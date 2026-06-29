@@ -459,13 +459,42 @@ pub fn molt_object_setattr(obj_bits: u64, name_bits: u64, value_bits: u64) {
 
 /// Mirrors crate::BufferExport from molt-runtime.
 /// IMPORTANT: This layout must match the runtime's BufferExport exactly.
+pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
+pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
+
 #[repr(C)]
 pub struct BufferExport {
     pub ptr: u64,
     pub len: u64,
-    pub readonly: u64,
-    pub stride: i64,
+    pub readonly: u32,
+    pub ndim: u32,
     pub itemsize: u64,
+    pub offset: isize,
+    pub owner: u64,
+    pub base: u64,
+    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
+}
+
+impl Default for BufferExport {
+    fn default() -> Self {
+        let mut format = [0; MOLT_BUFFER_FORMAT_CAP];
+        format[0] = b'B';
+        Self {
+            ptr: 0,
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format,
+        }
+    }
 }
 
 unsafe extern "C" {

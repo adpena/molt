@@ -748,6 +748,140 @@ static inline int PyArray_FailUnlessWriteable(PyArrayObject *array_obj, const ch
     return 0;
 }
 
+static inline int _molt_numpy_typenum_from_buffer_format(const char *format, Py_ssize_t itemsize) {
+    char code = (format != NULL && format[0] != '\0') ? format[0] : 'B';
+    switch (code) {
+        case '?':
+            return NPY_BOOL;
+        case 'b':
+            return NPY_BYTE;
+        case 'B':
+            return NPY_UBYTE;
+        case 'h':
+            return NPY_SHORT;
+        case 'H':
+            return NPY_USHORT;
+        case 'i':
+            return NPY_INT;
+        case 'I':
+            return NPY_UINT;
+        case 'l':
+            return sizeof(long) == (size_t)itemsize ? NPY_LONG : NPY_LONGLONG;
+        case 'L':
+            return sizeof(unsigned long) == (size_t)itemsize ? NPY_ULONG : NPY_ULONGLONG;
+        case 'q':
+            return NPY_LONGLONG;
+        case 'Q':
+            return NPY_ULONGLONG;
+        case 'f':
+            return itemsize == (Py_ssize_t)sizeof(double) ? NPY_DOUBLE : NPY_FLOAT;
+        case 'd':
+            return NPY_DOUBLE;
+        case 'O':
+            return NPY_OBJECT;
+        default:
+            return itemsize == 1 ? NPY_UBYTE : NPY_VOID;
+    }
+}
+
+static inline PyArray_Descr *_molt_numpy_descr_from_buffer(
+    const Py_buffer *view,
+    PyArray_Descr *requested
+) {
+    PyArray_Descr *descr = requested;
+    if (descr == NULL) {
+        int typenum = _molt_numpy_typenum_from_buffer_format(view->format, view->itemsize);
+        descr = PyArray_DescrFromType(typenum);
+        if (descr == NULL) {
+            return NULL;
+        }
+    }
+    if (descr->elsize > 0 && view->itemsize > 0
+        && descr->elsize != (int)view->itemsize) {
+        PyErr_SetString(PyExc_TypeError, "buffer dtype itemsize does not match requested dtype");
+        return NULL;
+    }
+    return descr;
+}
+
+static inline int _molt_numpy_buffer_flags_from_requirements(int requirements) {
+    int flags = PyBUF_FORMAT | PyBUF_STRIDES;
+    if ((requirements & NPY_ARRAY_WRITEABLE) != 0) {
+        flags |= PyBUF_WRITABLE;
+    }
+    if ((requirements & NPY_ARRAY_C_CONTIGUOUS) != 0) {
+        flags |= PyBUF_C_CONTIGUOUS;
+    }
+    if ((requirements & NPY_ARRAY_F_CONTIGUOUS) != 0) {
+        flags |= PyBUF_F_CONTIGUOUS;
+    }
+    return flags;
+}
+
+static inline PyObject *_molt_numpy_array_from_buffer_view(
+    PyObject *obj,
+    const Py_buffer *view,
+    PyArray_Descr *descr,
+    int requirements
+) {
+    PyArrayObject_fields *array_obj;
+    int i;
+    int flags = NPY_ARRAY_ALIGNED | NPY_ARRAY_NOTSWAPPED;
+    if (view->ndim < 0) {
+        PyErr_SetString(PyExc_ValueError, "negative buffer dimension count");
+        return NULL;
+    }
+    array_obj = (PyArrayObject_fields *)PyMem_Calloc(1, sizeof(PyArrayObject_fields));
+    if (array_obj == NULL) {
+        return NULL;
+    }
+    array_obj->ob_base = (PyObject *)&PyArray_Type;
+    array_obj->nd = view->ndim;
+    array_obj->descr = descr;
+    array_obj->data = (char *)view->buf;
+    if (view->readonly == 0) {
+        flags |= NPY_ARRAY_WRITEABLE;
+    }
+    if (PyBuffer_IsContiguous(view, 'C')) {
+        flags |= NPY_ARRAY_C_CONTIGUOUS;
+    }
+    if (PyBuffer_IsContiguous(view, 'F')) {
+        flags |= NPY_ARRAY_F_CONTIGUOUS;
+    }
+    array_obj->flags = flags;
+    if (view->ndim > 0) {
+        array_obj->dimensions = (npy_intp *)PyMem_Calloc((size_t)view->ndim, sizeof(npy_intp));
+        array_obj->strides = (npy_intp *)PyMem_Calloc((size_t)view->ndim, sizeof(npy_intp));
+        if (array_obj->dimensions == NULL || array_obj->strides == NULL) {
+            PyMem_Free(array_obj->strides);
+            PyMem_Free(array_obj->dimensions);
+            PyMem_Free(array_obj);
+            return NULL;
+        }
+        for (i = 0; i < view->ndim; i++) {
+            array_obj->dimensions[i] = view->shape != NULL ? (npy_intp)view->shape[i] : 0;
+            array_obj->strides[i] = view->strides != NULL ? (npy_intp)view->strides[i] : 0;
+        }
+    }
+    if (((requirements & NPY_ARRAY_C_CONTIGUOUS) != 0
+            && (array_obj->flags & NPY_ARRAY_C_CONTIGUOUS) == 0)
+        || ((requirements & NPY_ARRAY_F_CONTIGUOUS) != 0
+            && (array_obj->flags & NPY_ARRAY_F_CONTIGUOUS) == 0)
+        || ((requirements & NPY_ARRAY_WRITEABLE) != 0
+            && (array_obj->flags & NPY_ARRAY_WRITEABLE) == 0)) {
+        PyMem_Free(array_obj->strides);
+        PyMem_Free(array_obj->dimensions);
+        PyMem_Free(array_obj);
+        PyErr_SetString(PyExc_BufferError, "buffer does not satisfy requested NumPy array requirements");
+        return NULL;
+    }
+    array_obj->base = obj;
+    if (obj != NULL) {
+        Py_INCREF(obj);
+    }
+    return (PyObject *)array_obj;
+}
+
 static inline PyObject *PyArray_FromAny(
     PyObject *obj,
     PyArray_Descr *descr,
@@ -756,13 +890,34 @@ static inline PyObject *PyArray_FromAny(
     int requirements,
     PyObject *context
 ) {
-    (void)descr;
-    (void)min_depth;
-    (void)max_depth;
-    (void)requirements;
+    Py_buffer view;
+    PyArray_Descr *resolved_descr;
+    PyObject *array_obj;
     (void)context;
-    Py_INCREF(obj);
-    return obj;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL object passed to PyArray_FromAny");
+        return NULL;
+    }
+    if ((requirements & (NPY_ARRAY_ENSURECOPY | NPY_ARRAY_FORCECAST)) != 0) {
+        PyErr_SetString(PyExc_NotImplementedError, "Molt NumPy buffer construction does not implement copy or cast fallback");
+        return NULL;
+    }
+    if (PyObject_GetBuffer(obj, &view, _molt_numpy_buffer_flags_from_requirements(requirements)) < 0) {
+        return NULL;
+    }
+    if ((min_depth > 0 && view.ndim < min_depth) || (max_depth > 0 && view.ndim > max_depth)) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_ValueError, "buffer dimensionality does not satisfy requested depth");
+        return NULL;
+    }
+    resolved_descr = _molt_numpy_descr_from_buffer(&view, descr);
+    if (resolved_descr == NULL) {
+        PyBuffer_Release(&view);
+        return NULL;
+    }
+    array_obj = _molt_numpy_array_from_buffer_view(obj, &view, resolved_descr, requirements);
+    PyBuffer_Release(&view);
+    return array_obj;
 }
 
 static inline npy_intp PyArray_Size(PyObject *op) {

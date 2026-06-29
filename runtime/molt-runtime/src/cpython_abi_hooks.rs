@@ -6,8 +6,8 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use molt_cpython_abi::RuntimeHooks;
 use molt_cpython_abi::abi_types::MoltTypeTag;
+use molt_cpython_abi::{MoltBufferView as AbiMoltBufferView, RuntimeHooks};
 use molt_obj_model::MoltObject;
 
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
@@ -292,6 +292,71 @@ unsafe extern "C" fn hook_bytes_data(bits: u64, out_len: *mut usize) -> *const u
             unsafe { bytes_data(ptr) }
         }
     }
+}
+
+unsafe extern "C" fn hook_buffer_acquire(bits: u64, out_view: *mut AbiMoltBufferView) -> i32 {
+    if out_view.is_null() {
+        return -1;
+    }
+    let mut view = crate::c_api::MoltBufferView {
+        data: std::ptr::null_mut(),
+        len: 0,
+        readonly: 1,
+        ndim: 1,
+        itemsize: 1,
+        offset: 0,
+        owner: 0,
+        base: 0,
+        shape: [0; crate::MOLT_BUFFER_MAX_NDIM],
+        strides: [0; crate::MOLT_BUFFER_MAX_NDIM],
+        format: [0; crate::MOLT_BUFFER_FORMAT_CAP],
+    };
+    let rc = unsafe { crate::c_api::molt_buffer_acquire(bits, &mut view as *mut _) };
+    if rc != 0 {
+        return rc;
+    }
+    unsafe {
+        *out_view = AbiMoltBufferView {
+            data: view.data,
+            len: view.len,
+            readonly: view.readonly,
+            ndim: view.ndim,
+            itemsize: view.itemsize,
+            offset: view.offset,
+            owner: view.owner,
+            base: view.base,
+            shape: view.shape,
+            strides: view.strides,
+            format: view.format,
+        };
+    }
+    0
+}
+
+unsafe extern "C" fn hook_buffer_release(view: *mut AbiMoltBufferView) -> i32 {
+    if view.is_null() {
+        return -1;
+    }
+    let mut runtime_view = unsafe {
+        crate::c_api::MoltBufferView {
+            data: (*view).data,
+            len: (*view).len,
+            readonly: (*view).readonly,
+            ndim: (*view).ndim,
+            itemsize: (*view).itemsize,
+            offset: (*view).offset,
+            owner: (*view).owner,
+            base: (*view).base,
+            shape: (*view).shape,
+            strides: (*view).strides,
+            format: (*view).format,
+        }
+    };
+    let rc = unsafe { crate::c_api::molt_buffer_release(&mut runtime_view as *mut _) };
+    unsafe {
+        *view = AbiMoltBufferView::default();
+    }
+    rc
 }
 
 unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
@@ -627,6 +692,8 @@ pub fn register_cpython_hooks() {
         dict_len: hook_dict_len,
         str_data: hook_str_data,
         bytes_data: hook_bytes_data,
+        buffer_acquire: hook_buffer_acquire,
+        buffer_release: hook_buffer_release,
         classify_heap: hook_classify_heap,
         inc_ref: hook_inc_ref,
         dec_ref: hook_dec_ref,

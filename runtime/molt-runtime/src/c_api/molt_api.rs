@@ -1359,26 +1359,25 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         if out_view.is_null() {
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
-        let mut export = BufferExport {
-            ptr: std::ptr::null_mut(),
-            len: 0,
-            readonly: 1,
-            stride: 1,
-            itemsize: 1,
-        };
+        let mut export = BufferExport::default();
         if unsafe { molt_buffer_export(obj_bits, &mut export as *mut BufferExport) } != 0 {
             return -1;
         }
         inc_ref_bits(_py, obj_bits);
+        export.owner = obj_bits;
         unsafe {
             *out_view = MoltBufferView {
                 data: export.ptr,
                 len: export.len,
-                readonly: export.readonly as u32,
-                reserved: 0,
-                stride: export.stride,
+                readonly: export.readonly,
+                ndim: export.ndim,
                 itemsize: export.itemsize,
+                offset: export.offset,
                 owner: obj_bits,
+                base: export.base,
+                shape: export.shape,
+                strides: export.strides,
+                format: export.format,
             };
         }
         0
@@ -1398,10 +1397,15 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
             (*view).data = std::ptr::null_mut();
             (*view).len = 0;
             (*view).readonly = 1;
-            (*view).reserved = 0;
-            (*view).stride = 1;
+            (*view).ndim = 1;
             (*view).itemsize = 1;
+            (*view).offset = 0;
             (*view).owner = 0;
+            (*view).base = 0;
+            (*view).shape = [0; MOLT_BUFFER_MAX_NDIM];
+            (*view).strides = [0; MOLT_BUFFER_MAX_NDIM];
+            (*view).format = [0; MOLT_BUFFER_FORMAT_CAP];
+            (*view).format[0] = b'B';
         }
         0
     })

@@ -5,7 +5,7 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::RuntimeHooks;
+use molt_cpython_abi::hooks::{MoltBufferView, RuntimeHooks};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // `molt_cpython_abi_register_hooks`.
 
 static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
+static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 
 fn next_fake_handle() -> u64 {
     // NaN-boxed pointers are 50-bit aligned to ≥2-byte boundaries; bumping
@@ -91,6 +92,39 @@ unsafe extern "C" fn fake_bytes_data(_bits: u64, out_len: *mut usize) -> *const 
     }
     std::ptr::null()
 }
+unsafe extern "C" fn fake_buffer_acquire(
+    bits: u64,
+    out_view: *mut MoltBufferView,
+) -> std::os::raw::c_int {
+    if bits == 0 || out_view.is_null() {
+        return -1;
+    }
+    unsafe {
+        *out_view = MoltBufferView::default();
+        (*out_view).data = FAKE_BUFFER.as_ptr() as *mut u8;
+        (*out_view).len = FAKE_BUFFER.len() as u64;
+        (*out_view).readonly = 0;
+        (*out_view).ndim = 2;
+        (*out_view).itemsize = 1;
+        (*out_view).owner = bits;
+        (*out_view).base = bits;
+        (*out_view).shape[0] = 2;
+        (*out_view).shape[1] = 2;
+        (*out_view).strides[0] = 2;
+        (*out_view).strides[1] = 1;
+        (*out_view).format[0] = b'B';
+        (*out_view).format[1] = 0;
+    }
+    0
+}
+unsafe extern "C" fn fake_buffer_release(view: *mut MoltBufferView) -> std::os::raw::c_int {
+    if !view.is_null() {
+        unsafe {
+            *view = MoltBufferView::default();
+        }
+    }
+    0
+}
 unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
     MoltTypeTag::Other as u8
 }
@@ -136,6 +170,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     dict_len: fake_dict_len,
     str_data: fake_str_data,
     bytes_data: fake_bytes_data,
+    buffer_acquire: fake_buffer_acquire,
+    buffer_release: fake_buffer_release,
     classify_heap: fake_classify_heap,
     inc_ref: fake_inc_ref,
     dec_ref: fake_dec_ref,
@@ -151,6 +187,43 @@ fn init() {
     // no-op rather than panicking on `OnceLock::set` failure.
     unsafe {
         molt_cpython_abi::try_set_runtime_hooks(TEST_HOOKS);
+    }
+}
+
+#[test]
+fn test_getbuffer_uses_runtime_typed_descriptor() {
+    init();
+    let obj = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .handle_to_pyobj(next_fake_handle())
+    };
+    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+    let flags = 0x0004 | 0x0010 | 0x0008;
+    let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(obj, &mut view, flags) };
+    assert_eq!(rc, 0);
+    assert_eq!(view.len, 4);
+    assert_eq!(view.itemsize, 1);
+    assert_eq!(view.readonly, 0);
+    assert_eq!(view.ndim, 2);
+    assert!(!view.buf.is_null());
+    assert!(!view.format.is_null());
+    assert!(!view.shape.is_null());
+    assert!(!view.strides.is_null());
+    unsafe {
+        assert_eq!(*view.format as u8, b'B');
+        assert_eq!(*view.shape.add(0), 2);
+        assert_eq!(*view.shape.add(1), 2);
+        assert_eq!(*view.strides.add(0), 2);
+        assert_eq!(*view.strides.add(1), 1);
+        assert_eq!(
+            molt_cpython_abi::api::buffer::PyBuffer_IsContiguous(&view, b'C' as _),
+            1
+        );
+        molt_cpython_abi::api::buffer::PyBuffer_Release(&mut view);
+        assert!(view.buf.is_null());
+        assert!(view.internal.is_null());
+        molt_cpython_abi::api::refcount::Py_DECREF(obj);
     }
 }
 

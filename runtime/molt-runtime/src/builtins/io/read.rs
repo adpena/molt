@@ -1148,18 +1148,12 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             let msg = format!("{name}() unsupported for text files");
             return raise_exception::<_>(_py, "OSError", &msg);
         }
-        let mut export = BufferExport {
-            ptr: std::ptr::null_mut(),
-            len: 0,
-            readonly: 0,
-            stride: 0,
-            itemsize: 0,
-        };
+        let mut export = BufferExport::default();
         if molt_buffer_export(buffer_bits, &mut export) != 0 || export.readonly != 0 {
             let msg = format!("{name}() argument must be a writable bytes-like object");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        if export.itemsize != 1 || export.stride != 1 {
+        if export.ndim != 1 || export.itemsize != 1 || export.strides[0] != 1 {
             let msg = format!("{name}() argument must be a writable bytes-like object");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
