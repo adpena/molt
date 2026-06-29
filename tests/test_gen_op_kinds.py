@@ -708,6 +708,25 @@ def test_audit_native_arms_include_extracted_op_family_authority() -> None:
     assert "const" in native_arms
 
 
+def test_audit_native_single_kind_handlers_may_be_matchless() -> None:
+    """A one-kind native family may be straight-line, but multi-kind families must match."""
+    audit = _audit()
+    handlers = audit.extract_native_family_handlers()
+
+    for family, expected_kind in {
+        "SubscriptGet": "index",
+        "SubscriptStore": "store_index",
+    }.items():
+        module, fn_name = handlers[family]
+        path = (
+            ROOT
+            / f"runtime/molt-backend-native/src/native_backend/function_compiler/fc/{module}.rs"
+        )
+        assert audit.extract_native_handler_arm_kinds(path, fn_name, {expected_kind}) == {
+            expected_kind
+        }
+
+
 def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
     audit = _audit()
     res = audit.run_audit()

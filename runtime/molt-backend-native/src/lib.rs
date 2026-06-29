@@ -20,6 +20,8 @@ pub use molt_tir::{passes, representation_plan, tir};
 pub use molt_ir::intrinsic_symbols::{
     runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
 };
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) mod app_resolver_abi;
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
 #[cfg(feature = "native-backend")]
