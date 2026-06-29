@@ -3,7 +3,7 @@ use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS, WasmRuntimeImport,
+    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, WasmRuntimeImport, poll_table_imports,
     wasm_runtime_export_name, wasm_runtime_import,
 };
 use crate::wasm_plan::{
@@ -892,15 +892,13 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
 
     let sentinel_func_idx = first_call_indirect_idx + CALL_INDIRECT_IMPORTS.len() as u32;
     let element_indices = wasm_element_function_indices(&wasm);
-    let poll_table_prefix = POLL_TABLE_IMPORTS
-        .iter()
-        .map(|spec| spec.table_slot)
+    let poll_table_prefix = poll_table_imports()
+        .filter_map(|spec| spec.poll_table_slot)
         .max()
         .unwrap_or(0) as usize
         + 1;
-    let occupied_poll_slots: BTreeSet<usize> = POLL_TABLE_IMPORTS
-        .iter()
-        .map(|spec| spec.table_slot as usize)
+    let occupied_poll_slots: BTreeSet<usize> = poll_table_imports()
+        .filter_map(|spec| spec.poll_table_slot.map(|slot| slot as usize))
         .collect();
     for slot in 0..poll_table_prefix {
         if !occupied_poll_slots.contains(&slot) {
@@ -943,7 +941,8 @@ fn poll_table_slots_follow_manifest_slot_numbers() {
         WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll,
     ] {
         let import_name = import.name();
-        let slot = crate::wasm_abi::poll_table_import_slot(import)
+        let slot = crate::wasm_abi::IMPORT_REGISTRY[import as usize]
+            .poll_table_slot
             .unwrap_or_else(|| panic!("missing generated poll slot for {import_name}"));
         let func_index = *import_indices
             .get(import_name)

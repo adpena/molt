@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use wasm_encoder::{Function, Instruction};
 
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{POLL_TABLE_IMPORTS, poll_table_import_slot};
+use crate::wasm_abi::poll_table_imports;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 
@@ -13,9 +13,8 @@ pub(super) struct WasmPollTableLayout {
 
 impl WasmPollTableLayout {
     pub(super) fn build() -> Self {
-        let prefix_len = POLL_TABLE_IMPORTS
-            .iter()
-            .map(|spec| spec.table_slot)
+        let prefix_len = poll_table_imports()
+            .filter_map(|spec| spec.poll_table_slot)
             .max()
             .unwrap_or(0)
             + 1;
@@ -37,8 +36,8 @@ impl WasmPollTableLayout {
             return table_import_wrappers;
         }
 
-        for spec in POLL_TABLE_IMPORTS {
-            let import_name = spec.import.name();
+        for spec in poll_table_imports() {
+            let import_name = spec.name;
             let arity = 1usize;
             let type_idx = *user_type_map
                 .get(&arity)
@@ -67,14 +66,17 @@ impl WasmPollTableLayout {
         sentinel_func_idx: u32,
     ) -> Vec<u32> {
         let mut table_indices = vec![sentinel_func_idx; self.prefix_len as usize];
-        for spec in POLL_TABLE_IMPORTS {
-            let name = spec.import.name();
+        for spec in poll_table_imports() {
+            let name = spec.name;
             let idx = table_import_wrappers.get(name).copied().unwrap_or_else(|| {
                 *import_ids
                     .get(spec.import)
                     .unwrap_or_else(|| panic!("missing poll import for {name}"))
             });
-            let slot = spec.table_slot as usize;
+            let slot = spec
+                .poll_table_slot
+                .expect("poll table iterator must yield slot-bearing imports")
+                as usize;
             *table_indices
                 .get_mut(slot)
                 .unwrap_or_else(|| panic!("poll table slot {slot} outside poll table prefix")) =
@@ -85,14 +87,11 @@ impl WasmPollTableLayout {
     }
 
     pub(super) fn seed_function_table_slots(&self, func_to_table_idx: &mut BTreeMap<String, u32>) {
-        for spec in POLL_TABLE_IMPORTS {
-            let table_slot = poll_table_import_slot(spec.import).unwrap_or_else(|| {
-                panic!(
-                    "missing generated poll table slot for {}",
-                    spec.import.name()
-                )
-            });
-            func_to_table_idx.insert(spec.import.runtime_export_name().to_string(), table_slot);
+        for spec in poll_table_imports() {
+            let table_slot = spec
+                .poll_table_slot
+                .expect("poll table iterator must yield slot-bearing imports");
+            func_to_table_idx.insert(spec.runtime_export_name.to_string(), table_slot);
         }
     }
 }

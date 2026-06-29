@@ -24,8 +24,6 @@ OUT_RS_FILES = {
     "numeric_runtime_selector.rs": OUT_RS_DIR / "numeric_runtime_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
-    "poll_table_imports.rs": OUT_RS_DIR / "poll_table_imports.rs",
-    "runtime_callable_imports.rs": OUT_RS_DIR / "runtime_callable_imports.rs",
     "reserved_runtime_callables.rs": OUT_RS_DIR / "reserved_runtime_callables.rs",
     "runtime_callable_queries.rs": OUT_RS_DIR / "runtime_callable_queries.rs",
     "pure_profile.rs": OUT_RS_DIR / "pure_profile.rs",
