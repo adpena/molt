@@ -373,6 +373,7 @@ class _FrontendLayerExecutionContext:
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     module_deps: dict[str, set[str]]
+    source_modules: Collection[str]
     module_chunk_max_ops: int
     optimization_profile: str
     pgo_hot_function_names: Collection[str]
@@ -430,6 +431,7 @@ class _SerialFrontendLoweringContext:
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     module_deps: dict[str, set[str]]
+    source_modules: Collection[str]
     module_chunking: bool
     module_chunk_max_ops: int
     optimization_profile: str
@@ -820,10 +822,10 @@ class _ImportPlan:
 
     def with_compile_modules(self, compile_modules: Collection[str]) -> "_ImportPlan":
         compile_set = frozenset(compile_modules)
-        unknown = sorted(compile_set - self.known_modules)
+        unknown = sorted(compile_set - frozenset(self.module_graph))
         if unknown:
             raise ValueError(
-                "compile module set contains modules outside the closure plan: "
+                "compile module set contains modules without source graph entries: "
                 + ", ".join(unknown)
             )
         return _ImportPlan(

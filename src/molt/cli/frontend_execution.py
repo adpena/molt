@@ -233,6 +233,7 @@ def _prepare_frontend_execution(
     _FrontendIntegrationState,
     _MidendDiagnosticsState,
 ]:
+    source_modules = tuple(module_graph)
     frontend_layer_execution_context = _FrontendLayerExecutionContext(
         syntax_error_modules=syntax_error_modules,
         module_graph=module_graph,
@@ -249,6 +250,7 @@ def _prepare_frontend_execution(
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
         module_deps=module_deps,
+        source_modules=source_modules,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
         pgo_hot_function_names=pgo_hot_function_names,
@@ -284,6 +286,7 @@ def _prepare_frontend_execution(
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
         module_deps=module_deps,
+        source_modules=source_modules,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,

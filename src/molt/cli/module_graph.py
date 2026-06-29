@@ -461,7 +461,12 @@ def _materialize_import_plan(
     )
     namespace_module_names = support_modules.namespace_module_names
     generated_module_source_paths = dict(support_modules.generated_module_source_paths)
-    known_modules = frozenset(module_graph)
+    source_modules = frozenset(module_graph)
+    native_artifact_modules = frozenset(
+        artifact.module
+        for artifact in prepared_module_graph.native_artifact_plan.artifacts
+    )
+    known_modules = source_modules | native_artifact_modules
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
@@ -505,21 +510,21 @@ def _materialize_import_plan(
         generated_module_source_paths=MappingProxyType(generated_module_source_paths),
         known_modules=known_modules,
         declared_root_modules=frozenset(
-            name for name in declared_root_modules if name in known_modules
+            name for name in declared_root_modules if name in source_modules
         ),
         entry_reachable_modules=frozenset(
-            name for name in entry_reachable_modules if name in known_modules
+            name for name in entry_reachable_modules if name in source_modules
         ),
         runtime_support_modules=frozenset(
-            name for name in runtime_support_modules if name in known_modules
+            name for name in runtime_support_modules if name in source_modules
         ),
         stdlib_support_modules=frozenset(
-            name for name in stdlib_support_modules if name in known_modules
+            name for name in stdlib_support_modules if name in source_modules
         ),
         package_parent_modules=frozenset(
-            name for name in package_parent_modules if name in known_modules
+            name for name in package_parent_modules if name in source_modules
         ),
-        compile_modules=known_modules,
+        compile_modules=source_modules,
         known_modules_sorted=tuple(sorted(known_modules)),
         stdlib_allowlist_sorted=tuple(sorted(stdlib_allowlist)),
         module_graph_metadata=module_graph_metadata,
