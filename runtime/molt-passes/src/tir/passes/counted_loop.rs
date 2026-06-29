@@ -71,7 +71,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator};
+use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
+use crate::tir::blocks::{BlockId, LoopBreakKind, Terminator};
 use crate::tir::dominators::{self, CfgEdgePolicy};
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::ordered_comparison_trip_count;
@@ -179,9 +180,19 @@ fn find_def(func: &TirFunction, value: ValueId) -> Option<(BlockId, &crate::tir:
 
 /// Recognize a counted loop rooted at `header`, or refuse with `None`.
 ///
-/// `header` must be a `LoopRole::LoopHeader`. The caller is responsible for
+/// `header` must be a LoopForest header. The caller is responsible for
 /// iterating headers in a deterministic order.
 pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<CountedLoop> {
+    let loop_forest = <LoopForest as Analysis>::compute(func);
+    recognize_counted_loop_with_loop_forest(func, header, &loop_forest)
+}
+
+/// Recognize a counted loop using the caller-provided canonical LoopForest.
+pub(crate) fn recognize_counted_loop_with_loop_forest(
+    func: &TirFunction,
+    header: BlockId,
+    loop_forest: &LoopForestResult,
+) -> Option<CountedLoop> {
     macro_rules! trace {
         ($($a:tt)*) => {
             if std::env::var("MOLT_DEBUG_COUNTED_LOOP").is_ok() {
@@ -192,7 +203,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
             }
         };
     }
-    if func.loop_roles.get(&header) != Some(&LoopRole::LoopHeader) {
+    if !loop_forest_contains_header(loop_forest, header) {
         return None;
     }
     trace!("BEGIN recognition");
@@ -217,12 +228,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
 
     // When the cond block is a separate block, it must not be a loop header
     // itself (which would mean we walked into a nested loop).
-    if cond_block_id != header
-        && matches!(
-            func.loop_roles.get(&cond_block_id),
-            Some(&LoopRole::LoopHeader)
-        )
-    {
+    if cond_block_id != header && loop_forest_contains_header(loop_forest, cond_block_id) {
         return None;
     }
     // Cross-check against the frontend-recorded cond block when present: if the
@@ -258,7 +264,7 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
     } = gate;
 
     // No nested loop: the body must not itself be a loop header.
-    if matches!(func.loop_roles.get(&body_id), Some(&LoopRole::LoopHeader)) {
+    if loop_forest_contains_header(loop_forest, body_id) {
         trace!("body {:?} is a nested loop header", body_id);
         return None;
     }
@@ -424,6 +430,13 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
         back_args,
         loop_pairs_end: func.loop_pairs.get(&header).copied(),
     })
+}
+
+fn loop_forest_contains_header(loop_forest: &LoopForestResult, header: BlockId) -> bool {
+    loop_forest
+        .headers
+        .binary_search_by_key(&header.0, |b| b.0)
+        .is_ok()
 }
 
 fn loop_gate(

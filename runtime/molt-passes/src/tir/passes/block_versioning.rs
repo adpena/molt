@@ -21,7 +21,7 @@
 //!    to the specialized version.
 //!    Otherwise route to the generic version.
 //!
-//! 4. Loop headers with back-edges are not versioned — doing so could create
+//! 4. LoopForest loop headers are not versioned — doing so could create
 //!    unbounded versioning or violate SSA dominance on loop-carried values.
 //!
 //! 5. After versioning, blocks whose predecessors ALL route to the specialized
@@ -35,7 +35,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::analysis::{AnalysisManager, PredMap};
+use crate::tir::analysis::{AnalysisManager, LoopForest, PredMap};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_operand_independent_result_tir_type;
@@ -101,18 +101,6 @@ fn build_producing_op_map(func: &TirFunction) -> HashMap<ValueId, OpCode> {
         }
     }
     map
-}
-
-/// Identify loop headers: blocks with at least one back-edge predecessor
-/// (where pred.0 >= block.0).
-fn find_loop_headers(pred_map: &HashMap<BlockId, Vec<BlockId>>) -> HashSet<BlockId> {
-    let mut headers = HashSet::new();
-    for (&bid, preds) in pred_map {
-        if preds.iter().any(|p| p.0 >= bid.0) {
-            headers.insert(bid);
-        }
-    }
-    headers
 }
 
 /// Returns true if a value is statically known to be of the given type,
@@ -350,13 +338,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // a TypeGuard failure inside a try region must propagate to the handler.
     // Because the pass only proceeds when `has_exception_handling == false`,
     // the cached full-CFG `PredMap` has no exception edges and coincides with
-    // the terminator-only predecessor relation back-edge detection needs.
+    // the terminator-only predecessor relation used for versioning rewrites.
     if func.has_exception_handling {
         return stats;
     }
 
     let pred_map = am.get::<PredMap>(func).clone();
-    let loop_headers = find_loop_headers(&pred_map);
+    let loop_headers: HashSet<BlockId> =
+        am.get::<LoopForest>(func).headers.iter().copied().collect();
     let producing_ops = build_producing_op_map(func);
 
     // Build block-argument type map for type proofs.
@@ -379,7 +368,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut candidates: Vec<VersioningCandidate> = Vec::new();
 
     for &bid in &block_ids {
-        // Do not version loop headers — back-edge contexts are unreliable.
+        // Do not version loop headers — loop-carried contexts are unreliable.
         if loop_headers.contains(&bid) {
             continue;
         }
