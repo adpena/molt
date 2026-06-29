@@ -192,14 +192,15 @@ Polyhedral loop classification is generated too:
 `opcode_is_polyhedral_loop_header_table` for loops that may receive tiling
 annotations, while `polyhedral_affine_body_opcodes` feeds
 `opcode_is_polyhedral_affine_body_table` for the opcode-only affine body
-allowlist. `polyhedral.rs` owns body traversal and live Copy refinement; it does
-not carry private loop-header or affine-body opcode lists.
+allowlist. `LoopForest` owns loop headers and body block sets; `polyhedral.rs`
+owns tiling annotation and live Copy refinement, not private loop traversal or
+affine-body opcode lists.
 Vectorization opcode classification is generated too:
 `vectorize_opcode_facts` feeds `opcode_vectorize_facts_table`, so
 `vectorize.rs` owns accumulator recognition, live Copy refinement, min/max
 pattern validation, lane typing, and hint emission while body eligibility,
-loop-header markers, annotation targets, and reduction-family membership live
-in the registry.
+annotation targets, and reduction-family membership live in the registry.
+`LoopForest` owns loop headers and bodies.
 SSA attr transport is generated too:
 `ssa_s_value_attr_keys` feeds `opcode_ssa_s_value_attr_key_table`, and
 `ssa_original_kind_preserving_kinds` feeds

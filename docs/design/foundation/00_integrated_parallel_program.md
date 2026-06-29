@@ -26,7 +26,7 @@ The substrate and correctness foundation is largely built. Completed arcs:
 
 | Arc | Commit | What landed |
 |-----|--------|-------------|
-| S1 AnalysisManager + PassManager | `ef284d182` | `TirPass::run(func, am)`, 7 analyses (PredMap/ImmediateDoms/DomChildren/ExecReachable/StrictReachable/LoopForest/DefMap); deleted 3 duplicate dominator impls; `MOLT_VERIFY_ANALYSIS=1` guard |
+| S1 AnalysisManager + PassManager | `ef284d182` + current LoopForest convergence | `TirPass::run(func, am)`, 7 analyses (PredMap/ImmediateDoms/DomChildren/ExecReachable/StrictReachable/LoopForest/DefMap); LoopForest owns explicit loop roles plus dominator-proven backedge headers for LICM/BCE/vectorize/polyhedral; deleted duplicate dominator impls; `MOLT_VERIFY_ANALYSIS=1` guard |
 | S2 TargetInfo / cost model (TTI) | `9ff5d2e00` | `run(func, am, tti)`; deleted magic profitability constants |
 | S3 effects oracle | `8b6b88286` | `effects.rs` single source of truth; licm/gvn deleted their dup lists; Div/Mod/Pow CSE-safe-but-not-movable asymmetry encoded |
 | S4 call-graph + module phase | `7915b29a0` | `call_graph` + `ip_summary` + `module_phase`; replaced SimpleIR leaf-detection with TIR call-graph (byte-identical) |

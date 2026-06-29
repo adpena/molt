@@ -1033,7 +1033,6 @@ def _validate_vectorize_opcode_facts(data: dict, opcodes: set[str]) -> None:
             "opcode",
             "body",
             "reduction",
-            "loop_header",
             "annotation_target",
         }
         if unknown:
@@ -1065,21 +1064,14 @@ def _validate_vectorize_opcode_facts(data: dict, opcodes: set[str]) -> None:
                 f"vectorize_opcode_facts {opcode}: reduction must be one of "
                 f"{sorted(_VECTOR_REDUCTION_RULES)}, got {reduction!r}"
             )
-        for flag in ("loop_header", "annotation_target"):
-            value = row.get(flag, False)
-            if not isinstance(value, bool):
-                raise OpKindTableError(
-                    f"vectorize_opcode_facts {opcode}: {flag} must be bool"
-                )
+        if not isinstance(row.get("annotation_target", False), bool):
+            raise OpKindTableError(
+                f"vectorize_opcode_facts {opcode}: annotation_target must be bool"
+            )
         if reduction is not None and body != "scalar_arithmetic":
             raise OpKindTableError(
                 f"vectorize_opcode_facts {opcode}: reduction requires "
                 "body='scalar_arithmetic'"
-            )
-        if row.get("loop_header", False) and body != "iteration_control":
-            raise OpKindTableError(
-                f"vectorize_opcode_facts {opcode}: loop_header requires "
-                "body='iteration_control'"
             )
         if row.get("annotation_target", False) and body != "iteration_control":
             raise OpKindTableError(

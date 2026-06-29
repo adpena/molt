@@ -483,7 +483,6 @@ def _render_vectorize_opcode_facts(opcodes: list[dict], data: dict) -> str:
             "pub struct VectorizeOpcodeFacts {\n",
             "    pub body_action: VectorizeBodyAction,\n",
             "    pub reduction_rule: VectorReductionRule,\n",
-            "    pub loop_header_marker: bool,\n",
             "    pub annotation_target: bool,\n",
             "}\n\n",
             "#[inline]\n",
@@ -501,13 +500,11 @@ def _render_vectorize_opcode_facts(opcodes: list[dict], data: dict) -> str:
             if reduction is not None
             else "VectorReductionRule::None"
         )
-        loop_header = "true" if fact.get("loop_header", False) else "false"
         annotation = "true" if fact.get("annotation_target", False) else "false"
         lines.append(
             f"        OpCode::{name} => VectorizeOpcodeFacts {{ "
             f"body_action: VectorizeBodyAction::{body}, "
             f"reduction_rule: {reduction_variant}, "
-            f"loop_header_marker: {loop_header}, "
             f"annotation_target: {annotation} }},\n"
         )
     lines.append("    }\n}\n")

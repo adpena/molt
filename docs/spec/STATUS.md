@@ -285,9 +285,10 @@ the implementation. For forward-looking priorities, use
   `polyhedral_loop_header_opcodes` generates
   `opcode_is_polyhedral_loop_header_table`, and
   `polyhedral_affine_body_opcodes` generates
-  `opcode_is_polyhedral_affine_body_table`. `polyhedral.rs` owns loop-body
-  traversal, tiling annotation, and live Copy refinement, not private
-  loop-header or affine-body opcode sets.
+  `opcode_is_polyhedral_affine_body_table`. `LoopForest` owns loop headers and
+  loop-body block sets; `polyhedral.rs` owns tiling annotation and live Copy
+  refinement, not private loop-header/body traversal or affine-body opcode
+  sets.
 - SSA attr transport is registry-owned:
   `ssa_s_value_attr_keys` generates the exhaustive
   `opcode_ssa_s_value_attr_key_table`, and
@@ -297,10 +298,11 @@ the implementation. For forward-looking priorities, use
   payload routing or mapped `_original_kind` preservation.
 - Vectorization opcode classification is registry-owned:
   `vectorize_opcode_facts` generates the exhaustive
-  `opcode_vectorize_facts_table` consumed by `vectorize.rs`. The pass owns
-  accumulator recognition, live Copy refinement, min/max pattern validation,
-  lane typing, and hint emission, not private body-eligibility, loop-header,
-  annotation-target, or reduction opcode lists.
+  `opcode_vectorize_facts_table` consumed by `vectorize.rs`. `LoopForest` owns
+  loop headers and loop-body block sets; the pass owns accumulator recognition,
+  live Copy refinement, min/max pattern validation, lane typing, and hint
+  emission, not private body-eligibility, annotation-target, or reduction opcode
+  lists.
 - Representation-aware LIR verifier dispatch is registry-owned:
   `lir_verify_rules` generates the exhaustive `opcode_lir_verify_rule_table`
   consumed by `verify_lir.rs`. The verifier owns hook invariants and
