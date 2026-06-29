@@ -273,6 +273,16 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
+    assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
+    void_runtime_names = {
+        entry["runtime_name"]
+        for entry in data["import"]
+        if entry.get("callable_result") == "void"
+    }
+    assert "molt_asyncio_future_drop" in void_runtime_names
+    for runtime_name in sorted(void_runtime_names):
+        assert f'"{runtime_name}",' in rendered_runtime_rs
+    assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
     assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
@@ -289,10 +299,16 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     function_abi = (
         ROOT / "runtime/molt-runtime/src/builtins/functions/function_abi.rs"
     ).read_text(encoding="utf-8")
+    call_function = (ROOT / "runtime/molt-runtime/src/call/function.rs").read_text(
+        encoding="utf-8"
+    )
     assert "wasm_runtime_callables.inc" not in function_abi
     assert "wasm_poll_callables.inc" not in function_abi
     assert '"molt_type_call" => Some' not in function_abi
     assert "molt_async_sleep_poll as *const" not in function_abi
+    assert "runtime_callable_returns_void" in function_abi
+    assert "VOID_INTRINSICS" not in call_function
+    assert "runtime_callable_returns_void(fn_ptr)" in call_function
 
 
 def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:

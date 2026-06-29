@@ -125,6 +125,11 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     wasm_callables::runtime_callable_target_ptr(fn_ptr)
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn runtime_callable_returns_void(fn_ptr: u64) -> bool {
+    wasm_callables::runtime_callable_returns_void_from_target_ptr(fn_ptr)
+}
+
 #[inline]
 unsafe fn init_runtime_callable_function_obj(
     ptr: *mut u8,

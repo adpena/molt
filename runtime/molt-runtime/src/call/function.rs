@@ -174,28 +174,6 @@ fn should_force_trampoline_for_fixed_arity_call(
     task_trampoline_needed || tramp_ptr != 0
 }
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
-    const VOID_INTRINSICS: [&str; 9] = [
-        "molt_email_message_drop",
-        "molt_process_drop",
-        "molt_stream_reader_drop",
-        "molt_stream_close",
-        "molt_stream_drop",
-        "molt_ws_close",
-        "molt_ws_drop",
-        "molt_socket_reader_drop",
-        "molt_socket_drop",
-    ];
-    for name in VOID_INTRINSICS {
-        if crate::intrinsics::resolve_symbol(name) == Some(fn_ptr) {
-            return true;
-        }
-    }
-    false
-}
-
 fn trace_call_vec_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -454,13 +432,12 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                         arg0_bits,
                     ) as u64
                 } else {
-                    if is_void_wasm_call1_target(fn_ptr) {
+                    if crate::builtins::functions::runtime_callable_returns_void(fn_ptr) {
                         // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                         // `function_fn_ptr`. This branch handles void intrinsics (drop/close
-                        // functions) identified by `is_void_wasm_call1_target` — these return
-                        // nothing, so the void signature `fn(u64)` is correct. The compiler and
-                        // intrinsic registry must guarantee fn_ptr targets a void-returning
-                        // function. UB if fn_ptr is null or the target actually returns a value.
+                        // functions) identified by the generated WASM ABI manifest result facts.
+                        // These return nothing, so the void signature `fn(u64)` is correct.
+                        // UB if fn_ptr is null or the target actually returns a value.
                         let func: extern "C" fn(u64) = std::mem::transmute(
                             required_native_call_target!(_py, func_ptr, fn_ptr, "fixed arity call"),
                         );
