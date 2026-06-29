@@ -606,6 +606,12 @@ class _ExternalPackageNativeArtifact:
     abi_tag: str
     target_triple: str
     platform_tag: str
+    init_symbol: str = ""
+    runtime_linkage: str = "host_resolved"
+    artifact_kind: str = "shared_library"
+    support_file_sha256: tuple[tuple[str, str], ...] = ()
+    provided_capsules: tuple[str, ...] = ()
+    required_capsules: tuple[str, ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
         return {
@@ -620,6 +626,15 @@ class _ExternalPackageNativeArtifact:
             "abi_tag": self.abi_tag,
             "target_triple": self.target_triple,
             "platform_tag": self.platform_tag,
+            "init_symbol": self.init_symbol,
+            "runtime_linkage": self.runtime_linkage,
+            "artifact_kind": self.artifact_kind,
+            "support_file_sha256": [
+                {"path": rel_path, "sha256": digest}
+                for rel_path, digest in self.support_file_sha256
+            ],
+            "provided_capsules": list(self.provided_capsules),
+            "required_capsules": list(self.required_capsules),
         }
 
 
@@ -658,6 +673,12 @@ class _StagedExternalPackageNativeArtifact:
     abi_tag: str
     target_triple: str
     platform_tag: str
+    init_symbol: str = ""
+    runtime_linkage: str = "host_resolved"
+    artifact_kind: str = "shared_library"
+    support_file_sha256: tuple[tuple[str, str], ...] = ()
+    provided_capsules: tuple[str, ...] = ()
+    required_capsules: tuple[str, ...] = ()
 
     def json_payload(self) -> dict[str, Any]:
         return {
@@ -675,6 +696,15 @@ class _StagedExternalPackageNativeArtifact:
             "abi_tag": self.abi_tag,
             "target_triple": self.target_triple,
             "platform_tag": self.platform_tag,
+            "init_symbol": self.init_symbol,
+            "runtime_linkage": self.runtime_linkage,
+            "artifact_kind": self.artifact_kind,
+            "support_file_sha256": [
+                {"path": rel_path, "sha256": digest}
+                for rel_path, digest in self.support_file_sha256
+            ],
+            "provided_capsules": list(self.provided_capsules),
+            "required_capsules": list(self.required_capsules),
         }
 
 

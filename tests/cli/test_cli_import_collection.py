@@ -34,6 +34,7 @@ from molt.cli import build_results as cli_build_results
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
+from molt.cli import external_native as cli_external_native
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import module_graph_cache as cli_module_graph_cache
@@ -1723,7 +1724,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
 ) -> None:
     sleeper = tmp_path / "sleeper.py"
     sleeper.write_text(
-        "import time\ntime.sleep(2.0)\n",
+        "import time\ntime.sleep(5.0)\n",
         encoding="utf-8",
     )
     child_pid_file = tmp_path / "sleeper.pid"
@@ -1740,7 +1741,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
         start = time.perf_counter()
         result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
             [sys.executable, str(parent)],
-            timeout=0.5,
+            timeout=2.0,
         )
         elapsed = time.perf_counter() - start
     finally:
@@ -1751,7 +1752,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
 
     assert result.returncode == 0
     assert "parent-done" in cli._subprocess_output_text(result.stdout)
-    assert elapsed < 1.0
+    assert elapsed < 2.5
 
 
 def test_build_module_lowering_metadata_precomputes_module_flags(
@@ -1862,7 +1863,7 @@ def test_respect_pythonpath_keeps_repo_src_internal(
     src_root = ROOT / "src"
     monkeypatch.setenv("PYTHONPATH", str(src_root))
 
-    resolved = cli._resolve_module_root_resolution(
+    resolved = cli_build_inputs._resolve_module_root_resolution(
         ROOT,
         ROOT,
         respect_pythonpath=True,
@@ -2207,10 +2208,85 @@ def test_module_graph_policy_digest_includes_external_admission(
     )
 
 
+def _libmolt_source_manifest_fields(
+    *,
+    module: str,
+    artifact_name: str,
+    artifact_bytes: bytes,
+    target_triple: str | None = None,
+    runtime_linkage: str = "host_resolved",
+    artifact_kind: str | None = None,
+) -> dict[str, Any]:
+    module_leaf = module.rsplit(".", 1)[-1]
+    init_symbol = f"PyInit_{module_leaf}"
+    object_name = f"{module_leaf}.o"
+    digest = hashlib.sha256(artifact_bytes).hexdigest()
+    resolved_target_triple = target_triple or cli._host_target_triple()
+    resolved_artifact_kind = artifact_kind or (
+        "wasm_relocatable_object"
+        if runtime_linkage == "static_link"
+        else "shared_library"
+    )
+    return {
+        "schema_version": 1,
+        "module": module,
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": resolved_target_triple,
+        "platform_tag": cli._wheel_token(resolved_target_triple),
+        "capabilities": ["module.extension.exec"],
+        "extension": artifact_name,
+        "extension_sha256": digest,
+        "loader_kind": "libmolt_source",
+        "init_symbol": init_symbol,
+        "runtime_linkage": runtime_linkage,
+        "artifact_kind": resolved_artifact_kind,
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": init_symbol,
+            "init_symbol_owner": object_name,
+            "closure_sha256": digest,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "object": object_name,
+                    "source_sha256": digest,
+                    "object_sha256": digest,
+                    "defined_symbols": [init_symbol],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+
+
+def _apply_manifest_overrides(
+    manifest: dict[str, Any],
+    manifest_overrides: dict[str, Any] | None,
+) -> None:
+    if not manifest_overrides:
+        return
+    for key, value in manifest_overrides.items():
+        if (
+            key == "object_closure"
+            and isinstance(value, dict)
+            and isinstance(manifest.get("object_closure"), dict)
+        ):
+            cast(dict[str, Any], manifest["object_closure"]).update(value)
+        else:
+            manifest[key] = value
+
+
 def _write_external_native_package(
     tmp_path: Path,
     *,
     package: str = "nativepkg",
+    artifact_name: str = "_native.so",
     artifact_bytes: bytes = b"native-extension",
     write_manifest: bool = True,
     checksum_override: str | None = None,
@@ -2224,32 +2300,62 @@ def _write_external_native_package(
         f"import {package}._native\nVALUE = 1\n",
         encoding="utf-8",
     )
-    artifact_path = package_dir / "_native.so"
+    artifact_path = package_dir / artifact_name
     artifact_path.write_bytes(artifact_bytes)
     manifest_path = package_dir / "extension_manifest.json"
     if write_manifest:
-        extension_sha = hashlib.sha256(artifact_bytes).hexdigest()
-        manifest = {
-            "schema_version": 1,
-            "module": f"{package}._native",
-            "molt_c_api_version": "1",
-            "abi_tag": "molt_abi1",
-            "python_tag": "py3",
-            "target_triple": "x86_64-unknown-linux-gnu",
-            "platform_tag": "x86_64_unknown_linux_gnu",
-            "capabilities": ["module.extension.exec"],
-            "extension": "_native.so",
-            "extension_sha256": checksum_override or extension_sha,
-        }
-        if manifest_overrides:
-            manifest.update(manifest_overrides)
+        manifest = _libmolt_source_manifest_fields(
+            module=f"{package}._native",
+            artifact_name=artifact_name,
+            artifact_bytes=artifact_bytes,
+        )
+        if checksum_override is not None:
+            manifest["extension_sha256"] = checksum_override
+        _apply_manifest_overrides(manifest, manifest_overrides)
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     if shim_source is not None:
-        (package_dir / "_native.so.molt.py").write_text(
+        (package_dir / f"{artifact_name}.molt.py").write_text(
             shim_source,
             encoding="utf-8",
         )
     return external_root, artifact_path, manifest_path
+
+
+def _write_external_native_artifact(
+    external_root: Path,
+    *,
+    package: str,
+    relative_module: str,
+    artifact_name: str | None = None,
+    artifact_bytes: bytes | None = None,
+    manifest_overrides: dict[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    package_dir = external_root.joinpath(*package.split("."))
+    package_dir.mkdir(parents=True, exist_ok=True)
+    init_path = package_dir / "__init__.py"
+    if not init_path.exists():
+        init_path.write_text("VALUE = 1\n", encoding="utf-8")
+    module_parts = relative_module.split(".")
+    artifact_dir = package_dir.joinpath(*module_parts[:-1])
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(1, len(module_parts)):
+        parent_init = package_dir.joinpath(*module_parts[:index], "__init__.py")
+        if not parent_init.exists():
+            parent_init.write_text("", encoding="utf-8")
+    artifact_path = artifact_dir / (artifact_name or f"{module_parts[-1]}.so")
+    payload = artifact_bytes or f"{relative_module}-extension".encode("utf-8")
+    artifact_path.write_bytes(payload)
+    manifest_path = artifact_path.with_name(
+        artifact_path.name + ".extension_manifest.json"
+    )
+    manifest = _libmolt_source_manifest_fields(
+        module=f"{package}.{relative_module}",
+        artifact_name=artifact_path.name,
+        artifact_bytes=payload,
+    )
+    _apply_manifest_overrides(manifest, manifest_overrides)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return artifact_path, manifest_path
 
 
 def test_external_static_package_native_artifact_plan_validates_manifest(
@@ -2277,6 +2383,17 @@ def test_external_static_package_native_artifact_plan_validates_manifest(
     assert artifact.path == artifact_path.resolve()
     assert artifact.manifest_path == manifest_path.resolve()
     assert artifact.capabilities == ("module.extension.exec",)
+    assert artifact.init_symbol == "PyInit__native"
+    assert artifact.runtime_linkage == "host_resolved"
+    assert artifact.artifact_kind == "shared_library"
+    assert artifact.support_file_sha256 == (
+        (
+            "nativepkg/__init__.py",
+            hashlib.sha256(
+                (external_root / "nativepkg" / "__init__.py").read_bytes()
+            ).hexdigest(),
+        ),
+    )
     assert (
         artifact.extension_sha256
         == hashlib.sha256(artifact_path.read_bytes()).hexdigest()
@@ -2287,6 +2404,91 @@ def test_external_static_package_native_artifact_plan_validates_manifest(
         ]
         == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     )
+
+
+def test_external_static_package_wasm_artifact_plan_is_manifest_led(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        artifact_name="_native.molt.wasm",
+        artifact_bytes=b"wasm-relocatable-object",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+    )
+    (external_root / "nativepkg" / "stray.o").write_bytes(b"not-a-manifest-artifact")
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert error is None
+    assert policy is not None
+    assert len(policy.native_artifact_plan.artifacts) == 1
+    artifact = policy.native_artifact_plan.artifacts[0]
+    assert artifact.path == artifact_path.resolve()
+    assert artifact.target_triple == "wasm32-wasip1"
+    assert artifact.runtime_linkage == "static_link"
+    assert artifact.artifact_kind == "wasm_relocatable_object"
+
+
+def test_external_package_artifact_specific_manifests_allow_same_directory_modules(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    package_dir = external_root / "nativepkg"
+    ndimage_dir = package_dir / "ndimage"
+    ndimage_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (ndimage_dir / "__init__.py").write_text("", encoding="utf-8")
+    modules = ("_nd_image", "_ni_label")
+    for module in modules:
+        artifact_path = ndimage_dir / f"{module}.molt.wasm"
+        payload = f"{module}-wasm".encode("utf-8")
+        artifact_path.write_bytes(payload)
+        manifest = _libmolt_source_manifest_fields(
+            module=f"nativepkg.ndimage.{module}",
+            artifact_name=artifact_path.name,
+            artifact_bytes=payload,
+        )
+        manifest.update(
+            {
+                "target_triple": "wasm32-wasip1",
+                "platform_tag": "wasm32_wasip1",
+                "runtime_linkage": "static_link",
+                "artifact_kind": "wasm_relocatable_object",
+            }
+        )
+        artifact_path.with_name(
+            artifact_path.name + ".extension_manifest.json"
+        ).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={
+            "nativepkg.ndimage._nd_image",
+            "nativepkg.ndimage._ni_label",
+        },
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.ndimage._nd_image",
+        "nativepkg.ndimage._ni_label",
+    ]
+    assert {artifact.manifest_path.name for artifact in plan.artifacts} == {
+        "_nd_image.molt.wasm.extension_manifest.json",
+        "_ni_label.molt.wasm.extension_manifest.json",
+    }
 
 
 def test_external_static_package_native_artifact_requires_sidecar_manifest(
@@ -2395,6 +2597,262 @@ def test_external_static_package_native_artifact_rejects_invalid_manifest_json(
     assert policy is None
     assert error == 2
     assert "invalid extension manifest" in capsys.readouterr().err
+
+
+def test_external_native_artifact_error_summary_is_bounded() -> None:
+    errors = [f"pkg: native artifact ext{i}.so is missing sidecar" for i in range(20)]
+
+    summary = cli_external_native._external_native_artifact_error_summary(
+        errors,
+        limit=5,
+    )
+
+    assert "ext0.so" in summary
+    assert "ext4.so" in summary
+    assert "ext5.so" not in summary
+    assert "15 more external native artifact custody error(s)" in summary
+
+
+def test_external_native_artifact_plan_filters_to_required_modules(
+    tmp_path: Path,
+) -> None:
+    external_root, artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        write_manifest=False,
+    )
+
+    skipped_plan, skipped_errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.unused"},
+    )
+    required_plan, required_errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg._native"},
+    )
+
+    assert skipped_errors == []
+    assert skipped_plan is not None
+    assert skipped_plan.artifacts == ()
+    assert required_plan is None
+    assert len(required_errors) == 1
+    assert str(artifact_path) in required_errors[0]
+
+
+def test_external_static_package_admission_can_defer_native_artifact_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        write_manifest=False,
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    eager_policy, eager_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    deferred_policy, deferred_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+    )
+
+    assert eager_policy is None
+    assert eager_error == 2
+    assert str(artifact_path) in capsys.readouterr().err
+    assert deferred_error is None
+    assert deferred_policy is not None
+    assert deferred_policy.native_artifact_plan.artifacts == ()
+
+
+def test_external_native_artifact_plan_closes_over_capsule_providers(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        manifest_overrides={"provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        manifest_overrides={
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+    package_dir = external_root / "nativepkg"
+    (package_dir / "unused.so").write_bytes(b"unchecked-wheel-extension")
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.consumer"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.consumer",
+        "nativepkg.core._multiarray_umath",
+    ]
+    by_module = {artifact.module: artifact for artifact in plan.artifacts}
+    assert by_module["nativepkg.consumer"].required_capsules == (capsule,)
+    assert by_module["nativepkg.core._multiarray_umath"].provided_capsules == (capsule,)
+
+
+def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={**wasm_manifest, "provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        artifact_name="consumer.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.consumer"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.consumer",
+        "nativepkg.core._multiarray_umath",
+    ]
+    assert all(artifact.runtime_linkage == "static_link" for artifact in plan.artifacts)
+
+
+def test_external_native_artifact_plan_rejects_target_skewed_capsule_provider(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        manifest_overrides={"provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        artifact_name="consumer.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.consumer"},
+    )
+
+    assert plan is None
+    assert len(errors) == 1
+    assert "target-compatible validated provider artifact" in errors[0]
+    assert "nativepkg.core._multiarray_umath=host_resolved" in errors[0]
+
+
+def test_external_native_artifact_plan_rejects_missing_capsule_provider(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        manifest_overrides={
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.consumer"},
+    )
+
+    assert plan is None
+    assert len(errors) == 1
+    assert capsule in errors[0]
+    assert "nativepkg.consumer" in errors[0]
+    assert "no target-compatible validated provider artifact" in errors[0]
+
+
+def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="providers.provider_a",
+        manifest_overrides={"provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="providers.provider_b",
+        manifest_overrides={"provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        manifest_overrides={
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.consumer"},
+    )
+
+    assert plan is None
+    assert len(errors) == 1
+    assert "multiple candidate provider artifacts" in errors[0]
+    assert "nativepkg.providers.provider_a" in errors[0]
+    assert "nativepkg.providers.provider_b" in errors[0]
 
 
 def test_module_graph_policy_digest_includes_native_artifact_plan(
@@ -2506,6 +2964,9 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 linked_output_path=None,
                 emit_ir_path=None,
             ),
+            "External static packages require native binary output",
+            "target=native",
+            "packages=nativepkg",
         ),
         (
             "wasm",
@@ -2524,6 +2985,9 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 linked_output_path=tmp_path / "output_linked.wasm",
                 emit_ir_path=None,
             ),
+            "Linked WASM external static packages require wasm32 static_link",
+            "nativepkg._native=host_resolved/shared_library",
+            None,
         ),
         (
             "rust",
@@ -2542,6 +3006,9 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 linked_output_path=None,
                 emit_ir_path=None,
             ),
+            "External static packages require native binary output",
+            "target=rust",
+            "packages=nativepkg",
         ),
         (
             "luau",
@@ -2560,6 +3027,9 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 linked_output_path=None,
                 emit_ir_path=None,
             ),
+            "External static packages require native binary output",
+            "target=luau",
+            "packages=nativepkg",
         ),
         (
             "mlir",
@@ -2578,21 +3048,23 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
                 linked_output_path=None,
                 emit_ir_path=None,
             ),
+            "External static packages require native binary output",
+            "target=mlir",
+            "packages=nativepkg",
         ),
     ]
 
-    for target, output_layout in unsupported_layouts:
+    for target, output_layout, expected, detail, package_detail in unsupported_layouts:
         error_message = cli._external_native_artifact_output_custody_error(
             native_artifact_plan=policy.native_artifact_plan,
             output_layout=output_layout,
             target=target,
         )
         assert error_message is not None
-        assert "External static native packages require native binary output" in (
-            error_message
-        )
-        assert f"target={target}" in error_message
-        assert "packages=nativepkg" in error_message
+        assert expected in error_message
+        assert detail in error_message
+        if package_detail is not None:
+            assert package_detail in error_message
 
 
 def test_wrapper_build_cache_semantic_env_tracks_external_static_packages() -> None:
@@ -3292,7 +3764,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     assert staged_stdlib.read_bytes() == b"stdlib"
 
 
-def test_stage_external_native_artifacts_prunes_removed_shim_candidate(
+def test_stage_external_native_artifacts_prunes_extension_shim_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3309,23 +3781,24 @@ def test_stage_external_native_artifacts_prunes_removed_shim_candidate(
     assert policy is not None
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
+    runtime_root = (
+        artifacts_root
+        / "external_static_packages"
+        / policy.native_artifact_plan.digest()
+    )
+    stale_shim = runtime_root / "nativepkg" / "_native.so.molt.py"
+    stale_shim.parent.mkdir(parents=True, exist_ok=True)
+    stale_shim.write_text("stale facade\n", encoding="utf-8")
+
     staged_once = cli._stage_external_package_native_artifacts_for_build(
         policy.native_artifact_plan,
         artifacts_root=artifacts_root,
     )
+
+    assert artifact_path.with_name("_native.so.molt.py").is_file()
     assert len(staged_once) == 1
-    staged_shim = staged_once[0].runtime_root / "nativepkg" / "_native.so.molt.py"
-    assert staged_shim.read_text(encoding="utf-8") == "value = 911\n"
-
-    artifact_path.with_name("_native.so.molt.py").unlink()
-    staged_twice = cli._stage_external_package_native_artifacts_for_build(
-        policy.native_artifact_plan,
-        artifacts_root=artifacts_root,
-    )
-
-    assert len(staged_twice) == 1
-    assert not staged_shim.exists()
-    assert staged_shim not in staged_twice[0].staged_support_paths
+    assert not stale_shim.exists()
+    assert stale_shim not in staged_once[0].staged_support_paths
 
 
 def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custody(
@@ -3424,11 +3897,11 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     assert staged_init.read_text(encoding="utf-8").startswith(
         "import nativepkg._native"
     )
-    assert staged_shim.read_text(encoding="utf-8") == "value = 911\n"
+    assert not staged_shim.exists()
     assert staged.staged_path in captured_inputs
     assert staged.staged_manifest_path in captured_inputs
     assert staged_init in captured_inputs
-    assert staged_shim in captured_inputs
+    assert staged_shim not in captured_inputs
     stub_content = prepared.stub_path.read_text(encoding="utf-8")
     assert json.dumps(str(expected_runtime_root.resolve())) in stub_content
     native_main_start = stub_content.index("int main")

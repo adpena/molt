@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence, cast
 
@@ -23,7 +24,11 @@ from molt.cli.build_output_layout import (
     _resolve_out_dir,
     _resolve_output_roots,
 )
-from molt.cli.external_native import _resolve_import_admission_policy
+from molt.cli.external_native import (
+    _external_native_artifact_error_summary,
+    _resolve_external_package_native_artifact_plan,
+    _resolve_import_admission_policy,
+)
 from molt.cli.module_cache import (
     _build_scoped_lowering_inputs,
     _load_module_analysis,
@@ -704,6 +709,7 @@ def _prepare_frontend_stage_state(
         _resolve_import_admission_policy(
             external_module_roots=resolved_build_entry.external_module_roots,
             json_output=json_output,
+            defer_native_artifacts=True,
         )
     )
     if import_admission_policy_error is not None:
@@ -730,6 +736,29 @@ def _prepare_frontend_stage_state(
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
     assert prepared_module_graph is not None
+    native_artifact_plan, native_artifact_errors = (
+        _resolve_external_package_native_artifact_plan(
+            external_module_roots=import_admission_policy.external_roots,
+            admitted_packages=import_admission_policy.admitted_external_packages,
+            required_modules=(
+                set(prepared_module_graph.module_graph)
+                | set(prepared_module_graph.explicit_imports)
+                | set(prepared_module_graph.runtime_import_dispatch_roots)
+            ),
+        )
+    )
+    if native_artifact_errors:
+        return None, _fail(
+            "External static package native-artifact custody errors: "
+            + _external_native_artifact_error_summary(native_artifact_errors),
+            json_output,
+            command="build",
+        )
+    assert native_artifact_plan is not None
+    prepared_module_graph = replace(
+        prepared_module_graph,
+        native_artifact_plan=native_artifact_plan,
+    )
     output_base = _output_base_for_entry(entry_module, source_path)
     out_dir_path = _resolve_out_dir(project_root, out_dir)
     artifacts_root, bin_root, output_root = _resolve_output_roots(
