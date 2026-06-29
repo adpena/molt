@@ -9,7 +9,6 @@ use crate::wasm_abi::{
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_imports::IMPORT_REGISTRY;
 use crate::wasm_options::WasmCompileOptions;
-use crate::wasm_plan::gpu_runtime_call_symbol;
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind};
 
 pub(super) struct WasmRuntimeSurfacePlan {
@@ -196,11 +195,6 @@ impl WasmRuntimeSurfacePlan {
                     RuntimeArityPlan::DirectImportCall,
                 );
             }
-        }
-        if let Some(runtime_name) = gpu_runtime_call_symbol(kind) {
-            self.direct_import_call_specs
-                .entry(runtime_name.to_string())
-                .or_insert(0);
         }
         if kind == "call_func"
             && let Some(args) = op.args.as_ref()

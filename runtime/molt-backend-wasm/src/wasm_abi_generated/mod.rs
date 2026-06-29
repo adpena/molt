@@ -26,5 +26,7 @@ pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
 };
-pub(crate) use runtime_surface::runtime_surface_requires_direct_import;
+pub(crate) use runtime_surface::{
+    GPU_INTRINSIC_MANIFEST_NAMES, runtime_surface_requires_direct_import,
+};
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};

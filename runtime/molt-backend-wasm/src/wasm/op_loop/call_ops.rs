@@ -12,7 +12,6 @@ mod code_metadata;
 mod direct;
 mod dynamic;
 mod function_object;
-mod gpu_ops;
 mod local_value_ops;
 mod refcount_ops;
 mod site;
@@ -51,9 +50,6 @@ pub(super) fn emit_call_op(
     op: &OpIR,
 ) -> CallOpEmission {
     if let Some(emission) = handled(direct::emit_direct_call_op(call_ctx, func, op)) {
-        return emission;
-    }
-    if let Some(emission) = handled(gpu_ops::emit_gpu_call_op(call_ctx, func, op)) {
         return emission;
     }
     if let Some(emission) = handled(refcount_ops::emit_refcount_call_op(call_ctx, func, op)) {

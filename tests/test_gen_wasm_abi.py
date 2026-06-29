@@ -81,6 +81,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     data = gen.load_manifest()
     manifest_names = {entry["name"] for entry in data["import"]}
     host_exports = set(data["runtime_export_policy"]["host_exports"])
+    gpu_manifest_names = {entry["name"] for entry in data["gpu_intrinsic_manifest_name"]}
     fallback_specs = {entry["import"]: entry for entry in data["runtime_import_fallback"]}
 
     runtime_exports_path = ROOT / "src/molt/_wasm_runtime_exports.py"
@@ -95,6 +96,10 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "molt_set_wasm_table_base",
         "molt_gpu_matmul_contiguous",
     } <= host_exports
+    assert {
+        "molt_gpu_matmul_contiguous",
+        "molt_gpu_tensor__zeros",
+    } <= gpu_manifest_names <= host_exports
     assert fallback_specs["fast_dict_get"] == {
         "import": "fast_dict_get",
         "strategy": "call_bind_ic",
@@ -112,6 +117,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
 
     rendered_py = gen.render_py(data)
+    rendered_rs = _rendered_rs(gen, data)
+    assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
+    assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
@@ -210,6 +218,18 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
     assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
     assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
+    assert op_loop_calls["gpu_thread_id"] == {
+        "kind": "gpu_thread_id",
+        "import_name": "gpu_thread_id",
+        "args": [],
+        "sink": "result_or_drop",
+    }
+    assert op_loop_calls["gpu_barrier"] == {
+        "kind": "gpu_barrier",
+        "import_name": "gpu_barrier",
+        "args": [],
+        "sink": "result_or_drop",
+    }
 
     rendered_rs = _rendered_rs(gen, data)
     assert "enum LirRuntimeCall" in rendered_rs
@@ -262,6 +282,8 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert "module_cache_del" not in op_deps["__structural__"]
     assert op_deps["module_cache_del"] == ["module_cache_del"]
     assert op_deps["print"] == ["print_obj"]
+    assert op_deps["gpu_thread_id"] == ["gpu_thread_id"]
+    assert op_deps["gpu_barrier"] == ["gpu_barrier"]
     assert op_deps["object_new_bound"] == []
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
 
@@ -352,6 +374,12 @@ def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> No
     assert "REQUIRED_IMPORT_PREFIXES" not in runtime_import_demand
     assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_import_demand
     assert "runtime_surface_requires_direct_import(kind)" in runtime_import_demand
+
+    host_surface = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs"
+    ).read_text(encoding="utf-8")
+    assert "GPU_INTRINSIC_MANIFEST_NAMES" in host_surface
+    assert "DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES" not in host_surface
 
 
 def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
