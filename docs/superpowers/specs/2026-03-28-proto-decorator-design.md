@@ -20,8 +20,8 @@ compatibility with standard protobuf toolchains.
   `@gpu.kernel`, `@contextmanager`) and lowers them to typed IR with
   compile-time metadata extraction.
 - WASM host import infrastructure is mature: the backend emits typed import
-  calls and the host import registry in `wasm_imports.rs` dispatches them to
-  Rust implementations.
+  calls and the generated ABI manifest/facade defines the host import boundary
+  dispatched to Rust implementations.
 
 ## Problem Statement
 
@@ -262,7 +262,8 @@ as static-dispatch calls -- they do not go through Python's method resolution.
 ### WASM Codegen
 
 The WASM backend emits host import calls for encode and decode operations.
-These are registered in `wasm_imports.rs` alongside existing host imports.
+These are registered in `wasm_abi_manifest.toml` and generated into the shared
+WASM ABI facade alongside existing host imports.
 
 #### Host Imports
 
@@ -542,7 +543,7 @@ Extend `molt-runtime-protobuf/src/lib.rs` tests:
 1. Implement `molt_proto_encode` host import using existing
    `molt-runtime-protobuf` wrappers.
 2. Implement `molt_proto_decode` host import with full field-by-field decoding.
-3. Register host imports in `wasm_imports.rs`.
+3. Register host imports in `wasm_abi_manifest.toml` and regenerate the WASM ABI.
 4. Implement native backend direct calls.
 5. End-to-end test: roundtrip a simple message through WASM.
 
