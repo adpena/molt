@@ -390,6 +390,7 @@ def _lower_module_serial_with_context(
         scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
         known_modules_sorted=lowering_context.known_modules_sorted,
         pgo_hot_function_names_sorted=lowering_context.pgo_hot_function_names_sorted,
+        source_modules=lowering_context.source_modules,
     )
     metadata_view = execution_view.metadata
     scoped_inputs = execution_view.scoped_inputs
@@ -431,6 +432,7 @@ def _lower_module_serial_with_context(
             module_dep_closures=lowering_context.module_dep_closures,
             scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
             scoped_inputs=scoped_inputs,
+            source_modules=lowering_context.source_modules,
             scoped_known_classes=scoped_known_classes,
             is_package=is_package,
             path_stat=path_stat,
@@ -666,6 +668,7 @@ def _prepare_frontend_parallel_batch(
             known_modules_sorted=known_modules_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
             scoped_known_classes_by_module=scoped_known_classes_by_module,
+            source_modules=module_graph,
         )
         metadata_view = execution_view.metadata
         scoped_inputs = execution_view.scoped_inputs
@@ -703,6 +706,7 @@ def _prepare_frontend_parallel_batch(
                 module_dep_closures=module_dep_closures,
                 scoped_lowering_inputs=scoped_lowering_inputs,
                 scoped_inputs=scoped_inputs,
+                source_modules=module_graph,
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
                 scoped_known_classes=scoped_known_classes,
                 is_package=is_package,
@@ -741,6 +745,7 @@ def _prepare_frontend_parallel_batch(
                 module_dep_closures=module_dep_closures,
                 scoped_lowering_inputs=scoped_lowering_inputs,
                 scoped_inputs=scoped_inputs,
+                source_modules=module_graph,
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
                 scoped_known_classes=scoped_known_classes,
                 context_digest=context_digest_by_module.get(module_name),
@@ -781,6 +786,7 @@ def _prepare_frontend_parallel_batch(
                     module_dep_closures=module_dep_closures,
                     scoped_lowering_inputs=scoped_lowering_inputs,
                     scoped_inputs=scoped_inputs,
+                    source_modules=module_graph,
                     scoped_known_classes_by_module=scoped_known_classes_by_module,
                     scoped_known_classes=scoped_known_classes,
                     target_python=target_python,
