@@ -119,11 +119,18 @@ the implementation. For forward-looking priorities, use
   transitive external package closure is admitted only by direct entry imports
   or an explicit `MOLT_EXTERNAL_STATIC_PACKAGES` package declaration. The graph
   cache key includes this policy. Explicitly admitted external packages now
-  scan package-local `.so`/`.pyd` artifacts during build admission, require a
-  nearby `extension_manifest.json` with matching module, extension path,
+  scan package-local `.so`/`.pyd`/`.molt.wasm`/`.o`/`.a` artifact candidates
+  during build admission; source-recompiled NumPy/SciPy package roots fail
+  closed before module-graph discovery if admitted source trees contain no
+  package-local artifact candidates. Once graph reachability selects the
+  package/subpackage, the native artifact plan validates nearby
+  `extension_manifest.json` metadata with matching module, extension path,
   extension SHA-256, ABI, target triple, platform tag, and capabilities, and
-  fingerprint the artifact/manifest custody facts in graph, wrapper build, and
-  backend object-cache inputs. Native builds publish the validated artifact,
+  fingerprints the artifact/manifest custody facts in graph, wrapper build, and
+  backend object-cache inputs. Native-backed package `__init__.py` files are
+  native runtime support custody, not source-closure authority, so their broad
+  upstream imports do not compile unowned NumPy/SciPy trees. Native builds
+  publish the validated artifact,
   sidecar, package `__init__.py` chain, and runtime extension shim candidates
   into a deterministic `external_static_packages/<plan-digest>/` runtime root;
   generated native binaries inject that staged root into canonical
@@ -1327,9 +1334,12 @@ the implementation. For forward-looking priorities, use
   `fail_fast`, and `missing` status. The Molt runner uses
   `MOLT_EXTERNAL_STATIC_PACKAGES=numpy`, explicit `module.extension.exec`
   capability, and all-loaded-`numpy.*` module-origin custody. Build admission
-  now validates and fingerprints package-local native artifact sidecars for
-  explicitly admitted external packages, and native builds publish those
-  validated artifacts plus sidecars and runtime shim candidates under a
+  now refuses source-recompiled NumPy/SciPy package admission with no
+  package-local native/static artifact candidates, keeps native-backed package
+  initializers from seeding broad source closure, validates and fingerprints
+  reachable package-local native artifact sidecars for explicitly admitted
+  external packages, and native builds publish those validated artifacts plus
+  sidecars and runtime shim candidates under a
   deterministic `external_static_packages/<plan-digest>/` root and inject that
   staged root into generated native binaries before runtime startup. That is not
   yet a green no-host NumPy import proof. The strict NumPy `c_api_probe` lane is

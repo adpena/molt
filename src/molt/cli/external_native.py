@@ -50,6 +50,7 @@ _EXTERNAL_PACKAGE_ARTIFACT_SUFFIXES = (
     *_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES,
     *_EXTERNAL_PACKAGE_STATIC_LINK_ARTIFACT_SUFFIXES,
 )
+_SOURCE_RECOMPILED_EXTERNAL_PACKAGE_ROOTS = frozenset({"numpy", "scipy"})
 _EXTERNAL_PACKAGE_EXTENSION_MANIFEST = "extension_manifest.json"
 _EXTERNAL_PACKAGE_ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"
 
@@ -77,6 +78,24 @@ def _external_package_dir(root: Path, package: str) -> Path | None:
     if package_dir.is_dir() and _case_exact_file(init_file):
         return package_dir.resolve()
     return None
+
+
+def _source_recompiled_external_package_root(package: str) -> str | None:
+    normalized = package.strip()
+    for root in sorted(_SOURCE_RECOMPILED_EXTERNAL_PACKAGE_ROOTS):
+        if normalized == root or normalized.startswith(root + "."):
+            return root
+    return None
+
+
+def _native_artifact_source_packages_for_admission(
+    admitted_packages: Collection[str],
+) -> frozenset[str]:
+    return frozenset(
+        root
+        for package in admitted_packages
+        if (root := _source_recompiled_external_package_root(package)) is not None
+    )
 
 
 def _is_external_package_native_artifact(path: Path) -> bool:
@@ -170,6 +189,40 @@ def _iter_external_package_native_artifacts(package_dir: Path) -> list[Path]:
     return sorted(artifacts)
 
 
+def _external_package_native_artifact_candidate_errors(
+    *,
+    external_module_roots: Sequence[Path],
+    admitted_packages: Collection[str],
+) -> list[str]:
+    errors: list[str] = []
+    for package in sorted(admitted_packages):
+        native_root = _source_recompiled_external_package_root(package)
+        if native_root is None:
+            continue
+        package_dirs: list[Path] = []
+        artifact_candidate_count = 0
+        for root in external_module_roots:
+            package_dir = _external_package_dir(root.resolve(), package)
+            if package_dir is None:
+                continue
+            package_dirs.append(package_dir)
+            artifact_candidate_count += len(
+                _iter_external_package_native_artifacts(package_dir)
+            )
+        if not package_dirs or artifact_candidate_count:
+            continue
+        roots = ", ".join(str(path) for path in package_dirs)
+        errors.append(
+            f"{package}: source-recompiled external static package admission "
+            f"for native package root {native_root!r} requires at least one "
+            "package-local Molt native artifact candidate before graph admission; "
+            f"found none under {roots}. Build or stage libmolt source-recompiled "
+            f"{native_root} artifacts, or remove {package!r} from "
+            "MOLT_EXTERNAL_STATIC_PACKAGES."
+        )
+    return errors
+
+
 def _external_extension_module_name(
     *,
     package: str,
@@ -185,6 +238,22 @@ def _external_extension_module_name(
             break
     basename = basename.split(".", 1)[0]
     return ".".join(part for part in (package, *parent_parts, basename) if part)
+
+
+def _external_native_artifact_module_required(
+    module_name: str,
+    required_modules: frozenset[str] | None,
+) -> bool:
+    if required_modules is None:
+        return True
+    for required_module in required_modules:
+        if (
+            module_name == required_module
+            or module_name.startswith(required_module + ".")
+            or required_module.startswith(module_name + ".")
+        ):
+            return True
+    return False
 
 
 def _extension_path_matches_manifest(
@@ -547,6 +616,14 @@ def _resolve_external_package_native_artifact_plan(
 ) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
     artifacts: list[_ExternalPackageNativeArtifact] = []
     errors: list[str] = []
+    errors.extend(
+        _external_package_native_artifact_candidate_errors(
+            external_module_roots=external_module_roots,
+            admitted_packages=admitted_packages,
+        )
+    )
+    if errors:
+        return None, errors
     required = frozenset(required_modules) if required_modules is not None else None
     provider_candidates: list[tuple[str, Path, Path, str]] = []
     for package in sorted(admitted_packages):
@@ -563,7 +640,10 @@ def _resolve_external_package_native_artifact_plan(
                 provider_candidates.append(
                     (package, package_dir, artifact_path, module_name)
                 )
-                if required is not None and module_name not in required:
+                if not _external_native_artifact_module_required(
+                    module_name,
+                    required,
+                ):
                     continue
                 artifact, artifact_errors = _validate_external_package_native_artifact(
                     package=package,
@@ -617,6 +697,17 @@ def _resolve_import_admission_policy(
     )
     if error is not None:
         return None, _fail(error, json_output, command="build")
+    candidate_errors = _external_package_native_artifact_candidate_errors(
+        external_module_roots=external_module_roots,
+        admitted_packages=packages,
+    )
+    if candidate_errors:
+        return None, _fail(
+            "External static package native-artifact custody errors: "
+            + _external_native_artifact_error_summary(candidate_errors),
+            json_output,
+            command="build",
+        )
     if defer_native_artifacts:
         native_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     else:
@@ -635,6 +726,9 @@ def _resolve_import_admission_policy(
     return _ImportAdmissionPolicy(
         external_roots=tuple(external_module_roots),
         admitted_external_packages=packages,
+        native_artifact_source_packages=(
+            _native_artifact_source_packages_for_admission(packages)
+        ),
         native_artifact_plan=native_plan,
     ), None
 

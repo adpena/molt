@@ -712,6 +712,7 @@ class _StagedExternalPackageNativeArtifact:
 class _ImportAdmissionPolicy:
     external_roots: tuple[Path, ...] = ()
     admitted_external_packages: frozenset[str] = frozenset()
+    native_artifact_source_packages: frozenset[str] = frozenset()
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = field(
         default_factory=_ExternalPackageNativeArtifactPlan
     )
@@ -725,8 +726,18 @@ class _ImportAdmissionPolicy:
             for name in self.admitted_external_packages
             if name and name.strip()
         )
+        native_artifact_source_packages = frozenset(
+            name.strip()
+            for name in self.native_artifact_source_packages
+            if name and name.strip()
+        )
         object.__setattr__(self, "external_roots", external_roots)
         object.__setattr__(self, "admitted_external_packages", admitted)
+        object.__setattr__(
+            self,
+            "native_artifact_source_packages",
+            native_artifact_source_packages,
+        )
 
     def _external_root_for_path(self, path: Path) -> Path | None:
         resolved_path = path.resolve()
@@ -741,6 +752,22 @@ class _ImportAdmissionPolicy:
                 return True
         return False
 
+    def _native_artifact_source_package(self, module_name: str) -> str | None:
+        for package in self.native_artifact_source_packages:
+            if module_name == package or module_name.startswith(package + "."):
+                return package
+        return None
+
+    def owns_source_closure_with_native_artifact_plan(
+        self,
+        module_name: str,
+        path: Path,
+    ) -> bool:
+        return (
+            self._external_root_for_path(path) is not None
+            and self._native_artifact_source_package(module_name) is not None
+        )
+
     def admits_import(
         self,
         module_name: str,
@@ -750,7 +777,11 @@ class _ImportAdmissionPolicy:
     ) -> bool:
         if self._external_root_for_path(path) is None:
             return True
-        return from_entry_path or self._package_admitted(module_name)
+        if from_entry_path:
+            return True
+        if self._native_artifact_source_package(module_name) is not None:
+            return False
+        return self._package_admitted(module_name)
 
     def admits_package_parent(
         self,
@@ -761,6 +792,9 @@ class _ImportAdmissionPolicy:
     ) -> bool:
         if self._external_root_for_path(path) is None:
             return True
+        if self._native_artifact_source_package(module_name) is not None:
+            prefix = module_name + "."
+            return any(name.startswith(prefix) for name in existing_modules)
         if self._package_admitted(module_name):
             return True
         prefix = module_name + "."
@@ -770,6 +804,9 @@ class _ImportAdmissionPolicy:
         return {
             "external_roots": [str(root) for root in self.external_roots],
             "admitted_external_packages": sorted(self.admitted_external_packages),
+            "native_artifact_source_packages": sorted(
+                self.native_artifact_source_packages
+            ),
             "native_artifact_plan": self.native_artifact_plan.digest_payload(),
         }
 

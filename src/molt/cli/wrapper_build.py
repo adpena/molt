@@ -28,6 +28,8 @@ from molt.cli.default_paths import _default_molt_bin
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.external_native import (
+    _external_package_native_artifact_candidate_errors,
+    _native_artifact_source_packages_for_admission,
     _parse_external_static_packages,
     _resolve_external_package_native_artifact_plan,
 )
@@ -171,9 +173,17 @@ def _wrapper_build_dependency_fingerprints(
         )
         if admission_error is not None:
             return None
+        if _external_package_native_artifact_candidate_errors(
+            external_module_roots=resolved_build_entry.external_module_roots,
+            admitted_packages=admitted_packages,
+        ):
+            return None
         import_admission_policy = _ImportAdmissionPolicy(
             external_roots=resolved_build_entry.external_module_roots,
             admitted_external_packages=admitted_packages,
+            native_artifact_source_packages=(
+                _native_artifact_source_packages_for_admission(admitted_packages)
+            ),
             native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
         )
         try:

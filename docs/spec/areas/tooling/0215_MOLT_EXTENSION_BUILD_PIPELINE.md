@@ -98,13 +98,18 @@ Optional:
   archive-backed loads). Successful checks are cached with path+manifest
   fingerprints so replaced artifacts are revalidated on the next import/load.
 - Build-time external package admission enforces the same sidecar direction for
-  `MOLT_EXTERNAL_STATIC_PACKAGES`: package-local `.so`/`.pyd` artifacts must
-  have nearby `extension_manifest.json` metadata with matching module,
-  extension path, checksum, ABI, target, platform, and capabilities before the
-  frontend lowers that package graph. Graph, wrapper-build, and backend
-  object-cache identities include the validated artifact/manifest custody
-  facts. Native builds publish the validated artifact, sidecar, package
-  `__init__.py` chain, and runtime extension shim candidates into a
+  `MOLT_EXTERNAL_STATIC_PACKAGES`: source-recompiled package roots such as
+  NumPy/SciPy require at least one package-local native/static artifact
+  candidate before module-graph discovery, and their package `__init__.py`
+  sources are native runtime support custody rather than source-closure
+  authority. Reachable package/subpackage artifacts
+  (`.so`/`.pyd`/`.molt.wasm`/`.o`/`.a`) must have nearby
+  `extension_manifest.json` metadata with matching module, extension path,
+  checksum, ABI, target, platform, and capabilities before backend dispatch.
+  Graph, wrapper-build, and backend object-cache identities include the
+  validated artifact/manifest custody facts. Native builds publish the validated
+  artifact, sidecar, package `__init__.py` chain, and runtime extension shim
+  candidates into a
   deterministic `external_static_packages/<plan-digest>/` runtime root, then
   inject that staged root into generated native binaries before runtime startup
   and include those staged bytes in final link reuse fingerprints without adding
@@ -116,10 +121,12 @@ Optional:
 
 ## 7. Integration Points
 - `molt deps` should classify extensions as Tier B when `libmolt`-compiled.
-- `molt build` rejects explicitly admitted external package extensions with
-  missing or mismatched sidecar metadata before module graph lowering, and
-  publishes validated native artifacts plus sidecars and runtime shims into
-  deterministic build artifacts for native runtime import custody.
+- `molt build` rejects source-recompiled external package admission with no
+  native/static artifact candidates before module graph discovery, rejects
+  reachable external package extensions with missing or mismatched sidecar
+  metadata before backend dispatch, and publishes validated native artifacts
+  plus sidecars and runtime shims into deterministic build artifacts for native
+  runtime import custody.
 - `molt verify` enforces capability allowlists for extension loads.
 - CI runs an extension publish dry-run matrix (native + cross-target) covering
   `molt extension build`, `molt extension audit --require-abi`,
