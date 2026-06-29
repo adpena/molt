@@ -12,9 +12,8 @@
 //!
 //! ## Vectorizability criteria
 //!
-//! A loop (identified by blocks that contain a `ForIter` or `ScfFor` op, plus
-//! all blocks reachable from it before the loop exit) is considered vectorizable
-//! when **all** of the following hold:
+//! A loop discovered by the shared S1 `LoopForest` analysis is considered
+//! vectorizable when **all** of the following hold:
 //!
 //! 1. Every non-structural op operates only on `I64`, `F64`, or `Bool` values.
 //!    Mixed numeric types are allowed via Python-style numeric promotion (see
@@ -54,7 +53,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::analysis::{AnalysisManager, LoopForest};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     VectorReductionRule, VectorizeBodyAction, opcode_vectorize_facts_table,
@@ -138,7 +138,6 @@ enum VectorizeBodyDecision {
 }
 
 /// Translate generated opcode facts into the pass-local action.
-///
 /// The generated table owns opcode membership. This helper owns the only live
 /// refinement: a Copy op is analyzable only when its attrs prove it is a plain
 /// value copy rather than a lifetime/ownership operation.
@@ -160,7 +159,6 @@ fn vectorize_body_decision(op: &TirOp, action: VectorizeBodyAction) -> Vectorize
 
 /// SIMD lane category used for promotion analysis: `Int` covers `I64` / `Bool`
 /// (both ride in `i64` lanes), `Float` covers `F64`.
-///
 /// `Bool` is included in the numeric tower because Python promotes
 /// `bool → int → float`; zext-promoting `bool` to `i64` lets bool-mixed-with-int
 /// loops vectorize as `i64` lanes, while bool-mixed-with-float loops vectorize
@@ -178,224 +176,6 @@ fn lane_category(ty: &TirType) -> Option<LaneCategory> {
         TirType::F64 => Some(LaneCategory::Float),
         _ => None,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Loop detection
-// ---------------------------------------------------------------------------
-
-/// Identify all block ids that form or belong to a loop.
-///
-/// A "loop header" block is one whose terminator's target set includes a
-/// predecessor (back-edge), OR one that contains a `ForIter` / `ScfFor` op.
-///
-/// Returns a map: loop_header_block_id → set of block ids in the loop body
-/// (including the header itself).
-fn find_loops(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
-    // Build predecessor map.
-    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for &bid in func.blocks.keys() {
-        preds.entry(bid).or_default();
-    }
-    for (bid, block) in &func.blocks {
-        let succs = successors(&block.terminator);
-        for s in succs {
-            preds.entry(s).or_default().push(*bid);
-        }
-    }
-
-    // Compute dominators via simple RPO (adequate for small functions).
-    // We use the entry block as root.
-    let rpo = rpo_order(func);
-    let dom = compute_dominators(func, &rpo);
-
-    // Back edges: edge (u → v) where v dominates u.
-    let mut loops: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-
-    for (bid, block) in &func.blocks {
-        for s in successors(&block.terminator) {
-            // Check if s dominates bid (s is a loop header, bid is a latch).
-            if dominates(&dom, s, *bid) {
-                // Natural loop: collect all nodes between latch and header.
-                let body = natural_loop_body(func, s, *bid);
-                loops.entry(s).or_default().extend(body);
-            }
-        }
-    }
-
-    // Also treat any block with a ForIter / ScfFor op as a loop header even
-    // if the CFG doesn't reveal a clean back-edge (e.g. when lowered linearly).
-    for (bid, block) in &func.blocks {
-        if block
-            .ops
-            .iter()
-            .any(|op| opcode_vectorize_facts_table(op.opcode).loop_header_marker)
-        {
-            loops.entry(*bid).or_insert_with(|| {
-                let mut s = HashSet::new();
-                s.insert(*bid);
-                s
-            });
-        }
-    }
-
-    loops
-}
-
-/// Return the set of CFG successors of a terminator.
-fn successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut v: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
-            v.push(*default);
-            v
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
-}
-
-/// Reverse post-order traversal of the CFG from the entry block.
-fn rpo_order(func: &TirFunction) -> Vec<BlockId> {
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut post: Vec<BlockId> = Vec::new();
-    dfs_post(func, func.entry_block, &mut visited, &mut post);
-    post.reverse();
-    post
-}
-
-fn dfs_post(
-    func: &TirFunction,
-    bid: BlockId,
-    visited: &mut HashSet<BlockId>,
-    post: &mut Vec<BlockId>,
-) {
-    if !visited.insert(bid) {
-        return;
-    }
-    if let Some(block) = func.blocks.get(&bid) {
-        for s in successors(&block.terminator) {
-            dfs_post(func, s, visited, post);
-        }
-    }
-    post.push(bid);
-}
-
-/// Simple dominator computation (RPO-based Cooper et al. algorithm, O(N²)).
-/// Returns a map: block → immediate dominator block.
-fn compute_dominators(func: &TirFunction, rpo: &[BlockId]) -> HashMap<BlockId, BlockId> {
-    let mut idom: HashMap<BlockId, BlockId> = HashMap::new();
-    let entry = func.entry_block;
-    idom.insert(entry, entry);
-
-    // Build predecessor map.
-    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for bid in rpo {
-        preds.entry(*bid).or_default();
-    }
-    for bid in rpo {
-        if let Some(block) = func.blocks.get(bid) {
-            for s in successors(&block.terminator) {
-                preds.entry(s).or_default().push(*bid);
-            }
-        }
-    }
-
-    // RPO index for intersection.
-    let rpo_idx: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &b in rpo {
-            if b == entry {
-                continue;
-            }
-            let processed_preds: Vec<BlockId> = preds
-                .get(&b)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|p| idom.contains_key(p))
-                .collect();
-
-            if processed_preds.is_empty() {
-                continue;
-            }
-
-            let mut new_idom = processed_preds[0];
-            for &p in &processed_preds[1..] {
-                new_idom = intersect(&idom, &rpo_idx, new_idom, p);
-            }
-
-            if idom.get(&b) != Some(&new_idom) {
-                idom.insert(b, new_idom);
-                changed = true;
-            }
-        }
-    }
-
-    idom
-}
-
-fn intersect(
-    idom: &HashMap<BlockId, BlockId>,
-    rpo_idx: &HashMap<BlockId, usize>,
-    mut a: BlockId,
-    mut b: BlockId,
-) -> BlockId {
-    while a != b {
-        let ia = rpo_idx.get(&a).copied().unwrap_or(usize::MAX);
-        let ib = rpo_idx.get(&b).copied().unwrap_or(usize::MAX);
-        if ia > ib {
-            a = *idom.get(&a).unwrap_or(&a);
-        } else {
-            b = *idom.get(&b).unwrap_or(&b);
-        }
-    }
-    a
-}
-
-/// Returns `true` if `dominator` dominates `node` per the idom map.
-fn dominates(idom: &HashMap<BlockId, BlockId>, dominator: BlockId, mut node: BlockId) -> bool {
-    loop {
-        if node == dominator {
-            return true;
-        }
-        let parent = match idom.get(&node) {
-            Some(&p) if p != node => p,
-            _ => return false,
-        };
-        node = parent;
-    }
-}
-
-/// Collect all blocks in the natural loop with header `header` and latch `latch`.
-/// This is the set of nodes from which `latch` is reachable without passing through `header`.
-fn natural_loop_body(func: &TirFunction, header: BlockId, latch: BlockId) -> HashSet<BlockId> {
-    let mut body: HashSet<BlockId> = HashSet::new();
-    body.insert(header);
-    body.insert(latch);
-
-    let mut worklist = vec![latch];
-    while let Some(node) = worklist.pop() {
-        if func.blocks.contains_key(&node) {
-            // Walk predecessors — we need a pred map; build ad-hoc here.
-            // Since this is called per back-edge, build it inline.
-            for (&bid, blk) in &func.blocks {
-                if successors(&blk.terminator).contains(&node) && body.insert(bid) {
-                    worklist.push(bid);
-                }
-            }
-        }
-    }
-    body
 }
 
 // ---------------------------------------------------------------------------
@@ -542,20 +322,26 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
 ///
 /// Returns [`PassStats`] with `values_changed` set to the number of loops
 /// annotated.
-pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, tti: &TargetInfo) -> PassStats {
     let mut stats = PassStats {
         name: "vectorize",
         ..Default::default()
     };
 
-    let loops = find_loops(func);
+    let loop_forest = am.get::<LoopForest>(func).clone();
 
     // For each loop, analyse and potentially annotate.
     // We collect (header, info) pairs first to avoid borrowing `func` mutably
     // while reading from it.
-    let analyses: Vec<(BlockId, VectorizationInfo)> = loops
+    let analyses: Vec<(BlockId, VectorizationInfo)> = loop_forest
+        .headers
         .iter()
-        .map(|(&header, body)| (header, analyse_loop(func, body)))
+        .filter_map(|&header| {
+            loop_forest
+                .bodies
+                .get(&header)
+                .map(|body| (header, analyse_loop(func, body)))
+        })
         .collect();
 
     for (header, info) in analyses {
@@ -645,6 +431,7 @@ pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tir::analysis::AnalysisManager;
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -686,6 +473,11 @@ mod tests {
         let mut m = AttrDict::new();
         m.insert("value".into(), AttrValue::Int(v));
         m
+    }
+
+    fn run_vectorize(func: &mut TirFunction) -> PassStats {
+        let mut am = AnalysisManager::new();
+        run(func, &mut am, &TargetInfo::native_release_fast())
     }
 
     // -----------------------------------------------------------------------
@@ -797,7 +589,7 @@ mod tests {
             loop_cond_blocks: std::collections::HashMap::new(),
         };
 
-        let stats = run(&mut func, &TargetInfo::native_release_fast());
+        let stats = run_vectorize(&mut func);
 
         // Loop header should have been annotated.
         assert!(
@@ -905,7 +697,7 @@ mod tests {
             loop_cond_blocks: std::collections::HashMap::new(),
         };
 
-        run(&mut func, &TargetInfo::native_release_fast());
+        run_vectorize(&mut func);
 
         // The ForIter op must NOT have the "vectorize" attribute.
         let header = &func.blocks[&header_id];
@@ -1046,7 +838,7 @@ mod tests {
             vec![int_val, new_acc],
         );
 
-        run(&mut func, &TargetInfo::native_release_fast());
+        run_vectorize(&mut func);
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1106,7 +898,7 @@ mod tests {
             vec![acc2],
         );
 
-        run(&mut func, &TargetInfo::native_release_fast());
+        run_vectorize(&mut func);
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1157,7 +949,7 @@ mod tests {
             vec![acc2],
         );
 
-        run(&mut func, &TargetInfo::native_release_fast());
+        run_vectorize(&mut func);
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1214,7 +1006,7 @@ mod tests {
             vec![acc2, flag],
         );
 
-        run(&mut func, &TargetInfo::native_release_fast());
+        run_vectorize(&mut func);
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1248,7 +1040,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func, &TargetInfo::native_release_fast());
+        let stats = run_vectorize(&mut func);
 
         assert_eq!(stats.values_changed, 0);
         assert_eq!(stats.ops_removed, 0);

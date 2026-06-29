@@ -44,7 +44,7 @@
 //! | [`DomChildren`]  | `build_dom_children`                | gvn                              |
 //! | [`ExecReachable`]| `executable_reachable_blocks`       | (full-CFG reachable set)         |
 //! | [`StrictReachable`]| `reachable_blocks_with(TerminatorOnly)` | gvn (cross-block replace) |
-//! | [`LoopForest`]   | loop_roles + `collect_loop_blocks`  | licm, bce                        |
+//! | [`LoopForest`]   | loop roles/backedges + `collect_loop_blocks` | licm, bce, vectorize, polyhedral |
 //! | [`DefMap`]       | value → defining block              | gvn, licm                        |
 //!
 //! The names map to the S1 spec's `{PredMap, ImmediateDoms, DomChildren,
@@ -148,10 +148,10 @@ pub trait Analysis {
     fn compute(func: &TirFunction) -> Self::Result;
 }
 
-/// Loop forest: structural loop headers (from `loop_roles`) with the
-/// dominator-based natural-loop body of each. Shared by LICM and BCE, both of
-/// which derive headers from `LoopRole::LoopHeader` and bodies from
-/// `dominators::collect_loop_blocks`.
+/// Loop forest: structural loop headers from explicit `loop_roles` plus
+/// dominator-proven backedges, with the natural-loop body of each. Shared by
+/// LICM, BCE, vectorize, and polyhedral so loop-shape discovery has one cached
+/// authority.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoopForestResult {
     /// Loop headers in ascending `BlockId` order (deterministic).
@@ -228,8 +228,8 @@ impl Analysis for StrictReachable {
     }
 }
 
-/// Loop forest (headers from `loop_roles`, bodies from natural-loop
-/// construction).
+/// Loop forest (headers from explicit loop roles and natural-loop backedges,
+/// bodies from natural-loop construction).
 pub struct LoopForest;
 impl Analysis for LoopForest {
     type Result = LoopForestResult;
@@ -237,29 +237,42 @@ impl Analysis for LoopForest {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
-        let mut headers: Vec<BlockId> = func
+        let pred_map = dominators::build_pred_map(func);
+        let idoms = dominators::compute_idoms(func, &pred_map);
+
+        let mut header_set: HashSet<BlockId> = func
             .loop_roles
             .iter()
             .filter_map(|(bid, role)| {
-                if matches!(role, super::blocks::LoopRole::LoopHeader) {
+                if matches!(role, super::blocks::LoopRole::LoopHeader)
+                    && func.blocks.contains_key(bid)
+                {
                     Some(*bid)
                 } else {
                     None
                 }
             })
             .collect();
+
+        for (&candidate, preds) in &pred_map {
+            if idoms.contains_key(&candidate)
+                && preds
+                    .iter()
+                    .any(|&pred| dominators::dominates(candidate, pred, &idoms))
+            {
+                header_set.insert(candidate);
+            }
+        }
+
+        let mut headers: Vec<BlockId> = header_set.into_iter().collect();
         headers.sort_unstable_by_key(|b| b.0);
 
         let mut bodies: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-        if !headers.is_empty() {
-            let pred_map = dominators::build_pred_map(func);
-            let idoms = dominators::compute_idoms(func, &pred_map);
-            for &h in &headers {
-                bodies.insert(
-                    h,
-                    dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
-                );
-            }
+        for &h in &headers {
+            bodies.insert(
+                h,
+                dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
+            );
         }
         LoopForestResult { headers, bodies }
     }
@@ -625,6 +638,20 @@ mod tests {
         let mut am = AnalysisManager::new();
         let forest = am.get::<LoopForest>(&func).clone();
         // Single self-loop header.
+        assert_eq!(forest.headers.len(), 1);
+        let h = forest.headers[0];
+        let body = &forest.bodies[&h];
+        assert!(body.contains(&h));
+    }
+
+    #[test]
+    fn loop_forest_discovers_backedge_headers_without_loop_roles() {
+        let mut func = loopy();
+        func.loop_roles.clear();
+
+        let mut am = AnalysisManager::new();
+        let forest = am.get::<LoopForest>(&func).clone();
+
         assert_eq!(forest.headers.len(), 1);
         let h = forest.headers[0];
         let body = &forest.bodies[&h];

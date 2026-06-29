@@ -119,9 +119,9 @@
 #                  come from `result_arity` through
 #                  `opcode_fixed_result_count_table`.
 #   - vectorize_opcode_facts - generated opcode-to-fact lattice for
-#                  vectorize.rs body eligibility, loop-header markers,
-#                  annotation targets, and reduction-family hints. The registry
-#                  owns opcode membership; vectorize.rs owns CFG, accumulator
+#                  vectorize.rs body eligibility, annotation targets, and
+#                  reduction-family hints. The registry owns opcode membership;
+#                  LoopForest owns loop shape; vectorize.rs owns accumulator
 #                  recognition, lane typing, and hint emission.
 #   - lir_verify_rules - generated opcode-to-rule lattice for verify_lir.rs
 #                  representation-aware verifier hooks. The registry owns
@@ -1175,8 +1175,9 @@ value_range_container_length_rules = [
 
 # vectorize_opcode_facts: all opcode-level facts consumed by vectorize.rs. This
 # deliberately covers body eligibility, non-semantic loop machinery skips,
-# loop-header detection, annotation target selection, and reduction family in
-# one table so vectorize.rs cannot grow parallel hand-maintained taxonomies.
+# annotation target selection, and reduction family in one table so vectorize.rs
+# cannot grow parallel hand-maintained taxonomies. Loop shape is owned by
+# AnalysisManager/LoopForest.
 # Omitted opcodes reject vectorization by default. Copy remains a row with
 # `copy_if_plain` because eligibility depends on live attrs (`is_plain_value_copy`).
 vectorize_opcode_facts = [
@@ -1211,8 +1212,8 @@ vectorize_opcode_facts = [
     { opcode = "GetIter", body = "iteration_control", annotation_target = true },
     { opcode = "IterNext", body = "iteration_control" },
     { opcode = "IterNextUnboxed", body = "iteration_control" },
-    { opcode = "ForIter", body = "iteration_control", loop_header = true, annotation_target = true },
-    { opcode = "ScfFor", body = "iteration_control", loop_header = true, annotation_target = true },
+    { opcode = "ForIter", body = "iteration_control", annotation_target = true },
+    { opcode = "ScfFor", body = "iteration_control", annotation_target = true },
 ]
 
 # lir_verify_rules: opcodes that require representation-aware LIR verifier
