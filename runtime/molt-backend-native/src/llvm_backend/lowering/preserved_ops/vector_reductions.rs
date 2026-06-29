@@ -9,7 +9,7 @@ use super::*;
 /// dispatch (`function_compiler.rs`). The arity split is structural: the
 /// `_range` forms additionally pass the `start` bound (3 operands), while the
 /// plain, `_trusted`, and `_range_iter` forms pass only `(seq, acc)`.
-const VEC_REDUCTION_OPS: &[(&str, usize)] = &[
+pub(super) const VEC_REDUCTION_OPS: &[(&str, usize)] = &[
     ("vec_sum_int", 2),
     ("vec_sum_int_trusted", 2),
     ("vec_sum_int_range", 3),
@@ -70,10 +70,6 @@ static VEC_REDUCTION_RUNTIME_SYMBOLS: std::sync::LazyLock<Vec<(&'static str, &'s
             })
             .collect()
     });
-
-pub(super) fn is_preserved_vec_reduction_kind(kind: &str) -> bool {
-    vec_reduction_runtime_symbol(kind).is_some()
-}
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_preserved_vec_reduction_op(&mut self, op: &TirOp, kind: &str) -> bool {

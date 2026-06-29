@@ -1,29 +1,26 @@
 use super::*;
 
-pub(super) fn is_preserved_callable_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "builtin_func"
-            | "func_new"
-            | "func_new_closure"
-            | "code_new"
-            | "code_slot_set"
-            | "code_slots_init"
-            | "classmethod_new"
-            | "staticmethod_new"
-            | "property_new"
-            | "trace_enter_slot"
-            | "trace_exit"
-            | "frame_locals_set"
-            | "line"
-            | "fn_ptr_code_set"
-            | "callargs_new"
-            | "callargs_push_pos"
-            | "callargs_push_kw"
-            | "callargs_expand_star"
-            | "callargs_expand_kwstar"
-    )
-}
+pub(super) const HANDLED_KINDS: &[&str] = &[
+    "builtin_func",
+    "func_new",
+    "func_new_closure",
+    "code_new",
+    "code_slot_set",
+    "code_slots_init",
+    "classmethod_new",
+    "staticmethod_new",
+    "property_new",
+    "trace_enter_slot",
+    "trace_exit",
+    "frame_locals_set",
+    "line",
+    "fn_ptr_code_set",
+    "callargs_new",
+    "callargs_push_pos",
+    "callargs_push_kw",
+    "callargs_expand_star",
+    "callargs_expand_kwstar",
+];
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: &str) -> bool {

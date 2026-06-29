@@ -1,44 +1,41 @@
 use super::*;
 
-pub(super) fn is_preserved_container_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "list_from_range"
-            | "iter_next_unboxed"
-            | "len"
-            | "list_new"
-            | "list_fill_new"
-            | "list_append"
-            | "list_extend"
-            | "dict_new"
-            | "tuple_new"
-            | "tuple_from_list"
-            | "set_new"
-            | "set_add"
-            | "set_add_probe"
-            | "frozenset_new"
-            | "frozenset_add"
-            | "dict_set"
-            | "dict_setdefault"
-            | "dict_setdefault_empty_list"
-            | "dict_get"
-            | "iter"
-            | "unpack_sequence"
-            | "dict_update"
-            | "dict_update_missing"
-            | "dict_update_kwstar"
-            | "dict_clear"
-            | "dict_copy"
-            | "dict_popitem"
-            | "slice"
-            | "slice_new"
-            | "dict_keys"
-            | "dict_values"
-            | "dict_items"
-            | "enumerate"
-            | "dict_from_obj"
-    )
-}
+pub(super) const HANDLED_KINDS: &[&str] = &[
+    "list_from_range",
+    "iter_next_unboxed",
+    "len",
+    "list_new",
+    "list_fill_new",
+    "list_append",
+    "list_extend",
+    "dict_new",
+    "tuple_new",
+    "tuple_from_list",
+    "set_new",
+    "set_add",
+    "set_add_probe",
+    "frozenset_new",
+    "frozenset_add",
+    "dict_set",
+    "dict_setdefault",
+    "dict_setdefault_empty_list",
+    "dict_get",
+    "iter",
+    "unpack_sequence",
+    "dict_update",
+    "dict_update_missing",
+    "dict_update_kwstar",
+    "dict_clear",
+    "dict_copy",
+    "dict_popitem",
+    "slice",
+    "slice_new",
+    "dict_keys",
+    "dict_values",
+    "dict_items",
+    "enumerate",
+    "dict_from_obj",
+];
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_preserved_container_op(&mut self, op: &TirOp, kind: &str) -> bool {
