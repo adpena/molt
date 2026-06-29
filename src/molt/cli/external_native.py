@@ -17,6 +17,7 @@ from molt.cli.file_hashing import _sha256_file
 from molt.cli.models import (
     _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    _ExternalNativeCallableExport,
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _ImportAdmissionPolicy,
@@ -68,6 +69,8 @@ _EXTERNAL_PACKAGE_ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"
 _PYTHON_DOTTED_NAME_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
 )
+_PYTHON_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_NATIVE_SYMBOL_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]*")
 
 
 _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
@@ -345,6 +348,21 @@ def _manifest_str_tuple(
     )
 
 
+def _manifest_object_closure_required_capsules(
+    manifest: Mapping[str, Any],
+) -> tuple[str, ...]:
+    object_closure = manifest.get("object_closure")
+    if not isinstance(object_closure, Mapping):
+        return ()
+    required = set(_manifest_str_tuple(object_closure, "required_capsules"))
+    objects = object_closure.get("objects")
+    if isinstance(objects, list):
+        for item in objects:
+            if isinstance(item, Mapping):
+                required.update(_manifest_str_tuple(item, "required_capsules"))
+    return tuple(sorted(required))
+
+
 def _manifest_dotted_name_tuple(
     manifest: Mapping[str, Any],
     field_name: str,
@@ -380,6 +398,123 @@ def _manifest_dotted_name_tuple(
             continue
         out.add(stripped)
     return tuple(sorted(out))
+
+
+def _manifest_callable_exports(
+    manifest: Mapping[str, Any],
+    *,
+    package: str,
+    errors: list[str],
+) -> tuple[_ExternalNativeCallableExport, ...]:
+    value = manifest.get("callable_exports")
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        errors.append("extension_manifest.json 'callable_exports' must be a list")
+        return ()
+
+    exports: list[_ExternalNativeCallableExport] = []
+    seen: set[str] = set()
+    for index, raw_export in enumerate(value):
+        label = f"callable_exports[{index}]"
+        if not isinstance(raw_export, Mapping):
+            errors.append(f"extension_manifest.json {label} must be an object")
+            continue
+
+        module = raw_export.get("module")
+        name = raw_export.get("name")
+        binding = raw_export.get("binding")
+        abi = raw_export.get("abi")
+        symbol = raw_export.get("symbol")
+        deterministic = raw_export.get("deterministic", False)
+        effects_raw = raw_export.get("effects", [])
+
+        if not isinstance(module, str) or not module.strip():
+            errors.append(f"extension_manifest.json {label}.module must be non-empty")
+            continue
+        module = module.strip()
+        if _PYTHON_DOTTED_NAME_RE.fullmatch(module) is None:
+            errors.append(
+                f"extension_manifest.json {label}.module has invalid dotted name "
+                f"{module!r}"
+            )
+            continue
+        if module != package and not module.startswith(package + "."):
+            errors.append(
+                f"extension_manifest.json {label}.module {module!r} escapes "
+                f"admitted package {package!r}"
+            )
+            continue
+
+        if not isinstance(name, str) or _PYTHON_IDENTIFIER_RE.fullmatch(name) is None:
+            errors.append(
+                f"extension_manifest.json {label}.name must be a Python identifier"
+            )
+            continue
+        if binding not in {"module_attr", "direct_symbol"}:
+            errors.append(
+                f"extension_manifest.json {label}.binding must be "
+                "'module_attr' or 'direct_symbol'"
+            )
+            continue
+        if not isinstance(abi, str) or not abi.strip():
+            errors.append(f"extension_manifest.json {label}.abi must be non-empty")
+            continue
+
+        normalized_symbol: str | None = None
+        if symbol is not None:
+            if not isinstance(symbol, str) or not symbol.strip():
+                errors.append(
+                    f"extension_manifest.json {label}.symbol must be non-empty "
+                    "when present"
+                )
+                continue
+            normalized_symbol = symbol.strip()
+            if _NATIVE_SYMBOL_RE.fullmatch(normalized_symbol) is None:
+                errors.append(
+                    f"extension_manifest.json {label}.symbol has invalid native "
+                    f"symbol {normalized_symbol!r}"
+                )
+                continue
+        if binding == "direct_symbol" and normalized_symbol is None:
+            errors.append(
+                f"extension_manifest.json {label} direct_symbol binding requires "
+                "symbol"
+            )
+            continue
+
+        if not isinstance(effects_raw, list) or not all(
+            isinstance(effect, str) and effect.strip() for effect in effects_raw
+        ):
+            errors.append(
+                f"extension_manifest.json {label}.effects must be a list of "
+                "non-empty strings"
+            )
+            continue
+        if not isinstance(deterministic, bool):
+            errors.append(
+                f"extension_manifest.json {label}.deterministic must be boolean"
+            )
+            continue
+
+        export = _ExternalNativeCallableExport(
+            module=module,
+            name=name,
+            binding=binding,
+            symbol=normalized_symbol,
+            abi=abi.strip(),
+            effects=tuple(sorted({effect.strip() for effect in effects_raw})),
+            deterministic=deterministic,
+        )
+        if export.qualified_name in seen:
+            errors.append(
+                f"extension_manifest.json {label} duplicates callable export "
+                f"{export.qualified_name!r}"
+            )
+            continue
+        seen.add(export.qualified_name)
+        exports.append(export)
+    return tuple(sorted(exports, key=lambda export: export.qualified_name))
 
 
 def _validate_external_package_native_artifact(
@@ -462,13 +597,15 @@ def _validate_external_package_native_artifact(
     platform_tag = _required_manifest_str(manifest, "platform_tag", errors)
     abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
     provided_capsules = _manifest_str_tuple(manifest, "provided_capsules")
-    object_closure = manifest.get("object_closure")
-    required_capsules: tuple[str, ...] = ()
-    if isinstance(object_closure, Mapping):
-        required_capsules = _manifest_str_tuple(object_closure, "required_capsules")
+    required_capsules = _manifest_object_closure_required_capsules(manifest)
     python_exports = _manifest_dotted_name_tuple(
         manifest,
         "python_exports",
+        package=package,
+        errors=errors,
+    )
+    callable_exports = _manifest_callable_exports(
+        manifest,
         package=package,
         errors=errors,
     )
@@ -499,6 +636,7 @@ def _validate_external_package_native_artifact(
             provided_capsules=provided_capsules,
             required_capsules=required_capsules,
             python_exports=python_exports,
+            callable_exports=callable_exports,
         ),
         [],
     )
@@ -548,6 +686,35 @@ def _peek_external_artifact_python_exports(
         "python_exports",
         package=package,
         errors=errors,
+    )
+
+
+def _peek_external_artifact_callable_export_names(
+    *,
+    package: str,
+    artifact_path: Path,
+    package_dir: Path,
+) -> tuple[str, ...]:
+    manifest_path = _find_external_extension_manifest(
+        artifact_path=artifact_path,
+        package_dir=package_dir,
+    )
+    if manifest_path is None:
+        return ()
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    if not isinstance(manifest, dict):
+        return ()
+    errors: list[str] = []
+    return tuple(
+        export.qualified_name
+        for export in _manifest_callable_exports(
+            manifest,
+            package=package,
+            errors=errors,
+        )
     )
 
 
@@ -736,6 +903,11 @@ def _resolve_external_package_native_artifact_plan(
                     package_dir=package_dir,
                     artifact_path=artifact_path,
                 )
+                callable_exports = _peek_external_artifact_callable_export_names(
+                    package=package,
+                    package_dir=package_dir,
+                    artifact_path=artifact_path,
+                )
                 if (
                     required is not None
                     and not _external_native_artifact_module_required(
@@ -744,6 +916,7 @@ def _resolve_external_package_native_artifact_plan(
                         required_modules=required,
                     )
                     and not required.intersection(python_exports)
+                    and not required.intersection(callable_exports)
                 ):
                     continue
                 artifact, artifact_errors = _validate_external_package_native_artifact(
@@ -849,23 +1022,30 @@ def _wasm_external_package_native_source_errors(
 ) -> list[str]:
     errors: list[str] = []
     for package in sorted(admitted_packages):
+        package_dirs: list[Path] = []
+        first_marker: Path | None = None
+        has_wasm_static_link_artifact = False
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
             if package_dir is None:
                 continue
+            package_dirs.append(package_dir)
             marker = _first_external_package_native_source_marker(package_dir)
-            if marker is None:
-                continue
+            if marker is not None and first_marker is None:
+                first_marker = marker
             if _external_package_has_wasm_static_link_artifact(package_dir):
-                continue
-            errors.append(
-                f"{package}: admitted WASM external static package contains "
-                f"native source/artifact marker {marker} but has no wasm32 "
-                "static_link libmolt_source artifact manifest. Source roots "
-                "alone are not linkable for WASM; publish source-recompiled "
-                "native artifacts with extension_manifest.json and "
-                "python_exports for package symbols before admission."
-            )
+                has_wasm_static_link_artifact = True
+        if first_marker is None or has_wasm_static_link_artifact:
+            continue
+        roots = ", ".join(str(path) for path in package_dirs)
+        errors.append(
+            f"{package}: admitted WASM external static package contains "
+            f"native source/artifact marker {first_marker} but has no wasm32 "
+            "static_link libmolt_source artifact manifest in its admitted "
+            "package roots. Source roots alone are not linkable for WASM; "
+            "publish source-recompiled native artifacts with extension_manifest.json "
+            f"and python_exports for package symbols before admission. Roots: {roots}"
+        )
     return errors
 
 
@@ -1219,6 +1399,7 @@ def _stage_external_package_native_artifacts_for_build(
                 provided_capsules=artifact.provided_capsules,
                 required_capsules=artifact.required_capsules,
                 python_exports=artifact.python_exports,
+                callable_exports=artifact.callable_exports,
             )
         )
     return tuple(staged_artifacts)

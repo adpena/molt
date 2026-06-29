@@ -130,6 +130,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_spec_override_set: Any
     module_stmt_offsets: list[int]
     mutated_classes: set[str]
+    native_callable_exports: Any
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parse_codec: Any
@@ -174,10 +175,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         entry_module: str | None = None,
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
+        direct_call_modules: set[str] | None = None,
         known_classes: dict[str, ClassInfo] | None = None,
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
+        native_callable_exports: dict[str, dict[str, Any]] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -1554,6 +1557,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_chunking: bool,
         module_chunk_max_ops: int,
         known_modules: set[str] | None,
+        direct_call_modules: set[str] | None,
         stdlib_allowlist: set[str] | None,
     ) -> None: ...
 
@@ -1848,6 +1852,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _module_stable_funcs(self, node: ast.Module) -> set[str]: ...
 
     def _name_resolves_to_builtin(self, name: str) -> bool: ...
+
+    def _native_callable_export(
+        self, target_module: str, attr_name: str
+    ) -> dict[str, Any] | None: ...
 
     def _new_module_chunk_symbol(self) -> str: ...
 
@@ -2273,6 +2281,15 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         direct_registry_authorized: bool,
     ) -> MoltValue | None: ...
 
+    def _try_emit_imported_named_call(
+        self,
+        node: ast.Call,
+        *,
+        func_id: str,
+        imported_from: str | None,
+        needs_bind: bool,
+    ) -> Any: ...
+
     def _try_emit_importlib_import_module_literal_call(
         self, node: ast.Call
     ) -> MoltValue | None: ...
@@ -2308,6 +2325,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> Any: ...
 
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...
+
+    def _try_emit_native_callable_export_call(
+        self, target_module: str, attr_name: str, node: ast.Call
+    ) -> MoltValue | None: ...
 
     def _try_emit_static_dataclass_constructor(
         self, node: ast.Call, class_id: str, class_info: ClassInfo, class_ref: MoltValue

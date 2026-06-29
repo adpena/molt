@@ -1380,6 +1380,17 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             }
         }
         "invoke_ffi" => {
+            if let Some(export_name) = op.native_callable_export.as_deref() {
+                let binding = op.native_callable_binding.as_deref().unwrap_or("<missing>");
+                let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
+                let symbol = op
+                    .native_callable_symbol
+                    .as_deref()
+                    .unwrap_or("<module-attr>");
+                panic!(
+                    "native callable export `{export_name}` reached native backend without executable native ABI dispatch table: binding={binding} abi={abi} symbol={symbol}"
+                );
+            }
             let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let func_bits = var_get_boxed_overflow_safe(
                 &mut *module,

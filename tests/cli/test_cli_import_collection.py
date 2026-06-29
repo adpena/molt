@@ -2548,6 +2548,61 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
     )
 
 
+def test_external_native_artifact_plan_selects_callable_exported_imports(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "direct_symbol",
+                    "abi": "molt.forward_f32_v1",
+                    "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+                    "effects": ["read", "write"],
+                    "deterministic": True,
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage.distance_transform_edt"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.ndimage._nd_image",
+    ]
+    assert plan.native_callable_export_names() == frozenset(
+        {"nativepkg.ndimage.distance_transform_edt"}
+    )
+    assert plan.native_callable_exports_by_qualified_name() == {
+        "nativepkg.ndimage.distance_transform_edt": {
+            "module": "nativepkg.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.forward_f32_v1",
+            "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            "effects": ["read", "write"],
+            "deterministic": True,
+        }
+    }
+
+
 def test_source_recompiled_static_package_requires_native_artifact_candidate_pregraph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2661,7 +2716,9 @@ def test_admitted_external_native_package_does_not_close_source_only_ndimage_ini
 
     assert error is None
     assert prepared is not None
-    assert {"scipy", "scipy.ndimage"} <= set(prepared.module_graph)
+    assert "scipy.ndimage" in prepared.explicit_imports
+    assert "scipy" not in prepared.module_graph
+    assert "scipy.ndimage" not in prepared.module_graph
     assert "scipy.ndimage._nd_image" not in prepared.module_graph
     assert "scipy.massive" not in prepared.module_graph
     assert "scipy.ndimage.filters" not in prepared.module_graph
@@ -2969,6 +3026,46 @@ def test_wasm_external_static_package_with_native_source_requires_static_artifac
     assert "python_exports" in stderr
 
 
+def test_wasm_external_static_package_accepts_merged_source_and_artifact_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    package_dir = source_root / "scipy"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("from . import ndimage\n", encoding="utf-8")
+    (package_dir / "_native.c").write_text(
+        "int scipy_native_marker(void) { return 1; }\n",
+        encoding="utf-8",
+    )
+    artifact_root = tmp_path / "artifacts"
+    _write_external_native_artifact(
+        artifact_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["scipy.ndimage.distance_transform_edt"],
+        },
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "scipy")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(source_root, artifact_root),
+        json_output=False,
+        defer_native_artifacts=True,
+        target="wasm",
+    )
+
+    assert error is None
+    assert policy is not None
+    assert policy.native_artifact_plan.artifacts == ()
+
+
 def test_wasm_external_static_package_allows_pure_python_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3063,6 +3160,59 @@ def test_external_native_artifact_plan_closes_over_capsule_providers(
     by_module = {artifact.module: artifact for artifact in plan.artifacts}
     assert by_module["nativepkg.consumer"].required_capsules == (capsule,)
     assert by_module["nativepkg.core._multiarray_umath"].provided_capsules == (capsule,)
+
+
+def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="numpy",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={**wasm_manifest, "provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "object_closure": {
+                "objects": [
+                    {
+                        "object": "0_nd_image.o",
+                        "required_capsules": [capsule],
+                    }
+                ]
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"numpy", "scipy"},
+        required_modules={"scipy.ndimage"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "numpy._core._multiarray_umath",
+        "scipy.ndimage._nd_image",
+    ]
+    by_module = {artifact.module: artifact for artifact in plan.artifacts}
+    assert by_module["scipy.ndimage._nd_image"].required_capsules == (capsule,)
+    assert by_module["numpy._core._multiarray_umath"].provided_capsules == (capsule,)
 
 
 def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers(
@@ -3449,6 +3599,97 @@ def test_frontend_known_modules_do_not_authorize_unknown_children() -> None:
     assert gen._is_known_project_module("externalpkg")
     assert not gen._is_known_project_module("externalpkg.hidden")
     assert not gen._should_attempt_runtime_module_import("externalpkg.hidden")
+
+
+def test_frontend_known_modules_do_not_authorize_native_python_direct_calls() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy.ndimage import distance_transform_edt\n"
+        "mask = 1\n"
+        "result = distance_transform_edt(mask)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        known_func_defaults={
+            "scipy.ndimage": {
+                "distance_transform_edt": {
+                    "params": 1,
+                    "defaults": [],
+                }
+            }
+        },
+    )
+
+    assert any(op.get("kind") == "call_bind" for op in ops)
+    assert all(
+        not (
+            op.get("kind") == "call"
+            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+        )
+        for op in ops
+    )
+
+
+@pytest.mark.parametrize("binding", ["module_attr", "direct_symbol"])
+def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata(
+    binding: str,
+) -> None:
+    export: dict[str, object] = {
+        "module": "scipy.ndimage",
+        "name": "distance_transform_edt",
+        "binding": binding,
+        "abi": "molt.forward_f32_v1",
+    }
+    if binding == "direct_symbol":
+        export["symbol"] = "molt_scipy_ndimage_distance_transform_edt"
+
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy.ndimage import distance_transform_edt\n"
+        "mask = 1\n"
+        "result = distance_transform_edt(mask)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        known_func_defaults={
+            "scipy.ndimage": {
+                "distance_transform_edt": {
+                    "params": 1,
+                    "defaults": [],
+                }
+            }
+        },
+        native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
+    )
+
+    invoke_ops = [
+        op
+        for op in ops
+        if op.get("kind") == "invoke_ffi"
+        and op.get("native_callable_export")
+        == "scipy.ndimage.distance_transform_edt"
+    ]
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert invoke_op["native_callable_binding"] == binding
+    assert invoke_op["native_callable_abi"] == "molt.forward_f32_v1"
+    if binding == "direct_symbol":
+        assert (
+            invoke_op["native_callable_symbol"]
+            == "molt_scipy_ndimage_distance_transform_edt"
+        )
+    else:
+        assert "native_callable_symbol" not in invoke_op
+    assert all(op.get("kind") != "call_bind" for op in ops)
+    assert all(
+        not (
+            op.get("kind") == "call"
+            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+        )
+        for op in ops
+    )
 
 
 def test_collect_imports_module_init_scan_skips_function_body_imports() -> None:
@@ -8184,6 +8425,41 @@ def test_module_dependencies_from_imports_resolves_direct_graph_edges() -> None:
     assert deps == {"alpha", "beta", "warnings"}
 
 
+def test_frontend_analysis_resolves_known_native_artifact_dependencies(
+    tmp_path: Path,
+) -> None:
+    main_path = tmp_path / "field_solve.py"
+    main_path.write_text(
+        "from scipy.ndimage import distance_transform_edt\n",
+        encoding="utf-8",
+    )
+    module_graph = {"field_solve": main_path}
+    metadata = cli._build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths={},
+        entry_module="field_solve",
+        namespace_module_names=set(),
+    )
+
+    analysis, failure = cli_frontend_pipeline._prepare_frontend_analysis(
+        module_graph=module_graph,
+        module_graph_metadata=metadata,
+        module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        roots=[tmp_path],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        stdlib_allowlist=cli_module_stdlib_policy._stdlib_allowlist(),
+        project_root=tmp_path,
+        entry_module="field_solve",
+        json_output=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        dependency_known_modules={"scipy", "scipy.ndimage"},
+    )
+
+    assert failure is None
+    assert analysis is not None
+    assert analysis.module_deps["field_solve"] == {"scipy", "scipy.ndimage"}
+
+
 def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> None:
     payload = cli._module_lowering_context_payload(
         "main",
@@ -8924,6 +9200,57 @@ def test_scoped_lowering_input_view_keeps_native_artifact_modules_without_bundle
     )
 
 
+def test_scoped_lowering_input_view_carries_native_callable_exports() -> None:
+    native_callable_exports = {
+        "nativepkg.ndimage.distance_transform_edt": {
+            "module": "nativepkg.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.forward_f32_v1",
+            "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+        },
+        "unrelatedpkg.run": {
+            "module": "unrelatedpkg",
+            "name": "run",
+            "binding": "module_attr",
+            "abi": "molt.object_call_v1",
+        },
+    }
+
+    scoped_view = cli._scoped_lowering_input_view(
+        "main",
+        module_deps={"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
+        known_modules={"main", "nativepkg.ndimage"},
+        direct_call_modules={"main"},
+        known_func_defaults={},
+        known_func_kinds={},
+        native_callable_exports=native_callable_exports,
+        pgo_hot_function_names=(),
+        type_facts=None,
+        module_dep_closures={
+            "main": frozenset({"main", "nativepkg.ndimage"}),
+            "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
+        },
+        known_modules_sorted=("main", "nativepkg.ndimage"),
+        source_modules=("main", "nativepkg.ndimage"),
+    )
+
+    assert scoped_view.direct_call_modules == ("main",)
+    assert scoped_view.direct_call_modules_payload == ["main"]
+    assert scoped_view.native_callable_exports == {
+        "nativepkg.ndimage.distance_transform_edt": {
+            "module": "nativepkg.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.forward_f32_v1",
+            "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+        }
+    }
+    assert scoped_view.native_callable_exports_payload == (
+        scoped_view.native_callable_exports
+    )
+
+
 def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9166,6 +9493,70 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
 
     assert isinstance(digest, str)
     assert digest
+
+
+def test_module_lowering_context_digest_includes_native_callable_exports() -> None:
+    common: dict[str, object] = {
+        "logical_source_path": "/tmp/main.py",
+        "entry_override": None,
+        "known_classes_snapshot": {},
+        "parse_codec": "json",
+        "type_hint_policy": "ignore",
+        "fallback_policy": "error",
+        "type_facts": None,
+        "enable_phi": True,
+        "known_modules": {"main", "nativepkg.ndimage"},
+        "direct_call_modules": {"main"},
+        "stdlib_allowlist": set(),
+        "known_func_defaults": {},
+        "known_func_kinds": {},
+        "module_deps": {"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
+        "module_is_namespace": False,
+        "module_chunking": False,
+        "module_chunk_max_ops": 0,
+        "optimization_profile": "dev",
+        "pgo_hot_function_names": set(),
+        "module_dep_closures": {
+            "main": frozenset({"main", "nativepkg.ndimage"}),
+            "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
+        },
+        "path_stat": os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    }
+    export_a = {
+        "nativepkg.ndimage.distance_transform_edt": {
+            "module": "nativepkg.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.forward_f32_v1",
+            "symbol": "molt_symbol_a",
+        }
+    }
+    export_b = {
+        "nativepkg.ndimage.distance_transform_edt": {
+            "module": "nativepkg.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.forward_f32_v1",
+            "symbol": "molt_symbol_b",
+        }
+    }
+
+    digest_a = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        native_callable_exports=export_a,
+        **common,
+    )
+    digest_b = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        native_callable_exports=export_b,
+        **common,
+    )
+
+    assert digest_a is not None
+    assert digest_b is not None
+    assert digest_a != digest_b
 
 
 def test_module_lowering_context_digest_includes_scoped_func_kinds(
