@@ -66,7 +66,9 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     ListOps,
     DictOps,
     SetOps,
-    Indexing,
+    SubscriptGet,
+    SubscriptStore,
+    SliceOps,
     TextPredicates,
     TextTransform,
     RuntimeOps,
@@ -144,7 +146,15 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
     (NativeOpFamily::ListOps, super::list_ops::HANDLED_KINDS),
     (NativeOpFamily::DictOps, super::dict_ops::HANDLED_KINDS),
     (NativeOpFamily::SetOps, super::set_ops::HANDLED_KINDS),
-    (NativeOpFamily::Indexing, super::indexing::HANDLED_KINDS),
+    (
+        NativeOpFamily::SubscriptGet,
+        super::subscript_get::HANDLED_KINDS,
+    ),
+    (
+        NativeOpFamily::SubscriptStore,
+        super::subscript_store::HANDLED_KINDS,
+    ),
+    (NativeOpFamily::SliceOps, super::slice_ops::HANDLED_KINDS),
     (
         NativeOpFamily::TextPredicates,
         super::text_predicates::HANDLED_KINDS,
@@ -513,5 +523,35 @@ mod tests {
                  (lower_to_simple emits it as the no-_original_kind default)",
             );
         }
+    }
+
+    /// Subscript lowering is intentionally split by mutation and slice shape:
+    /// getitem and setitem own large list fast paths, while delete/slice ops are
+    /// thin runtime-call lowering. Keep them as separate native families so the
+    /// old aggregate indexing bucket cannot grow back.
+    #[test]
+    fn subscript_kinds_route_to_dedicated_families() {
+        for (kind, family) in [
+            ("index", NativeOpFamily::SubscriptGet),
+            ("store_index", NativeOpFamily::SubscriptStore),
+            ("del_index", NativeOpFamily::SliceOps),
+            ("slice", NativeOpFamily::SliceOps),
+            ("slice_new", NativeOpFamily::SliceOps),
+        ] {
+            assert_eq!(
+                native_op_family(kind),
+                Some(family),
+                "subscript kind `{kind}` must route to its dedicated native family",
+            );
+        }
+        assert_eq!(super::super::subscript_get::HANDLED_KINDS, ["index"]);
+        assert_eq!(
+            super::super::subscript_store::HANDLED_KINDS,
+            ["store_index"]
+        );
+        assert_eq!(
+            super::super::slice_ops::HANDLED_KINDS,
+            ["del_index", "slice", "slice_new"]
+        );
     }
 }

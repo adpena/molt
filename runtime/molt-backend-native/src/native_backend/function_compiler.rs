@@ -1288,12 +1288,11 @@ impl SimpleBackend {
                         fc::OpFlow::Proceed => {}
                     }
                 }
-                // handle_indexing_op family - extracted to fc::indexing (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Indexing) => {
-                    fc::indexing::handle_indexing_op(
+                // Subscript read fast paths: extracted from the old aggregate indexing bucket.
+                _ if op_family == Some(fc::NativeOpFamily::SubscriptGet) => {
+                    fc::subscript_get::handle_subscript_get_op(
                         &op,
                         op_idx,
-                        &func_ir.name,
                         &func_ir.ops,
                         &mut self.module,
                         &mut self.import_ids,
@@ -1306,7 +1305,42 @@ impl SimpleBackend {
                         &mut list_index_fast_paths,
                         scalar_fast_paths_enabled,
                         local_inc_ref_obj,
+                        &nbc,
+                    );
+                }
+                // Subscript write fast paths: mutating list/dict setitem lowering is its own unit.
+                _ if op_family == Some(fc::NativeOpFamily::SubscriptStore) => {
+                    fc::subscript_store::handle_subscript_store_op(
+                        &op,
+                        op_idx,
+                        &func_ir.name,
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        representation_plan,
+                        &mut list_index_fast_paths,
+                        scalar_fast_paths_enabled,
+                        local_inc_ref_obj,
                         local_dec_ref_obj,
+                        &nbc,
+                    );
+                }
+                // Thin delete/slice runtime-call lowering: separate from get/set fast paths.
+                _ if op_family == Some(fc::NativeOpFamily::SliceOps) => {
+                    fc::slice_ops::handle_slice_op(
+                        &op,
+                        op_idx,
+                        &func_ir.name,
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        representation_plan,
                         &nbc,
                     );
                 }
