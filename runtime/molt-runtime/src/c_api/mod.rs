@@ -32,10 +32,14 @@ pub struct MoltBufferView {
     pub data: *mut u8,
     pub len: u64,
     pub readonly: u32,
-    pub reserved: u32,
-    pub stride: i64,
+    pub ndim: u32,
     pub itemsize: u64,
+    pub offset: isize,
     pub owner: MoltHandle,
+    pub base: MoltHandle,
+    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
 }
 
 #[derive(Default)]
