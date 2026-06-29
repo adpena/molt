@@ -33393,14 +33393,6 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])] = &[
         ],
     ),
     (
-        "call_async",
-        &[
-            WasmRuntimeImport::HandleResolve,
-            WasmRuntimeImport::IncRefObj,
-            WasmRuntimeImport::TaskNew,
-        ],
-    ),
-    (
         "call_guarded",
         &[
             WasmRuntimeImport::CallBindIc,
@@ -33462,26 +33454,6 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])] = &[
         &[WasmRuntimeImport::NotImplemented],
     ),
     ("const_str", &[WasmRuntimeImport::StringFromBytes]),
-    (
-        "coroutine",
-        &[
-            WasmRuntimeImport::CancelTokenGetCurrent,
-            WasmRuntimeImport::HandleResolve,
-            WasmRuntimeImport::IncRefObj,
-            WasmRuntimeImport::TaskNew,
-            WasmRuntimeImport::TaskRegisterTokenOwned,
-        ],
-    ),
-    (
-        "alloc_task",
-        &[
-            WasmRuntimeImport::CancelTokenGetCurrent,
-            WasmRuntimeImport::HandleResolve,
-            WasmRuntimeImport::IncRefObj,
-            WasmRuntimeImport::TaskNew,
-            WasmRuntimeImport::TaskRegisterTokenOwned,
-        ],
-    ),
     ("del_attr_generic_ptr", &[WasmRuntimeImport::DelAttrObject]),
     (
         "dict_new",

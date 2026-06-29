@@ -101,6 +101,18 @@ mod tests {
     }
 
     #[test]
+    fn task_runtime_layout_ops_do_not_declare_generated_import_deps() {
+        for task_layout_op in ["alloc_task", "call_async", "coroutine"] {
+            assert!(
+                OP_IMPORT_DEPS
+                    .iter()
+                    .all(|&(kind, _deps)| kind != task_layout_op),
+                "{task_layout_op} import demand is owned by WasmTaskRuntimeLayout, not OP_IMPORT_DEPS"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_surface_direct_import_matchers_are_generated() {
         assert!(runtime_surface_requires_direct_import("path_exists"));
         assert!(runtime_surface_requires_direct_import("socket_bind"));

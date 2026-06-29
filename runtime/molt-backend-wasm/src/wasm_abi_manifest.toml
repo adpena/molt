@@ -8109,14 +8109,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "call_async"
-deps = [
-  "handle_resolve",
-  "inc_ref_obj",
-  "task_new",
-]
-
-[[op_import_dep]]
 kind = "call_guarded"
 deps = [
   "call_bind_ic",
@@ -8267,26 +8259,6 @@ dispatch_runtime_seed = true
 parse_scalar_literal = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
-
-[[op_import_dep]]
-kind = "coroutine"
-deps = [
-  "cancel_token_get_current",
-  "handle_resolve",
-  "inc_ref_obj",
-  "task_new",
-  "task_register_token_owned",
-]
-
-[[op_import_dep]]
-kind = "alloc_task"
-deps = [
-  "cancel_token_get_current",
-  "handle_resolve",
-  "inc_ref_obj",
-  "task_new",
-  "task_register_token_owned",
-]
 
 [[op_import_dep]]
 kind = "del_attr_generic_ptr"
