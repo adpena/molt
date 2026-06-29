@@ -18,7 +18,11 @@ pub(super) fn emit_dict_op(
             let args = op.args.as_ref().unwrap_or(&empty_args_dn);
             let out = locals[op.out.as_ref().unwrap()];
             func.instruction(&Instruction::I64Const((args.len() / 2) as i64));
-            emit_call(func, reloc_enabled, import_ids["dict_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DictNew],
+            );
             func.instruction(&Instruction::LocalSet(out));
             for pair in args.chunks(2) {
                 let key = locals[&pair[0]];
@@ -26,7 +30,11 @@ pub(super) fn emit_dict_op(
                 func.instruction(&Instruction::LocalGet(out));
                 func.instruction(&Instruction::LocalGet(key));
                 func.instruction(&Instruction::LocalGet(val));
-                emit_call(func, reloc_enabled, import_ids["dict_set"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DictSet],
+                );
                 func.instruction(&Instruction::LocalSet(out));
             }
         }

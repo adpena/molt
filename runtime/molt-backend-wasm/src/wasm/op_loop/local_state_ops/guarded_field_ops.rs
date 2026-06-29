@@ -30,13 +30,21 @@ pub(super) fn emit_guarded_field_local_state_op(
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::LocalSet(tmp_ptr));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
-            emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayoutPtr],
+            );
             func.instruction(&Instruction::LocalSet(guard_val));
 
             func.instruction(&Instruction::LocalGet(guard_val));
@@ -62,7 +70,11 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::If(BlockType::Empty));
 
             func.instruction(&Instruction::LocalGet(tmp_val));
-            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            );
             func.instruction(&Instruction::LocalGet(tmp_val));
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalSet(locals[out]));
@@ -87,7 +99,11 @@ pub(super) fn emit_guarded_field_local_state_op(
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["guarded_field_get_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardedFieldGetPtr],
+            );
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalSet(locals[out]));
             } else {
@@ -108,13 +124,21 @@ pub(super) fn emit_guarded_field_local_state_op(
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::LocalSet(tmp_ptr));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
-            emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayoutPtr],
+            );
             func.instruction(&Instruction::LocalSet(guard_val));
 
             func.instruction(&Instruction::LocalGet(guard_val));
@@ -149,7 +173,11 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["object_field_set_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldSetPtr],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -187,7 +215,11 @@ pub(super) fn emit_guarded_field_local_state_op(
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["guarded_field_set_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardedFieldSetPtr],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -211,13 +243,21 @@ pub(super) fn emit_guarded_field_local_state_op(
             let bytes = attr.as_bytes();
             let data = backend.add_data_segment(reloc_enabled, bytes);
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::LocalSet(tmp_ptr));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
-            emit_call(func, reloc_enabled, import_ids["guard_layout_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayoutPtr],
+            );
             func.instruction(&Instruction::LocalSet(guard_val));
 
             func.instruction(&Instruction::LocalGet(guard_val));
@@ -235,7 +275,11 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["object_field_init_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldInitPtr],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -273,7 +317,11 @@ pub(super) fn emit_guarded_field_local_state_op(
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
-            emit_call(func, reloc_enabled, import_ids["guarded_field_init_ptr"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardedFieldInitPtr],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));

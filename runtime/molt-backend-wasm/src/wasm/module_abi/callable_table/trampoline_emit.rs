@@ -84,7 +84,7 @@ impl WasmBackend {
             emit_call(
                 &mut func,
                 reloc_enabled,
-                self.import_ids["list_builder_new"],
+                self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ListBuilderNew],
             );
             func.instruction(&Instruction::LocalSet(builder_local));
             // list_builder_append(builder, value) for each value in order
@@ -94,7 +94,8 @@ impl WasmBackend {
                 emit_call(
                     &mut func,
                     reloc_enabled,
-                    self.import_ids["list_builder_append"],
+                    self.import_ids
+                        [crate::wasm_abi_generated::WasmRuntimeImport::ListBuilderAppend],
                 );
             }
             // tuple_builder_finish(builder) -> tuple handle (single i64)
@@ -102,7 +103,7 @@ impl WasmBackend {
             emit_call(
                 &mut func,
                 reloc_enabled,
-                self.import_ids["tuple_builder_finish"],
+                self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TupleBuilderFinish],
             );
         }
         func.instruction(&Instruction::End);

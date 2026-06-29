@@ -50,7 +50,7 @@ pub(super) fn emit_bitwise_numeric_op(
             reloc_enabled,
             known_raw_ints,
             selection.op_loop_kind,
-            selection.import_name,
+            selection.import,
         ),
         WasmNumericOpLoopKind::Invert | WasmNumericOpLoopKind::Neg | WasmNumericOpLoopKind::Pos => {
             emit_boxed_unary_result(
@@ -58,7 +58,7 @@ pub(super) fn emit_bitwise_numeric_op(
                 op,
                 import_ids,
                 locals,
-                selection.import_name,
+                selection.import,
                 reloc_enabled,
             )
         }
@@ -71,7 +71,7 @@ pub(super) fn emit_bitwise_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
-            selection.import_name,
+            selection.import,
             ShiftDirection::Left,
         ),
         WasmNumericOpLoopKind::RShift => emit_shift_op(
@@ -83,7 +83,7 @@ pub(super) fn emit_bitwise_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
-            selection.import_name,
+            selection.import,
             ShiftDirection::Right,
         ),
         _ => unreachable!("non-bitwise numeric selector routed to bitwise emitter"),
@@ -100,7 +100,7 @@ fn emit_simple_bitwise_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     bitwise_op: WasmNumericOpLoopKind,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
@@ -156,7 +156,7 @@ fn emit_shift_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
     direction: ShiftDirection,
 ) {
     let operands = binary_operands(op, locals);
@@ -197,7 +197,7 @@ fn emit_shift_fast_path(
     const_cache: &ConstantCache,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
     direction: ShiftDirection,
 ) {
     let temps = int_binary_temps(locals);
@@ -247,7 +247,7 @@ fn emit_left_shift_fast_path(
     const_cache: &ConstantCache,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
     temps: super::common::IntBinaryTemps,
 ) {
     func.instruction(&Instruction::I64Shl);

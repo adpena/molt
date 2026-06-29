@@ -24,7 +24,11 @@ pub(super) fn emit_dataclass_op(
             func.instruction(&Instruction::LocalGet(fields));
             func.instruction(&Instruction::LocalGet(values));
             func.instruction(&Instruction::LocalGet(flags));
-            emit_call(func, reloc_enabled, import_ids["dataclass_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "dataclass_new_values" => {
@@ -46,7 +50,11 @@ pub(super) fn emit_dataclass_op(
             func.instruction(&Instruction::LocalGet(fields));
             func.instruction(&Instruction::LocalGet(out));
             func.instruction(&Instruction::LocalGet(flags));
-            emit_call(func, reloc_enabled, import_ids["dataclass_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew],
+            );
             func.instruction(&Instruction::LocalSet(out));
         }
         "dataclass_get" => {
@@ -55,7 +63,11 @@ pub(super) fn emit_dataclass_op(
             let idx = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(idx));
-            emit_call(func, reloc_enabled, import_ids["dataclass_get"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassGet],
+            );
             store_result_or_drop(func, op, locals);
         }
         "dataclass_set" => {
@@ -66,7 +78,11 @@ pub(super) fn emit_dataclass_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(idx));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["dataclass_set"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassSet],
+            );
             store_result_or_drop(func, op, locals);
         }
         "dataclass_set_class" => {
@@ -75,7 +91,11 @@ pub(super) fn emit_dataclass_op(
             let class_obj = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::LocalGet(class_obj));
-            emit_call(func, reloc_enabled, import_ids["dataclass_set_class"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassSetClass],
+            );
             store_result_or_drop(func, op, locals);
         }
         _ => return false,

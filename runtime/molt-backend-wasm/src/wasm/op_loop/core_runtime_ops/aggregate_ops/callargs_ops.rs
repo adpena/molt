@@ -17,7 +17,11 @@ pub(super) fn emit_callargs_op(
             let out = locals[op.out.as_ref().unwrap()];
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Const(0));
-            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallargsNew],
+            );
             func.instruction(&Instruction::LocalSet(out));
         }
         _ => return false,

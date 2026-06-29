@@ -51,7 +51,11 @@ pub(super) fn emit_local_slot_op(
             {
                 let src = locals[src_name];
                 func.instruction(&Instruction::LocalGet(src));
-                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                );
                 copy_local(func, locals, src_name, out_name);
             }
             true

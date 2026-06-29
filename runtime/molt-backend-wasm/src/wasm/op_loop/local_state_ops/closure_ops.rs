@@ -19,13 +19,21 @@ pub(super) fn emit_closure_local_state_op(
             let obj = locals[&args[0]];
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            emit_call(func, reloc_enabled, import_ids["closure_load"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureLoad],
+            );
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalSet(locals[out]));
             } else {
@@ -37,14 +45,22 @@ pub(super) fn emit_closure_local_state_op(
             let obj = locals[&args[0]];
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(tmp_ptr));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(locals[&args[1]]));
-            emit_call(func, reloc_enabled, import_ids["closure_store"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureStore],
+            );
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalSet(locals[out]));
             } else {

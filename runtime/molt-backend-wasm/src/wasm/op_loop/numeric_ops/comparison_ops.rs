@@ -75,7 +75,7 @@ pub(super) fn emit_comparison_numeric_op(
             reloc_enabled,
             known_raw_ints,
             selection.op_loop_kind,
-            selection.import_name,
+            selection.import,
         ),
         WasmNumericOpLoopKind::Eq | WasmNumericOpLoopKind::Ne => emit_equality_compare_op(
             func,
@@ -86,14 +86,14 @@ pub(super) fn emit_comparison_numeric_op(
             reloc_enabled,
             known_raw_ints,
             selection.op_loop_kind,
-            selection.import_name,
+            selection.import,
         ),
         WasmNumericOpLoopKind::StringEq => emit_boxed_binary_result(
             func,
             op,
             import_ids,
             locals,
-            selection.import_name,
+            selection.import,
             reloc_enabled,
         ),
         _ => unreachable!("non-comparison numeric selector routed to comparison emitter"),
@@ -110,7 +110,7 @@ fn emit_ordered_compare_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     compare_op: WasmNumericOpLoopKind,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
@@ -161,7 +161,7 @@ fn emit_equality_compare_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     compare_op: WasmNumericOpLoopKind,
-    import_name: &str,
+    import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {

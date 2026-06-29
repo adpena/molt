@@ -1,4 +1,5 @@
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::box_int;
@@ -11,10 +12,10 @@ pub(super) enum BuilderFinish {
 }
 
 impl BuilderFinish {
-    const fn import_name(self) -> &'static str {
+    const fn import(self) -> WasmRuntimeImport {
         match self {
-            Self::List => "list_builder_finish",
-            Self::Tuple => "tuple_builder_finish",
+            Self::List => WasmRuntimeImport::ListBuilderFinish,
+            Self::Tuple => WasmRuntimeImport::TupleBuilderFinish,
         }
     }
 }
@@ -29,15 +30,23 @@ pub(super) fn emit_sequence_builder_from_args(
     finish: BuilderFinish,
 ) {
     func.instruction(&Instruction::I64Const(box_int(value_names.len() as i64)));
-    emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ListBuilderNew],
+    );
     func.instruction(&Instruction::LocalSet(out));
     for name in value_names {
         let val = locals[name];
         func.instruction(&Instruction::LocalGet(out));
         func.instruction(&Instruction::LocalGet(val));
-        emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ListBuilderAppend],
+        );
     }
     func.instruction(&Instruction::LocalGet(out));
-    emit_call(func, reloc_enabled, import_ids[finish.import_name()]);
+    emit_call(func, reloc_enabled, import_ids[finish.import()]);
     func.instruction(&Instruction::LocalSet(out));
 }

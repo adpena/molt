@@ -1,5 +1,6 @@
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::{emit_call, emit_table_index_i64};
 use wasm_encoder::{Function, Instruction};
 
@@ -10,7 +11,14 @@ pub(super) fn emit_function_object_call_op(
 ) -> CallOpEmission {
     match op.kind.as_str() {
         "func_new" => {
-            emit_function_constructor(call_ctx, func, op, "func_new", "func_new", None);
+            emit_function_constructor(
+                call_ctx,
+                func,
+                op,
+                "func_new",
+                WasmRuntimeImport::FuncNew,
+                None,
+            );
             CallOpEmission::Handled
         }
         "func_new_closure" => {
@@ -25,7 +33,7 @@ pub(super) fn emit_function_object_call_op(
                 func,
                 op,
                 "func_new_closure",
-                "func_new_closure",
+                WasmRuntimeImport::FuncNewClosure,
                 Some(closure_bits),
             );
             CallOpEmission::Handled
@@ -33,7 +41,11 @@ pub(super) fn emit_function_object_call_op(
         "builtin_func" => emit_builtin_func(call_ctx, func, op),
         "missing" => {
             let out = call_ctx.locals[op.out.as_ref().unwrap()];
-            emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids["missing"]);
+            emit_call(
+                func,
+                call_ctx.reloc_enabled,
+                call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Missing],
+            );
             func.instruction(&Instruction::LocalSet(out));
             CallOpEmission::Handled
         }
@@ -45,14 +57,15 @@ pub(super) fn emit_function_object_call_op(
             emit_call(
                 func,
                 call_ctx.reloc_enabled,
-                call_ctx.import_ids["function_closure_bits"],
+                call_ctx.import_ids
+                    [crate::wasm_abi_generated::WasmRuntimeImport::FunctionClosureBits],
             );
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::LocalGet(out));
             emit_call(
                 func,
                 call_ctx.reloc_enabled,
-                call_ctx.import_ids["inc_ref_obj"],
+                call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
             );
             CallOpEmission::Handled
         }
@@ -73,7 +86,14 @@ fn emit_builtin_func(
     {
         return CallOpEmission::Handled;
     }
-    emit_function_constructor(call_ctx, func, op, "builtin_func", "func_new_builtin", None);
+    emit_function_constructor(
+        call_ctx,
+        func,
+        op,
+        "builtin_func",
+        WasmRuntimeImport::FuncNewBuiltin,
+        None,
+    );
     CallOpEmission::Handled
 }
 
@@ -82,7 +102,7 @@ fn emit_function_constructor(
     func: &mut Function,
     op: &OpIR,
     table_context: &str,
-    import_name: &str,
+    import: WasmRuntimeImport,
     trailing_local: Option<u32>,
 ) {
     let func_name = op.s_value.as_ref().unwrap();
@@ -104,11 +124,7 @@ fn emit_function_constructor(
     if let Some(local) = trailing_local {
         func.instruction(&Instruction::LocalGet(local));
     }
-    emit_call(
-        func,
-        call_ctx.reloc_enabled,
-        call_ctx.import_ids[import_name],
-    );
+    emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
     if let Some(out) = op.out.as_ref() {
         let res = call_ctx.locals[out];
         func.instruction(&Instruction::LocalSet(res));

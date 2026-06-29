@@ -6,7 +6,7 @@ pub(super) fn numeric_lir_runtime_call(selection: WasmNumericRuntimeSelection) -
     selection.lir_runtime_call.unwrap_or_else(|| {
         panic!(
             "generated WASM numeric selector for {} lacks LIR runtime-call authority",
-            selection.import_name
+            selection.import.name()
         )
     })
 }

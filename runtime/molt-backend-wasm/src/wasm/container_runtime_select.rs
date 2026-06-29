@@ -1,10 +1,10 @@
+use crate::OpIR;
 use crate::repr::{ContainerKind, ContainerStorageKind};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi_generated::{
-    LirRuntimeCall, WasmContainerRuntimeFact, WasmContainerRuntimeOp,
+    LirRuntimeCall, WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmRuntimeImport,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
-use crate::OpIR;
 use molt_tir::tir::types::TirType;
 
 pub(in crate::wasm) fn selected_container_runtime_import(
@@ -12,11 +12,11 @@ pub(in crate::wasm) fn selected_container_runtime_import(
     op_index: usize,
     kind: &str,
     op: &OpIR,
-) -> Option<&'static str> {
+) -> Option<WasmRuntimeImport> {
     let selector_op = wasm_container_runtime_op(kind)?;
     selected_storage_runtime(selector_op, plan, op_index, op)
         .or_else(|| selected_container_kind_runtime(selector_op, plan, op))
-        .map(|selection| selection.import_name)
+        .map(|selection| selection.import)
 }
 
 pub(in crate::wasm) fn selected_lir_container_runtime_call(
@@ -25,10 +25,8 @@ pub(in crate::wasm) fn selected_lir_container_runtime_call(
     container_ty: Option<&TirType>,
 ) -> Option<LirRuntimeCall> {
     if has_flat_list_int_storage
-        && let Some(selection) = wasm_container_runtime_selection(
-            selector_op,
-            WasmContainerRuntimeFact::FlatListInt,
-        )
+        && let Some(selection) =
+            wasm_container_runtime_selection(selector_op, WasmContainerRuntimeFact::FlatListInt)
     {
         return selection.lir_runtime_call;
     }

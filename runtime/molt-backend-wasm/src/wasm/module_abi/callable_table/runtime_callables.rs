@@ -119,7 +119,7 @@ impl WasmBackend {
             });
             let import_idx = *self
                 .import_ids
-                .get(spec.import_name.as_str())
+                .get_name(spec.import_name.as_str())
                 .unwrap_or_else(|| panic!("missing builtin import for {}", spec.import_name));
             self.funcs.function(type_idx);
             let func_index = self.func_count;

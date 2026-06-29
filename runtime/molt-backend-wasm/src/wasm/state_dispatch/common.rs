@@ -97,7 +97,7 @@ pub(super) fn emit_stateful_resume_prelude(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["obj_get_state"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjGetState],
     );
     func.instruction(&Instruction::LocalSet(locals.state_local));
     func.instruction(&Instruction::LocalGet(locals.state_local));
@@ -180,9 +180,9 @@ pub(super) fn emit_dispatch_if(
     };
     let truthy_import =
         if wasm_scalar_truthiness_fast_path_for_name(op_emitter.scalar_plan(), &args[0]) {
-            "is_truthy_int"
+            crate::wasm_abi_generated::WasmRuntimeImport::IsTruthyInt
         } else {
-            "is_truthy"
+            crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy
         };
     emit_branch_truthiness_i32(
         func,
@@ -211,7 +211,7 @@ pub(super) fn emit_dispatch_loop_break_cond(
     emit_branch_truthiness_i32(
         func,
         cond,
-        op_emitter.import_ids["is_truthy"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
         op_emitter.reloc_enabled,
     );
     if invert {
@@ -251,7 +251,7 @@ pub(super) fn emit_dispatch_check_exception(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["exception_pending"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
     );
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
@@ -356,7 +356,7 @@ pub(super) fn emit_arena_free(func: &mut Function, op_emitter: &WasmFunctionEmit
         emit_call(
             func,
             op_emitter.reloc_enabled,
-            op_emitter.import_ids["arena_free"],
+            op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ArenaFree],
         );
     }
 }

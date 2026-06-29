@@ -353,15 +353,21 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         "sink": "result_or_drop",
     }
 
-    rendered_rs = _rendered_rs(gen, data)
-    assert "enum LirRuntimeCall" in rendered_rs
-    assert "Self::FloorDiv => \"floordiv\"" in rendered_rs
-    assert "pub(crate) const fn boxed_operand_count" in rendered_rs
-    assert "Self::StoreIndex => Some(3)" in rendered_rs
-    assert "Self::ModuleImport => \"module_import\"" in rendered_rs
-    assert "Self::ModuleImport => Some" not in rendered_rs
-    assert "lir_fixed_runtime_call" in rendered_rs
-    assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_rs
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
+    assert "enum LirRuntimeCall" in rendered_lir_rs
+    assert "use super::imports::WasmRuntimeImport;" in rendered_lir_rs
+    assert "pub(crate) const fn import(self) -> WasmRuntimeImport" in rendered_lir_rs
+    assert "Self::FloorDiv => WasmRuntimeImport::Floordiv" in rendered_lir_rs
+    assert "pub(crate) const fn boxed_operand_count" in rendered_lir_rs
+    assert "Self::StoreIndex => Some(3)" in rendered_lir_rs
+    assert "Self::ModuleImport => WasmRuntimeImport::ModuleImport" in rendered_lir_rs
+    assert 'Self::ModuleImport => "module_import"' not in rendered_lir_rs
+    assert "Self::ModuleImport => Some" not in rendered_lir_rs
+    assert "pub(crate) const fn import_name" not in rendered_lir_rs
+    assert "self.import().name()" not in rendered_lir_rs
+    assert "lir_fixed_runtime_call" in rendered_lir_rs
+    assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_lir_rs
 
     broken = copy.deepcopy(data)
     broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
@@ -425,6 +431,7 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     rendered_py = gen.render_py(data)
     assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_selector_rs
     assert "WasmContainerRuntimeFact::FlatListInt" in rendered_selector_rs
+    assert "import: WasmRuntimeImport::ListIntGetitem" in rendered_selector_rs
     assert "LirRuntimeCall::ListIntGetitem" in rendered_selector_rs
     assert "wasm_container_runtime_selection" in rendered_selector_rs
     assert "mod container_runtime_selector;" in rendered_mod_rs
@@ -473,6 +480,7 @@ def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
     assert "WASM_OBJECT_NEW_BOUND_SELECTORS" in rendered_selector_rs
     assert "WasmObjectNewBoundPayload::Unsized" in rendered_selector_rs
     assert "WasmObjectNewBoundPayload::Sized" in rendered_selector_rs
+    assert "import: WasmRuntimeImport::ObjectNewBoundSized" in rendered_selector_rs
     assert "LirRuntimeCall::ObjectNewBoundSized" in rendered_selector_rs
     assert "wasm_object_new_bound_selection" in rendered_selector_rs
     assert "mod object_new_bound_selector;" in rendered_mod_rs
@@ -539,7 +547,7 @@ def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
     assert "WASM_METHOD_IC_MAX_EXTRA_ARGS: usize = 4" in rendered_selector_rs
     assert "WasmMethodIcFamily::Method" in rendered_selector_rs
     assert "WasmMethodIcFamily::SuperMethod" in rendered_selector_rs
-    assert 'import_name: "call_super_method_ic4"' in rendered_selector_rs
+    assert "import: WasmRuntimeImport::CallSuperMethodIc4" in rendered_selector_rs
     assert "wasm_method_ic_selection" in rendered_selector_rs
     assert "mod method_ic_selector;" in rendered_mod_rs
     assert "WasmMethodIcFamily" in rendered_mod_rs
@@ -615,7 +623,9 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     rendered_py = gen.render_py(data)
     assert "WASM_NUMERIC_RUNTIME_SELECTORS" in rendered_selector_rs
     assert "WasmNumericOpLoopKind::VectorReduction" in rendered_selector_rs
+    assert "import: WasmRuntimeImport::InplaceAdd" in rendered_selector_rs
     assert "LirRuntimeCall::InplaceAdd" in rendered_selector_rs
+    assert "deps: &[WasmRuntimeImport::InplaceAdd, WasmRuntimeImport::StrConcat]" in rendered_selector_rs
     assert '"shl" => Some(WasmNumericRuntimeSelection' in rendered_selector_rs
     assert 'call: LirRuntimeCall::PowMod' in rendered_lir_rs
     assert "mod numeric_runtime_selector;" in rendered_mod_rs
@@ -687,7 +697,11 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
     op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
 
-    assert "OP_IMPORT_DEPS" in _rendered_rs(gen, data)
+    rendered_rs = _rendered_rs(gen, data)
+    assert "OP_IMPORT_DEPS" in rendered_rs
+    assert "OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])]" in rendered_rs
+    assert '"print", &[WasmRuntimeImport::PrintObj]' in rendered_rs
+    assert '"object_new_bound_stack",\n        &[WasmRuntimeImport::ObjectNewBoundSized]' in rendered_rs
     assert "module_cache_del" not in op_deps["__structural__"]
     assert "module_cache_del" not in op_deps
     assert op_loop_calls["module_cache_del"]["required_imports"] == ["module_cache_del"]

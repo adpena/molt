@@ -55,7 +55,7 @@ fn emit_load_or_copy(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
         emit_call(
             func,
             call_ctx.reloc_enabled,
-            call_ctx.import_ids["inc_ref_obj"],
+            call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
         );
         let out = call_ctx.locals[out_name];
         func.instruction(&Instruction::LocalGet(src));
@@ -75,7 +75,7 @@ fn emit_conversion_alias(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Functi
             emit_call(
                 func,
                 call_ctx.reloc_enabled,
-                call_ctx.import_ids["inc_ref_obj"],
+                call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
             );
             func.instruction(&Instruction::LocalGet(src));
             let out = call_ctx.locals[out_name];

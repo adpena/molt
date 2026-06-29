@@ -39,18 +39,34 @@ pub(super) fn emit_dynamic_call_op(
             let table_idx = call_site_abi.table_index(target_name, "call_guarded");
             if escaped_target {
                 func.instruction(&Instruction::LocalGet(callee_bits));
-                emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
-                emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsFunctionObj],
+                );
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+                );
                 func.instruction(&Instruction::I64Const(0));
                 func.instruction(&Instruction::I64Ne);
                 func.instruction(&Instruction::If(BlockType::Empty));
-                emit_call(func, reloc_enabled, import_ids["recursion_guard_enter"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardEnter],
+                );
                 func.instruction(&Instruction::I64Const(0));
                 func.instruction(&Instruction::I64Ne);
                 func.instruction(&Instruction::If(BlockType::Empty));
                 let code_id = op.value.unwrap_or(0);
                 func.instruction(&Instruction::I64Const(code_id));
-                emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceEnterSlot],
+                );
                 func.instruction(&Instruction::Drop);
                 let spill_base = call_site_abi.call_func_spill_offset();
                 spill_call_args(func, locals, spill_base, &args_names[1..]);
@@ -58,11 +74,23 @@ pub(super) fn emit_dynamic_call_op(
                 func.instruction(&Instruction::I64Const(spill_base as i64));
                 func.instruction(&Instruction::I64Const(arity as i64));
                 func.instruction(&Instruction::I64Const(code_id));
-                emit_call(func, reloc_enabled, import_ids["call_func_dispatch"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallFuncDispatch],
+                );
                 func.instruction(&Instruction::LocalSet(out));
-                emit_call(func, reloc_enabled, import_ids["trace_exit"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceExit],
+                );
                 func.instruction(&Instruction::Drop);
-                emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardExit],
+                );
                 func.instruction(&Instruction::Else);
                 // Recursion guard failed — exception is already pending.
                 // Return immediately so the pending RecursionError
@@ -82,21 +110,37 @@ pub(super) fn emit_dynamic_call_op(
                 emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_guarded_nonfunc");
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 func.instruction(&Instruction::LocalGet(callargs_tmp));
-                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
+                );
                 func.instruction(&Instruction::LocalSet(out));
                 func.instruction(&Instruction::End);
                 return CallOpEmission::Handled;
             }
             func.instruction(&Instruction::LocalGet(callee_bits));
-            emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
-            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsFunctionObj],
+            );
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+            );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             func.instruction(&Instruction::If(BlockType::Empty));
 
             // callee is a function object: resolve and compare against expected target
             func.instruction(&Instruction::LocalGet(callee_bits));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(tmp_ptr));
@@ -113,13 +157,21 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::If(BlockType::Empty));
 
             // fast path: callee matches expected target
-            emit_call(func, reloc_enabled, import_ids["recursion_guard_enter"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardEnter],
+            );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             func.instruction(&Instruction::If(BlockType::Empty));
             let code_id = op.value.unwrap_or(0);
             func.instruction(&Instruction::I64Const(code_id));
-            emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceEnterSlot],
+            );
             func.instruction(&Instruction::Drop);
             // For closure functions, extract the closure environment
             // from the callee object and push it as the leading arg.
@@ -128,7 +180,11 @@ pub(super) fn emit_dynamic_call_op(
             // so we must prepend the env before the user arguments.
             if call_site_abi.is_closure_function(target_name) {
                 func.instruction(&Instruction::LocalGet(callee_bits));
-                emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FunctionClosureBits],
+                );
             }
             for arg_name in &args_names[1..] {
                 let arg = locals[arg_name];
@@ -136,9 +192,17 @@ pub(super) fn emit_dynamic_call_op(
             }
             emit_call(func, reloc_enabled, func_idx);
             func.instruction(&Instruction::LocalSet(out));
-            emit_call(func, reloc_enabled, import_ids["trace_exit"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceExit],
+            );
             func.instruction(&Instruction::Drop);
-            emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardExit],
+            );
             func.instruction(&Instruction::Else);
             // Recursion guard failed — exception is already pending.
             // Return immediately so the pending RecursionError
@@ -165,7 +229,11 @@ pub(super) fn emit_dynamic_call_op(
             );
             func.instruction(&Instruction::LocalGet(callee_bits));
             func.instruction(&Instruction::LocalGet(callargs_tmp));
-            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
+            );
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::End);
 
@@ -182,7 +250,11 @@ pub(super) fn emit_dynamic_call_op(
             emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_guarded_nonfunc");
             func.instruction(&Instruction::LocalGet(callee_bits));
             func.instruction(&Instruction::LocalGet(callargs_tmp));
-            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
+            );
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::End);
         }
@@ -201,7 +273,12 @@ pub(super) fn emit_dynamic_call_op(
                 let out = locals[op.out.as_ref().unwrap()];
                 func.instruction(&Instruction::LocalGet(name_bits));
                 func.instruction(&Instruction::LocalGet(namespace_bits));
-                emit_call(func, reloc_enabled, import_ids["require_intrinsic_runtime"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids
+                        [crate::wasm_abi_generated::WasmRuntimeImport::RequireIntrinsicRuntime],
+                );
                 func.instruction(&Instruction::LocalSet(out));
                 release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 return CallOpEmission::Handled;
@@ -221,7 +298,11 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::I64Const(nargs as i64));
             let code_id = op.value.unwrap_or(0);
             func.instruction(&Instruction::I64Const(code_id));
-            emit_call(func, reloc_enabled, import_ids["call_func_dispatch"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallFuncDispatch],
+            );
             func.instruction(&Instruction::LocalSet(out));
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
@@ -256,7 +337,11 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::LocalGet(callargs_tmp));
             let require_bridge_cap = if invoke_bridge_lane { 1 } else { 0 };
             func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
-            emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::InvokeFfiIc],
+            );
             func.instruction(&Instruction::LocalSet(out));
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
@@ -281,9 +366,17 @@ pub(super) fn emit_dynamic_call_op(
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(builder_ptr));
             if op.kind == "call_indirect" {
-                emit_call(func, reloc_enabled, import_ids["call_indirect_ic"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallIndirectIc],
+                );
             } else {
-                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
+                );
             }
             if let Some(out_local) = out {
                 func.instruction(&Instruction::LocalSet(out_local));
@@ -313,14 +406,23 @@ pub(super) fn emit_dynamic_call_op(
                         let arg = locals[&args_names[1]];
                         func.instruction(&Instruction::LocalGet(method_bits));
                         func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(func, reloc_enabled, import_ids["fast_list_append"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids
+                                [crate::wasm_abi_generated::WasmRuntimeImport::FastListAppend],
+                        );
                         true
                     }
                     "BoundMethod:str:join" if arity == 1 => {
                         let arg = locals[&args_names[1]];
                         func.instruction(&Instruction::LocalGet(method_bits));
                         func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(func, reloc_enabled, import_ids["fast_str_join"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrJoin],
+                        );
                         true
                     }
                     "BoundMethod:dict:get" if arity == 2 => {
@@ -329,29 +431,50 @@ pub(super) fn emit_dynamic_call_op(
                         func.instruction(&Instruction::LocalGet(method_bits));
                         func.instruction(&Instruction::LocalGet(key));
                         func.instruction(&Instruction::LocalGet(default));
-                        emit_call(func, reloc_enabled, import_ids["fast_dict_get"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastDictGet],
+                        );
                         true
                     }
                     "BoundMethod:str:startswith" if arity == 1 => {
                         let arg = locals[&args_names[1]];
                         func.instruction(&Instruction::LocalGet(method_bits));
                         func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(func, reloc_enabled, import_ids["fast_str_startswith"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids
+                                [crate::wasm_abi_generated::WasmRuntimeImport::FastStrStartswith],
+                        );
                         true
                     }
                     "BoundMethod:str:upper" if arity == 0 => {
                         func.instruction(&Instruction::LocalGet(method_bits));
-                        emit_call(func, reloc_enabled, import_ids["fast_str_upper"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrUpper],
+                        );
                         true
                     }
                     "BoundMethod:str:lower" if arity == 0 => {
                         func.instruction(&Instruction::LocalGet(method_bits));
-                        emit_call(func, reloc_enabled, import_ids["fast_str_lower"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrLower],
+                        );
                         true
                     }
                     "BoundMethod:str:strip" if arity == 0 => {
                         func.instruction(&Instruction::LocalGet(method_bits));
-                        emit_call(func, reloc_enabled, import_ids["fast_str_strip"]);
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrStrip],
+                        );
                         true
                     }
                     _ => false,
@@ -374,7 +497,11 @@ pub(super) fn emit_dynamic_call_op(
                 emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_method");
                 func.instruction(&Instruction::LocalGet(method_bits));
                 func.instruction(&Instruction::LocalGet(callargs_tmp));
-                emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
+                );
             }
             func.instruction(&Instruction::LocalSet(out));
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);

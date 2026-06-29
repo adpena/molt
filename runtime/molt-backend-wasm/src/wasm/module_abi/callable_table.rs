@@ -208,7 +208,11 @@ impl WasmBackend {
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) {
-        emit_call(func, reloc_enabled, self.import_ids["runtime_init"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeInit],
+        );
         func.instruction(&Instruction::Drop);
         if manifest_len > 0 {
             self.emit_data_ptr(reloc_enabled, func_index, func, manifest_segment);
@@ -216,7 +220,7 @@ impl WasmBackend {
             emit_call(
                 func,
                 reloc_enabled,
-                self.import_ids["set_intrinsic_manifest"],
+                self.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SetIntrinsicManifest],
             );
             func.instruction(&Instruction::Drop);
         }

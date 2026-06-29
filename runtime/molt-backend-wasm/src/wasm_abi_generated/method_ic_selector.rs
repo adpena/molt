@@ -3,6 +3,8 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
+use super::imports::WasmRuntimeImport;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmMethodIcFamily {
     Method,
@@ -11,7 +13,7 @@ pub(crate) enum WasmMethodIcFamily {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WasmMethodIcSelection {
-    pub(crate) import_name: &'static str,
+    pub(crate) import: WasmRuntimeImport,
 }
 
 #[allow(dead_code)]
@@ -30,70 +32,70 @@ pub(crate) const WASM_METHOD_IC_SELECTORS: &[WasmMethodIcSelectorSpec] = &[
         family: WasmMethodIcFamily::Method,
         extra_arg_count: 0,
         selection: WasmMethodIcSelection {
-            import_name: "call_method_ic0",
+            import: WasmRuntimeImport::CallMethodIc0,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::Method,
         extra_arg_count: 1,
         selection: WasmMethodIcSelection {
-            import_name: "call_method_ic1",
+            import: WasmRuntimeImport::CallMethodIc1,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::Method,
         extra_arg_count: 2,
         selection: WasmMethodIcSelection {
-            import_name: "call_method_ic2",
+            import: WasmRuntimeImport::CallMethodIc2,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::Method,
         extra_arg_count: 3,
         selection: WasmMethodIcSelection {
-            import_name: "call_method_ic3",
+            import: WasmRuntimeImport::CallMethodIc3,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::Method,
         extra_arg_count: 4,
         selection: WasmMethodIcSelection {
-            import_name: "call_method_ic4",
+            import: WasmRuntimeImport::CallMethodIc4,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::SuperMethod,
         extra_arg_count: 0,
         selection: WasmMethodIcSelection {
-            import_name: "call_super_method_ic0",
+            import: WasmRuntimeImport::CallSuperMethodIc0,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::SuperMethod,
         extra_arg_count: 1,
         selection: WasmMethodIcSelection {
-            import_name: "call_super_method_ic1",
+            import: WasmRuntimeImport::CallSuperMethodIc1,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::SuperMethod,
         extra_arg_count: 2,
         selection: WasmMethodIcSelection {
-            import_name: "call_super_method_ic2",
+            import: WasmRuntimeImport::CallSuperMethodIc2,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::SuperMethod,
         extra_arg_count: 3,
         selection: WasmMethodIcSelection {
-            import_name: "call_super_method_ic3",
+            import: WasmRuntimeImport::CallSuperMethodIc3,
         },
     },
     WasmMethodIcSelectorSpec {
         family: WasmMethodIcFamily::SuperMethod,
         extra_arg_count: 4,
         selection: WasmMethodIcSelection {
-            import_name: "call_super_method_ic4",
+            import: WasmRuntimeImport::CallSuperMethodIc4,
         },
     },
 ];
@@ -106,34 +108,34 @@ pub(crate) fn wasm_method_ic_selection(
     let capped_extra_arg_count = extra_arg_count.min(WASM_METHOD_IC_MAX_EXTRA_ARGS);
     match (family, capped_extra_arg_count) {
         (WasmMethodIcFamily::Method, 0) => WasmMethodIcSelection {
-            import_name: "call_method_ic0",
+            import: WasmRuntimeImport::CallMethodIc0,
         },
         (WasmMethodIcFamily::Method, 1) => WasmMethodIcSelection {
-            import_name: "call_method_ic1",
+            import: WasmRuntimeImport::CallMethodIc1,
         },
         (WasmMethodIcFamily::Method, 2) => WasmMethodIcSelection {
-            import_name: "call_method_ic2",
+            import: WasmRuntimeImport::CallMethodIc2,
         },
         (WasmMethodIcFamily::Method, 3) => WasmMethodIcSelection {
-            import_name: "call_method_ic3",
+            import: WasmRuntimeImport::CallMethodIc3,
         },
         (WasmMethodIcFamily::Method, 4) => WasmMethodIcSelection {
-            import_name: "call_method_ic4",
+            import: WasmRuntimeImport::CallMethodIc4,
         },
         (WasmMethodIcFamily::SuperMethod, 0) => WasmMethodIcSelection {
-            import_name: "call_super_method_ic0",
+            import: WasmRuntimeImport::CallSuperMethodIc0,
         },
         (WasmMethodIcFamily::SuperMethod, 1) => WasmMethodIcSelection {
-            import_name: "call_super_method_ic1",
+            import: WasmRuntimeImport::CallSuperMethodIc1,
         },
         (WasmMethodIcFamily::SuperMethod, 2) => WasmMethodIcSelection {
-            import_name: "call_super_method_ic2",
+            import: WasmRuntimeImport::CallSuperMethodIc2,
         },
         (WasmMethodIcFamily::SuperMethod, 3) => WasmMethodIcSelection {
-            import_name: "call_super_method_ic3",
+            import: WasmRuntimeImport::CallSuperMethodIc3,
         },
         (WasmMethodIcFamily::SuperMethod, 4) => WasmMethodIcSelection {
-            import_name: "call_super_method_ic4",
+            import: WasmRuntimeImport::CallSuperMethodIc4,
         },
         _ => unreachable!("method IC selector grid is generated exhaustively"),
     }
