@@ -4,8 +4,11 @@ use super::site::{
 };
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
-use crate::wasm_abi::TASK_KIND_FUTURE;
-use crate::wasm_binary::{emit_call, emit_return_call, emit_table_index_i64};
+use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm::task_runtime::{
+    WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
+};
+use crate::wasm_binary::{emit_call, emit_return_call};
 use std::collections::BTreeMap;
 use wasm_encoder::{Function, Instruction};
 
@@ -33,15 +36,15 @@ fn emit_call_async(
     let reloc_enabled = call_ctx.reloc_enabled;
 
     let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
+    let layout = WasmTaskRuntimeLayout::for_call_async();
     let target_name = op.s_value.as_ref().expect("call_async target missing");
     let table_idx = call_site_abi.table_index(target_name, "call_async");
-    emit_table_index_i64(func, reloc_enabled, table_idx);
-    func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
-    func.instruction(&Instruction::I64Const(TASK_KIND_FUTURE));
-    emit_call(
+    layout.emit_task_new(
         func,
+        import_ids,
         reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TaskNew],
+        table_idx,
+        (payload_len * 8) as i64,
     );
     let res = if let Some(out) = op.out.as_ref() {
         let r = locals[out];
@@ -51,28 +54,20 @@ fn emit_call_async(
         func.instruction(&Instruction::Drop);
         0
     };
-    if let Some(args) = op.args.as_ref() {
+    if let Some(args) = op.args.as_ref()
+        && !args.is_empty()
+    {
+        let base_local = locals.synthetic(WasmFrameSyntheticLocal::WasmAllocResolve);
+        emit_task_payload_base(func, import_ids, reloc_enabled, res, base_local);
         for (idx, arg) in args.iter().enumerate() {
             let arg_val = locals[arg];
-            func.instruction(&Instruction::LocalGet(res));
-            emit_call(
+            emit_store_task_payload_local(
                 func,
+                import_ids,
                 reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
-            );
-            func.instruction(&Instruction::I32Const((idx * 8) as i32));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::LocalGet(arg_val));
-            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                align: 3,
-                offset: 0,
-                memory_index: 0,
-            }));
-            func.instruction(&Instruction::LocalGet(arg_val));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                base_local,
+                layout.payload_base_offset() + (idx as i32) * 8,
+                arg_val,
             );
         }
     }
