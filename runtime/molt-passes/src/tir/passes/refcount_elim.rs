@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::analysis::{AnalysisManager, ImmediateDoms, PredMap};
+use crate::tir::analysis::{AnalysisManager, ImmediateDoms, LoopForest, PredMap};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
@@ -427,116 +427,101 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
     //   - x must be defined in a block that strictly dominates the loop header.
     //   - The loop header must have a back-edge (it IS a loop header).
     // -----------------------------------------------------------------------
-    if !func.loop_roles.is_empty() || func.blocks.len() > 1 {
-        let pred_map = am.get::<PredMap>(func).clone();
-        let idoms = am.get::<ImmediateDoms>(func).clone();
-        // NOTE: refcount-elim's def map intentionally EXCLUDES function params
-        // (a refcount on a param must not be treated as loop-invariant and
-        // removed). This differs from the canonical `DefMap` analysis, so it
-        // stays a local computation rather than going through the manager.
-        let def_map = build_def_map(func);
+    {
+        let loop_forest = am.get::<LoopForest>(func).clone();
+        if !loop_forest.headers.is_empty() {
+            let idoms = am.get::<ImmediateDoms>(func).clone();
+            // NOTE: refcount-elim's def map intentionally EXCLUDES function params
+            // (a refcount on a param must not be treated as loop-invariant and
+            // removed). This differs from the canonical `DefMap` analysis, so it
+            // stays a local computation rather than going through the manager.
+            let def_map = build_def_map(func);
 
-        // Identify loop headers: blocks with at least one back-edge predecessor.
-        // A back-edge is an edge P → H where H.0 <= P.0 (by BlockId ordering).
-        // Also use explicit loop_roles if available.
-        let mut loop_header_set: HashSet<BlockId> = HashSet::new();
+            // For each loop header, look for paired IncRef/DecRef on a
+            // loop-invariant value within the header block itself.
+            let mut loop_removals: Vec<(BlockId, usize, usize)> = Vec::new();
 
-        // From explicit loop_roles.
-        for (&bid, role) in &func.loop_roles {
-            if matches!(role, crate::tir::blocks::LoopRole::LoopHeader) {
-                loop_header_set.insert(bid);
-            }
-        }
-
-        // From back-edge detection.
-        for (&bid, preds) in &pred_map {
-            for pred in preds {
-                if pred.0 >= bid.0 {
-                    loop_header_set.insert(bid);
-                    break;
-                }
-            }
-        }
-
-        // For each loop header, look for paired IncRef/DecRef on a
-        // loop-invariant value within the header block itself.
-        let mut loop_removals: Vec<(BlockId, usize, usize)> = Vec::new();
-
-        for &header_bid in &loop_header_set {
-            let block = match func.blocks.get(&header_bid) {
-                Some(b) => b,
-                None => continue,
-            };
-            let n = block.ops.len();
-            if n < 2 {
-                continue;
-            }
-
-            // Scan for IncRef(x)...DecRef(x) or DecRef(x)...IncRef(x) pairs
-            // with no barrier in between, where x is loop-invariant.
-            for i in 0..n {
-                let op_i = &block.ops[i];
-                let role_i = refcount_balance_role(op_i.opcode);
-                let Some(target_opcode) = role_i.complementary_opcode() else {
+            for &header_bid in &loop_forest.headers {
+                let block = match func.blocks.get(&header_bid) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let Some(body) = loop_forest.bodies.get(&header_bid) else {
                     continue;
                 };
-                let val = match op_i.operands.first().copied() {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-                // Check loop invariance: value must be defined in a block
-                // that strictly dominates the header.
-                let def_block = match def_map.get(&val) {
-                    Some(&b) => b,
-                    None => continue,
-                };
-                if def_block == header_bid {
-                    continue; // Defined inside the loop header — not invariant.
-                }
-                if !dominates(def_block, header_bid, &idoms) {
-                    continue; // Not dominated — not provably invariant.
+                let n = block.ops.len();
+                if n < 2 {
+                    continue;
                 }
 
-                // Scan forward for the matching pair with no barrier.
-                let mut partner: Option<usize> = None;
-                for j in (i + 1)..n {
-                    let op_j = &block.ops[j];
-                    if alias.is_rc_barrier(op_j) {
-                        break;
-                    }
-                    if op_j.opcode == target_opcode && op_j.operands.first().copied() == Some(val) {
-                        partner = Some(j);
-                        break;
-                    }
-                    // If we see the same opcode on the same value, the balance
-                    // is different; stop.
-                    if refcount_balance_role(op_j.opcode) == role_i
-                        && op_j.operands.first().copied() == Some(val)
-                    {
-                        break;
-                    }
-                }
+                // Scan for IncRef(x)...DecRef(x) or DecRef(x)...IncRef(x) pairs
+                // with no barrier in between, where x is loop-invariant.
+                for i in 0..n {
+                    let op_i = &block.ops[i];
+                    let role_i = refcount_balance_role(op_i.opcode);
+                    let Some(target_opcode) = role_i.complementary_opcode() else {
+                        continue;
+                    };
+                    let val = match op_i.operands.first().copied() {
+                        Some(v) => v,
+                        None => continue,
+                    };
 
-                if let Some(j) = partner {
-                    loop_removals.push((header_bid, i, j));
-                    break; // One pair per header per scan to avoid index confusion.
+                    // Check loop invariance: value must be defined outside the
+                    // canonical LoopForest body and strictly dominate the header.
+                    let def_block = match def_map.get(&val) {
+                        Some(&b) => b,
+                        None => continue,
+                    };
+                    if body.contains(&def_block) {
+                        continue; // Defined inside the loop — not invariant.
+                    }
+                    if !dominates(def_block, header_bid, &idoms) {
+                        continue; // Not dominated — not provably invariant.
+                    }
+
+                    // Scan forward for the matching pair with no barrier.
+                    let mut partner: Option<usize> = None;
+                    for j in (i + 1)..n {
+                        let op_j = &block.ops[j];
+                        if alias.is_rc_barrier(op_j) {
+                            break;
+                        }
+                        if op_j.opcode == target_opcode
+                            && op_j.operands.first().copied() == Some(val)
+                        {
+                            partner = Some(j);
+                            break;
+                        }
+                        // If we see the same opcode on the same value, the balance
+                        // is different; stop.
+                        if refcount_balance_role(op_j.opcode) == role_i
+                            && op_j.operands.first().copied() == Some(val)
+                        {
+                            break;
+                        }
+                    }
+
+                    if let Some(j) = partner {
+                        loop_removals.push((header_bid, i, j));
+                        break; // One pair per header per scan to avoid index confusion.
+                    }
                 }
             }
-        }
 
-        // Apply loop removals (remove higher index first to preserve indices).
-        for (bid, idx_a, idx_b) in loop_removals {
-            if let Some(block) = func.blocks.get_mut(&bid) {
-                let (lo, hi) = if idx_a < idx_b {
-                    (idx_a, idx_b)
-                } else {
-                    (idx_b, idx_a)
-                };
-                if hi < block.ops.len() && lo < block.ops.len() {
-                    block.ops.remove(hi);
-                    block.ops.remove(lo);
-                    stats.ops_removed += 2;
+            // Apply loop removals (remove higher index first to preserve indices).
+            for (bid, idx_a, idx_b) in loop_removals {
+                if let Some(block) = func.blocks.get_mut(&bid) {
+                    let (lo, hi) = if idx_a < idx_b {
+                        (idx_a, idx_b)
+                    } else {
+                        (idx_b, idx_a)
+                    };
+                    if hi < block.ops.len() && lo < block.ops.len() {
+                        block.ops.remove(hi);
+                        block.ops.remove(lo);
+                        stats.ops_removed += 2;
+                    }
                 }
             }
         }

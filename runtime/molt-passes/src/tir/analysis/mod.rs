@@ -44,7 +44,7 @@
 //! | [`DomChildren`]  | `build_dom_children`                | gvn                              |
 //! | [`ExecReachable`]| `executable_reachable_blocks`       | (full-CFG reachable set)         |
 //! | [`StrictReachable`]| `reachable_blocks_with(TerminatorOnly)` | gvn (cross-block replace) |
-//! | [`LoopForest`]   | loop roles/backedges + `collect_loop_blocks` | licm, bce, vectorize, polyhedral |
+//! | [`LoopForest`]   | loop roles/backedges + `collect_loop_blocks` | licm, bce, vectorize, polyhedral, block-versioning, type-guard-hoist, refcount-elim, scev, value-range, counted-loop, loop-unroll |
 //! | [`DefMap`]       | value → defining block              | gvn, licm                        |
 //!
 //! The names map to the S1 spec's `{PredMap, ImmediateDoms, DomChildren,

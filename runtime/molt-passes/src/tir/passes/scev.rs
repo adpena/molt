@@ -56,9 +56,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::analysis::{Analysis, AnalysisId};
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
-use crate::tir::dominators;
+use crate::tir::analysis::{Analysis, AnalysisId, LoopForest, LoopForestResult};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{ScevExpr, TripCount, ordered_comparison_trip_count};
 use crate::tir::op_kinds_generated::{
@@ -133,43 +132,7 @@ impl Analysis for ScalarEvolution {
 // Computation
 // ---------------------------------------------------------------------------
 
-/// Loop context: headers + the set of blocks belonging to each natural loop.
-/// Computed exactly as `analysis::LoopForest` does (the S1 loop forest) so SCEV
-/// shares the one sound definition of a loop body.
-struct LoopContext {
-    headers: Vec<BlockId>,
-    bodies: HashMap<BlockId, HashSet<BlockId>>,
-}
-
-/// Build the loop context the same way the S1 `LoopForest` analysis does.
-fn build_loop_context(func: &TirFunction) -> LoopContext {
-    let mut headers: Vec<BlockId> = func
-        .loop_roles
-        .iter()
-        .filter_map(|(bid, role)| {
-            if matches!(role, LoopRole::LoopHeader) {
-                Some(*bid)
-            } else {
-                None
-            }
-        })
-        .collect();
-    headers.sort_unstable_by_key(|b| b.0);
-
-    let mut bodies: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-    if !headers.is_empty() {
-        let pred_map = dominators::build_pred_map(func);
-        let idoms = dominators::compute_idoms(func, &pred_map);
-        for &h in &headers {
-            bodies.insert(
-                h,
-                dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
-            );
-        }
-    }
-
-    LoopContext { headers, bodies }
-}
+type LoopContext = LoopForestResult;
 
 /// Index of where every value is defined and the op (if any) that defines it.
 struct DefIndex {
@@ -206,7 +169,7 @@ impl DefIndex {
     }
 }
 
-fn build_def_index(func: &TirFunction) -> DefIndex {
+fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId>) -> DefIndex {
     let mut def_block = HashMap::new();
     let mut def_op = HashMap::new();
     let mut const_int = HashMap::new();
@@ -217,7 +180,7 @@ fn build_def_index(func: &TirFunction) -> DefIndex {
         for arg in &block.args {
             def_block.insert(arg.id, bid);
         }
-        if matches!(func.loop_roles.get(&bid), Some(LoopRole::LoopHeader)) {
+        if loop_headers.contains(&bid) {
             header_args.insert(bid, block.args.iter().map(|a| a.id).collect());
         }
         for op in &block.ops {
@@ -605,15 +568,25 @@ fn fold_mul(a: ScevExpr, b: ScevExpr) -> ScevExpr {
 /// [`ScalarEvolution`] analysis and the value-range analysis (single source of
 /// truth — no duplicate recurrence recognizer).
 pub fn compute_scev(func: &TirFunction) -> ScevResult {
-    let loops = build_loop_context(func);
+    let loops = <LoopForest as Analysis>::compute(func);
+    compute_scev_with_loop_forest(func, &loops)
+}
+
+/// Compute scalar-evolution facts against the canonical LoopForest supplied by
+/// a caller that already owns loop-shape discovery.
+pub(crate) fn compute_scev_with_loop_forest(
+    func: &TirFunction,
+    loops: &LoopForestResult,
+) -> ScevResult {
     if loops.headers.is_empty() {
         // No loops → no recurrences and no trip counts. Still classify
         // constants/invariants so value-range can use them, but that is cheap
         // and done lazily by value-range itself; here we return empty.
         return ScevResult::default();
     }
-    let defs = build_def_index(func);
-    let mut builder = ScevBuilder::new(func, &loops, &defs);
+    let loop_headers: HashSet<BlockId> = loops.headers.iter().copied().collect();
+    let defs = build_def_index(func, &loop_headers);
+    let mut builder = ScevBuilder::new(func, loops, &defs);
 
     // Compute SCEV for the IV header-arg of each loop (the primary recurrences),
     // plus the back-edge increments and any affine derivations the consumer may
@@ -662,7 +635,7 @@ pub fn compute_scev(func: &TirFunction) -> ScevResult {
     ScevResult {
         exprs,
         trip_counts,
-        headers: loops.headers,
+        headers: loops.headers.clone(),
     }
 }
 
@@ -940,6 +913,17 @@ mod tests {
             other => panic!("expected AddRec, got {other:?}"),
         }
         assert!(scev.is_induction_var(iv));
+    }
+
+    #[test]
+    fn detects_backedge_loop_without_loop_roles() {
+        let (mut func, header, iv, _body) = range_loop(10, true);
+        func.loop_roles.clear();
+
+        let scev = compute_scev(&func);
+
+        assert!(scev.is_induction_var(iv));
+        assert_eq!(scev.trip_count(header), TripCount::Constant(10));
     }
 
     #[test]

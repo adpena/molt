@@ -33,8 +33,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::analysis::{Analysis, AnalysisId};
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::analysis::{Analysis, AnalysisId, LoopForest, LoopForestResult};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{
@@ -49,7 +49,7 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-use super::scev::{ScevResult, compute_scev, find_loop_guard};
+use super::scev::{ScevResult, compute_scev_with_loop_forest, find_loop_guard};
 use super::value_identity::copy_value_source;
 
 // ---------------------------------------------------------------------------
@@ -296,8 +296,9 @@ impl Analysis for ValueRange {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = true;
     fn compute(func: &TirFunction) -> Self::Result {
-        let scev = compute_scev(func);
-        compute_value_range(func, &scev)
+        let loop_forest = <LoopForest as Analysis>::compute(func);
+        let scev = compute_scev_with_loop_forest(func, &loop_forest);
+        compute_value_range_with_loop_forest(func, &scev, &loop_forest)
     }
 }
 
@@ -307,6 +308,16 @@ impl Analysis for ValueRange {
 
 /// Compute value-range facts from the function + its scalar-evolution facts.
 pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeResult {
+    let loop_forest = <LoopForest as Analysis>::compute(func);
+    compute_value_range_with_loop_forest(func, scev, &loop_forest)
+}
+
+/// Compute value-range facts using the caller-provided canonical LoopForest.
+pub(crate) fn compute_value_range_with_loop_forest(
+    func: &TirFunction,
+    scev: &ScevResult,
+    loop_forest: &LoopForestResult,
+) -> ValueRangeResult {
     let mut result = ValueRangeResult::default();
 
     // ---- transparent-copy map (built first; every fact resolves through it) --
@@ -331,7 +342,7 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
     collect_constants_and_lengths(func, &mut result);
 
     // ---- loop bodies (for IV-range placement) -------------------------------
-    let loop_bodies = build_loop_bodies(func);
+    let loop_bodies = &loop_forest.bodies;
 
     // ---- global ranges from constants ---------------------------------------
     for (&v, &c) in &result.const_int {
@@ -433,7 +444,7 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
     // last value). We seed the IV's range from that descriptor for any header SCEV
     // left un-ranged. This is the producer that unblocks SROA's hot-loop field
     // promotion on the dominant `for i in range(C): obj.field = <i-derived>` shape.
-    seed_counted_loop_iv_ranges(func, &loop_bodies, &mut result);
+    seed_counted_loop_iv_ranges(func, loop_forest, &mut result);
 
     // ---- forward transfer-function propagation ------------------------------
     // Compute ranges for op-defined values (`i + 1`, `i & 15`, `i % 4`, `i >> 2`,
@@ -545,20 +556,13 @@ fn emit_vrange_report(
 /// incoming proven too.
 fn seed_counted_loop_iv_ranges(
     func: &TirFunction,
-    loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    loop_forest: &LoopForestResult,
     result: &mut ValueRangeResult,
 ) {
-    use super::counted_loop::recognize_counted_loop;
+    use super::counted_loop::recognize_counted_loop_with_loop_forest;
 
-    let mut headers: Vec<BlockId> = func
-        .loop_roles
-        .iter()
-        .filter_map(|(bid, role)| matches!(role, LoopRole::LoopHeader).then_some(*bid))
-        .collect();
-    headers.sort_unstable_by_key(|b| b.0);
-
-    for header in headers {
-        let Some(c) = recognize_counted_loop(func, header) else {
+    for &header in &loop_forest.headers {
+        let Some(c) = recognize_counted_loop_with_loop_forest(func, header, loop_forest) else {
             continue;
         };
         let iv_canon = result.resolve(c.induction_var);
@@ -573,7 +577,7 @@ fn seed_counted_loop_iv_ranges(
         };
         // Place the IV range as a weak global + a per-body-block fact.
         result.global_range.insert(iv_canon, iv_range);
-        if let Some(body) = loop_bodies.get(&header) {
+        if let Some(body) = loop_forest.bodies.get(&header) {
             for &b in body {
                 let existing = result
                     .block_range
@@ -1145,34 +1149,6 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
     }
 }
 
-/// Build header → natural-loop body set (the S1 loop forest definition).
-fn build_loop_bodies(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
-    let mut headers: Vec<BlockId> = func
-        .loop_roles
-        .iter()
-        .filter_map(|(bid, role)| {
-            if matches!(role, LoopRole::LoopHeader) {
-                Some(*bid)
-            } else {
-                None
-            }
-        })
-        .collect();
-    headers.sort_unstable_by_key(|b| b.0);
-    let mut bodies = HashMap::new();
-    if !headers.is_empty() {
-        let pred_map = dominators::build_pred_map(func);
-        let idoms = dominators::compute_idoms(func, &pred_map);
-        for h in headers {
-            bodies.insert(
-                h,
-                dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
-            );
-        }
-    }
-    bodies
-}
-
 /// The value carried on the loop's back-edge into the header phi `iv` — i.e.
 /// the IV's next-iteration value. `iv` is a header block-argument; this returns
 /// the argument passed at `iv`'s index by the (single) body block whose
@@ -1352,7 +1328,8 @@ fn narrow_block(result: &mut ValueRangeResult, bid: BlockId, var: ValueId, range
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::TirBlock;
+    use crate::tir::blocks::{LoopRole, TirBlock};
+    use crate::tir::passes::scev::compute_scev;
 
     #[test]
     fn proves_in_bounds_const_index() {
@@ -1594,6 +1571,27 @@ mod tests {
             vr.proves_index_in_bounds(body, a, iv),
             "a constant-bounded counted loop is provably in-bounds even without nsw"
         );
+    }
+
+    #[test]
+    fn counted_loop_fallback_uses_loopforest_without_loop_roles() {
+        let (mut func, body, a, iv) = range_loop_vr(10, 10);
+        func.loop_roles.clear();
+        for op in func.blocks.get_mut(&body).unwrap().ops.iter_mut() {
+            if op.opcode == OpCode::Add {
+                op.attrs.remove("no_signed_wrap");
+            }
+        }
+
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+
+        assert!(
+            !scev.is_induction_var(iv),
+            "without nsw, SCEV must not be the source of this range"
+        );
+        assert_eq!(vr.range_of(iv), IntRange::new(0, 9));
+        assert!(vr.proves_index_in_bounds(body, a, iv));
     }
 
     #[test]

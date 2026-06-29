@@ -8,32 +8,32 @@
 //! A value is loop-invariant if it is defined OUTSIDE the loop (i.e. in a
 //! block that dominates the loop header).
 //!
-//! ## Simplified loop detection
+//! ## Loop-shape authority
 //!
-//! TirBlock does not carry a `loop_depth` field — that information lives in
-//! the `CFG` built from `SimpleIR`, which is not available here.  We therefore
-//! use a structural approximation:
+//! Loop headers and natural-loop bodies come from the shared
+//! [`LoopForest`](crate::tir::analysis::LoopForest) analysis. The pass derives
+//! a loop preheader from the header predecessors outside that canonical body,
+//! and uses immediate dominators to prove a guarded value is available before
+//! the loop.
 //!
 //! 1. Build a map: ValueId → BlockId (the block that defines the value).
 //!    Block arguments are treated as defined in their own block.
-//! 2. Detect back-edges by examining the TIR block graph: an edge A → B is a
-//!    back-edge if B.0 ≤ A.0 (lower or equal BlockId number).
-//! 3. A block B is "inside a loop" if it has at least one back-edge predecessor
-//!    (a predecessor with higher BlockId whose terminator targets B).
-//! 4. The "preheader" of the loop is the unique predecessor of B that is NOT
-//!    a back-edge (i.e., has a lower BlockId and is not the back-edge block).
-//! 5. A TypeGuard inside a loop block B is hoistable if:
-//!    - Its first operand is defined in a block with strictly lower BlockId
-//!      than B (i.e., defined before the loop).
-//!    - A unique preheader block exists for B.
+//! 2. Read LoopForest headers and body sets.
+//! 3. The "preheader" of a loop is the unique predecessor of the header that is
+//!    outside the LoopForest body.
+//! 4. A TypeGuard inside a loop block B is hoistable if:
+//!    - Its first operand is defined outside that LoopForest body.
+//!    - Its defining block dominates the loop header.
+//!    - A unique preheader block exists.
 //!
-//! This approximation is conservative: it may miss some hoisting opportunities
-//! in irregular CFGs, but it will never hoist unsafely.
+//! This is conservative: it may miss some hoisting opportunities in irregular
+//! CFGs, but it will never hoist unsafely.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::analysis::{AnalysisManager, PredMap};
+use crate::tir::analysis::{AnalysisManager, ImmediateDoms, LoopForest, PredMap};
 use crate::tir::blocks::BlockId;
+use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -98,74 +98,68 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // with the terminator-only predecessor relation this pass needs.
     let def_map = build_def_map(func);
     let pred_map = am.get::<PredMap>(func).clone();
+    let idoms = am.get::<ImmediateDoms>(func).clone();
+    let loop_forest = am.get::<LoopForest>(func).clone();
 
-    // Identify loop headers: a block B is a loop header if it has a predecessor
-    // P where P.0 >= B.0 (back-edge by BlockId ordering).
-    // For each loop header B, collect:
-    //   - back-edge predecessors (P.0 >= B.0)
-    //   - non-back-edge predecessors (the preheader candidates)
+    // For each LoopForest header, keep the canonical body and derive the unique
+    // preheader from incoming header edges outside that body.
     struct LoopInfo {
         preheader: Option<BlockId>,
+        body: HashSet<BlockId>,
     }
 
     let mut loop_headers: HashMap<BlockId, LoopInfo> = HashMap::new();
 
-    for (&bid, preds) in &pred_map {
-        let back_preds: Vec<BlockId> = preds.iter().copied().filter(|p| p.0 >= bid.0).collect();
-        if back_preds.is_empty() {
-            continue; // not a loop header
-        }
-        let non_back_preds: Vec<BlockId> = preds.iter().copied().filter(|p| p.0 < bid.0).collect();
-        // Unique preheader = exactly one non-back predecessor.
-        let preheader = if non_back_preds.len() == 1 {
-            Some(non_back_preds[0])
+    for &header in &loop_forest.headers {
+        let Some(body) = loop_forest.bodies.get(&header) else {
+            continue;
+        };
+        let mut preheaders: Vec<BlockId> = pred_map
+            .get(&header)
+            .map(|preds| {
+                preds
+                    .iter()
+                    .copied()
+                    .filter(|pred| !body.contains(pred))
+                    .collect()
+            })
+            .unwrap_or_default();
+        preheaders.sort_unstable_by_key(|b| b.0);
+        preheaders.dedup();
+        let preheader = if preheaders.len() == 1 {
+            Some(preheaders[0])
         } else {
             None // ambiguous or no preheader — skip hoisting
         };
-        loop_headers.insert(bid, LoopInfo { preheader });
+        loop_headers.insert(
+            header,
+            LoopInfo {
+                preheader,
+                body: body.clone(),
+            },
+        );
     }
 
     if loop_headers.is_empty() {
         return stats;
     }
 
-    // Identify all blocks that are "inside" any loop.
-    // A block B is inside a loop rooted at header H if B's BlockId >= H.0
-    // and B can reach H via the back-edge. For the simplified approximation
-    // we just consider blocks that are NOT loop headers but are reachable
-    // from a back-edge predecessor. We collect the natural loop bodies by
-    // BFS backwards from the back-edge predecessor to the header.
+    // Identify all blocks that are inside any loop. When loop bodies overlap,
+    // choose the smallest body first so hoisting targets the innermost loop
+    // deterministically.
     let mut block_to_header: HashMap<BlockId, BlockId> = HashMap::new();
+    let mut ordered_loops: Vec<(BlockId, usize)> = loop_headers
+        .iter()
+        .map(|(&header, info)| (header, info.body.len()))
+        .collect();
+    ordered_loops.sort_unstable_by_key(|(header, body_len)| (*body_len, header.0));
 
-    for &header in loop_headers.keys() {
-        // All back-edge predecessors and blocks reachable from them down to
-        // header (exclusive) are in the loop. For our purposes we just mark
-        // all blocks with BlockId in [header.0, back_pred.0] as belonging
-        // to this loop. This is a safe over-approximation.
-        let back_preds: Vec<BlockId> = pred_map[&header]
-            .iter()
-            .copied()
-            .filter(|p| p.0 >= header.0)
-            .collect();
-        for back_pred in back_preds {
-            // BFS backwards from back_pred to header through the pred_map.
-            let mut visited: HashSet<BlockId> = HashSet::new();
-            let mut worklist = vec![back_pred];
-            visited.insert(header); // don't cross the header boundary
-            while let Some(node) = worklist.pop() {
-                if !visited.insert(node) {
-                    continue;
-                }
-                block_to_header.entry(node).or_insert(header);
-                // Walk predecessors that are within the loop (>= header.0).
-                for &pred in pred_map.get(&node).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    if pred.0 >= header.0 && !visited.contains(&pred) {
-                        worklist.push(pred);
-                    }
-                }
-            }
-            // The header itself is also in the loop.
-            block_to_header.entry(header).or_insert(header);
+    for (header, _) in ordered_loops {
+        let Some(info) = loop_headers.get(&header) else {
+            continue;
+        };
+        for &bid in &info.body {
+            block_to_header.entry(bid).or_insert(header);
         }
     }
 
@@ -215,14 +209,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 Some(v) => v,
                 None => continue,
             };
-            // Is the guarded value defined outside the loop?
-            // "Outside" means defined in a block with BlockId strictly < header.0.
+            // Is the guarded value defined outside the loop and available at
+            // header entry?
             let def_block = match def_map.get(&guarded) {
                 Some(&b) => b,
                 None => continue, // defined externally / unknown — skip
             };
-            if def_block.0 >= header.0 {
+            let Some(loop_info) = loop_headers.get(&header) else {
+                continue;
+            };
+            if loop_info.body.contains(&def_block) {
                 // Defined inside the loop — not hoistable.
+                continue;
+            }
+            if !dominates(def_block, header, &idoms) {
                 continue;
             }
             // Hoistable! Record the work.
@@ -391,6 +391,70 @@ mod tests {
         assert!(
             !header_ops.iter().any(|op| op.opcode == OpCode::TypeGuard),
             "TypeGuard should NOT remain in loop header (bb1)"
+        );
+    }
+
+    #[test]
+    fn typeguard_hoists_when_latch_id_precedes_header() {
+        // Non-monotonic block ids prove the pass is using LoopForest/dominance
+        // rather than the legacy ordering heuristic.
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+
+        let x = func.fresh_value();
+        let ok = func.fresh_value();
+        let header = BlockId(20);
+        let body = BlockId(5);
+        func.next_block = 21;
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![x]));
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![],
+            };
+        }
+
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![make_type_guard(x, ok)],
+                terminator: Terminator::Branch {
+                    target: body,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        assert_eq!(stats.ops_removed, 1);
+        assert_eq!(stats.ops_added, 1);
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::TypeGuard)
+        );
+        assert!(
+            !func.blocks[&header]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::TypeGuard)
         );
     }
 

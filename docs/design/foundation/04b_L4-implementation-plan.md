@@ -395,13 +395,18 @@ Mitigation: The TypeGuard rewrite must only fire when the type argument is a PRI
 
 The `lower_to_simple.rs`:1660 treatment of TypeGuard as `copy_var` means that if `block_versioning` does NOT fire (no proving predecessor), the TypeGuard falls through as a copy of the operand — which is semantically wrong (should be a bool). This requires a parallel fix: `lower_to_simple.rs` must lower `TypeGuard` as an actual isinstance call when it is NOT eliminated by `block_versioning`. The current `copy_var` treatment assumes `block_versioning` always eliminates or the TypeGuard is already dead — this is no longer safe once `type_guard_gen` starts emitting TypeGuards for `isinstance` calls that may not get versioned.
 
-### Risk 2: PhantomBackEdge after TerminatorOnlyPredMap switch (LOW after Phase 1)
+### Risk 2: PhantomBackEdge after TerminatorOnlyPredMap switch (RETIRED)
 
-After Phase 1, `block_versioning` and `type_guard_hoist` use `TerminatorOnlyPredMap`. The back-edge detection `p.0 >= bid.0` on terminator-only preds is sound for the structured loop shapes the frontend emits. However, if a pass reorders BlockIds (e.g., `loop_unroll` inserts a fresh landing block with a new high BlockId), the `p.0 >= bid.0` heuristic could give a false result on the modified CFG.
-
-The correct fix long-term is to use `LoopForest` for loop-header detection (not the BlockId ordering heuristic). Both `block_versioning.rs`:106-113 and `type_guard_hoist.rs`:111-126 should consult `am.get::<LoopForest>(func)` for the canonical loop-header set rather than re-deriving it from BlockId ordering. This is the deeper structural fix; the Phase 1 TerminatorOnlyPredMap fix is a necessary stepping stone but not the final form.
-
-Filing this as a technical debt item: post-Phase 2 when the passes actually fire, add a migration from `p.0 >= bid.0` to `LoopForest`-based header detection in both passes.
+The old risk was BlockId-order loop discovery (`p.0 >= bid.0`) in
+`block_versioning` and `type_guard_hoist`. That duplicate authority has been
+deleted. TIR loop-shape consumers now route through the canonical
+`LoopForest`: direct pass consumers (`block_versioning`, `type_guard_hoist`,
+`refcount_elim`) read the cached analysis from `AnalysisManager`; counted-loop
+consumers (`value_range`, `loop_unroll`) pass the same `LoopForestResult`
+through recognition; and analysis consumers (`scev`, `value_range`) share
+internal compute paths that accept the same `LoopForestResult`. Edge-payload
+recognizers still stay local to counted-loop/SCEV/value-range, but loop headers
+and natural-loop bodies have one authority.
 
 ### Risk 3: IV Strength Reduction + overflow_peel interaction (MEDIUM, Phase 3)
 
