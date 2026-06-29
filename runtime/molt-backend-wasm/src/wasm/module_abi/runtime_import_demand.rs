@@ -5,6 +5,7 @@ use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::object_new_bound_select::selected_object_new_bound_runtime;
+use crate::wasm::task_runtime::WasmTaskRuntimeLayout;
 use crate::wasm_abi::{
     WasmRuntimeImport, runtime_callable_arity, runtime_callable_import, wasm_runtime_import,
 };
@@ -64,15 +65,23 @@ impl WasmRuntimeImportDemand {
             return;
         }
 
-        if let Some(call) = op_loop_runtime_call(kind) {
+        if kind == "alloc_task" {
+            let layout = WasmTaskRuntimeLayout::for_alloc_task_kind(op.task_kind.as_deref());
+            self.require_task_layout(
+                layout,
+                op.args.as_ref().is_some_and(|args| !args.is_empty()),
+            );
+        } else if kind == "call_async" {
+            self.require_task_layout(
+                WasmTaskRuntimeLayout::for_call_async(),
+                op.args.as_ref().is_some_and(|args| !args.is_empty()),
+            );
+        } else if let Some(call) = op_loop_runtime_call(kind) {
             self.require_imports(call.required_imports);
         } else if wasm_bulk_memory_op(kind).is_some() {
             // WASM-native bulk-memory ops emit no runtime import. Keep the
             // no-demand fact generated beside their emission spec.
         } else if let Some(deps) = self.deps_map.get(kind).copied() {
-            if debug_imports_enabled() && kind == "alloc_task" {
-                eprintln!("WASM_IMPORTS alloc_task deps={deps:?} func={}", func_name);
-            }
             self.require_imports(deps);
         } else if let Some(import) = wasm_runtime_import(kind)
             && known_imports.contains(&import)
@@ -118,27 +127,6 @@ impl WasmRuntimeImportDemand {
             }
         }
 
-        if let Some(task_kind) = op.task_kind.as_deref() {
-            if debug_imports_enabled() {
-                eprintln!(
-                    "WASM_IMPORTS task_meta kind={} task_kind={} args={} func={}",
-                    kind,
-                    task_kind,
-                    op.args.as_ref().map(|args| args.len()).unwrap_or(0),
-                    func_name
-                );
-            }
-            self.require_import(WasmRuntimeImport::TaskNew);
-            if op.args.as_ref().is_some_and(|args| !args.is_empty()) {
-                self.require_import(WasmRuntimeImport::HandleResolve);
-                self.require_import(WasmRuntimeImport::IncRefObj);
-            }
-            if matches!(task_kind, "future" | "coroutine") {
-                self.require_import(WasmRuntimeImport::CancelTokenGetCurrent);
-                self.require_import(WasmRuntimeImport::TaskRegisterTokenOwned);
-            }
-        }
-
         if let Some(import) = selected_container_runtime_import(scalar_plan, op_index, kind, op) {
             self.require_import(import);
         }
@@ -163,30 +151,10 @@ impl WasmRuntimeImportDemand {
         let Some(required) = self.auto_required_imports.as_mut() else {
             return;
         };
-        if !task_kinds.is_empty() {
-            required.insert(WasmRuntimeImport::TaskNew);
-        }
-        if task_kinds.values().any(|kind| {
-            matches!(
-                kind,
-                TrampolineKind::Generator | TrampolineKind::Coroutine | TrampolineKind::AsyncGen
-            )
-        }) {
-            required.insert(WasmRuntimeImport::HandleResolve);
-            required.insert(WasmRuntimeImport::IncRefObj);
-        }
-        if task_kinds
-            .values()
-            .any(|kind| matches!(kind, TrampolineKind::Coroutine))
-        {
-            required.insert(WasmRuntimeImport::CancelTokenGetCurrent);
-            required.insert(WasmRuntimeImport::TaskRegisterTokenOwned);
-        }
-        if task_kinds
-            .values()
-            .any(|kind| matches!(kind, TrampolineKind::AsyncGen))
-        {
-            required.insert(WasmRuntimeImport::AsyncgenNew);
+        for kind in task_kinds.values() {
+            if let Some(layout) = WasmTaskRuntimeLayout::for_trampoline_kind(*kind) {
+                layout.extend_required_imports(required, true);
+            }
         }
         for plan in lir_lowering_plans.values() {
             if let Some(output) = plan.lir_fast_body() {
@@ -198,6 +166,12 @@ impl WasmRuntimeImportDemand {
     fn require_import(&mut self, import: WasmRuntimeImport) {
         if let Some(required) = self.auto_required_imports.as_mut() {
             required.insert(import);
+        }
+    }
+
+    fn require_task_layout(&mut self, layout: WasmTaskRuntimeLayout, has_payload_slots: bool) {
+        if let Some(required) = self.auto_required_imports.as_mut() {
+            layout.extend_required_imports(required, has_payload_slots);
         }
     }
 

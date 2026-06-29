@@ -5,6 +5,7 @@ use crate::wasm::context::CompileFuncContext;
 use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use crate::wasm::multi_return_layout::WasmMultiReturnLayout;
+use crate::wasm::task_runtime::WasmTaskRuntimeLayout;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
 use crate::wasm_values::box_none;
 use crate::{FunctionIR, OpIR};
@@ -171,10 +172,16 @@ impl WasmFunctionFramePlan {
                 | "chan_recv_yield" => stateful = true,
                 "jump" | "label" => saw_jump_or_label = true,
                 "alloc_task" => {
-                    let tk = op.task_kind.as_deref().unwrap_or("future");
-                    let has_prefix = tk == "generator";
                     let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
-                    if has_prefix || has_args {
+                    let layout =
+                        WasmTaskRuntimeLayout::for_alloc_task_kind(op.task_kind.as_deref());
+                    if layout.needs_alloc_resolve(has_args) {
+                        needs_alloc_resolve = true;
+                    }
+                }
+                "call_async" => {
+                    let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
+                    if WasmTaskRuntimeLayout::for_call_async().needs_alloc_resolve(has_args) {
                         needs_alloc_resolve = true;
                     }
                 }

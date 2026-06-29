@@ -20,6 +20,7 @@ mod multi_return_layout;
 mod object_new_bound_select;
 mod op_loop;
 mod state_dispatch;
+mod task_runtime;
 mod tir_pipeline;
 mod trampoline_analysis;
 pub use backend::WasmBackend;
