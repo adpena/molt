@@ -232,6 +232,68 @@ def test_debt_probe_ignores_bare_upstream_stdlib_xxx_not_owned_debt(tmp_path: Pa
     assert findings[0].detail == "L2:hack, L3:FIXME"
 
 
+def test_python_stub_surface_probe_counts_stubs_and_notimplemented(
+    tmp_path: Path,
+):
+    stdlib = tmp_path / "src" / "molt" / "stdlib"
+    stdlib.mkdir(parents=True)
+    (stdlib / "gap.py").write_text(
+        '"""Intrinsic-first stdlib module stub for `gap`."""\n'
+        "def loads(payload):\n"
+        "    raise NotImplementedError('real parser missing')\n"
+        "def message():\n"
+        "    return 'NotImplementedError in a string is not a raise'\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_python_stub_surfaces(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["python_stub_surfaces_total"] == 2
+    assert findings[0].location == "src/molt/stdlib/gap.py:1"
+    assert findings[0].detail == (
+        "L1:intrinsic-first stub, L3:raise NotImplementedError"
+    )
+
+
+def test_rust_stub_surface_probe_counts_live_stubs_not_tests(tmp_path: Path):
+    rust = tmp_path / "runtime" / "molt-backend-rust" / "src" / "rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        'fn emit(out: &mut String) { out.push_str("/* MOLT_STUB: op */"); }\n'
+        'fn todo_live() { todo!("wire real lowering"); }\n',
+        encoding="utf-8",
+    )
+    (rust / "checked_backend.rs").write_text(
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        '    fn fixture() { assert!(!source.contains("MOLT_STUB")); }\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "runtime" / "molt-backend-rust" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "stub_fixture.rs").write_text(
+        'fn fixture() { unimplemented!("fixture only"); }\n',
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "runtime" / "molt-runtime" / "src"
+    runtime.mkdir(parents=True)
+    (runtime / "memoryview.rs").write_text(
+        'fn gap() { raise_exception(_py, "NotImplementedError", "missing"); }\n',
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_rust_stub_surfaces(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["rust_stub_surfaces_total"] == 3
+    assert {finding.location for finding in findings} == {
+        "runtime/molt-backend-rust/src/rust/op_emitter.rs:1",
+        "runtime/molt-runtime/src/memoryview.rs:1",
+    }
+
+
 # --- 2. robustness of the scanning helpers --------------------------------
 
 

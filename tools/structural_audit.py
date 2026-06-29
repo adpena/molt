@@ -208,6 +208,12 @@ class DebtMarkerHit:
 
 
 @dataclass(frozen=True)
+class ImplementationGapHit:
+    line: int
+    marker: str
+
+
+@dataclass(frozen=True)
 class LargeSourceFile:
     path: Path
     rel: str
@@ -1120,6 +1126,226 @@ def probe_debt_markers(root: Path) -> list[Finding]:
     return findings
 
 
+_INTRINSIC_FIRST_STUB_RE = re.compile(
+    r"not fully lowered yet; only an intrinsic-first stub is available|"
+    r"intrinsic-first (?:top-level )?stdlib .*stub|"
+    r"stub-only for now",
+    re.IGNORECASE,
+)
+
+
+def _python_raise_is_notimplemented(node: ast.Raise) -> bool:
+    exc = node.exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Name):
+        return exc.id == "NotImplementedError"
+    if isinstance(exc, ast.Attribute):
+        return exc.attr == "NotImplementedError"
+    return False
+
+
+def _python_stub_surface_hits(path: Path, text: str) -> list[ImplementationGapHit]:
+    hits: list[ImplementationGapHit] = []
+    first_stub_match = _INTRINSIC_FIRST_STUB_RE.search(text)
+    if first_stub_match is not None:
+        hits.append(
+            ImplementationGapHit(
+                line=_line_of_offset(text, first_stub_match.start()),
+                marker="intrinsic-first stub",
+            )
+        )
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return hits
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise) and _python_raise_is_notimplemented(node):
+            hits.append(
+                ImplementationGapHit(
+                    line=getattr(node, "lineno", 1),
+                    marker="raise NotImplementedError",
+                )
+            )
+    return sorted(
+        {(hit.line, hit.marker): hit for hit in hits}.values(),
+        key=lambda hit: (hit.line, hit.marker),
+    )
+
+
+def probe_python_stub_surfaces(root: Path) -> list[Finding]:
+    """Python implementation-gap surfaces as a first-class ratchet.
+
+    Generic comment TODOs are useful, but an executable stub or a direct
+    NotImplementedError is a stronger signal: the runtime has an admitted gap.
+    Keep this separate so stdlib/frontend compatibility debt cannot hide inside
+    a broad marker count.
+    """
+    findings: list[Finding] = []
+    for path in _iter_source_files(root, (".py",)):
+        if _is_generated(path):
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        hits = _python_stub_surface_hits(path, text)
+        if not hits:
+            continue
+        rel = path.relative_to(root).as_posix()
+        count = len(hits)
+        examples = ", ".join(f"L{hit.line}:{hit.marker}" for hit in hits[:5])
+        findings.append(
+            Finding(
+                probe="python_stub_surface",
+                severity="medium" if count >= 3 else "low",
+                title=f"{count} Python stub/NotImplemented surface(s)",
+                location=f"{rel}:{hits[0].line}",
+                detail=examples,
+                suggested_action=(
+                    "replace the stub with a real intrinsic/runtime/compiler "
+                    "primitive or delete the surface if it is outside the Molt "
+                    "AOT contract"
+                ),
+                class_retired="python-executable-stub-surface",
+                metric=count,
+            )
+        )
+    return findings
+
+
+def _is_test_source_path(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    parts = rel.parts
+    return (
+        "tests" in parts
+        or path.name == "tests.rs"
+        or path.name.endswith("_tests.rs")
+        or path.name.startswith("test_")
+    )
+
+
+def _rust_line_is_comment_only(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*")
+
+
+def _rust_cfg_test_line_numbers(text: str) -> set[int]:
+    lines = text.splitlines()
+    test_lines: set[int] = set()
+    pending_cfg_test = False
+    test_mod_depth: int | None = None
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if test_mod_depth is not None:
+            test_lines.add(line_no)
+            test_mod_depth += line.count("{") - line.count("}")
+            if test_mod_depth <= 0:
+                test_mod_depth = None
+            continue
+        if stripped.startswith("#[cfg(test)]"):
+            pending_cfg_test = True
+            test_lines.add(line_no)
+            continue
+        if not pending_cfg_test:
+            continue
+        test_lines.add(line_no)
+        if re.match(r"(?:pub\s+)?mod\s+tests\b", stripped):
+            test_mod_depth = line.count("{") - line.count("}")
+            if test_mod_depth <= 0:
+                test_mod_depth = 1
+            pending_cfg_test = False
+            continue
+        if stripped and not stripped.startswith("#"):
+            pending_cfg_test = False
+    return test_lines
+
+
+def _blank_lines(lines: list[str], blank_line_numbers: set[int]) -> str:
+    return "\n".join(
+        "" if line_no in blank_line_numbers else line
+        for line_no, line in enumerate(lines, start=1)
+    )
+
+
+def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
+    hits: list[ImplementationGapHit] = []
+    lines = text.splitlines()
+    test_lines = _rust_cfg_test_line_numbers(text)
+    live_text = _blank_lines(lines, test_lines)
+    code_without_comments_or_strings = _mask_rust_comments_and_strings(live_text)
+    for match in _CODE_DEBT_RE.finditer(code_without_comments_or_strings):
+        hits.append(
+            ImplementationGapHit(
+                line=_line_of_offset(code_without_comments_or_strings, match.start()),
+                marker=match.group(1),
+            )
+        )
+    for line_no, line in enumerate(lines, start=1):
+        if line_no in test_lines:
+            continue
+        if _rust_line_is_comment_only(line):
+            continue
+        if "MOLT_STUB" in line:
+            hits.append(ImplementationGapHit(line=line_no, marker="MOLT_STUB"))
+        if "NotImplementedError" in line:
+            hits.append(
+                ImplementationGapHit(line=line_no, marker="NotImplementedError")
+            )
+        if re.search(r"panic!\s*\([^)]*not implemented", line, re.IGNORECASE):
+            hits.append(
+                ImplementationGapHit(line=line_no, marker="panic!(not implemented)")
+            )
+    return sorted(
+        {(hit.line, hit.marker): hit for hit in hits}.values(),
+        key=lambda hit: (hit.line, hit.marker),
+    )
+
+
+def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
+    """Rust/backend/runtime implementation-gap surfaces.
+
+    This catches generated-code stubs such as `MOLT_STUB` emission, Rust
+    `todo!`/`unimplemented!`, and production runtime paths that raise
+    `NotImplementedError`. Test fixtures are skipped so the ratchet tracks live
+    implementation debt, not intentionally fake harness inputs.
+    """
+    findings: list[Finding] = []
+    for path in _iter_source_files(root, (".rs",)):
+        if _is_generated(path) or _is_test_source_path(path, root):
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        hits = _rust_stub_surface_hits(text)
+        if not hits:
+            continue
+        rel = path.relative_to(root).as_posix()
+        count = len(hits)
+        examples = ", ".join(f"L{hit.line}:{hit.marker}" for hit in hits[:5])
+        findings.append(
+            Finding(
+                probe="rust_stub_surface",
+                severity="medium" if count >= 3 else "low",
+                title=f"{count} Rust stub/NotImplemented surface(s)",
+                location=f"{rel}:{hits[0].line}",
+                detail=examples,
+                suggested_action=(
+                    "replace emitted stubs or NotImplementedError paths with the "
+                    "shared runtime/compiler primitive that owns the missing "
+                    "semantics"
+                ),
+                class_retired="rust-executable-stub-surface",
+                metric=count,
+            )
+        )
+    return findings
+
+
 _NATIVE_SCALAR_PLAN_SURFACE_REL = (
     "runtime/molt-backend-native/src/native_backend/function_compiler"
 )
@@ -1400,6 +1626,8 @@ PROBES = (
     probe_kitchen_sink_files,
     probe_undecomposed_god_files,
     probe_debt_markers,
+    probe_python_stub_surfaces,
+    probe_rust_stub_surfaces,
     probe_native_scalar_plan_authority,
     probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
@@ -1433,6 +1661,8 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     match_cls = [f for f in sem if f.title.startswith("hand-classified")]
     handsets = [f for f in sem if f.title.startswith("`matches!`")]
     debt = [f for f in findings if f.probe == "debt_marker"]
+    python_stubs = [f for f in findings if f.probe == "python_stub_surface"]
+    rust_stubs = [f for f in findings if f.probe == "rust_stub_surface"]
     kitchen_sink = [f for f in findings if f.probe == "kitchen_sink_file"]
     undecomposed = [f for f in findings if f.probe == "undecomposed_god_file"]
     native_scalar_plan = [
@@ -1463,6 +1693,10 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         # hand-maintained opcode SETS via matches! (≥3 opcodes) in any file
         "handset_classifications": float(len(handsets)),
         "debt_markers_total": float(sum(int(f.metric) for f in debt)),
+        "python_stub_surfaces_total": float(
+            sum(int(f.metric) for f in python_stubs)
+        ),
+        "rust_stub_surfaces_total": float(sum(int(f.metric) for f in rust_stubs)),
         "kitchen_sink_files": kitchen_sink_files,
         "max_kitchen_sink_structural_score": max_kitchen_sink_structural_score,
         "kitchen_sink_large_regions": kitchen_sink_large_regions,

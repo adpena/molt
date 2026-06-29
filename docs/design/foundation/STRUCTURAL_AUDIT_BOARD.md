@@ -13,6 +13,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
 | debt_markers_total | 343 |
+| python_stub_surfaces_total | 809 |
+| rust_stub_surfaces_total | 57 |
 | kitchen_sink_files | 0 |
 | max_kitchen_sink_structural_score | 0 |
 | kitchen_sink_large_regions | 0 |
@@ -26,21 +28,21 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| low | large_source_file | `runtime/molt-runtime/src/c_api/tests.rs` | 4145 lines (ceiling 4000) |
-| low | large_source_file | `src/molt/gpu/tensor.py` | 2674 lines (ceiling 2500) |
-| low | debt_marker | `src/molt/stdlib/email/message.py:34` | 5 debt/workaround markers |
-| low | debt_marker | `src/molt/stdlib/xml/etree/ElementPath.py:251` | 4 debt/workaround markers |
-| low | debt_marker | `src/molt/stdlib/xml/etree/ElementTree.py:241` | 4 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-luau/src/luau_backend/source_postpro…` | 2 debt/workaround markers |
-| low | debt_marker | `runtime/molt-runtime-serial/src/binascii.rs:1211` | 2 debt/workaround markers |
-| low | debt_marker | `runtime/molt-tier/src/lib.rs:228` | 2 debt/workaround markers |
-| low | debt_marker | `src/molt/gpu/distributed.py:79` | 2 debt/workaround markers |
-| low | debt_marker | `src/molt/stdlib/zlib.py:268` | 2 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs:486` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-native/src/llvm_backend/lowering/val…` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-backend-native/src/native_backend/function_c…` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-cpython-abi/src/api/abstract_number.rs:267` | 1 debt/workaround markers |
-| low | debt_marker | `runtime/molt-cpython-abi/src/api/object.rs:602` | 1 debt/workaround markers |
+| medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_attribute.py:51` | 75 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_named.py:251` | 67 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_builtin_construc…` | 50 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/expressions.py:56` | 42 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/stdlib/numbers.py:48` | 41 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_builtin_scalar.p…` | 23 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/stdlib/asyncio/transports.py:24` | 23 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/classes.py:436` | 22 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/statement_assignments.py:33` | 22 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_builtin_iter.py:38` | 19 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/async_gen.py:387` | 18 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/call_runtime_helpers.py:251` | 14 Python stub/NotImplemented surface(s) |
+| medium | rust_stub_surface | `runtime/molt-runtime/src/builtins/modules/runpy.rs:733` | 12 Rust stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/frontend/visitors/comprehensions.py:65` | 11 Python stub/NotImplemented surface(s) |
+| medium | rust_stub_surface | `runtime/molt-runtime/src/object/ops/subscript.rs:159` | 7 Rust stub/NotImplemented surface(s) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -56,6 +58,78 @@ Product board for the molt structural sweep — the first instrument of the Molt
 > MISSING-FACT-by-benchmark board lives in `call_fact_coverage.py` (representation census) + doc 46 — structural_audit does not have benchmark profiles, so it does not claim that board (no overclaiming).
 
 ## Full findings by probe
+
+### python_stub_surface (339)
+
+| sev | what | where | action |
+| --- | --- | --- | --- |
+| medium | 75 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_dispatch_attribute.py:51` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 67 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_dispatch_named.py:251` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 50 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_dispatch_builtin_constructors.py:36` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 42 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/expressions.py:56` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 41 Python stub/NotImplemented surface(s) | `src/molt/stdlib/numbers.py:48` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 23 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_dispatch_builtin_scalar.py:36` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 23 Python stub/NotImplemented surface(s) | `src/molt/stdlib/asyncio/transports.py:24` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 22 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/classes.py:436` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 22 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/statement_assignments.py:33` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 19 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_dispatch_builtin_iter.py:38` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 18 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/async_gen.py:387` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 14 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_runtime_helpers.py:251` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 11 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/comprehensions.py:65` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 6 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/string_formatting.py:258` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 6 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/pattern_match.py:359` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 5 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/statement_control_flow.py:311` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 5 Python stub/NotImplemented surface(s) | `src/molt/stdlib/email/_policybase.py:240` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 5 Python stub/NotImplemented surface(s) | `src/molt/stdlib/ssl.py:121` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 4 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/expression_primitives.py:34` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 4 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/statement_scope.py:271` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 4 Python stub/NotImplemented surface(s) | `tools/cross_run.py:477` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/type_annotations.py:307` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_method_dispatch.py:159` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_module_dispatch.py:99` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_reductions.py:169` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/_tkinter.py:159` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/asyncio/events.py:1033` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/concurrent/futures/__init__.py:447` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/multiprocessing/_core.py:1145` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/zipfile/__init__.py:125` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/call_dispatch_imported.py:104` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/molt/frontend/visitors/functions.py:420` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/molt/gpu/tensor.py:1951` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/molt/net.py:171` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/molt/stdlib/asyncio/protocols.py:43` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/molt/stdlib/concurrent/futures/_base.py:41` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 2 Python stub/NotImplemented surface(s) | `src/moltlib/net.py:171` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 1 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/import_lowering.py:374` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 1 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/local_bindings.py:768` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| low | 1 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/loop_lowering.py:842` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| … | _299 more_ | | run `--json` for full list |
+
+### rust_stub_surface (21)
+
+| sev | what | where | action |
+| --- | --- | --- | --- |
+| medium | 12 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/modules/runpy.rs:733` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 7 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/object/ops/subscript.rs:159` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 4 Rust stub/NotImplemented surface(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:788` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 4 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/micro_stubs.rs:17` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/exceptions.rs:1942` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/functions/compile_codeop.rs:1072` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/io_path.rs:170` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/subprocess_ext.rs:403` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-http/src/functions_logging.rs:922` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-path/src/pathlib.rs:1559` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/platform_importlib_resources/read…` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/concurrency/isolates.rs:1070` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/object/ops_memoryview.rs:405` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-backend-luau/src/luau/compile_pipeline.rs:538` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-backend-rust/src/rust.rs:831` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-cpython-abi/src/abi_types.rs:298` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-path/src/os_ext.rs:1647` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-tk/src/tk/state.rs:546` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/functions/function_abi.rs:440` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/platform.rs:1329` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/cpython_abi_hooks.rs:510` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 
 ### large_source_file (2)
 
@@ -88,7 +162,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/call_facts.rs:52` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/escape_analysis.rs:346` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/module_slot_promotion.rs:947` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize.rs:494` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize.rs:274` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-asyncio/src/lib.rs:86` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-net/src/lib.rs:6` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/matcher.rs:390` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
