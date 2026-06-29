@@ -20,8 +20,8 @@ use crate::builtins::types::{
 use crate::object::layout::{
     code_arg_names_bits, code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr,
     code_kwonly_names_bits, code_name_bits, code_set_signature_bits, code_signature_posonly_bits,
-    code_vararg_bits, code_varkw_bits, function_defaults_version, function_set_call_target_ptr,
-    function_set_code_bits,
+    code_vararg_bits, code_varkw_bits, function_call_target_ptr, function_defaults_version,
+    function_set_call_target_ptr, function_set_code_bits,
 };
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 use molt_obj_model::MoltObject;

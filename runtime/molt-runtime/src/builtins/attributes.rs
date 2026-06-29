@@ -2534,7 +2534,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     return Some(MoltObject::from_ptr(ptr).bits());
                 }
                 "co_positions" => {
-                    let func_ptr = alloc_function_obj(
+                    let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                         _py,
                         crate::molt_code_positions as *const () as usize as u64,
                         1,

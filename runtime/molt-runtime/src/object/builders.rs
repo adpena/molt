@@ -1108,6 +1108,9 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         let none_bits = MoltObject::none().bits();
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
         *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = std::ptr::null();
+        if let Some(call_target) = crate::builtins::functions::runtime_callable_target_ptr(fn_ptr) {
+            crate::object::layout::function_set_call_target_ptr(ptr, call_target);
+        }
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = 0;

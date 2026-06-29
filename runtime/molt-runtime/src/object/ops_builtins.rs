@@ -287,7 +287,7 @@ pub extern "C" fn molt_guarded_call(
     }
     let result: u64 = unsafe {
         let n = nargs as usize;
-        molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
+        molt_guarded_call_dispatch(fn_ptr as usize as *const (), args_ptr, n)
     };
     if code_id >= 0 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -351,7 +351,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
     }
     let result: u64 = unsafe {
         let n = nargs as usize;
-        molt_guarded_call_dispatch(fn_ptr, args_ptr, n)
+        molt_guarded_call_dispatch(fn_ptr as usize as *const (), args_ptr, n)
     };
     if callee_bits != 0 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -391,33 +391,36 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
 /// corruption, segfault, or silent data corruption. There is no runtime guard;
 /// correctness depends entirely on the compiler backend.
 #[inline(never)]
-unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize) -> u64 {
+unsafe fn molt_guarded_call_dispatch(
+    call_target: *const (),
+    args_ptr: *const u64,
+    n: usize,
+) -> u64 {
     unsafe {
         match n {
             0 => {
                 // SAFETY: transmute to 0-arity fn; see function-level invariants.
-                let f: extern "C" fn() -> u64 = std::mem::transmute(fn_ptr as usize);
+                let f: extern "C" fn() -> u64 = std::mem::transmute(call_target);
                 f()
             }
             1 => {
                 // SAFETY: transmute to 1-arity fn; see function-level invariants.
-                let f: extern "C" fn(u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                let f: extern "C" fn(u64) -> u64 = std::mem::transmute(call_target);
                 f(*args_ptr)
             }
             2 => {
                 // SAFETY: transmute to 2-arity fn; see function-level invariants.
-                let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(call_target);
                 f(*args_ptr, *args_ptr.add(1))
             }
             3 => {
                 // SAFETY: transmute to 3-arity fn; see function-level invariants.
-                let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr as usize);
+                let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(call_target);
                 f(*args_ptr, *args_ptr.add(1), *args_ptr.add(2))
             }
             4 => {
                 // SAFETY: transmute to 4-arity fn; see function-level invariants.
-                let f: extern "C" fn(u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                let f: extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -428,7 +431,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             5 => {
                 // SAFETY: transmute to 5-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -440,7 +443,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             6 => {
                 // SAFETY: transmute to 6-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -453,7 +456,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             7 => {
                 // SAFETY: transmute to 7-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -467,7 +470,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             8 => {
                 // SAFETY: transmute to 8-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -482,7 +485,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             9 => {
                 // SAFETY: transmute to 9-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -498,7 +501,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             10 => {
                 // SAFETY: transmute to 10-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -515,7 +518,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
             11 => {
                 // SAFETY: transmute to 11-arity fn; see function-level invariants.
                 let f: extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
-                    std::mem::transmute(fn_ptr as usize);
+                    std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -545,7 +548,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                     u64,
                     u64,
                     u64,
-                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                ) -> u64 = std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -577,7 +580,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                     u64,
                     u64,
                     u64,
-                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                ) -> u64 = std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -611,7 +614,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                     u64,
                     u64,
                     u64,
-                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                ) -> u64 = std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -647,7 +650,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                     u64,
                     u64,
                     u64,
-                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                ) -> u64 = std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -685,7 +688,7 @@ unsafe fn molt_guarded_call_dispatch(fn_ptr: u64, args_ptr: *const u64, n: usize
                     u64,
                     u64,
                     u64,
-                ) -> u64 = std::mem::transmute(fn_ptr as usize);
+                ) -> u64 = std::mem::transmute(call_target);
                 f(
                     *args_ptr,
                     *args_ptr.add(1),
@@ -1059,6 +1062,10 @@ fn molt_call_func_direct(
     _code_id: u64,
     callable_bits: u64,
 ) -> u64 {
+    let Some(call_target) = (unsafe { direct_call_target_for_callable(callable_bits, fn_ptr) })
+    else {
+        return missing_direct_call_target(_py, fn_ptr);
+    };
     if !recursion_guard_enter() {
         return raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded");
     }
@@ -1088,7 +1095,7 @@ fn molt_call_func_direct(
             frame_stack_push_function(_py, code_bits, frame_func_ptr);
         }
     }
-    let result = unsafe { molt_guarded_call_dispatch(fn_ptr, args.as_ptr(), args.len()) };
+    let result = unsafe { molt_guarded_call_dispatch(call_target, args.as_ptr(), args.len()) };
     let result =
         unsafe { crate::call::function::protect_borrowed_args_aliased_return(_py, result, args) };
     if obj_from_bits(callable_bits).as_ptr().is_some() {
@@ -1115,26 +1122,43 @@ fn molt_call_func_direct(
 /// `TYPE_ID_FUNCTION` with matching arity before reaching here.
 /// Invalid fn_ptr causes a segfault or stack corruption.
 #[inline(always)]
-fn runtime_or_legacy_target(fn_ptr: u64) -> *const () {
-    runtime_callable_target_ptr(fn_ptr).unwrap_or({
-        #[cfg(not(miri))]
-        {
-            fn_ptr as usize as *const ()
-        }
-        #[cfg(miri)]
-        {
-            std::ptr::null()
-        }
-    })
+unsafe fn direct_call_target_for_function(func_ptr: *mut u8, fn_ptr: u64) -> Option<*const ()> {
+    let target = unsafe { crate::object::layout::function_call_target_ptr(func_ptr) };
+    if !target.is_null() {
+        return Some(target);
+    }
+    runtime_callable_target_ptr(fn_ptr)
 }
 
 #[inline(always)]
-unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
+unsafe fn direct_call_target_for_callable(callable_bits: u64, fn_ptr: u64) -> Option<*const ()> {
+    let ptr = obj_from_bits(callable_bits).as_ptr()?;
     unsafe {
-        // SAFETY: fn_ptr validated by probe_simple_func as 0-arity function pointer.
-        let target = runtime_or_legacy_target(fn_ptr);
-        assert!(!target.is_null(), "runtime callable target missing");
-        let f: extern "C" fn() -> u64 = std::mem::transmute(target);
+        match object_type_id(ptr) {
+            TYPE_ID_FUNCTION => direct_call_target_for_function(ptr, fn_ptr),
+            TYPE_ID_BOUND_METHOD => {
+                let func_bits = bound_method_func_bits(ptr);
+                let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+                if object_type_id(func_ptr) == TYPE_ID_FUNCTION {
+                    direct_call_target_for_function(func_ptr, fn_ptr)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+fn missing_direct_call_target(_py: &crate::concurrency::PyToken<'_>, fn_ptr: u64) -> u64 {
+    let msg = format!("direct function call target 0x{fn_ptr:x} is not initialized");
+    raise_exception::<u64>(_py, "RuntimeError", &msg)
+}
+
+#[inline(always)]
+unsafe fn direct_call_0(call_target: *const ()) -> u64 {
+    unsafe {
+        let f: extern "C" fn() -> u64 = std::mem::transmute(call_target);
         f()
     }
 }
@@ -1147,12 +1171,9 @@ unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
 /// Caller ensures arity match via `probe_simple_func`.
 #[allow(dead_code)]
 #[inline(always)]
-unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
+unsafe fn direct_call_1(call_target: *const (), a0: u64) -> u64 {
     unsafe {
-        // SAFETY: fn_ptr validated by probe_simple_func as 1-arity function pointer.
-        let target = runtime_or_legacy_target(fn_ptr);
-        assert!(!target.is_null(), "runtime callable target missing");
-        let f: extern "C" fn(u64) -> u64 = std::mem::transmute(target);
+        let f: extern "C" fn(u64) -> u64 = std::mem::transmute(call_target);
         f(a0)
     }
 }
@@ -1165,12 +1186,9 @@ unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
 /// Caller ensures arity match via `probe_simple_func`.
 #[allow(dead_code)]
 #[inline(always)]
-unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
+unsafe fn direct_call_2(call_target: *const (), a0: u64, a1: u64) -> u64 {
     unsafe {
-        // SAFETY: fn_ptr validated by probe_simple_func as 2-arity function pointer.
-        let target = runtime_or_legacy_target(fn_ptr);
-        assert!(!target.is_null(), "runtime callable target missing");
-        let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(target);
+        let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(call_target);
         f(a0, a1)
     }
 }
@@ -1183,24 +1201,21 @@ unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
 /// Caller ensures arity match via `probe_simple_func`.
 #[allow(dead_code)]
 #[inline(always)]
-unsafe fn direct_call_3(fn_ptr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
+unsafe fn direct_call_3(call_target: *const (), a0: u64, a1: u64, a2: u64) -> u64 {
     unsafe {
-        // SAFETY: fn_ptr validated by probe_simple_func as 3-arity function pointer.
-        let target = runtime_or_legacy_target(fn_ptr);
-        assert!(!target.is_null(), "runtime callable target missing");
-        let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(target);
+        let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(call_target);
         f(a0, a1, a2)
     }
 }
 
-/// Probe the callable: if it's a non-closure function with matching arity,
-/// return Some(fn_ptr). Otherwise None.
+/// Probe the callable: if it's a non-closure function with matching arity and
+/// a materialized call target, return its identity and executable target.
 #[inline(always)]
 unsafe fn probe_simple_func(
     _py: &crate::concurrency::PyToken<'_>,
     func_bits: u64,
     expected_arity: usize,
-) -> Option<u64> {
+) -> Option<(u64, *const ())> {
     unsafe {
         let obj = obj_from_bits(func_bits);
         let ptr = obj.as_ptr()?;
@@ -1222,7 +1237,9 @@ unsafe fn probe_simple_func(
         if (function_arity(ptr) as usize) != expected_arity {
             return None;
         }
-        Some(function_fn_ptr(ptr))
+        let fn_ptr = function_fn_ptr(ptr);
+        let call_target = direct_call_target_for_function(ptr, fn_ptr)?;
+        Some((fn_ptr, call_target))
     }
 }
 
@@ -1252,7 +1269,7 @@ pub extern "C" fn molt_function_requires_binder_fast(func_bits: u64) -> u64 {
 pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 0) {
+            if let Some((_fn_ptr, call_target)) = probe_simple_func(_py, func_bits, 0) {
                 if !recursion_guard_enter() {
                     return raise_exception::<u64>(
                         _py,
@@ -1260,7 +1277,7 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
                         "maximum recursion depth exceeded",
                     );
                 }
-                let result = direct_call_0(fn_ptr);
+                let result = direct_call_0(call_target);
                 recursion_guard_exit();
                 return result;
             }
@@ -1275,7 +1292,7 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
 pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 1) {
+            if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 1) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
                     let result = crate::call::function::call_function_obj1(_py, func_bits, a0);
                     return crate::call::function::protect_borrowed_args_aliased_return(
@@ -1298,7 +1315,7 @@ pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
 pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 2) {
+            if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 2) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
                     let result = crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
                     return crate::call::function::protect_borrowed_args_aliased_return(
@@ -1321,7 +1338,7 @@ pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 
 pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 3) {
+            if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 3) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
                     let result =
                         crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);

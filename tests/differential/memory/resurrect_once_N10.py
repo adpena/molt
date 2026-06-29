@@ -5,9 +5,9 @@
 # per-call-site type-call inline cache is WARM, so the IC fast path
 # (`try_call_bind_ic_fast`) fires. Before the fix, that path `transmute`d the raw
 # `object.__init__` marker `fn_ptr` and jumped to `0xFFFF...04` -> SIGSEGV. The
-# fix routes the IC fast path through the SAME single decode authority
-# (`function_call_target_or_legacy_ptr`) as the slow fixed-arity path, so calling
-# a raw runtime-callable marker is unrepresentable.
+# fix routes the IC fast path through the same required call-target authority as
+# the slow fixed-arity path, so calling a raw runtime-callable marker is
+# unrepresentable.
 #
 # Lifecycle invariant (council §D): each of the 10 instances runs `__del__`
 # EXACTLY ONCE (resurrect), stays usable, and is destroyed once on the final

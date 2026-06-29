@@ -131,10 +131,18 @@ unsafe fn init_runtime_callable_function_obj(
     fn_key: u64,
     raw_fn_ptr: u64,
     trampoline_ptr: u64,
+    native_direct_target: bool,
 ) {
     if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
         unsafe {
             function_set_call_target_ptr(ptr, call_target);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if native_direct_target && unsafe { function_call_target_ptr(ptr) }.is_null() && raw_fn_ptr != 0
+    {
+        unsafe {
+            function_set_call_target_ptr(ptr, raw_fn_ptr as usize as *const ());
         }
     }
     let normalized_trampoline_ptr = normalize_runtime_trampoline_ptr(raw_fn_ptr, trampoline_ptr);
@@ -164,7 +172,7 @@ pub(crate) fn alloc_runtime_function_obj(
         return ptr;
     }
     unsafe {
-        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, 0);
+        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, 0, false);
     }
     ptr
 }
@@ -187,7 +195,7 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
             MoltObject::none().bits()
         } else {
             unsafe {
-                init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr);
+                init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -237,7 +245,7 @@ fn molt_func_new_builtin_raw_impl(
         return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
     }
     unsafe {
-        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr);
+        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, false);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         object_set_class_bits(_py, ptr, builtin_bits);
         inc_ref_bits(_py, builtin_bits);
@@ -339,7 +347,7 @@ pub extern "C" fn molt_func_new_closure(
         }
         unsafe {
             function_set_closure_bits(_py, ptr, closure_bits);
-            init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr);
+            init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -448,6 +456,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             fn_ptr,
             fn_ptr,
             code_callable_trampoline_ptr(code_ptr),
+            true,
         );
         function_set_globals_bits(_py, func_ptr, args[1]);
         function_set_globals_override_enabled(func_ptr, true);

@@ -2,12 +2,12 @@ use molt_obj_model::MoltObject;
 
 use super::methods::is_not_implemented_bits;
 use crate::{
-    TYPE_ID_DICT, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs,
-    alloc_function_obj, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, call_callable1, class_bases_bits, class_bases_vec, class_dict_bits,
-    class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending, inc_ref_bits,
-    int_bits_from_i64, is_truthy, issubclass_bits, maybe_ptr_from_bits, obj_eq, obj_from_bits,
-    object_type_id, raise_exception, runtime_state, type_of_bits,
+    TYPE_ID_DICT, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs, alloc_list,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable1,
+    class_bases_bits, class_bases_vec, class_dict_bits, class_mro_vec, dec_ref_bits,
+    dict_get_in_place, dict_order, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
+    issubclass_bits, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id, raise_exception,
+    runtime_state, type_of_bits,
 };
 
 fn get_attr_default(
@@ -1187,7 +1187,8 @@ pub extern "C" fn molt_abc_bootstrap() -> u64 {
                 return MoltObject::none().bits();
             }
             let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            let fn_obj_ptr = alloc_function_obj(_py, fn_ptr, arity);
+            let fn_obj_ptr =
+                crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
             if fn_obj_ptr.is_null() {
                 dec_ref_bits(_py, key_bits);
                 return MoltObject::none().bits();
