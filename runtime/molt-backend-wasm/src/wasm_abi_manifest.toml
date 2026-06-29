@@ -4760,6 +4760,89 @@ import_name = "dec_ref_obj"
 variant = "IntFromI64"
 import_name = "int_from_i64"
 
+# Container-specialized runtime import selector. The compiler supplies the
+# proven operation plus storage/type fact; generic fallback is owned by callers
+# when no row is present.
+
+[[container_runtime_selector]]
+op = "index"
+fact = "flat_list_int"
+import_name = "list_int_getitem"
+lir_variant = "ListIntGetitem"
+
+[[container_runtime_selector]]
+op = "store_index"
+fact = "flat_list_int"
+import_name = "list_int_setitem"
+lir_variant = "ListIntSetitem"
+
+[[container_runtime_selector]]
+op = "index"
+fact = "dict"
+import_name = "dict_getitem"
+lir_variant = "DictGetitem"
+
+[[container_runtime_selector]]
+op = "index"
+fact = "tuple"
+import_name = "tuple_getitem"
+lir_variant = "TupleGetitem"
+
+[[container_runtime_selector]]
+op = "store_index"
+fact = "dict"
+import_name = "dict_setitem"
+lir_variant = "DictSetitem"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "set"
+import_name = "set_contains"
+lir_variant = "SetContains"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "dict"
+import_name = "dict_contains"
+lir_variant = "DictContains"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "list"
+import_name = "list_contains"
+lir_variant = "ListContains"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "str"
+import_name = "str_contains"
+lir_variant = "StrContains"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "list"
+import_name = "len_list"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "str"
+import_name = "len_str"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "dict"
+import_name = "len_dict"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "tuple"
+import_name = "len_tuple"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "set"
+import_name = "len_set"
+
 # Fixed op-loop runtime-call authority. These rows cover runtime calls whose
 # WASM emission is exactly: local-prefix/op-value args, one tracked import call,
 # and a result/drop/none sink. Control protocols, builders, arena alloc,

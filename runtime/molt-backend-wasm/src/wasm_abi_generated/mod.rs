@@ -4,6 +4,7 @@
 
 mod call_indirect;
 mod const_policy;
+mod container_runtime_selector;
 mod imports;
 mod lir_runtime_calls;
 mod pure_profile;
@@ -15,6 +16,10 @@ pub(crate) use call_indirect::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY};
 pub(crate) use const_policy::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
     WasmConstRawIntEffect, WasmConstScalarValue, wasm_const_op_policy,
+};
+pub(crate) use container_runtime_selector::{
+    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
+    wasm_container_runtime_op, wasm_container_runtime_selection,
 };
 pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
 pub(crate) use lir_runtime_calls::{

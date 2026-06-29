@@ -251,6 +251,71 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert "crate::wasm_abi_generated::LirRuntimeCall" in local_facade
 
 
+def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    selectors = {
+        (entry["op"], entry["fact"]): (
+            entry["import_name"],
+            entry.get("lir_variant"),
+        )
+        for entry in data["container_runtime_selector"]
+    }
+
+    assert selectors == {
+        ("index", "flat_list_int"): ("list_int_getitem", "ListIntGetitem"),
+        ("store_index", "flat_list_int"): (
+            "list_int_setitem",
+            "ListIntSetitem",
+        ),
+        ("index", "dict"): ("dict_getitem", "DictGetitem"),
+        ("index", "tuple"): ("tuple_getitem", "TupleGetitem"),
+        ("store_index", "dict"): ("dict_setitem", "DictSetitem"),
+        ("contains", "set"): ("set_contains", "SetContains"),
+        ("contains", "dict"): ("dict_contains", "DictContains"),
+        ("contains", "list"): ("list_contains", "ListContains"),
+        ("contains", "str"): ("str_contains", "StrContains"),
+        ("len", "list"): ("len_list", None),
+        ("len", "str"): ("len_str", None),
+        ("len", "dict"): ("len_dict", None),
+        ("len", "tuple"): ("len_tuple", None),
+        ("len", "set"): ("len_set", None),
+    }
+
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_selector_rs = rendered_rs_modules["container_runtime_selector.rs"]
+    rendered_mod_rs = rendered_rs_modules["mod.rs"]
+    rendered_py = gen.render_py(data)
+    assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_selector_rs
+    assert "WasmContainerRuntimeFact::FlatListInt" in rendered_selector_rs
+    assert "LirRuntimeCall::ListIntGetitem" in rendered_selector_rs
+    assert "wasm_container_runtime_selection" in rendered_selector_rs
+    assert "mod container_runtime_selector;" in rendered_mod_rs
+    assert "WasmContainerRuntimeOp" in rendered_mod_rs
+    assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_py
+    assert (
+        '("index", "flat_list_int", "list_int_getitem", "ListIntGetitem")'
+        in rendered_py
+    )
+
+    broken_duplicate = copy.deepcopy(data)
+    broken_duplicate["container_runtime_selector"].append(
+        copy.deepcopy(broken_duplicate["container_runtime_selector"][0])
+    )
+    with pytest.raises(gen.WasmAbiManifestError, match="duplicate container_runtime_selector"):
+        gen.validate_loaded_manifest(broken_duplicate)
+
+    broken_import = copy.deepcopy(data)
+    broken_import["container_runtime_selector"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken_import)
+
+    broken_lir = copy.deepcopy(data)
+    broken_lir["container_runtime_selector"][0]["lir_variant"] = "DictGetitem"
+    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
+        gen.validate_loaded_manifest(broken_lir)
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
