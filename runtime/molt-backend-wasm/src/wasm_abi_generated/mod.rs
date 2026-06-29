@@ -14,8 +14,11 @@ mod lir_runtime_calls;
 mod method_ic_selector;
 mod numeric_runtime_selector;
 mod object_new_bound_selector;
+mod poll_table_imports;
 mod pure_profile;
-mod runtime_callables;
+mod reserved_runtime_callables;
+mod runtime_callable_imports;
+mod runtime_callable_queries;
 mod runtime_surface;
 mod static_types;
 
@@ -49,11 +52,12 @@ pub(crate) use numeric_runtime_selector::{
 pub(crate) use object_new_bound_selector::{
     WasmObjectNewBoundPayload, WasmObjectNewBoundSelection, wasm_object_new_bound_selection,
 };
+pub(crate) use poll_table_imports::{POLL_TABLE_IMPORTS, poll_table_import_slot};
 pub(crate) use pure_profile::pure_profile_skips_import;
-pub(crate) use runtime_callables::{
-    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,
-    runtime_callable_arity, runtime_callable_import,
+pub(crate) use reserved_runtime_callables::{
+    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
 };
+pub(crate) use runtime_callable_imports::{RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult};
+pub(crate) use runtime_callable_queries::{runtime_callable_arity, runtime_callable_import};
 pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};
