@@ -30,6 +30,7 @@ pub(crate) mod accessors;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
+pub(crate) mod cold_header;
 pub(crate) mod gc;
 #[allow(dead_code)]
 pub mod gil;
@@ -71,6 +72,11 @@ use refcount::MoltRefCount;
 
 #[allow(unused_imports)]
 pub(crate) use type_ids::*;
+
+use cold_header::{
+    MoltColdHeader, SHARED_COLD_IDX_BIT, alloc_cold_header, cold_idx_is_shared, cold_idx_real,
+    free_cold_header, get_cold_header, with_cold_header_mut,
+};
 
 use crate::async_rt::poll::ws_wait_poll_fn_addr;
 #[cfg(not(feature = "stdlib_itertools"))]
@@ -315,7 +321,7 @@ pub struct MoltHeader {
     pub ref_count: MoltRefCount, // 4 bytes
     pub flags: u32,              // 4 bytes (semantic bits declared below)
     pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
-    pub cold_idx: u32,           // 4 bytes — index into COLD_HEADER_SLAB (0 = none)
+    pub cold_idx: u32,           // 4 bytes — cold-header slab index (0 = none)
     pub reserved: u32,           // 4 bytes — keeps payload 8-byte aligned
 }
 // Total: 24 bytes. poll_fn, state, extended_size live in MoltColdHeader.
@@ -516,197 +522,6 @@ pub(crate) const HEADER_FLAG_HAS_WEAKREF: u32 = 1 << 24;
 // can be kept small and cache-friendly.
 // ---------------------------------------------------------------------------
 
-/// Rarely-accessed per-object metadata, stored in a side pool keyed by the
-/// object's data pointer address.
-#[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct MoltColdHeader {
-    /// Function pointer for polling (generators / async tasks).
-    pub(crate) poll_fn: u64,
-    /// State machine state (generators / async tasks / hash cache).
-    pub(crate) state: i64,
-    /// Exact allocation size for objects that exceed the size-class table.
-    pub(crate) extended_size: usize,
-}
-
-/// Slab allocator for cold headers.  Entries are stored in a contiguous `Vec`
-/// and referenced by a `u32` index stored in `MoltHeader::cold_idx`.
-/// Index 0 is reserved as "no cold header".  This gives O(1) alloc, access,
-/// and free — no hashing, no hash collisions, better cache locality.
-struct ColdHeaderSlab {
-    /// Slot 0 is unused (sentinel). Valid indices start at 1.
-    entries: Vec<MoltColdHeader>,
-    /// Slot liveness mirrors `entries` exactly.  A freed slot may be reused only
-    /// after `free` has marked it non-live; this makes double-free detection a
-    /// slab invariant instead of an allocator-side accident.
-    live: Vec<bool>,
-    /// Free-list of previously freed indices (LIFO reuse).
-    free_list: Vec<u32>,
-}
-
-impl ColdHeaderSlab {
-    fn new() -> Self {
-        Self {
-            // Slot 0 is the sentinel — push a dummy entry.
-            entries: vec![MoltColdHeader::default()],
-            live: vec![false],
-            free_list: Vec::new(),
-        }
-    }
-
-    /// Allocate a slot, returning its u32 index (always >= 1).
-    /// Returns 0 if the slab is full (`u32::MAX` live cold headers).
-    fn alloc(&mut self, cold: MoltColdHeader) -> u32 {
-        while let Some(idx) = self.free_list.pop() {
-            // Belt-and-suspenders: verify the recycled index is in bounds.
-            // This defends against any residual free-list corruption.
-            if (idx as usize) < self.entries.len() {
-                if self.live[idx as usize] {
-                    panic!(
-                        "cold header slab free-list corruption: live slot {} was queued",
-                        idx
-                    );
-                }
-                self.entries[idx as usize] = cold;
-                self.live[idx as usize] = true;
-                return idx;
-            }
-            // Index was stale/corrupted — discard and fall through to push.
-        }
-        let idx = self.entries.len();
-        if idx > u32::MAX as usize {
-            // Slab full — too many live cold-header users.
-            // Panic instead of returning 0, which would silently corrupt
-            // object state (cold_idx=0 is the "no header" sentinel).
-            panic!(
-                "cold header slab exhausted ({} entries) — too many live \
-                 cold-header users",
-                self.entries.len()
-            );
-        }
-        self.entries.push(cold);
-        self.live.push(true);
-        idx as u32
-    }
-
-    /// Get a reference to the cold header at `idx`.
-    /// Returns `None` for index 0 (no cold header).
-    #[inline]
-    fn get(&self, idx: u32) -> Option<&MoltColdHeader> {
-        if idx == 0 {
-            None
-        } else if self.live.get(idx as usize).copied().unwrap_or(false) {
-            self.entries.get(idx as usize)
-        } else {
-            None
-        }
-    }
-
-    /// Get a mutable reference to the cold header at `idx`.
-    /// Returns `None` for index 0 (no cold header).
-    #[inline]
-    fn get_mut(&mut self, idx: u32) -> Option<&mut MoltColdHeader> {
-        if idx == 0 {
-            None
-        } else if self.live.get(idx as usize).copied().unwrap_or(false) {
-            self.entries.get_mut(idx as usize)
-        } else {
-            None
-        }
-    }
-
-    /// Free the slot at `idx`, returning it to the free list.
-    /// No-op for index 0.
-    fn free(&mut self, idx: u32) {
-        if idx == 0 {
-            return;
-        }
-        // Zero out the entry to avoid stale data, then recycle.
-        // Only push to free_list when the index is actually in bounds —
-        // a corrupted cold_idx (e.g. from use-after-free or stale pointer
-        // reuse) must not poison the free list.
-        if (idx as usize) >= self.entries.len() {
-            return;
-        }
-        if !self.live[idx as usize] {
-            panic!("cold header slab double free for slot {}", idx);
-        }
-        if let Some(entry) = self.entries.get_mut(idx as usize) {
-            *entry = MoltColdHeader::default();
-            self.live[idx as usize] = false;
-            self.free_list.push(idx);
-        }
-    }
-}
-
-static COLD_HEADER_SLAB: OnceLock<Mutex<ColdHeaderSlab>> = OnceLock::new();
-
-fn cold_header_slab() -> &'static Mutex<ColdHeaderSlab> {
-    COLD_HEADER_SLAB.get_or_init(|| Mutex::new(ColdHeaderSlab::new()))
-}
-
-/// Allocate a cold header, returning its slab index.
-/// The caller must store this index in `MoltHeader::cold_idx`.
-pub(crate) fn alloc_cold_header(cold: MoltColdHeader) -> u32 {
-    let mut slab = cold_header_slab().lock().unwrap();
-    slab.alloc(cold)
-}
-
-/// High bit of `MoltHeader::cold_idx` flagged as "shared" — many
-/// instances of the same class point to one cold header (allocated
-/// at first instantiation, reused for every subsequent instance).
-/// Eliminates the per-instance `alloc_cold_header` mutex contention
-/// in tight allocation loops, and — critically for stack-allocated
-/// instances — encodes `class_bits` (which lives in the cold
-/// header's `state` field) without per-instance heap allocation.
-///
-/// When the bit is set:
-///   - `object_state` masks it off before slab lookup.
-///   - `object_set_state` allocates a *private* cold header for the
-///     mutating instance (since shared state cannot be modified
-///     without affecting siblings).
-///   - `object_set_poll_fn` similarly promotes shared → private.
-///   - `free_cold_header_for_obj` is a no-op (the shared cold header
-///     outlives any individual instance — only the class itself
-///     owns and frees it).
-///
-/// The slab index is bounded by `COLD_HEADER_SLAB_CAP` which is well
-/// below `2^31`, so the bit will never collide with a real index.
-pub(crate) const SHARED_COLD_IDX_BIT: u32 = 1 << 31;
-
-/// Mask off the shared-bit to recover the real slab index.
-#[inline]
-pub(crate) fn cold_idx_real(raw: u32) -> u32 {
-    raw & !SHARED_COLD_IDX_BIT
-}
-
-/// Returns `true` when the cold_idx is flagged as shared and should
-/// not be freed when the owning instance is deallocated.
-#[inline]
-pub(crate) fn cold_idx_is_shared(raw: u32) -> bool {
-    raw & SHARED_COLD_IDX_BIT != 0
-}
-
-/// Retrieve a **copy** of the cold header at `idx`.
-/// Returns `None` if idx == 0.
-#[inline]
-pub(crate) fn get_cold_header(idx: u32) -> Option<MoltColdHeader> {
-    if idx == 0 {
-        return None;
-    }
-    let slab = cold_header_slab().lock().unwrap();
-    slab.get(idx).copied()
-}
-
-/// Free the cold header at `idx`, returning the slot to the free list.
-/// No-op if idx == 0.
-pub(crate) fn free_cold_header(idx: u32) {
-    if idx == 0 {
-        return;
-    }
-    let mut slab = cold_header_slab().lock().unwrap();
-    slab.free(idx);
-}
-
 /// Returns the per-class shared cold-header index for `class_ptr`,
 /// allocating one lazily on first call.  The shared cold header
 /// stores `class_bits` (the boxed class reference) in its `state`
@@ -877,10 +692,7 @@ pub(crate) fn object_set_poll_fn(data_ptr: *mut u8, poll_fn: u64) {
             return;
         }
         if raw_idx != 0 {
-            let mut slab = cold_header_slab().lock().unwrap();
-            if let Some(entry) = slab.get_mut(raw_idx) {
-                entry.poll_fn = poll_fn;
-            }
+            let _ = with_cold_header_mut(raw_idx, |entry| entry.poll_fn = poll_fn);
         } else {
             // Lazily allocate a cold header.
             let new_idx = alloc_cold_header(MoltColdHeader {
@@ -928,10 +740,7 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
             return;
         }
         if raw_idx != 0 {
-            let mut slab = cold_header_slab().lock().unwrap();
-            if let Some(entry) = slab.get_mut(raw_idx) {
-                entry.state = state;
-            }
+            let _ = with_cold_header_mut(raw_idx, |entry| entry.state = state);
         } else {
             // Lazily allocate a cold header.
             let new_idx = alloc_cold_header(MoltColdHeader {
@@ -3099,67 +2908,5 @@ mod tests {
             );
             dec_ref_bits(_py, crate::MoltObject::from_ptr(allowed).bits());
         });
-    }
-
-    #[test]
-    fn cold_header_slab_rejects_out_of_bounds_free() {
-        use super::{ColdHeaderSlab, MoltColdHeader};
-
-        let mut slab = ColdHeaderSlab::new();
-        let idx1 = slab.alloc(MoltColdHeader::default());
-        assert!(idx1 >= 1);
-        let idx2 = slab.alloc(MoltColdHeader::default());
-        assert!(idx2 >= 1);
-        let len_before_free = slab.entries.len();
-        let free_list_len_before = slab.free_list.len();
-
-        slab.free(24427);
-
-        assert_eq!(slab.free_list.len(), free_list_len_before);
-        assert_eq!(slab.entries.len(), len_before_free);
-        assert_eq!(slab.live.len(), len_before_free);
-
-        let idx3 = slab.alloc(MoltColdHeader::default());
-        assert!(idx3 >= 1);
-
-        slab.free(idx1);
-        assert_eq!(slab.free_list.len(), free_list_len_before + 1);
-        assert!(slab.get(idx1).is_none());
-        let idx4 = slab.alloc(MoltColdHeader::default());
-        assert_eq!(idx4, idx1);
-        assert!(slab.get(idx4).is_some());
-    }
-
-    #[test]
-    #[should_panic(expected = "cold header slab double free")]
-    fn cold_header_slab_rejects_double_free() {
-        use super::{ColdHeaderSlab, MoltColdHeader};
-
-        let mut slab = ColdHeaderSlab::new();
-        let idx = slab.alloc(MoltColdHeader::default());
-
-        slab.free(idx);
-        slab.free(idx);
-    }
-
-    #[test]
-    fn cold_header_slab_supports_more_than_65535_live_entries() {
-        use super::{ColdHeaderSlab, MoltColdHeader};
-
-        let result = std::panic::catch_unwind(|| {
-            let mut slab = ColdHeaderSlab::new();
-            for _ in 0..70_000 {
-                let _ = slab.alloc(MoltColdHeader::default());
-            }
-            slab.entries.len()
-        });
-
-        match result {
-            Ok(len) => assert!(
-                len > 65_536,
-                "expected slab to hold more than 65,536 entries, got {len}"
-            ),
-            Err(_) => panic!("cold header slab should scale beyond 65,535 live entries"),
-        }
     }
 }
