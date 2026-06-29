@@ -210,6 +210,7 @@ def _run_backend_pipeline(
             build_config=prepared_build_config,
             build_roots=prepared_build_roots,
             build_preamble=prepared_build_preamble,
+            ir=ir,
             resolved_modules=resolved_modules,
             json_output=json_output,
             verbose=verbose,

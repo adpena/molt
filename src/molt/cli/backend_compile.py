@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, Sequence
 
 from molt._wasm_runtime_exports import wasm_runtime_required_import_names
+from molt.cli import required_features as _required_features
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
@@ -294,6 +295,7 @@ def _prepare_backend_dispatch(
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     resolved_modules: set[str] | frozenset[str] | None,
+    ir: Mapping[str, Any],
     warnings: list[str],
     start_daemon: bool = True,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
@@ -321,7 +323,13 @@ def _prepare_backend_dispatch(
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
     if is_wasm and backend_env is not None:
-        extra_required_imports = wasm_runtime_required_import_names(resolved_modules)
+        functions = ir.get("functions")
+        reached_intrinsics = (
+            _required_features.reached_intrinsic_symbols(functions)
+            if isinstance(functions, list)
+            else frozenset()
+        )
+        extra_required_imports = wasm_runtime_required_import_names(reached_intrinsics)
         if extra_required_imports:
             backend_env["MOLT_WASM_EXTRA_REQUIRED_IMPORTS"] = ",".join(
                 extra_required_imports
@@ -1089,6 +1097,7 @@ def _prepare_backend_compile(
                     ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                     ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                     resolved_modules=resolved_modules,
+                    ir=ir,
                     warnings=warnings,
                 )
             )
