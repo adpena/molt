@@ -6,19 +6,20 @@ use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
     RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
 };
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::box_none;
 
 #[derive(Clone)]
 pub(super) struct WasmCompactBuiltinRuntimeCallable {
     pub(super) runtime_name: String,
-    pub(super) import_name: String,
+    pub(super) import: WasmRuntimeImport,
     pub(super) arity: usize,
 }
 
 struct WasmRuntimeCallableWrapperSpec {
     runtime_name: String,
-    import_name: String,
+    import: WasmRuntimeImport,
     arity: usize,
     result: RuntimeCallableResult,
 }
@@ -51,7 +52,7 @@ impl WasmRuntimeCallableTablePlan {
                 .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
                 .map(|spec| WasmCompactBuiltinRuntimeCallable {
                     runtime_name: spec.runtime_name.to_string(),
-                    import_name: spec.import_name.to_string(),
+                    import: spec.import,
                     arity: spec.arity,
                 })
                 .collect();
@@ -64,27 +65,16 @@ impl WasmRuntimeCallableTablePlan {
             }
         }
 
-        let mut wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec> =
-            RESERVED_RUNTIME_CALLABLE_SPECS
-                .iter()
-                .map(|spec| WasmRuntimeCallableWrapperSpec {
-                    runtime_name: spec.runtime_name.to_string(),
-                    import_name: spec.import_name.to_string(),
-                    arity: spec.arity,
-                    result: RuntimeCallableResult::I64,
-                })
-                .collect();
-        wrapper_specs.extend(
-            RUNTIME_CALLABLE_IMPORTS
-                .iter()
-                .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
-                .map(|spec| WasmRuntimeCallableWrapperSpec {
-                    runtime_name: spec.runtime_name.to_string(),
-                    import_name: spec.import_name.to_string(),
-                    arity: spec.arity,
-                    result: spec.result,
-                }),
-        );
+        let wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec> = RUNTIME_CALLABLE_IMPORTS
+            .iter()
+            .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
+            .map(|spec| WasmRuntimeCallableWrapperSpec {
+                runtime_name: spec.runtime_name.to_string(),
+                import: spec.import,
+                arity: spec.arity,
+                result: spec.result,
+            })
+            .collect();
 
         Self {
             compact_builtin_runtime_callables,
@@ -117,10 +107,7 @@ impl WasmBackend {
             let type_idx = *user_type_map.get(&spec.arity).unwrap_or_else(|| {
                 panic!("missing builtin wrapper signature for arity {}", spec.arity)
             });
-            let import_idx = *self
-                .import_ids
-                .get_name(spec.import_name.as_str())
-                .unwrap_or_else(|| panic!("missing builtin import for {}", spec.import_name));
+            let import_idx = self.import_ids[spec.import];
             self.funcs.function(type_idx);
             let func_index = self.func_count;
             self.func_count += 1;
