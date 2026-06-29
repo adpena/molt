@@ -220,7 +220,7 @@ execution_tier = "auto"   # "auto" | "interpret" | "compile"
 tier_up_threshold = 100
 ```
 
-Both runtimes parse this manifest at initialization. Monty checks capabilities in its eval loop; Molt checks them at WASM host import boundaries (`wasm_imports.rs`). The `ResourceTracker` trait (`runtime/molt-runtime/src/resource.rs`) is the enforcement mechanism on both sides.
+Both runtimes parse this manifest at initialization. Monty checks capabilities in its eval loop; Molt checks them at WASM host import boundaries described by `wasm_abi_manifest.toml` and the generated ABI facade. The `ResourceTracker` trait (`runtime/molt-runtime/src/resource.rs`) is the enforcement mechanism on both sides.
 
 ### 4.2 Type Stub Format
 
@@ -511,7 +511,7 @@ Both runtimes execute inside the same WASM isolate (or native process). The sand
 The `ResourceTracker` trait (`molt-runtime/src/resource.rs`) is thread-local and set once at initialization. Both runtimes call into it:
 
 - **Monty:** Checks `on_allocate` on every object creation, `check_time` every N instructions (rate-limited), `check_recursion_depth` on every call.
-- **Molt:** Checks `on_allocate` via WASM host imports (`wasm_imports.rs`), `check_time` at loop back-edges (compiled in by codegen), `check_operation_size` for pow/repeat/shift operations (compiled as pre-checks).
+- **Molt:** Checks `on_allocate` via generated WASM host imports, `check_time` at loop back-edges (compiled in by codegen), `check_operation_size` for pow/repeat/shift operations (compiled as pre-checks).
 
 The `LimitedTracker` implementation tracks five dimensions simultaneously: heap bytes, wall-clock duration, allocation count, recursion depth, and per-operation result size. All limits are read from `molt.capabilities.toml` at startup.
 

@@ -83,7 +83,7 @@ deps `molt-lower` + `molt-codegen-abi` + **`molt-backend-llvm` (optional, `llvm`
 — the real `native → llvm` edge; ~50K. Seam: largest codegen unit + the only backend that
 depends on another, so it sits one level above llvm (NOT beside/grouped). Biggest cache win.
 
-**`molt-backend-wasm`** — `wasm.rs`, `wasm_imports.rs`; deps `molt-lower` +
+**`molt-backend-wasm`** — `wasm.rs`, `wasm_abi.rs`, generated ABI tables; deps `molt-lower` +
 `molt-codegen-abi` + `wasm-encoder`/`wasmparser`; ~20K. Seam: independent of every backend;
 the TIR→WASM lowering already lives in molt-lower, so the encoder is a clean consumer.
 

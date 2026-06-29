@@ -25,7 +25,7 @@ fn peephole_instrs(input: Vec<Instruction<'static>>) -> Vec<Instruction<'static>
 
 #[test]
 fn lir_runtime_calls_are_manifest_registered_imports() {
-    let manifest_imports: std::collections::BTreeSet<_> = crate::wasm_imports::IMPORT_REGISTRY
+    let manifest_imports: std::collections::BTreeSet<_> = crate::wasm_abi::IMPORT_REGISTRY
         .iter()
         .map(|spec| spec.import)
         .collect();

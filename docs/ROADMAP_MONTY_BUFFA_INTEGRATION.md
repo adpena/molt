@@ -228,7 +228,7 @@ Sprint 2026-03-28. All items verified: 4 crates compile, 40 Rust + 69 Python tes
 | DoS guards | `runtime/molt-runtime/src/object/ops_arith.rs` |
 | Capability manifest | `src/molt/capability_manifest.py` |
 | WASM exception tags | `runtime/molt-backend/src/wasm.rs` |
-| WASM resource imports | `runtime/molt-backend/src/wasm_imports.rs` |
+| WASM resource imports | `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` / generated ABI facade |
 | IO mode toggle | `runtime/molt-runtime/src/vfs/caps.rs` |
 | Snapshot/resume | `runtime/molt-snapshot/src/lib.rs` |
 | Embed SDK | `runtime/molt-embed/src/lib.rs` |

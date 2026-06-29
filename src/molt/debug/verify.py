@@ -15,7 +15,7 @@ NATIVE_BACKEND_PATH = (
     ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 )
 WASM_BACKEND_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm.rs"
-WASM_IMPORTS_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm_imports.rs"
+WASM_ABI_PATH = ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs"
 
 ALIASES: dict[str, list[str]] = {
     "ConstInt": ["CONST", "CONST_BIGINT"],
@@ -496,8 +496,7 @@ def _read_backend_texts() -> tuple[str, str, str, str]:
     frontend_text = FRONTEND_PATH.read_text(encoding="utf-8")
     native_backend_text = NATIVE_BACKEND_PATH.read_text(encoding="utf-8")
     wasm_backend_text = WASM_BACKEND_PATH.read_text(encoding="utf-8")
-    if WASM_IMPORTS_PATH.exists():
-        wasm_backend_text += "\n" + WASM_IMPORTS_PATH.read_text(encoding="utf-8")
+    wasm_backend_text += "\n" + WASM_ABI_PATH.read_text(encoding="utf-8")
     return spec_text, frontend_text, native_backend_text, wasm_backend_text
 
 
