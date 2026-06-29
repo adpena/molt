@@ -612,6 +612,7 @@ class _ExternalPackageNativeArtifact:
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
     required_capsules: tuple[str, ...] = ()
+    python_exports: tuple[str, ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
         return {
@@ -635,6 +636,7 @@ class _ExternalPackageNativeArtifact:
             ],
             "provided_capsules": list(self.provided_capsules),
             "required_capsules": list(self.required_capsules),
+            "python_exports": list(self.python_exports),
         }
 
 
@@ -679,6 +681,7 @@ class _StagedExternalPackageNativeArtifact:
     support_file_sha256: tuple[tuple[str, str], ...] = ()
     provided_capsules: tuple[str, ...] = ()
     required_capsules: tuple[str, ...] = ()
+    python_exports: tuple[str, ...] = ()
 
     def json_payload(self) -> dict[str, Any]:
         return {
@@ -705,6 +708,7 @@ class _StagedExternalPackageNativeArtifact:
             ],
             "provided_capsules": list(self.provided_capsules),
             "required_capsules": list(self.required_capsules),
+            "python_exports": list(self.python_exports),
         }
 
 

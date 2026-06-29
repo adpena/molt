@@ -85,12 +85,20 @@ Modules may be:
   capabilities match the actual artifact. Build admission fails closed before
   frontend lowering when the sidecar is missing or invalid, and graph, wrapper,
   and backend object-cache inputs include the artifact and manifest custody
-  facts. Native builds must then publish the validated artifact, sidecar,
-  package `__init__.py` chain, and existing runtime extension shim candidates
-  under a deterministic `external_static_packages/<plan-digest>/` runtime root;
-  generated native binaries must prepend that staged root to canonical
-  `MOLT_MODULE_ROOTS` before runtime startup, and target modes without a
-  runtime-custody consumer must fail closed. Final link reuse hashes those
+  facts. Extension sidecars may declare `python_exports` as dotted package
+  import names (for example a package-level function reexport) satisfied by the
+  native artifact; the native-artifact planner treats those names as the same
+  reachability authority as the extension module name, so source package
+  closure and native object closure cannot disagree. For WASM builds, an
+  admitted external package containing native source or host-extension markers
+  must publish wasm32 `static_link` `libmolt_source` artifacts before the graph
+  scanner expands that package; raw NumPy/SciPy-style source roots are not a
+  linkable substitute. Native builds must then publish the validated artifact,
+  sidecar, package `__init__.py` chain, and existing runtime extension shim
+  candidates under a deterministic `external_static_packages/<plan-digest>/`
+  runtime root; generated native binaries must prepend that staged root to
+  canonical `MOLT_MODULE_ROOTS` before runtime startup, and target modes without
+  a runtime-custody consumer must fail closed. Final link reuse hashes those
   staged bytes, but runtime-loaded extensions are not appended to the linker
   command unless the extension ABI explicitly requires link-time linkage.
 - Core stdlib closure must use the same explicit nested-scan exception set as

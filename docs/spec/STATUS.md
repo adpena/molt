@@ -122,8 +122,13 @@ the implementation. For forward-looking priorities, use
   scan package-local `.so`/`.pyd` artifacts during build admission, require a
   nearby `extension_manifest.json` with matching module, extension path,
   extension SHA-256, ABI, target triple, platform tag, and capabilities, and
-  fingerprint the artifact/manifest custody facts in graph, wrapper build, and
-  backend object-cache inputs. Native builds publish the validated artifact,
+  fingerprint the artifact/manifest custody facts, including
+  `python_exports` import names owned by a native artifact, in graph, wrapper
+  build, and backend object-cache inputs. WASM admission now fails before graph
+  expansion when an admitted external package contains native-source or
+  host-extension markers but lacks wasm32 `static_link` `libmolt_source`
+  artifact manifests; raw NumPy/SciPy-style source roots are not treated as
+  linkable package evidence. Native builds publish the validated artifact,
   sidecar, package `__init__.py` chain, and runtime extension shim candidates
   into a deterministic `external_static_packages/<plan-digest>/` runtime root;
   generated native binaries inject that staged root into canonical
@@ -1328,11 +1333,14 @@ the implementation. For forward-looking priorities, use
   `MOLT_EXTERNAL_STATIC_PACKAGES=numpy`, explicit `module.extension.exec`
   capability, and all-loaded-`numpy.*` module-origin custody. Build admission
   now validates and fingerprints package-local native artifact sidecars for
-  explicitly admitted external packages, and native builds publish those
-  validated artifacts plus sidecars and runtime shim candidates under a
-  deterministic `external_static_packages/<plan-digest>/` root and inject that
-  staged root into generated native binaries before runtime startup. That is not
-  yet a green no-host NumPy import proof. The strict NumPy `c_api_probe` lane is
+  explicitly admitted external packages, uses sidecar `python_exports` to bind
+  package-level imports to their owning native artifacts, and rejects WASM
+  native-source package admission before graph expansion when no wasm32
+  static-link artifacts are staged. Native builds publish validated artifacts
+  plus sidecars and runtime shim candidates under a deterministic
+  `external_static_packages/<plan-digest>/` root and inject that staged root
+  into generated native binaries before runtime startup. That is not yet a
+  green no-host NumPy import proof. The strict NumPy `c_api_probe` lane is
   green at 447 scanned source files, 1,258 required symbols, 1,258 supported,
   zero missing, and zero fail-fast. The strict SciPy `c_api_probe` lane is green
   at 592 scanned source files, 321 required symbols, 321 supported, zero
