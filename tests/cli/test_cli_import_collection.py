@@ -2358,6 +2358,24 @@ def _write_external_native_artifact(
     return artifact_path, manifest_path
 
 
+def _write_source_only_external_package(
+    tmp_path: Path,
+    *,
+    package: str,
+    init_source: str = "VALUE = 1\n",
+) -> tuple[Path, Path]:
+    external_root = tmp_path / "site"
+    package_parts = package.split(".")
+    package_dir = external_root.joinpath(*package_parts)
+    package_dir.mkdir(parents=True)
+    for index in range(1, len(package_parts)):
+        parent_init = external_root.joinpath(*package_parts[:index], "__init__.py")
+        if not parent_init.exists():
+            parent_init.write_text("", encoding="utf-8")
+    (package_dir / "__init__.py").write_text(init_source, encoding="utf-8")
+    return external_root, package_dir
+
+
 def test_external_static_package_native_artifact_plan_validates_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2528,6 +2546,182 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
     assert plan.artifacts[0].python_exports == (
         "nativepkg.ndimage.distance_transform_edt",
     )
+
+
+def test_source_recompiled_static_package_requires_native_artifact_candidate_pregraph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, package_dir = _write_source_only_external_package(
+        tmp_path,
+        package="scipy",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "scipy")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+    )
+
+    assert policy is None
+    assert error == 2
+    stderr = capsys.readouterr().err
+    assert "source-recompiled external static package admission" in stderr
+    assert "before graph admission" in stderr
+    assert "scipy" in stderr
+    assert str(package_dir) in stderr
+
+
+def test_source_recompiled_static_subpackage_requires_native_artifact_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_source_only_external_package(
+        tmp_path,
+        package="scipy.ndimage",
+        init_source="from . import filters\n",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "scipy.ndimage")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(tmp_path / "site",),
+        json_output=False,
+        defer_native_artifacts=True,
+    )
+
+    assert policy is None
+    assert error == 2
+    stderr = capsys.readouterr().err
+    assert "native package root 'scipy'" in stderr
+    assert "scipy.ndimage" in stderr
+
+
+def test_admitted_external_native_package_does_not_close_source_only_ndimage_initializers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    external_root = tmp_path / "site"
+    project.mkdir()
+    entry = project / "main.py"
+    entry.write_text("import scipy.ndimage\n", encoding="utf-8")
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+    )
+    scipy_dir = external_root / "scipy"
+    ndimage_dir = scipy_dir / "ndimage"
+    (scipy_dir / "__init__.py").write_text(
+        "import scipy.massive\n",
+        encoding="utf-8",
+    )
+    (scipy_dir / "massive.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (ndimage_dir / "__init__.py").write_text(
+        "import numpy\nimport scipy.ndimage.filters\n",
+        encoding="utf-8",
+    )
+    (ndimage_dir / "filters.py").write_text("VALUE = 2\n", encoding="utf-8")
+    numpy_dir = external_root / "numpy"
+    numpy_dir.mkdir()
+    (numpy_dir / "__init__.py").write_text("import numpy.core\n", encoding="utf-8")
+    (numpy_dir / "core.py").write_text("VALUE = 3\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "scipy")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+    )
+    assert policy_error is None
+    assert policy is not None
+
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry,
+        entry_module="main",
+        module_roots=[project.resolve(), external_root.resolve()],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=project,
+        entry_tree=ast.parse(entry.read_text(encoding="utf-8")),
+        diagnostics_enabled=True,
+        module_reasons={},
+        json_output=False,
+        target="wasm",
+        import_admission_policy=policy,
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert {"scipy", "scipy.ndimage"} <= set(prepared.module_graph)
+    assert "scipy.ndimage._nd_image" not in prepared.module_graph
+    assert "scipy.massive" not in prepared.module_graph
+    assert "scipy.ndimage.filters" not in prepared.module_graph
+    assert "numpy" not in prepared.module_graph
+    assert "numpy.core" not in prepared.module_graph
+    native_plan, native_errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=policy.external_roots,
+        admitted_packages=policy.admitted_external_packages,
+        required_modules=(
+            set(prepared.module_graph)
+            | set(prepared.explicit_imports)
+            | set(prepared.runtime_import_dispatch_roots)
+        ),
+    )
+    assert native_errors == []
+    assert native_plan is not None
+    assert [artifact.module for artifact in native_plan.artifacts] == [
+        "scipy.ndimage._nd_image"
+    ]
+
+
+def test_pure_python_external_static_package_can_defer_without_native_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _package_dir = _write_source_only_external_package(
+        tmp_path,
+        package="purepkg",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "purepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+        defer_native_artifacts=True,
+    )
+
+    assert error is None
+    assert policy is not None
+    assert policy.admitted_external_packages == frozenset({"purepkg"})
+    assert policy.native_artifact_plan.artifacts == ()
+
+
+def test_native_artifact_plan_rejects_source_recompiled_package_without_candidates(
+    tmp_path: Path,
+) -> None:
+    external_root, package_dir = _write_source_only_external_package(
+        tmp_path,
+        package="numpy",
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"numpy"},
+    )
+
+    assert plan is None
+    assert len(errors) == 1
+    assert "native package root 'numpy'" in errors[0]
+    assert str(package_dir) in errors[0]
 
 
 def test_external_static_package_native_artifact_requires_sidecar_manifest(
