@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_import_abi::{RuntimeImportSignature, RuntimeReturnAbi};
 
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,21 +101,23 @@ impl SimpleBackend {
         func_id
     }
 
-    /// Convenience wrapper around `import_func_id_split` for use when
-    /// `&mut self` is not split-borrowed (e.g. in tests).
-    #[cfg(test)]
-    pub(in crate::native_backend::simple_backend) fn import_func_id(
-        &mut self,
-        name: &'static str,
-        params: &[types::Type],
-        returns: &[types::Type],
+    pub(crate) fn import_runtime_func_id_split(
+        module: &mut ObjectModule,
+        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        signature: RuntimeImportSignature,
     ) -> cranelift_module::FuncId {
-        Self::import_func_id_split(
-            &mut self.module,
-            &mut self.import_ids,
-            name,
-            params,
-            returns,
-        )
+        let params = vec![types::I64; signature.param_count];
+        match signature.return_abi {
+            RuntimeReturnAbi::I64 => Self::import_func_id_split(
+                module,
+                import_ids,
+                signature.name,
+                &params,
+                &[types::I64],
+            ),
+            RuntimeReturnAbi::Void => {
+                Self::import_func_id_split(module, import_ids, signature.name, &params, &[])
+            }
+        }
     }
 }

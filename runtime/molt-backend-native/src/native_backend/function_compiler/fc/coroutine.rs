@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW};
 
 /// Single-source kind authority for [`handle_coroutine_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -947,12 +948,10 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             }
         }
         "cancel_token_get_current" => {
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_cancel_token_get_current",
-                &[],
-                &[types::I64],
+                MOLT_CANCEL_TOKEN_GET_CURRENT,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
@@ -1008,12 +1007,10 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let poll_func_ref = module.declare_func_in_func(poll_func_id, builder.func);
             let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-            let task_callee = SimpleBackend::import_func_id_split(
+            let task_callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_task_new",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                MOLT_TASK_NEW,
             );
             let task_local = module.declare_func_in_func(task_callee, builder.func);
             let kind_val = builder.ins().iconst(types::I64, TASK_KIND_FUTURE);

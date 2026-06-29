@@ -241,7 +241,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "state_yield_set_state",
             )
             .unwrap();
-        let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+        let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
         let _ = self
             .backend
             .builder

@@ -1,4 +1,7 @@
 use super::super::*;
+use crate::runtime_import_abi::{
+    MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED,
+};
 
 /// Single-source kind authority for [`handle_memory_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -255,12 +258,10 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let poll_func_ref = module.declare_func_in_func(poll_func_id, builder.func);
             let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
-            let task_callee = SimpleBackend::import_func_id_split(
+            let task_callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_task_new",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
+                MOLT_TASK_NEW,
             );
             let task_local = module.declare_func_in_func(task_callee, builder.func);
             let kind_val = builder.ins().iconst(types::I64, kind_bits);
@@ -288,23 +289,19 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 }
             }
             if matches!(task_kind, "future" | "coroutine") {
-                let get_callee = SimpleBackend::import_func_id_split(
+                let get_callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_cancel_token_get_current",
-                    &[],
-                    &[types::I64],
+                    MOLT_CANCEL_TOKEN_GET_CURRENT,
                 );
                 let get_local = module.declare_func_in_func(get_callee, builder.func);
                 let get_call = builder.ins().call(get_local, &[]);
                 let current_token = builder.inst_results(get_call)[0];
 
-                let reg_callee = SimpleBackend::import_func_id_split(
+                let reg_callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_task_register_token_owned",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    MOLT_TASK_REGISTER_TOKEN_OWNED,
                 );
                 let reg_local = module.declare_func_in_func(reg_callee, builder.func);
                 builder.ins().call(reg_local, &[obj, current_token]);

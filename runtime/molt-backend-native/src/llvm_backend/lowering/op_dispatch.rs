@@ -109,7 +109,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if crate::tir::op_kinds_generated::opcode_result_mints_owned_selected_operand_table(
                     op.opcode,
                 ) {
-                    let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+                    let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
                     self.backend
                         .builder
                         .build_call(
@@ -204,7 +204,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Refcount --
             OpCode::IncRef => {
                 let val = self.resolve(op.operands[0]);
-                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+                let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
                 let bits = self.ensure_i64(val);
                 self.backend
                     .builder
@@ -230,7 +230,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::DelBoundary => {
                 let val = self.resolve(op.operands[0]);
                 let bits = self.ensure_i64(val);
-                let dec_fn = self.ensure_runtime_void_fn("molt_dec_ref_obj", 1);
+                let dec_fn = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
                 self.backend
                     .builder
                     .build_call(dec_fn, &[bits.into()], "")
@@ -238,7 +238,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpCode::DecRef => {
                 let val = self.resolve(op.operands[0]);
-                let dec_fn = self.ensure_runtime_void_fn("molt_dec_ref_obj", 1);
+                let dec_fn = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
                 let bits = self.ensure_i64(val);
                 self.backend
                     .builder
