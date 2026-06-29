@@ -27,14 +27,18 @@ pub enum TirPipelineCacheFlavor {
     Native,
     Llvm,
     Wasm,
+    Luau,
+    FactGraph,
 }
 
 impl TirPipelineCacheFlavor {
     fn cache_prefix(self) -> &'static [u8] {
         match self {
-            Self::Native => b"native-tir-function-cache-v3\0",
-            Self::Llvm => b"llvm-tir-function-cache-v1\0",
-            Self::Wasm => b"wasm-tir-function-cache-v2\0",
+            Self::Native => b"native-tir-function-cache-v4\0",
+            Self::Llvm => b"llvm-tir-function-cache-v2\0",
+            Self::Wasm => b"wasm-tir-function-cache-v3\0",
+            Self::Luau => b"luau-tir-function-cache-v1\0",
+            Self::FactGraph => b"fact-graph-tir-function-cache-v1\0",
         }
     }
 }
@@ -162,6 +166,7 @@ struct TirOptimizationInput {
     params: Vec<String>,
     ops: Vec<OpIR>,
     param_types: Option<Vec<String>>,
+    source_file: Option<String>,
 }
 
 struct TirOptimizationOutput {
@@ -189,7 +194,12 @@ pub fn content_hash_for_function(
     target_info: &TargetInfo,
 ) -> String {
     let body_bytes = super::serialize::serialize_ops(&func_ir.ops);
-    let cache_hash_body = cached_tir_hash_body(cache_flavor, target_info, &body_bytes);
+    let mut cache_hash_body = cached_tir_hash_body(cache_flavor, target_info, &body_bytes);
+    cache_hash_body.extend_from_slice(b"source-file\0");
+    if let Some(source_file) = &func_ir.source_file {
+        cache_hash_body.extend_from_slice(source_file.as_bytes());
+    }
+    cache_hash_body.push(0);
     CompilationCache::compute_hash_with_signature(
         &func_ir.name,
         &func_ir.params,
@@ -515,6 +525,7 @@ where
                         params: func_ir.params.clone(),
                         ops: func_ir.ops.clone(),
                         param_types: func_ir.param_types.clone(),
+                        source_file: func_ir.source_file.clone(),
                     }
                 })
                 .collect();
@@ -764,7 +775,7 @@ where
         params: input.params,
         ops: input.ops,
         param_types: input.param_types,
-        source_file: None,
+        source_file: input.source_file,
         is_extern: false,
     };
     trace_tir_function_stage(&tmp_func.name, "start", tmp_func.ops.len());
@@ -983,7 +994,7 @@ mod tests {
 
     #[test]
     fn cache_hash_includes_target_and_platform_fingerprint() {
-        let func = FunctionIR {
+        let mut func = FunctionIR {
             name: "f".to_string(),
             params: vec!["x".to_string()],
             ops: vec![OpIR {
@@ -1014,5 +1025,86 @@ mod tests {
             content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
             content_hash_for_function(&func, TirPipelineCacheFlavor::Wasm, &wasm)
         );
+        assert_ne!(
+            content_hash_for_function(&func, TirPipelineCacheFlavor::Wasm, &wasm),
+            content_hash_for_function(&func, TirPipelineCacheFlavor::Luau, &wasm)
+        );
+        assert_ne!(
+            content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
+            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native)
+        );
+
+        let without_source =
+            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native);
+        func.source_file = Some("app.py".to_string());
+        let with_source =
+            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native);
+        func.source_file = Some("other.py".to_string());
+        let with_other_source =
+            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native);
+
+        assert_ne!(without_source, with_source);
+        assert_ne!(with_source, with_other_source);
+    }
+
+    #[test]
+    fn cached_tir_custody_preserves_function_source_file() {
+        let mut functions = vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: Vec::new(),
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..Default::default()
+            }],
+            param_types: None,
+            source_file: Some("app.py".to_string()),
+            is_extern: false,
+        }];
+        let target_info = TargetInfo::native_release_fast();
+        let cache_dir =
+            std::env::temp_dir().join(format!("molt-tir-source-file-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let mut run = run_cached_tir_pipeline(
+            &mut functions,
+            TirPipelineRunOptions {
+                target_info: target_info.clone(),
+                cache_flavor: TirPipelineCacheFlavor::FactGraph,
+                cache_dir: Some(cache_dir.clone()),
+                process_externs: false,
+                verify_lir: false,
+                tir_dump: false,
+                tir_stats: false,
+                progress_prefix: None,
+                resource_plan: TirOptimizationResourcePlan {
+                    threads: 1,
+                    wave_function_limit: 1,
+                    wave_op_budget: 16,
+                },
+            },
+            |_| {},
+        );
+        let non_inlinable = HashSet::new();
+        let owned_run = run_owned_module_pipeline_from_cached_tir(
+            &functions,
+            &mut run.cached_tir,
+            TirOwnedModulePipelineOptions {
+                target_info: &target_info,
+                module_name: "fact_graph_module",
+                non_inlinable: &non_inlinable,
+                missing_tir_context: "source-file test",
+                mode: TirOwnedModulePipelineMode::TerminalDropsOnly,
+            },
+        );
+
+        let (_, tir_func) = owned_run
+            .tir_functions
+            .iter()
+            .find(|(_, func)| func.name == "molt_main")
+            .expect("molt_main TIR");
+        assert_eq!(
+            tir_func.attrs.get(crate::tir::ops::SOURCE_FILE_ATTR),
+            Some(&crate::tir::ops::AttrValue::Str("app.py".to_string()))
+        );
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 }
