@@ -326,6 +326,12 @@ pub struct MoltHeader {
 }
 // Total: 24 bytes. poll_fn, state, extended_size live in MoltColdHeader.
 
+const _: () = {
+    assert!(std::mem::size_of::<MoltHeader>() == molt_codegen_abi::HEADER_SIZE_BYTES as usize);
+    assert!(std::mem::align_of::<MoltHeader>() <= molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES);
+    assert!(std::mem::size_of::<MoltHeader>() % molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES == 0);
+};
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PtrSlot(pub(crate) *mut u8);
 
@@ -634,7 +640,8 @@ fn object_allocation_plan(total_size: usize) -> Option<ObjectAllocationPlan> {
     } else {
         total_size
     };
-    let layout = Layout::from_size_align(alloc_size, 8).ok()?;
+    let layout =
+        Layout::from_size_align(alloc_size, molt_codegen_abi::HEADER_ALLOC_ALIGN_BYTES).ok()?;
     Some(ObjectAllocationPlan {
         alloc_size,
         layout,

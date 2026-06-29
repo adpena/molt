@@ -10,12 +10,10 @@ _GeneratorProtocol annotation gives them static checking.
 
 from __future__ import annotations
 
-
 from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
-    cast,
 )
 
 from molt.frontend._types import (
@@ -605,9 +603,7 @@ class SerializationMixin(
             code_id = self.func_code_ids.get(function_name or "")
             if code_id is None:
                 code_id = self._register_code_symbol(function_name or "")
-            json_ops.insert(
-                0, {"kind": "trace_enter_slot", "value": int(cast(int, code_id))}
-            )
+            json_ops.insert(0, {"kind": "trace_enter_slot", "value": int(code_id)})
 
         # Post-pass: inject expression-level col_offset/end_col_offset into
         # JSON dicts emitted by raising ops.  This is done after serialization

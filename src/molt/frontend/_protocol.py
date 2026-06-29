@@ -67,7 +67,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
-    known_classes: Any
+    known_classes: dict[str, ClassInfo]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
@@ -107,7 +107,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_chunking: Any
     module_const_dicts: dict[str, dict[str, Any]]
     module_declared_classes: set[str]
-    module_declared_funcs: dict[str, str]
+    module_declared_funcs: dict[str, FunctionKind]
     module_defined_funcs: set[str]
     module_frame_code_id: int | None
     module_frame_emitted: Any
@@ -1709,7 +1709,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _lookup_func_kind(
         self, module_name: str | None, func_id: str
-    ) -> str | None: ...
+    ) -> FunctionKind | None: ...
 
     def _loop_guard_assumption(
         self, obj_name: str, expected_class: str

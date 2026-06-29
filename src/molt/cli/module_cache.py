@@ -63,7 +63,7 @@ def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
 def _collect_func_kinds(tree: ast.AST) -> dict[str, str]:
     if not isinstance(tree, ast.Module):
         return {}
-    return collect_module_func_kinds(tree)
+    return {name: kind.value for name, kind in collect_module_func_kinds(tree).items()}
 
 
 def _scoped_known_func_defaults(

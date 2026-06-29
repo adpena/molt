@@ -341,7 +341,7 @@ def emit_pipeline_fact_graph(
                     },
                     warnings=build_preamble.warnings,
                 ),
-                json_output=True,
+                True,
             )
         return 0
     finally:

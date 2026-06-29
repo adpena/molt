@@ -27,6 +27,7 @@ from molt.frontend._types import (
     _INLINE_INT_MIN,
 )
 from molt.frontend.lowering.op_kinds_generated import BINOP_OP_KIND
+from molt.frontend.sema import FunctionKind
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -148,7 +149,7 @@ class ExpressionVisitorMixin(_MixinBase):
     def _emit_stable_module_func_ref(self, name: str) -> "MoltValue":
         """Read a stable module-level sync function without erasing identity."""
         mod_attr = self._emit_module_attr_get(name)
-        if self.module_declared_funcs.get(name) == "sync":
+        if self.module_declared_funcs.get(name) == FunctionKind.SYNC:
             symbol = self._function_symbol_for_reference(name)
             mod_attr.type_hint = f"Func:{symbol}"
         return mod_attr

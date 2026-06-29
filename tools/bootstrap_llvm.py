@@ -4,40 +4,40 @@ from __future__ import annotations
 import argparse
 import os
 import platform
-import re
 import shutil
 import subprocess
 import tarfile
 import urllib.request
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LLVM_22_RELEASE = "22.1.8"
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.llvm_toolchain import (  # noqa: E402
+    LlvmToolchainConfigError,
+    default_llvm_release,
+    llvm_sys_prefix_env_var_for_version,
+    required_llvm_backend_pin,
+)
 
 
 def _required_llvm_major(root: Path) -> int:
-    manifest = root / "runtime" / "molt-backend" / "Cargo.toml"
-    text = manifest.read_text(encoding="utf-8")
-    match = re.search(
-        r'inkwell\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"llvm(\d+)-\d+"',
-        text,
-        re.DOTALL,
-    )
-    if match is None:
-        raise SystemExit(f"Unable to find inkwell llvm feature pin in {manifest}")
-    return int(match.group(1))
+    pin = required_llvm_backend_pin(root)
+    if pin is None:
+        raise SystemExit(f"Unable to find LLVM backend feature pin under {root}")
+    return pin.major
 
 
 def _default_release_for_major(major: int) -> str:
-    if major == 22:
-        return DEFAULT_LLVM_22_RELEASE
-    return f"{major}.1.0"
+    return default_llvm_release(major)
 
 
 def _llvm_sys_prefix_env_var(version: str) -> str:
-    major, minor, *_ = version.split(".")
-    return f"LLVM_SYS_{int(major) * 10 + int(minor)}_PREFIX"
+    return llvm_sys_prefix_env_var_for_version(version)
 
 
 def _run(cmd: list[str], *, cwd: Path | None, env: dict[str, str]) -> None:
@@ -163,7 +163,9 @@ def _safe_extract_tar_xz(archive: Path, destination: Path) -> None:
             try:
                 target.relative_to(destination.resolve())
             except ValueError as exc:
-                raise SystemExit(f"Archive contains unsafe path: {member.name}") from exc
+                raise SystemExit(
+                    f"Archive contains unsafe path: {member.name}"
+                ) from exc
         tf.extractall(destination, members=members)
 
 
@@ -193,14 +195,15 @@ def _verify_llvm_config(prefix: Path, version: str) -> Path:
     expected = ".".join(version.split(".")[:2])
     actual = proc.stdout.strip()
     if not actual.startswith(expected + ".") and actual != expected:
-        raise SystemExit(
-            f"{llvm_config} reports {actual}; expected LLVM {expected}.x"
-        )
+        raise SystemExit(f"{llvm_config} reports {actual}; expected LLVM {expected}.x")
     return llvm_config
 
 
 def main(argv: list[str] | None = None) -> int:
-    major = _required_llvm_major(ROOT)
+    try:
+        major = _required_llvm_major(ROOT)
+    except LlvmToolchainConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     default_version = _default_release_for_major(major)
     parser = argparse.ArgumentParser(
         description="Build and install a complete LLVM dev prefix for Molt."
@@ -304,7 +307,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[bootstrap-llvm] configured {build_dir}")
         return 0
     _run(
-        ["cmake", "--build", str(build_dir), "--target", "install", "--", "-j", str(args.jobs)],
+        [
+            "cmake",
+            "--build",
+            str(build_dir),
+            "--target",
+            "install",
+            "--",
+            "-j",
+            str(args.jobs),
+        ],
         cwd=ROOT,
         env=env,
     )

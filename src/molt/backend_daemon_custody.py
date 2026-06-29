@@ -265,14 +265,18 @@ def _split_windows_command(command: str) -> tuple[str, ...]:
         import ctypes
         from ctypes import wintypes
 
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return _split_windows_command_fallback(command)
+
         argc = ctypes.c_int()
-        command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+        command_line_to_argv = windll.shell32.CommandLineToArgvW
         command_line_to_argv.argtypes = (
             wintypes.LPCWSTR,
             ctypes.POINTER(ctypes.c_int),
         )
         command_line_to_argv.restype = ctypes.POINTER(wintypes.LPWSTR)
-        local_free = ctypes.windll.kernel32.LocalFree
+        local_free = windll.kernel32.LocalFree
         local_free.argtypes = (wintypes.HLOCAL,)
         local_free.restype = wintypes.HLOCAL
         argv = command_line_to_argv(command, ctypes.byref(argc))

@@ -390,7 +390,7 @@ class MoltClient:
         if metrics_hook is not None:
             metrics_hook(dict(response_metrics))
         if after_recv is not None:
-            recv_meta = dict(request_meta)
+            recv_meta: dict[str, object] = dict(request_meta)
             recv_meta.update(
                 {
                     "status": status,

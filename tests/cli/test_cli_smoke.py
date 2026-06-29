@@ -603,7 +603,9 @@ def test_cli_doctor_strict_treats_warning_only_dx_advice_as_nonfatal(
     )
 
     monkeypatch.setattr(SETUP_READINESS, "_find_molt_root", lambda _cwd: ROOT)
-    monkeypatch.setattr(SETUP_READINESS, "_build_toolchain_report", lambda _root: report)
+    monkeypatch.setattr(
+        SETUP_READINESS, "_build_toolchain_report", lambda _root: report
+    )
 
     assert SETUP_READINESS.doctor(strict=True) == 0
 
@@ -632,7 +634,7 @@ def test_cli_update_check_json() -> None:
 
 
 def test_required_llvm_backend_major_matches_manifest() -> None:
-    assert cli._required_llvm_backend_major(ROOT) == 21
+    assert cli._required_llvm_backend_major(ROOT) == 22
 
 
 def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
