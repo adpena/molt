@@ -31,8 +31,8 @@ pub(crate) use container_runtime_selector::{
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
 pub(crate) use imports::{
-    IMPORT_REGISTRY, OP_IMPORT_DEPS, RuntimeImportSpec, WasmRuntimeImport,
-    wasm_runtime_export_name, wasm_runtime_import,
+    IMPORT_REGISTRY, RuntimeImportSpec, WasmRuntimeImport, wasm_runtime_export_name,
+    wasm_runtime_import,
 };
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
@@ -53,7 +53,5 @@ pub(crate) use runtime_callables::{
     RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,
     runtime_callable_arity, runtime_callable_import,
 };
-pub(crate) use runtime_surface::{
-    GPU_INTRINSIC_MANIFEST_NAMES, runtime_surface_requires_direct_import,
-};
+pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};

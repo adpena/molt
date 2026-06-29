@@ -4,12 +4,12 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
     wasm_runtime_import_names,
-    wasm_runtime_required_import_names,
 )
 from molt._wasm_abi_generated import (
     wasm_runtime_export_name,
     wasm_runtime_import_name,
 )
+from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt.cli.backend_execution import _backend_codegen_env_digest
 from molt.cli.required_features import reached_intrinsic_symbols
 
@@ -86,10 +86,15 @@ def _function(name: str, ops: list[dict[str, object]]) -> dict[str, object]:
     return {"name": name, "params": [], "ops": ops}
 
 
-def _required_imports_for(
+def _reached_runtime_import_names_for(
     functions: list[dict[str, object]],
 ) -> set[str]:
-    return set(wasm_runtime_required_import_names(reached_intrinsic_symbols(functions)))
+    names: set[str] = set()
+    for symbol in reached_intrinsic_symbols(functions):
+        import_name = wasm_runtime_import_name(intrinsic_runtime_symbol_name(symbol))
+        if import_name is not None:
+            names.add(import_name)
+    return names
 
 
 def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
@@ -258,16 +263,18 @@ def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports(
     assert " -C link-arg=--export-if-defined=molt_callargs_push_pos" in flags
 
 
-def test_wasm_runtime_required_import_names_reads_stdlib_intrinsics() -> None:
-    names = set(wasm_runtime_required_import_names({"molt_os_name"}))
+def test_reached_runtime_import_names_read_stdlib_intrinsics() -> None:
+    import_name = wasm_runtime_import_name(intrinsic_runtime_symbol_name("molt_os_name"))
+    assert import_name == "os_name"
+    names = {import_name}
     assert "os_name" in names
     assert "ssl_cert_none" not in names
 
 
-def test_wasm_runtime_required_import_names_keep_codec_numeric_slices_narrow() -> (
+def test_reached_runtime_import_names_keep_codec_numeric_slices_narrow() -> (
     None
 ):
-    codec_names = _required_imports_for(
+    codec_names = _reached_runtime_import_names_for(
         [
             _function(
                 "molt_main",
@@ -281,7 +288,7 @@ def test_wasm_runtime_required_import_names_keep_codec_numeric_slices_narrow() -
     )
     assert codec_names == {"codecs_decode", "codecs_encode"}
 
-    numeric_names = _required_imports_for(
+    numeric_names = _reached_runtime_import_names_for(
         [
             _function("molt_main", [_builtin_func("molt_decimal_from_str")]),
             _function("dead_regex", [_builtin_func("molt_re_compile")]),
@@ -297,8 +304,8 @@ def test_wasm_runtime_required_import_names_keep_codec_numeric_slices_narrow() -
     assert leaked == []
 
 
-def test_wasm_runtime_required_import_names_include_time_capabilities() -> None:
-    names = _required_imports_for(
+def test_reached_runtime_import_names_include_time_capabilities() -> None:
+    names = _reached_runtime_import_names_for(
         [
             _function(
                 "molt_main",
@@ -318,25 +325,13 @@ def test_wasm_runtime_required_import_names_include_time_capabilities() -> None:
     assert "capabilities_trusted" in names
 
 
-def test_wasm_runtime_required_import_names_use_public_async_sleep_symbol() -> None:
-    names = set(wasm_runtime_required_import_names({"molt_async_sleep"}))
+def test_reached_runtime_import_names_use_public_async_sleep_symbol() -> None:
+    import_name = wasm_runtime_import_name(
+        intrinsic_runtime_symbol_name("molt_async_sleep")
+    )
+    names = {import_name}
     assert "async_sleep" in names
     assert "async_sleep_new" not in names
-
-
-def test_wasm_codegen_env_digest_tracks_required_import_set() -> None:
-    base_env = {
-        "MOLT_WASM_DATA_BASE": "1048576",
-        "MOLT_WASM_TABLE_BASE": "4096",
-    }
-    extra_env = {
-        **base_env,
-        "MOLT_WASM_EXTRA_REQUIRED_IMPORTS": "os_name,ssl_cert_none",
-    }
-
-    assert _backend_codegen_env_digest(
-        is_wasm=True, env=base_env
-    ) != _backend_codegen_env_digest(is_wasm=True, env=extra_env)
 
 
 def test_wasm_codegen_env_digest_tracks_split_runtime_table_min() -> None:

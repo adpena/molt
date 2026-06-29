@@ -163,7 +163,7 @@ def _render_rs_mod() -> str:
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use imports::{\n",
-            "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY, OP_IMPORT_DEPS,\n",
+            "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY,\n",
             "    RuntimeImportSpec, WasmRuntimeImport,\n",
             "};\n",
             "pub(crate) use lir_runtime_calls::{\n",
@@ -188,9 +188,7 @@ def _render_rs_mod() -> str:
             "    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,\n",
             "    runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
-            "pub(crate) use runtime_surface::{\n",
-            "    runtime_surface_requires_direct_import, GPU_INTRINSIC_MANIFEST_NAMES,\n",
-            "};\n",
+            "pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
             "};\n",
@@ -528,18 +526,6 @@ def _render_rs_imports(data: dict) -> str:
             "}\n\n",
         ]
     )
-    lines.append("pub(crate) const OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])] = &[\n")
-    for entry in data.get("op_import_dep", []):
-        kind = entry["kind"]
-        deps = entry["deps"]
-        if not deps:
-            lines.append(f'    ("{kind}", &[]),\n')
-            continue
-        lines.append(f'    ("{kind}", &[\n')
-        for dep in deps:
-            lines.append(f"        {_rust_runtime_import(data, dep)},\n")
-        lines.append("    ]),\n")
-    lines.append("];\n\n")
     return "".join(lines)
 
 
@@ -1151,14 +1137,6 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
 
 def _render_rs_runtime_surface(data: dict) -> str:
     lines: list[str] = [_header("//")]
-    lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_PREFIXES: &[&str] = &[\n")
-    for entry in data.get("runtime_required_import_prefix", []):
-        lines.append(f'    "{entry["prefix"]}",\n')
-    lines.append("];\n\n")
-    lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_SINGLETONS: &[&str] = &[\n")
-    for entry in data.get("runtime_required_import_singleton", []):
-        lines.append(f'    "{entry["name"]}",\n')
-    lines.append("];\n\n")
     lines.extend(
         [
             "#[allow(dead_code)]\n",
@@ -1215,17 +1193,6 @@ def _render_rs_runtime_surface(data: dict) -> str:
             ]
         )
     lines.append("];\n\n")
-    lines.extend(
-        [
-            "#[inline]\n",
-            "pub(crate) fn runtime_surface_requires_direct_import(kind: &str) -> bool {\n",
-            "    REQUIRED_RUNTIME_IMPORT_PREFIXES\n",
-            "        .iter()\n",
-            "        .any(|prefix| kind.starts_with(prefix))\n",
-            "        || REQUIRED_RUNTIME_IMPORT_SINGLETONS.contains(&kind)\n",
-            "}\n\n",
-        ]
-    )
     return "".join(lines)
 
 
@@ -1831,23 +1798,6 @@ def render_py(data: dict) -> str:
             f'{lir_operand_count_repr}, {_py_tuple(entry["deps"])}),\n'
         )
     lines.append(")\n\n")
-    lines.append("WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (\n")
-    for entry in data.get("runtime_required_import_prefix", []):
-        lines.append(f'    "{entry["prefix"]}",\n')
-    lines.append(")\n\n")
-    lines.append("WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS: tuple[str, ...] = (\n")
-    for entry in data.get("runtime_required_import_singleton", []):
-        lines.append(f'    "{entry["name"]}",\n')
-    lines.append(")\n\n")
-    lines.extend(
-        [
-            "def runtime_surface_requires_direct_import(kind: str) -> bool:\n",
-            "    return any(\n",
-            "        kind.startswith(prefix)\n",
-            "        for prefix in WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES\n",
-            "    ) or kind in WASM_REQUIRED_RUNTIME_IMPORT_SINGLETONS\n\n",
-        ]
-    )
     output_export_policy = data["output_export_policy"]
     lines.append(
         "WASM_OUTPUT_EXPORT_ALIAS_PREFIX: str = "

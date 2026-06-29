@@ -1,18 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
-use super::runtime_import_demand::WasmRuntimeImportDemand;
-use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi::{
     WasmRuntimeImport, runtime_callable_arity, runtime_callable_import, wasm_runtime_import,
 };
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_imports::IMPORT_REGISTRY;
-use crate::wasm_options::WasmCompileOptions;
-use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind};
+use crate::{FunctionIR, OpIR, SimpleIR};
 
 pub(super) struct WasmRuntimeSurfacePlan {
-    pub(super) import_demand: WasmRuntimeImportDemand,
     pub(super) max_func_arity: usize,
     pub(super) max_call_arity: usize,
     pub(super) max_class_def_words: usize,
@@ -22,18 +18,12 @@ pub(super) struct WasmRuntimeSurfacePlan {
 }
 
 impl WasmRuntimeSurfacePlan {
-    pub(super) fn build(
-        ir: &SimpleIR,
-        lir_lowering_plans: &crate::wasm::lir_fast::WasmFunctionLoweringPlans,
-        task_kinds: &BTreeMap<String, TrampolineKind>,
-        options: &WasmCompileOptions,
-    ) -> Self {
+    pub(super) fn build(ir: &SimpleIR) -> Self {
         let defined_function_names: BTreeSet<&str> =
             ir.functions.iter().map(|func| func.name.as_str()).collect();
         let known_imports: BTreeSet<WasmRuntimeImport> =
             IMPORT_REGISTRY.iter().map(|spec| spec.import).collect();
         let mut plan = Self {
-            import_demand: WasmRuntimeImportDemand::new(options),
             max_func_arity: 0,
             max_call_arity: 0,
             max_class_def_words: 0,
@@ -45,7 +35,6 @@ impl WasmRuntimeSurfacePlan {
         for func_ir in &ir.functions {
             plan.observe_function(func_ir, &defined_function_names, &known_imports);
         }
-        plan.import_demand.finish(lir_lowering_plans, task_kinds);
         plan
     }
 
@@ -72,7 +61,6 @@ impl WasmRuntimeSurfacePlan {
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let is_poll = func_ir.name.ends_with("_poll");
-        let scalar_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
         let const_strings: BTreeMap<&str, &str> = func_ir
             .ops
             .iter()
@@ -105,13 +93,10 @@ impl WasmRuntimeSurfacePlan {
         if !is_poll {
             self.max_func_arity = self.max_func_arity.max(func_ir.params.len());
         }
-        for (op_index, op) in func_ir.ops.iter().enumerate() {
+        for op in &func_ir.ops {
             self.observe_op(
-                func_ir.name.as_str(),
                 op,
-                op_index,
                 is_poll,
-                &scalar_plan,
                 &const_strings,
                 &runtime_lookup_vars,
                 defined_function_names,
@@ -122,26 +107,14 @@ impl WasmRuntimeSurfacePlan {
 
     fn observe_op(
         &mut self,
-        func_name: &str,
         op: &OpIR,
-        op_index: usize,
         is_poll: bool,
-        scalar_plan: &ScalarRepresentationPlan,
         const_strings: &BTreeMap<&str, &str>,
         runtime_lookup_vars: &BTreeSet<&str>,
         defined_function_names: &BTreeSet<&str>,
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let kind = op.kind.as_str();
-        self.import_demand.observe_op(
-            func_name,
-            op,
-            op_index,
-            is_poll,
-            scalar_plan,
-            defined_function_names,
-            known_imports,
-        );
         if !is_poll
             && (kind == "call_func" || kind == "invoke_ffi")
             && let Some(args) = &op.args

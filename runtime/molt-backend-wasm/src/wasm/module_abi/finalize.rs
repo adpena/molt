@@ -32,7 +32,7 @@ impl WasmBackend {
         self.emit_import_audit();
         self.append_ordered_sections(&callable_table_elements);
 
-        let unused_imports = if !reloc_enabled && self.options.wasm_profile != WasmProfile::Full {
+        let unused_imports = if self.options.wasm_profile != WasmProfile::Full {
             self.import_ids.unused_names().into_iter().collect()
         } else {
             BTreeSet::new()

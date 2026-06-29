@@ -11350,9 +11350,6 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_backend_compile, "wasm_runtime_required_import_names", lambda symbols: ()
-    )
-    monkeypatch.setattr(
         cli_backend_compile,
         "_read_wasm_data_end",
         lambda path: 4096 if path == runtime_reloc_wasm else None,
@@ -11431,9 +11428,6 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(
-        cli_backend_compile, "wasm_runtime_required_import_names", lambda symbols: ()
-    )
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda _path: 4096)
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_memory_min_bytes", lambda _path: 8192)
     monkeypatch.setattr(
@@ -11504,9 +11498,6 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
     monkeypatch.setattr(cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
-    monkeypatch.setattr(
-        cli_backend_compile, "wasm_runtime_required_import_names", lambda symbols: ()
-    )
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda path: None)
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_memory_min_bytes", lambda path: None)
     monkeypatch.setattr(

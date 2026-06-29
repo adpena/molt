@@ -54,7 +54,6 @@ from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
     wasm_runtime_missing_required_exports,
-    wasm_runtime_required_import_names,
 )
 from molt.debug import DebugSubcommand
 from molt.dx import DxConfigError, DxProject

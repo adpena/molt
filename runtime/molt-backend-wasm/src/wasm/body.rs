@@ -118,6 +118,7 @@ impl WasmBody {
         })
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn runtime_imports(&self) -> impl Iterator<Item = WasmRuntimeImport> + '_ {
         self.ops.iter().filter_map(|op| match op {
             WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)) => Some(call.import()),

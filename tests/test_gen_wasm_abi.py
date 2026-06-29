@@ -714,7 +714,6 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
         )
         for entry in data["numeric_runtime_selector"]
     }
-    op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
 
     assert selectors["add"] == ("add", "Add", "Add", 2, ("add", "str_concat"))
     assert selectors["inplace_add"] == (
@@ -734,11 +733,6 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
         None,
         ("vec_sum_int",),
     )
-    assert op_deps["add"] == ["add", "str_concat"]
-    assert op_deps["inplace_add"] == ["inplace_add", "str_concat"]
-    assert op_deps["shl"] == ["lshift"]
-    assert op_deps["bit_not"] == ["invert"]
-    assert op_deps["vec_sum_int"] == ["vec_sum_int"]
 
     rendered_rs_modules = gen.render_rs_modules(data)
     rendered_selector_rs = rendered_rs_modules["numeric_runtime_selector.rs"]
@@ -784,11 +778,6 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     with pytest.raises(manifest.WasmAbiManifestError, match="invalid lir_operand_count"):
         manifest.validate_loaded_manifest(broken_count)
 
-    broken_parallel_dep = copy.deepcopy(data)
-    broken_parallel_dep["op_import_dep"].append({"kind": "add", "deps": ["add"]})
-    with pytest.raises(manifest.WasmAbiManifestError, match="owned by numeric_runtime_selector"):
-        manifest.validate_loaded_manifest(broken_parallel_dep)
-
 
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
@@ -823,19 +812,14 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     ) in rendered_py
 
 
-def test_wasm_abi_manifest_owns_op_import_deps() -> None:
+def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
-    op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
     op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
 
     rendered_rs = _rendered_rs(gen, data)
-    assert "OP_IMPORT_DEPS" in rendered_rs
-    assert "OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])]" in rendered_rs
-    assert '"print", &[WasmRuntimeImport::PrintObj]' in rendered_rs
-    assert '"object_new_bound_stack",\n        &[WasmRuntimeImport::ObjectNewBoundSized]' in rendered_rs
-    assert "module_cache_del" not in op_deps["__structural__"]
-    assert "module_cache_del" not in op_deps
+    assert "op_import_dep" not in data
+    assert "OP_IMPORT_DEPS" not in rendered_rs
     assert op_loop_calls["module_cache_del"]["required_imports"] == ["module_cache_del"]
     assert op_loop_calls["context_enter"]["required_imports"] == [
         "context_enter",
@@ -850,44 +834,12 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
         "thread_poll",
         "thread_submit",
     ]
-    assert not set(op_deps).intersection(op_loop_calls)
-    assert op_deps["print"] == ["print_obj"]
-    assert "gpu_thread_id" not in op_deps
-    assert "gpu_barrier" not in op_deps
     assert op_loop_calls["gpu_thread_id"]["required_imports"] == ["gpu_thread_id"]
     assert op_loop_calls["gpu_barrier"]["required_imports"] == ["gpu_barrier"]
-    assert "memory_copy" not in op_deps
-    assert "memory_fill" not in op_deps
-    assert "object_new_bound" not in op_deps
-    assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
-    assert "call_method_ic" not in op_deps
-    assert "call_super_method_ic" not in op_deps
-
-    runtime_import_demand = (
+    assert not (
         ROOT
         / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
-    ).read_text(encoding="utf-8")
-    assert "op_loop_runtime_call(kind)" in runtime_import_demand
-    assert "self.require_imports(call.required_imports)" in runtime_import_demand
-    assert "wasm_bulk_memory_op(kind).is_some()" in runtime_import_demand
-
-    broken = copy.deepcopy(data)
-    broken["op_import_dep"].append(
-        {"kind": "module_cache_del", "deps": ["module_cache_del"]}
-    )
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="duplicates generated op_loop_runtime_call demand",
-    ):
-        manifest.validate_loaded_manifest(broken)
-
-    broken_bulk = copy.deepcopy(data)
-    broken_bulk["op_import_dep"].append({"kind": "memory_copy", "deps": []})
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="duplicates generated wasm_bulk_memory_op demand",
-    ):
-        manifest.validate_loaded_manifest(broken_bulk)
+    ).exists()
 
 
 def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
@@ -951,7 +903,6 @@ def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
 def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
-    op_deps = {entry["kind"]: entry["deps"] for entry in data["op_import_dep"]}
     policies = {entry["kind"]: entry for entry in data["const_op_policy"]}
 
     assert policies["const"] == {
@@ -980,10 +931,6 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
     assert policies["const_bigint"]["parse_scalar_literal"] is False
     assert policies["const_bigint"]["lir_fast"] == "materialize"
-    for kind, policy in policies.items():
-        materializer = policy.get("materializer_import")
-        if materializer is not None:
-            assert materializer in op_deps[kind]
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
@@ -998,44 +945,17 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert "WASM_CONST_OP_POLICIES" in rendered_py
 
 
-def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> None:
+def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matchers() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
-    import_names = {entry["name"] for entry in data["import"]}
-    prefixes = {entry["prefix"] for entry in data["runtime_required_import_prefix"]}
-    singletons = {entry["name"] for entry in data["runtime_required_import_singleton"]}
-
-    assert {"os_", "path_", "socket_", "math_", "dataclass_"} <= prefixes
-    assert {
-        "socketpair",
-        "spawn",
-        "block_on",
-        "open_builtin",
-        "errno_constants",
-    } <= singletons
-    assert "os_name" not in singletons
-    assert any("os_name".startswith(prefix) for prefix in prefixes)
-    assert all(
-        any(name.startswith(prefix) for name in import_names)
-        for prefix in prefixes
-    )
-    assert singletons <= import_names
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
-    assert "REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_rs
-    assert "REQUIRED_RUNTIME_IMPORT_SINGLETONS" in rendered_rs
-    assert "runtime_surface_requires_direct_import" in rendered_rs
-    assert "WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_py
-    assert "runtime_surface_requires_direct_import" in rendered_py
-
-    runtime_import_demand = (
-        ROOT
-        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
-    ).read_text(encoding="utf-8")
-    assert "REQUIRED_IMPORT_PREFIXES" not in runtime_import_demand
-    assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_import_demand
-    assert "runtime_surface_requires_direct_import(kind)" in runtime_import_demand
+    assert "runtime_required_import_prefix" not in data
+    assert "runtime_required_import_singleton" not in data
+    assert "runtime_surface_requires_direct_import" not in rendered_rs
+    assert "WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES" not in rendered_py
+    assert "runtime_surface_requires_direct_import" not in rendered_py
 
     host_surface = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs"
