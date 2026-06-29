@@ -787,6 +787,9 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
         == policy.native_artifact_plan.digest()
     )
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
+    assert "nativepkg._native" in import_plan.known_modules
+    assert "nativepkg._native" not in import_plan.module_graph
+    assert "nativepkg._native" not in import_plan.compile_modules
 
 
 def test_entry_collections_closure_preserves_static_helper_import_edges(
@@ -7945,7 +7948,7 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
             "alpha": frozenset({"alpha"}),
             "unrelated": frozenset({"unrelated"}),
         },
-        known_modules={"main", "alpha", "unrelated"},
+        known_modules={"main", "alpha", "unrelated", "nativepkg._native"},
         known_func_defaults={
             "main": {"run": {"params": 0, "defaults": []}},
             "alpha": {"helper": {"params": 1, "defaults": []}},
@@ -7960,7 +7963,15 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
         type_facts=type_facts,
     )
 
-    assert scoped_lowering_inputs.known_modules_by_module["main"] == ("alpha", "main")
+    assert scoped_lowering_inputs.known_modules_by_module["main"] == (
+        "alpha",
+        "main",
+        "nativepkg._native",
+    )
+    assert scoped_lowering_inputs.known_modules_by_module["alpha"] == (
+        "alpha",
+        "nativepkg._native",
+    )
     assert set(scoped_lowering_inputs.known_func_defaults_by_module["main"]) == {
         "main",
         "alpha",
@@ -7994,7 +8005,7 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
             "main": frozenset({"main", "alpha"}),
             "alpha": frozenset({"alpha"}),
         },
-        known_modules={"main", "alpha"},
+        known_modules={"main", "alpha", "nativepkg._native"},
         known_func_defaults={
             "main": {"run": {"params": 0, "defaults": []}},
             "alpha": {"helper": {"params": 1, "defaults": []}},
@@ -8026,7 +8037,7 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
             "alpha": frozenset({"alpha"}),
         },
         scoped_lowering_inputs=scoped_lowering_inputs,
-        known_modules_sorted=("alpha", "main"),
+        known_modules_sorted=("alpha", "main", "nativepkg._native"),
         pgo_hot_function_names_sorted=("main::hot",),
     )
 
@@ -8047,10 +8058,40 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         is scoped_lowering_inputs.pgo_hot_function_names_by_module["main"]
     )
     assert scoped_view.type_facts is scoped_lowering_inputs.type_facts_by_module["main"]
-    assert scoped_view.known_modules_payload == ["alpha", "main"]
-    assert scoped_view.known_modules_set == frozenset({"alpha", "main"})
+    assert scoped_view.known_modules_payload == [
+        "alpha",
+        "main",
+        "nativepkg._native",
+    ]
+    assert scoped_view.known_modules_set == frozenset(
+        {"alpha", "main", "nativepkg._native"}
+    )
     assert scoped_view.pgo_hot_function_names_payload == ["main::hot"]
     assert scoped_view.pgo_hot_function_names_set == frozenset({"main::hot"})
+
+
+def test_scoped_lowering_input_view_keeps_native_artifact_modules_without_bundle() -> None:
+    scoped_view = cli._scoped_lowering_input_view(
+        "main",
+        module_deps={"main": {"alpha"}, "alpha": set()},
+        known_modules={"main", "alpha", "nativepkg._native"},
+        known_func_defaults={},
+        known_func_kinds={},
+        pgo_hot_function_names=(),
+        type_facts=None,
+        module_dep_closures={
+            "main": frozenset({"main", "alpha"}),
+            "alpha": frozenset({"alpha"}),
+        },
+        known_modules_sorted=("alpha", "main", "nativepkg._native"),
+        source_modules=("alpha", "main"),
+    )
+
+    assert scoped_view.known_modules == (
+        "alpha",
+        "main",
+        "nativepkg._native",
+    )
 
 
 def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
@@ -13000,6 +13041,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             known_func_defaults={},
             known_func_kinds={},
             module_deps={},
+            source_modules=(),
             module_chunk_max_ops=0,
             optimization_profile="dev",
             pgo_hot_function_names=set(),
@@ -13053,6 +13095,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         ),
         lambda *args, **kwargs: None,
         lambda: (None, None),
+        lambda *args, **kwargs: None,
         tmp_path,
         cli._EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )

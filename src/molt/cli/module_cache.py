@@ -101,19 +101,31 @@ def _scoped_known_modules(
     *,
     module_deps: dict[str, set[str]],
     known_modules: Collection[str],
+    always_known_modules: Collection[str] = (),
     module_dep_closures: dict[str, frozenset[str]] | None = None,
 ) -> tuple[str, ...]:
     scoped_names = module_dep_closures.get(module_name) if module_dep_closures else None
     if scoped_names is None:
         scoped_names = _module_dependency_closure(module_name, module_deps)
     known_modules_set = set(known_modules)
+    always_known_modules_set = set(always_known_modules)
     return tuple(
         sorted(
-            name
-            for name in scoped_names
-            if name == module_name or name in known_modules_set
+            {
+                name
+                for name in scoped_names
+                if name == module_name or name in known_modules_set
+            }
+            | always_known_modules_set
         )
     )
+
+
+def _always_known_modules(
+    known_modules: Collection[str],
+    source_modules: Collection[str],
+) -> frozenset[str]:
+    return frozenset(set(known_modules) - set(source_modules))
 
 
 def _scoped_known_classes(
@@ -182,11 +194,14 @@ def _build_scoped_lowering_inputs(
     scoped_known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]] = {}
     scoped_pgo_hot_function_names_by_module: dict[str, tuple[str, ...]] = {}
     scoped_type_facts_by_module: dict[str, TypeFacts | None] = {}
+    source_modules = frozenset(module_names)
+    always_known_modules = _always_known_modules(known_modules, source_modules)
     for module_name in sorted(module_names):
         scoped_known_modules_by_module[module_name] = _scoped_known_modules(
             module_name,
             module_deps=module_deps,
             known_modules=known_modules,
+            always_known_modules=always_known_modules,
             module_dep_closures=module_dep_closures,
         )
         scoped_known_func_defaults_by_module[module_name] = _scoped_known_func_defaults(
@@ -271,6 +286,7 @@ def _scoped_lowering_input_view(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     known_modules_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
+    source_modules: Collection[str] | None = None,
 ) -> _ScopedLoweringInputView:
     if (
         scoped_lowering_inputs is not None
@@ -289,6 +305,10 @@ def _scoped_lowering_input_view(
             module_name,
             module_deps=module_deps,
             known_modules=known_modules_scope_source,
+            always_known_modules=_always_known_modules(
+                known_modules_scope_source,
+                source_modules if source_modules is not None else module_deps,
+            ),
             module_dep_closures=module_dep_closures,
         )
     if (
@@ -424,6 +444,7 @@ def _module_lowering_execution_view(
     known_modules_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    source_modules: Collection[str] | None = None,
 ) -> _ModuleLoweringExecutionView:
     metadata = _module_lowering_metadata_view(
         module_name,
@@ -443,6 +464,7 @@ def _module_lowering_execution_view(
         scoped_lowering_inputs=scoped_lowering_inputs,
         known_modules_sorted=known_modules_sorted,
         pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+        source_modules=source_modules,
     )
     scoped_known_classes = _scoped_known_classes_view(
         module_name,
@@ -904,6 +926,7 @@ def _module_lowering_context_payload(
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
+    source_modules: Collection[str] | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_classes: dict[str, Any] | None = None,
     is_package: bool | None = None,
@@ -928,6 +951,7 @@ def _module_lowering_context_payload(
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            source_modules=source_modules,
         )
     known_modules_sorted = scoped_inputs.known_modules
     if stdlib_allowlist_sorted is None:
@@ -1026,6 +1050,7 @@ def _module_lowering_context_digest_for_module(
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
+    source_modules: Collection[str] | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_classes: dict[str, Any] | None = None,
     is_package: bool | None = None,
@@ -1059,6 +1084,7 @@ def _module_lowering_context_digest_for_module(
         module_dep_closures=module_dep_closures,
         scoped_lowering_inputs=scoped_lowering_inputs,
         scoped_inputs=scoped_inputs,
+        source_modules=source_modules,
         scoped_known_classes_by_module=scoped_known_classes_by_module,
         scoped_known_classes=scoped_known_classes,
         is_package=is_package,
@@ -1184,6 +1210,7 @@ def _load_cached_module_lowering_result(
     scoped_known_classes: dict[str, Any] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
+    source_modules: Collection[str] | None = None,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> dict[str, Any] | None:
@@ -1220,6 +1247,7 @@ def _load_cached_module_lowering_result(
             module_dep_closures=module_dep_closures,
             scoped_lowering_inputs=scoped_lowering_inputs,
             scoped_inputs=scoped_inputs,
+            source_modules=source_modules,
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             scoped_known_classes=scoped_known_classes,
             is_package=is_package,
@@ -1266,6 +1294,7 @@ def _module_worker_payload(
     module_dep_closures: dict[str, frozenset[str]],
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
+    source_modules: Collection[str] | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     scoped_known_classes: dict[str, Any] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
@@ -1288,6 +1317,7 @@ def _module_worker_payload(
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=tuple(known_modules),
             pgo_hot_function_names_sorted=tuple(pgo_hot_function_names),
+            source_modules=source_modules,
         )
     if stdlib_allowlist_payload is None:
         stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
