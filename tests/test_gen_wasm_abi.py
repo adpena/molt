@@ -204,7 +204,12 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
 
     assert calls["Add"]["import_name"] == "add"
+    assert calls["Add"]["boxed_operand_count"] == 2
     assert calls["FloorDiv"]["import_name"] == "floordiv"
+    assert calls["Neg"]["boxed_operand_count"] == 1
+    assert calls["StoreIndex"]["boxed_operand_count"] == 3
+    assert calls["GetAttrName"]["boxed_operand_count"] == 2
+    assert calls["Iter"]["boxed_operand_count"] == 1
     assert calls["ModuleImportStar"] == {
         "variant": "ModuleImportStar",
         "import_name": "module_import_star",
@@ -234,6 +239,10 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     rendered_rs = _rendered_rs(gen, data)
     assert "enum LirRuntimeCall" in rendered_rs
     assert "Self::FloorDiv => \"floordiv\"" in rendered_rs
+    assert "pub(crate) const fn boxed_operand_count" in rendered_rs
+    assert "Self::StoreIndex => Some(3)" in rendered_rs
+    assert "Self::ModuleImport => \"module_import\"" in rendered_rs
+    assert "Self::ModuleImport => Some" not in rendered_rs
     assert "lir_fixed_runtime_call" in rendered_rs
     assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_rs
 
@@ -241,6 +250,10 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
     with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
         gen.validate_loaded_manifest(broken)
+    broken_count = copy.deepcopy(data)
+    broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
+    with pytest.raises(gen.WasmAbiManifestError, match="boxed_operand_count"):
+        gen.validate_loaded_manifest(broken_count)
 
     local_facade = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/runtime_calls.rs"
@@ -248,7 +261,14 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert "enum LirRuntimeCall" not in local_facade
     assert "match kind" not in local_facade
     assert "lir_fixed_runtime_call" in local_facade
+    assert "LirFixedRuntimeCall" in local_facade
     assert "crate::wasm_abi_generated::LirRuntimeCall" in local_facade
+
+    call_abi = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/lir_runtime_ops/call_abi.rs"
+    ).read_text(encoding="utf-8")
+    assert "boxed_operand_count().unwrap_or_else" in call_abi
+    assert "runtime_call, 2" not in call_abi
 
 
 def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:

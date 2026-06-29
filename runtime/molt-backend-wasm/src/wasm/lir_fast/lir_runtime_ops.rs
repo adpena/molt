@@ -12,7 +12,7 @@ pub(super) use builder_ops::{
     LirSequenceBuilderFinish, emit_lir_build_dict, emit_lir_build_set, emit_lir_sequence_builder,
 };
 pub(super) use call_abi::{
-    emit_lir_boxed_binary_runtime_call, emit_lir_boxed_operands_runtime_call, original_kind,
+    emit_lir_boxed_operands_runtime_call, emit_lir_fixed_runtime_call, original_kind,
 };
 pub(super) use closure_ops::{emit_lir_closure_load, emit_lir_closure_store};
 pub(super) use exception_ops::emit_lir_exception_pending;
