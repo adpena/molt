@@ -6,6 +6,9 @@ import molt.cli as cli
 from molt.cli import frontend_pipeline
 
 _FRONTEND_PIPELINE_NAMES = (
+    "_dead_module_elimination_extra_roots",
+    "_dead_module_elimination_mode",
+    "_dead_module_elimination_safelist",
     "_output_base_for_entry",
     "_prepare_frontend_analysis",
     "_prepare_frontend_lowering_config",
