@@ -11,7 +11,7 @@ from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
-from molt.compiler_analysis.static_truth import static_if_live_branch
+from molt.compiler_analysis.static_truth import static_if_live_branch, static_test_truthiness
 
 
 # Runtime helper bodies whose imports are required static graph edges. This is
@@ -241,6 +241,44 @@ def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
     return (*prefix, name)
 
 
+def _statically_executed_boolop_values(
+    node: ast.BoolOp,
+    *,
+    type_checking_names: Collection[str],
+    type_checking_module_aliases: Collection[str],
+) -> tuple[ast.expr, ...]:
+    values: list[ast.expr] = []
+    if isinstance(node.op, ast.And):
+        for idx, value in enumerate(node.values):
+            values.append(value)
+            value_truth = static_test_truthiness(
+                value,
+                type_checking_names=type_checking_names,
+                type_checking_module_aliases=type_checking_module_aliases,
+            )
+            if value_truth is False:
+                return tuple(values)
+            if value_truth is None:
+                values.extend(node.values[idx + 1 :])
+                return tuple(values)
+        return tuple(values)
+    if isinstance(node.op, ast.Or):
+        for idx, value in enumerate(node.values):
+            values.append(value)
+            value_truth = static_test_truthiness(
+                value,
+                type_checking_names=type_checking_names,
+                type_checking_module_aliases=type_checking_module_aliases,
+            )
+            if value_truth is True:
+                return tuple(values)
+            if value_truth is None:
+                values.extend(node.values[idx + 1 :])
+                return tuple(values)
+        return tuple(values)
+    return tuple(node.values)
+
+
 _TYPE_CHECKING_MODULES = frozenset({"typing", "typing_extensions"})
 
 
@@ -361,6 +399,16 @@ def _static_scan_nodes(
             visit(node.value, qualname_prefix, truth_bindings)
             visit(node.target, qualname_prefix, truth_bindings)
             truth_bindings.record_rebinding_target(node.target)
+            return
+        if isinstance(node, ast.BoolOp):
+            for value in _statically_executed_boolop_values(
+                node,
+                type_checking_names=truth_bindings.type_checking_names,
+                type_checking_module_aliases=(
+                    truth_bindings.type_checking_module_aliases
+                ),
+            ):
+                visit(value, qualname_prefix, truth_bindings)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             function_qualname = ".".join(_qualified_child(qualname_prefix, node.name))
@@ -1035,6 +1083,16 @@ def _collect_imports(
             _visit(node.target, bindings, truth_bindings, qualname_prefix)
             bindings.record_rebinding_target(node.target)
             truth_bindings.record_rebinding_target(node.target)
+            return
+        if isinstance(node, ast.BoolOp):
+            for value in _statically_executed_boolop_values(
+                node,
+                type_checking_names=truth_bindings.type_checking_names,
+                type_checking_module_aliases=(
+                    truth_bindings.type_checking_module_aliases
+                ),
+            ):
+                _visit(value, bindings, truth_bindings, qualname_prefix)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):

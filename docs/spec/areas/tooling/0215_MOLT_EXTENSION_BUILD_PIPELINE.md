@@ -102,7 +102,10 @@ Optional:
   NumPy/SciPy require at least one package-local native/static artifact
   candidate before module-graph discovery, and their package `__init__.py`
   sources are native runtime support custody rather than source-closure
-  authority. Reachable package/subpackage artifacts
+  authority. Static import closure uses the shared `static_truth` guard
+  primitive, including short-circuit boolean pruning, so dead
+  `TYPE_CHECKING`/constant guarded imports and dynamic probes do not become
+  package graph edges. Reachable package/subpackage artifacts
   (`.so`/`.pyd`/`.molt.wasm`/`.o`/`.a`) must have nearby
   `extension_manifest.json` metadata with matching module, extension path,
   checksum, ABI, target, platform, capabilities, optional `python_exports`

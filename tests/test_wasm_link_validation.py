@@ -513,6 +513,16 @@ def _module_with_linking_symbols(entries: list[bytes]) -> bytes:
     return wasm_link._build_sections([(0, custom)])
 
 
+def _module_with_flattenable_rec_group_type() -> bytes:
+    func_type = b"\x60\x00\x00"
+    type_payload = bytearray()
+    type_payload.extend(wasm_link._write_varuint(1))
+    type_payload.append(0x4E)
+    type_payload.extend(wasm_link._write_varuint(1))
+    type_payload.extend(func_type)
+    return wasm_link._build_sections([(1, bytes(type_payload))])
+
+
 def test_strip_debug_sections_removes_all_dwarf_custom_sections() -> None:
     debug_info = wasm_link._build_custom_section(".debug_info", b"old")
     debug_line_str = wasm_link._build_custom_section(".debug_line_str", b"new")
@@ -1011,6 +1021,9 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     split_dir = tmp_path / "split"
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
     link_calls: list[list[str]] = []
+    app_link_bytes = _module_with_flattenable_rec_group_type()
+    flattened_app_link_bytes = wasm_link._flatten_rec_groups(app_link_bytes)
+    assert flattened_app_link_bytes is not None
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
@@ -1021,7 +1034,8 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             link_calls.append(list(cmd))
-        _write_wasm_ld_output(cmd, output_bytes)
+        link_output = app_link_bytes if len(link_calls) == 2 else output_bytes
+        _write_wasm_ld_output(cmd, link_output)
 
         class Result:
             returncode = 0
@@ -1072,7 +1086,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     assert str(runtime) not in split_app_cmd
     assert any("molt_runtime_stub" in part for part in monolithic_cmd)
     assert not any("molt_runtime_stub" in part for part in split_app_cmd)
-    assert (split_dir / "app.wasm").read_bytes() == output_bytes
+    assert (split_dir / "app.wasm").read_bytes() == flattened_app_link_bytes
 
 
 def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() -> None:

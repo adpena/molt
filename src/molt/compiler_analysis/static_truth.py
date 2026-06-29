@@ -43,6 +43,66 @@ def static_test_truthiness(
         return False
     if isinstance(expr, ast.Constant):
         return bool(expr.value)
+    if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+        return bool(expr.elts)
+    if isinstance(expr, ast.Dict):
+        return bool(expr.keys)
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+        operand_truth = static_test_truthiness(
+            expr.operand,
+            type_checking_names=type_checking_names,
+            type_checking_module_aliases=type_checking_module_aliases,
+        )
+        if operand_truth is not None:
+            return not operand_truth
+        return None
+    if isinstance(expr, ast.BoolOp):
+        if isinstance(expr.op, ast.And):
+            saw_unknown = False
+            for value in expr.values:
+                value_truth = static_test_truthiness(
+                    value,
+                    type_checking_names=type_checking_names,
+                    type_checking_module_aliases=type_checking_module_aliases,
+                )
+                if value_truth is False:
+                    return False
+                if value_truth is None:
+                    saw_unknown = True
+            return None if saw_unknown else True
+        if isinstance(expr.op, ast.Or):
+            saw_unknown = False
+            for value in expr.values:
+                value_truth = static_test_truthiness(
+                    value,
+                    type_checking_names=type_checking_names,
+                    type_checking_module_aliases=type_checking_module_aliases,
+                )
+                if value_truth is True:
+                    return True
+                if value_truth is None:
+                    saw_unknown = True
+            return None if saw_unknown else False
+    if (
+        isinstance(expr, ast.Compare)
+        and len(expr.ops) == 1
+        and len(expr.comparators) == 1
+        and isinstance(expr.comparators[0], ast.Constant)
+        and isinstance(expr.comparators[0].value, bool)
+    ):
+        left_truth = static_test_truthiness(
+            expr.left,
+            type_checking_names=type_checking_names,
+            type_checking_module_aliases=type_checking_module_aliases,
+        )
+        if left_truth is None:
+            return None
+        comparator = expr.comparators[0].value
+        op = expr.ops[0]
+        if isinstance(op, (ast.Eq, ast.Is)):
+            return left_truth is comparator
+        if isinstance(op, (ast.NotEq, ast.IsNot)):
+            return left_truth is not comparator
     return None
 
 
