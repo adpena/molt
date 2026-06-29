@@ -1,0 +1,809 @@
+use super::super::*;
+use super::list_index_fast_path::{
+    ListIndexFastPathState, generic_list_int_lane_eligible, index_fallback_import_name,
+};
+use super::var_get_boxed_overflow_safe_fn;
+
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &["index"];
+
+/// Cranelift codegen for subscript read (`index`).
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments, clippy::manual_map)]
+pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
+    op: &OpIR,
+    op_idx: usize,
+    func_ops: &[OpIR],
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    vars: &BTreeMap<String, Variable>,
+    scalarized_tuples: &BTreeMap<String, Vec<Value>>,
+    representation_plan: &ScalarRepresentationPlan,
+    list_index_fast_paths: &mut ListIndexFastPathState,
+    scalar_fast_paths_enabled: bool,
+    local_inc_ref_obj: FuncRef,
+    nbc: &crate::NanBoxConsts,
+) {
+    let ops = func_ops;
+    let var_is_int =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_integer_scalar(name);
+    let var_is_bool =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_bool_scalar(name);
+    let var_is_str =
+        |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_str_scalar(name);
+    let op_index_key_is_integer_family = |op: &OpIR| {
+        scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
+    };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       representation_plan: &ScalarRepresentationPlan|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            representation_plan,
+            nbc,
+        )
+    };
+    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    // Stack-tuple fast path: resolve element at compile time.
+    let stack_resolved = scalarized_tuples.get(&args[0]).and_then(|elems| {
+        SimpleBackend::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
+            let ui = ci as usize;
+            elems.get(ui).copied()
+        })
+    });
+    if let Some(elem_val) = stack_resolved {
+        // The element came from a non-escaping tuple; inc_ref
+        // to keep refcount correct since the tuple itself was
+        // never heap-allocated.
+        emit_inc_ref_obj(&mut *builder, elem_val, local_inc_ref_obj, nbc);
+        if let Some(out__) = op.out.as_ref() {
+            def_var_named(&mut *builder, vars, out__, elem_val);
+        }
+    } else {
+        let obj = var_get_boxed_overflow_safe(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            &args[0],
+            representation_plan,
+        )
+        .expect("Obj not found");
+        let idx = var_get_boxed_overflow_safe(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            &args[1],
+            representation_plan,
+        )
+        .expect("Index not found");
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        if representation_plan.op_has_container_storage(
+            op_idx,
+            op,
+            ContainerStorageKind::FlatListInt,
+        ) {
+            // Inline list[int] getitem — direct memory access using
+            // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
+            //
+            // Requires a plan-owned raw-int index for the bounds-checked inline path.
+            // Falls back to the safe runtime function otherwise.
+            // Inside loops, use Variable-only shadows (phi-correct).
+            let raw_idx_lookup = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
+            if let Some(raw_idx) = raw_idx_lookup {
+                // Extract storage_ptr, data_ptr, len (cached across loop iterations).
+                let (data_ptr, len_val) = {
+                    let dp = if let Some(&var) =
+                        list_index_fast_paths.list_int_data_cache.get(&args[0])
+                    {
+                        builder.use_var(var)
+                    } else {
+                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                        let shifted = builder.ins().ishl_imm(masked, 16);
+                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                        let storage_ptr =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                        let dp = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            LIST_INT_STORAGE_DATA_OFFSET,
+                        );
+                        let var = builder.declare_var(types::I64);
+                        builder.def_var(var, dp);
+                        list_index_fast_paths
+                            .list_int_data_cache
+                            .insert(args[0].clone(), var);
+                        // Also cache len
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            LIST_INT_STORAGE_LEN_OFFSET,
+                        );
+                        let lvar = builder.declare_var(types::I64);
+                        builder.def_var(lvar, len);
+                        list_index_fast_paths
+                            .list_int_len_cache
+                            .insert(args[0].clone(), lvar);
+                        dp
+                    };
+                    let lv = if let Some(&var) =
+                        list_index_fast_paths.list_int_len_cache.get(&args[0])
+                    {
+                        builder.use_var(var)
+                    } else {
+                        // Len not cached yet (data was cached in a prior op).
+                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                        let shifted = builder.ins().ishl_imm(masked, 16);
+                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                        let storage_ptr =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            LIST_INT_STORAGE_LEN_OFFSET,
+                        );
+                        let lvar = builder.declare_var(types::I64);
+                        builder.def_var(lvar, len);
+                        list_index_fast_paths
+                            .list_int_len_cache
+                            .insert(args[0].clone(), lvar);
+                        len
+                    };
+                    (dp, lv)
+                };
+                let bce_safe = op.bce_safe == Some(true);
+                let out_is_raw = op
+                    .out
+                    .as_ref()
+                    .is_some_and(|out| representation_plan.is_raw_int_carrier_name(out));
+                if bce_safe {
+                    // BCE-proven safe: straight-line element access
+                    // with no bounds check, no branch, no slow path.
+                    let byte_offset = builder.ins().ishl_imm(raw_idx, 3);
+                    let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                    let raw_result =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                    if let Some(out__) = op.out.as_ref() {
+                        let result = if out_is_raw {
+                            raw_result
+                        } else {
+                            box_raw_i64_value_overflow_safe(
+                                &mut *module,
+                                &mut *import_ids,
+                                &mut *builder,
+                                import_refs,
+                                sealed_blocks,
+                                raw_result,
+                            )
+                        };
+                        def_var_named(&mut *builder, vars, out__, result);
+                    }
+                } else {
+                    // Bounds check: 0 <= raw_idx < len.
+                    // On failure, fall through to the safe runtime function.
+                    let in_bounds = builder
+                        .ins()
+                        .icmp(IntCC::UnsignedLessThan, raw_idx, len_val);
+                    let fast_block = builder.create_block();
+                    let slow_block = builder.create_block();
+                    builder.set_cold_block(slow_block);
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64);
+                    builder
+                        .ins()
+                        .brif(in_bounds, fast_block, &[], slow_block, &[]);
+
+                    // Fast path: direct load
+                    switch_to_block_materialized(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, sealed_blocks, fast_block);
+                    let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                    let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                    let raw_result =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                    let fast_result = if out_is_raw {
+                        raw_result
+                    } else {
+                        box_raw_i64_value_overflow_safe(
+                            &mut *module,
+                            &mut *import_ids,
+                            &mut *builder,
+                            import_refs,
+                            sealed_blocks,
+                            raw_result,
+                        )
+                    };
+                    jump_block(&mut *builder, merge_block, &[fast_result]);
+
+                    // Slow path: runtime call handles negative index and IndexError.
+                    switch_to_block_materialized(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, sealed_blocks, slow_block);
+                    let (callee_name, slow_index) = if out_is_raw {
+                        ("molt_list_int_getitem_raw_checked", raw_idx)
+                    } else {
+                        ("molt_list_int_getitem", *idx)
+                    };
+                    let callee = SimpleBackend::import_func_id_split(
+                        &mut *module,
+                        &mut *import_ids,
+                        callee_name,
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, slow_index]);
+                    let slow_res = builder.inst_results(call)[0];
+                    jump_block(&mut *builder, merge_block, &[slow_res]);
+
+                    // Merge
+                    switch_to_block_materialized(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, sealed_blocks, merge_block);
+                    let merged = builder.block_params(merge_block)[0];
+                    if let Some(out__) = op.out.as_ref() {
+                        def_var_named(&mut *builder, vars, out__, merged);
+                    }
+                }
+            } else {
+                // Fallback: NaN-boxed index, call the standard variant.
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_list_int_getitem",
+                    &[types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                let res = builder.inst_results(call)[0];
+                if let Some(out__) = op.out.as_ref() {
+                    def_var_from_boxed_transport(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        import_refs,
+                        vars,
+                        representation_plan,
+                        nbc,
+                        out__,
+                        res,
+                    );
+                }
+            }
+        } else if generic_list_int_lane_eligible(
+            representation_plan,
+            op,
+            op_index_key_is_integer_family(op),
+        ) {
+            // Inline list getitem — handles both TYPE_ID_LIST (Vec<u64>)
+            // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
+            //
+            // At cache-miss time we load the type_id from the object header
+            // and select the correct data/len offsets. The is_bool flag is
+            // cached alongside data_ptr/len so the fast-block element access
+            // can branch between u64-load (regular list) and u8-load+NaN-box
+            // (list_bool) without re-loading the header.
+            let raw_idx_lookup = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
+            if let Some(raw_idx) = raw_idx_lookup {
+                let vec_layout = vec_u64_layout();
+                // Determine output element type for specialization.
+                // When known, the cache-miss path skips the type_id
+                // check + dual-layout loads, and the fast path skips
+                // the per-access is_bool branch entirely.
+                let getitem_out_is_bool = op.out.as_ref().is_some_and(|o| var_is_bool(o));
+                let getitem_out_is_non_bool = op.out.as_ref().is_some_and(|o| {
+                    var_is_int(o) || var_is_str(o) || representation_plan.name_is_float_scalar(o)
+                });
+                // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
+                let (data_ptr, len_val, is_bool_val) = {
+                    let dp = if let Some(&var) = list_index_fast_paths.list_data_cache.get(&args[0])
+                    {
+                        builder.use_var(var)
+                    } else {
+                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                        let shifted = builder.ins().ishl_imm(masked, 16);
+                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                        // obj_ptr[0] = storage pointer (Vec<u64> or ListBoolStorage)
+                        let storage_ptr =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                        if getitem_out_is_bool {
+                            // Proven bool list -- skip type_id check, use
+                            // ListBoolStorage layout (repr(C): data@0, len@8).
+                            let ibvar = builder.declare_var(types::I8);
+                            let const_true = builder.ins().iconst(types::I8, 1);
+                            builder.def_var(ibvar, const_true);
+                            list_index_fast_paths
+                                .list_is_bool_cache
+                                .insert(args[0].clone(), ibvar);
+                            let dp = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                0i32,
+                            );
+                            let len = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                8i32,
+                            );
+                            let var = builder.declare_var(types::I64);
+                            builder.def_var(var, dp);
+                            list_index_fast_paths
+                                .list_data_cache
+                                .insert(args[0].clone(), var);
+                            let lvar = builder.declare_var(types::I64);
+                            builder.def_var(lvar, len);
+                            list_index_fast_paths
+                                .list_len_cache
+                                .insert(args[0].clone(), lvar);
+                            dp
+                        } else if getitem_out_is_non_bool {
+                            // Proven non-bool list -- skip type_id check, use
+                            // Vec<u64> layout (repr(Rust), probed offsets).
+                            let ibvar = builder.declare_var(types::I8);
+                            let const_false = builder.ins().iconst(types::I8, 0);
+                            builder.def_var(ibvar, const_false);
+                            list_index_fast_paths
+                                .list_is_bool_cache
+                                .insert(args[0].clone(), ibvar);
+                            let dp = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                vec_layout.data_offset,
+                            );
+                            let len = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                vec_layout.len_offset,
+                            );
+                            let var = builder.declare_var(types::I64);
+                            builder.def_var(var, dp);
+                            list_index_fast_paths
+                                .list_data_cache
+                                .insert(args[0].clone(), var);
+                            let lvar = builder.declare_var(types::I64);
+                            builder.def_var(lvar, len);
+                            list_index_fast_paths
+                                .list_len_cache
+                                .insert(args[0].clone(), lvar);
+                            dp
+                        } else {
+                            // Unknown element type -- load type_id and both layouts.
+                            let tid = builder.ins().load(
+                                types::I32,
+                                MemFlagsData::trusted(),
+                                obj_ptr,
+                                HEADER_TYPE_ID_OFFSET,
+                            );
+                            let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                            let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                            let ibvar = builder.declare_var(types::I8);
+                            builder.def_var(ibvar, is_bool);
+                            list_index_fast_paths
+                                .list_is_bool_cache
+                                .insert(args[0].clone(), ibvar);
+                            let dp_bool = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                0i32,
+                            );
+                            let len_bool = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                8i32,
+                            );
+                            let dp_vec = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                vec_layout.data_offset,
+                            );
+                            let len_vec = builder.ins().load(
+                                types::I64,
+                                MemFlagsData::trusted(),
+                                storage_ptr,
+                                vec_layout.len_offset,
+                            );
+                            let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
+                            let len = builder.ins().select(is_bool, len_bool, len_vec);
+                            let var = builder.declare_var(types::I64);
+                            builder.def_var(var, dp);
+                            list_index_fast_paths
+                                .list_data_cache
+                                .insert(args[0].clone(), var);
+                            let lvar = builder.declare_var(types::I64);
+                            builder.def_var(lvar, len);
+                            list_index_fast_paths
+                                .list_len_cache
+                                .insert(args[0].clone(), lvar);
+                            dp
+                        }
+                    };
+                    let lv = if let Some(&var) = list_index_fast_paths.list_len_cache.get(&args[0])
+                    {
+                        builder.use_var(var)
+                    } else {
+                        // Len not cached yet (data was cached in a prior op).
+                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                        let shifted = builder.ins().ishl_imm(masked, 16);
+                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                        let storage_ptr =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+                        // Use is_bool_cache if available, otherwise re-probe.
+                        let is_bool = if let Some(&ibv) =
+                            list_index_fast_paths.list_is_bool_cache.get(&args[0])
+                        {
+                            builder.use_var(ibv)
+                        } else {
+                            let tid = builder.ins().load(
+                                types::I32,
+                                MemFlagsData::trusted(),
+                                obj_ptr,
+                                HEADER_TYPE_ID_OFFSET,
+                            );
+                            let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                            let ib = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                            let ibvar = builder.declare_var(types::I8);
+                            builder.def_var(ibvar, ib);
+                            list_index_fast_paths
+                                .list_is_bool_cache
+                                .insert(args[0].clone(), ibvar);
+                            ib
+                        };
+                        let len_bool = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            8i32,
+                        );
+                        let len_vec = builder.ins().load(
+                            types::I64,
+                            MemFlagsData::trusted(),
+                            storage_ptr,
+                            vec_layout.len_offset,
+                        );
+                        let len = builder.ins().select(is_bool, len_bool, len_vec);
+                        let lvar = builder.declare_var(types::I64);
+                        builder.def_var(lvar, len);
+                        list_index_fast_paths
+                            .list_len_cache
+                            .insert(args[0].clone(), lvar);
+                        len
+                    };
+                    let ibv =
+                        if let Some(&v) = list_index_fast_paths.list_is_bool_cache.get(&args[0]) {
+                            builder.use_var(v)
+                        } else {
+                            // Fallback: assume regular list (is_bool = 0).
+                            builder.ins().iconst(types::I8, 0)
+                        };
+                    (dp, lv, ibv)
+                };
+                let bce_safe_list = op.bce_safe == Some(true);
+                let out_is_bool = getitem_out_is_bool;
+                let out_is_non_bool = getitem_out_is_non_bool;
+                if bce_safe_list && out_is_bool {
+                    // BCE-proven safe + proven bool list: straight-line
+                    // u8-load, no bounds check, no inc_ref (bools are
+                    // inline NaN-boxed values, not heap pointers).
+                    let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                    let byte_val =
+                        builder
+                            .ins()
+                            .load(types::I8, MemFlagsData::trusted(), bool_elem_addr, 0);
+                    let byte_ext = builder.ins().uextend(types::I64, byte_val);
+                    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+                    let bool_elem = builder.ins().bor(bool_tag, byte_ext);
+                    if let Some(out__) = op.out.as_ref() {
+                        def_bool_result(
+                            &mut *builder,
+                            vars,
+                            representation_plan,
+                            out__,
+                            bool_elem,
+                            Some(byte_ext),
+                        );
+                    }
+                } else if bce_safe_list && out_is_non_bool {
+                    // BCE-proven safe + proven non-bool list: straight-line
+                    // u64-load, no bounds check.
+                    let byte_offset = builder.ins().ishl_imm(raw_idx, 3);
+                    let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                    let elem =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                    emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
+                    if let Some(out__) = op.out.as_ref() {
+                        def_var_named(&mut *builder, vars, out__, elem);
+                    }
+                } else {
+                    // Bounds check: 0 <= raw_idx < len.
+                    // On failure, fall through to the safe runtime function.
+                    let in_bounds = builder
+                        .ins()
+                        .icmp(IntCC::UnsignedLessThan, raw_idx, len_val);
+                    let fast_block = builder.create_block();
+                    let slow_block = builder.create_block();
+                    builder.set_cold_block(slow_block);
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I64); // result
+                    builder
+                        .ins()
+                        .brif(in_bounds, fast_block, &[], slow_block, &[]);
+
+                    // Fast path: element access.
+                    // When the output type is statically known we can
+                    // skip the per-access is_bool branch entirely:
+                    //   - bool output → always u8-load + NaN-box
+                    //   - proven non-bool output → always u64-load + inc_ref
+                    //   - unknown → branch on cached is_bool flag
+                    switch_to_block_materialized(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, sealed_blocks, fast_block);
+                    // Carry a conditional bool payload through the merge block.
+                    // For the "unknown" path: when the list IS list_bool,
+                    // this shadow holds the raw byte (0 or 1) which lets
+                    // downstream `if`/`br_if` consumers skip NaN-box tag
+                    // extraction.
+                    // For the "proven bool" path: the shadow is always the
+                    // raw byte, enabling ZERO NaN-box overhead at consumers.
+                    let has_raw_bool_carrier_unknown = !out_is_bool
+                        && !out_is_non_bool
+                        && list_index_fast_paths
+                            .list_is_bool_cache
+                            .contains_key(&args[0]);
+                    let has_raw_bool_carrier = out_is_bool || has_raw_bool_carrier_unknown;
+                    if has_raw_bool_carrier {
+                        builder.append_block_param(merge_block, types::I64);
+                        // raw bool result
+                    }
+                    if out_is_bool {
+                        // Proven bool list — emit u8-load directly, no branch.
+                        let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                        let byte_val = builder.ins().load(
+                            types::I8,
+                            MemFlagsData::trusted(),
+                            bool_elem_addr,
+                            0,
+                        );
+                        let byte_ext = builder.ins().uextend(types::I64, byte_val);
+                        let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+                        let bool_elem = builder.ins().bor(bool_tag, byte_ext);
+                        // Pass raw 0/1 shadow for downstream consumers.
+                        jump_block(&mut *builder, merge_block, &[bool_elem, byte_ext]);
+                    } else if out_is_non_bool {
+                        // Proven non-bool list — emit u64-load directly, no branch.
+                        let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                        let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                        let elem =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                        emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
+                        jump_block(&mut *builder, merge_block, &[elem]);
+                    } else {
+                        // Unknown element type — branch on cached is_bool flag.
+                        let zero_i8 = builder.ins().iconst(types::I8, 0);
+                        let is_bool_check =
+                            builder.ins().icmp(IntCC::NotEqual, is_bool_val, zero_i8);
+                        let bool_load_block = builder.create_block();
+                        let vec_load_block = builder.create_block();
+                        builder.ins().brif(
+                            is_bool_check,
+                            bool_load_block,
+                            &[],
+                            vec_load_block,
+                            &[],
+                        );
+
+                        // Bool list path: load u8, convert to NaN-boxed bool.
+                        // No inc_ref needed — bools are inline NaN-boxed values.
+                        switch_to_block_materialized(&mut *builder, bool_load_block);
+                        seal_block_once(&mut *builder, sealed_blocks, bool_load_block);
+                        let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
+                        let byte_val = builder.ins().load(
+                            types::I8,
+                            MemFlagsData::trusted(),
+                            bool_elem_addr,
+                            0,
+                        );
+                        // NaN-box: result = (QNAN | TAG_BOOL) | (byte_val as u64)
+                        let byte_ext = builder.ins().uextend(types::I64, byte_val);
+                        let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+                        let bool_elem = builder.ins().bor(bool_tag, byte_ext);
+                        if has_raw_bool_carrier {
+                            // Shadow carries raw 0/1 for downstream truthiness.
+                            jump_block(&mut *builder, merge_block, &[bool_elem, byte_ext]);
+                        } else {
+                            jump_block(&mut *builder, merge_block, &[bool_elem]);
+                        }
+
+                        // Regular list path: load u64, inc_ref.
+                        switch_to_block_materialized(&mut *builder, vec_load_block);
+                        seal_block_once(&mut *builder, sealed_blocks, vec_load_block);
+                        let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                        let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+                        let elem =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
+                        emit_inc_ref_obj(&mut *builder, elem, local_inc_ref_obj, nbc);
+                        if has_raw_bool_carrier {
+                            // Non-bool path: shadow = NaN-boxed element (not a raw bool).
+                            jump_block(&mut *builder, merge_block, &[elem, elem]);
+                        } else {
+                            jump_block(&mut *builder, merge_block, &[elem]);
+                        }
+                    }
+
+                    // Slow path: safe runtime call (handles negative index, IndexError)
+                    switch_to_block_materialized(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, sealed_blocks, slow_block);
+                    let callee = SimpleBackend::import_func_id_split(
+                        &mut *module,
+                        &mut *import_ids,
+                        "molt_list_getitem_int_fast",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                    let slow_res = builder.inst_results(call)[0];
+                    if has_raw_bool_carrier {
+                        if out_is_bool {
+                            // Proven bool: extract raw 0/1 from NaN-boxed bool.
+                            let raw_bit = builder.ins().band_imm(slow_res, 1);
+                            jump_block(&mut *builder, merge_block, &[slow_res, raw_bit]);
+                        } else {
+                            // Unknown path: shadow = NaN-boxed element when not bool.
+                            jump_block(&mut *builder, merge_block, &[slow_res, slow_res]);
+                        }
+                    } else {
+                        jump_block(&mut *builder, merge_block, &[slow_res]);
+                    }
+
+                    // Merge
+                    switch_to_block_materialized(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, sealed_blocks, merge_block);
+                    let merged = builder.block_params(merge_block)[0];
+                    if let Some(out__) = op.out.as_ref() {
+                        // Store conditional bool payload so downstream `if`/`br_if`
+                        // can skip NaN-box tag extraction for list_bool elements.
+                        if has_raw_bool_carrier {
+                            let raw_carrier = builder.block_params(merge_block)[1];
+                            if out_is_bool {
+                                // Proven bool: raw_carrier is always 0/1.
+                                // Store directly — consumers can branch
+                                // with zero NaN-box overhead.
+                                def_bool_result(
+                                    &mut *builder,
+                                    vars,
+                                    representation_plan,
+                                    out__,
+                                    merged,
+                                    Some(raw_carrier),
+                                );
+                            } else {
+                                def_var_named(&mut *builder, vars, out__, merged);
+                                // Unknown path: shadow is raw 0/1 when
+                                // list is bool, NaN-boxed otherwise.
+                                list_index_fast_paths.conditional_list_bool_shadows.insert(
+                                    out__.to_string(),
+                                    ConditionalListBoolShadow {
+                                        list_name: args[0].clone(),
+                                        payload: raw_carrier,
+                                    },
+                                );
+                            }
+                        } else {
+                            def_var_named(&mut *builder, vars, out__, merged);
+                        }
+                    }
+                }
+            } else {
+                // No raw-int carrier: fall back to runtime call.
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_list_getitem_int_fast",
+                    &[types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                let res = builder.inst_results(call)[0];
+                if let Some(out__) = op.out.as_ref() {
+                    def_var_from_boxed_transport(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        import_refs,
+                        vars,
+                        representation_plan,
+                        nbc,
+                        out__,
+                        res,
+                    );
+                }
+            }
+        } else {
+            // Dispatch based on container specialization:
+            // - dict: direct hash-table lookup
+            // - tuple: direct element access
+            // - fast_int: generic list but index is known int (no container_type proof)
+            // - default: full type dispatch
+            let fn_name = index_fallback_import_name(
+                representation_plan,
+                op,
+                op_index_key_is_integer_family(op),
+            );
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                fn_name,
+                &[types::I64, types::I64],
+                &[types::I64],
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let call = builder.ins().call(local_callee, &[*obj, *idx]);
+            let res = builder.inst_results(call)[0];
+            if let Some(out__) = op.out.as_ref() {
+                def_var_from_boxed_transport(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    out__,
+                    res,
+                );
+            }
+        }
+    }
+}

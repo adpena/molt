@@ -530,6 +530,12 @@ interleave anytime. N1 must wait for the LLVM partner's arc (§0.3). C1/O are cl
 - Move-only split of the 39,043-line file into `native_backend/fc/{arith,control_flow,
   collections,exceptions,closures,trampolines,loops,async_gen,intrinsic_calls}.rs` + a
   `function_compiler.rs` that becomes a thin `mod fc; use fc::*;` re-export shell.
+- Live refinement: the former aggregate `fc::indexing` handler is retired.
+  Subscript read fast paths, subscript write fast paths, and delete/slice
+  runtime-call lowering now live in `fc/subscript_get.rs`,
+  `fc/subscript_store.rs`, and `fc/slice_ops.rs`, each with its own
+  `NativeOpFamily` routing authority so the old mixed indexing bucket cannot
+  accumulate new codegen concerns.
 - Each submodule keeps `use super::*` (module-ancestry privacy preserved — NO crate boundary, so
   this is safe and unchanged from 34e3bddbf methodology).
 - Line budget: no submodule >6,000 lines; target ~4,000 avg.
