@@ -21,6 +21,7 @@ LEGACY_OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
 OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
 OUT_RS_FILES = {
     "mod.rs": OUT_RS_DIR / "mod.rs",
+    "bulk_memory_ops.rs": OUT_RS_DIR / "bulk_memory_ops.rs",
     "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "imports.rs": OUT_RS_DIR / "imports.rs",
@@ -107,6 +108,10 @@ CONTAINER_RUNTIME_SELECTOR_FACTS = {
     "set",
     "str",
     "tuple",
+}
+WASM_BULK_MEMORY_INSTRUCTIONS = {
+    "memory_copy": "Copy",
+    "memory_fill": "Fill",
 }
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
@@ -460,11 +465,13 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             )
         args = [f"local:{arg_idx}" for arg_idx in range(arg_count)]
         for kind in kinds:
+            expanded_import_name = import_name or kind
             expanded.append(
                 {
                     "kind": kind,
-                    "import_name": import_name or kind,
+                    "import_name": expanded_import_name,
                     "args": args,
+                    "required_imports": [expanded_import_name],
                     "sink": sink,
                 }
             )
@@ -717,6 +724,36 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call {kind!r} references unknown import {import_name!r}"
             )
+        required_imports = entry.get("required_imports")
+        if required_imports is None:
+            required_imports = [import_name]
+        if not isinstance(required_imports, list) or not required_imports:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} must define required_imports as a non-empty list"
+            )
+        required_seen: set[str] = set()
+        normalized_required_imports: list[str] = []
+        for required_idx, required in enumerate(required_imports):
+            if not isinstance(required, str) or not required:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} has invalid required_imports entry {required_idx}"
+                )
+            if required in required_seen:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} repeats required import {required!r}"
+                )
+            if required not in seen_imports:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} required_imports references "
+                    f"unknown import {required!r}"
+                )
+            required_seen.add(required)
+            normalized_required_imports.append(required)
+        if import_name not in required_seen:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} required_imports must include emitted import {import_name!r}"
+            )
+        entry["required_imports"] = normalized_required_imports
         sink = entry.get("sink")
         if sink not in OP_LOOP_RUNTIME_SINKS:
             raise WasmAbiManifestError(
@@ -756,6 +793,35 @@ def validate_loaded_manifest(data: dict) -> dict:
             )
     data["op_loop_runtime_call"] = op_loop_runtime_calls
     data.pop("op_loop_runtime_call_group", None)
+
+    bulk_memory_ops = data.get("wasm_bulk_memory_op", [])
+    if not isinstance(bulk_memory_ops, list) or not bulk_memory_ops:
+        raise WasmAbiManifestError("manifest must define wasm_bulk_memory_op entries")
+    seen_bulk_memory_kinds: set[str] = set()
+    for idx, entry in enumerate(bulk_memory_ops):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"wasm_bulk_memory_op entry {idx} must be a table"
+            )
+        kind = entry.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise WasmAbiManifestError(
+                f"wasm_bulk_memory_op entry {idx} has invalid kind"
+            )
+        if kind in seen_bulk_memory_kinds:
+            raise WasmAbiManifestError(f"duplicate wasm_bulk_memory_op kind {kind!r}")
+        seen_bulk_memory_kinds.add(kind)
+        instruction = entry.get("instruction")
+        if instruction not in WASM_BULK_MEMORY_INSTRUCTIONS:
+            raise WasmAbiManifestError(
+                f"wasm_bulk_memory_op {kind!r} has invalid instruction "
+                f"{instruction!r}"
+            )
+        arg_count = entry.get("arg_count")
+        if not isinstance(arg_count, int) or arg_count != 3:
+            raise WasmAbiManifestError(
+                f"wasm_bulk_memory_op {kind!r} must use arg_count = 3"
+            )
 
     container_runtime_selectors = data.get("container_runtime_selector", [])
     if not isinstance(container_runtime_selectors, list):
@@ -822,6 +888,14 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(f"op_import_dep entry {idx} has invalid kind")
         if kind in seen_op_import_kinds:
             raise WasmAbiManifestError(f"duplicate op_import_dep kind {kind!r}")
+        if kind in seen_op_loop_runtime_kinds:
+            raise WasmAbiManifestError(
+                f"op_import_dep {kind!r} duplicates generated op_loop_runtime_call demand"
+            )
+        if kind in seen_bulk_memory_kinds:
+            raise WasmAbiManifestError(
+                f"op_import_dep {kind!r} duplicates generated wasm_bulk_memory_op demand"
+            )
         seen_op_import_kinds.add(kind)
         if not isinstance(deps, list):
             raise WasmAbiManifestError(
@@ -1365,6 +1439,7 @@ def _render_rs_mod() -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "mod bulk_memory_ops;\n",
             "mod call_indirect;\n",
             "mod container_runtime_selector;\n",
             "mod const_policy;\n",
@@ -1374,6 +1449,9 @@ def _render_rs_mod() -> str:
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
+            "pub(crate) use bulk_memory_ops::{\n",
+            "    WasmBulkMemoryInstruction, WasmBulkMemoryOpSpec, wasm_bulk_memory_op,\n",
+            "};\n",
             "pub(crate) use call_indirect::{\n",
             "    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY,\n",
             "};\n",
@@ -1654,6 +1732,53 @@ def _render_rs_imports(data: dict) -> str:
     return "".join(lines)
 
 
+def _render_rs_bulk_memory_ops(data: dict) -> str:
+    entries = data.get("wasm_bulk_memory_op", [])
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmBulkMemoryInstruction {\n",
+        ]
+    )
+    for variant in sorted(set(WASM_BULK_MEMORY_INSTRUCTIONS.values())):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmBulkMemoryOpSpec {\n",
+            "    pub(crate) instruction: WasmBulkMemoryInstruction,\n",
+            "    pub(crate) arg_count: usize,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_bulk_memory_op(\n",
+            "    kind: &str,\n",
+            ") -> Option<WasmBulkMemoryOpSpec> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in entries:
+        instruction = WASM_BULK_MEMORY_INSTRUCTIONS[entry["instruction"]]
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(WasmBulkMemoryOpSpec {{\n",
+                "            instruction: WasmBulkMemoryInstruction::"
+                f"{instruction},\n",
+                f"            arg_count: {entry['arg_count']},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_op_loop_arg(arg: str) -> str:
     if arg.startswith("local:"):
         return f"OpLoopRuntimeArgSpec::Local({arg.removeprefix('local:')})"
@@ -1773,6 +1898,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             "pub(crate) struct OpLoopRuntimeCallSpec {\n",
             "    pub(crate) import_name: &'static str,\n",
             "    pub(crate) args: &'static [OpLoopRuntimeArgSpec],\n",
+            "    pub(crate) required_imports: &'static [&'static str],\n",
             "    pub(crate) sink: OpLoopRuntimeSinkSpec,\n",
             "}\n\n",
             "#[inline]\n",
@@ -1790,6 +1916,14 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
         )
         for arg in entry["args"]:
             lines.append(f"                {_render_op_loop_arg(arg)},\n")
+        lines.extend(
+            [
+                "            ],\n",
+                "            required_imports: &[\n",
+            ]
+        )
+        for required in entry["required_imports"]:
+            lines.append(f'                "{required}",\n')
         lines.extend(
             [
                 "            ],\n",
@@ -2272,6 +2406,7 @@ def _render_rs_pure_profile(data: dict) -> str:
 def render_rs_modules(data: dict) -> dict[str, str]:
     modules = {
         "mod.rs": _render_rs_mod(),
+        "bulk_memory_ops.rs": _render_rs_bulk_memory_ops(data),
         "call_indirect.rs": _render_rs_call_indirect(data),
         "container_runtime_selector.rs": _render_rs_container_runtime_selector(data),
         "const_policy.rs": _render_rs_const_policy(data),
@@ -2299,6 +2434,13 @@ def render_py(data: dict) -> str:
     lines.append("WASM_IMPORT_REGISTRY: tuple[str, ...] = (\n")
     for entry in data["import"]:
         lines.append(f'    "{entry["name"]}",\n')
+    lines.append(")\n\n")
+    lines.append("WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (\n")
+    for entry in data.get("wasm_bulk_memory_op", []):
+        lines.append(
+            f'    ("{entry["kind"]}", "{entry["instruction"]}", '
+            f'{entry["arg_count"]}),\n'
+        )
     lines.append(")\n\n")
     poll_imports = sorted(
         (
