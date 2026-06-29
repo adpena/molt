@@ -96,6 +96,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     text = runtime_exports_path.read_text(encoding="utf-8")
     assert "wasm_imports.rs" not in text
     assert "WASM_IMPORT_REGISTRY" in text
+    assert "_normalize_runtime_export_name" not in text
     assert "_HOST_RUNTIME_EXPORTS" not in text
     assert "_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS" not in text
     assert {"alloc", "runtime_init", "socket_connect", "task_new"} <= manifest_names
@@ -131,6 +132,16 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
+    assert "WASM_RUNTIME_IMPORT_EXPORT_NAMES" in rendered_py
+    assert "WASM_RUNTIME_EXPORT_BY_IMPORT" in rendered_py
+    assert "WASM_RUNTIME_IMPORT_BY_EXPORT" in rendered_py
+    assert "def wasm_runtime_import_name" in rendered_py
+    assert "def wasm_runtime_export_name" in rendered_py
+    assert '("alloc", "molt_alloc")' in rendered_py
+    assert '("socket_drop", "molt_socket_drop")' in rendered_py
+    assert "runtime_export_name" in rendered_rs
+    assert 'Self::Alloc => "molt_alloc"' in rendered_rs
+    assert 'Self::SocketDrop => "molt_socket_drop"' in rendered_rs
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
@@ -1190,5 +1201,6 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
     assert "_WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in link_format
     assert "_WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in link_format
     assert "_WASM_ABI.WASM_ESSENTIAL_EXPORTS" in link_format
+    assert "_WASM_ABI.wasm_runtime_export_name" in link_format
     assert '"molt_alloc"' not in link_format
     assert '"molt_isolate_import"' not in link_format

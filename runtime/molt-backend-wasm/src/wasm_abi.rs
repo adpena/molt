@@ -5,7 +5,8 @@ pub(crate) use crate::wasm_abi_generated::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, GPU_INTRINSIC_MANIFEST_NAMES,
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
-    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,
+    WasmRuntimeImport, poll_table_import_slot, runtime_callable_arity, runtime_callable_import,
+    wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,

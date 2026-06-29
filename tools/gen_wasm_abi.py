@@ -116,6 +116,16 @@ def _rust_runtime_import(data: dict, import_name: str) -> str:
     return f"WasmRuntimeImport::{variants[import_name]}"
 
 
+def _runtime_export_name(entry: dict) -> str:
+    name = entry["name"]
+    runtime_name = entry.get("runtime_name")
+    if runtime_name is not None:
+        return runtime_name
+    if name.startswith("molt_"):
+        return name
+    return f"molt_{name}"
+
+
 def _rust_option_str(value: str | None) -> str:
     return "None" if value is None else f'Some("{value}")'
 
@@ -153,8 +163,8 @@ def _render_rs_mod() -> str:
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use imports::{\n",
-            "    wasm_runtime_import, IMPORT_REGISTRY, OP_IMPORT_DEPS, RuntimeImportSpec,\n",
-            "    WasmRuntimeImport,\n",
+            "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY, OP_IMPORT_DEPS,\n",
+            "    RuntimeImportSpec, WasmRuntimeImport,\n",
             "};\n",
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
@@ -447,6 +457,19 @@ def _render_rs_imports(data: dict) -> str:
         [
             "        }\n",
             "    }\n\n",
+            "    pub(crate) const fn runtime_export_name(self) -> &'static str {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in data["import"]:
+        lines.append(
+            f"            Self::{import_variants[entry['name']]} => "
+            f'"{_runtime_export_name(entry)}",\n'
+        )
+    lines.extend(
+        [
+            "        }\n",
+            "    }\n\n",
             "    pub(crate) const fn type_idx(self) -> u32 {\n",
             "        match self {\n",
         ]
@@ -497,6 +520,14 @@ def _render_rs_imports(data: dict) -> str:
                 f"        \"{runtime_name}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
             )
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
+    lines.extend(
+        [
+            "#[inline]\n",
+            "pub(crate) fn wasm_runtime_export_name(name: &str) -> Option<&'static str> {\n",
+            "    wasm_runtime_import(name).map(WasmRuntimeImport::runtime_export_name)\n",
+            "}\n\n",
+        ]
+    )
     lines.append("pub(crate) const OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])] = &[\n")
     for entry in data.get("op_import_dep", []):
         kind = entry["kind"]
@@ -1696,6 +1727,34 @@ def render_py(data: dict) -> str:
             "}\n\n",
             "def wasm_import_name(name: str) -> str | None:\n",
             "    return WASM_IMPORT_NAME_BY_LOOKUP.get(name)\n\n",
+            "WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (\n",
+        ]
+    )
+    for entry in data["import"]:
+        lines.append(
+            f'    ("{entry["name"]}", "{_runtime_export_name(entry)}"),\n'
+        )
+    lines.extend(
+        [
+            ")\n\n",
+            "WASM_RUNTIME_EXPORT_BY_IMPORT: dict[str, str] = {\n",
+            "    import_name: export_name\n",
+            "    for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES\n",
+            "}\n\n",
+            "WASM_RUNTIME_IMPORT_BY_EXPORT: dict[str, str] = {\n",
+            "    export_name: import_name\n",
+            "    for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES\n",
+            "}\n\n",
+            "def wasm_runtime_import_name(name: str) -> str | None:\n",
+            "    import_name = wasm_import_name(name)\n",
+            "    if import_name is not None:\n",
+            "        return import_name\n",
+            "    return WASM_RUNTIME_IMPORT_BY_EXPORT.get(name)\n\n",
+            "def wasm_runtime_export_name(name: str) -> str | None:\n",
+            "    import_name = wasm_runtime_import_name(name)\n",
+            "    if import_name is None:\n",
+            "        return None\n",
+            "    return WASM_RUNTIME_EXPORT_BY_IMPORT[import_name]\n\n",
             "def wasm_import_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:\n",
             "    import_name = wasm_import_name(name)\n",
             "    if import_name is None:\n",

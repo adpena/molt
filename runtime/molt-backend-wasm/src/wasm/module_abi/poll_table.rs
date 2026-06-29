@@ -92,7 +92,7 @@ impl WasmPollTableLayout {
                     spec.import.name()
                 )
             });
-            func_to_table_idx.insert(format!("molt_{}", spec.import.name()), table_slot);
+            func_to_table_idx.insert(spec.import.runtime_export_name().to_string(), table_slot);
         }
     }
 }
