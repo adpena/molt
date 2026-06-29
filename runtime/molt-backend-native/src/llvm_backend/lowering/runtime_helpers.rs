@@ -50,8 +50,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if !self.backend.runtime_intrinsic_symbols.contains(&symbol) {
             return false;
         }
-        let Some(return_abi) = classified_runtime_import_return_abi(&symbol, op.operands.len())
-        else {
+        let Some(return_abi) = runtime_import_return_abi(&symbol, op.operands.len()) else {
             self.record_fatal(format!(
                 "preserved SimpleIR op `{kind}` maps to runtime symbol `{symbol}`, \
                  but that symbol has no LLVM ABI classification"

@@ -4818,7 +4818,7 @@ def test_dangerous_cell_baseline_matches_current_audit() -> None:
 
 def test_audit_resolves_constant_backed_llvm_runtime_imports() -> None:
     audit = _audit()
-    imports = audit.extract_llvm_classified_runtime_imports()
+    imports = audit.extract_llvm_runtime_import_abis()
 
     expected = {
         "molt_asyncgen_new": 1,

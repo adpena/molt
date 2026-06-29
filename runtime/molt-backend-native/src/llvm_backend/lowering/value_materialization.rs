@@ -1095,7 +1095,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if let Some(func) = self.backend.module.get_function(name) {
             return require_llvm_function_type(name, func, fn_ty);
         }
-        if !is_classified_runtime_import(name, param_count, return_abi) {
+        if let Some(func) =
+            declare_fixed_runtime_function(self.backend.context, &self.backend.module, name)
+        {
+            return require_llvm_function_type(name, func, fn_ty);
+        }
+        if !is_runtime_import_abi(name, param_count, return_abi) {
             panic!(
                 "LLVM runtime import `{name}` has no ABI classification for conservative declaration"
             );

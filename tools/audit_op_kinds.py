@@ -94,6 +94,9 @@ LLVM_RUNTIME_IMPORT_ABI_FACTS_RS = (
     ROOT
     / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
+LLVM_RUNTIME_IMPORT_FIXED_RS = (
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
+)
 LLVM_RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 LLVM_PRESERVED_OPS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs"
@@ -695,14 +698,14 @@ def extract_runtime_molt_symbols() -> set[str]:
     return set(extract_runtime_molt_externs())
 
 
-def _classified_runtime_import_array_body() -> str:
-    text = LLVM_RUNTIME_IMPORT_ABI_FACTS_RS.read_text(encoding="utf-8")
+def _runtime_import_array_body(path: Path, const_name: str) -> str:
+    text = path.read_text(encoding="utf-8")
     m = re.search(
-        r"CLASSIFIED_RUNTIME_IMPORTS\s*:\s*&\[RuntimeImportSignature\]\s*=\s*&\[",
+        re.escape(const_name) + r"\s*:\s*&\[[^\]]+\]\s*=\s*&\[",
         text,
     )
     if m is None:
-        raise RustMatchParseError("CLASSIFIED_RUNTIME_IMPORTS array not found")
+        raise RustMatchParseError(f"{const_name} array not found")
     start = m.end()
     depth = 1
     i = start
@@ -713,7 +716,7 @@ def _classified_runtime_import_array_body() -> str:
             depth -= 1
         i += 1
     if depth != 0:
-        raise RustMatchParseError("CLASSIFIED_RUNTIME_IMPORTS array is unbalanced")
+        raise RustMatchParseError(f"{const_name} array is unbalanced")
     return text[start : i - 1]
 
 
@@ -738,20 +741,16 @@ def _insert_classified_runtime_import(
     existing = out.get(classified.symbol)
     if existing is not None and existing != classified:
         raise RustMatchParseError(
-            "conflicting CLASSIFIED_RUNTIME_IMPORTS entries for "
+            "conflicting LLVM runtime import ABI entries for "
             f"{classified.symbol}: {existing} vs {classified}"
         )
     out[classified.symbol] = classified
 
 
-def extract_llvm_classified_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
-    """Runtime symbols the LLVM generic preserved-op fallback may declare.
-
-    `try_lower_preserved_runtime_call` requires a real runtime symbol *and* an
-    entry in `CLASSIFIED_RUNTIME_IMPORTS`; this audit must join both authorities
-    or it can bless a runtime export that LLVM would still fail loudly.
-    """
-    body = _classified_runtime_import_array_body()
+def _extract_conservative_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
+    body = _runtime_import_array_body(
+        LLVM_RUNTIME_IMPORT_ABI_FACTS_RS, "CONSERVATIVE_RUNTIME_IMPORTS"
+    )
     constants = extract_runtime_import_signature_constants()
     out: dict[str, ClassifiedRuntimeImport] = {}
     for symbol, param_count, return_abi in re.findall(
@@ -771,9 +770,64 @@ def extract_llvm_classified_runtime_imports() -> dict[str, ClassifiedRuntimeImpo
         classified = constants.get(const)
         if classified is None:
             raise RustMatchParseError(
-                f"CLASSIFIED_RUNTIME_IMPORTS references unknown constant {const}"
+                f"CONSERVATIVE_RUNTIME_IMPORTS references unknown constant {const}"
             )
         _insert_classified_runtime_import(out, classified)
+    return out
+
+
+def _extract_fixed_boxed_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
+    """Boxed fixed imports that are also valid generic fallback ABI facts.
+
+    Custom fixed declarations such as `(ptr, i64, ptr) -> i32` are intentionally
+    excluded: the generic preserved-op fallback can emit only all-i64 parameters
+    and i64/void returns.
+    """
+    body = _runtime_import_array_body(LLVM_RUNTIME_IMPORT_FIXED_RS, "FIXED_RUNTIME_IMPORTS")
+    constants = extract_runtime_import_signature_constants()
+    out: dict[str, ClassifiedRuntimeImport] = {}
+    for ctor, symbol, param_count in re.findall(
+        r'\b(i64_ret|void_ret)\(\s*"([^"]+)"\s*,\s*(\d+)\s*,',
+        body,
+        re.S,
+    ):
+        return_abi = "I64" if ctor == "i64_ret" else "Void"
+        _insert_classified_runtime_import(
+            out, ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
+        )
+    for ctor, const, param_count in re.findall(
+        r"\b(i64_ret|void_ret)\(\s*([A-Z][A-Z0-9_]*)\.name\s*,\s*(\d+)\s*,",
+        body,
+        re.S,
+    ):
+        classified = constants.get(const)
+        if classified is None:
+            raise RustMatchParseError(f"FIXED_RUNTIME_IMPORTS references unknown constant {const}")
+        expected_return = "I64" if ctor == "i64_ret" else "Void"
+        if classified.return_abi != expected_return or classified.param_count != int(param_count):
+            raise RustMatchParseError(
+                f"FIXED_RUNTIME_IMPORTS disagrees with {const}: "
+                f"{classified} vs {ctor}/{param_count}"
+            )
+        _insert_classified_runtime_import(out, classified)
+    return out
+
+
+def extract_llvm_runtime_import_abis() -> dict[str, ClassifiedRuntimeImport]:
+    """Runtime symbols the LLVM generic preserved-op fallback may declare.
+
+    Fixed boxed imports own exact declarations and stronger attributes;
+    conservative imports own the residual on-demand fallback surface. The
+    generic preserved-op fallback may use either authority when the ABI is
+    all-i64 parameters plus i64/void return.
+    """
+    out: dict[str, ClassifiedRuntimeImport] = {}
+    for source in (
+        _extract_fixed_boxed_runtime_imports(),
+        _extract_conservative_runtime_imports(),
+    ):
+        for classified in source.values():
+            _insert_classified_runtime_import(out, classified)
     return out
 
 
@@ -1451,13 +1505,14 @@ def run_audit() -> AuditResult:
     llvm_arms = extract_llvm_preserved_op_kinds()
     llvm_vec = extract_vec_reduction_ops()
     runtime_externs = extract_runtime_molt_externs()
-    classified_runtime_imports = extract_llvm_classified_runtime_imports()
+    runtime_import_abis = extract_llvm_runtime_import_abis()
     runtime_syms = set(runtime_externs)
     classified_runtime_fallback = {
         symbol.removeprefix("molt_")
         for symbol, ext in runtime_externs.items()
-        if (classified := classified_runtime_imports.get(symbol)) is not None
+        if (classified := runtime_import_abis.get(symbol)) is not None
         if symbol.startswith("molt_")
+        and symbol.removeprefix("molt_") not in llvm_arms
         and runtime_extern_classified_fallback_eligible(ext, classified)
     }
     void_runtime_ops = extract_llvm_void_runtime_ops()

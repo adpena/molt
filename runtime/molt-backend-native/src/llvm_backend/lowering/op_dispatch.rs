@@ -941,229 +941,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- SCF dialect ops --
-            // Structured control flow ops are desugared into LLVM basic blocks.
-            // ScfIf uses conditional branches to then/else blocks with a merge phi.
-            // ScfFor/ScfWhile delegate to runtime helpers since full loop lowering
-            // requires loop analysis infrastructure (induction variable detection,
-            // trip count computation) that lives in a separate pass.
-            // ScfYield maps to a runtime call that returns its value.
-            OpCode::ScfIf => {
-                let _ = has_attr(op, "vectorize");
-                let i64_ty = self.backend.context.i64_type();
-
-                // Resolve condition and coerce to i1.
-                let cond_i64 = if !op.operands.is_empty() {
-                    let v = self.resolve(op.operands[0]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
-                let truthy_result = self
-                    .backend
-                    .builder
-                    .build_call(truthy_fn, &[cond_i64.into()], "scf_if_truthy")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let cond_i1 = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        truthy_result.into_int_value(),
-                        i64_ty.const_int(0, false),
-                        "scf_if_cond",
-                    )
-                    .unwrap();
-
-                // Resolve then/else function operands.
-                let then_fn_bits = if op.operands.len() > 1 {
-                    let v = self.resolve(op.operands[1]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let else_fn_bits = if op.operands.len() > 2 {
-                    let v = self.resolve(op.operands[2]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-
-                // Create basic blocks for then, else, and merge.
-                let current_fn = self.llvm_fn;
-                let then_bb = self
-                    .backend
-                    .context
-                    .append_basic_block(current_fn, "scf_if_then");
-                let else_bb = self
-                    .backend
-                    .context
-                    .append_basic_block(current_fn, "scf_if_else");
-                let merge_bb = self
-                    .backend
-                    .context
-                    .append_basic_block(current_fn, "scf_if_merge");
-                self.all_llvm_blocks.push(then_bb);
-                self.all_llvm_blocks.push(else_bb);
-                self.all_llvm_blocks.push(merge_bb);
-
-                self.backend
-                    .builder
-                    .build_conditional_branch(cond_i1, then_bb, else_bb)
-                    .unwrap();
-
-                // Then block: call then_fn via molt_call_0 and branch to merge.
-                self.backend.builder.position_at_end(then_bb);
-                let call0_fn = self.backend.module.get_function("molt_call_0").unwrap();
-                let then_result = self
-                    .backend
-                    .builder
-                    .build_call(call0_fn, &[then_fn_bits.into()], "scf_then_result")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.backend
-                    .builder
-                    .build_unconditional_branch(merge_bb)
-                    .unwrap();
-                let then_exit_bb = self.backend.builder.get_insert_block().unwrap();
-
-                // Else block: call else_fn via molt_call_0 and branch to merge.
-                self.backend.builder.position_at_end(else_bb);
-                let else_result = self
-                    .backend
-                    .builder
-                    .build_call(call0_fn, &[else_fn_bits.into()], "scf_else_result")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.backend
-                    .builder
-                    .build_unconditional_branch(merge_bb)
-                    .unwrap();
-                let else_exit_bb = self.backend.builder.get_insert_block().unwrap();
-
-                // Merge block: phi node selects then/else result.
-                self.backend.builder.position_at_end(merge_bb);
-                let phi = self
-                    .backend
-                    .builder
-                    .build_phi(i64_ty, "scf_if_phi")
-                    .unwrap();
-                phi.add_incoming(&[(&then_result, then_exit_bb), (&else_result, else_exit_bb)]);
-                let phi_val = phi.as_basic_value();
-
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, phi_val);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-            OpCode::ScfFor => {
-                // ScfFor delegates to the runtime: full loop lowering requires
-                // induction variable detection and trip count analysis that runs
-                // as a separate TIR pass before LLVM lowering.
-                let _ = has_attr(op, "vectorize");
-                let i64_ty = self.backend.context.i64_type();
-                let lb = if !op.operands.is_empty() {
-                    let v = self.resolve(op.operands[0]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let ub = if op.operands.len() > 1 {
-                    let v = self.resolve(op.operands[1]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let step = if op.operands.len() > 2 {
-                    let v = self.resolve(op.operands[2]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(1, false)
-                };
-                let body_fn_bits = if op.operands.len() > 3 {
-                    let v = self.resolve(op.operands[3]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let scf_for_fn = self.backend.module.get_function("molt_scf_for").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        scf_for_fn,
-                        &[lb.into(), ub.into(), step.into(), body_fn_bits.into()],
-                        "scf_for",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-            OpCode::ScfWhile => {
-                // ScfWhile delegates to the runtime: full loop lowering requires
-                // condition hoisting and break/continue analysis.
-                let _ = has_attr(op, "vectorize");
-                let i64_ty = self.backend.context.i64_type();
-                let cond_fn_bits = if !op.operands.is_empty() {
-                    let v = self.resolve(op.operands[0]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let body_fn_bits = if op.operands.len() > 1 {
-                    let v = self.resolve(op.operands[1]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(0, false)
-                };
-                let scf_while_fn = self.backend.module.get_function("molt_scf_while").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        scf_while_fn,
-                        &[cond_fn_bits.into(), body_fn_bits.into()],
-                        "scf_while",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-            OpCode::ScfYield => {
-                // ScfYield returns its operand value (or None if no operand).
-                let _ = has_attr(op, "vectorize");
-                let i64_ty = self.backend.context.i64_type();
-                let val = if !op.operands.is_empty() {
-                    let v = self.resolve(op.operands[0]);
-                    self.ensure_i64(v)
-                } else {
-                    i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                };
-                let scf_yield_fn = self.backend.module.get_function("molt_scf_yield").unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(scf_yield_fn, &[val.into()], "scf_yield")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
+            // These must reach LLVM as real CFG, loop, and phi structure. The
+            // old runtime-delegate names were never exported by molt-runtime, so
+            // keeping them as declarations converted missing lowering into link
+            // failures. Fail closed here until the structured lowering pass owns
+            // the full CFG form.
+            OpCode::ScfIf => self.record_removed_runtime_delegate(
+                op,
+                "molt_call_0",
+                "lower structured if/else regions into LLVM CFG before codegen",
+            ),
+            OpCode::ScfFor => self.record_removed_runtime_delegate(
+                op,
+                "molt_scf_for",
+                "lower counted or iterator loops into LLVM CFG before codegen",
+            ),
+            OpCode::ScfWhile => self.record_removed_runtime_delegate(
+                op,
+                "molt_scf_while",
+                "lower while regions into LLVM CFG before codegen",
+            ),
+            OpCode::ScfYield => self.record_removed_runtime_delegate(
+                op,
+                "molt_scf_yield",
+                "thread SCF region results through block arguments or phi nodes before codegen",
+            ),
 
             // Exception region markers. LLVM still uses polling-based Molt
             // exceptions, but the runtime expects a handler frame to be

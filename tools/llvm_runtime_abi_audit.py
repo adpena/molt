@@ -15,10 +15,11 @@ vocabulary and the generated TIR mapper:
 * if a `runtime/molt-runtime*/src/**/*.rs` leaf exports `molt_<kind>`, LLVM's generic
   fallback can see it through the availability set.
 
-Every boxed/i64 or void export in that surface must be classified in
-`CLASSIFIED_RUNTIME_IMPORTS`; non-boxed C returns are explicitly fail-closed.
-Every classified fact must also match the actual Rust export parameter ABI and
-return ABI, because the LLVM fallback declaration is derived from that fact.
+Every boxed/i64 or void export in that surface must be owned by either the
+fixed runtime import table or the residual conservative import table; non-boxed
+C returns are explicitly fail-closed. Every ABI fact must also match the actual
+Rust export parameter ABI and return ABI, because the LLVM fallback declaration
+is derived from that fact.
 """
 
 from __future__ import annotations
@@ -43,6 +44,10 @@ RUNTIME_IMPORT_ABI_FACTS_RS = (
     ROOT
     / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
+RUNTIME_IMPORT_FIXED_RS = (
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
+)
+RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 
 ABI_I64_RETURNS = {"u64", "i64"}
 ABI_VOID_RETURNS = {"", "()", "void"}
@@ -270,10 +275,46 @@ def runtime_exports(
     return exports
 
 
-def classified_abi_facts(
-    path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
-) -> tuple[dict[tuple[str, int], AbiFact], tuple[DuplicateAbiFact, ...]]:
+def _insert_abi_fact(
+    facts: dict[tuple[str, int], AbiFact],
+    duplicates: list[DuplicateAbiFact],
+    fact: AbiFact,
+) -> None:
+    key = (fact.symbol, fact.arity)
+    if key in facts:
+        duplicates.append(
+            DuplicateAbiFact(
+                fact.symbol, fact.arity, facts[key].return_abi, fact.return_abi
+            )
+        )
+    else:
+        facts[key] = fact
+
+
+def runtime_import_signature_constants(
+    path: Path = RUNTIME_IMPORT_ABI_RS,
+) -> dict[str, AbiFact]:
     text = path.read_text(encoding="utf-8")
+    out: dict[str, AbiFact] = {}
+    for const, symbol, arity, return_abi in re.findall(
+        r"pub\(crate\)\s+const\s+([A-Z][A-Z0-9_]*)\s*:\s*"
+        r"RuntimeImportSignature\s*=\s*runtime_sig\(\s*"
+        r'"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)\s*;',
+        text,
+        re.DOTALL,
+    ):
+        out[const] = AbiFact(symbol, int(arity), return_abi, ("I64",) * int(arity))
+    return out
+
+
+def runtime_import_abi_facts(
+    conservative_path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
+    fixed_path: Path = RUNTIME_IMPORT_FIXED_RS,
+    constants_path: Path = RUNTIME_IMPORT_ABI_RS,
+) -> tuple[dict[tuple[str, int], AbiFact], tuple[DuplicateAbiFact, ...]]:
+    conservative_text = conservative_path.read_text(encoding="utf-8")
+    fixed_text = fixed_path.read_text(encoding="utf-8")
+    constants = runtime_import_signature_constants(constants_path)
     facts: dict[tuple[str, int], AbiFact] = {}
     duplicates: list[DuplicateAbiFact] = []
     for match in re.finditer(
@@ -281,7 +322,7 @@ def classified_abi_facts(
         r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
         r"(?P<arity>\d+)\s*,\s*"
         r"RuntimeReturnAbi::(?P<abi>I64|Void)\s*,?\s*\)",
-        text,
+        conservative_text,
         re.DOTALL,
     ):
         fact = AbiFact(
@@ -290,20 +331,51 @@ def classified_abi_facts(
             match.group("abi"),
             ("I64",) * int(match.group("arity")),
         )
-        key = (fact.symbol, fact.arity)
-        if key in facts:
-            duplicates.append(
-                DuplicateAbiFact(
-                    fact.symbol, fact.arity, facts[key].return_abi, fact.return_abi
-                )
-            )
-        else:
-            facts[key] = fact
+        _insert_abi_fact(facts, duplicates, fact)
+    for line in conservative_text.splitlines():
+        stripped = line.split("//", maxsplit=1)[0].strip()
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)\s*,", stripped)
+        if match is None:
+            continue
+        const = match.group(1)
+        if const in constants:
+            _insert_abi_fact(facts, duplicates, constants[const])
+    for match in re.finditer(
+        r"\b(?P<ctor>i64_ret|void_ret)\(\s*"
+        r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
+        r"(?P<arity>\d+)\s*,",
+        fixed_text,
+        re.DOTALL,
+    ):
+        return_abi = "I64" if match.group("ctor") == "i64_ret" else "Void"
+        fact = AbiFact(
+            match.group("name"),
+            int(match.group("arity")),
+            return_abi,
+            ("I64",) * int(match.group("arity")),
+        )
+        _insert_abi_fact(facts, duplicates, fact)
+    for match in re.finditer(
+        r"\b(?P<ctor>i64_ret|void_ret)\(\s*"
+        r"(?P<const>[A-Z][A-Z0-9_]*)\.name\s*,\s*"
+        r"(?P<arity>\d+)\s*,",
+        fixed_text,
+        re.DOTALL,
+    ):
+        const = match.group("const")
+        if const not in constants:
+            continue
+        fact = constants[const]
+        expected_return = "I64" if match.group("ctor") == "i64_ret" else "Void"
+        if fact.arity == int(match.group("arity")) and fact.return_abi == expected_return:
+            _insert_abi_fact(facts, duplicates, fact)
     return facts, tuple(sorted(duplicates))
 
 
-def rust_return_to_abi(rust_return: str) -> str | None:
-    normalized = rust_return.strip()
+def rust_return_to_abi(
+    rust_return: str, aliases: dict[str, str] | None = None
+) -> str | None:
+    normalized = normalize_rust_type(rust_return, aliases or {})
     if normalized in ABI_VOID_RETURNS:
         return "Void"
     if normalized in ABI_I64_RETURNS:
@@ -374,7 +446,7 @@ def validate_classified_facts(
                 )
             )
 
-        expected_return_abi = rust_return_to_abi(export.rust_return)
+        expected_return_abi = rust_return_to_abi(export.rust_return, aliases)
         if expected_return_abi is None:
             issues.append(
                 ClassifiedFactIssue(
@@ -408,13 +480,17 @@ def validate_classified_facts(
 def run_audit(root: Path = ROOT) -> AuditResult:
     serialization = root / SERIALIZATION_PY.relative_to(ROOT)
     op_kinds = root / OP_KINDS_GENERATED_RS.relative_to(ROOT)
-    runtime_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
+    conservative_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
+    fixed_imports = root / RUNTIME_IMPORT_FIXED_RS.relative_to(ROOT)
+    runtime_import_abi = root / RUNTIME_IMPORT_ABI_RS.relative_to(ROOT)
     runtime_roots = runtime_src_roots(root)
 
     preserved_kinds = frontend_wire_kinds(serialization) - mapped_tir_kinds(op_kinds)
     exports = runtime_exports(runtime_roots)
     aliases = runtime_type_aliases(runtime_roots)
-    facts, duplicates = classified_abi_facts(runtime_imports)
+    facts, duplicates = runtime_import_abi_facts(
+        conservative_imports, fixed_imports, runtime_import_abi
+    )
     classified_fact_issues = validate_classified_facts(exports, facts, aliases)
 
     missing: list[AbiIssue] = []
@@ -427,7 +503,7 @@ def run_audit(root: Path = ROOT) -> AuditResult:
         export = exports.get(symbol)
         if export is None:
             continue
-        expected = rust_return_to_abi(export.rust_return)
+        expected = rust_return_to_abi(export.rust_return, aliases)
         export = RuntimeSignature(
             export.symbol,
             export.arity,

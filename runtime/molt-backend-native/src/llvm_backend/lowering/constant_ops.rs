@@ -86,16 +86,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .context
             .ptr_type(inkwell::AddressSpace::default());
         let bigint_from_str_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
-        let bfs_fn = if let Some(f) = self.backend.module.get_function("molt_bigint_from_str") {
-            require_llvm_function_type("molt_bigint_from_str", f, bigint_from_str_ty)
-        } else {
-            declare_conservative_runtime_function(
-                self.backend.context,
-                &self.backend.module,
-                "molt_bigint_from_str",
-                bigint_from_str_ty,
-            )
-        };
+        let bfs_fn = declare_fixed_runtime_function(
+            self.backend.context,
+            &self.backend.module,
+            "molt_bigint_from_str",
+        )
+        .unwrap_or_else(|| panic!("molt_bigint_from_str must be a fixed LLVM runtime import"));
+        let bfs_fn = require_llvm_function_type("molt_bigint_from_str", bfs_fn, bigint_from_str_ty);
 
         let len_val = i64_ty.const_int(digits.len() as u64, false);
         let call = self
@@ -205,11 +202,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
-    pub(super) fn raw_string_const_ptr_len(
+    pub(super) fn raw_string_const_ptr_and_len(
         &mut self,
         s: &str,
     ) -> (
-        inkwell::values::IntValue<'ctx>,
+        inkwell::values::PointerValue<'ctx>,
         inkwell::values::IntValue<'ctx>,
     ) {
         let i64_ty = self.backend.context.i64_type();
@@ -219,12 +216,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "__guard_attr_str_",
             &format!("_{}", sanitize_const_name(s)),
         );
+        let len_bits = i64_ty.const_int(name_bytes.len() as u64, false);
+        (ptr, len_bits)
+    }
+
+    pub(super) fn raw_string_const_ptr_len(
+        &mut self,
+        s: &str,
+    ) -> (
+        inkwell::values::IntValue<'ctx>,
+        inkwell::values::IntValue<'ctx>,
+    ) {
+        let i64_ty = self.backend.context.i64_type();
+        let (ptr, len_bits) = self.raw_string_const_ptr_and_len(s);
         let ptr_bits = self
             .backend
             .builder
             .build_ptr_to_int(ptr, i64_ty, "guard_attr_ptr")
             .unwrap();
-        let len_bits = i64_ty.const_int(name_bytes.len() as u64, false);
         (ptr_bits, len_bits)
     }
 
@@ -253,10 +262,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     fn ensure_string_from_bytes_fn(&self) -> FunctionValue<'ctx> {
-        if let Some(f) = self.backend.module.get_function("molt_string_from_bytes") {
-            return f;
-        }
-
         let ptr_ty = self
             .backend
             .context
@@ -264,11 +269,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let i32_ty = self.backend.context.i32_type();
         let i64_ty = self.backend.context.i64_type();
         let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
-        self.backend.module.add_function(
+        let func = declare_fixed_runtime_function(
+            self.backend.context,
+            &self.backend.module,
             "molt_string_from_bytes",
-            fn_ty,
-            Some(inkwell::module::Linkage::External),
         )
+        .unwrap_or_else(|| panic!("molt_string_from_bytes must be a fixed LLVM runtime import"));
+        require_llvm_function_type("molt_string_from_bytes", func, fn_ty)
     }
 }
 
