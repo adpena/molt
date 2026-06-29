@@ -126,7 +126,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
 
     rendered_py = gen.render_py(data)
-    rendered_rs = _rendered_rs(gen, data)
+    rendered_modules = gen.render_rs_modules(data)
+    rendered_rs = "".join(rendered_modules.values())
+    import_metadata = rendered_modules["import_metadata.rs"]
+    import_queries = rendered_modules["import_queries.rs"]
+    import_specs = rendered_modules["import_specs.rs"]
     assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
     assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
@@ -139,9 +143,18 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "def wasm_runtime_export_name" in rendered_py
     assert '("alloc", "molt_alloc")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
-    assert "runtime_export_name" in rendered_rs
-    assert 'Self::Alloc => "molt_alloc"' in rendered_rs
-    assert 'Self::SocketDrop => "molt_socket_drop"' in rendered_rs
+    assert "import_registry.rs" not in rendered_modules
+    assert "runtime_name: Option<&'static str>" in import_specs
+    assert 'name: "alloc"' in import_specs
+    assert "runtime_name: None" in import_specs
+    assert 'name: "socket_drop"' in import_specs
+    assert 'runtime_name: Some("molt_socket_drop")' in import_specs
+    assert "pub(crate) fn wasm_runtime_import" in import_queries
+    assert "spec.name == name || spec.runtime_name == Some(name)" in import_queries
+    assert '"molt_alloc" => Some(WasmRuntimeImport::Alloc)' not in import_queries
+    assert "runtime_export_name" in import_metadata
+    assert 'Self::Alloc => "molt_alloc"' in import_metadata
+    assert 'Self::SocketDrop => "molt_socket_drop"' in import_metadata
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
@@ -282,11 +295,15 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "=> Some(WasmRuntimeImport::ImportlibImportTransaction)" not in (
         runtime_callable_queries
     )
-    assert '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)' in rendered_rs
+    assert 'runtime_name: "molt_importlib_import_transaction"' in (
+        runtime_callable_imports
+    )
     assert (
-        '"socket_drop" => Some(WasmRuntimeImport::SocketDrop),\n'
-        '        "molt_socket_drop" => Some(WasmRuntimeImport::SocketDrop),'
-    ) in rendered_rs
+        "import: WasmRuntimeImport::ImportlibImportTransaction"
+        in runtime_callable_imports
+    )
+    assert 'runtime_name: "molt_socket_drop"' in runtime_callable_imports
+    assert "import: WasmRuntimeImport::SocketDrop" in runtime_callable_imports
     assert "runtime_callable_import_name" not in rendered_rs
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT" in rendered_py
