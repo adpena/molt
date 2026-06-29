@@ -256,16 +256,21 @@ def _external_extension_module_name(
 
 
 def _external_native_artifact_module_required(
+    *,
+    package: str,
     module_name: str,
     required_modules: frozenset[str] | None,
 ) -> bool:
     if required_modules is None:
         return True
+    package_root = package.strip()
     for required_module in required_modules:
-        if (
-            module_name == required_module
-            or module_name.startswith(required_module + ".")
-            or required_module.startswith(module_name + ".")
+        if module_name == required_module or required_module.startswith(
+            module_name + "."
+        ):
+            return True
+        if required_module != package_root and module_name.startswith(
+            required_module + "."
         ):
             return True
     return False
@@ -734,8 +739,9 @@ def _resolve_external_package_native_artifact_plan(
                 if (
                     required is not None
                     and not _external_native_artifact_module_required(
-                        module_name,
-                        required,
+                        package=package,
+                        module_name=module_name,
+                        required_modules=required,
                     )
                     and not required.intersection(python_exports)
                 ):
