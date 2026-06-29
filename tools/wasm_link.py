@@ -849,7 +849,7 @@ def _validate_linked(linked: Path) -> bool:
     call_indirect = [
         name
         for module, name, kind, _ in imports
-        if module == "env" and kind == 0 and name.startswith("molt_call_indirect")
+        if module == "env" and kind == 0 and is_call_indirect_import_name(name)
     ]
     if call_indirect:
         print(

@@ -202,6 +202,18 @@ def _static_type_index_by_signature(
     }
 
 
+def _runtime_callable_signature(arity: int, result: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    params = ("i64",) * arity
+    results = () if result == "void" else ("i64",)
+    return params, results
+
+
+def _format_runtime_callable_signature(
+    runtime_name: str, params: tuple[str, ...], result: str
+) -> str:
+    return f"{runtime_name}({', '.join(params)}) -> {result}"
+
+
 def _intrinsic_manifest_names() -> set[str]:
     return {name for name, _, _ in _intrinsic_signature_rows()}
 
@@ -335,12 +347,11 @@ def _intrinsic_runtime_callable_imports(
                 )
             continue
         result = _rust_intrinsic_callable_result(rust_exports, runtime_name, arity)
-        params = ("i64",) * arity
-        results = () if result == "void" else ("i64",)
+        params, results = _runtime_callable_signature(arity, result)
         type_idx = type_indices.get((params, results))
         if type_idx is None:
             missing_static_types.append(
-                f"{runtime_name}({', '.join(params)}) -> {result}"
+                _format_runtime_callable_signature(runtime_name, params, result)
             )
             continue
         existing_entry = explicit_imports_by_name.get(import_name)
@@ -397,6 +408,122 @@ def _intrinsic_runtime_callable_imports(
     if missing_static_types:
         raise WasmAbiManifestError(
             "intrinsic runtime callables need WASM static_type rows: "
+            + "; ".join(missing_static_types)
+        )
+    return synthesized
+
+
+def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
+    reserved_callables = data.get("reserved_runtime_callable", [])
+    if not isinstance(reserved_callables, list):
+        raise WasmAbiManifestError("reserved_runtime_callable must be a list of tables")
+    seen_reserved_indices: set[int] = set()
+    seen_reserved_runtime_names: set[str] = set()
+    seen_reserved_import_names: set[str] = set()
+    for idx, entry in enumerate(reserved_callables):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"reserved_runtime_callable entry {idx} must be a table"
+            )
+        table_index = entry.get("index")
+        runtime_name = entry.get("runtime_name")
+        import_name = entry.get("import_name")
+        callable_arity = entry.get("callable_arity")
+        if not isinstance(table_index, int) or table_index < 0:
+            raise WasmAbiManifestError(
+                f"reserved_runtime_callable entry {idx} has invalid index"
+            )
+        if table_index in seen_reserved_indices:
+            raise WasmAbiManifestError(
+                f"duplicate reserved runtime callable index {table_index}"
+            )
+        seen_reserved_indices.add(table_index)
+        if not isinstance(runtime_name, str) or not runtime_name.startswith("molt_"):
+            raise WasmAbiManifestError(
+                f"reserved_runtime_callable entry {idx} has invalid runtime_name"
+            )
+        if runtime_name in seen_reserved_runtime_names:
+            raise WasmAbiManifestError(
+                f"duplicate reserved runtime callable {runtime_name!r}"
+            )
+        seen_reserved_runtime_names.add(runtime_name)
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} has invalid import_name"
+            )
+        if import_name in seen_reserved_import_names:
+            raise WasmAbiManifestError(
+                f"duplicate reserved runtime import {import_name!r}"
+            )
+        seen_reserved_import_names.add(import_name)
+        if not isinstance(callable_arity, int) or callable_arity < 0:
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} has invalid callable_arity"
+            )
+    expected_reserved_indices = set(range(len(reserved_callables)))
+    if seen_reserved_indices != expected_reserved_indices:
+        raise WasmAbiManifestError(
+            "reserved runtime callable indices must be contiguous from zero"
+        )
+    return reserved_callables
+
+
+def _reserved_runtime_callable_imports(
+    static_types: list[dict],
+    imports: list[dict],
+    reserved_callables: list[dict],
+) -> list[dict]:
+    type_indices = _static_type_index_by_signature(static_types)
+    explicit_imports_by_name = {
+        entry["name"]: entry for entry in imports if isinstance(entry.get("name"), str)
+    }
+    synthesized: list[dict] = []
+    missing_static_types: list[str] = []
+    for entry in reserved_callables:
+        runtime_name = entry["runtime_name"]
+        import_name = entry["import_name"]
+        arity = entry["callable_arity"]
+        params, results = _runtime_callable_signature(arity, "i64")
+        type_idx = type_indices.get((params, results))
+        if type_idx is None:
+            missing_static_types.append(
+                _format_runtime_callable_signature(runtime_name, params, "i64")
+            )
+            continue
+        existing_entry = explicit_imports_by_name.get(import_name)
+        if existing_entry is not None:
+            existing_type = existing_entry.get("type")
+            if not isinstance(existing_type, int) or not (
+                0 <= existing_type < len(static_types)
+            ):
+                raise WasmAbiManifestError(
+                    f"reserved runtime callable {runtime_name!r} import "
+                    f"{import_name!r} has invalid static type {existing_type!r}"
+                )
+            existing_signature = static_types[existing_type]
+            if (
+                tuple(existing_signature["params"]) != params
+                or tuple(existing_signature["results"]) != results
+            ):
+                raise WasmAbiManifestError(
+                    f"reserved runtime callable {runtime_name!r} import "
+                    f"{import_name!r} uses static type {existing_type}; expected "
+                    f"{_format_runtime_callable_signature(runtime_name, params, 'i64')}"
+                )
+            if (
+                existing_entry.get("runtime_name") is not None
+                or existing_entry.get("callable_arity") is not None
+                or existing_entry.get("callable_result") is not None
+            ):
+                raise WasmAbiManifestError(
+                    f"reserved runtime callable {runtime_name!r} must be owned "
+                    "only by reserved_runtime_callable, not duplicated in [[import]]"
+                )
+            continue
+        synthesized.append({"name": import_name, "type": type_idx})
+    if missing_static_types:
+        raise WasmAbiManifestError(
+            "reserved runtime callables need WASM static_type rows: "
             + "; ".join(missing_static_types)
         )
     return synthesized
@@ -721,6 +848,7 @@ def validate_loaded_manifest(data: dict) -> dict:
     imports = data.get("import")
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
+    reserved_callables = _validate_reserved_runtime_callables(data)
     non_runtime_callable_intrinsics = set(
         _validate_string_list(
             "non_runtime_callable_intrinsic",
@@ -739,6 +867,13 @@ def validate_loaded_manifest(data: dict) -> dict:
             static_types,
             imports,
             non_runtime_callable_intrinsics,
+        )
+    )
+    imports.extend(
+        _reserved_runtime_callable_imports(
+            static_types,
+            imports,
+            reserved_callables,
         )
     )
     seen_imports: set[str] = set()
@@ -1378,57 +1513,6 @@ def validate_loaded_manifest(data: dict) -> dict:
             )
         seen_required_singletons.add(name)
 
-    reserved_callables = data.get("reserved_runtime_callable", [])
-    if not isinstance(reserved_callables, list):
-        raise WasmAbiManifestError("reserved_runtime_callable must be a list of tables")
-    seen_reserved_indices: set[int] = set()
-    seen_reserved_runtime_names: set[str] = set()
-    seen_reserved_import_names: set[str] = set()
-    for idx, entry in enumerate(reserved_callables):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"reserved_runtime_callable entry {idx} must be a table"
-            )
-        table_index = entry.get("index")
-        runtime_name = entry.get("runtime_name")
-        import_name = entry.get("import_name")
-        callable_arity = entry.get("callable_arity")
-        if not isinstance(table_index, int) or table_index < 0:
-            raise WasmAbiManifestError(
-                f"reserved_runtime_callable entry {idx} has invalid index"
-            )
-        if table_index in seen_reserved_indices:
-            raise WasmAbiManifestError(
-                f"duplicate reserved runtime callable index {table_index}"
-            )
-        seen_reserved_indices.add(table_index)
-        if not isinstance(runtime_name, str) or not runtime_name.startswith("molt_"):
-            raise WasmAbiManifestError(
-                f"reserved_runtime_callable entry {idx} has invalid runtime_name"
-            )
-        if runtime_name in seen_reserved_runtime_names:
-            raise WasmAbiManifestError(
-                f"duplicate reserved runtime callable {runtime_name!r}"
-            )
-        seen_reserved_runtime_names.add(runtime_name)
-        if not isinstance(import_name, str) or not import_name:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has invalid import_name"
-            )
-        if import_name in seen_reserved_import_names:
-            raise WasmAbiManifestError(
-                f"duplicate reserved runtime import {import_name!r}"
-            )
-        seen_reserved_import_names.add(import_name)
-        if not isinstance(callable_arity, int) or callable_arity < 0:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has invalid callable_arity"
-            )
-    expected_reserved_indices = set(range(len(reserved_callables)))
-    if seen_reserved_indices != expected_reserved_indices:
-        raise WasmAbiManifestError(
-            "reserved runtime callable indices must be contiguous from zero"
-        )
     output_export_policy = data.get("output_export_policy")
     if not isinstance(output_export_policy, dict):
         raise WasmAbiManifestError("manifest must define [output_export_policy]")

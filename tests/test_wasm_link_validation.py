@@ -291,7 +291,9 @@ def _build_exported_runtime_module_many(export_names: list[str]) -> bytes:
     return wasm_link._build_sections(sections)
 
 
-def _build_host_call_indirect_module() -> bytes:
+def _build_host_call_indirect_module(
+    import_name: str = "molt_call_indirect3",
+) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
 
@@ -310,7 +312,7 @@ def _build_host_call_indirect_module() -> bytes:
     import_payload = bytearray()
     import_payload.extend(write_varuint(1))
     import_payload.extend(wasm_link._write_string("env"))
-    import_payload.extend(wasm_link._write_string("molt_call_indirect3"))
+    import_payload.extend(wasm_link._write_string(import_name))
     import_payload.append(0x00)
     import_payload.extend(write_varuint(0))
     sections.append((2, bytes(import_payload)))
@@ -656,6 +658,28 @@ def test_validate_linked_rejects_unexpected_table_import_contract(
     assert not wasm_link._validate_linked(linked)
     captured = capsys.readouterr()
     assert "unsupported table" in captured.err
+
+
+def test_validate_linked_rejects_only_manifest_call_indirect_imports(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: None)
+
+    linked = tmp_path / "linked.wasm"
+    linked.write_bytes(_build_host_call_indirect_module("molt_call_indirect3"))
+
+    assert not wasm_link._validate_linked(linked)
+    captured = capsys.readouterr()
+    assert "molt_call_indirect3" in captured.err
+
+    linked.write_bytes(_build_host_call_indirect_module("molt_call_indirect99"))
+
+    assert not wasm_link._validate_linked(linked)
+    captured = capsys.readouterr()
+    assert "molt_call_indirect99" not in captured.err
+    assert "missing exported memory" in captured.err
 
 
 def test_stub_dead_functions_preserves_start_root_reachability() -> None:
