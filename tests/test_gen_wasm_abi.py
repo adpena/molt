@@ -88,6 +88,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     manifest_names = {entry["name"] for entry in data["import"]}
+    imports_by_name = {entry["name"]: entry for entry in data["import"]}
     host_exports = set(data["runtime_export_policy"]["host_exports"])
     gpu_manifest_names = {entry["name"] for entry in data["gpu_intrinsic_manifest_name"]}
     fallback_specs = {entry["import"]: entry for entry in data["runtime_import_fallback"]}
@@ -100,6 +101,10 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "_HOST_RUNTIME_EXPORTS" not in text
     assert "_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS" not in text
     assert {"alloc", "runtime_init", "socket_connect", "task_new"} <= manifest_names
+    assert imports_by_name["runtime_init"]["runtime_name"] == "molt_runtime_init"
+    assert "callable_arity" not in imports_by_name["runtime_init"]
+    assert imports_by_name["runtime_shutdown"]["runtime_name"] == "molt_runtime_shutdown"
+    assert "callable_arity" not in imports_by_name["runtime_shutdown"]
     assert {
         "molt_runtime_shutdown",
         "molt_set_wasm_table_base",
@@ -144,6 +149,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "def wasm_runtime_import_name" in rendered_py
     assert "def wasm_runtime_export_name" in rendered_py
     assert "('alloc', None, 'molt_alloc'" in rendered_py
+    assert "('runtime_init', 'molt_runtime_init', 'molt_runtime_init'" in rendered_py
+    assert (
+        "('runtime_shutdown', 'molt_runtime_shutdown', 'molt_runtime_shutdown'"
+        in rendered_py
+    )
     assert "('socket_drop', 'molt_socket_drop', 'molt_socket_drop'" in rendered_py
     assert "import_registry.rs" not in rendered_modules
     assert "#[repr(usize)]" in import_tokens
@@ -155,16 +165,28 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert 'name: "alloc"' in import_specs
     assert "runtime_name: None" in import_specs
     assert 'runtime_export_name: "molt_alloc"' in import_specs
+    assert 'name: "runtime_init"' in import_specs
+    assert 'runtime_name: Some("molt_runtime_init")' in import_specs
+    assert 'runtime_export_name: "molt_runtime_init"' in import_specs
+    assert 'name: "runtime_shutdown"' in import_specs
+    assert 'runtime_name: Some("molt_runtime_shutdown")' in import_specs
+    assert 'runtime_export_name: "molt_runtime_shutdown"' in import_specs
     assert 'name: "socket_drop"' in import_specs
     assert 'runtime_name: Some("molt_socket_drop")' in import_specs
     assert 'runtime_export_name: "molt_socket_drop"' in import_specs
     assert "pub(crate) fn wasm_runtime_import" in import_queries
     assert "spec.name == name || spec.runtime_name == Some(name)" in import_queries
     assert '"molt_alloc" => Some(WasmRuntimeImport::Alloc)' not in import_queries
+    assert '"molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit)' not in import_queries
+    assert (
+        '"molt_runtime_shutdown" => Some(WasmRuntimeImport::RuntimeShutdown)'
+        not in import_queries
+    )
     assert "runtime_import_spec(self).name" in import_metadata
     assert "runtime_import_spec(self).runtime_export_name" in import_metadata
     assert "runtime_import_spec(self).type_idx" in import_metadata
     assert 'Self::Alloc => "molt_alloc"' not in import_metadata
+    assert 'Self::RuntimeInit => "molt_runtime_init"' not in import_metadata
     assert 'Self::SocketDrop => "molt_socket_drop"' not in import_metadata
 
 

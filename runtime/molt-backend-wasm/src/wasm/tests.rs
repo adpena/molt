@@ -974,8 +974,28 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
     );
     assert_eq!(wasm_runtime_import("molt_alloc"), None);
     assert_eq!(
+        wasm_runtime_import("runtime_init"),
+        Some(WasmRuntimeImport::RuntimeInit)
+    );
+    assert_eq!(
+        wasm_runtime_import("molt_runtime_init"),
+        Some(WasmRuntimeImport::RuntimeInit)
+    );
+    assert_eq!(
+        wasm_runtime_import("runtime_shutdown"),
+        Some(WasmRuntimeImport::RuntimeShutdown)
+    );
+    assert_eq!(
+        wasm_runtime_import("molt_runtime_shutdown"),
+        Some(WasmRuntimeImport::RuntimeShutdown)
+    );
+    assert_eq!(
         WasmRuntimeImport::ImportlibImportTransaction.runtime_export_name(),
         "molt_importlib_import_transaction"
+    );
+    assert_eq!(
+        WasmRuntimeImport::RuntimeInit.runtime_export_name(),
+        "molt_runtime_init"
     );
     assert_eq!(
         wasm_runtime_export_name("importlib_import_transaction"),
@@ -990,6 +1010,10 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
         Some("molt_socket_drop")
     );
     assert_eq!(wasm_runtime_export_name("molt_alloc"), None);
+    assert_eq!(
+        wasm_runtime_export_name("molt_runtime_init"),
+        Some("molt_runtime_init")
+    );
 }
 
 #[test]
