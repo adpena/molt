@@ -450,6 +450,7 @@ def _render_rs_import_tokens(data: dict) -> str:
     lines.extend(
         [
             "#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n",
+            "#[repr(usize)]\n",
             "pub(crate) enum WasmRuntimeImport {\n",
         ]
     )
@@ -464,48 +465,20 @@ def _render_rs_import_tokens(data: dict) -> str:
 
 
 def _render_rs_import_metadata(data: dict) -> str:
-    import_variants = _runtime_import_variants(data)
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use super::import_specs::runtime_import_spec;\n",
             "use super::import_tokens::WasmRuntimeImport;\n\n",
             "impl WasmRuntimeImport {\n",
-            "    pub(crate) const fn name(self) -> &'static str {\n",
-            "        match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f"            Self::{import_variants[entry['name']]} => \"{entry['name']}\",\n"
-        )
-    lines.extend(
-        [
-            "        }\n",
+            "    pub(crate) fn name(self) -> &'static str {\n",
+            "        runtime_import_spec(self).name\n",
             "    }\n\n",
-            "    pub(crate) const fn runtime_export_name(self) -> &'static str {\n",
-            "        match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f"            Self::{import_variants[entry['name']]} => "
-            f'"{_runtime_export_name(entry)}",\n'
-        )
-    lines.extend(
-        [
-            "        }\n",
+            "    pub(crate) fn runtime_export_name(self) -> &'static str {\n",
+            "        runtime_import_spec(self).runtime_export_name\n",
             "    }\n\n",
-            "    pub(crate) const fn type_idx(self) -> u32 {\n",
-            "        match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f"            Self::{import_variants[entry['name']]} => {entry['type']},\n"
-        )
-    lines.extend(
-        [
-            "        }\n",
+            "    pub(crate) fn type_idx(self) -> u32 {\n",
+            "        runtime_import_spec(self).type_idx\n",
             "    }\n",
             "}\n\n",
         ]
@@ -523,6 +496,7 @@ def _render_rs_import_specs(data: dict) -> str:
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) name: &'static str,\n",
             "    pub(crate) runtime_name: Option<&'static str>,\n",
+            "    pub(crate) runtime_export_name: &'static str,\n",
             "    pub(crate) type_idx: u32,\n",
             "}\n\n",
             "pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[\n",
@@ -535,6 +509,7 @@ def _render_rs_import_specs(data: dict) -> str:
                 f"        import: {_rust_runtime_import(data, entry['name'])},\n",
                 f"        name: \"{entry['name']}\",\n",
                 f"        runtime_name: {_rust_option_str(entry.get('runtime_name'))},\n",
+                f"        runtime_export_name: \"{_runtime_export_name(entry)}\",\n",
                 f"        type_idx: {entry['type']},\n",
                 "    },\n",
             ]
@@ -542,6 +517,12 @@ def _render_rs_import_specs(data: dict) -> str:
     lines.extend(
         [
             "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_import_spec(import: WasmRuntimeImport) -> &'static RuntimeImportSpec {\n",
+            "    let spec = &IMPORT_REGISTRY[import as usize];\n",
+            "    debug_assert_eq!(spec.import, import);\n",
+            "    spec\n",
+            "}\n\n",
         ]
     )
     return "".join(lines)
