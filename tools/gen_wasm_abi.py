@@ -138,6 +138,7 @@ def _render_rs_mod() -> str:
             "mod call_indirect;\n",
             "mod container_runtime_selector;\n",
             "mod const_policy;\n",
+            "mod import_registry;\n",
             "mod imports;\n",
             "mod lir_runtime_calls;\n",
             "mod method_ic_selector;\n",
@@ -162,10 +163,11 @@ def _render_rs_mod() -> str:
             "    WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,\n",
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
-            "pub(crate) use imports::{\n",
+            "pub(crate) use import_registry::{\n",
             "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY,\n",
-            "    RuntimeImportSpec, WasmRuntimeImport,\n",
+            "    RuntimeImportSpec,\n",
             "};\n",
+            "pub(crate) use imports::WasmRuntimeImport;\n",
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
@@ -481,6 +483,16 @@ def _render_rs_imports(data: dict) -> str:
             "        }\n",
             "    }\n",
             "}\n\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_import_registry(data: dict) -> str:
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "use super::imports::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeImportSpec {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
@@ -1548,6 +1560,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "const_policy.rs": _render_rs_const_policy(data),
         "static_types.rs": _render_rs_static_types(data),
         "imports.rs": _render_rs_imports(data),
+        "import_registry.rs": _render_rs_import_registry(data),
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "method_ic_selector.rs": _render_rs_method_ic_selector(data),
         "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(data),
