@@ -4730,6 +4730,34 @@ def test_collect_imports_prunes_type_checking_branches() -> None:
         assert "warnings" not in imports
 
 
+def test_collect_imports_prunes_boolean_static_guard_branches() -> None:
+    tree = ast.parse(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING or False:\n"
+        "    import numpy\n"
+        "if not TYPE_CHECKING:\n"
+        "    import scipy\n"
+        "if False and __import__('pandas'):\n"
+        "    import pandas\n"
+        "if TYPE_CHECKING is False:\n"
+        "    import scipy.ndimage\n"
+    )
+
+    imports = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="pkg",
+            import_scan_mode="module_init",
+        )
+    )
+
+    assert "typing" not in imports
+    assert "numpy" not in imports
+    assert "pandas" not in imports
+    assert "scipy" in imports
+    assert "scipy.ndimage" in imports
+
+
 def test_collect_imports_prunes_type_checking_alias_branches() -> None:
     tree = ast.parse(
         "from typing import TYPE_CHECKING as TC\n"

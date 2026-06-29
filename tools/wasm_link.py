@@ -760,6 +760,16 @@ def _optimize_split_app_module(
         return app_path.read_bytes()
 
 
+def _canonicalize_wasm_ld_output(data: bytes, *, description: str) -> bytes:
+    try:
+        flattened = _flatten_rec_groups(data)
+    except ValueError as exc:
+        raise ValueError(
+            f"Failed to flatten {description} wasm rec groups: {exc}"
+        ) from exc
+    return data if flattened is None else flattened
+
+
 # Minimal function body: 0 locals, ``unreachable``, ``end``.
 
 
@@ -1361,13 +1371,15 @@ def _run_wasm_ld(
         # first keeps every later type-section-aware pass operating on a
         # canonical MVP type section.
         try:
-            flattened = _flatten_rec_groups(linked_bytes)
+            canonical_linked_bytes = _canonicalize_wasm_ld_output(
+                linked_bytes, description="linked"
+            )
         except ValueError as exc:
-            print(f"Failed to flatten wasm rec groups: {exc}", file=sys.stderr)
+            print(str(exc), file=sys.stderr)
             return 1
-        if flattened is not None:
-            work_linked.write_bytes(flattened)
-            linked_bytes = flattened
+        if canonical_linked_bytes != linked_bytes:
+            work_linked.write_bytes(canonical_linked_bytes)
+            linked_bytes = canonical_linked_bytes
         public_export_map = {
             name: export_symbol_map[name]
             for name in preserved_output_exports
@@ -1593,6 +1605,16 @@ def _run_wasm_ld(
                         file=sys.stderr,
                     )
                     return 1
+                try:
+                    canonical_rewritten_data = _canonicalize_wasm_ld_output(
+                        rewritten_data, description="split app native-linked"
+                    )
+                except ValueError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 1
+                if canonical_rewritten_data != rewritten_data:
+                    split_native_app_path.write_bytes(canonical_rewritten_data)
+                    rewritten_data = canonical_rewritten_data
             else:
                 # For split-runtime without external native objects, the app
                 # artifact must remain unlinked while preserving the runtime ABI

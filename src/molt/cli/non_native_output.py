@@ -180,14 +180,14 @@ def _browser_native_callable_manifest(
 ) -> dict[str, Any]:
     required = frozenset(required_symbols)
     symbols: dict[str, dict[str, Any]] = {}
-    if native_artifact_plan is None:
-        if required:
-            missing = ", ".join(sorted(required))
-            raise ValueError(
-                "app imports native callable symbol(s) without staged native "
-                f"artifact custody: {missing}"
-            )
+    if not required:
         return {"module": "molt_native", "symbols": symbols}
+    if native_artifact_plan is None:
+        missing = ", ".join(sorted(required))
+        raise ValueError(
+            "app imports native callable symbol(s) without staged native "
+            f"artifact custody: {missing}"
+        )
     for artifact in native_artifact_plan.artifacts:
         artifact_payload = {
             "package": artifact.package,

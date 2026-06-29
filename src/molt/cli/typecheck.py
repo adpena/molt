@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,9 @@ from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import _find_project_root
 
+_TY_CHECK_TIMEOUT_ENV = "MOLT_TY_TIMEOUT"
+_DEFAULT_TY_CHECK_TIMEOUT = 30.0
+
 
 def _collect_py_files(target: Path) -> list[Path]:
     if target.is_file():
@@ -21,11 +26,25 @@ def _collect_py_files(target: Path) -> list[Path]:
     return sorted(path for path in target.rglob("*.py") if path.is_file())
 
 
+def _ty_check_timeout() -> float:
+    raw = os.environ.get(_TY_CHECK_TIMEOUT_ENV)
+    if raw is None:
+        return _DEFAULT_TY_CHECK_TIMEOUT
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return _DEFAULT_TY_CHECK_TIMEOUT
+    if timeout <= 0:
+        return _DEFAULT_TY_CHECK_TIMEOUT
+    return timeout
+
+
 def _run_ty_check(path: Path) -> tuple[bool, str]:
     commands = [
         ["uv", "run", "ty", "check", str(path), "--output-format", "concise"],
         ["ty", "check", str(path), "--output-format", "concise"],
     ]
+    timeout = _ty_check_timeout()
     for cmd in commands:
         try:
             result = _run_completed_command(
@@ -34,9 +53,16 @@ def _run_ty_check(path: Path) -> tuple[bool, str]:
                 env=None,
                 cwd=None,
                 memory_guard_prefix="MOLT_CLI",
+                timeout=timeout,
             )
         except FileNotFoundError:
             continue
+        except subprocess.TimeoutExpired:
+            return (
+                False,
+                f"ty check timed out after {timeout:.1f}s; "
+                "continuing with guarded hints only.",
+            )
         if result.returncode == 0:
             return True, result.stdout.strip()
         combined = (result.stdout + result.stderr).strip()
