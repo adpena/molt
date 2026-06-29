@@ -272,6 +272,105 @@ def test_resolve_module_path_requires_exact_case(tmp_path: Path) -> None:
     assert cli_module_resolution._resolve_module_path("tinygrad.Tensor", [tmp_path]) is None
 
 
+def test_prefixed_module_root_resolves_vendored_source_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vendor_root = tmp_path / "subprojects" / "array_api_compat" / "array_api_compat"
+    package_root = vendor_root / "array_api_compat"
+    common = package_root / "common"
+    common.mkdir(parents=True)
+    package_init = package_root / "__init__.py"
+    package_init.write_text(
+        "from .common._helpers import is_numpy_namespace\n", encoding="utf-8"
+    )
+    (common / "__init__.py").write_text("", encoding="utf-8")
+    helper = common / "_helpers.py"
+    helper.write_text(
+        "def is_numpy_namespace(xp):\n    return True\n", encoding="utf-8"
+    )
+    monkeypatch.setenv(
+        "MOLT_MODULE_ROOTS",
+        f"scipy._external.array_api_compat={package_root}",
+    )
+
+    assert (
+        cli_module_resolution._resolve_module_path(
+            "scipy._external.array_api_compat",
+            [tmp_path],
+        )
+        == package_init
+    )
+    assert (
+        cli_module_resolution._resolve_module_path(
+            "scipy._external.array_api_compat.common._helpers",
+            [tmp_path],
+        )
+        == helper
+    )
+    assert (
+        cli_module_resolution._module_name_from_path(
+            helper,
+            [vendor_root],
+            cli_module_resolution._stdlib_root_path(),
+        )
+        == "scipy._external.array_api_compat.common._helpers"
+    )
+
+
+def test_prefixed_module_root_is_external_admission_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vendor_package = tmp_path / "vendor" / "pkg"
+    vendor_package.mkdir(parents=True)
+    (vendor_package / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("MOLT_MODULE_ROOTS", f"upstream.pkg={vendor_package}")
+
+    resolved = cli_build_inputs._resolve_module_root_resolution(
+        ROOT,
+        ROOT,
+        respect_pythonpath=False,
+        lib_paths=[],
+    )
+
+    assert vendor_package.resolve() in resolved.roots
+    assert vendor_package.resolve() in resolved.external_roots
+
+
+def test_module_resolution_cache_tracks_prefixed_root_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "first" / "pkg"
+    second = tmp_path / "second" / "pkg"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    first_init = first / "__init__.py"
+    second_init = second / "__init__.py"
+    first_init.write_text("VALUE = 1\n", encoding="utf-8")
+    second_init.write_text("VALUE = 2\n", encoding="utf-8")
+    cache = cli_module_resolution._ModuleResolutionCache()
+    stdlib_root = cli_module_resolution._stdlib_root_path()
+
+    monkeypatch.setenv("MOLT_MODULE_ROOTS", f"upstream.pkg={first}")
+    assert (
+        cache.resolve_module("upstream.pkg", [tmp_path], stdlib_root, set())
+        == first_init
+    )
+    assert (
+        cache.module_name_from_path(first_init, [tmp_path], stdlib_root)
+        == "upstream.pkg"
+    )
+
+    monkeypatch.setenv("MOLT_MODULE_ROOTS", f"upstream.pkg={second}")
+    assert (
+        cache.resolve_module("upstream.pkg", [tmp_path], stdlib_root, set())
+        == second_init
+    )
+    assert (
+        cache.module_name_from_path(second_init, [tmp_path], stdlib_root)
+        == "upstream.pkg"
+    )
+
+
 def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     support_pkg = cli_module_resolution._resolve_module_path("test.support", [stdlib_root])
