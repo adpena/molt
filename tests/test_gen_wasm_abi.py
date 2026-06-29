@@ -88,6 +88,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     manifest_names = {entry["name"] for entry in data["import"]}
+    imports_by_name = {entry["name"]: entry for entry in data["import"]}
     host_exports = set(data["runtime_export_policy"]["host_exports"])
     gpu_manifest_names = {entry["name"] for entry in data["gpu_intrinsic_manifest_name"]}
     fallback_specs = {entry["import"]: entry for entry in data["runtime_import_fallback"]}
@@ -100,6 +101,10 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "_HOST_RUNTIME_EXPORTS" not in text
     assert "_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS" not in text
     assert {"alloc", "runtime_init", "socket_connect", "task_new"} <= manifest_names
+    assert imports_by_name["runtime_init"]["runtime_name"] == "molt_runtime_init"
+    assert "callable_arity" not in imports_by_name["runtime_init"]
+    assert imports_by_name["runtime_shutdown"]["runtime_name"] == "molt_runtime_shutdown"
+    assert "callable_arity" not in imports_by_name["runtime_shutdown"]
     assert {
         "molt_runtime_shutdown",
         "molt_set_wasm_table_base",
@@ -138,9 +143,20 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "def wasm_runtime_import_name" in rendered_py
     assert "def wasm_runtime_export_name" in rendered_py
     assert '("alloc", "molt_alloc")' in rendered_py
+    assert '("runtime_init", "molt_runtime_init")' in rendered_py
+    assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
     assert "runtime_export_name" in rendered_rs
     assert 'Self::Alloc => "molt_alloc"' in rendered_rs
+    assert 'Self::RuntimeInit => "molt_runtime_init"' in rendered_rs
+    assert (
+        '"molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit)'
+        in rendered_rs
+    )
+    assert (
+        '"molt_runtime_shutdown" => Some(WasmRuntimeImport::RuntimeShutdown)'
+        in rendered_rs
+    )
     assert 'Self::SocketDrop => "molt_socket_drop"' in rendered_rs
 
 
@@ -480,7 +496,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     rendered_rs_modules = gen.render_rs_modules(data)
     rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
     assert "enum LirRuntimeCall" in rendered_lir_rs
-    assert "use super::imports::WasmRuntimeImport;" in rendered_lir_rs
+    assert "use super::import_tokens::WasmRuntimeImport;" in rendered_lir_rs
     assert "pub(crate) const fn import(self) -> WasmRuntimeImport" in rendered_lir_rs
     assert "Self::FloorDiv => WasmRuntimeImport::Floordiv" in rendered_lir_rs
     assert "pub(crate) const fn boxed_operand_count" in rendered_lir_rs

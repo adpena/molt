@@ -8768,6 +8768,8 @@ WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {
         "molt_trace_enter_slot": "trace_enter_slot",
         "molt_trace_exit": "trace_exit",
         "molt_trace_set_line": "trace_set_line",
+        "molt_runtime_init": "runtime_init",
+        "molt_runtime_shutdown": "runtime_shutdown",
         "molt_sys_set_version_info": "sys_set_version_info",
         "molt_print_builtin": "print_builtin",
         "molt_gen_locals": "gen_locals",

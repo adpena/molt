@@ -868,7 +868,7 @@ def validate_loaded_manifest(data: dict) -> dict:
             non_reserved_import_refs,
         )
     seen_imports: set[str] = set()
-    seen_runtime_callables: set[str] = set()
+    seen_runtime_names: set[str] = set()
     seen_poll_slots: set[int] = set()
     for idx, entry in enumerate(imports):
         if not isinstance(entry, dict):
@@ -890,13 +890,17 @@ def validate_loaded_manifest(data: dict) -> dict:
         runtime_name = entry.get("runtime_name")
         callable_arity = entry.get("callable_arity")
         callable_result = entry.get("callable_result", "i64")
-        has_callable_field = runtime_name is not None or callable_arity is not None
-        if has_callable_field:
+        if runtime_name is not None:
             if not isinstance(runtime_name, str) or not runtime_name:
                 raise WasmAbiManifestError(f"import {name!r} has invalid runtime_name")
-            if runtime_name in seen_runtime_callables:
-                raise WasmAbiManifestError(f"duplicate runtime callable {runtime_name!r}")
-            seen_runtime_callables.add(runtime_name)
+            if runtime_name in seen_runtime_names:
+                raise WasmAbiManifestError(f"duplicate runtime import alias {runtime_name!r}")
+            seen_runtime_names.add(runtime_name)
+        if callable_arity is not None:
+            if runtime_name is None:
+                raise WasmAbiManifestError(
+                    f"import {name!r} cannot set callable_arity without runtime_name"
+                )
             if not isinstance(callable_arity, int) or callable_arity < 0:
                 raise WasmAbiManifestError(f"import {name!r} has invalid callable_arity")
             if callable_result not in {"i64", "void"}:
@@ -918,7 +922,7 @@ def validate_loaded_manifest(data: dict) -> dict:
                     f"duplicate poll table slot {poll_table_slot}"
                 )
             seen_poll_slots.add(poll_table_slot)
-    runtime_import_alias_collisions = seen_imports & seen_runtime_callables
+    runtime_import_alias_collisions = seen_imports & seen_runtime_names
     if runtime_import_alias_collisions:
         raise WasmAbiManifestError(
             "runtime import aliases collide with canonical import names: "
