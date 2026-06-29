@@ -21,8 +21,8 @@ use molt_codegen_abi as nanbox;
 use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::runtime_imports::{
-    classified_runtime_import_return_abi, declare_conservative_runtime_function,
-    is_classified_runtime_import,
+    declare_conservative_runtime_function, declare_fixed_runtime_function, is_runtime_import_abi,
+    runtime_import_return_abi,
 };
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
@@ -872,6 +872,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.diagnostics
             .borrow_mut()
             .push(format!("{}: {}", self.func.name, message.into()));
+    }
+
+    fn record_removed_runtime_delegate(
+        &mut self,
+        op: &TirOp,
+        runtime_symbol: &str,
+        structural_path: &str,
+    ) {
+        self.record_fatal(format!(
+            "{:?} reached LLVM lowering through removed runtime delegate `{runtime_symbol}`; \
+             {structural_path}",
+            op.opcode
+        ));
+        let undef: BasicValueEnum<'ctx> = self.backend.context.i64_type().get_undef().into();
+        for &result_id in &op.results {
+            self.values.insert(result_id, undef);
+            self.value_types.insert(result_id, TirType::DynBox);
+        }
     }
 
     /// Record that `from_bb` branches to `to_bb` at the LLVM level.

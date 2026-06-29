@@ -2,10 +2,7 @@
   "dangerous": {
     "llvm_coverage_gap": [],
     "freshvalue_llvm_gap": [],
-    "classifier_silent_fallthrough": [
-      "object_set_class",
-      "unpack_sequence"
-    ],
+    "classifier_silent_fallthrough": [],
     "simpleir_lane_gap": [],
     "mapped_never_emitted": [
       "bit_not",

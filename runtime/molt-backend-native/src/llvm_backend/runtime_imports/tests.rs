@@ -5,6 +5,7 @@ use crate::runtime_import_abi::{RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::context::Context;
 use inkwell::values::FunctionValue;
+use std::collections::HashSet;
 /// Check that a function has an enum attribute with the given name.
 fn has_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
     let kind_id = Attribute::get_named_enum_kind_id(attr_name);
@@ -59,7 +60,7 @@ fn shared_runtime_helper_imports_have_llvm_abi_authority() {
     for signature in TRAMPOLINE_RUNTIME_IMPORTS {
         let func = module.get_function(signature.name).unwrap_or_else(|| {
             assert_eq!(
-                classified_runtime_import_return_abi(signature.name, signature.param_count),
+                runtime_import_return_abi(signature.name, signature.param_count),
                 Some(signature.return_abi),
                 "{} should be declared or classified",
                 signature.name
@@ -97,6 +98,83 @@ fn shared_runtime_helper_imports_have_llvm_abi_authority() {
 }
 
 #[test]
+fn fixed_runtime_imports_do_not_overlap_conservative_fallbacks() {
+    let conservative: HashSet<&str> = CONSERVATIVE_RUNTIME_IMPORTS
+        .iter()
+        .map(|signature| signature.name)
+        .collect();
+    let mut fixed_names = HashSet::new();
+    for spec in fixed::FIXED_RUNTIME_IMPORTS {
+        assert!(
+            fixed_names.insert(spec.name),
+            "fixed LLVM runtime import `{}` appears more than once",
+            spec.name,
+        );
+        assert!(
+            !conservative.contains(spec.name),
+            "fixed LLVM runtime import `{}` must not also live in the conservative fallback table",
+            spec.name,
+        );
+    }
+}
+
+#[test]
+fn custom_fixed_runtime_import_signatures_are_typed() {
+    let ctx = Context::create();
+    let module = ctx.create_module("test_custom_fixed_runtime_imports");
+    declare_runtime_functions(&ctx, &module);
+
+    let string_from_bytes = module
+        .get_function("molt_string_from_bytes")
+        .expect("molt_string_from_bytes should be fixed-declared");
+    assert_eq!(string_from_bytes.count_params(), 3);
+    let params = string_from_bytes.get_type().get_param_types();
+    assert!(params[0].is_pointer_type());
+    assert_eq!(params[1].into_int_type().get_bit_width(), 64);
+    assert!(params[2].is_pointer_type());
+    let ret_ty = string_from_bytes
+        .get_type()
+        .get_return_type()
+        .expect("molt_string_from_bytes should return i32");
+    assert!(ret_ty.is_int_type());
+    assert_eq!(ret_ty.into_int_type().get_bit_width(), 32);
+    assert!(has_fn_attr(string_from_bytes, "nounwind"));
+    assert!(has_fn_attr(string_from_bytes, "willreturn"));
+
+    let bigint_from_str = module
+        .get_function("molt_bigint_from_str")
+        .expect("molt_bigint_from_str should be fixed-declared");
+    assert_eq!(bigint_from_str.count_params(), 2);
+    let params = bigint_from_str.get_type().get_param_types();
+    assert!(params[0].is_pointer_type());
+    assert_eq!(params[1].into_int_type().get_bit_width(), 64);
+    let ret_ty = bigint_from_str
+        .get_type()
+        .get_return_type()
+        .expect("molt_bigint_from_str should return i64");
+    assert!(ret_ty.is_int_type());
+    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
+    assert!(has_fn_attr(bigint_from_str, "nounwind"));
+    assert!(has_fn_attr(bigint_from_str, "willreturn"));
+
+    let get_attr_object_ic = module
+        .get_function("molt_get_attr_object_ic")
+        .expect("molt_get_attr_object_ic should be fixed-declared");
+    assert_eq!(get_attr_object_ic.count_params(), 4);
+    let params = get_attr_object_ic.get_type().get_param_types();
+    assert_eq!(params[0].into_int_type().get_bit_width(), 64);
+    assert!(params[1].is_pointer_type());
+    assert_eq!(params[2].into_int_type().get_bit_width(), 64);
+    assert_eq!(params[3].into_int_type().get_bit_width(), 64);
+    let ret_ty = get_attr_object_ic
+        .get_type()
+        .get_return_type()
+        .expect("molt_get_attr_object_ic should return i64");
+    assert!(ret_ty.is_int_type());
+    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
+}
+
+#[test]
 fn fused_method_dispatch_ic_runtime_functions_are_declared() {
     let ctx = Context::create();
     let module = ctx.create_module("test_method_dispatch_ic");
@@ -104,21 +182,22 @@ fn fused_method_dispatch_ic_runtime_functions_are_declared() {
 
     // call_method_icN: site + recv + name_ptr + name_len + N args = 4 + N.
     // call_super_method_icN: site + class + self + name_ptr + name_len + N
-    // args = 5 + N. All u64 — the name pointer is a native pointer cast to
-    // i64. These dispatch arbitrary user code, so they carry `nounwind`
-    // (catch_unwind boundary) but must NOT carry `willreturn`.
+    // args = 5 + N. `name_ptr` is a native pointer in the LLVM ABI; all other
+    // values are boxed i64 carriers. These dispatch arbitrary user code, so
+    // they carry `nounwind` (catch_unwind boundary) but must NOT carry
+    // `willreturn`.
     let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
-    for (name, arity) in &[
-        ("molt_call_method_ic0", 4usize),
-        ("molt_call_method_ic1", 5),
-        ("molt_call_method_ic2", 6),
-        ("molt_call_method_ic3", 7),
-        ("molt_call_method_ic4", 8),
-        ("molt_call_super_method_ic0", 5),
-        ("molt_call_super_method_ic1", 6),
-        ("molt_call_super_method_ic2", 7),
-        ("molt_call_super_method_ic3", 8),
-        ("molt_call_super_method_ic4", 9),
+    for (name, arity, ptr_index) in &[
+        ("molt_call_method_ic0", 4usize, 2usize),
+        ("molt_call_method_ic1", 5, 2),
+        ("molt_call_method_ic2", 6, 2),
+        ("molt_call_method_ic3", 7, 2),
+        ("molt_call_method_ic4", 8, 2),
+        ("molt_call_super_method_ic0", 5, 3),
+        ("molt_call_super_method_ic1", 6, 3),
+        ("molt_call_super_method_ic2", 7, 3),
+        ("molt_call_super_method_ic3", 8, 3),
+        ("molt_call_super_method_ic4", 9, 3),
     ] {
         let func = module
             .get_function(name)
@@ -128,6 +207,19 @@ fn fused_method_dispatch_ic_runtime_functions_are_declared() {
             *arity,
             "{name} should have {arity} i64 parameters"
         );
+        let params = func.get_type().get_param_types();
+        for (idx, param) in params.iter().enumerate() {
+            if idx == *ptr_index {
+                assert!(param.is_pointer_type(), "{name} param {idx} should be ptr");
+            } else {
+                assert!(param.is_int_type(), "{name} param {idx} should be integer");
+                assert_eq!(
+                    param.into_int_type().get_bit_width(),
+                    64,
+                    "{name} param {idx} should be i64"
+                );
+            }
+        }
         assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
         // Method dispatch runs arbitrary user code (may loop/suspend): the
         // declaration must not promise termination.
@@ -342,7 +434,7 @@ fn lowering_literal_runtime_imports_are_declared_or_classified() {
             }
             continue;
         }
-        if !is_classified_runtime_import(&name, param_count, return_abi) {
+        if !is_runtime_import_abi(&name, param_count, return_abi) {
             missing.push(format!("{name}/{param_count}/{return_abi:?}"));
         }
     }
@@ -487,15 +579,6 @@ fn no_willreturn_on_control_flow_functions() {
         "molt_getitem_unchecked",
         "molt_setitem_method",
         "molt_delitem_method",
-        "molt_yield",
-        "molt_yield_from",
-        "molt_scf_for",
-        "molt_scf_while",
-        "molt_scf_yield",
-        "molt_scf_if",
-        "molt_get_iter",
-        "molt_for_iter",
-        "molt_call_method",
         "molt_call_builtin",
         "molt_call_bind",
         "molt_call_bind_ic",
@@ -504,7 +587,6 @@ fn no_willreturn_on_control_flow_functions() {
         "molt_call_func_fast1",
         "molt_call_func_fast2",
         "molt_call_func_fast3",
-        "molt_call_0",
         "molt_module_import",
     ] {
         let f = module.get_function(name).expect(name);

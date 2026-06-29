@@ -43,19 +43,30 @@ def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
     assert stdev_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
 
 
-def test_classified_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None:
-    runtime_imports = tmp_path / "runtime_imports.rs"
-    runtime_imports.write_text(
+def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None:
+    conservative_imports = tmp_path / "abi_facts.rs"
+    fixed_imports = tmp_path / "fixed.rs"
+    constants = tmp_path / "runtime_import_abi.rs"
+    conservative_imports.write_text(
         "\n".join(
             [
+                "pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[",
                 'runtime_sig("molt_alpha", 1, RuntimeReturnAbi::I64),',
                 'runtime_sig("molt_alpha", 1, RuntimeReturnAbi::Void),',
+                "];",
             ]
         ),
         encoding="utf-8",
     )
+    fixed_imports.write_text(
+        "pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[];",
+        encoding="utf-8",
+    )
+    constants.write_text("", encoding="utf-8")
 
-    facts, duplicates = AUDIT.classified_abi_facts(runtime_imports)
+    facts, duplicates = AUDIT.runtime_import_abi_facts(
+        conservative_imports, fixed_imports, constants
+    )
 
     assert facts[("molt_alpha", 1)] == AUDIT.AbiFact(
         "molt_alpha",
@@ -160,4 +171,24 @@ def test_classified_fact_validation_rejects_export_drift() -> None:
             "I64",
             "runtime.rs",
         ),
+    )
+
+
+def test_classified_fact_validation_normalizes_return_aliases() -> None:
+    exports = {
+        "molt_chan_new": AUDIT.RuntimeSignature(
+            "molt_chan_new", 1, "ChanHandle", "runtime.rs", "", ("u64",)
+        )
+    }
+    facts = {
+        ("molt_chan_new", 1): AUDIT.AbiFact(
+            "molt_chan_new", 1, "I64", ("I64",)
+        )
+    }
+
+    assert (
+        AUDIT.validate_classified_facts(
+            exports, facts, aliases={"ChanHandle": "u64"}
+        )
+        == ()
     )
