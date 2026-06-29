@@ -5,3 +5,4 @@
 
 #[allow(dead_code)]
 pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = 256;
+pub(crate) const WASM_TABLE_REF_EXPORT_PREFIX: &str = "__molt_table_ref_";

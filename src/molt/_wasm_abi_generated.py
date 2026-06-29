@@ -3079,6 +3079,8 @@ WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 1 + max((slot for slot, _name in WASM
 
 WASM_LEGACY_TABLE_BASE: int = 256
 
+WASM_TABLE_REF_EXPORT_PREFIX: str = '__molt_table_ref_'
+
 WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (
     ("molt_types_bootstrap", "types_bootstrap", 0, "i64"),
     ("molt_abc_bootstrap", "abc_bootstrap", 0, "i64"),

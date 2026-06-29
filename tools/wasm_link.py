@@ -67,7 +67,10 @@ from wasm_link_format import (  # noqa: E402
     _read_varuint as _read_varuint,
     _read_varsint as _read_varsint,
     call_indirect_import_name_for_arity as call_indirect_import_name_for_arity,
+    is_table_ref_export_name as is_table_ref_export_name,
     is_call_indirect_import_name as is_call_indirect_import_name,
+    parse_table_ref_export_name as parse_table_ref_export_name,
+    table_ref_export_name as table_ref_export_name,
     _repair_out_of_bounds_func_refs as _repair_out_of_bounds_func_refs,
     _safe_repair_out_of_bounds_func_refs as _safe_repair_out_of_bounds_func_refs,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
@@ -476,7 +479,7 @@ def _canonical_split_runtime_required_exports(runtime_data: bytes) -> set[str]:
         for name in _collect_function_exports(runtime_data)
         if name not in _ESSENTIAL_EXPORTS
         and name not in {"molt_exception_pending"}
-        and not name.startswith("__molt_table_ref_")
+        and not is_table_ref_export_name(name)
     }
 
 
@@ -1355,7 +1358,7 @@ def _run_wasm_ld(
             {
                 name: export_symbol_map[name]
                 for name in _collect_function_exports(output_data)
-                if name.startswith("__molt_table_ref_") and name in export_symbol_map
+                if is_table_ref_export_name(name) and name in export_symbol_map
             }
         )
         updated = _ensure_function_exports_by_symbol_names(
@@ -1456,9 +1459,9 @@ def _run_wasm_ld(
                 allowed_table_indices = None
                 if not split_runtime:
                     allowed_table_indices = {
-                        int(name.removeprefix("__molt_table_ref_"))
+                        ref_index
                         for name in _collect_function_exports(output.read_bytes())
-                        if name.startswith("__molt_table_ref_")
+                        if (ref_index := parse_table_ref_export_name(name)) is not None
                     }
                 updated = _append_table_ref_elements(
                     linked_bytes,

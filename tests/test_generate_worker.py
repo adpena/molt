@@ -1,3 +1,13 @@
+import json
+
+from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
+from molt.wasm_artifact import wasm_table_ref_export_name
+
+
+def _table_ref_export_name(index: int) -> str:
+    return wasm_table_ref_export_name(index)
+
+
 def test_generate_worker_produces_valid_js(tmp_path):
     from tools.generate_worker import generate_worker
 
@@ -230,15 +240,17 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
 def test_generate_split_worker_installs_exported_table_refs() -> None:
     from molt.cli import _generate_split_worker_js
 
+    app_ref = _table_ref_export_name(7)
+    runtime_ref = _table_ref_export_name(3)
     content = _generate_split_worker_js(
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
         app_table_ref_signatures={
-            "__molt_table_ref_7": {"params": ["i64"], "result": "i64"}
+            app_ref: {"params": ["i64"], "result": "i64"}
         },
         runtime_table_ref_signatures={
-            "__molt_table_ref_3": {"params": ["i32"], "result": "i32"}
+            runtime_ref: {"params": ["i32"], "result": "i32"}
         },
     )
 
@@ -250,20 +262,28 @@ def test_generate_split_worker_installs_exported_table_refs() -> None:
     assert "ensureTableCapacityForExportedRefs(appInstance, sharedTable);" in content
     assert "installTableRefs(appInstance, sharedTable);" in content
     assert "? [`MOLT_WASM_TABLE_BASE=${32}`]" in content
+    assert (
+        f"const TABLE_REF_EXPORT_PREFIX = {json.dumps(WASM_TABLE_REF_EXPORT_PREFIX)};"
+        in content
+    )
+    assert "const parseTableRefExportName = (name) => {" in content
+    assert "const tableRefExportName = (index) =>" in content
 
 
 def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     from molt.cli import _generate_split_worker_js
 
+    app_ref = _table_ref_export_name(7)
+    runtime_ref = _table_ref_export_name(3)
     content = _generate_split_worker_js(
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
         app_table_ref_signatures={
-            "__molt_table_ref_7": {"params": ["i64"], "result": "i64"}
+            app_ref: {"params": ["i64"], "result": "i64"}
         },
         runtime_table_ref_signatures={
-            "__molt_table_ref_3": {"params": ["i32"], "result": "i32"}
+            runtime_ref: {"params": ["i32"], "result": "i32"}
         },
     )
 
@@ -272,7 +292,8 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "hostEnv[indirectName] = (fnIndex, ...args) => {" in content
     assert "const idx = Number(fnIndex);" in content
     assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
-    assert "const directName = `__molt_table_ref_${dispatchIdx}`;" in content
+    assert "const directName = tableRefExportName(dispatchIdx);" in content
+    assert f"/^{WASM_TABLE_REF_EXPORT_PREFIX}" not in content
     assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
     assert "return indirectFn(fnIndex, ...args);" in content
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
@@ -318,10 +339,10 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
             },
         },
         app_table_ref_signatures={
-            "__molt_table_ref_1": {"params": ["i64"], "result": "i64"}
+            _table_ref_export_name(1): {"params": ["i64"], "result": "i64"}
         },
         runtime_table_ref_signatures={
-            "__molt_table_ref_2": {"params": ["i32"], "result": "i32"}
+            _table_ref_export_name(2): {"params": ["i32"], "result": "i32"}
         },
     )
 
@@ -344,12 +365,18 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert '"strategy": "call_bind_ic"' in content
     assert '"dict_getitem": {"call_arity": null' in content
     assert '"exports": ["molt_dict_getitem_borrowed"]' in content
+    expected_app_refs = {
+        _table_ref_export_name(1): {"params": ["i64"], "result": "i64"}
+    }
+    expected_runtime_refs = {
+        _table_ref_export_name(2): {"params": ["i32"], "result": "i32"}
+    }
     assert (
-        'const appTableRefSignatures = {"__molt_table_ref_1": {"params": ["i64"], "result": "i64"}};'
+        f"const appTableRefSignatures = {json.dumps(expected_app_refs, sort_keys=True)};"
         in content
     )
     assert (
-        'const runtimeTableRefSignatures = {"__molt_table_ref_2": {"params": ["i32"], "result": "i32"}};'
+        f"const runtimeTableRefSignatures = {json.dumps(expected_runtime_refs, sort_keys=True)};"
         in content
     )
     assert "const TAG_NONE = 0x0003000000000000n;" in content
@@ -418,8 +445,8 @@ def test_effective_split_worker_table_base_uses_backend_authority() -> None:
             wasm_table_base=4096,
             runtime_table_min=315,
             app_table_ref_signatures={
-                "__molt_table_ref_4096": {"params": ["i64"], "result": "i64"},
-                "__molt_table_ref_4189": {"params": ["i64"], "result": "i64"},
+                _table_ref_export_name(4096): {"params": ["i64"], "result": "i64"},
+                _table_ref_export_name(4189): {"params": ["i64"], "result": "i64"},
             },
         )
         == 4096
@@ -434,7 +461,7 @@ def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
             wasm_table_base=None,
             runtime_table_min=315,
             app_table_ref_signatures={
-                "__molt_table_ref_4130": {"params": ["i64"], "result": "i64"},
+                _table_ref_export_name(4130): {"params": ["i64"], "result": "i64"},
             },
         )
         is None
@@ -451,7 +478,7 @@ def test_effective_split_worker_table_base_rejects_export_mismatch() -> None:
             wasm_table_base=4096,
             runtime_table_min=315,
             app_table_ref_signatures={
-                "__molt_table_ref_4130": {"params": ["i64"], "result": "i64"},
+                _table_ref_export_name(4130): {"params": ["i64"], "result": "i64"},
             },
         )
 
@@ -520,8 +547,8 @@ def _signature_fixture_wasm() -> bytes:
     )
     export_payload = _wasm_vec(
         [
-            _wasm_function_export("__molt_table_ref_7", 3),
-            _wasm_function_export("__molt_table_ref_8", 4),
+            _wasm_function_export(_table_ref_export_name(7), 3),
+            _wasm_function_export(_table_ref_export_name(8), 4),
         ]
     )
     return wasm_artifact._build_wasm_sections(
@@ -568,21 +595,22 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
 
 
 def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:
-    from molt.wasm_artifact import _wasm_export_function_signatures
+    from molt.wasm_artifact import (
+        _wasm_export_function_signatures,
+        wasm_table_ref_export_signatures,
+    )
 
     wasm_path = tmp_path / "runtime.wasm"
     wasm_path.write_bytes(_signature_fixture_wasm())
 
-    assert _wasm_export_function_signatures(
-        wasm_path, export_name_prefix="__molt_table_ref_"
-    ) == {
-        "__molt_table_ref_7": {"params": ["i64"], "result": "i64"},
-        "__molt_table_ref_8": {"params": ["i32", "i64", "i32"], "result": "i32"},
+    assert wasm_table_ref_export_signatures(wasm_path) == {
+        _table_ref_export_name(7): {"params": ["i64"], "result": "i64"},
+        _table_ref_export_name(8): {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
     assert _wasm_export_function_signatures(
-        wasm_path, export_names={"__molt_table_ref_8"}
+        wasm_path, export_names={_table_ref_export_name(8)}
     ) == {
-        "__molt_table_ref_8": {"params": ["i32", "i64", "i32"], "result": "i32"},
+        _table_ref_export_name(8): {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
 
 
@@ -625,4 +653,4 @@ def test_export_wasm_table_refs_adds_exports_for_active_slots(tmp_path) -> None:
         export.name: (export.kind, export.index)
         for export in parse_wasm_exports(wasm_path.read_bytes())
     }
-    assert exports["__molt_table_ref_3"] == (0, 0)
+    assert exports[_table_ref_export_name(3)] == (0, 0)

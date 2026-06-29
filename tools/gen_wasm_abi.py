@@ -83,6 +83,14 @@ def _py_tuple(vals: list[str]) -> str:
     return "(" + ", ".join(f'"{val}"' for val in vals) + ")"
 
 
+def _py_string(value: str) -> str:
+    return repr(value)
+
+
+def _rust_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _rust_pascal_variant(value: str) -> str:
     return "".join(part.capitalize() for part in value.split("_"))
 
@@ -1590,6 +1598,10 @@ def render_py(data: dict) -> str:
         "WASM_LEGACY_TABLE_BASE: int = "
         f"{data['table_layout']['legacy_table_base']}\n\n"
     )
+    lines.append(
+        "WASM_TABLE_REF_EXPORT_PREFIX: str = "
+        f"{_py_string(data['table_layout']['table_ref_export_prefix'])}\n\n"
+    )
     lines.append("WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (\n")
     for entry in data["import"]:
         if "callable_arity" not in entry:
@@ -1837,6 +1849,10 @@ def render_table_layout_inc(data: dict) -> str:
     lines.append(
         "pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = "
         f"{data['table_layout']['legacy_table_base']};\n"
+    )
+    lines.append(
+        "pub(crate) const WASM_TABLE_REF_EXPORT_PREFIX: &str = "
+        f"{_rust_string(data['table_layout']['table_ref_export_prefix'])};\n"
     )
     return "".join(lines)
 

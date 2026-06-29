@@ -7,14 +7,22 @@ from pathlib import Path
 
 import pytest
 
+from molt.wasm_artifact import wasm_table_ref_export_name
 
-WORKER_ABI_JS = """
-const runtimeImportResultKinds = {"molt_module_import": "i64"};
-const runtimeImportSignatures = {"molt_module_import": {"params": ["i32"], "result": "i64"}};
-const appTableRefSignatures = {"__molt_table_ref_4096": {"params": [], "result": "nil"}};
-const runtimeTableRefSignatures = {};
-export default {};
-"""
+
+APP_TABLE_REF = wasm_table_ref_export_name(4096)
+APP_TABLE_REF_SIGNATURES = {APP_TABLE_REF: {"params": [], "result": "nil"}}
+
+WORKER_ABI_JS = "\n".join(
+    [
+        'const runtimeImportResultKinds = {"molt_module_import": "i64"};',
+        'const runtimeImportSignatures = {"molt_module_import": {"params": ["i32"], "result": "i64"}};',
+        f"const appTableRefSignatures = {json.dumps(APP_TABLE_REF_SIGNATURES, sort_keys=True)};",
+        "const runtimeTableRefSignatures = {};",
+        "export default {};",
+        "",
+    ]
+)
 
 MANIFEST_ABI = {
     "runtime_imports": {
@@ -26,7 +34,7 @@ MANIFEST_ABI = {
         "result_kinds": {"molt_module_import": "i64"},
     },
     "table_refs": {
-        "app": {"__molt_table_ref_4096": {"params": [], "result": "nil"}},
+        "app": APP_TABLE_REF_SIGNATURES,
         "runtime": {},
     },
 }
