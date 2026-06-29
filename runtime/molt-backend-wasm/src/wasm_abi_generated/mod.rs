@@ -17,7 +17,10 @@ pub(crate) use const_policy::{
     WasmConstRawIntEffect, WasmConstScalarValue, wasm_const_op_policy,
 };
 pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
-pub(crate) use lir_runtime_calls::{LirRuntimeCall, preserved_copy_runtime_call};
+pub(crate) use lir_runtime_calls::{
+    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, OpLoopRuntimeSinkSpec,
+    lir_fixed_runtime_call, op_loop_runtime_call,
+};
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,

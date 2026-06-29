@@ -13,7 +13,7 @@ use super::lir_scalar::{
     emit_lir_checked_mul, emit_lir_comparison, emit_lir_identity_comparison, emit_lir_not,
     emit_lir_shift, emit_lir_truthy_cond_builtin, emit_lir_unary_arith, emit_lir_unary_pos,
 };
-use super::runtime_calls::preserved_copy_runtime_call;
+use super::runtime_calls::lir_fixed_runtime_call;
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
 use crate::wasm::lir_fast::LirRuntimeCall;
@@ -176,47 +176,19 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::In => emit_lir_membership(ctx, op, false),
         OpCode::NotIn => emit_lir_membership(ctx, op, true),
         OpCode::ExceptionPending => emit_lir_exception_pending(ctx, op),
-        OpCode::FunctionDefaultsVersion => emit_lir_boxed_operands_runtime_call(
-            ctx,
-            op,
-            LirRuntimeCall::FunctionDefaultsVersion,
-            1,
-        ),
-        OpCode::ModuleCacheGet => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleCacheGet, 1)
-        }
-        OpCode::ModuleCacheSet => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleCacheSet, 2)
-        }
-        OpCode::ModuleCacheDel => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleCacheDel, 1)
-        }
-        OpCode::ModuleGetAttr => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleGetAttr, 2)
-        }
-        OpCode::ModuleImportFrom => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleImportFrom, 2)
-        }
-        OpCode::ModuleGetGlobal => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleGetGlobal, 2)
-        }
-        OpCode::ModuleGetName => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleGetName, 2)
-        }
-        OpCode::ModuleSetAttr => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleSetAttr, 3)
-        }
-        OpCode::ModuleDelGlobal => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleDelGlobal, 2)
-        }
-        OpCode::ModuleDelGlobalIfPresent => emit_lir_boxed_operands_runtime_call(
-            ctx,
-            op,
-            LirRuntimeCall::ModuleDelGlobalIfPresent,
-            2,
-        ),
+        OpCode::FunctionDefaultsVersion
+        | OpCode::ModuleCacheGet
+        | OpCode::ModuleCacheSet
+        | OpCode::ModuleCacheDel
+        | OpCode::ModuleGetAttr
+        | OpCode::ModuleImportFrom
+        | OpCode::ModuleGetGlobal
+        | OpCode::ModuleGetName
+        | OpCode::ModuleSetAttr
+        | OpCode::ModuleDelGlobal
+        | OpCode::ModuleDelGlobalIfPresent => emit_lir_generated_fixed_runtime_call(ctx, op),
         OpCode::Import if !tir_op.operands.is_empty() => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::ModuleImport, 1)
+            emit_lir_generated_fixed_runtime_call(ctx, op)
         }
         OpCode::LoadAttr | OpCode::StoreAttr | OpCode::DelAttr => emit_lir_attr(ctx, op),
         OpCode::Alloc => emit_lir_alloc(ctx, op),
@@ -318,6 +290,19 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
     }
 }
 
+fn emit_lir_generated_fixed_runtime_call(ctx: &mut LirLowerCtx, op: &LirOp) {
+    let kind = crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.tir_op.opcode);
+    let runtime = lir_fixed_runtime_call(kind)
+        .unwrap_or_else(|| panic!("missing generated WASM LIR fixed runtime call for {kind}"));
+    assert!(
+        op.tir_op.operands.len() >= runtime.operand_count,
+        "generated WASM LIR fixed runtime call for {kind} needs {} operands, got {}",
+        runtime.operand_count,
+        op.tir_op.operands.len()
+    );
+    emit_lir_boxed_operands_runtime_call(ctx, op, runtime.call, runtime.operand_count);
+}
+
 fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
     if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
         ctx.emit_get(src);
@@ -342,7 +327,7 @@ fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
         {
             emit_lir_identity_copy(ctx, op)
         }
-        Some(kind) if let Some(runtime) = preserved_copy_runtime_call(kind) => {
+        Some(kind) if let Some(runtime) = lir_fixed_runtime_call(kind) => {
             emit_lir_boxed_operands_runtime_call(ctx, op, runtime.call, runtime.operand_count)
         }
         Some(_) => emit_lir_unsupported_marker(ctx, op),

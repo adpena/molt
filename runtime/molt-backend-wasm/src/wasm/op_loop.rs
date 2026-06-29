@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::Function;
 
 mod builder_ops;
+mod call_emit;
 mod call_ops;
 mod control_ops;
 mod core_runtime_ops;
