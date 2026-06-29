@@ -315,7 +315,12 @@ def _discover_module_graph_from_paths(
             if precomputed_imports_by_path is not None
             else None
         )
-        if precomputed_imports is not None:
+        if import_admission_policy.owns_source_closure_with_native_artifact_plan(
+            module_name,
+            path,
+        ):
+            imports = ()
+        elif precomputed_imports is not None:
             imports = precomputed_imports
             if use_persisted_graph_cache:
                 with contextlib.suppress(OSError):

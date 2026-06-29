@@ -475,11 +475,14 @@ executes an isolated `numpy==2.4.2` baseline through
 capability, and all-loaded-`numpy.*` module-origin custody. Its purpose is to
 prove NumPy C-API scan closure first, then separately drive off-the-shelf NumPy
 source build/import/runtime through Molt-owned headers and source-recompiled
-native extension package custody. Build admission already fails closed for admitted
-package-local `.so`/`.pyd` artifacts without valid sidecar manifests and
-fingerprints artifact/manifest hashes in graph, wrapper, and backend
-object-cache inputs; native builds also publish validated artifacts, sidecars,
-package `__init__.py` files, and runtime shim candidates under a deterministic
+native extension package custody. Build admission fails closed if the admitted
+NumPy source tree has no package-local native/static artifact candidates, keeps
+native-backed package initializers from expanding into broad source closure, and
+then validates reachable `.so`/`.pyd`/`.molt.wasm`/`.o`/`.a` artifacts through
+sidecar manifests before backend dispatch. The validated artifact/manifest
+hashes are fingerprinted in graph, wrapper, and backend object-cache inputs;
+native builds also publish validated artifacts, sidecars, package `__init__.py`
+files, and runtime shim candidates under a deterministic
 `external_static_packages/<plan-digest>/` runtime root and inject that staged
 root into generated native binaries before runtime startup. The NumPy C-API
 scan layer is green under `c_api_scan` at 447 scanned source files, 1,258
@@ -521,7 +524,10 @@ excluded. The suite is classified as `c_api_probe`. This is the SciPy
 missing-symbol/source-scan closure lane, green at 592 scanned source files, 321
 required symbols, 321 supported, zero missing, and zero fail-fast; it is not a
 runtime workload lane and does not overclaim unchanged SciPy package execution
-through Molt.
+through Molt. Admitting SciPy source through `MOLT_EXTERNAL_STATIC_PACKAGES`
+without package-local native/static artifact candidates is expected to fail
+before module-graph discovery; a C-API scan pass alone is not package build,
+link, import, or runtime execution support.
 
 Artifacts:
 - machine-readable: `results.json`

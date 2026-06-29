@@ -522,7 +522,7 @@ falls back to the host process version when a target is selected.
 | `MOLT_HASH_SEED` | Override the hash seed for deterministic builds. |
 | `MOLT_STDLIB_PROFILE` | Default stdlib profile (`full` or `micro`). |
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
-| `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names whose transitive closure may be admitted from external roots. Direct entry imports from external roots remain bounded when unset. |
+| `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, and their package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
 | `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
 | `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
