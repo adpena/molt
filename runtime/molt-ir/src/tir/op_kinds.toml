@@ -34,9 +34,11 @@
 #                  canonical spelling for each mapped OpCode also feeds the
 #                  generated OpCode→backend-op-name table.
 #   - [[simpleir_control_kind]] — SimpleIR CFG/SSA/pre-SSA control facts for
-#                  kinds consumed structurally before kind_to_opcode. These rows
-#                  generate tir::is_structural, cfg.rs block-boundary helpers,
-#                  and lower_from_simple.rs pre-SSA rewrite membership.
+#                  kinds consumed structurally before kind_to_opcode, plus WASM
+#                  backend split/dispatch shape facts for the same wire
+#                  spellings. These rows generate tir::is_structural, cfg.rs
+#                  block-boundary helpers, lower_from_simple.rs pre-SSA rewrite
+#                  membership, and WASM non-linear dispatch predicates.
 #   - [[frontend_effect_kind]] — frontend-only optimizer effect facts and
 #                  explicit pre-serialization overrides. The generated frontend
 #                  effect oracle derives mapper defaults, raising barriers, and
@@ -1670,6 +1672,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = true
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = true
 
 [[simpleir_control_kind]]
 kind = "state_label"
@@ -1682,6 +1690,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = true
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = true
 
 [[simpleir_control_kind]]
 kind = "if"
@@ -1694,6 +1708,12 @@ block_ender = false
 conditional_branch = true
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "else"
@@ -1706,6 +1726,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "end_if"
@@ -1718,6 +1744,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_start"
@@ -1730,6 +1762,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = true
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_end"
@@ -1742,6 +1780,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = true
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break"
@@ -1754,6 +1798,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_continue"
@@ -1766,6 +1816,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "jump"
@@ -1778,6 +1834,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "goto"
@@ -1790,6 +1852,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "br_if"
@@ -1802,6 +1870,12 @@ block_ender = false
 conditional_branch = true
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break_if_true"
@@ -1814,6 +1888,12 @@ block_ender = false
 conditional_branch = true
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break_if_false"
@@ -1826,6 +1906,12 @@ block_ender = false
 conditional_branch = true
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break_if_exception"
@@ -1838,6 +1924,12 @@ block_ender = false
 conditional_branch = true
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "ret"
@@ -1850,6 +1942,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "ret_void"
@@ -1862,6 +1960,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "return"
@@ -1874,6 +1978,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "nop"
@@ -1886,6 +1996,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = false
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "state_switch"
@@ -1898,6 +2014,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = true
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "state_yield"
@@ -1910,6 +2032,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = true
+wasm_state_resume_after = true
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "state_transition"
@@ -1922,6 +2050,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = true
+wasm_state_resume_after = true
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "chan_send_yield"
@@ -1934,6 +2068,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = true
+wasm_state_resume_after = true
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "chan_recv_yield"
@@ -1946,6 +2086,12 @@ block_ender = true
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = true
+wasm_state_resume_after = true
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_index_start"
@@ -1958,6 +2104,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = true
 ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = true
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_index_next"
@@ -1970,6 +2122,192 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = true
 ssa_only = false
+wasm_split_barrier = false
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "loop_index_end"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "for_iter_start"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "for_iter_end"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "while_start"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "while_end"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "try_start"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "try_end"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "async_for_start"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "async_for_end"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+[[simpleir_control_kind]]
+kind = "check_exception"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = true
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = true
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "phi"
@@ -1982,6 +2320,12 @@ block_ender = false
 conditional_branch = false
 pre_ssa_rewritten = false
 ssa_only = true
+wasm_split_barrier = false
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
 
 [[absorbing_kind]]
 kind = "dict_new"

@@ -8,13 +8,14 @@ use crate::wasm_binary::emit_call;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::{INT_MASK, POINTER_MASK, emit_branch_truthiness_i32};
 use crate::{FunctionIR, OpIR};
+use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_state_resume_at;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(in crate::wasm) fn exception_handler_region_indices(ops: &[OpIR]) -> BTreeSet<usize> {
     let mut label_to_op_index: BTreeMap<i64, usize> = BTreeMap::new();
     for (idx, op) in ops.iter().enumerate() {
-        if matches!(op.kind.as_str(), "label" | "state_label")
+        if simpleir_kind_is_wasm_state_resume_at(op.kind.as_str())
             && let Some(label_id) = op.value
         {
             label_to_op_index.insert(label_id, idx);

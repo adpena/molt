@@ -1,4 +1,7 @@
 use crate::OpIR;
+use molt_tir::tir::op_kinds_generated::{
+    simpleir_kind_is_wasm_state_resume_after, simpleir_kind_is_wasm_state_resume_at,
+};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use wasm_encoder::{BlockType, Function, Instruction};
@@ -15,23 +18,23 @@ pub(super) fn build_state_resume_maps(
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
 
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "state_transition" | "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
-                if let Some(state_id) = op.value {
-                    state_map.insert(state_id, idx + 1);
-                }
+        if simpleir_kind_is_wasm_state_resume_after(op.kind.as_str()) {
+            if let Some(state_id) = op.value {
+                state_map.insert(state_id, idx + 1);
             }
-            "label" | "state_label" => {
-                if let Some(state_id) = op.value {
-                    state_map.insert(state_id, idx);
-                }
+        } else if simpleir_kind_is_wasm_state_resume_at(op.kind.as_str()) {
+            if let Some(state_id) = op.value {
+                state_map.insert(state_id, idx);
             }
-            "const" => {
-                if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
-                    const_ints.insert(out.clone(), value);
+        } else {
+            match op.kind.as_str() {
+                "const" => {
+                    if let (Some(out), Some(value)) = (op.out.as_ref(), op.value) {
+                        const_ints.insert(out.clone(), value);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 

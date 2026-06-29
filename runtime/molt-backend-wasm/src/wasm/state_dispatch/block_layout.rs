@@ -1,36 +1,9 @@
 use super::NonLinearDispatchLocals;
 use crate::OpIR;
+use molt_tir::tir::op_kinds_generated::{
+    simpleir_kind_is_wasm_dispatch_block_leader, simpleir_kind_is_wasm_dispatch_block_terminator,
+};
 use wasm_encoder::{BlockType, Function, Instruction};
-
-fn is_stateful_dispatch_terminator(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_switch"
-            | "state_transition"
-            | "state_yield"
-            | "chan_send_yield"
-            | "chan_recv_yield"
-            | "if"
-            | "else"
-            | "end_if"
-            | "loop_start"
-            | "loop_index_start"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "loop_break"
-            | "loop_continue"
-            | "loop_end"
-            | "jump"
-            | "try_start"
-            | "try_end"
-            | "label"
-            | "state_label"
-            | "check_exception"
-            | "ret"
-            | "ret_void"
-    )
-}
 
 pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     let op_count = ops.len();
@@ -41,13 +14,10 @@ pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     let mut is_start = vec![false; op_count];
     is_start[0] = true;
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "label" | "state_label" | "loop_start" | "loop_index_start" | "loop_end" => {
-                is_start[idx] = true;
-            }
-            _ => {}
+        if simpleir_kind_is_wasm_dispatch_block_leader(op.kind.as_str()) {
+            is_start[idx] = true;
         }
-        if is_stateful_dispatch_terminator(op.kind.as_str()) && idx + 1 < op_count {
+        if simpleir_kind_is_wasm_dispatch_block_terminator(op.kind.as_str()) && idx + 1 < op_count {
             is_start[idx + 1] = true;
         }
     }
