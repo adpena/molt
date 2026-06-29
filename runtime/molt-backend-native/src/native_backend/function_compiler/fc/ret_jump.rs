@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::runtime_import_abi::MOLT_INC_REF_OBJ;
 
 /// Single-source kind authority for [`handle_ret_jump_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -1090,12 +1091,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // No dec_ref for old — drain_cleanup_tracked handles
                     // final cleanup at function return (lifetimes extended
                     // by the back-edge detection in preanalysis).
-                    let inc_callee = SimpleBackend::import_func_id_split(
+                    let inc_callee = SimpleBackend::import_runtime_func_id_split(
                         &mut *module,
                         &mut *import_ids,
-                        "molt_inc_ref_obj",
-                        &[types::I64],
-                        &[],
+                        MOLT_INC_REF_OBJ,
                     );
                     let inc_local = module.declare_func_in_func(inc_callee, builder.func);
                     builder.ins().call(inc_local, &[*val]);

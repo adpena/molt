@@ -24,6 +24,8 @@ pub use molt_ir::intrinsic_symbols::{
 pub mod llvm_backend;
 #[cfg(feature = "native-backend")]
 mod native_backend;
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) mod runtime_import_abi;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 #[cfg(feature = "native-backend")]
 pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};

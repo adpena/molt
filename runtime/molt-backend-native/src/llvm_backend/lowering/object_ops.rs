@@ -64,7 +64,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_load(i64_ty, field_ptr, "field_val")
                 .unwrap();
             // inc_ref the loaded value (may be a heap pointer).
-            let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+            let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
             self.backend
                 .builder
                 .build_call(inc_fn, &[val.into()], "field_load_inc_ref")
@@ -172,7 +172,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         .try_as_basic_value()
         .unwrap_basic();
         if runtime_name == "molt_get_attr_object_ic" {
-            let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+            let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
             let _ = self
                 .backend
                 .builder

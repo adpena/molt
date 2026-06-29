@@ -88,6 +88,23 @@ pub(in crate::native_backend::function_compiler) fn import_func_ref(
 }
 
 #[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder,
+    local_refs: &mut BTreeMap<&'static str, FuncRef>,
+    signature: crate::runtime_import_abi::RuntimeImportSignature,
+) -> FuncRef {
+    let func_id = SimpleBackend::import_runtime_func_id_split(module, import_ids, signature);
+    if let Some(func_ref) = local_refs.get(signature.name) {
+        return *func_ref;
+    }
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    local_refs.insert(signature.name, func_ref);
+    func_ref
+}
+
+#[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn declare_function_object_target(
     module: &mut ObjectModule,
     op_kind: &str,
