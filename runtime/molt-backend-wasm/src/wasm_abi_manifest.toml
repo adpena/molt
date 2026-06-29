@@ -5292,6 +5292,15 @@ kind = "context_enter"
 import_name = "context_enter"
 args = ["local:0"]
 sink = "result_or_drop"
+required_imports = [
+  "context_enter",
+  "context_exit",
+  "context_depth",
+  "context_closing",
+  "context_null",
+  "context_unwind",
+  "context_unwind_to",
+]
 lir_variant = "ContextEnter"
 lir_operand_count = 1
 
@@ -5300,6 +5309,11 @@ kind = "context_exit"
 import_name = "context_exit"
 args = ["local:0", "local:1"]
 sink = "result_or_drop"
+required_imports = [
+  "context_exit",
+  "context_depth",
+  "context_unwind_to",
+]
 lir_variant = "ContextExit"
 lir_operand_count = 2
 
@@ -5308,6 +5322,11 @@ kind = "context_unwind"
 import_name = "context_unwind"
 args = ["local:0"]
 sink = "result_or_drop"
+required_imports = [
+  "context_unwind",
+  "context_unwind_to",
+  "context_depth",
+]
 lir_variant = "ContextUnwind"
 lir_operand_count = 1
 
@@ -5352,18 +5371,45 @@ kind = "alloc_class"
 import_name = "alloc_class"
 args = ["op_value_i64:alloc_class missing payload size", "local:0"]
 sink = "result_or_drop"
+required_imports = [
+  "alloc_class",
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
 
 [[op_loop_runtime_call]]
 kind = "alloc_class_trusted"
 import_name = "alloc_class_trusted"
 args = ["op_value_i64:alloc_class_trusted missing payload size", "local:0"]
 sink = "result_or_drop"
+required_imports = [
+  "alloc_class_trusted",
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
 
 [[op_loop_runtime_call]]
 kind = "alloc_class_static"
 import_name = "alloc_class_static"
 args = ["op_value_i64:alloc_class_static missing payload size", "local:0"]
 sink = "result_or_drop"
+required_imports = [
+  "alloc_class_static",
+  "class_new",
+  "class_set_base",
+  "class_apply_set_name",
+  "class_layout_version",
+  "class_merge_layout",
+  "class_set_layout_version",
+]
 
 [[op_loop_runtime_call]]
 kind = "string_format"
@@ -5431,6 +5477,30 @@ import_name = "print_newline"
 args = []
 sink = "none"
 
+[[op_loop_runtime_call]]
+kind = "asyncgen_new"
+import_name = "asyncgen_new"
+args = ["local:0"]
+sink = "result_or_drop"
+required_imports = [
+  "asyncgen_hooks_get",
+  "asyncgen_hooks_set",
+  "asyncgen_locals",
+  "asyncgen_locals_register",
+  "asyncgen_new",
+  "asyncgen_shutdown",
+]
+
+[[op_loop_runtime_call]]
+kind = "thread_submit"
+import_name = "thread_submit"
+args = ["local:0", "local:1", "local:2"]
+sink = "result_or_drop"
+required_imports = [
+  "thread_poll",
+  "thread_submit",
+]
+
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 0
@@ -5469,7 +5539,6 @@ kinds = [
   "block_on",
   "cancel_token_is_cancelled",
   "cancel_token_set_current",
-  "asyncgen_new",
   "is_generator",
   "is_callable",
   "iter",
@@ -5546,7 +5615,6 @@ kinds = [
 sink = "result_or_drop"
 arg_count = 3
 kinds = [
-  "thread_submit",
   "slice",
   "slice_new",
   "list_from_range",
@@ -5690,6 +5758,16 @@ kinds = [
   "bytes_count_slice",
   "bytearray_count_slice",
 ]
+
+[[wasm_bulk_memory_op]]
+kind = "memory_copy"
+instruction = "memory_copy"
+arg_count = 3
+
+[[wasm_bulk_memory_op]]
+kind = "memory_fill"
+instruction = "memory_fill"
+arg_count = 3
 
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.
@@ -6908,36 +6986,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "gpu_thread_id"
-deps = [
-  "gpu_thread_id",
-]
-
-[[op_import_dep]]
-kind = "gpu_block_id"
-deps = [
-  "gpu_block_id",
-]
-
-[[op_import_dep]]
-kind = "gpu_block_dim"
-deps = [
-  "gpu_block_dim",
-]
-
-[[op_import_dep]]
-kind = "gpu_grid_dim"
-deps = [
-  "gpu_grid_dim",
-]
-
-[[op_import_dep]]
-kind = "gpu_barrier"
-deps = [
-  "gpu_barrier",
-]
-
-[[op_import_dep]]
 kind = "eq"
 deps = [
   "eq",
@@ -6971,82 +7019,6 @@ deps = [
 kind = "ge"
 deps = [
   "ge",
-]
-
-[[op_import_dep]]
-kind = "context_enter"
-deps = [
-  "context_enter",
-  "context_exit",
-  "context_depth",
-  "context_closing",
-  "context_null",
-  "context_unwind",
-  "context_unwind_to",
-]
-
-[[op_import_dep]]
-kind = "context_exit"
-deps = [
-  "context_exit",
-  "context_depth",
-  "context_unwind_to",
-]
-
-[[op_import_dep]]
-kind = "context_closing"
-deps = [
-  "context_closing",
-]
-
-[[op_import_dep]]
-kind = "context_null"
-deps = [
-  "context_null",
-]
-
-[[op_import_dep]]
-kind = "context_unwind"
-deps = [
-  "context_unwind",
-  "context_unwind_to",
-  "context_depth",
-]
-
-[[op_import_dep]]
-kind = "alloc_class"
-deps = [
-  "alloc_class",
-  "class_new",
-  "class_set_base",
-  "class_apply_set_name",
-  "class_layout_version",
-  "class_merge_layout",
-  "class_set_layout_version",
-]
-
-[[op_import_dep]]
-kind = "alloc_class_static"
-deps = [
-  "alloc_class_static",
-  "class_new",
-  "class_set_base",
-  "class_apply_set_name",
-  "class_layout_version",
-  "class_merge_layout",
-  "class_set_layout_version",
-]
-
-[[op_import_dep]]
-kind = "alloc_class_trusted"
-deps = [
-  "alloc_class_trusted",
-  "class_new",
-  "class_set_base",
-  "class_apply_set_name",
-  "class_layout_version",
-  "class_merge_layout",
-  "class_set_layout_version",
 ]
 
 [[op_import_dep]]
@@ -7131,18 +7103,6 @@ deps = [
 kind = "guard_layout_ptr"
 deps = [
   "guard_layout_ptr",
-]
-
-[[op_import_dep]]
-kind = "exceptiongroup_combine"
-deps = [
-  "exceptiongroup_combine",
-]
-
-[[op_import_dep]]
-kind = "exceptiongroup_match"
-deps = [
-  "exceptiongroup_match",
 ]
 
 [[op_import_dep]]
@@ -7250,54 +7210,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "module_cache_del"
-deps = [
-  "module_cache_del",
-]
-
-[[op_import_dep]]
-kind = "module_del_global"
-deps = [
-  "module_del_global",
-]
-
-[[op_import_dep]]
-kind = "module_del_global_if_present"
-deps = [
-  "module_del_global_if_present",
-]
-
-[[op_import_dep]]
-kind = "module_get_global"
-deps = [
-  "module_get_global",
-]
-
-[[op_import_dep]]
-kind = "module_get_name"
-deps = [
-  "module_get_name",
-]
-
-[[op_import_dep]]
-kind = "module_import_from"
-deps = [
-  "module_import_from",
-]
-
-[[op_import_dep]]
-kind = "module_import"
-deps = [
-  "module_import",
-]
-
-[[op_import_dep]]
-kind = "module_import_star"
-deps = [
-  "module_import_star",
-]
-
-[[op_import_dep]]
 kind = "code_new"
 deps = [
   "code_new",
@@ -7343,12 +7255,6 @@ deps = [
 kind = "check_exception"
 deps = [
   "exception_pending",
-]
-
-[[op_import_dep]]
-kind = "function_defaults_version"
-deps = [
-  "function_defaults_version",
 ]
 
 [[op_import_dep]]
@@ -7660,18 +7566,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "iter"
-deps = [
-  "iter",
-]
-
-[[op_import_dep]]
-kind = "iter_next"
-deps = [
-  "iter_next",
-]
-
-[[op_import_dep]]
 kind = "iter_next_unboxed"
 deps = [
   "index",
@@ -7688,12 +7582,6 @@ deps = [
 kind = "contains"
 deps = [
   "contains",
-]
-
-[[op_import_dep]]
-kind = "guard_tag"
-deps = [
-  "guard_type",
 ]
 
 [[op_import_dep]]
@@ -7721,57 +7609,9 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "is_callable"
-deps = [
-  "is_callable",
-]
-
-[[op_import_dep]]
 kind = "is_function_obj"
 deps = [
   "is_function_obj",
-]
-
-[[op_import_dep]]
-kind = "is_generator"
-deps = [
-  "is_generator",
-]
-
-[[op_import_dep]]
-kind = "exception_new_builtin"
-deps = [
-  "exception_new_builtin",
-]
-
-[[op_import_dep]]
-kind = "exception_new_builtin_empty"
-deps = [
-  "exception_new_builtin_empty",
-]
-
-[[op_import_dep]]
-kind = "exception_new_builtin_one"
-deps = [
-  "exception_new_builtin_one",
-]
-
-[[op_import_dep]]
-kind = "gen_close"
-deps = [
-  "generator_close",
-]
-
-[[op_import_dep]]
-kind = "gen_send"
-deps = [
-  "generator_send",
-]
-
-[[op_import_dep]]
-kind = "gen_throw"
-deps = [
-  "generator_throw",
 ]
 
 [[op_import_dep]]
@@ -7811,12 +7651,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "bridge_unavailable"
-deps = [
-  "bridge_unavailable",
-]
-
-[[op_import_dep]]
 kind = "classmethod_new"
 deps = [
   "classmethod_new",
@@ -7844,30 +7678,6 @@ deps = [
 kind = "repr_builtin"
 deps = [
   "repr_builtin",
-]
-
-[[op_import_dep]]
-kind = "repr_from_obj"
-deps = [
-  "repr_from_obj",
-]
-
-[[op_import_dep]]
-kind = "int_from_str_of_obj"
-deps = [
-  "int_from_str_of_obj",
-]
-
-[[op_import_dep]]
-kind = "ord_at"
-deps = [
-  "ord_at",
-]
-
-[[op_import_dep]]
-kind = "str_from_obj"
-deps = [
-  "str_from_obj",
 ]
 
 [[op_import_dep]]
@@ -7908,30 +7718,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "callargs_push_pos"
-deps = [
-  "callargs_push_pos",
-]
-
-[[op_import_dep]]
-kind = "callargs_push_kw"
-deps = [
-  "callargs_push_kw",
-]
-
-[[op_import_dep]]
-kind = "callargs_expand_star"
-deps = [
-  "callargs_expand_star",
-]
-
-[[op_import_dep]]
-kind = "callargs_expand_kwstar"
-deps = [
-  "callargs_expand_kwstar",
-]
-
-[[op_import_dep]]
 kind = "function_default_kind"
 deps = [
   "function_default_kind",
@@ -7969,17 +7755,6 @@ deps = [
 
 [[op_import_dep]]
 kind = "async_generator_yield"
-deps = [
-  "asyncgen_hooks_get",
-  "asyncgen_hooks_set",
-  "asyncgen_locals",
-  "asyncgen_locals_register",
-  "asyncgen_new",
-  "asyncgen_shutdown",
-]
-
-[[op_import_dep]]
-kind = "asyncgen_new"
 deps = [
   "asyncgen_hooks_get",
   "asyncgen_hooks_set",
@@ -8295,18 +8070,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "list_int_new"
-deps = [
-  "list_int_new",
-]
-
-[[op_import_dep]]
-kind = "list_fill_new"
-deps = [
-  "list_fill_new",
-]
-
-[[op_import_dep]]
 kind = "build_list"
 deps = [
   "list_builder_append",
@@ -8416,12 +8179,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "string_format"
-deps = [
-  "format_builtin",
-]
-
-[[op_import_dep]]
 kind = "task_new"
 deps = [
   "task_new",
@@ -8433,13 +8190,6 @@ kind = "thread_spawn"
 deps = [
   "thread_poll",
   "thread_spawn",
-]
-
-[[op_import_dep]]
-kind = "thread_submit"
-deps = [
-  "thread_poll",
-  "thread_submit",
 ]
 
 [[op_import_dep]]

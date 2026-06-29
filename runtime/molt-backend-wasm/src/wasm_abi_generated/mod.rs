@@ -3,6 +3,7 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
+mod bulk_memory_ops;
 mod call_indirect;
 mod const_policy;
 mod container_runtime_selector;
@@ -13,6 +14,9 @@ mod runtime_callables;
 mod runtime_surface;
 mod static_types;
 
+pub(crate) use bulk_memory_ops::{
+    WasmBulkMemoryInstruction, WasmBulkMemoryOpSpec, wasm_bulk_memory_op,
+};
 pub(crate) use call_indirect::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY};
 pub(crate) use const_policy::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,

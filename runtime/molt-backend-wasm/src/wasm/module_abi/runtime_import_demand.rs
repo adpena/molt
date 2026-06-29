@@ -4,6 +4,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
+use crate::wasm_abi_generated::{op_loop_runtime_call, wasm_bulk_memory_op};
 use crate::wasm_imports::{OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
 use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 use crate::{OpIR, TrampolineKind};
@@ -60,8 +61,12 @@ impl WasmRuntimeImportDemand {
             return;
         }
 
-        let import_deps = self.deps_map.get(kind).copied();
-        if let Some(deps) = import_deps {
+        if let Some(call) = op_loop_runtime_call(kind) {
+            self.require_imports(call.required_imports);
+        } else if wasm_bulk_memory_op(kind).is_some() {
+            // WASM-native bulk-memory ops emit no runtime import. Keep the
+            // no-demand fact generated beside their emission spec.
+        } else if let Some(deps) = self.deps_map.get(kind).copied() {
             if debug_imports_enabled() && kind == "alloc_task" {
                 eprintln!("WASM_IMPORTS alloc_task deps={deps:?} func={}", func_name);
             }

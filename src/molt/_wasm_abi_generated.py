@@ -3035,6 +3035,11 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "xml_register_namespace",
 )
 
+WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (
+    ("memory_copy", "memory_copy", 3),
+    ("memory_fill", "memory_fill", 3),
+)
+
 WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (
     (1, "async_sleep_poll"),
     (2, "anext_default_poll"),
