@@ -80,7 +80,12 @@ The live codebase and executable Cargo metadata remain authoritative.
    files recompiles the whole ~352K-line crate.
 2. **The backend-native and frontend god-file locks still serialize multi-agent
    development.** Native/LLVM codegen is now isolated in
-   `molt-backend-native`, but native codegen is still centered on
+   `molt-backend-native`, and the native pre-codegen program pipeline is split:
+   `native_backend/simple_backend/program_pipeline.rs` owns profile ordering,
+   pre-TIR rewrites, cached-TIR custody, Cranelift module-phase handoff,
+   skip-path drops, post-TIR rewrites, intrinsic-manifest custody, and
+   shared-stdlib externalization, while `compile_driver.rs` owns backend
+   dispatch and object emission. The remaining native god-file lock is
    `function_compiler.rs`; frontend F1 split files, but F2 semantic authority
    split is still active work.
 3. **Shared-cache policy is still more important than raw local target size.**

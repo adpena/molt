@@ -40,9 +40,10 @@ pub(crate) use deferred_codegen::{
 };
 pub(crate) use deferred_codegen::{DeferredDefine, should_flush_deferred_codegen};
 mod app_resolver;
+mod program_pipeline;
+#[cfg(any(test, feature = "llvm"))]
+pub(crate) use program_pipeline::preprocess_backend_tir_input;
 mod compile_driver;
-#[cfg(test)]
-pub(crate) use compile_driver::preprocess_backend_tir_input;
 mod trampolines;
 
 /// Output of a native compilation pass.
