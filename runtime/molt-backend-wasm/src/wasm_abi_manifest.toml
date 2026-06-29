@@ -4635,52 +4635,42 @@ import_name = "module_import"
 [[lir_runtime_call]]
 variant = "ModuleImportStar"
 import_name = "module_import_star"
-preserved_copy_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "ModuleNew"
 import_name = "module_new"
-preserved_copy_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "BridgeUnavailable"
 import_name = "bridge_unavailable"
-preserved_copy_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "ContextNull"
 import_name = "context_null"
-preserved_copy_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "ContextEnter"
 import_name = "context_enter"
-preserved_copy_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "ContextExit"
 import_name = "context_exit"
-preserved_copy_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "ContextUnwind"
 import_name = "context_unwind"
-preserved_copy_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "ContextDepth"
 import_name = "context_depth"
-preserved_copy_operand_count = 0
 
 [[lir_runtime_call]]
 variant = "ContextUnwindTo"
 import_name = "context_unwind_to"
-preserved_copy_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "ContextClosing"
 import_name = "context_closing"
-preserved_copy_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "ObjectNewBound"
@@ -4749,6 +4739,549 @@ import_name = "dec_ref_obj"
 [[lir_runtime_call]]
 variant = "IntFromI64"
 import_name = "int_from_i64"
+
+# Fixed op-loop runtime-call authority. These rows cover runtime calls whose
+# WASM emission is exactly: local-prefix/op-value args, one tracked import call,
+# and a result/drop/none sink. Control protocols, builders, arena alloc,
+# selected-import dispatch, ICs, native-EH, and multi-call adapters stay out.
+
+[[op_loop_runtime_call]]
+kind = "import"
+import_name = "module_import"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ModuleImport"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_import"
+import_name = "module_import"
+args = ["local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "module_import_star"
+import_name = "module_import_star"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleImportStar"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_new"
+import_name = "module_new"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ModuleNew"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "function_defaults_version"
+import_name = "function_defaults_version"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "FunctionDefaultsVersion"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_cache_get"
+import_name = "module_cache_get"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ModuleCacheGet"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_cache_set"
+import_name = "module_cache_set"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleCacheSet"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_cache_del"
+import_name = "module_cache_del"
+args = ["local:0"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleCacheDel"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_get_attr"
+import_name = "module_get_attr"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleGetAttr"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_import_from"
+import_name = "module_import_from"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleImportFrom"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_get_global"
+import_name = "module_get_global"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleGetGlobal"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_get_name"
+import_name = "module_get_name"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleGetName"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_set_attr"
+import_name = "module_set_attr"
+args = ["local:0", "local:1", "local:2"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleSetAttr"
+lir_operand_count = 3
+
+[[op_loop_runtime_call]]
+kind = "module_del_global"
+import_name = "module_del_global"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleDelGlobal"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_del_global_if_present"
+import_name = "module_del_global_if_present"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleDelGlobalIfPresent"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "bridge_unavailable"
+import_name = "bridge_unavailable"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "BridgeUnavailable"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_null"
+import_name = "context_null"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextNull"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_enter"
+import_name = "context_enter"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextEnter"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_exit"
+import_name = "context_exit"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ContextExit"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "context_unwind"
+import_name = "context_unwind"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextUnwind"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_depth"
+import_name = "context_depth"
+args = []
+sink = "result_or_drop"
+lir_variant = "ContextDepth"
+lir_operand_count = 0
+
+[[op_loop_runtime_call]]
+kind = "context_unwind_to"
+import_name = "context_unwind_to"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ContextUnwindTo"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "context_closing"
+import_name = "context_closing"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextClosing"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "abs"
+import_name = "abs_builtin"
+args = ["local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "guard_tag"
+import_name = "guard_type"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "alloc_class"
+import_name = "alloc_class"
+args = ["op_value_i64:alloc_class missing payload size", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "alloc_class_trusted"
+import_name = "alloc_class_trusted"
+args = ["op_value_i64:alloc_class_trusted missing payload size", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "alloc_class_static"
+import_name = "alloc_class_static"
+args = ["op_value_i64:alloc_class_static missing payload size", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "string_format"
+import_name = "format_builtin"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_finally_pending_observer"
+import_name = "exception_last_pending"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_new_builtin"
+import_name = "exception_new_builtin"
+args = ["op_value_i64:exception_new_builtin missing tag value", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_new_builtin_empty"
+import_name = "exception_new_builtin_empty"
+args = ["op_value_i64:exception_new_builtin_empty missing tag value"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_new_builtin_one"
+import_name = "exception_new_builtin_one"
+args = ["op_value_i64:exception_new_builtin_one missing tag value", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gen_send"
+import_name = "generator_send"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gen_throw"
+import_name = "generator_throw"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gen_close"
+import_name = "generator_close"
+args = ["local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "chan_drop"
+import_name = "chan_drop"
+args = ["local:0"]
+sink = "drop"
+
+[[op_loop_runtime_call]]
+kind = "spawn"
+import_name = "spawn"
+args = ["local:0"]
+sink = "none"
+
+[[op_loop_runtime_call]]
+kind = "print_newline"
+import_name = "print_newline"
+args = []
+sink = "none"
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 0
+kinds = [
+  "errno_constants",
+  "promise_new",
+  "cancel_token_get_current",
+  "cancelled",
+  "cancel_current",
+  "exception_stack_clear",
+  "exception_stack_enter",
+  "exception_stack_depth",
+  "exception_last",
+  "exception_last_pending",
+  "exception_active",
+  "exception_current",
+  "exception_clear",
+  "asyncgen_shutdown",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 1
+kinds = [
+  "not",
+  "id",
+  "file_close",
+  "file_flush",
+  "chan_new",
+  "cancel_token_new",
+  "cancel_token_clone",
+  "cancel_token_drop",
+  "cancel_token_cancel",
+  "future_cancel",
+  "future_cancel_clear",
+  "block_on",
+  "cancel_token_is_cancelled",
+  "cancel_token_set_current",
+  "asyncgen_new",
+  "is_generator",
+  "is_callable",
+  "iter",
+  "aiter",
+  "iter_next",
+  "anext",
+  "list_clear",
+  "list_copy",
+  "list_reverse",
+  "tuple_from_list",
+  "dict_from_obj",
+  "dict_clear",
+  "dict_copy",
+  "dict_popitem",
+  "dict_keys",
+  "dict_values",
+  "dict_items",
+  "set_pop",
+  "exception_stack_exit",
+  "exception_stack_set_depth",
+  "exception_enter_handler",
+  "exception_resolve_captured",
+  "exceptiongroup_combine",
+  "exception_kind",
+  "exception_class",
+  "exception_message",
+  "exception_context_set",
+  "exception_set_last",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 2
+kinds = [
+  "is",
+  "file_open",
+  "file_read",
+  "file_write",
+  "future_cancel_msg",
+  "promise_set_result",
+  "promise_set_exception",
+  "task_register_token_owned",
+  "env_get",
+  "del_index",
+  "list_append",
+  "list_int_new",
+  "list_fill_new",
+  "list_pop",
+  "list_extend",
+  "list_remove",
+  "list_count",
+  "list_index",
+  "tuple_count",
+  "dict_update",
+  "dict_setdefault_empty_list",
+  "dict_update_kwstar",
+  "set_add",
+  "set_add_probe",
+  "frozenset_add",
+  "set_discard",
+  "set_remove",
+  "set_update",
+  "set_intersection_update",
+  "set_difference_update",
+  "set_symdiff_update",
+  "exception_new",
+  "exception_new_from_class",
+  "exceptiongroup_match",
+  "exception_set_cause",
+  "exception_set_value",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 3
+kinds = [
+  "thread_submit",
+  "slice",
+  "slice_new",
+  "list_from_range",
+  "range_new",
+  "list_insert",
+  "dict_get",
+  "dict_inc",
+  "dict_str_int_inc",
+  "dict_setdefault",
+  "callargs_push_kw",
+  "enumerate",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 4
+kinds = [
+  "list_index_range",
+  "dict_pop",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 2
+kinds = [
+  "callargs_push_pos",
+  "callargs_expand_star",
+  "callargs_expand_kwstar",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 1
+kinds = [
+  "ord",
+  "chr",
+  "string_lower",
+  "string_upper",
+  "string_capitalize",
+  "bytes_from_obj",
+  "bytearray_from_obj",
+  "float_from_obj",
+  "intarray_from_seq",
+  "memoryview_new",
+  "memoryview_tobytes",
+  "str_from_obj",
+  "repr_from_obj",
+  "ascii_from_obj",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 2
+kinds = [
+  "ord_at",
+  "string_join",
+  "string_split",
+  "string_split_validate",
+  "string_strip",
+  "string_lstrip",
+  "string_rstrip",
+  "bytes_split",
+  "bytearray_split",
+  "buffer2d_matmul",
+  "bytes_find",
+  "bytearray_find",
+  "string_find",
+  "string_startswith",
+  "bytes_startswith",
+  "bytearray_startswith",
+  "string_endswith",
+  "bytes_endswith",
+  "bytearray_endswith",
+  "string_count",
+  "bytes_count",
+  "bytearray_count",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 3
+kinds = [
+  "string_split_field",
+  "string_split_field_len",
+  "string_split_max",
+  "bytes_split_max",
+  "bytearray_split_max",
+  "bytes_from_str",
+  "bytearray_from_str",
+  "int_from_obj",
+  "int_from_str_of_obj",
+  "complex_from_obj",
+  "buffer2d_new",
+  "buffer2d_get",
+  "string_split_ws_dict_inc",
+  "taq_ingest_line",
+  "string_split_field_start",
+  "string_split_field_end",
+  "string_split_field_is_ascii",
+  "string_split_field_to_int",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 4
+kinds = [
+  "string_split_field_eq",
+  "string_split_field_len_from_bounds",
+  "bytes_replace",
+  "string_replace",
+  "bytearray_replace",
+  "buffer2d_set",
+  "memoryview_cast",
+  "string_split_sep_dict_inc",
+  "bytearray_fill_range",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 5
+kinds = [
+  "string_split_field_ord_at_bounds",
+  "statistics_mean_slice",
+  "statistics_stdev_slice",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 6
+kinds = [
+  "bytes_find_slice",
+  "bytearray_find_slice",
+  "string_find_slice",
+  "string_startswith_slice",
+  "bytes_startswith_slice",
+  "bytearray_startswith_slice",
+  "string_endswith_slice",
+  "bytes_endswith_slice",
+  "bytearray_endswith_slice",
+  "string_count_slice",
+  "bytes_count_slice",
+  "bytearray_count_slice",
+]
 
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.

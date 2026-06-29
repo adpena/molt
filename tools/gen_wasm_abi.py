@@ -83,6 +83,12 @@ CONST_POLICY_LIR_FAST = {
     "lower",
     "materialize",
 }
+OP_LOOP_RUNTIME_SINKS = {
+    "result_or_drop": "ResultOrDrop",
+    "non_none_result_or_drop": "NonNoneResultOrDrop",
+    "drop": "Drop",
+    "none": "None",
+}
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
 
@@ -108,6 +114,79 @@ def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
         if arity is not None:
             imports.append((arity, name))
     return sorted(imports)
+
+
+def _validate_op_loop_runtime_arg(section: str, idx: int, arg_idx: int, arg: object) -> str:
+    if not isinstance(arg, str) or not arg:
+        raise WasmAbiManifestError(
+            f"{section} entry {idx} arg {arg_idx} must be a non-empty string"
+        )
+    if arg.startswith("local:"):
+        local_idx = arg.removeprefix("local:")
+        if not local_idx.isdecimal() or str(int(local_idx)) != local_idx:
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} arg {arg_idx} has invalid local index {arg!r}"
+            )
+        return arg
+    if arg.startswith("op_value_i64:"):
+        message = arg.removeprefix("op_value_i64:")
+        if not message:
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} arg {arg_idx} has empty op_value_i64 message"
+            )
+        return arg
+    raise WasmAbiManifestError(
+        f"{section} entry {idx} arg {arg_idx} has invalid arg form {arg!r}"
+    )
+
+
+def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
+    expanded: list[dict] = []
+    explicit = data.get("op_loop_runtime_call", [])
+    if not isinstance(explicit, list):
+        raise WasmAbiManifestError("op_loop_runtime_call must be a list of tables")
+    for idx, entry in enumerate(explicit):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"op_loop_runtime_call entry {idx} must be a table")
+        expanded.append(dict(entry))
+
+    groups = data.get("op_loop_runtime_call_group", [])
+    if not isinstance(groups, list):
+        raise WasmAbiManifestError("op_loop_runtime_call_group must be a list of tables")
+    for idx, entry in enumerate(groups):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} must be a table"
+            )
+        kinds = _validate_string_list(
+            f"op_loop_runtime_call_group entry {idx}", "kinds", entry.get("kinds")
+        )
+        arg_count = entry.get("arg_count")
+        if not isinstance(arg_count, int) or arg_count < 0:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid arg_count"
+            )
+        sink = entry.get("sink")
+        if sink not in OP_LOOP_RUNTIME_SINKS:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid sink {sink!r}"
+            )
+        import_name = entry.get("import_name")
+        if import_name is not None and (not isinstance(import_name, str) or not import_name):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid import_name"
+            )
+        args = [f"local:{arg_idx}" for arg_idx in range(arg_count)]
+        for kind in kinds:
+            expanded.append(
+                {
+                    "kind": kind,
+                    "import_name": import_name or kind,
+                    "args": args,
+                    "sink": sink,
+                }
+            )
+    return expanded
 
 
 def _validate_val_type_list(
@@ -262,6 +341,7 @@ def validate_loaded_manifest(data: dict) -> dict:
     if not isinstance(lir_runtime_calls, list) or not lir_runtime_calls:
         raise WasmAbiManifestError("manifest must define lir_runtime_call entries")
     seen_lir_variants: set[str] = set()
+    lir_import_by_variant: dict[str, str] = {}
     seen_lir_imports: set[str] = set()
     seen_lir_preserved_copy_imports: set[str] = set()
     for idx, entry in enumerate(lir_runtime_calls):
@@ -286,6 +366,7 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"lir_runtime_call {variant!r} references unknown import "
                 f"{import_name!r}"
             )
+        lir_import_by_variant[variant] = import_name
         preserved_copy_operand_count = entry.get("preserved_copy_operand_count")
         if preserved_copy_operand_count is None:
             continue
@@ -302,6 +383,69 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"duplicate preserved-Copy LIR runtime-call import {import_name!r}"
             )
         seen_lir_preserved_copy_imports.add(import_name)
+
+    op_loop_runtime_calls = _expand_op_loop_runtime_calls(data)
+    seen_op_loop_runtime_kinds: set[str] = set()
+    seen_op_loop_lir_variants: set[str] = set()
+    for idx, entry in enumerate(op_loop_runtime_calls):
+        kind = entry.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call entry {idx} has invalid kind"
+            )
+        if kind in seen_op_loop_runtime_kinds:
+            raise WasmAbiManifestError(
+                f"duplicate op_loop_runtime_call kind {kind!r}"
+            )
+        seen_op_loop_runtime_kinds.add(kind)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid import_name"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} references unknown import {import_name!r}"
+            )
+        sink = entry.get("sink")
+        if sink not in OP_LOOP_RUNTIME_SINKS:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid sink {sink!r}"
+            )
+        args = entry.get("args")
+        if not isinstance(args, list):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} must define args as a list"
+            )
+        entry["args"] = [
+            _validate_op_loop_runtime_arg("op_loop_runtime_call", idx, arg_idx, arg)
+            for arg_idx, arg in enumerate(args)
+        ]
+        lir_variant = entry.get("lir_variant")
+        lir_operand_count = entry.get("lir_operand_count")
+        if lir_variant is None and lir_operand_count is None:
+            continue
+        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid lir_variant {lir_variant!r}"
+            )
+        if lir_variant in seen_op_loop_lir_variants:
+            raise WasmAbiManifestError(
+                f"duplicate op_loop_runtime_call lir_variant {lir_variant!r}"
+            )
+        seen_op_loop_lir_variants.add(lir_variant)
+        if lir_import_by_variant[lir_variant] != import_name:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} import {import_name!r} does not "
+                f"match lir_variant {lir_variant!r} import "
+                f"{lir_import_by_variant[lir_variant]!r}"
+            )
+        if not isinstance(lir_operand_count, int) or lir_operand_count < 0:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid lir_operand_count"
+            )
+    data["op_loop_runtime_call"] = op_loop_runtime_calls
+    data.pop("op_loop_runtime_call_group", None)
 
     op_import_deps = data.get("op_import_dep", [])
     if not isinstance(op_import_deps, list):
@@ -849,7 +993,8 @@ def _render_rs_mod() -> str:
             "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
             "pub(crate) use lir_runtime_calls::{\n",
-            "    LirRuntimeCall, preserved_copy_runtime_call,\n",
+            "    lir_fixed_runtime_call, op_loop_runtime_call, LirRuntimeCall,\n",
+            "    OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, OpLoopRuntimeSinkSpec,\n",
             "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
@@ -1104,10 +1249,25 @@ def _render_rs_imports(data: dict) -> str:
     return "".join(lines)
 
 
+def _render_op_loop_arg(arg: str) -> str:
+    if arg.startswith("local:"):
+        return f"OpLoopRuntimeArgSpec::Local({arg.removeprefix('local:')})"
+    if arg.startswith("op_value_i64:"):
+        return (
+            "OpLoopRuntimeArgSpec::OpValueI64("
+            f"\"{arg.removeprefix('op_value_i64:')}\")"
+        )
+    raise AssertionError(f"unknown op-loop runtime arg {arg!r}")
+
+
 def _render_rs_lir_runtime_calls(data: dict) -> str:
     entries = data["lir_runtime_call"]
     preserved_entries = [
         entry for entry in entries if "preserved_copy_operand_count" in entry
+    ]
+    op_loop_entries = data.get("op_loop_runtime_call", [])
+    op_loop_lir_entries = [
+        entry for entry in op_loop_entries if "lir_variant" in entry
     ]
     lines: list[str] = [_header("//")]
     lines.extend(
@@ -1145,23 +1305,76 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             "    }\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct LirPreservedCopyRuntimeCall {\n",
+            "pub(crate) struct LirFixedRuntimeCall {\n",
             "    pub(crate) call: LirRuntimeCall,\n",
             "    pub(crate) operand_count: usize,\n",
             "}\n\n",
             "#[inline]\n",
-            "pub(crate) fn preserved_copy_runtime_call(\n",
-            "    kind: &str,\n",
-            ") -> Option<LirPreservedCopyRuntimeCall> {\n",
+            "pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {\n",
             "    match kind {\n",
         ]
     )
     for entry in preserved_entries:
         lines.extend(
             [
-                f"        \"{entry['import_name']}\" => Some(LirPreservedCopyRuntimeCall {{\n",
+                f"        \"{entry['import_name']}\" => Some(LirFixedRuntimeCall {{\n",
                 f"            call: LirRuntimeCall::{entry['variant']},\n",
                 f"            operand_count: {entry['preserved_copy_operand_count']},\n",
+                "        }),\n",
+            ]
+        )
+    for entry in op_loop_lir_entries:
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(LirFixedRuntimeCall {{\n",
+                f"            call: LirRuntimeCall::{entry['lir_variant']},\n",
+                f"            operand_count: {entry['lir_operand_count']},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum OpLoopRuntimeArgSpec {\n",
+            "    Local(usize),\n",
+            "    OpValueI64(&'static str),\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum OpLoopRuntimeSinkSpec {\n",
+            "    ResultOrDrop,\n",
+            "    NonNoneResultOrDrop,\n",
+            "    Drop,\n",
+            "    None,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct OpLoopRuntimeCallSpec {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) args: &'static [OpLoopRuntimeArgSpec],\n",
+            "    pub(crate) sink: OpLoopRuntimeSinkSpec,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in op_loop_entries:
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(OpLoopRuntimeCallSpec {{\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                "            args: &[\n",
+            ]
+        )
+        for arg in entry["args"]:
+            lines.append(f"                {_render_op_loop_arg(arg)},\n")
+        lines.extend(
+            [
+                "            ],\n",
+                "            sink: OpLoopRuntimeSinkSpec::"
+                f"{OP_LOOP_RUNTIME_SINKS[entry['sink']]},\n",
                 "        }),\n",
             ]
         )
