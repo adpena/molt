@@ -621,6 +621,26 @@ runtime_name = "molt_function_set_defaults"
 callable_arity = 3
 
 [[import]]
+name = "gpu_thread_id"
+type = 0
+
+[[import]]
+name = "gpu_block_id"
+type = 0
+
+[[import]]
+name = "gpu_block_dim"
+type = 0
+
+[[import]]
+name = "gpu_grid_dim"
+type = 0
+
+[[import]]
+name = "gpu_barrier"
+type = 0
+
+[[import]]
 name = "require_intrinsic_runtime"
 type = 3
 runtime_name = "molt_require_intrinsic_runtime"
@@ -4746,6 +4766,36 @@ import_name = "int_from_i64"
 # selected-import dispatch, ICs, native-EH, and multi-call adapters stay out.
 
 [[op_loop_runtime_call]]
+kind = "gpu_thread_id"
+import_name = "gpu_thread_id"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_block_id"
+import_name = "gpu_block_id"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_block_dim"
+import_name = "gpu_block_dim"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_grid_dim"
+import_name = "gpu_grid_dim"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_barrier"
+import_name = "gpu_barrier"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
 kind = "import"
 import_name = "module_import"
 args = ["local:0"]
@@ -5686,7 +5736,11 @@ host_exports = [
   "molt_exception_kind",
   "molt_exception_last",
   "molt_exception_message",
+  "molt_gpu_barrier",
+  "molt_gpu_block_dim",
+  "molt_gpu_block_id",
   "molt_gpu_broadcast_binary_contiguous",
+  "molt_gpu_grid_dim",
   "molt_gpu_linear_contiguous",
   "molt_gpu_linear_split_last_dim_contiguous",
   "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
@@ -5703,6 +5757,7 @@ host_exports = [
   "molt_gpu_tensor__zeros",
   "molt_gpu_tensor_from_buffer",
   "molt_gpu_tensor_from_parts",
+  "molt_gpu_thread_id",
   "molt_handle_resolve",
   "molt_header_size",
   "molt_object_repr",
@@ -5716,6 +5771,57 @@ host_exports = [
   "molt_traceback_format_exc",
   "molt_type_tag_of_bits",
 ]
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_broadcast_binary_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_linear_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_linear_split_last_dim_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_matmul_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_permute_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_repeat_axis_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_rms_norm_last_axis_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_rope_apply_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_softmax_last_axis_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_squared_relu_gate_interleaved_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor_from_buffer"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor_from_parts"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__tensor_concat_first_dim"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__tensor_scatter_rows"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__tensor_take_rows"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__zeros"
 
 [[runtime_import_fallback]]
 import = "fast_list_append"
@@ -6441,6 +6547,36 @@ deps = [
 kind = "print"
 deps = [
   "print_obj",
+]
+
+[[op_import_dep]]
+kind = "gpu_thread_id"
+deps = [
+  "gpu_thread_id",
+]
+
+[[op_import_dep]]
+kind = "gpu_block_id"
+deps = [
+  "gpu_block_id",
+]
+
+[[op_import_dep]]
+kind = "gpu_block_dim"
+deps = [
+  "gpu_block_dim",
+]
+
+[[op_import_dep]]
+kind = "gpu_grid_dim"
+deps = [
+  "gpu_grid_dim",
+]
+
+[[op_import_dep]]
+kind = "gpu_barrier"
+deps = [
+  "gpu_barrier",
 ]
 
 [[op_import_dep]]

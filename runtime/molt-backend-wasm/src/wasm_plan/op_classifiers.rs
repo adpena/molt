@@ -6,17 +6,6 @@ pub(crate) fn is_shared_drop_fact_marker(kind: &str) -> bool {
     matches!(kind, "drop_inserted" | "exception_region_drops_inserted")
 }
 
-pub(crate) fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
-    match kind {
-        "gpu_thread_id" => Some("molt_gpu_thread_id"),
-        "gpu_block_id" => Some("molt_gpu_block_id"),
-        "gpu_block_dim" => Some("molt_gpu_block_dim"),
-        "gpu_grid_dim" => Some("molt_gpu_grid_dim"),
-        "gpu_barrier" => Some("molt_gpu_barrier"),
-        _ => None,
-    }
-}
-
 pub(crate) fn wasm_scalar_integer_fast_path_for_op(
     plan: &ScalarRepresentationPlan,
     op: &OpIR,

@@ -690,6 +690,67 @@ fn intrinsic_runtime_callables_are_manifest_backed() {
 }
 
 #[test]
+fn gpu_context_runtime_ops_are_manifest_backed() {
+    let mut ret = wasm_test_op("ret", None, vec!["tid"]);
+    ret.var = Some("tid".to_string());
+    let func = wasm_test_function(
+        "gpu_context_runtime_ops",
+        vec![],
+        None,
+        vec![
+            wasm_test_op("gpu_thread_id", Some("tid"), vec![]),
+            wasm_test_op("gpu_block_id", Some("bid"), vec![]),
+            wasm_test_op("gpu_block_dim", Some("bdim"), vec![]),
+            wasm_test_op("gpu_grid_dim", Some("gdim"), vec![]),
+            wasm_test_op("gpu_barrier", Some("barrier"), vec![]),
+            ret,
+        ],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("GPU context runtime ops must compile through generated ABI metadata");
+
+    let import_types = wasm_function_import_type_indices(&wasm);
+    let import_indices = wasm_function_import_indices(&wasm);
+    let call_indices = wasm_direct_call_indices(&wasm);
+    let sigs = wasm_type_section_signatures(&wasm);
+    for import_name in [
+        "gpu_thread_id",
+        "gpu_block_id",
+        "gpu_block_dim",
+        "gpu_grid_dim",
+        "gpu_barrier",
+    ] {
+        let import_type = *import_types
+            .get(import_name)
+            .unwrap_or_else(|| panic!("{import_name} import must be manifest-backed"));
+        assert_eq!(
+            sigs[import_type as usize],
+            (0, 1),
+            "{import_name} must use the manifest [] -> i64 ABI"
+        );
+        let import_index = *import_indices
+            .get(import_name)
+            .unwrap_or_else(|| panic!("{import_name} import must stay live"));
+        assert!(
+            call_indices.contains(&import_index),
+            "{import_name} must be emitted as a direct runtime call"
+        );
+    }
+}
+
+#[test]
 #[should_panic(expected = "builtin runtime callable arity mismatch")]
 fn builtin_callable_observed_arity_must_match_manifest() {
     let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);

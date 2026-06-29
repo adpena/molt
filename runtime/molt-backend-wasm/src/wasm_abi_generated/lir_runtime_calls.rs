@@ -409,6 +409,31 @@ pub(crate) struct OpLoopRuntimeCallSpec {
 #[inline]
 pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> {
     match kind {
+        "gpu_thread_id" => Some(OpLoopRuntimeCallSpec {
+            import_name: "gpu_thread_id",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gpu_block_id" => Some(OpLoopRuntimeCallSpec {
+            import_name: "gpu_block_id",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gpu_block_dim" => Some(OpLoopRuntimeCallSpec {
+            import_name: "gpu_block_dim",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gpu_grid_dim" => Some(OpLoopRuntimeCallSpec {
+            import_name: "gpu_grid_dim",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gpu_barrier" => Some(OpLoopRuntimeCallSpec {
+            import_name: "gpu_barrier",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
         "import" => Some(OpLoopRuntimeCallSpec {
             import_name: "module_import",
             args: &[OpLoopRuntimeArgSpec::Local(0)],

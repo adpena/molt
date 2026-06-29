@@ -5,7 +5,7 @@ use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
 use crate::wasm_imports::{OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
 use crate::wasm_options::{WasmCompileOptions, WasmProfile};
-use crate::wasm_plan::{gpu_runtime_call_symbol, wasm_specialized_container_import};
+use crate::wasm_plan::wasm_specialized_container_import;
 use crate::{OpIR, TrampolineKind};
 
 type RuntimeImportDepsMap = BTreeMap<&'static str, &'static [&'static str]>;
@@ -141,9 +141,6 @@ impl WasmRuntimeImportDemand {
             && name.ends_with("_poll")
         {
             self.require_import(runtime_import_name_str(name));
-        }
-        if let Some(runtime_name) = gpu_runtime_call_symbol(kind) {
-            self.require_import(runtime_import_name_str(runtime_name));
         }
     }
 

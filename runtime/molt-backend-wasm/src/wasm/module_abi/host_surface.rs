@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use wasm_encoder::{EntityType, ExportKind, MemoryType};
 
 use crate::wasm::WasmBackend;
+use crate::wasm_abi::GPU_INTRINSIC_MANIFEST_NAMES;
 use crate::wasm_data::DataSegmentRef;
-use crate::wasm_plan::DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES;
 
 pub(super) struct WasmModuleHostSurface {
     pub(super) manifest_segment: DataSegmentRef,
@@ -43,7 +43,7 @@ impl WasmBackend {
         max_class_def_words: usize,
     ) -> WasmModuleHostSurface {
         manifest_intrinsic_names.extend(
-            DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES
+            GPU_INTRINSIC_MANIFEST_NAMES
                 .iter()
                 .map(|name| (*name).to_string()),
         );
