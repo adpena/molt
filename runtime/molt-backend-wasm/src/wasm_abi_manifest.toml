@@ -4703,8 +4703,18 @@ import_name = "add"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "InplaceAdd"
+import_name = "inplace_add"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "Sub"
 import_name = "sub"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplaceSub"
+import_name = "inplace_sub"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
@@ -4713,8 +4723,18 @@ import_name = "mul"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "InplaceMul"
+import_name = "inplace_mul"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "Div"
 import_name = "div"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplaceDiv"
+import_name = "inplace_div"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
@@ -4723,8 +4743,18 @@ import_name = "floordiv"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "InplaceFloorDiv"
+import_name = "inplace_floordiv"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "Mod"
 import_name = "mod"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplaceMod"
+import_name = "inplace_mod"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
@@ -4758,6 +4788,11 @@ import_name = "ge"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "StringEq"
+import_name = "string_eq"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "Is"
 import_name = "is"
 boxed_operand_count = 2
@@ -4768,13 +4803,28 @@ import_name = "bit_and"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "InplaceBitAnd"
+import_name = "inplace_bit_and"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "BitOr"
 import_name = "bit_or"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "InplaceBitOr"
+import_name = "inplace_bit_or"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "BitXor"
 import_name = "bit_xor"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplaceBitXor"
+import_name = "inplace_bit_xor"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
@@ -4788,8 +4838,18 @@ import_name = "lshift"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
+variant = "InplaceLShift"
+import_name = "inplace_lshift"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "RShift"
 import_name = "rshift"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplaceRShift"
+import_name = "inplace_rshift"
 boxed_operand_count = 2
 
 [[lir_runtime_call]]
@@ -4806,6 +4866,476 @@ boxed_operand_count = 1
 variant = "Pow"
 import_name = "pow"
 boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplacePow"
+import_name = "inplace_pow"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "PowMod"
+import_name = "pow_mod"
+boxed_operand_count = 3
+
+[[lir_runtime_call]]
+variant = "Round"
+import_name = "round"
+boxed_operand_count = 3
+
+[[lir_runtime_call]]
+variant = "Trunc"
+import_name = "trunc"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "Matmul"
+import_name = "matmul"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "InplaceMatmul"
+import_name = "inplace_matmul"
+boxed_operand_count = 2
+
+# Numeric op-loop and LIR fallback selector. The manifest owns the exact helper
+# import, the op-loop semantic operation, LIR runtime-call variant when one
+# exists, and op import deps generated from these rows.
+
+[[numeric_runtime_selector]]
+kind = "add"
+import_name = "add"
+op_loop_variant = "Add"
+lir_variant = "Add"
+lir_operand_count = 2
+deps = [
+  "add",
+  "str_concat",
+]
+
+[[numeric_runtime_selector]]
+kind = "inplace_add"
+import_name = "inplace_add"
+op_loop_variant = "Add"
+lir_variant = "InplaceAdd"
+lir_operand_count = 2
+deps = [
+  "inplace_add",
+  "str_concat",
+]
+
+[[numeric_runtime_selector]]
+kind = "sub"
+import_name = "sub"
+op_loop_variant = "Sub"
+lir_variant = "Sub"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_sub"
+import_name = "inplace_sub"
+op_loop_variant = "Sub"
+lir_variant = "InplaceSub"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "mul"
+import_name = "mul"
+op_loop_variant = "Mul"
+lir_variant = "Mul"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_mul"
+import_name = "inplace_mul"
+op_loop_variant = "Mul"
+lir_variant = "InplaceMul"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "div"
+import_name = "div"
+op_loop_variant = "TrueDiv"
+lir_variant = "Div"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_div"
+import_name = "inplace_div"
+op_loop_variant = "TrueDiv"
+lir_variant = "InplaceDiv"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "floordiv"
+import_name = "floordiv"
+op_loop_variant = "FloorDiv"
+lir_variant = "FloorDiv"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_floordiv"
+import_name = "inplace_floordiv"
+op_loop_variant = "FloorDiv"
+lir_variant = "InplaceFloorDiv"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "mod"
+import_name = "mod"
+op_loop_variant = "Mod"
+lir_variant = "Mod"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_mod"
+import_name = "inplace_mod"
+op_loop_variant = "Mod"
+lir_variant = "InplaceMod"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "matmul"
+import_name = "matmul"
+op_loop_variant = "Matmul"
+lir_variant = "Matmul"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_matmul"
+import_name = "inplace_matmul"
+op_loop_variant = "Matmul"
+lir_variant = "InplaceMatmul"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "pow"
+import_name = "pow"
+op_loop_variant = "Pow"
+lir_variant = "Pow"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_pow"
+import_name = "inplace_pow"
+op_loop_variant = "Pow"
+lir_variant = "InplacePow"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "pow_mod"
+import_name = "pow_mod"
+op_loop_variant = "PowMod"
+lir_variant = "PowMod"
+lir_operand_count = 3
+
+[[numeric_runtime_selector]]
+kind = "round"
+import_name = "round"
+op_loop_variant = "Round"
+lir_variant = "Round"
+lir_operand_count = 3
+
+[[numeric_runtime_selector]]
+kind = "trunc"
+import_name = "trunc"
+op_loop_variant = "Trunc"
+lir_variant = "Trunc"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "bit_and"
+import_name = "bit_and"
+op_loop_variant = "BitAnd"
+lir_variant = "BitAnd"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_bit_and"
+import_name = "inplace_bit_and"
+op_loop_variant = "BitAnd"
+lir_variant = "InplaceBitAnd"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "bit_or"
+import_name = "bit_or"
+op_loop_variant = "BitOr"
+lir_variant = "BitOr"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_bit_or"
+import_name = "inplace_bit_or"
+op_loop_variant = "BitOr"
+lir_variant = "InplaceBitOr"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "bit_xor"
+import_name = "bit_xor"
+op_loop_variant = "BitXor"
+lir_variant = "BitXor"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_bit_xor"
+import_name = "inplace_bit_xor"
+op_loop_variant = "BitXor"
+lir_variant = "InplaceBitXor"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "invert"
+import_name = "invert"
+op_loop_variant = "Invert"
+lir_variant = "Invert"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "bit_not"
+import_name = "invert"
+op_loop_variant = "Invert"
+lir_variant = "Invert"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "neg"
+import_name = "neg"
+op_loop_variant = "Neg"
+lir_variant = "Neg"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "unary_neg"
+import_name = "neg"
+op_loop_variant = "Neg"
+lir_variant = "Neg"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "pos"
+import_name = "pos"
+op_loop_variant = "Pos"
+lir_variant = "Pos"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "unary_pos"
+import_name = "pos"
+op_loop_variant = "Pos"
+lir_variant = "Pos"
+lir_operand_count = 1
+
+[[numeric_runtime_selector]]
+kind = "lshift"
+import_name = "lshift"
+op_loop_variant = "LShift"
+lir_variant = "LShift"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "shl"
+import_name = "lshift"
+op_loop_variant = "LShift"
+lir_variant = "LShift"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_lshift"
+import_name = "inplace_lshift"
+op_loop_variant = "LShift"
+lir_variant = "InplaceLShift"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "rshift"
+import_name = "rshift"
+op_loop_variant = "RShift"
+lir_variant = "RShift"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "shr"
+import_name = "rshift"
+op_loop_variant = "RShift"
+lir_variant = "RShift"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "inplace_rshift"
+import_name = "inplace_rshift"
+op_loop_variant = "RShift"
+lir_variant = "InplaceRShift"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "lt"
+import_name = "lt"
+op_loop_variant = "Lt"
+lir_variant = "Lt"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "le"
+import_name = "le"
+op_loop_variant = "Le"
+lir_variant = "Le"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "gt"
+import_name = "gt"
+op_loop_variant = "Gt"
+lir_variant = "Gt"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "ge"
+import_name = "ge"
+op_loop_variant = "Ge"
+lir_variant = "Ge"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "eq"
+import_name = "eq"
+op_loop_variant = "Eq"
+lir_variant = "Eq"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "ne"
+import_name = "ne"
+op_loop_variant = "Ne"
+lir_variant = "Ne"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "string_eq"
+import_name = "string_eq"
+op_loop_variant = "StringEq"
+lir_variant = "StringEq"
+lir_operand_count = 2
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_int"
+import_name = "vec_sum_int"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_int_trusted"
+import_name = "vec_sum_int_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_int_range_iter"
+import_name = "vec_sum_int_range_iter"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_int_range_iter_trusted"
+import_name = "vec_sum_int_range_iter_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_int_range"
+import_name = "vec_sum_int_range"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_int_range_trusted"
+import_name = "vec_sum_int_range_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_float"
+import_name = "vec_sum_float"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_float_trusted"
+import_name = "vec_sum_float_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_float_range_iter"
+import_name = "vec_sum_float_range_iter"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_float_range_iter_trusted"
+import_name = "vec_sum_float_range_iter_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_float_range"
+import_name = "vec_sum_float_range"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_sum_float_range_trusted"
+import_name = "vec_sum_float_range_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_prod_int"
+import_name = "vec_prod_int"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_prod_int_trusted"
+import_name = "vec_prod_int_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_prod_int_range"
+import_name = "vec_prod_int_range"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_prod_int_range_trusted"
+import_name = "vec_prod_int_range_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_min_int"
+import_name = "vec_min_int"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_min_int_trusted"
+import_name = "vec_min_int_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_min_int_range"
+import_name = "vec_min_int_range"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_min_int_range_trusted"
+import_name = "vec_min_int_range_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_max_int"
+import_name = "vec_max_int"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_max_int_trusted"
+import_name = "vec_max_int_trusted"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_max_int_range"
+import_name = "vec_max_int_range"
+op_loop_variant = "VectorReduction"
+
+[[numeric_runtime_selector]]
+kind = "vec_max_int_range_trusted"
+import_name = "vec_max_int_range_trusted"
+op_loop_variant = "VectorReduction"
 
 [[lir_runtime_call]]
 variant = "Index"
@@ -7059,42 +7589,6 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "eq"
-deps = [
-  "eq",
-]
-
-[[op_import_dep]]
-kind = "ne"
-deps = [
-  "ne",
-]
-
-[[op_import_dep]]
-kind = "lt"
-deps = [
-  "lt",
-]
-
-[[op_import_dep]]
-kind = "le"
-deps = [
-  "le",
-]
-
-[[op_import_dep]]
-kind = "gt"
-deps = [
-  "gt",
-]
-
-[[op_import_dep]]
-kind = "ge"
-deps = [
-  "ge",
-]
-
-[[op_import_dep]]
 kind = "class_new"
 deps = [
   "class_new",
@@ -7307,209 +7801,15 @@ deps = [
 ]
 
 [[op_import_dep]]
-kind = "add"
-deps = [
-  "add",
-  "str_concat",
-]
-
-[[op_import_dep]]
 kind = "str_concat"
 deps = [
   "str_concat",
 ]
 
 [[op_import_dep]]
-kind = "sub"
-deps = [
-  "sub",
-]
-
-[[op_import_dep]]
-kind = "mul"
-deps = [
-  "mul",
-]
-
-[[op_import_dep]]
-kind = "div"
-deps = [
-  "div",
-]
-
-[[op_import_dep]]
-kind = "floordiv"
-deps = [
-  "floordiv",
-]
-
-[[op_import_dep]]
-kind = "mod"
-deps = [
-  "mod",
-]
-
-[[op_import_dep]]
-kind = "pow"
-deps = [
-  "pow",
-]
-
-[[op_import_dep]]
-kind = "pow_mod"
-deps = [
-  "pow_mod",
-]
-
-[[op_import_dep]]
-kind = "lshift"
-deps = [
-  "lshift",
-]
-
-[[op_import_dep]]
-kind = "rshift"
-deps = [
-  "rshift",
-]
-
-[[op_import_dep]]
-kind = "bit_and"
-deps = [
-  "bit_and",
-]
-
-[[op_import_dep]]
-kind = "bit_or"
-deps = [
-  "bit_or",
-]
-
-[[op_import_dep]]
-kind = "bit_xor"
-deps = [
-  "bit_xor",
-]
-
-[[op_import_dep]]
-kind = "invert"
-deps = [
-  "invert",
-]
-
-[[op_import_dep]]
-kind = "neg"
-deps = [
-  "neg",
-]
-
-[[op_import_dep]]
-kind = "pos"
-deps = [
-  "pos",
-]
-
-[[op_import_dep]]
-kind = "matmul"
-deps = [
-  "matmul",
-]
-
-[[op_import_dep]]
-kind = "inplace_add"
-deps = [
-  "inplace_add",
-  "str_concat",
-]
-
-[[op_import_dep]]
-kind = "inplace_sub"
-deps = [
-  "inplace_sub",
-]
-
-[[op_import_dep]]
-kind = "inplace_mul"
-deps = [
-  "inplace_mul",
-]
-
-[[op_import_dep]]
-kind = "inplace_div"
-deps = [
-  "inplace_div",
-]
-
-[[op_import_dep]]
-kind = "inplace_floordiv"
-deps = [
-  "inplace_floordiv",
-]
-
-[[op_import_dep]]
-kind = "inplace_mod"
-deps = [
-  "inplace_mod",
-]
-
-[[op_import_dep]]
-kind = "inplace_pow"
-deps = [
-  "inplace_pow",
-]
-
-[[op_import_dep]]
-kind = "inplace_lshift"
-deps = [
-  "inplace_lshift",
-]
-
-[[op_import_dep]]
-kind = "inplace_rshift"
-deps = [
-  "inplace_rshift",
-]
-
-[[op_import_dep]]
-kind = "inplace_matmul"
-deps = [
-  "inplace_matmul",
-]
-
-[[op_import_dep]]
-kind = "inplace_bit_and"
-deps = [
-  "inplace_bit_and",
-]
-
-[[op_import_dep]]
-kind = "inplace_bit_or"
-deps = [
-  "inplace_bit_or",
-]
-
-[[op_import_dep]]
-kind = "inplace_bit_xor"
-deps = [
-  "inplace_bit_xor",
-]
-
-[[op_import_dep]]
 kind = "abs_builtin"
 deps = [
   "abs_builtin",
-]
-
-[[op_import_dep]]
-kind = "round"
-deps = [
-  "round",
-]
-
-[[op_import_dep]]
-kind = "trunc"
-deps = [
-  "trunc",
 ]
 
 [[op_import_dep]]
@@ -7733,12 +8033,6 @@ deps = [
 kind = "format_builtin"
 deps = [
   "format_builtin",
-]
-
-[[op_import_dep]]
-kind = "string_eq"
-deps = [
-  "string_eq",
 ]
 
 [[op_import_dep]]

@@ -6,89 +6,66 @@ use super::common::{
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
 use crate::wasm_values::{ConstantCache, IntFastLane, emit_box_bool_from_i32};
 use std::collections::BTreeMap;
 use wasm_encoder::{Function, Instruction};
 
-#[derive(Clone, Copy)]
-enum OrderedCompareOp {
-    Lt,
-    Le,
-    Gt,
-    Ge,
+fn emit_i64_ordered_compare(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
+    match op_loop_kind {
+        WasmNumericOpLoopKind::Lt => func.instruction(&Instruction::I64LtS),
+        WasmNumericOpLoopKind::Le => func.instruction(&Instruction::I64LeS),
+        WasmNumericOpLoopKind::Gt => func.instruction(&Instruction::I64GtS),
+        WasmNumericOpLoopKind::Ge => func.instruction(&Instruction::I64GeS),
+        _ => unreachable!("non-ordered numeric selector routed to ordered compare emitter"),
+    };
 }
 
-impl OrderedCompareOp {
-    fn from_kind(kind: &str) -> Option<(Self, &'static str)> {
-        match kind {
-            "lt" => Some((Self::Lt, "lt")),
-            "le" => Some((Self::Le, "le")),
-            "gt" => Some((Self::Gt, "gt")),
-            "ge" => Some((Self::Ge, "ge")),
-            _ => None,
-        }
-    }
-
-    fn emit_i64(self, func: &mut Function) {
-        match self {
-            Self::Lt => func.instruction(&Instruction::I64LtS),
-            Self::Le => func.instruction(&Instruction::I64LeS),
-            Self::Gt => func.instruction(&Instruction::I64GtS),
-            Self::Ge => func.instruction(&Instruction::I64GeS),
-        };
-    }
-
-    fn emit_f64(self, func: &mut Function) {
-        match self {
-            Self::Lt => func.instruction(&Instruction::F64Lt),
-            Self::Le => func.instruction(&Instruction::F64Le),
-            Self::Gt => func.instruction(&Instruction::F64Gt),
-            Self::Ge => func.instruction(&Instruction::F64Ge),
-        };
-    }
+fn emit_f64_ordered_compare(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
+    match op_loop_kind {
+        WasmNumericOpLoopKind::Lt => func.instruction(&Instruction::F64Lt),
+        WasmNumericOpLoopKind::Le => func.instruction(&Instruction::F64Le),
+        WasmNumericOpLoopKind::Gt => func.instruction(&Instruction::F64Gt),
+        WasmNumericOpLoopKind::Ge => func.instruction(&Instruction::F64Ge),
+        _ => unreachable!("non-ordered numeric selector routed to ordered compare emitter"),
+    };
 }
 
-#[derive(Clone, Copy)]
-enum EqualityCompareOp {
-    Eq,
-    Ne,
-}
-
-impl EqualityCompareOp {
-    fn from_kind(kind: &str) -> Option<(Self, &'static str)> {
-        match kind {
-            "eq" => Some((Self::Eq, "eq")),
-            "ne" => Some((Self::Ne, "ne")),
-            _ => None,
-        }
-    }
-
-    fn emit_boxed_identity_compare(self, func: &mut Function, lhs: u32, rhs: u32) {
-        func.instruction(&Instruction::LocalGet(lhs));
-        func.instruction(&Instruction::LocalGet(rhs));
-        match self {
-            Self::Eq => func.instruction(&Instruction::I64Eq),
-            Self::Ne => func.instruction(&Instruction::I64Ne),
-        };
-        emit_box_bool_from_i32(func);
-    }
+fn emit_boxed_identity_compare(
+    func: &mut Function,
+    op_loop_kind: WasmNumericOpLoopKind,
+    lhs: u32,
+    rhs: u32,
+) {
+    func.instruction(&Instruction::LocalGet(lhs));
+    func.instruction(&Instruction::LocalGet(rhs));
+    match op_loop_kind {
+        WasmNumericOpLoopKind::Eq => func.instruction(&Instruction::I64Eq),
+        WasmNumericOpLoopKind::Ne => func.instruction(&Instruction::I64Ne),
+        _ => unreachable!("non-equality numeric selector routed to equality compare emitter"),
+    };
+    emit_box_bool_from_i32(func);
 }
 
 #[allow(unused_variables)]
 pub(super) fn emit_comparison_numeric_op(
     func: &mut Function,
     op: &OpIR,
+    selection: WasmNumericRuntimeSelection,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     const_cache: &ConstantCache,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-) -> bool {
-    if let Some((compare_op, import_name)) = OrderedCompareOp::from_kind(op.kind.as_str()) {
-        emit_ordered_compare_op(
+) {
+    match selection.op_loop_kind {
+        WasmNumericOpLoopKind::Lt
+        | WasmNumericOpLoopKind::Le
+        | WasmNumericOpLoopKind::Gt
+        | WasmNumericOpLoopKind::Ge => emit_ordered_compare_op(
             func,
             op,
             import_ids,
@@ -97,14 +74,10 @@ pub(super) fn emit_comparison_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
-            compare_op,
-            import_name,
-        );
-        return true;
-    }
-
-    if let Some((compare_op, import_name)) = EqualityCompareOp::from_kind(op.kind.as_str()) {
-        emit_equality_compare_op(
+            selection.op_loop_kind,
+            selection.import_name,
+        ),
+        WasmNumericOpLoopKind::Eq | WasmNumericOpLoopKind::Ne => emit_equality_compare_op(
             func,
             op,
             import_ids,
@@ -112,19 +85,19 @@ pub(super) fn emit_comparison_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
-            compare_op,
-            import_name,
-        );
-        return true;
+            selection.op_loop_kind,
+            selection.import_name,
+        ),
+        WasmNumericOpLoopKind::StringEq => emit_boxed_binary_result(
+            func,
+            op,
+            import_ids,
+            locals,
+            selection.import_name,
+            reloc_enabled,
+        ),
+        _ => unreachable!("non-comparison numeric selector routed to comparison emitter"),
     }
-
-    match op.kind.as_str() {
-        "string_eq" => {
-            emit_boxed_binary_result(func, op, import_ids, locals, "string_eq", reloc_enabled)
-        }
-        _ => return false,
-    }
-    true
 }
 
 fn emit_ordered_compare_op(
@@ -136,7 +109,7 @@ fn emit_ordered_compare_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    compare_op: OrderedCompareOp,
+    compare_op: WasmNumericOpLoopKind,
     import_name: &str,
 ) {
     let operands = binary_operands(op, locals);
@@ -158,7 +131,7 @@ fn emit_ordered_compare_op(
                     const_cache,
                     known_raw_ints,
                 );
-                compare_op.emit_i64(func);
+                emit_i64_ordered_compare(func, compare_op);
                 emit_box_bool_from_i32(func);
             },
         );
@@ -171,7 +144,7 @@ fn emit_ordered_compare_op(
             locals,
             reloc_enabled,
             |func, _scratch_local| {
-                compare_op.emit_f64(func);
+                emit_f64_ordered_compare(func, compare_op);
                 emit_box_bool_from_i32(func);
             },
         );
@@ -187,7 +160,7 @@ fn emit_equality_compare_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    compare_op: EqualityCompareOp,
+    compare_op: WasmNumericOpLoopKind,
     import_name: &str,
 ) {
     let operands = binary_operands(op, locals);
@@ -200,7 +173,7 @@ fn emit_equality_compare_op(
             reloc_enabled,
             known_raw_ints,
             IntFastLane::IntOnly,
-            |func| compare_op.emit_boxed_identity_compare(func, operands.lhs, operands.rhs),
+            |func| emit_boxed_identity_compare(func, compare_op, operands.lhs, operands.rhs),
         );
     } else {
         emit_boxed_binary_result(func, op, import_ids, locals, import_name, reloc_enabled);

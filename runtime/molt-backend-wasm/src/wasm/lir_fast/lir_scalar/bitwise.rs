@@ -1,41 +1,25 @@
 use super::super::lir_context::LirLowerCtx;
-use super::super::runtime_calls::LirRuntimeCall;
+use super::super::runtime_calls::{LirRuntimeCall, numeric_lir_runtime_call};
 use super::boxing::emit_get_boxed_for_repr;
+use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::values::ValueId;
 use wasm_encoder::Instruction;
 
-#[derive(Clone, Copy)]
-pub(in crate::wasm::lir_fast) enum BitwiseOp {
-    And,
-    Or,
-    Xor,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::wasm::lir_fast) enum ShiftOp {
-    Left,
-    Right,
-}
-
 pub(in crate::wasm::lir_fast) fn emit_lir_bitwise(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
-    bw: BitwiseOp,
+    selection: WasmNumericRuntimeSelection,
 ) {
     let tir_op = &op.tir_op;
     if tir_op.operands.len() < 2 || op.result_values.is_empty() {
         return;
     }
-    let instr = match bw {
-        BitwiseOp::And => Instruction::I64And,
-        BitwiseOp::Or => Instruction::I64Or,
-        BitwiseOp::Xor => Instruction::I64Xor,
-    };
-    let runtime_call = match bw {
-        BitwiseOp::And => LirRuntimeCall::BitAnd,
-        BitwiseOp::Or => LirRuntimeCall::BitOr,
-        BitwiseOp::Xor => LirRuntimeCall::BitXor,
+    let instr = match selection.op_loop_kind {
+        WasmNumericOpLoopKind::BitAnd => Instruction::I64And,
+        WasmNumericOpLoopKind::BitOr => Instruction::I64Or,
+        WasmNumericOpLoopKind::BitXor => Instruction::I64Xor,
+        _ => unreachable!("non-bitwise numeric selector routed to LIR bitwise emitter"),
     };
     emit_lir_i64_binary_or_boxed(
         ctx,
@@ -45,11 +29,15 @@ pub(in crate::wasm::lir_fast) fn emit_lir_bitwise(
         op.result_values[0].repr,
         instr,
         false,
-        runtime_call,
+        numeric_lir_runtime_call(selection),
     );
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_bit_not(ctx: &mut LirLowerCtx, op: &LirOp) {
+pub(in crate::wasm::lir_fast) fn emit_lir_bit_not(
+    ctx: &mut LirLowerCtx,
+    op: &LirOp,
+    selection: WasmNumericRuntimeSelection,
+) {
     let tir_op = &op.tir_op;
     if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first()) {
         if ctx.repr_of(src) == LirRepr::I64 {
@@ -58,13 +46,17 @@ pub(in crate::wasm::lir_fast) fn emit_lir_bit_not(ctx: &mut LirLowerCtx, op: &Li
             ctx.instructions.push(Instruction::I64Xor);
         } else {
             emit_get_boxed_for_repr(ctx, src);
-            ctx.emit_runtime_call(LirRuntimeCall::Invert);
+            ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
         }
         ctx.emit_set(result.id);
     }
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_shift(ctx: &mut LirLowerCtx, op: &LirOp, shift: ShiftOp) {
+pub(in crate::wasm::lir_fast) fn emit_lir_shift(
+    ctx: &mut LirLowerCtx,
+    op: &LirOp,
+    selection: WasmNumericRuntimeSelection,
+) {
     let tir_op = &op.tir_op;
     if tir_op.operands.len() < 2 {
         return;
@@ -72,9 +64,10 @@ pub(in crate::wasm::lir_fast) fn emit_lir_shift(ctx: &mut LirLowerCtx, op: &LirO
     let Some(result) = op.result_values.first() else {
         return;
     };
-    let (instruction, runtime_call) = match shift {
-        ShiftOp::Left => (Instruction::I64Shl, LirRuntimeCall::LShift),
-        ShiftOp::Right => (Instruction::I64ShrS, LirRuntimeCall::RShift),
+    let instruction = match selection.op_loop_kind {
+        WasmNumericOpLoopKind::LShift => Instruction::I64Shl,
+        WasmNumericOpLoopKind::RShift => Instruction::I64ShrS,
+        _ => unreachable!("non-shift numeric selector routed to LIR shift emitter"),
     };
     // Shifts require raw-result proof: WASM masks counts mod 64 and Python does
     // not. Any unproven count or result routes through the BigInt-correct helper.
@@ -86,7 +79,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_shift(ctx: &mut LirLowerCtx, op: &LirO
         result.repr,
         instruction,
         true,
-        runtime_call,
+        numeric_lir_runtime_call(selection),
     );
 }
 

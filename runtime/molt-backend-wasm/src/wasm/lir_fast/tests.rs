@@ -681,7 +681,10 @@ fn typed_dict_and_tuple_index_select_specialized_runtime_calls() {
 #[test]
 fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() {
     let index_cases = [
-        ("list_index_generic", TirType::List(Box::new(TirType::DynBox))),
+        (
+            "list_index_generic",
+            TirType::List(Box::new(TirType::DynBox)),
+        ),
         ("set_index_generic", TirType::Set(Box::new(TirType::DynBox))),
         ("str_index_generic", TirType::Str),
     ];
@@ -719,10 +722,10 @@ fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() 
             output.runtime_calls
         );
         assert!(
-            !output.runtime_calls.iter().any(|call| matches!(
-                *call,
-                "dict_getitem" | "tuple_getitem" | "list_int_getitem"
-            )),
+            !output
+                .runtime_calls
+                .iter()
+                .any(|call| matches!(*call, "dict_getitem" | "tuple_getitem" | "list_int_getitem")),
             "{name} must not use an unsupported specialized index helper"
         );
     }
@@ -768,10 +771,10 @@ fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() 
             output.runtime_calls
         );
         assert!(
-            !output.runtime_calls.iter().any(|call| matches!(
-                *call,
-                "dict_setitem" | "list_int_setitem"
-            )),
+            !output
+                .runtime_calls
+                .iter()
+                .any(|call| matches!(*call, "dict_setitem" | "list_int_setitem")),
             "{name} must not use an unsupported specialized store helper"
         );
     }
@@ -1946,6 +1949,105 @@ fn dynbox_binary_bitwise_and_shift_helpers_stay_lir_fast_runtime_calls() {
         assert!(
             output.runtime_calls.contains(&runtime_call),
             "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn dynbox_inplace_arithmetic_uses_generated_numeric_lir_helpers() {
+    let cases = [
+        (
+            "inplace_add_dynbox",
+            OpCode::InplaceAdd,
+            "inplace_add",
+            "add",
+        ),
+        (
+            "inplace_sub_dynbox",
+            OpCode::InplaceSub,
+            "inplace_sub",
+            "sub",
+        ),
+        (
+            "inplace_mul_dynbox",
+            OpCode::InplaceMul,
+            "inplace_mul",
+            "mul",
+        ),
+    ];
+
+    for (name, opcode, expected_runtime_call, rejected_runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&expected_runtime_call),
+            "{name} must call {expected_runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.contains(&rejected_runtime_call),
+            "{name} must not collapse to {rejected_runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn preserved_copy_numeric_helpers_use_generated_fixed_runtime_selector() {
+    let cases = [
+        ("inplace_div", 2, "inplace_div"),
+        ("inplace_floordiv", 2, "inplace_floordiv"),
+        ("inplace_mod", 2, "inplace_mod"),
+        ("inplace_pow", 2, "inplace_pow"),
+        ("matmul", 2, "matmul"),
+        ("inplace_matmul", 2, "inplace_matmul"),
+        ("pow_mod", 3, "pow_mod"),
+        ("round", 3, "round"),
+        ("trunc", 1, "trunc"),
+        ("string_eq", 2, "string_eq"),
+        ("shl", 2, "lshift"),
+        ("shr", 2, "rshift"),
+        ("bit_not", 1, "invert"),
+        ("unary_neg", 1, "neg"),
+        ("unary_pos", 1, "pos"),
+    ];
+
+    for (original_kind, operand_count, runtime_call) in cases {
+        let func =
+            make_copy_original_kind_runtime_func(original_kind, original_kind, operand_count, true);
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{original_kind} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{original_kind} must call {runtime_call}; got {:?}",
             output.runtime_calls
         );
     }

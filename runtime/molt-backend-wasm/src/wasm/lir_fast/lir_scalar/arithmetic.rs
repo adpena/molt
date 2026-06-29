@@ -1,53 +1,29 @@
 use super::super::lir_context::LirLowerCtx;
-use super::super::runtime_calls::LirRuntimeCall;
+use super::super::runtime_calls::numeric_lir_runtime_call;
 use super::boxing::{emit_box_inline_i64, emit_box_none, emit_get_boxed_for_repr};
 use crate::wasm::body::WasmLirFallbackReason;
+use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
 use molt_codegen_abi::{INT_MAX_INLINE as INLINE_INT_MAX, INT_MIN_INLINE as INLINE_INT_MIN};
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
 use molt_tir::tir::values::ValueId;
 use wasm_encoder::{BlockType, Instruction, ValType};
 
-#[derive(Clone, Copy)]
-pub(in crate::wasm::lir_fast) enum ArithOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    FloorDiv,
-    Mod,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::wasm::lir_fast) enum UnaryOp {
-    Neg,
-}
-
-fn raw_i64_arith_instruction(arith: ArithOp) -> Instruction<'static> {
-    match arith {
-        ArithOp::Add => Instruction::I64Add,
-        ArithOp::Sub => Instruction::I64Sub,
-        ArithOp::Mul => Instruction::I64Mul,
-        ArithOp::Div | ArithOp::FloorDiv => Instruction::I64DivS,
-        ArithOp::Mod => Instruction::I64RemS,
-    }
-}
-
-fn boxed_arith_runtime_call(arith: ArithOp) -> LirRuntimeCall {
-    match arith {
-        ArithOp::Add => LirRuntimeCall::Add,
-        ArithOp::Sub => LirRuntimeCall::Sub,
-        ArithOp::Mul => LirRuntimeCall::Mul,
-        ArithOp::Div => LirRuntimeCall::Div,
-        ArithOp::FloorDiv => LirRuntimeCall::FloorDiv,
-        ArithOp::Mod => LirRuntimeCall::Mod,
+fn raw_i64_arith_instruction(op_loop_kind: WasmNumericOpLoopKind) -> Instruction<'static> {
+    match op_loop_kind {
+        WasmNumericOpLoopKind::Add => Instruction::I64Add,
+        WasmNumericOpLoopKind::Sub => Instruction::I64Sub,
+        WasmNumericOpLoopKind::Mul => Instruction::I64Mul,
+        WasmNumericOpLoopKind::TrueDiv | WasmNumericOpLoopKind::FloorDiv => Instruction::I64DivS,
+        WasmNumericOpLoopKind::Mod => Instruction::I64RemS,
+        _ => unreachable!("non-arithmetic numeric selector routed to arithmetic emitter"),
     }
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
-    arith: ArithOp,
+    selection: WasmNumericRuntimeSelection,
 ) {
     let tir_op = &op.tir_op;
     if tir_op.operands.len() < 2 || op.result_values.is_empty() {
@@ -66,7 +42,8 @@ pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
 
         ctx.emit_get(lhs);
         ctx.emit_get(rhs);
-        ctx.instructions.push(raw_i64_arith_instruction(arith));
+        ctx.instructions
+            .push(raw_i64_arith_instruction(selection.op_loop_kind));
         ctx.emit_set(main);
 
         ctx.emit_get(main);
@@ -86,7 +63,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
         // when both operands are proven inside the 47-bit inline window.
         emit_box_inline_i64(ctx, lhs);
         emit_box_inline_i64(ctx, rhs);
-        ctx.emit_runtime_call(boxed_arith_runtime_call(arith));
+        ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
         ctx.emit_set(overflow_box);
         ctx.instructions.push(Instruction::I32Const(1));
         ctx.emit_set(overflow_flag);
@@ -104,21 +81,22 @@ pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
         (LirRepr::I64, LirRepr::I64) if result_repr == LirRepr::I64 && !boxed_dispatch => {
             ctx.emit_get(lhs);
             ctx.emit_get(rhs);
-            ctx.instructions.push(raw_i64_arith_instruction(arith));
+            ctx.instructions
+                .push(raw_i64_arith_instruction(selection.op_loop_kind));
         }
         (LirRepr::F64, LirRepr::F64) => {
             ctx.emit_get(lhs);
             ctx.emit_get(rhs);
-            match arith {
-                ArithOp::Add => ctx.instructions.push(Instruction::F64Add),
-                ArithOp::Sub => ctx.instructions.push(Instruction::F64Sub),
-                ArithOp::Mul => ctx.instructions.push(Instruction::F64Mul),
-                ArithOp::Div => ctx.instructions.push(Instruction::F64Div),
-                ArithOp::FloorDiv => {
+            match selection.op_loop_kind {
+                WasmNumericOpLoopKind::Add => ctx.instructions.push(Instruction::F64Add),
+                WasmNumericOpLoopKind::Sub => ctx.instructions.push(Instruction::F64Sub),
+                WasmNumericOpLoopKind::Mul => ctx.instructions.push(Instruction::F64Mul),
+                WasmNumericOpLoopKind::TrueDiv => ctx.instructions.push(Instruction::F64Div),
+                WasmNumericOpLoopKind::FloorDiv => {
                     ctx.instructions.push(Instruction::F64Div);
                     ctx.instructions.push(Instruction::F64Floor);
                 }
-                ArithOp::Mod => {
+                WasmNumericOpLoopKind::Mod => {
                     let scratch_a = ctx.alloc_scratch_local(ValType::F64);
                     let scratch_b = ctx.alloc_scratch_local(ValType::F64);
                     ctx.instructions.push(Instruction::LocalSet(scratch_b));
@@ -132,12 +110,13 @@ pub(in crate::wasm::lir_fast) fn emit_lir_binary_arith(
                     ctx.instructions.push(Instruction::F64Mul);
                     ctx.instructions.push(Instruction::F64Sub);
                 }
+                _ => unreachable!("non-arithmetic numeric selector routed to arithmetic emitter"),
             }
         }
         _ => {
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.emit_runtime_call(boxed_arith_runtime_call(arith));
+            ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
             ctx.emit_set(dst);
             return;
         }
@@ -248,7 +227,7 @@ fn emit_checked_mul_overflow_flag(
 pub(in crate::wasm::lir_fast) fn emit_lir_unary_arith(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
-    _unary: UnaryOp,
+    selection: WasmNumericRuntimeSelection,
 ) {
     let tir_op = &op.tir_op;
     if tir_op.operands.is_empty() || op.result_values.is_empty() {
@@ -268,7 +247,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unary_arith(
         }
         _ => {
             emit_get_boxed_for_repr(ctx, src);
-            ctx.emit_runtime_call(LirRuntimeCall::Neg);
+            ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
             ctx.emit_set(dst);
             return;
         }
@@ -276,7 +255,11 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unary_arith(
     ctx.emit_set(dst);
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_unary_pos(ctx: &mut LirLowerCtx, op: &LirOp) {
+pub(in crate::wasm::lir_fast) fn emit_lir_unary_pos(
+    ctx: &mut LirLowerCtx,
+    op: &LirOp,
+    selection: WasmNumericRuntimeSelection,
+) {
     let tir_op = &op.tir_op;
     if tir_op.operands.is_empty() || op.result_values.is_empty() {
         return;
@@ -287,7 +270,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unary_pos(ctx: &mut LirLowerCtx, op: &
         (LirRepr::I64, LirRepr::I64) | (LirRepr::F64, LirRepr::F64) => ctx.emit_get(src),
         _ => {
             emit_get_boxed_for_repr(ctx, src);
-            ctx.emit_runtime_call(LirRuntimeCall::Pos);
+            ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
         }
     }
     ctx.emit_set(dst);
