@@ -108,16 +108,6 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn emit_lir_runtime_call_with_res
     emit_lir_runtime_result(ctx, op);
 }
 
-pub(in crate::wasm::lir_fast::lir_runtime_ops) fn positive_i64_attr(
-    op: &LirOp,
-    attr: &str,
-) -> Option<i64> {
-    match op.tir_op.attrs.get(attr) {
-        Some(AttrValue::Int(value)) if *value > 0 => Some(*value),
-        _ => None,
-    }
-}
-
 pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_i64_attr(
     op: &LirOp,
     attr: &str,

@@ -4,6 +4,7 @@
 // DO NOT EDIT BY HAND.
 
 pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
+    ("types_bootstrap", 0),
     ("abc_bootstrap", 0),
     ("collections_abc_runtime_types", 0),
     ("abc_get_cache_token", 0),
@@ -1991,7 +1992,6 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("keyword_lists", 0),
     ("keyword_iskeyword", 2),
     ("keyword_issoftkeyword", 2),
-    ("types_bootstrap", 0),
     ("this_payload", 0),
     ("quopri_encode", 5),
     ("quopri_decode", 3),
@@ -3065,7 +3065,6 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("object_new", &["object_new", "object_set_class"]),
-    ("object_new_bound", &[]),
     ("object_new_bound_stack", &["object_new_bound_sized"]),
     ("object_field_get", &["object_field_get"]),
     ("object_field_get_ptr", &["object_field_get_ptr"]),
@@ -3085,26 +3084,6 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("builtin_func", &["func_new_builtin"]),
     ("call_bind", &["call_bind"]),
     ("call_bind_ic", &["call_bind_ic"]),
-    (
-        "call_method_ic",
-        &[
-            "call_method_ic0",
-            "call_method_ic1",
-            "call_method_ic2",
-            "call_method_ic3",
-            "call_method_ic4",
-        ],
-    ),
-    (
-        "call_super_method_ic",
-        &[
-            "call_super_method_ic0",
-            "call_super_method_ic1",
-            "call_super_method_ic2",
-            "call_super_method_ic3",
-            "call_super_method_ic4",
-        ],
-    ),
     ("call_arity_error", &["call_arity_error"]),
     ("call_indirect", &["call_indirect_ic"]),
     ("call_indirect_ic", &["call_indirect_ic"]),

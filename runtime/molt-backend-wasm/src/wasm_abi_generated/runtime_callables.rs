@@ -156,6 +156,12 @@ pub(crate) struct RuntimeCallableImportSpec {
 
 pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
+        runtime_name: "molt_types_bootstrap",
+        import_name: "types_bootstrap",
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_abc_bootstrap",
         import_name: "abc_bootstrap",
         arity: 0,
@@ -9531,12 +9537,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_keyword_issoftkeyword",
         import_name: "keyword_issoftkeyword",
         arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_types_bootstrap",
-        import_name: "types_bootstrap",
-        arity: 0,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {

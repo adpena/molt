@@ -1,5 +1,5 @@
 use super::container_runtime_select::selected_container_runtime_import;
-use super::{WasmBackend, WasmCompileOptions};
+use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
@@ -137,6 +137,53 @@ fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> OpIR {
     }
 }
 
+fn wasm_object_new_bound_ir(payload_size: Option<i64>) -> SimpleIR {
+    let mut allocate = wasm_test_op("object_new_bound", Some("obj"), vec!["cls"]);
+    allocate.value = payload_size;
+    let mut ret = wasm_test_op("ret", None, vec!["obj"]);
+    ret.var = Some("obj".to_string());
+    SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            vec!["cls"],
+            None,
+            vec![allocate, ret],
+        )],
+        profile: None,
+    }
+}
+
+fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR {
+    let mut args = match kind {
+        "call_method_ic" => vec!["recv".to_string()],
+        "call_super_method_ic" => vec!["cls".to_string(), "self_obj".to_string()],
+        _ => panic!("unsupported method IC kind {kind}"),
+    };
+    for idx in 0..extra_arg_count {
+        args.push(format!("arg{idx}"));
+    }
+    let call = OpIR {
+        kind: kind.to_string(),
+        out: Some("out".to_string()),
+        args: Some(args.clone()),
+        s_value: Some("selected_method".to_string()),
+        ..OpIR::default()
+    };
+    let mut ret = wasm_test_op("ret", None, vec!["out"]);
+    ret.var = Some("out".to_string());
+    SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: args,
+            ops: vec![call, ret],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    }
+}
+
 #[test]
 fn scalar_fast_path_ignores_transport_hints() {
     let mut add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
@@ -247,8 +294,18 @@ fn container_import_selection_uses_manifest_typed_query_matrix() {
             Some("list_contains"),
             Some("len_list"),
         ),
-        ("typed_set_queries", "set", Some("set_contains"), Some("len_set")),
-        ("typed_str_queries", "str", Some("str_contains"), Some("len_str")),
+        (
+            "typed_set_queries",
+            "set",
+            Some("set_contains"),
+            Some("len_set"),
+        ),
+        (
+            "typed_str_queries",
+            "str",
+            Some("str_contains"),
+            Some("len_str"),
+        ),
         ("typed_tuple_queries", "tuple", None, Some("len_tuple")),
     ];
 
@@ -285,7 +342,12 @@ fn container_import_selection_uses_manifest_index_store_matrix() {
             Some("dict_getitem"),
             Some("dict_setitem"),
         ),
-        ("typed_tuple_index_store", "tuple", Some("tuple_getitem"), None),
+        (
+            "typed_tuple_index_store",
+            "tuple",
+            Some("tuple_getitem"),
+            None,
+        ),
         ("typed_list_index_store", "list", None, None),
         ("typed_set_index_store", "set", None, None),
         ("typed_str_index_store", "str", None, None),
@@ -334,6 +396,200 @@ fn container_import_selection_uses_flat_list_storage_proof() {
         selected_container_runtime_import(&plan, 2, "store_index", &set),
         Some("list_int_setitem")
     );
+}
+
+#[test]
+fn object_new_bound_import_demand_and_codegen_follow_payload_selector() {
+    let cases = [
+        (
+            "object_new_bound_unsized_selector",
+            None,
+            "object_new_bound",
+            "object_new_bound_sized",
+        ),
+        (
+            "object_new_bound_sized_selector",
+            Some(24),
+            "object_new_bound_sized",
+            "object_new_bound",
+        ),
+    ];
+    for (name, payload_size, expected_import, rejected_import) in cases {
+        let reloc_wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: true,
+            wasm_profile: WasmProfile::Auto,
+            ..WasmCompileOptions::default()
+        })
+        .compile(wasm_object_new_bound_ir(payload_size));
+        let reloc_imports = wasm_function_import_names(&reloc_wasm);
+        assert!(
+            reloc_imports.iter().any(|name| name == expected_import),
+            "{expected_import} must be selected by Auto+reloc import demand; imports={reloc_imports:?}"
+        );
+
+        let direct_wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: false,
+            wasm_profile: WasmProfile::Auto,
+            ..WasmCompileOptions::default()
+        })
+        .compile(wasm_object_new_bound_ir(payload_size));
+        let import_indices = wasm_function_import_indices(&direct_wasm);
+        let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");
+        let expected_index = *import_indices
+            .get(expected_import)
+            .unwrap_or_else(|| panic!("{expected_import} import must exist"));
+        assert!(
+            call_indices.contains(&expected_index),
+            "{name} must directly call {expected_import} from molt_main; calls={call_indices:?}"
+        );
+        if let Some(rejected_index) = import_indices.get(rejected_import) {
+            assert!(
+                !call_indices.contains(rejected_index),
+                "{name} must not directly call {rejected_import} from molt_main; calls={call_indices:?}"
+            );
+        }
+        if let Some(size) = payload_size {
+            assert!(
+                wasm_i64_consts(&direct_wasm).contains(&size),
+                "{name} must emit payload byte size {size}"
+            );
+        }
+    }
+}
+
+#[test]
+fn method_ic_import_demand_and_codegen_follow_generated_arity_selector() {
+    let cases = [
+        (
+            "call_method_ic",
+            0,
+            "call_method_ic0",
+            [
+                "call_method_ic0",
+                "call_method_ic1",
+                "call_method_ic2",
+                "call_method_ic3",
+                "call_method_ic4",
+            ],
+        ),
+        (
+            "call_method_ic",
+            2,
+            "call_method_ic2",
+            [
+                "call_method_ic0",
+                "call_method_ic1",
+                "call_method_ic2",
+                "call_method_ic3",
+                "call_method_ic4",
+            ],
+        ),
+        (
+            "call_method_ic",
+            5,
+            "call_method_ic4",
+            [
+                "call_method_ic0",
+                "call_method_ic1",
+                "call_method_ic2",
+                "call_method_ic3",
+                "call_method_ic4",
+            ],
+        ),
+        (
+            "call_super_method_ic",
+            0,
+            "call_super_method_ic0",
+            [
+                "call_super_method_ic0",
+                "call_super_method_ic1",
+                "call_super_method_ic2",
+                "call_super_method_ic3",
+                "call_super_method_ic4",
+            ],
+        ),
+        (
+            "call_super_method_ic",
+            2,
+            "call_super_method_ic2",
+            [
+                "call_super_method_ic0",
+                "call_super_method_ic1",
+                "call_super_method_ic2",
+                "call_super_method_ic3",
+                "call_super_method_ic4",
+            ],
+        ),
+        (
+            "call_super_method_ic",
+            5,
+            "call_super_method_ic4",
+            [
+                "call_super_method_ic0",
+                "call_super_method_ic1",
+                "call_super_method_ic2",
+                "call_super_method_ic3",
+                "call_super_method_ic4",
+            ],
+        ),
+    ];
+    for (kind, extra_arg_count, expected_import, family_imports) in cases {
+        let reloc_wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: true,
+            wasm_profile: WasmProfile::Auto,
+            ..WasmCompileOptions::default()
+        })
+        .compile(wasm_method_ic_ir(kind, extra_arg_count));
+        let reloc_imports = wasm_function_import_names(&reloc_wasm);
+        assert!(
+            reloc_imports.iter().any(|name| name == expected_import),
+            "{kind}/{extra_arg_count} must retain selected import {expected_import}; imports={reloc_imports:?}"
+        );
+        for import_name in family_imports {
+            if import_name != expected_import {
+                assert!(
+                    !reloc_imports.iter().any(|name| name == import_name),
+                    "{kind}/{extra_arg_count} must not retain unselected import {import_name}; imports={reloc_imports:?}"
+                );
+            }
+        }
+
+        let direct_wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: false,
+            wasm_profile: WasmProfile::Auto,
+            ..WasmCompileOptions::default()
+        })
+        .compile(wasm_method_ic_ir(kind, extra_arg_count));
+        let import_indices = wasm_function_import_indices(&direct_wasm);
+        let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");
+        let expected_index = *import_indices
+            .get(expected_import)
+            .unwrap_or_else(|| panic!("{expected_import} import must exist"));
+        assert!(
+            call_indices.contains(&expected_index),
+            "{kind}/{extra_arg_count} must directly call {expected_import}; calls={call_indices:?}"
+        );
+        for import_name in family_imports {
+            if let Some(unselected_index) = import_indices.get(import_name)
+                && import_name != expected_import
+            {
+                assert!(
+                    !call_indices.contains(unselected_index),
+                    "{kind}/{extra_arg_count} must not directly call {import_name}; calls={call_indices:?}"
+                );
+            }
+        }
+        assert!(
+            wasm_data_segment_payloads(&direct_wasm)
+                .iter()
+                .any(|payload| payload.as_slice() == b"selected_method"),
+            "{kind}/{extra_arg_count} must materialize the selected method name"
+        );
+    }
 }
 
 /// Extract `(param_count, result_count)` for every func type in a module's
@@ -385,17 +641,44 @@ fn wasm_function_import_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
 }
 
 fn wasm_direct_call_indices(wasm: &[u8]) -> Vec<u32> {
+    wasm_direct_call_indices_for_body(wasm, None)
+}
+
+fn wasm_direct_call_indices_for_export(wasm: &[u8], export_name: &str) -> Vec<u32> {
+    let export_index = *wasm_function_export_indices(wasm)
+        .get(export_name)
+        .unwrap_or_else(|| panic!("missing function export {export_name}"));
+    let import_count = wasm_function_import_indices(wasm).len() as u32;
+    let body_index = export_index
+        .checked_sub(import_count)
+        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
+    wasm_direct_call_indices_for_body(wasm, Some(body_index))
+}
+
+fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option<u32>) -> Vec<u32> {
     let mut calls = Vec::new();
+    let mut body_index = 0u32;
     for payload in Parser::new(0).parse_all(wasm) {
         if let Ok(Payload::CodeSectionEntry(body)) = payload
             && let Ok(mut ops) = body.get_operators_reader()
         {
+            if body_filter.is_some_and(|target| target != body_index) {
+                body_index += 1;
+                continue;
+            }
             while let Ok(op) = ops.read() {
                 if let wasmparser::Operator::Call { function_index } = op {
                     calls.push(function_index);
                 }
             }
+            body_index += 1;
         }
+    }
+    if let Some(target) = body_filter {
+        assert!(
+            target < body_index,
+            "requested WASM body {target}, but module only has {body_index} code bodies"
+        );
     }
     calls
 }
