@@ -157,6 +157,36 @@ typedef struct {
     MoltBufferView _molt_view;
 } Py_buffer;
 
+/* Buffer protocol flags. Keep these before PyObject_GetBuffer so header users
+   cannot compile a policy-less buffer acquisition path. */
+#ifndef PyBUF_SIMPLE
+#define PyBUF_SIMPLE 0
+#endif
+#ifndef PyBUF_WRITABLE
+#define PyBUF_WRITABLE 0x0001
+#endif
+#ifndef PyBUF_WRITEABLE
+#define PyBUF_WRITEABLE PyBUF_WRITABLE
+#endif
+#ifndef PyBUF_FORMAT
+#define PyBUF_FORMAT 0x0004
+#endif
+#ifndef PyBUF_ND
+#define PyBUF_ND 0x0008
+#endif
+#ifndef PyBUF_STRIDES
+#define PyBUF_STRIDES (0x0010 | PyBUF_ND)
+#endif
+#ifndef PyBUF_C_CONTIGUOUS
+#define PyBUF_C_CONTIGUOUS 0x0020
+#endif
+#ifndef PyBUF_F_CONTIGUOUS
+#define PyBUF_F_CONTIGUOUS 0x0040
+#endif
+#ifndef PyBUF_ANY_CONTIGUOUS
+#define PyBUF_ANY_CONTIGUOUS 0x0080
+#endif
+
 typedef struct _molt_pythreadstate {
     int _molt_reserved;
 } PyThreadState;
@@ -4462,8 +4492,41 @@ static inline int PyBytes_AsStringAndSize(PyObject *value, char **buf, Py_ssize_
     return 0;
 }
 
+static inline int _molt_pybuffer_is_c_contiguous(const Py_buffer *view) {
+    Py_ssize_t expected;
+    int i;
+    if (view == NULL || view->ndim <= 1 || view->shape == NULL || view->strides == NULL) {
+        return 1;
+    }
+    expected = view->itemsize > 0 ? view->itemsize : 1;
+    for (i = view->ndim - 1; i >= 0; --i) {
+        if (view->shape[i] > 1 && view->strides[i] != expected) {
+            return 0;
+        }
+        expected *= view->shape[i] > 0 ? view->shape[i] : 1;
+    }
+    return 1;
+}
+
+static inline int _molt_pybuffer_is_f_contiguous(const Py_buffer *view) {
+    Py_ssize_t expected;
+    int i;
+    if (view == NULL || view->ndim <= 1 || view->shape == NULL || view->strides == NULL) {
+        return 1;
+    }
+    expected = view->itemsize > 0 ? view->itemsize : 1;
+    for (i = 0; i < view->ndim; ++i) {
+        if (view->shape[i] > 1 && view->strides[i] != expected) {
+            return 0;
+        }
+        expected *= view->shape[i] > 0 ? view->shape[i] : 1;
+    }
+    return 1;
+}
+
+static inline void PyBuffer_Release(Py_buffer *view);
+
 static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
-    (void)flags;
     if (view == NULL) {
         PyErr_SetString(PyExc_TypeError, "buffer view must not be NULL");
         return -1;
@@ -4472,13 +4535,36 @@ static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) 
     memset(view, 0, sizeof(*view));
     rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
     if (rc == 0) {
+        if ((flags & PyBUF_WRITABLE) != 0 && view->_molt_view.readonly != 0) {
+            (void)molt_buffer_release(&view->_molt_view);
+            PyErr_SetString(PyExc_BufferError, "writable buffer requested for readonly object");
+            return -1;
+        }
         view->buf = view->_molt_view.data;
         view->len = (Py_ssize_t)view->_molt_view.len;
         view->readonly = (int)view->_molt_view.readonly;
         view->itemsize = (Py_ssize_t)view->_molt_view.itemsize;
-        view->ndim = 1;
+        view->ndim = (int)view->_molt_view.ndim;
+        view->format = (flags & PyBUF_FORMAT) != 0 ? view->_molt_view.format : NULL;
+        view->shape = (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0
+            ? (Py_ssize_t *)view->_molt_view.shape
+            : NULL;
+        view->strides = (flags & PyBUF_STRIDES) != 0
+            ? (Py_ssize_t *)view->_molt_view.strides
+            : NULL;
+        view->suboffsets = NULL;
+        view->internal = &view->_molt_view;
         view->obj = obj;
         if (obj != NULL) Py_INCREF(obj);
+        if (((flags & PyBUF_C_CONTIGUOUS) != 0 && !_molt_pybuffer_is_c_contiguous(view))
+            || ((flags & PyBUF_F_CONTIGUOUS) != 0 && !_molt_pybuffer_is_f_contiguous(view))
+            || ((flags & PyBUF_ANY_CONTIGUOUS) != 0
+                && !_molt_pybuffer_is_c_contiguous(view)
+                && !_molt_pybuffer_is_f_contiguous(view))) {
+            PyBuffer_Release(view);
+            PyErr_SetString(PyExc_BufferError, "requested contiguous buffer is not available");
+            return -1;
+        }
     }
     return rc;
 }
@@ -4492,6 +4578,16 @@ static inline void PyBuffer_Release(Py_buffer *view) {
         Py_DECREF(view->obj);
         view->obj = NULL;
     }
+    view->buf = NULL;
+    view->len = 0;
+    view->itemsize = 1;
+    view->readonly = 1;
+    view->ndim = 0;
+    view->format = NULL;
+    view->shape = NULL;
+    view->strides = NULL;
+    view->suboffsets = NULL;
+    view->internal = NULL;
 }
 
 static inline char *PyBytes_AsString(PyObject *value) {
@@ -11242,13 +11338,28 @@ static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
 }
 
 static inline int PyObject_CheckBuffer(PyObject *obj) {
-    (void)obj;
+    MoltBufferView tmp;
+    if (obj == NULL) return 0;
+    memset(&tmp, 0, sizeof(tmp));
+    if (molt_buffer_acquire(_molt_py_handle(obj), &tmp) == 0) {
+        (void)molt_buffer_release(&tmp);
+        return 1;
+    }
+    if (molt_err_pending() != 0) {
+        (void)molt_err_clear();
+    }
     return 0;
 }
 
 static inline int PyBuffer_IsContiguous(const Py_buffer *view, char order) {
-    (void)view; (void)order;
-    return 1;
+    if (view == NULL) return 0;
+    if (order == 'C' || order == 'c') {
+        return _molt_pybuffer_is_c_contiguous(view);
+    }
+    if (order == 'F' || order == 'f') {
+        return _molt_pybuffer_is_f_contiguous(view);
+    }
+    return _molt_pybuffer_is_c_contiguous(view) || _molt_pybuffer_is_f_contiguous(view);
 }
 
 static inline void PyBuffer_FillContiguousStrides(int ndim, Py_ssize_t *shape,

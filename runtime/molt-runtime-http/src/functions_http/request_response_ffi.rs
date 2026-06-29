@@ -634,16 +634,12 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
-        let mut export = crate::bridge::BufferExport {
-            ptr: 0,
-            len: 0,
-            readonly: 0,
-            stride: 0,
-            itemsize: 0,
-        };
+        let mut export = crate::bridge::BufferExport::default();
         if crate::bridge::molt_buffer_export(buffer_bits, &mut export)
             || export.readonly != 0
+            || export.ndim != 1
             || export.itemsize != 1
+            || export.strides[0] != 1
         {
             return raise_exception::<_>(
                 _py,
