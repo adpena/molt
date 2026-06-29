@@ -8,6 +8,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
+use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_dispatch_block_terminator;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::Function;
@@ -272,40 +273,13 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 op,
             );
 
-            match op.kind.as_str() {
-                "if"
-                | "else"
-                | "end_if"
-                | "loop_start"
-                | "loop_index_start"
-                | "loop_break"
-                | "loop_break_if_true"
-                | "loop_break_if_false"
-                | "loop_continue"
-                | "label"
-                | "br_if"
-                | "jump"
-                | "state_switch"
-                | "state_transition"
-                | "state_yield"
-                | "chan_send_yield"
-                | "chan_recv_yield"
-                | "try_start"
-                | "try_end"
-                | "check_exception"
-                | "loop_end"
-                | "ret"
-                | "ret_void" => {
-                    known_raw_ints.clear();
-                }
-                "const" => {}
-                _ => {
-                    if let Some(ref out) = op.out
-                        && let Some(&out_idx) = locals.get(out.as_str())
-                    {
-                        known_raw_ints.remove(&out_idx);
-                    }
-                }
+            if simpleir_kind_is_wasm_dispatch_block_terminator(op.kind.as_str()) {
+                known_raw_ints.clear();
+            } else if op.kind != "const"
+                && let Some(ref out) = op.out
+                && let Some(&out_idx) = locals.get(out.as_str())
+            {
+                known_raw_ints.remove(&out_idx);
             }
         }
     }

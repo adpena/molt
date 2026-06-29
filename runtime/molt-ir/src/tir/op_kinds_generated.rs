@@ -140,6 +140,126 @@ pub fn simpleir_kind_is_ssa_only(kind: &str) -> bool {
     matches!(kind, "phi")
 }
 
+/// Whether WASM must keep this SimpleIR kind out of straight-line megafunction chunk splitting and local coalescing.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_wasm_split_barrier(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label"
+            | "state_label"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_break"
+            | "loop_continue"
+            | "jump"
+            | "goto"
+            | "br_if"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "ret"
+            | "ret_void"
+            | "return"
+            | "state_switch"
+            | "state_yield"
+            | "state_transition"
+            | "chan_send_yield"
+            | "chan_recv_yield"
+            | "loop_index_start"
+            | "loop_index_end"
+            | "for_iter_start"
+            | "for_iter_end"
+            | "while_start"
+            | "while_end"
+            | "try_start"
+            | "try_end"
+            | "async_for_start"
+            | "async_for_end"
+            | "check_exception"
+    )
+}
+
+/// Whether this SimpleIR kind starts a WASM non-linear dispatch block.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_wasm_dispatch_block_leader(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label" | "state_label" | "loop_start" | "loop_end" | "loop_index_start"
+    )
+}
+
+/// Whether this SimpleIR kind terminates a WASM non-linear dispatch block and invalidates raw-int local facts.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_wasm_dispatch_block_terminator(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label"
+            | "state_label"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_break"
+            | "loop_continue"
+            | "jump"
+            | "br_if"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "ret"
+            | "ret_void"
+            | "state_switch"
+            | "state_yield"
+            | "state_transition"
+            | "chan_send_yield"
+            | "chan_recv_yield"
+            | "loop_index_start"
+            | "try_start"
+            | "try_end"
+            | "check_exception"
+    )
+}
+
+/// Whether this SimpleIR kind requires the WASM stateful dispatch frame mode.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_wasm_stateful_dispatch(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_switch" | "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
+    )
+}
+
+/// Whether this SimpleIR kind maps its state id to the following WASM resume op.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_wasm_state_resume_after(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
+    )
+}
+
+/// Whether this SimpleIR kind maps its label id to the current WASM resume op.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_wasm_state_resume_at(kind: &str) -> bool {
+    matches!(kind, "label" | "state_label")
+}
+
 /// Whether a kind is consumed structurally by CFG/SSA/pre-SSA rather than kind_to_opcode.
 /// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
 /// SSA, pre-SSA lowering, and the op-kind audit share one authority.

@@ -193,7 +193,7 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
     lower_from_simple = _read_rs_module_cluster(tir_path("lower_from_simple.rs"))
     audit = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
 
-    expected = {
+    base_expected = {
         "label": {"structural", "block_leader"},
         "state_label": {"structural", "block_leader"},
         "if": {"structural", "block_leader", "conditional_branch"},
@@ -222,6 +222,103 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         "loop_index_next": {"pre_ssa_rewritten"},
         "phi": {"ssa_only"},
     }
+    wasm_expected = {
+        "label": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_leader",
+            "wasm_dispatch_block_terminator",
+            "wasm_state_resume_at",
+        },
+        "state_label": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_leader",
+            "wasm_dispatch_block_terminator",
+            "wasm_state_resume_at",
+        },
+        "if": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "else": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "end_if": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "loop_start": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_leader",
+            "wasm_dispatch_block_terminator",
+        },
+        "loop_end": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_leader",
+            "wasm_dispatch_block_terminator",
+        },
+        "loop_break": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "loop_continue": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "jump": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "goto": {"wasm_split_barrier"},
+        "br_if": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "loop_break_if_true": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+        },
+        "loop_break_if_false": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+        },
+        "loop_break_if_exception": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+        },
+        "ret": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "ret_void": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "return": {"wasm_split_barrier"},
+        "state_switch": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+            "wasm_stateful_dispatch",
+        },
+        "state_yield": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+            "wasm_stateful_dispatch",
+            "wasm_state_resume_after",
+        },
+        "state_transition": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+            "wasm_stateful_dispatch",
+            "wasm_state_resume_after",
+        },
+        "chan_send_yield": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+            "wasm_stateful_dispatch",
+            "wasm_state_resume_after",
+        },
+        "chan_recv_yield": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+            "wasm_stateful_dispatch",
+            "wasm_state_resume_after",
+        },
+        "loop_index_start": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_leader",
+            "wasm_dispatch_block_terminator",
+        },
+        "loop_index_end": {"wasm_split_barrier"},
+        "for_iter_start": {"wasm_split_barrier"},
+        "for_iter_end": {"wasm_split_barrier"},
+        "while_start": {"wasm_split_barrier"},
+        "while_end": {"wasm_split_barrier"},
+        "try_start": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "try_end": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
+        "async_for_start": {"wasm_split_barrier"},
+        "async_for_end": {"wasm_split_barrier"},
+        "check_exception": {
+            "wasm_split_barrier",
+            "wasm_dispatch_block_terminator",
+        },
+    }
+    expected = {kind: set(facts) for kind, facts in base_expected.items()}
+    for kind, facts in wasm_expected.items():
+        expected.setdefault(kind, set()).update(facts)
     fields = gen._SIMPLEIR_CONTROL_FACT_FIELDS
     actual = {
         row["kind"]: {field for field in fields if row[field]}
@@ -312,6 +409,27 @@ def test_simpleir_control_kind_validation_rejects_drift() -> None:
         assert "ssa_only cannot overlap runtime facts" in str(e)
     else:
         raise AssertionError("ssa_only/runtime overlap was accepted")
+
+    wasm_leader_without_split = json.loads(json.dumps(data))
+    wasm_leader_without_split["simpleir_control_kind"][0]["wasm_split_barrier"] = False
+    try:
+        gen._validate_simpleir_control_kinds(wasm_leader_without_split)
+    except gen.OpKindTableError as e:
+        assert "wasm dispatch block leader requires wasm split barrier" in str(e)
+    else:
+        raise AssertionError("wasm dispatch leader without split barrier was accepted")
+
+    wasm_resume_without_suspend = json.loads(json.dumps(data))
+    for row in wasm_resume_without_suspend["simpleir_control_kind"]:
+        if row["kind"] == "state_yield":
+            row["suspend"] = False
+            break
+    try:
+        gen._validate_simpleir_control_kinds(wasm_resume_without_suspend)
+    except gen.OpKindTableError as e:
+        assert "wasm resume-after requires suspend and stateful dispatch" in str(e)
+    else:
+        raise AssertionError("wasm resume-after without suspend was accepted")
 
 
 # ---------------------------------------------------------------------------

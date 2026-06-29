@@ -9,6 +9,7 @@ use crate::wasm::task_runtime::WasmTaskRuntimeLayout;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
 use crate::wasm_values::box_none;
 use crate::{FunctionIR, OpIR};
+use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_stateful_dispatch;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{Function, ValType};
 
@@ -168,8 +169,7 @@ impl WasmFunctionFramePlan {
             match op.kind.as_str() {
                 "store" | "store_init" | "load" | "guarded_load" | "guarded_field_get"
                 | "guarded_field_set" | "guarded_field_init" => needs_field_fast = true,
-                "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
-                | "chan_recv_yield" => stateful = true,
+                kind if simpleir_kind_is_wasm_stateful_dispatch(kind) => stateful = true,
                 "jump" | "label" => saw_jump_or_label = true,
                 "alloc_task" => {
                     let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
