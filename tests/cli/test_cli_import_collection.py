@@ -1486,6 +1486,87 @@ def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
     assert eliminated == 1
 
 
+def test_dead_module_elimination_pure_wasm_safelist_skips_host_stdlib() -> None:
+    module_order = ["builtins", "sys", "os", "typing", "warnings", "array", "demo"]
+    module_layers = [
+        ["builtins", "sys", "os", "typing", "warnings", "array"],
+        ["demo"],
+    ]
+    module_deps = {
+        "demo": {"array"},
+        "array": set(),
+        "typing": {"warnings"},
+        "os": set(),
+        "warnings": set(),
+    }
+
+    filtered_order, filtered_layers, eliminated = (
+        cli_module_dependencies._apply_dead_module_elimination(
+            module_order,
+            module_layers,
+            entry_module="demo",
+            module_deps=module_deps,
+            module_names=set(module_order),
+            safelist=(
+                cli_module_dependencies._PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST
+            ),
+        )
+    )
+
+    assert filtered_order == ["builtins", "sys", "array", "demo"]
+    assert filtered_layers == [["builtins", "sys", "array"], ["demo"]]
+    assert eliminated == 3
+
+
+def test_pure_wasm_dme_mode_overrides_legacy_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_layout = cli_frontend_pipeline._BuildOutputLayout(
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_mlir_emit=False,
+        split_runtime=True,
+        linked=True,
+        target_triple=None,
+        emit_mode="wasm",
+        output_artifact=Path("output.wasm"),
+        output_binary=None,
+        linked_output_path=Path("output_linked.wasm"),
+        emit_ir_path=None,
+    )
+    monkeypatch.setenv("MOLT_WASM_PROFILE", "pure")
+    monkeypatch.setenv("MOLT_DEAD_MODULE_ELIMINATION", "1")
+
+    assert (
+        cli_frontend_pipeline._dead_module_elimination_mode(
+            output_layout=output_layout,
+            tree_shake=True,
+        )
+        == "pure-wasm"
+    )
+
+
+def test_pure_wasm_dme_roots_do_not_seed_runtime_support_closure() -> None:
+    import_plan = types.SimpleNamespace(
+        explicit_imports=frozenset({"array"}),
+        declared_root_modules=frozenset({"demo"}),
+        package_parent_modules=frozenset(),
+        namespace_module_names=frozenset(),
+        runtime_import_dispatch_roots=frozenset({"array", "importlib", "typing"}),
+        runtime_support_modules=frozenset({"importlib", "_molt_importer"}),
+        stdlib_support_modules=frozenset({"builtins", "sys", "typing"}),
+    )
+
+    roots = cli_frontend_pipeline._dead_module_elimination_extra_roots(
+        import_plan,
+        mode="pure-wasm",
+    )
+
+    assert roots == {"array", "demo"}
+
+
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
     tmp_path: Path,
 ) -> None:

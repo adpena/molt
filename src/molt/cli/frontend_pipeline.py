@@ -35,6 +35,8 @@ from molt.cli.module_graph import (
     _prepare_entry_module_graph,
 )
 from molt.cli.module_dependencies import (
+    _DEAD_MODULE_ELIMINATION_SAFELIST,
+    _PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST,
     _analyze_module_schedule,
     _apply_dead_module_elimination,
     _dependent_module_closure,
@@ -588,6 +590,47 @@ def _prepare_build_callbacks(
     )
 
 
+def _dead_module_elimination_mode(
+    *,
+    output_layout: _BuildOutputLayout,
+    tree_shake: bool,
+) -> str | None:
+    wasm_profile = os.environ.get("MOLT_WASM_PROFILE", "").strip().lower()
+    if tree_shake and output_layout.is_wasm and wasm_profile == "pure":
+        return "pure-wasm"
+    if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
+        return "explicit"
+    return None
+
+
+def _dead_module_elimination_safelist(mode: str) -> frozenset[str]:
+    if mode == "pure-wasm":
+        return _PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST
+    return _DEAD_MODULE_ELIMINATION_SAFELIST
+
+
+def _dead_module_elimination_extra_roots(
+    import_plan: _ImportPlan,
+    *,
+    mode: str,
+) -> frozenset[str]:
+    if mode == "pure-wasm":
+        return frozenset(
+            import_plan.explicit_imports
+            | import_plan.declared_root_modules
+            | import_plan.package_parent_modules
+            | import_plan.namespace_module_names
+        )
+    return frozenset(
+        import_plan.runtime_import_dispatch_roots
+        | import_plan.declared_root_modules
+        | import_plan.runtime_support_modules
+        | import_plan.stdlib_support_modules
+        | import_plan.package_parent_modules
+        | import_plan.namespace_module_names
+    )
+
+
 def _prepare_frontend_stage_state(
     *,
     prepared_build_preamble: _PreparedBuildPreamble,
@@ -838,6 +881,7 @@ def _prepare_frontend_pipeline(
     output: str | None,
     emit_ir: str | None,
     type_facts_path: str | None,
+    tree_shake: bool,
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
     prepared_frontend_stage_bundle, prepared_frontend_stage_state_error = (
         _prepare_frontend_stage_state(
@@ -917,14 +961,14 @@ def _prepare_frontend_pipeline(
     compile_module_layers: list[list[str]] = [
         list(layer) for layer in prepared_frontend_analysis.module_layers
     ]
-    if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
-        dme_roots = (
-            import_plan.runtime_import_dispatch_roots
-            | import_plan.declared_root_modules
-            | import_plan.runtime_support_modules
-            | import_plan.stdlib_support_modules
-            | import_plan.package_parent_modules
-            | import_plan.namespace_module_names
+    dme_mode = _dead_module_elimination_mode(
+        output_layout=prepared_build_outputs.output_layout,
+        tree_shake=tree_shake,
+    )
+    if dme_mode is not None:
+        dme_roots = _dead_module_elimination_extra_roots(
+            import_plan,
+            mode=dme_mode,
         )
         compile_module_order, compile_module_layers, dme_eliminated = (
             _apply_dead_module_elimination(
@@ -934,6 +978,7 @@ def _prepare_frontend_pipeline(
                 module_deps=prepared_frontend_analysis.module_deps,
                 module_names=set(import_plan.module_graph),
                 extra_roots=dme_roots,
+                safelist=_dead_module_elimination_safelist(dme_mode),
             )
         )
         if dme_eliminated > 0:
