@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
 use crate::wasm_abi::{
-    WasmRuntimeImport, runtime_callable_arity, runtime_callable_import, wasm_runtime_import,
+    IMPORT_REGISTRY, WasmRuntimeImport, runtime_callable_arity, runtime_callable_import,
+    wasm_runtime_import,
 };
 use crate::wasm_import_tracking::TrackedImportIds;
-use crate::wasm_imports::IMPORT_REGISTRY;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
 pub(super) struct WasmRuntimeSurfacePlan {

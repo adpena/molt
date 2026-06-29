@@ -508,9 +508,9 @@ molt-lower, so this crate is a clean consumer of molt-lower output). Deps `molt-
 
 ### 7.1 Exact partition
 The live partition is the full WASM authority cluster, not the older
-`wasm.rs`/`wasm_imports.rs` slice: `runtime/molt-backend-wasm/src/{wasm.rs,
+`wasm.rs`/generated-ABI slice: `runtime/molt-backend-wasm/src/{wasm.rs,
 wasm_abi.rs,wasm_abi_generated/,wasm_abi_manifest.toml,wasm_binary.rs,
-wasm_data.rs,wasm_dispatch.rs,wasm_import_tracking.rs,wasm_imports.rs,
+wasm_data.rs,wasm_dispatch.rs,wasm_import_tracking.rs,
 wasm_options.rs,wasm_plan.rs,wasm_values.rs,wasm/**}`. LIR-fast planning lives
 with the LIR-fast lowering authority under `wasm/lir_fast/plan.rs`; `wasm_plan.rs`
 keeps non-LIR WASM planning helpers such as stage audit, multi-return, GPU symbol,

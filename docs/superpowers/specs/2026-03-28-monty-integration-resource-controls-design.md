@@ -133,7 +133,7 @@ pub struct LimitedTracker {
 pub struct UnlimitedTracker;
 ```
 
-**Integration points in WASM host imports (`wasm_imports.rs`):**
+**Integration points in generated WASM host imports:**
 - `heap_alloc` → `tracker.on_allocate(size)`
 - `heap_free` → `tracker.on_free(size)`
 - `list_append` / `dict_set` → `tracker.on_grow(delta)`
@@ -464,7 +464,7 @@ Each wave includes tests:
 - `molt.capabilities.toml` — example manifest in new format
 
 **Modified files:**
-- `runtime/molt-backend/src/wasm_imports.rs` — resource tracker hooks at host boundary
+- `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` / generated ABI facade — resource tracker hooks at host boundary
 - `runtime/molt-backend/src/wasm.rs` — uncatchable exception tags, Asyncify markers
 - `runtime/molt-backend/src/passes.rs` — CheckOperationSize TIR pass
 - `runtime/molt-backend/src/lib.rs` — resource tracker integration

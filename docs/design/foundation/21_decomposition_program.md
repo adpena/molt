@@ -210,7 +210,7 @@ All verified by `grep -rE 'crate::<mod>' <subtree>`:
   - `function_compiler.rs`: `debug_artifacts`, `passes::ReturnAliasSummary`, `representation_plan`,
     `switch_to_block_tracking`, `block_has_terminator`, `unbox_int` (NaN-box helpers in `lib.rs`).
   - `wasm.rs`: heavy `tir::*` (lower_to_wasm, lower_to_simple, type_refine, serialize, cache,
-    target_info), `passes::*`, `wasm_imports`, `representation_plan`.
+    target_info), `passes::*`, generated WASM ABI facade, `representation_plan`.
   - `llvm_backend/lowering.rs`: `tir::ops/values/types/function/blocks`, `repr::{Repr, ContainerKind}`,
     `representation_plan::LlvmReprFacts`, `pending_bits`/`stable_ic_site_id` (lib.rs NaN-box).
   - `luau.rs`, `rust.rs`: only `representation_plan` (minimal coupling — easiest to extract).
@@ -309,7 +309,7 @@ real Phase 2) and the per-pair drift is reconciled; see §3 Phase R.**
  molt-backend-    molt-backend-     molt-backend-       molt-backend-   molt-backend-
    native            wasm              luau                rust            (none more)
  (Cranelift +     (wasm.rs +        (luau.rs +          (rust.rs          [feature crates
-  LLVM):           wasm_imports +    luau_ir +           transpiler)       above are leaves]
+  LLVM):           wasm_abi +        luau_ir +           transpiler)       above are leaves]
   native_backend/  lower_to_wasm)    luau_lower)         ~5K LOC
   + llvm_backend/  ~21K LOC          ~14K LOC
   ~58K LOC

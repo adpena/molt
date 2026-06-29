@@ -3,7 +3,7 @@ use wasm_encoder::{EntityType, ImportSection};
 use super::runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm::WasmBackend;
-use crate::wasm_abi_generated::{RuntimeImportSpec, WasmRuntimeImport};
+use crate::wasm_abi::{IMPORT_REGISTRY, RuntimeImportSpec, WasmRuntimeImport};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
 
@@ -25,7 +25,7 @@ impl WasmBackend {
             is_pure: self.options.wasm_profile == WasmProfile::Pure,
         };
 
-        for spec in crate::wasm_imports::IMPORT_REGISTRY {
+        for spec in IMPORT_REGISTRY {
             registrar.add_spec(*spec);
         }
 

@@ -303,7 +303,7 @@ No change needed for phase A. The generator_fusion pass is a MODULE-level pass i
 
 **Phase 5 of this arc** (os.walk as Python generator) is the deletion milestone. When os.walk-as-Python compiles, fuses, and passes the perf gate:
 
-- Delete `molt_os_walk` intrinsic from `runtime/molt-backend/src/intrinsic_symbols.rs` (and `generated.rs`, `wasm_imports.rs`, `wasm.rs`, `simple_backend.rs` manifest tables, `gen_intrinsics.py`)
+- Delete `molt_os_walk` intrinsic from `runtime/molt-backend/src/intrinsic_symbols.rs` (and `generated.rs`, `wasm_abi_manifest.toml`/generated WASM ABI tables, `wasm.rs`, `simple_backend.rs` manifest tables, `gen_intrinsics.py`)
 - Delete the native Rust os.walk implementation in the runtime crate
 - The Python `os.walk` in `src/molt/stdlib/os.py` becomes the canonical implementation
 
@@ -593,7 +593,7 @@ Handle the `while stack: ... yield` pattern where the generator body itself has 
 Implement a lazy `scandir` runtime iterator (the irreducible OS boundary). `os.scandir()` currently returns an eager list; make it a proper lazy iterator at the runtime/intrinsic level. This is a small runtime change with no TIR impact, but required for os.walk-as-Python to be non-OOM on large directories.
 
 **Phase E — os.walk as pure Python**
-Write `os.walk` in `src/molt/stdlib/os.py` as a CPython-verbatim iterative generator (work-stack, top-down + bottom-up, in-place `dirnames` pruning, `onerror`, `followlinks`). Verify: (a) Phase A/B/C fusion fires on it (`MOLT_DUMP_TIR` shows no `alloc_task`), (b) all parity tests pass vs CPython 3.12/3.13/3.14, (c) perf >= CPython on the walk benchmark across all targets, (d) no OOM on a large directory tree, (e) no SIGSEGV on a deep tree. ONLY AFTER (a-e) pass: delete `molt_os_walk` from `intrinsic_symbols.rs`, `generated.rs`, `wasm_imports.rs`, `wasm.rs` manifest tables, `simple_backend.rs`, `gen_intrinsics.py`.
+Write `os.walk` in `src/molt/stdlib/os.py` as a CPython-verbatim iterative generator (work-stack, top-down + bottom-up, in-place `dirnames` pruning, `onerror`, `followlinks`). Verify: (a) Phase A/B/C fusion fires on it (`MOLT_DUMP_TIR` shows no `alloc_task`), (b) all parity tests pass vs CPython 3.12/3.13/3.14, (c) perf >= CPython on the walk benchmark across all targets, (d) no OOM on a large directory tree, (e) no SIGSEGV on a deep tree. ONLY AFTER (a-e) pass: delete `molt_os_walk` from `intrinsic_symbols.rs`, `generated.rs`, `wasm_abi_manifest.toml`/generated WASM ABI tables, `wasm.rs` manifest tables, `simple_backend.rs`, `gen_intrinsics.py`.
 
 **Phase F — itertools retirement (long tail)**
 For each itertools native (chain, islice, product, compress, dropwhile, takewhile, cycle, repeat): write the Python generator equivalent, verify fusion, verify perf parity, delete the native intrinsic. Each is independent; prioritize by usage frequency.

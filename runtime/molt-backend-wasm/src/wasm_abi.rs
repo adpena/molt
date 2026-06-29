@@ -2,11 +2,11 @@ use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
 pub(crate) use crate::wasm_abi_generated::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, GPU_INTRINSIC_MANIFEST_NAMES,
+    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, GPU_INTRINSIC_MANIFEST_NAMES, IMPORT_REGISTRY,
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
-    WasmRuntimeImport, poll_table_import_slot, runtime_callable_arity, runtime_callable_import,
-    wasm_runtime_export_name, wasm_runtime_import,
+    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, RuntimeImportSpec, STATIC_FUNC_TYPES,
+    STATIC_TYPE_COUNT, WasmRuntimeImport, poll_table_import_slot, runtime_callable_arity,
+    runtime_callable_import, wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
@@ -101,7 +101,11 @@ pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
 
 #[cfg(test)]
 mod tests {
-    use super::{STATIC_TYPE_COUNT, emit_static_type_section};
+    use super::{IMPORT_REGISTRY, STATIC_TYPE_COUNT, WasmRuntimeImport, emit_static_type_section};
+    use crate::wasm_abi_generated::{
+        LirRuntimeCall, WasmObjectNewBoundPayload, op_loop_runtime_call,
+        wasm_object_new_bound_selection,
+    };
     use wasm_encoder::{Module, TypeSection};
     use wasmparser::{CompositeInnerType, Parser, Payload};
 
@@ -127,6 +131,58 @@ mod tests {
             }
         }
         sigs
+    }
+
+    #[test]
+    fn module_cache_del_is_registered_as_on_demand_wasm_import() {
+        let import_type = IMPORT_REGISTRY.iter().find_map(|spec| {
+            (spec.import == WasmRuntimeImport::ModuleCacheDel).then_some(spec.type_idx)
+        });
+        assert_eq!(
+            import_type,
+            Some(2),
+            "module_cache_del must use the unary i64 -> i64 host import ABI"
+        );
+
+        let op_call =
+            op_loop_runtime_call("module_cache_del").expect("module_cache_del op-loop call");
+        assert_eq!(op_call.import, WasmRuntimeImport::ModuleCacheDel);
+        assert_eq!(
+            op_call.required_imports,
+            [WasmRuntimeImport::ModuleCacheDel],
+            "module_cache_del codegen must request its runtime import explicitly"
+        );
+    }
+
+    #[test]
+    fn object_new_bound_declares_wasm_imports() {
+        let bound_type = IMPORT_REGISTRY.iter().find_map(|spec| {
+            (spec.import == WasmRuntimeImport::ObjectNewBound).then_some(spec.type_idx)
+        });
+        assert_eq!(
+            bound_type,
+            Some(2),
+            "object_new_bound must use the unary i64 -> i64 host import ABI"
+        );
+
+        let sized_type = IMPORT_REGISTRY.iter().find_map(|spec| {
+            (spec.import == WasmRuntimeImport::ObjectNewBoundSized).then_some(spec.type_idx)
+        });
+        assert_eq!(
+            sized_type,
+            Some(3),
+            "object_new_bound_sized must use the binary i64,i64 -> i64 host import ABI"
+        );
+
+        let unsized_selection = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Unsized);
+        assert_eq!(unsized_selection.import, WasmRuntimeImport::ObjectNewBound);
+        assert_eq!(
+            unsized_selection.lir_runtime_call,
+            LirRuntimeCall::ObjectNewBound
+        );
+        let sized = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Sized);
+        assert_eq!(sized.import, WasmRuntimeImport::ObjectNewBoundSized);
+        assert_eq!(sized.lir_runtime_call, LirRuntimeCall::ObjectNewBoundSized);
     }
 
     #[test]
