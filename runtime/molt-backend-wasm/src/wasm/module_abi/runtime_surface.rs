@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::super::class_def_layout::ClassDefLayout;
 use super::runtime_import_demand::WasmRuntimeImportDemand;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_abi::{runtime_callable_arity, runtime_callable_import};
-use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
+use crate::wasm_abi::{
+    WasmRuntimeImport, runtime_callable_arity, runtime_callable_import, wasm_runtime_import,
+};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_imports::IMPORT_REGISTRY;
 use crate::wasm_options::WasmCompileOptions;

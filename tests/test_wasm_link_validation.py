@@ -443,6 +443,30 @@ def _build_runtime_import_strip_module() -> bytes:
     return wasm_link._build_sections(sections)
 
 
+def _build_runtime_import_module(import_names: list[str]) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(len(import_names)))
+    for name in import_names:
+        import_payload.extend(wasm_link._write_string("molt_runtime"))
+        import_payload.extend(wasm_link._write_string(name))
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
 def _build_symbol_subsection(entries: list[bytes]) -> bytes:
     return wasm_link._write_varuint(len(entries)) + b"".join(entries)
 
@@ -1011,6 +1035,43 @@ def test_strip_unused_module_function_imports_remaps_indices() -> None:
 
     call_targets = _parse_code_section_call_targets(stripped)
     assert call_targets == [[0]]
+
+
+def test_rewrite_output_imports_uses_generated_runtime_export_names(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.wasm"
+    output.write_bytes(_build_runtime_import_module(["socket_drop", "molt_alloc"]))
+
+    rewritten = wasm_link._rewrite_output_imports(
+        output,
+        {"molt_socket_drop", "molt_alloc"},
+    )
+
+    assert rewritten is not None
+    rewritten_path, temp_dir, force_exports = rewritten
+    try:
+        assert force_exports == []
+        assert _function_import_pairs(rewritten_path.read_bytes()) == [
+            ("molt_runtime", "molt_socket_drop"),
+            ("molt_runtime", "molt_alloc"),
+        ]
+    finally:
+        temp_dir.cleanup()
+
+
+def test_split_runtime_validation_uses_generated_runtime_export_names(
+    tmp_path: Path,
+) -> None:
+    app = tmp_path / "app.wasm"
+    runtime = tmp_path / "runtime.wasm"
+    app.write_bytes(_build_runtime_import_module(["socket_drop", "unknown_probe"]))
+    runtime.write_bytes(_build_exported_runtime_module("molt_socket_drop"))
+
+    assert not wasm_link._validate_split_runtime_outputs(app, runtime)
+
+    app.write_bytes(_build_runtime_import_module(["socket_drop"]))
+    assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
 
 def test_post_link_optimize_split_app_does_not_preserve_all_reference_exports() -> None:

@@ -31,6 +31,7 @@ from wasm_link_format import (
     _find_func_import_index,
     is_table_ref_export_name,
     parse_table_ref_export_name,
+    wasm_runtime_export_name,
     _parse_custom_section,
     _parse_func_type_indices,
     _parse_import_desc,
@@ -927,20 +928,24 @@ def _rewrite_output_imports(
             desc = payload[desc_start:offset]
 
             new_name = name
-            if module == "molt_runtime" and kind == 0 and not name.startswith("molt_"):
-                prefixed = f"molt_{name}"
-                if prefixed in runtime_exports:
-                    new_name = prefixed
+            if module == "molt_runtime" and kind == 0:
+                export_name = wasm_runtime_export_name(name)
+                if (
+                    export_name is not None
+                    and export_name != name
+                    and export_name in runtime_exports
+                ):
+                    new_name = export_name
                     needs_rewrite = True
-                elif name not in runtime_exports:
-                    # The prefixed symbol is not in the runtime's export
+                elif export_name is not None and name not in runtime_exports:
+                    # The generated runtime export is not in the runtime's export
                     # section — likely inlined away by LTO during the
-                    # cdylib build.  Still rewrite to the prefixed name
+                    # cdylib build.  Still rewrite to the generated export name
                     # so wasm-ld can resolve it from a relocatable
                     # runtime that retains the symbol.
-                    new_name = prefixed
+                    new_name = export_name
                     needs_rewrite = True
-                    force_exports.append(prefixed)
+                    force_exports.append(export_name)
 
             rebuilt.extend(_write_string(module))
             rebuilt.extend(_write_string(new_name))

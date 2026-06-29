@@ -58,6 +58,15 @@ WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
 
 WASM_TABLE_REF_EXPORT_PREFIX = _WASM_ABI.WASM_TABLE_REF_EXPORT_PREFIX
 
+
+def wasm_runtime_import_name(name: str) -> str | None:
+    return _WASM_ABI.wasm_runtime_import_name(name)
+
+
+def wasm_runtime_export_name(name: str) -> str | None:
+    return _WASM_ABI.wasm_runtime_export_name(name)
+
+
 _CALL_INDIRECT_IMPORT_BY_ARITY = {
     int(name.removeprefix("molt_call_indirect")): name
     for name in WASM_CALL_INDIRECT_IMPORTS

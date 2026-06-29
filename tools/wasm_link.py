@@ -71,6 +71,7 @@ from wasm_link_format import (  # noqa: E402
     is_call_indirect_import_name as is_call_indirect_import_name,
     parse_table_ref_export_name as parse_table_ref_export_name,
     table_ref_export_name as table_ref_export_name,
+    wasm_runtime_export_name as wasm_runtime_export_name,
     _repair_out_of_bounds_func_refs as _repair_out_of_bounds_func_refs,
     _safe_repair_out_of_bounds_func_refs as _safe_repair_out_of_bounds_func_refs,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
@@ -507,7 +508,10 @@ def _tree_shake_runtime(
     # tree-shaking strips every function export even when the app has a
     # large live runtime dependency surface.
     normalized_required_exports = set(required_exports)
-    normalized_required_exports.update(f"molt_{name}" for name in required_exports)
+    for name in required_exports:
+        export_name = wasm_runtime_export_name(name)
+        if export_name is not None:
+            normalized_required_exports.add(export_name)
     normalized_required_exports.update(_ESSENTIAL_EXPORTS)
     # Preserve the minimal exception-inspection surface used by the direct
     # runner and browser host to marshal JS values and turn pending runtime
@@ -972,14 +976,17 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
     except ValueError as exc:
         print(f"Failed to parse split-runtime staged output: {exc}", file=sys.stderr)
         return False
-    missing = sorted(
-        name
-        for name in app_imports
-        if name not in rt_exports
-        and f"molt_{name}" not in rt_exports
-        and name.removeprefix("molt_") not in rt_exports
-        and name not in _ESSENTIAL_EXPORTS
-    )
+    missing: list[str] = []
+    for name in app_imports:
+        export_name = wasm_runtime_export_name(name)
+        if name in rt_exports:
+            continue
+        if export_name is not None and export_name in rt_exports:
+            continue
+        if name in _ESSENTIAL_EXPORTS:
+            continue
+        missing.append(name)
+    missing.sort()
     if missing:
         print(
             "Split-runtime app imports are absent from staged shared runtime: "
@@ -1614,13 +1621,17 @@ def _run_wasm_ld(
                 app_imports = _collect_module_imports(
                     app_stage.read_bytes(), "molt_runtime"
                 )
-                missing_runtime_imports = sorted(
-                    name
-                    for name in app_imports
-                    if name not in canonical_required_exports
-                    and (name.removeprefix("molt_") not in canonical_required_exports)
-                    and name not in _ESSENTIAL_EXPORTS
-                )
+                missing_runtime_imports: list[str] = []
+                for name in app_imports:
+                    export_name = wasm_runtime_export_name(name)
+                    if name in canonical_required_exports:
+                        continue
+                    if export_name is not None and export_name in canonical_required_exports:
+                        continue
+                    if name in _ESSENTIAL_EXPORTS:
+                        continue
+                    missing_runtime_imports.append(name)
+                missing_runtime_imports.sort()
                 if missing_runtime_imports:
                     # The app imports a runtime symbol the canonical export
                     # surface does not advertise.  This is a hard ABI contract

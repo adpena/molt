@@ -4,6 +4,10 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_import_names,
     wasm_runtime_required_import_names,
 )
+from molt._wasm_abi_generated import (
+    wasm_runtime_export_name,
+    wasm_runtime_import_name,
+)
 from molt.cli.backend_execution import _backend_codegen_env_digest
 
 
@@ -76,6 +80,15 @@ def test_wasm_runtime_export_link_args_prefixes_import_registry() -> None:
         " -C link-arg=--export-if-defined="
         "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
     )
+
+
+def test_wasm_runtime_export_names_are_generated() -> None:
+    assert wasm_runtime_import_name("socket_drop") == "socket_drop"
+    assert wasm_runtime_import_name("molt_socket_drop") == "socket_drop"
+    assert wasm_runtime_import_name("molt_alloc") == "alloc"
+    assert wasm_runtime_export_name("socket_drop") == "molt_socket_drop"
+    assert wasm_runtime_export_name("molt_socket_drop") == "molt_socket_drop"
+    assert wasm_runtime_export_name("molt_alloc") == "molt_alloc"
 
 
 def test_wasm_runtime_export_link_args_does_not_widen_full_runtime_with_stdlib_modules() -> (
