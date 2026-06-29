@@ -190,6 +190,45 @@ def test_ty_check_uses_cli_memory_guard(monkeypatch, tmp_path: Path) -> None:
         "concise",
     ]
     assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_CLI"
+    assert captured["kwargs"]["timeout"] == 30.0
+
+
+def test_ty_check_timeout_env_reaches_cli_memory_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setenv("MOLT_TY_TIMEOUT", "1.5")
+    monkeypatch.setattr(cli_typecheck, "_run_completed_command", fake_run)
+
+    ok, output = cli_typecheck._run_ty_check(tmp_path)
+
+    assert ok is True
+    assert output == "ok"
+    assert captured["kwargs"]["timeout"] == 1.5
+
+
+def test_ty_check_timeout_returns_guarded_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd, timeout=2.0)
+
+    monkeypatch.setenv("MOLT_TY_TIMEOUT", "2")
+    monkeypatch.setattr(cli_typecheck, "_run_completed_command", fake_run)
+
+    ok, output = cli_typecheck._run_ty_check(tmp_path)
+
+    assert ok is False
+    assert "ty check timed out after 2.0s" in output
+    assert "guarded hints" in output
 
 
 def test_backend_daemon_spawn_uses_guard_context_and_sentinel(

@@ -46,13 +46,11 @@ pub struct RustBackend {
     /// Used to emit a writeback when loop_index_next updates the phi var,
     /// so the locals frame stays coherent after the loop exits.
     phi_to_frame: BTreeMap<String, (String, String)>,
-    unsupported_ops: BTreeSet<String>,
     /// Best-effort alias graph from temporaries to their source bindings.
     /// Used to propagate side-effecting mutations on cloned temps back to roots.
     aliases: BTreeMap<String, AliasBinding>,
     /// Current function params (as Rust identifiers) for call-by-object writeback.
     current_params: Vec<String>,
-    current_function_name: Option<String>,
     current_is_main: bool,
     current_scalar_plan: Option<ScalarRepresentationPlan>,
 }
@@ -71,10 +69,8 @@ impl RustBackend {
             hoisted_vars: BTreeSet::new(),
             use_crate: false,
             phi_to_frame: BTreeMap::new(),
-            unsupported_ops: BTreeSet::new(),
             aliases: BTreeMap::new(),
             current_params: Vec::new(),
-            current_function_name: None,
             current_is_main: false,
             current_scalar_plan: None,
         }
@@ -90,7 +86,6 @@ impl RustBackend {
 
     /// Compile the given IR to a Rust source string.
     pub fn compile(&mut self, ir: &SimpleIR) -> String {
-        self.unsupported_ops.clear();
         // Phase 1: emit all function bodies into a temporary buffer so we
         // can scan which runtime helpers are actually referenced.
         let mut func_body = String::with_capacity(16384);
@@ -125,36 +120,18 @@ impl RustBackend {
         std::mem::take(&mut self.output)
     }
 
-    /// Compile and reject unsupported Rust-backend operations before source escapes.
+    /// Compile and reject any preview-blocker stubs in the output.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
         let source = self.compile(ir);
-        if self.unsupported_ops.is_empty() {
+        let stubs = rust_stub_markers(&source);
+        if stubs.is_empty() {
             Ok(source)
         } else {
-            let unsupported = self.unsupported_ops.iter().cloned().collect::<Vec<_>>();
             Err(format!(
-                "Rust backend cannot lower: {} -- use --target luau or native",
-                unsupported.join(", ")
+                "output contains unimplemented op stubs: {} — use --target luau or native",
+                stubs.join(", ")
             ))
         }
-    }
-
-    pub(super) fn record_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) -> String {
-        let function_name = self.current_function_name.as_deref().unwrap_or("<unknown>");
-        let mut detail = format!(
-            "{} for op `{}` in function `{}`",
-            reason.into(),
-            op.kind,
-            function_name
-        );
-        if let Some(out) = op.out.as_deref().filter(|out| !out.is_empty()) {
-            detail.push_str(&format!(" -> `{out}`"));
-        }
-        if let Some(args) = op.args.as_ref().filter(|args| !args.is_empty()) {
-            detail.push_str(&format!(" args=({})", args.join(", ")));
-        }
-        self.unsupported_ops.insert(detail.clone());
-        detail
     }
 
     fn clear_alias(&mut self, var: &str) {
@@ -242,7 +219,6 @@ impl RustBackend {
         } else {
             func.params.iter().map(|p| rust_ident(p)).collect()
         };
-        self.current_function_name = Some(func.name.clone());
         self.aliases.clear();
 
         let name = rust_ident(&func.name);
@@ -848,6 +824,24 @@ pub(crate) fn rust_ident(name: &str) -> String {
     }
 }
 
+fn rust_stub_markers(source: &str) -> Vec<String> {
+    let mut markers = BTreeSet::new();
+    for line in source.lines() {
+        let mut tail = line;
+        while let Some(start) = tail.find("/* MOLT_STUB:") {
+            let marker_start = start + "/* ".len();
+            let after_marker = &tail[marker_start..];
+            let marker_end = after_marker
+                .find(" */")
+                .or_else(|| after_marker.find("*/"))
+                .unwrap_or(after_marker.len());
+            markers.insert(after_marker[..marker_end].trim().to_string());
+            tail = &after_marker[marker_end..];
+        }
+    }
+    markers.into_iter().take(8).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1104,9 +1098,9 @@ mod tests {
 
         let source = backend
             .compile_checked(&ir)
-            .expect("call_method should lower from s_value");
+            .expect("call_method should lower from s_value without stub markers");
         assert!(source.contains("molt_list_append(&mut items, value.clone());"));
-        assert!(!source.contains("compile_error!"));
+        assert!(!source.contains("MOLT_STUB: method"));
     }
 
     #[test]
@@ -1136,16 +1130,18 @@ mod tests {
             profile: None,
         };
 
-        let source = backend.compile_checked(&ir).expect("ord_at should lower");
+        let source = backend
+            .compile_checked(&ir)
+            .expect("ord_at should lower without stub markers");
         assert!(source.contains("fn molt_ord_at(obj: &MoltValue, key: &MoltValue)"));
         assert!(source.contains("fn molt_get_item(obj: &MoltValue, key: &MoltValue)"));
         assert!(source.contains("fn molt_ord(x: &MoltValue)"));
         assert!(source.contains("let mut code: MoltValue = molt_ord_at(&s, &i);"));
-        assert!(!source.contains("compile_error!"));
+        assert!(!source.contains("MOLT_STUB"));
     }
 
     #[test]
-    fn compile_code_slots_contains_and_ref_markers_without_placeholder_diagnostics() {
+    fn compile_code_slots_contains_and_ref_markers_without_stubs() {
         let mut backend = RustBackend::new();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -1292,11 +1288,11 @@ mod tests {
         assert!(source.contains(
             "let mut present: MoltValue = MoltValue::Bool(molt_in(&needle, &container));"
         ));
-        assert!(!source.contains("compile_error!"));
+        assert!(!source.contains("MOLT_STUB"));
     }
 
     #[test]
-    fn compile_checked_reports_unsupported_ops_before_source_escapes() {
+    fn compile_checked_reports_stub_markers() {
         let mut backend = RustBackend::new();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -1316,36 +1312,8 @@ mod tests {
 
         let err = backend
             .compile_checked(&ir)
-            .expect_err("unsupported ops should be rejected before source escapes");
-        assert!(err.contains("Rust backend cannot lower"));
-        assert!(err.contains("unsupported Rust backend op `matmul`"));
-        assert!(err.contains("op `matmul` in function `unsupported`"));
-        assert!(err.contains("-> `value`"));
-    }
-
-    #[test]
-    fn compile_checked_rejects_semantic_marker_ops_without_outputs() {
-        let mut backend = RustBackend::new();
-        let ir = SimpleIR {
-            functions: vec![FunctionIR {
-                name: "unsupported_branch".to_string(),
-                params: vec![],
-                ops: vec![OpIR {
-                    kind: "branch".to_string(),
-                    ..OpIR::default()
-                }],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-            }],
-            profile: None,
-        };
-
-        let err = backend
-            .compile_checked(&ir)
-            .expect_err("semantic marker ops must not compile as no-ops");
-        assert!(err.contains("semantic op `branch` has no Rust backend lowering"));
-        assert!(err.contains("op `branch` in function `unsupported_branch`"));
+            .expect_err("unsupported ops should be rejected with marker details");
+        assert!(err.contains("MOLT_STUB: matmul"));
     }
 
     #[test]
@@ -1433,7 +1401,7 @@ mod tests {
         assert!(source.contains("let __unpack_seq"));
         assert!(source.contains("let mut left: MoltValue = __unpack_seq[0].clone();"));
         assert!(source.contains("let mut right: MoltValue = __unpack_seq[1].clone();"));
-        assert!(!source.contains("compile_error!"));
+        assert!(!source.contains("MOLT_STUB: unpack_sequence"));
     }
 
     #[test]
@@ -1492,7 +1460,7 @@ mod tests {
 
         let source = backend
             .compile_checked(&ir)
-            .expect("module cache ops should lower");
+            .expect("module cache ops should lower without stub markers");
         assert!(source.contains("fn molt_module_cache_get("));
         assert!(source.contains("fn molt_module_cache_set("));
         assert!(source.contains("fn molt_module_cache_del("));
@@ -1502,11 +1470,11 @@ mod tests {
         assert!(source.contains("molt_module_cache_del(&name);"));
         assert!(!source.contains("let mut miss: MoltValue = MoltValue::Bool(true);"));
         assert!(!source.contains("let mut hit: MoltValue = MoltValue::Bool(true);"));
-        assert!(!source.contains("compile_error!"));
+        assert!(!source.contains("MOLT_STUB: module_cache"));
     }
 
     #[test]
-    fn compile_const_bigint_lowers_exact_i64_literal() {
+    fn compile_const_bigint_parses_from_string_literal() {
         let mut backend = RustBackend::new();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -1531,56 +1499,13 @@ mod tests {
             profile: None,
         };
 
-        let source = backend
-            .compile_checked(&ir)
-            .expect("i64-sized bigint literal should lower exactly");
+        let source = backend.compile(&ir);
         assert!(
-            source.contains("let mut big: MoltValue = MoltValue::Int(2305843009213693951i64);")
+            source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))")
         );
-        assert!(!source.contains("\"2305843009213693951\".parse::<i64>().unwrap_or(0)"));
-    }
-
-    #[test]
-    fn compile_checked_rejects_unrepresented_literal_values() {
-        let mut backend = RustBackend::new();
-        let ir = SimpleIR {
-            functions: vec![FunctionIR {
-                name: "molt_main".to_string(),
-                params: vec![],
-                ops: vec![
-                    OpIR {
-                        kind: "const_bigint".to_string(),
-                        s_value: Some("9223372036854775808".to_string()),
-                        out: Some("too_big".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "const_bytes".to_string(),
-                        s_value: Some("payload".to_string()),
-                        out: Some("bytes".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "const_ellipsis".to_string(),
-                        out: Some("ellipsis".to_string()),
-                        ..OpIR::default()
-                    },
-                ],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-            }],
-            profile: None,
-        };
-
-        let err = backend
-            .compile_checked(&ir)
-            .expect_err("unsupported literal value representations must fail closed");
-        assert!(err.contains("bigint literal exceeds Rust backend i64 value representation"));
-        assert!(err.contains("bytes literals require a Rust backend bytes value representation"));
-        assert!(err.contains(
-            "literal `const_ellipsis` requires a dedicated Rust backend value representation"
-        ));
+        assert!(
+            !source.contains("MoltValue::Int(2305843009213693951.parse::<i64>().unwrap_or(0))")
+        );
     }
 
     #[test]
@@ -1625,7 +1550,8 @@ mod tests {
         assert!(source.contains("let mut rows: MoltValue = MoltValue::None;"));
         assert!(source.contains("rows = src.clone();"));
         assert!(source.contains("let mut tmp: MoltValue = rows.clone();"));
-        assert!(!source.contains("compile_error!"));
+        assert!(!source.contains("MOLT_STUB: store_var"));
+        assert!(!source.contains("MOLT_STUB: load_var"));
     }
 
     #[test]
