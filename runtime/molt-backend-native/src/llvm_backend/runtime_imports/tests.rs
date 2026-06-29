@@ -1,11 +1,26 @@
 use super::attributes::MEMORY_READ;
-use super::declarations::runtime_function_type;
 use super::*;
-use crate::runtime_import_abi::{RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS};
+use crate::runtime_import_abi::{
+    RuntimeImportSignature, RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS,
+};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::context::Context;
+use inkwell::types::FunctionType;
 use inkwell::values::FunctionValue;
 use std::collections::HashSet;
+
+fn runtime_function_type<'ctx>(
+    ctx: &'ctx Context,
+    signature: RuntimeImportSignature,
+) -> FunctionType<'ctx> {
+    let i64_ty = ctx.i64_type();
+    let params = vec![i64_ty.into(); signature.param_count];
+    match signature.return_abi {
+        RuntimeReturnAbi::I64 => i64_ty.fn_type(&params, false),
+        RuntimeReturnAbi::Void => ctx.void_type().fn_type(&params, false),
+    }
+}
+
 /// Check that a function has an enum attribute with the given name.
 fn has_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
     let kind_id = Attribute::get_named_enum_kind_id(attr_name);
