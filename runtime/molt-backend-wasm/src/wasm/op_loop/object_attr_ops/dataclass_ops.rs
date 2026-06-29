@@ -1,6 +1,10 @@
 use super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
 use super::super::result_sink::store_result_or_drop;
-use super::super::*;
+use crate::OpIR;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_dataclass_op(
     func: &mut Function,

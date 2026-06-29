@@ -54,8 +54,39 @@ pub struct TirOptimizationResourcePlan {
 }
 
 #[derive(Debug)]
+pub struct CachedTirCustody {
+    optimized_tir_by_name: BTreeMap<String, TirFunction>,
+}
+
+impl CachedTirCustody {
+    fn new() -> Self {
+        Self {
+            optimized_tir_by_name: BTreeMap::new(),
+        }
+    }
+
+    fn insert(&mut self, name: String, tir_func: TirFunction) {
+        self.optimized_tir_by_name.insert(name, tir_func);
+    }
+
+    fn remove_required(&mut self, name: &str, missing_tir_context: &str) -> TirFunction {
+        self.optimized_tir_by_name.remove(name).unwrap_or_else(|| {
+            panic!("{missing_tir_context} did not return optimized TIR for '{name}'")
+        })
+    }
+
+    fn optimized_tir_by_name_mut(&mut self) -> &mut BTreeMap<String, TirFunction> {
+        &mut self.optimized_tir_by_name
+    }
+
+    pub fn contains_function(&self, name: &str) -> bool {
+        self.optimized_tir_by_name.contains_key(name)
+    }
+}
+
+#[derive(Debug)]
 pub struct TirPipelineRun {
-    pub optimized_tir_by_name: std::collections::BTreeMap<String, TirFunction>,
+    pub cached_tir: CachedTirCustody,
     pub uncached_count: usize,
 }
 
@@ -398,7 +429,7 @@ pub fn run_cached_tir_pipeline<F>(
 where
     F: Fn(&mut FunctionIR) + Sync,
 {
-    let mut optimized_tir_by_name = std::collections::BTreeMap::new();
+    let mut cached_tir_custody = CachedTirCustody::new();
     let mut tir_cache =
         CompilationCache::open(options.cache_dir.clone().unwrap_or_else(backend_cache_dir));
     let mut work_items: Vec<TirOptimizationWorkItem> = Vec::new();
@@ -411,17 +442,17 @@ where
         let content_hash =
             content_hash_for_function(func_ir, options.cache_flavor, &options.target_info);
         if let Some(cached_bytes) = tir_cache.get(&content_hash)
-            && let Some(cached_tir) = super::serialize::deserialize_tir_function(&cached_bytes)
+            && let Some(cached_tir_func) = super::serialize::deserialize_tir_function(&cached_bytes)
         {
-            verify_lir_if_requested(&cached_tir, options.verify_lir);
-            let cached_ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir);
+            verify_lir_if_requested(&cached_tir_func, options.verify_lir);
+            let cached_ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
             assert!(
                 super::lower_to_simple::validate_labels(&cached_ops),
                 "cached TIR back-conversion emitted invalid labels for '{}'",
-                cached_tir.name
+                cached_tir_func.name
             );
             func_ir.ops = cached_ops;
-            optimized_tir_by_name.insert(func_ir.name.clone(), cached_tir);
+            cached_tir_custody.insert(func_ir.name.clone(), cached_tir_func);
             continue;
         }
 
@@ -508,7 +539,7 @@ where
                 func_ir.ops = output.simple_ops;
                 let bytes = super::serialize::serialize_tir_function(&output.tir_func);
                 tir_cache.put(&output.content_hash, &bytes, vec![]);
-                optimized_tir_by_name.insert(func_ir.name.clone(), output.tir_func);
+                cached_tir_custody.insert(func_ir.name.clone(), output.tir_func);
             }
         }
 
@@ -522,14 +553,14 @@ where
 
     tir_cache.save_index();
     TirPipelineRun {
-        optimized_tir_by_name,
+        cached_tir: cached_tir_custody,
         uncached_count,
     }
 }
 
 pub fn run_simple_ir_module_pipeline_from_cached_tir(
     functions: &mut [FunctionIR],
-    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    cached_tir: &mut CachedTirCustody,
     mut options: TirSimpleIrModulePipelineOptions<'_>,
 ) -> TirSimpleIrModulePipelineRun {
     emit_simple_ir_module_stage(
@@ -538,7 +569,7 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
     );
     let (mut module, idx_map) = take_local_tir_module_from_cached_tir(
         functions,
-        optimized_tir_by_name,
+        cached_tir,
         options.module_name,
         options.missing_tir_context,
     );
@@ -581,23 +612,23 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
 pub fn finalize_simple_ir_drops_from_cached_tir(
     functions: &mut [FunctionIR],
     target_info: &TargetInfo,
-    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    cached_tir: &mut CachedTirCustody,
 ) {
     super::drop_phase::finalize_simple_ir_drops_with_tir_custody(
         functions,
         target_info,
-        optimized_tir_by_name,
+        cached_tir.optimized_tir_by_name_mut(),
     );
 }
 
 pub fn run_owned_module_pipeline_from_cached_tir(
     functions: &[FunctionIR],
-    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    cached_tir: &mut CachedTirCustody,
     options: TirOwnedModulePipelineOptions<'_>,
 ) -> TirOwnedModulePipelineRun {
     let mut tir_functions = take_ordered_tir_functions_from_cached_tir(
         functions,
-        optimized_tir_by_name,
+        cached_tir,
         options.missing_tir_context,
     );
     let module_analysis = match options.mode {
@@ -651,7 +682,7 @@ fn emit_simple_ir_module_stage(
 
 fn take_local_tir_module_from_cached_tir(
     functions: &[FunctionIR],
-    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    cached_tir: &mut CachedTirCustody,
     module_name: &str,
     missing_tir_context: &str,
 ) -> (TirModule, Vec<usize>) {
@@ -661,14 +692,7 @@ fn take_local_tir_module_from_cached_tir(
         if func_ir.is_extern {
             continue;
         }
-        let tir_func = optimized_tir_by_name
-            .remove(&func_ir.name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{missing_tir_context} did not return optimized TIR for '{}'",
-                    func_ir.name
-                )
-            });
+        let tir_func = cached_tir.remove_required(&func_ir.name, missing_tir_context);
         tir_functions.push(tir_func);
         idx_map.push(idx);
     }
@@ -683,7 +707,7 @@ fn take_local_tir_module_from_cached_tir(
 
 fn take_ordered_tir_functions_from_cached_tir(
     functions: &[FunctionIR],
-    optimized_tir_by_name: &mut BTreeMap<String, TirFunction>,
+    cached_tir: &mut CachedTirCustody,
     missing_tir_context: &str,
 ) -> Vec<(bool, TirFunction)> {
     functions
@@ -692,14 +716,7 @@ fn take_ordered_tir_functions_from_cached_tir(
             let tir_func = if func_ir.is_extern {
                 super::lower_from_simple::lower_to_tir(func_ir)
             } else {
-                optimized_tir_by_name
-                    .remove(&func_ir.name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{missing_tir_context} did not return optimized TIR for '{}'",
-                            func_ir.name
-                        )
-                    })
+                cached_tir.remove_required(&func_ir.name, missing_tir_context)
             };
             (func_ir.is_extern, tir_func)
         })

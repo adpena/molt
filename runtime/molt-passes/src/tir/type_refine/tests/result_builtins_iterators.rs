@@ -83,7 +83,7 @@ fn builtin_ord_and_chr_return_types_refine() {
 }
 
 #[test]
-fn ord_at_return_type_refines_to_i64() {
+fn ord_at_return_type_refines_to_dynbox() {
     let text = ValueId(0);
     let index = ValueId(1);
     let result = ValueId(2);
@@ -100,7 +100,7 @@ fn ord_at_return_type_refines_to_i64() {
     refine_types(&mut func);
     let type_map = extract_type_map(&func);
 
-    assert_eq!(type_map.get(&result), Some(&TirType::I64));
+    assert_eq!(type_map.get(&result), Some(&TirType::DynBox));
 }
 
 #[test]

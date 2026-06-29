@@ -24,6 +24,8 @@ OUT_RS_FILES = {
     "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "imports.rs": OUT_RS_DIR / "imports.rs",
+    "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
+    "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
     "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
@@ -85,6 +87,26 @@ CONST_POLICY_RAW_INT_EFFECTS = {
 CONST_POLICY_LIR_FAST = {
     "lower",
     "materialize",
+}
+OP_LOOP_RUNTIME_SINKS = {
+    "result_or_drop": "ResultOrDrop",
+    "non_none_result_or_drop": "NonNoneResultOrDrop",
+    "drop": "Drop",
+    "none": "None",
+}
+CONTAINER_RUNTIME_SELECTOR_OPS = {
+    "contains",
+    "index",
+    "len",
+    "store_index",
+}
+CONTAINER_RUNTIME_SELECTOR_FACTS = {
+    "dict",
+    "flat_list_int",
+    "list",
+    "set",
+    "str",
+    "tuple",
 }
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
@@ -376,6 +398,79 @@ def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None
         )
 
 
+def _validate_op_loop_runtime_arg(section: str, idx: int, arg_idx: int, arg: object) -> str:
+    if not isinstance(arg, str) or not arg:
+        raise WasmAbiManifestError(
+            f"{section} entry {idx} arg {arg_idx} must be a non-empty string"
+        )
+    if arg.startswith("local:"):
+        local_idx = arg.removeprefix("local:")
+        if not local_idx.isdecimal() or str(int(local_idx)) != local_idx:
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} arg {arg_idx} has invalid local index {arg!r}"
+            )
+        return arg
+    if arg.startswith("op_value_i64:"):
+        message = arg.removeprefix("op_value_i64:")
+        if not message:
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} arg {arg_idx} has empty op_value_i64 message"
+            )
+        return arg
+    raise WasmAbiManifestError(
+        f"{section} entry {idx} arg {arg_idx} has invalid arg form {arg!r}"
+    )
+
+
+def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
+    expanded: list[dict] = []
+    explicit = data.get("op_loop_runtime_call", [])
+    if not isinstance(explicit, list):
+        raise WasmAbiManifestError("op_loop_runtime_call must be a list of tables")
+    for idx, entry in enumerate(explicit):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"op_loop_runtime_call entry {idx} must be a table")
+        expanded.append(dict(entry))
+
+    groups = data.get("op_loop_runtime_call_group", [])
+    if not isinstance(groups, list):
+        raise WasmAbiManifestError("op_loop_runtime_call_group must be a list of tables")
+    for idx, entry in enumerate(groups):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} must be a table"
+            )
+        kinds = _validate_string_list(
+            f"op_loop_runtime_call_group entry {idx}", "kinds", entry.get("kinds")
+        )
+        arg_count = entry.get("arg_count")
+        if not isinstance(arg_count, int) or arg_count < 0:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid arg_count"
+            )
+        sink = entry.get("sink")
+        if sink not in OP_LOOP_RUNTIME_SINKS:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid sink {sink!r}"
+            )
+        import_name = entry.get("import_name")
+        if import_name is not None and (not isinstance(import_name, str) or not import_name):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid import_name"
+            )
+        args = [f"local:{arg_idx}" for arg_idx in range(arg_count)]
+        for kind in kinds:
+            expanded.append(
+                {
+                    "kind": kind,
+                    "import_name": import_name or kind,
+                    "args": args,
+                    "sink": sink,
+                }
+            )
+    return expanded
+
+
 def _validate_val_type_list(
     entry_kind: str, entry_idx: int, field: str, value: object
 ) -> list[str]:
@@ -411,6 +506,27 @@ def _validate_string_list(section: str, field: str, value: object) -> list[str]:
         seen.add(item)
         items.append(item)
     return items
+
+
+def _validate_rust_variant(section: str, idx: int, value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise WasmAbiManifestError(f"{section} entry {idx} has invalid variant")
+    first = value[0]
+    if not ("A" <= first <= "Z"):
+        raise WasmAbiManifestError(
+            f"{section} entry {idx} variant {value!r} must start with A-Z"
+        )
+    for char in value:
+        if not (
+            "A" <= char <= "Z"
+            or "a" <= char <= "z"
+            or "0" <= char <= "9"
+            or char == "_"
+        ):
+            raise WasmAbiManifestError(
+                f"{section} entry {idx} variant {value!r} is not an ASCII Rust variant"
+            )
+    return value
 
 
 def validate_loaded_manifest(data: dict) -> dict:
@@ -523,6 +639,175 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"missing {missing}"
             )
     _validate_intrinsic_runtime_callable_export_abi(imports)
+
+    lir_runtime_calls = data.get("lir_runtime_call", [])
+    if not isinstance(lir_runtime_calls, list) or not lir_runtime_calls:
+        raise WasmAbiManifestError("manifest must define lir_runtime_call entries")
+    seen_lir_variants: set[str] = set()
+    lir_import_by_variant: dict[str, str] = {}
+    seen_lir_imports: set[str] = set()
+    seen_lir_preserved_copy_imports: set[str] = set()
+    for idx, entry in enumerate(lir_runtime_calls):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"lir_runtime_call entry {idx} must be a table")
+        variant = _validate_rust_variant("lir_runtime_call", idx, entry.get("variant"))
+        if variant in seen_lir_variants:
+            raise WasmAbiManifestError(f"duplicate LIR runtime-call variant {variant!r}")
+        seen_lir_variants.add(variant)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} has invalid import_name"
+            )
+        if import_name in seen_lir_imports:
+            raise WasmAbiManifestError(
+                f"duplicate LIR runtime-call import {import_name!r}"
+            )
+        seen_lir_imports.add(import_name)
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} references unknown import "
+                f"{import_name!r}"
+            )
+        lir_import_by_variant[variant] = import_name
+        boxed_operand_count = entry.get("boxed_operand_count")
+        if boxed_operand_count is not None and (
+            not isinstance(boxed_operand_count, int) or boxed_operand_count < 0
+        ):
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} has invalid boxed_operand_count"
+            )
+        preserved_copy_operand_count = entry.get("preserved_copy_operand_count")
+        if preserved_copy_operand_count is None:
+            continue
+        if (
+            not isinstance(preserved_copy_operand_count, int)
+            or preserved_copy_operand_count < 0
+        ):
+            raise WasmAbiManifestError(
+                f"lir_runtime_call {variant!r} has invalid "
+                "preserved_copy_operand_count"
+            )
+        if import_name in seen_lir_preserved_copy_imports:
+            raise WasmAbiManifestError(
+                f"duplicate preserved-Copy LIR runtime-call import {import_name!r}"
+            )
+        seen_lir_preserved_copy_imports.add(import_name)
+
+    op_loop_runtime_calls = _expand_op_loop_runtime_calls(data)
+    seen_op_loop_runtime_kinds: set[str] = set()
+    seen_op_loop_lir_variants: set[str] = set()
+    for idx, entry in enumerate(op_loop_runtime_calls):
+        kind = entry.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call entry {idx} has invalid kind"
+            )
+        if kind in seen_op_loop_runtime_kinds:
+            raise WasmAbiManifestError(
+                f"duplicate op_loop_runtime_call kind {kind!r}"
+            )
+        seen_op_loop_runtime_kinds.add(kind)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid import_name"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} references unknown import {import_name!r}"
+            )
+        sink = entry.get("sink")
+        if sink not in OP_LOOP_RUNTIME_SINKS:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid sink {sink!r}"
+            )
+        args = entry.get("args")
+        if not isinstance(args, list):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} must define args as a list"
+            )
+        entry["args"] = [
+            _validate_op_loop_runtime_arg("op_loop_runtime_call", idx, arg_idx, arg)
+            for arg_idx, arg in enumerate(args)
+        ]
+        lir_variant = entry.get("lir_variant")
+        lir_operand_count = entry.get("lir_operand_count")
+        if lir_variant is None and lir_operand_count is None:
+            continue
+        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid lir_variant {lir_variant!r}"
+            )
+        if lir_variant in seen_op_loop_lir_variants:
+            raise WasmAbiManifestError(
+                f"duplicate op_loop_runtime_call lir_variant {lir_variant!r}"
+            )
+        seen_op_loop_lir_variants.add(lir_variant)
+        if lir_import_by_variant[lir_variant] != import_name:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} import {import_name!r} does not "
+                f"match lir_variant {lir_variant!r} import "
+                f"{lir_import_by_variant[lir_variant]!r}"
+            )
+        if not isinstance(lir_operand_count, int) or lir_operand_count < 0:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} has invalid lir_operand_count"
+            )
+    data["op_loop_runtime_call"] = op_loop_runtime_calls
+    data.pop("op_loop_runtime_call_group", None)
+
+    container_runtime_selectors = data.get("container_runtime_selector", [])
+    if not isinstance(container_runtime_selectors, list):
+        raise WasmAbiManifestError(
+            "container_runtime_selector must be a list of tables"
+        )
+    seen_container_selectors: set[tuple[str, str]] = set()
+    for idx, entry in enumerate(container_runtime_selectors):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"container_runtime_selector entry {idx} must be a table"
+            )
+        op = entry.get("op")
+        if not isinstance(op, str) or op not in CONTAINER_RUNTIME_SELECTOR_OPS:
+            raise WasmAbiManifestError(
+                f"container_runtime_selector entry {idx} has invalid op {op!r}"
+            )
+        fact = entry.get("fact")
+        if not isinstance(fact, str) or fact not in CONTAINER_RUNTIME_SELECTOR_FACTS:
+            raise WasmAbiManifestError(
+                f"container_runtime_selector entry {idx} has invalid fact {fact!r}"
+            )
+        selector_key = (op, fact)
+        if selector_key in seen_container_selectors:
+            raise WasmAbiManifestError(
+                f"duplicate container_runtime_selector {selector_key!r}"
+            )
+        seen_container_selectors.add(selector_key)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"container_runtime_selector {selector_key!r} has invalid import_name"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"container_runtime_selector {selector_key!r} references "
+                f"unknown import {import_name!r}"
+            )
+        lir_variant = entry.get("lir_variant")
+        if lir_variant is None:
+            continue
+        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
+            raise WasmAbiManifestError(
+                f"container_runtime_selector {selector_key!r} has invalid "
+                f"lir_variant {lir_variant!r}"
+            )
+        if lir_import_by_variant[lir_variant] != import_name:
+            raise WasmAbiManifestError(
+                f"container_runtime_selector {selector_key!r} import "
+                f"{import_name!r} does not match lir_variant {lir_variant!r} "
+                f"import {lir_import_by_variant[lir_variant]!r}"
+            )
 
     op_import_deps = data.get("op_import_dep", [])
     if not isinstance(op_import_deps, list):
@@ -857,6 +1142,33 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"runtime_export_policy host export {name!r} must start with 'molt_'"
             )
 
+    gpu_intrinsic_manifest_names = data.get("gpu_intrinsic_manifest_name", [])
+    if not isinstance(gpu_intrinsic_manifest_names, list) or not gpu_intrinsic_manifest_names:
+        raise WasmAbiManifestError(
+            "manifest must define gpu_intrinsic_manifest_name entries"
+        )
+    seen_gpu_intrinsic_manifest_names: set[str] = set()
+    host_export_set = set(host_exports)
+    for idx, entry in enumerate(gpu_intrinsic_manifest_names):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"gpu_intrinsic_manifest_name entry {idx} must be a table"
+            )
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.startswith("molt_gpu_"):
+            raise WasmAbiManifestError(
+                f"gpu_intrinsic_manifest_name entry {idx} has invalid name"
+            )
+        if name in seen_gpu_intrinsic_manifest_names:
+            raise WasmAbiManifestError(
+                f"duplicate GPU intrinsic manifest name {name!r}"
+            )
+        if name not in host_export_set:
+            raise WasmAbiManifestError(
+                f"GPU intrinsic manifest name {name!r} must also be a runtime host export"
+            )
+        seen_gpu_intrinsic_manifest_names.add(name)
+
     fallback_entries = data.get("runtime_import_fallback", [])
     if not isinstance(fallback_entries, list):
         raise WasmAbiManifestError("runtime_import_fallback must be a list of tables")
@@ -1054,8 +1366,10 @@ def _render_rs_mod() -> str:
     lines.extend(
         [
             "mod call_indirect;\n",
+            "mod container_runtime_selector;\n",
             "mod const_policy;\n",
             "mod imports;\n",
+            "mod lir_runtime_calls;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
@@ -1063,18 +1377,29 @@ def _render_rs_mod() -> str:
             "pub(crate) use call_indirect::{\n",
             "    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY,\n",
             "};\n",
+            "pub(crate) use container_runtime_selector::{\n",
+            "    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,\n",
+            "    wasm_container_runtime_op, wasm_container_runtime_selection,\n",
+            "};\n",
             "pub(crate) use const_policy::{\n",
             "    wasm_const_op_policy, wasm_const_op_policy_for_opcode, WasmConstInlineSeed,\n",
             "    WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,\n",
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
+            "pub(crate) use lir_runtime_calls::{\n",
+            "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
+            "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
+            "    OpLoopRuntimeSinkSpec,\n",
+            "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
             "    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,\n",
             "};\n",
-            "pub(crate) use runtime_surface::runtime_surface_requires_direct_import;\n",
+            "pub(crate) use runtime_surface::{\n",
+            "    runtime_surface_requires_direct_import, GPU_INTRINSIC_MANIFEST_NAMES,\n",
+            "};\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
             "};\n",
@@ -1329,6 +1654,278 @@ def _render_rs_imports(data: dict) -> str:
     return "".join(lines)
 
 
+def _render_op_loop_arg(arg: str) -> str:
+    if arg.startswith("local:"):
+        return f"OpLoopRuntimeArgSpec::Local({arg.removeprefix('local:')})"
+    if arg.startswith("op_value_i64:"):
+        return (
+            "OpLoopRuntimeArgSpec::OpValueI64("
+            f"\"{arg.removeprefix('op_value_i64:')}\")"
+        )
+    raise AssertionError(f"unknown op-loop runtime arg {arg!r}")
+
+
+def _render_rs_lir_runtime_calls(data: dict) -> str:
+    entries = data["lir_runtime_call"]
+    preserved_entries = [
+        entry for entry in entries if "preserved_copy_operand_count" in entry
+    ]
+    op_loop_entries = data.get("op_loop_runtime_call", [])
+    op_loop_lir_entries = [
+        entry for entry in op_loop_entries if "lir_variant" in entry
+    ]
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum LirRuntimeCall {\n",
+        ]
+    )
+    for entry in entries:
+        lines.append(f"    {entry['variant']},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl LirRuntimeCall {\n",
+            "    #[cfg(test)]\n",
+            "    pub(crate) const ALL: &'static [Self] = &[\n",
+        ]
+    )
+    for entry in entries:
+        lines.append(f"        Self::{entry['variant']},\n")
+    lines.extend(
+        [
+            "    ];\n\n",
+            "    pub(crate) const fn import_name(self) -> &'static str {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in entries:
+        lines.append(
+            f"            Self::{entry['variant']} => \"{entry['import_name']}\",\n"
+        )
+    lines.extend(
+        [
+            "        }\n",
+            "    }\n",
+            "\n",
+            "    pub(crate) const fn boxed_operand_count(self) -> Option<usize> {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in entries:
+        if "boxed_operand_count" in entry:
+            lines.append(
+                f"            Self::{entry['variant']} => Some({entry['boxed_operand_count']}),\n"
+            )
+    lines.extend(
+        [
+            "            _ => None,\n",
+            "        }\n",
+            "    }\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct LirFixedRuntimeCall {\n",
+            "    pub(crate) call: LirRuntimeCall,\n",
+            "    pub(crate) operand_count: usize,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in preserved_entries:
+        lines.extend(
+            [
+                f"        \"{entry['import_name']}\" => Some(LirFixedRuntimeCall {{\n",
+                f"            call: LirRuntimeCall::{entry['variant']},\n",
+                f"            operand_count: {entry['preserved_copy_operand_count']},\n",
+                "        }),\n",
+            ]
+        )
+    for entry in op_loop_lir_entries:
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(LirFixedRuntimeCall {{\n",
+                f"            call: LirRuntimeCall::{entry['lir_variant']},\n",
+                f"            operand_count: {entry['lir_operand_count']},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum OpLoopRuntimeArgSpec {\n",
+            "    Local(usize),\n",
+            "    OpValueI64(&'static str),\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum OpLoopRuntimeSinkSpec {\n",
+            "    ResultOrDrop,\n",
+            "    NonNoneResultOrDrop,\n",
+            "    Drop,\n",
+            "    None,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct OpLoopRuntimeCallSpec {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) args: &'static [OpLoopRuntimeArgSpec],\n",
+            "    pub(crate) sink: OpLoopRuntimeSinkSpec,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in op_loop_entries:
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(OpLoopRuntimeCallSpec {{\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                "            args: &[\n",
+            ]
+        )
+        for arg in entry["args"]:
+            lines.append(f"                {_render_op_loop_arg(arg)},\n")
+        lines.extend(
+            [
+                "            ],\n",
+                "            sink: OpLoopRuntimeSinkSpec::"
+                f"{OP_LOOP_RUNTIME_SINKS[entry['sink']]},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_container_runtime_selector(data: dict) -> str:
+    selectors = data.get("container_runtime_selector", [])
+    op_variants = {
+        op: _rust_pascal_variant(op)
+        for op in sorted(CONTAINER_RUNTIME_SELECTOR_OPS)
+    }
+    fact_variants = {
+        fact: _rust_pascal_variant(fact)
+        for fact in sorted(CONTAINER_RUNTIME_SELECTOR_FACTS)
+    }
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmContainerRuntimeOp {\n",
+        ]
+    )
+    for variant in op_variants.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmContainerRuntimeFact {\n",
+        ]
+    )
+    for variant in fact_variants.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmContainerRuntimeSelection {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmContainerRuntimeSelectorSpec {\n",
+            "    pub(crate) op: WasmContainerRuntimeOp,\n",
+            "    pub(crate) fact: WasmContainerRuntimeFact,\n",
+            "    pub(crate) selection: WasmContainerRuntimeSelection,\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelectorSpec] = &[\n",
+        ]
+    )
+    for entry in selectors:
+        lir_variant = entry.get("lir_variant")
+        lir_call = (
+            "None"
+            if lir_variant is None
+            else f"Some(LirRuntimeCall::{lir_variant})"
+        )
+        lines.extend(
+            [
+                "    WasmContainerRuntimeSelectorSpec {\n",
+                f"        op: WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
+                f"        fact: WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
+                "        selection: WasmContainerRuntimeSelection {\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            lir_runtime_call: {lir_call},\n",
+                "        },\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_container_runtime_op(kind: &str) -> Option<WasmContainerRuntimeOp> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for op, variant in op_variants.items():
+        lines.append(f'        "{op}" => Some(WasmContainerRuntimeOp::{variant}),\n')
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_container_runtime_selection(\n",
+            "    op: WasmContainerRuntimeOp,\n",
+            "    fact: WasmContainerRuntimeFact,\n",
+            ") -> Option<WasmContainerRuntimeSelection> {\n",
+            "    match (op, fact) {\n",
+        ]
+    )
+    for entry in selectors:
+        lir_variant = entry.get("lir_variant")
+        lir_call = (
+            "None"
+            if lir_variant is None
+            else f"Some(LirRuntimeCall::{lir_variant})"
+        )
+        lines.extend(
+            [
+                "        (\n",
+                f"            WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
+                f"            WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
+                "        ) => Some(WasmContainerRuntimeSelection {\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            lir_runtime_call: {lir_call},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_rs_runtime_surface(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.append("pub(crate) const REQUIRED_RUNTIME_IMPORT_PREFIXES: &[&str] = &[\n")
@@ -1347,6 +1944,14 @@ def _render_rs_runtime_surface(data: dict) -> str:
     )
     for name in data["runtime_export_policy"]["host_exports"]:
         lines.append(f'    "{name}",\n')
+    lines.append("];\n\n")
+    lines.extend(
+        [
+            "pub(crate) const GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[\n",
+        ]
+    )
+    for entry in data.get("gpu_intrinsic_manifest_name", []):
+        lines.append(f'    "{entry["name"]}",\n')
     lines.append("];\n\n")
     lines.extend(
         [
@@ -1668,9 +2273,11 @@ def render_rs_modules(data: dict) -> dict[str, str]:
     modules = {
         "mod.rs": _render_rs_mod(),
         "call_indirect.rs": _render_rs_call_indirect(data),
+        "container_runtime_selector.rs": _render_rs_container_runtime_selector(data),
         "const_policy.rs": _render_rs_const_policy(data),
         "static_types.rs": _render_rs_static_types(data),
         "imports.rs": _render_rs_imports(data),
+        "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
         "runtime_callables.rs": _render_rs_runtime_callables(data),
         "pure_profile.rs": _render_rs_pure_profile(data),
@@ -1809,6 +2416,17 @@ def render_py(data: dict) -> str:
             f'"{entry["lir_fast"]}"),\n'
         )
     lines.append(")\n\n")
+    lines.append(
+        "WASM_CONTAINER_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None], ...] = (\n"
+    )
+    for entry in data.get("container_runtime_selector", []):
+        lir_variant = entry.get("lir_variant")
+        lir_variant_repr = "None" if lir_variant is None else f'"{lir_variant}"'
+        lines.append(
+            f'    ("{entry["op"]}", "{entry["fact"]}", '
+            f'"{entry["import_name"]}", {lir_variant_repr}),\n'
+        )
+    lines.append(")\n\n")
     lines.append("WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (\n")
     for entry in data.get("runtime_required_import_prefix", []):
         lines.append(f'    "{entry["prefix"]}",\n')
@@ -1850,6 +2468,10 @@ def render_py(data: dict) -> str:
     for name in data["runtime_export_policy"]["host_exports"]:
         lines.append(f'        "{name}",\n')
     lines.append("    }\n")
+    lines.append(")\n\n")
+    lines.append("WASM_GPU_INTRINSIC_MANIFEST_NAMES: tuple[str, ...] = (\n")
+    for entry in data.get("gpu_intrinsic_manifest_name", []):
+        lines.append(f'    "{entry["name"]}",\n')
     lines.append(")\n\n")
     lines.append(
         "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"

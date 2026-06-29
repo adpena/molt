@@ -188,7 +188,20 @@ impl<'a> SsaContext<'a> {
         self.source_sites.get(op_idx).copied().flatten()
     }
 
-    fn stamp_source_site(&self, tir_op: &mut TirOp, op_idx: usize) {
+    fn source_op_index_for_op(&self, op_idx: usize) -> usize {
+        let Some(op) = self.ops.get(op_idx) else {
+            return op_idx;
+        };
+        match op.source_op_idx {
+            Some(value) => usize::try_from(value).unwrap_or_else(|_| {
+                panic!("invalid negative source_op_idx {value} at op {op_idx}")
+            }),
+            None => op_idx,
+        }
+    }
+
+    fn stamp_source_identity(&self, tir_op: &mut TirOp, op_idx: usize) {
+        tir_op.set_source_op_index(self.source_op_index_for_op(op_idx));
         if let Some(site) = self.source_site_for_op(op_idx) {
             tir_op.set_source_site(site);
         }
@@ -361,7 +374,7 @@ impl<'a> SsaContext<'a> {
                         attrs,
                         source_span: None,
                     };
-                    self.stamp_source_site(&mut tir_op, op_idx);
+                    self.stamp_source_identity(&mut tir_op, op_idx);
                     // Push val and done onto their variable stacks.
                     var_stacks.entry(val_var.clone()).or_default().push(val_vid);
                     block_pushed
@@ -744,6 +757,83 @@ mod tests {
             }),
             "SSA lift must stamp executable ops from the active source line marker"
         );
+    }
+
+    #[test]
+    fn ssa_lift_stamps_source_op_index_on_ops_and_inline_consts() {
+        let ops = vec![
+            op_val_out("const", 5, "x"),
+            op_args_out("add", &["x", "3"], "y"),
+            op_args("ret", &["y"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let const_five = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::ConstInt
+                    && matches!(op.attrs.get("value"), Some(AttrValue::Int(5)))
+            })
+            .expect("literal const op should be emitted");
+        assert_eq!(const_five.source_op_index(), Some(0));
+
+        let inline_three = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::ConstInt
+                    && matches!(op.attrs.get("value"), Some(AttrValue::Int(3)))
+            })
+            .expect("inline const arg should be emitted");
+        assert_eq!(inline_three.source_op_index(), Some(1));
+
+        let add = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::Add)
+            .expect("add op should be emitted");
+        assert_eq!(add.source_op_index(), Some(1));
+    }
+
+    #[test]
+    fn ssa_lift_preserves_transport_source_op_index() {
+        let ops = vec![
+            op_val_out("const", 5, "x"),
+            OpIR {
+                kind: "add".into(),
+                args: Some(vec!["x".into(), "3".into()]),
+                out: Some("y".into()),
+                source_op_idx: Some(41),
+                ..OpIR::default()
+            },
+            op_args("ret", &["y"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let inline_three = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::ConstInt
+                    && matches!(op.attrs.get("value"), Some(AttrValue::Int(3)))
+            })
+            .expect("inline const arg should be emitted");
+        assert_eq!(inline_three.source_op_index(), Some(41));
+
+        let add = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::Add)
+            .expect("add op should be emitted");
+        assert_eq!(add.source_op_index(), Some(41));
     }
 
     #[test]

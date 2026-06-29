@@ -1,3 +1,4 @@
+use super::WasmBackend;
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
 use super::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
@@ -6,8 +7,11 @@ use super::state_dispatch::{
     NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
     exception_handler_region_indices,
 };
-use super::*;
-use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
+use crate::FunctionIR;
+use crate::wasm::lir_fast::try_emit_planned_lir_fast_body;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::{BlockType, ExportKind, Instruction};
 
 impl WasmBackend {
     pub(super) fn compile_func(
@@ -33,49 +37,8 @@ impl WasmBackend {
                 .export(&func_ir.name, ExportKind::Func, self.func_count);
         }
         self.func_count += 1;
-        if is_production_lir_wasm_fast_path_name(&func_ir.name) && !func_ir.is_extern {
-            let Some(plan) = ctx.lir_lowering_plans.get(&func_ir.name) else {
-                panic!(
-                    "missing WASM LIR lowering plan for production fast-path function {}",
-                    func_ir.name
-                );
-            };
-            match plan {
-                crate::wasm_plan::WasmFunctionLoweringPlan::LirFast(lir_output) => {
-                    if std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
-                        == Some(func_ir.name.as_str())
-                    {
-                        eprintln!(
-                            "WASM_SIG_FUNC fast_path name={} lir_param_types={:?} lir_result_types={:?}",
-                            func_ir.name, lir_output.param_types, lir_output.result_types
-                        );
-                    }
-                    let mut func = Function::new_with_locals_types(lir_output.locals.clone());
-                    lir_output.emit_into(
-                        &func_ir.name,
-                        self,
-                        func_index,
-                        reloc_enabled,
-                        ctx.const_str_scratch_segment,
-                        |name| ctx.import_ids[name],
-                        &mut func,
-                    );
-                    self.codes.function(&func);
-                    return;
-                }
-                crate::wasm_plan::WasmFunctionLoweringPlan::Generic { reason } => {
-                    if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1")
-                        || std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
-                            == Some(func_ir.name.as_str())
-                    {
-                        eprintln!(
-                            "[molt-wasm-lir-fast] function={} generic_reason={}",
-                            func_ir.name,
-                            reason.diagnostic_name()
-                        );
-                    }
-                }
-            }
+        if try_emit_planned_lir_fast_body(self, func_ir, func_index, reloc_enabled, ctx) {
+            return;
         }
         let call_site_abi = &ctx.call_site_abi;
         let import_ids = ctx.import_ids;

@@ -1,5 +1,10 @@
 use super::super::super::multi_return_layout::WasmMultiReturnLayout;
-use super::super::*;
+use super::super::call_emit::OpLoopRuntimeCallContext;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::Function;
 
 #[path = "aggregate_ops/callargs_ops.rs"]
 mod callargs_ops;
@@ -22,6 +27,16 @@ pub(super) struct AggregateRuntimeContext<'a> {
     pub(super) multi_return: &'a WasmMultiReturnLayout,
     pub(super) reloc_enabled: bool,
     pub(super) op_idx: usize,
+}
+
+impl AggregateRuntimeContext<'_> {
+    pub(super) fn op_loop_call_context(&self) -> OpLoopRuntimeCallContext<'_> {
+        OpLoopRuntimeCallContext {
+            import_ids: self.import_ids,
+            locals: self.locals,
+            reloc_enabled: self.reloc_enabled,
+        }
+    }
 }
 
 #[allow(unused_variables)]

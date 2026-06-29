@@ -1,7 +1,11 @@
 use super::super::super::class_def_layout::ClassDefLayout;
 use super::super::super::context::CompileFuncContext;
 use super::super::result_sink::{store_non_none_result_or_drop, store_result_or_drop};
-use super::super::*;
+use crate::OpIR;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_class_object_op(
     func: &mut Function,

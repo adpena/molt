@@ -125,6 +125,7 @@ pub(super) fn peephole_set_get_to_tee(instructions: WasmBodyOps) -> WasmBodyOps 
             WasmBodyOp::ConstMaterialization(materialization) => out
                 .ops
                 .push(WasmBodyOp::ConstMaterialization(materialization.clone())),
+            WasmBodyOp::DataPtrI32(bytes) => out.ops.push(WasmBodyOp::DataPtrI32(bytes.clone())),
         }
         i += 1;
     }

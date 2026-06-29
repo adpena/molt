@@ -1,4 +1,8 @@
-use super::*;
+use super::LocalStateOpContext;
+use crate::OpIR;
+use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_binary::emit_call;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_closure_local_state_op(
     context: &mut LocalStateOpContext<'_>,
