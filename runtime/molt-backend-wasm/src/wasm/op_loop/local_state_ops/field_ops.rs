@@ -64,7 +64,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::I64Const(offset));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["object_field_set"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldSet],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -95,7 +99,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::I64Const(offset));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["object_field_set"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldSet],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -139,7 +147,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::I64Const(offset));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["object_field_init"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldInit],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -170,7 +182,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::I64Const(offset));
             func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["object_field_init"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldInit],
+            );
             if let Some(out) = op.out.as_ref() {
                 if out != "none" {
                     func.instruction(&Instruction::LocalSet(locals[out]));
@@ -221,7 +237,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::If(BlockType::Empty));
 
             func.instruction(&Instruction::LocalGet(tmp_val));
-            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            );
             func.instruction(&Instruction::LocalGet(tmp_val));
             func.instruction(&Instruction::LocalSet(out));
 
@@ -233,7 +253,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::Else);
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::I64Const(offset));
-            emit_call(func, reloc_enabled, import_ids["object_field_get"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldGet],
+            );
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::End);
         }
@@ -276,7 +300,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::If(BlockType::Empty));
 
             func.instruction(&Instruction::LocalGet(tmp_val));
-            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            );
             func.instruction(&Instruction::LocalGet(tmp_val));
             func.instruction(&Instruction::LocalSet(out));
 
@@ -288,7 +316,11 @@ pub(super) fn emit_field_local_state_op(
             func.instruction(&Instruction::Else);
             func.instruction(&Instruction::LocalGet(obj));
             func.instruction(&Instruction::I64Const(offset));
-            emit_call(func, reloc_enabled, import_ids["object_field_get"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectFieldGet],
+            );
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::End);
         }

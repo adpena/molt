@@ -23,15 +23,27 @@ pub(super) fn emit_state_machine_local_state_op(
             let out = locals[op.out.as_ref().unwrap()];
             let self_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(0));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(self_ptr));
             func.instruction(&Instruction::LocalGet(self_ptr));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            emit_call(func, reloc_enabled, import_ids["obj_set_state"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
+            );
             func.instruction(&Instruction::LocalGet(future));
-            emit_call(func, reloc_enabled, import_ids["future_poll"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FuturePoll],
+            );
             func.instruction(&Instruction::LocalSet(out));
             if let Some(slot) = slot_bits {
                 func.instruction(&Instruction::LocalGet(self_ptr));
@@ -40,7 +52,11 @@ pub(super) fn emit_state_machine_local_state_op(
                 func.instruction(&Instruction::I64Const(INT_MASK as i64));
                 func.instruction(&Instruction::I64And);
                 func.instruction(&Instruction::LocalGet(out));
-                emit_call(func, reloc_enabled, import_ids["closure_store"]);
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureStore],
+                );
                 func.instruction(&Instruction::Drop);
             }
             func.instruction(&Instruction::LocalGet(out));
@@ -50,8 +66,16 @@ pub(super) fn emit_state_machine_local_state_op(
             func.instruction(&Instruction::LocalGet(self_ptr));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::LocalGet(future));
-            emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
-            emit_call(func, reloc_enabled, import_ids["sleep_register"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
+            );
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SleepRegister],
+            );
             func.instruction(&Instruction::Drop);
             func.instruction(&Instruction::I64Const(box_pending()));
             func.instruction(&Instruction::Return);

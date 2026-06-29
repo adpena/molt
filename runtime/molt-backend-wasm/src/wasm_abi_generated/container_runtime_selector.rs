@@ -3,6 +3,7 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
+use super::imports::WasmRuntimeImport;
 use super::lir_runtime_calls::LirRuntimeCall;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,7 +26,7 @@ pub(crate) enum WasmContainerRuntimeFact {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WasmContainerRuntimeSelection {
-    pub(crate) import_name: &'static str,
+    pub(crate) import: WasmRuntimeImport,
     pub(crate) lir_runtime_call: Option<LirRuntimeCall>,
 }
 
@@ -43,7 +44,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Index,
         fact: WasmContainerRuntimeFact::FlatListInt,
         selection: WasmContainerRuntimeSelection {
-            import_name: "list_int_getitem",
+            import: WasmRuntimeImport::ListIntGetitem,
             lir_runtime_call: Some(LirRuntimeCall::ListIntGetitem),
         },
     },
@@ -51,7 +52,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::StoreIndex,
         fact: WasmContainerRuntimeFact::FlatListInt,
         selection: WasmContainerRuntimeSelection {
-            import_name: "list_int_setitem",
+            import: WasmRuntimeImport::ListIntSetitem,
             lir_runtime_call: Some(LirRuntimeCall::ListIntSetitem),
         },
     },
@@ -59,7 +60,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Index,
         fact: WasmContainerRuntimeFact::Dict,
         selection: WasmContainerRuntimeSelection {
-            import_name: "dict_getitem",
+            import: WasmRuntimeImport::DictGetitem,
             lir_runtime_call: Some(LirRuntimeCall::DictGetitem),
         },
     },
@@ -67,7 +68,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Index,
         fact: WasmContainerRuntimeFact::Tuple,
         selection: WasmContainerRuntimeSelection {
-            import_name: "tuple_getitem",
+            import: WasmRuntimeImport::TupleGetitem,
             lir_runtime_call: Some(LirRuntimeCall::TupleGetitem),
         },
     },
@@ -75,7 +76,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::StoreIndex,
         fact: WasmContainerRuntimeFact::Dict,
         selection: WasmContainerRuntimeSelection {
-            import_name: "dict_setitem",
+            import: WasmRuntimeImport::DictSetitem,
             lir_runtime_call: Some(LirRuntimeCall::DictSetitem),
         },
     },
@@ -83,7 +84,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Contains,
         fact: WasmContainerRuntimeFact::Set,
         selection: WasmContainerRuntimeSelection {
-            import_name: "set_contains",
+            import: WasmRuntimeImport::SetContains,
             lir_runtime_call: Some(LirRuntimeCall::SetContains),
         },
     },
@@ -91,7 +92,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Contains,
         fact: WasmContainerRuntimeFact::Dict,
         selection: WasmContainerRuntimeSelection {
-            import_name: "dict_contains",
+            import: WasmRuntimeImport::DictContains,
             lir_runtime_call: Some(LirRuntimeCall::DictContains),
         },
     },
@@ -99,7 +100,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Contains,
         fact: WasmContainerRuntimeFact::List,
         selection: WasmContainerRuntimeSelection {
-            import_name: "list_contains",
+            import: WasmRuntimeImport::ListContains,
             lir_runtime_call: Some(LirRuntimeCall::ListContains),
         },
     },
@@ -107,7 +108,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Contains,
         fact: WasmContainerRuntimeFact::Str,
         selection: WasmContainerRuntimeSelection {
-            import_name: "str_contains",
+            import: WasmRuntimeImport::StrContains,
             lir_runtime_call: Some(LirRuntimeCall::StrContains),
         },
     },
@@ -115,7 +116,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Len,
         fact: WasmContainerRuntimeFact::List,
         selection: WasmContainerRuntimeSelection {
-            import_name: "len_list",
+            import: WasmRuntimeImport::LenList,
             lir_runtime_call: None,
         },
     },
@@ -123,7 +124,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Len,
         fact: WasmContainerRuntimeFact::Str,
         selection: WasmContainerRuntimeSelection {
-            import_name: "len_str",
+            import: WasmRuntimeImport::LenStr,
             lir_runtime_call: None,
         },
     },
@@ -131,7 +132,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Len,
         fact: WasmContainerRuntimeFact::Dict,
         selection: WasmContainerRuntimeSelection {
-            import_name: "len_dict",
+            import: WasmRuntimeImport::LenDict,
             lir_runtime_call: None,
         },
     },
@@ -139,7 +140,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Len,
         fact: WasmContainerRuntimeFact::Tuple,
         selection: WasmContainerRuntimeSelection {
-            import_name: "len_tuple",
+            import: WasmRuntimeImport::LenTuple,
             lir_runtime_call: None,
         },
     },
@@ -147,7 +148,7 @@ pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelecto
         op: WasmContainerRuntimeOp::Len,
         fact: WasmContainerRuntimeFact::Set,
         selection: WasmContainerRuntimeSelection {
-            import_name: "len_set",
+            import: WasmRuntimeImport::LenSet,
             lir_runtime_call: None,
         },
     },
@@ -172,85 +173,85 @@ pub(crate) fn wasm_container_runtime_selection(
     match (op, fact) {
         (WasmContainerRuntimeOp::Index, WasmContainerRuntimeFact::FlatListInt) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "list_int_getitem",
+                import: WasmRuntimeImport::ListIntGetitem,
                 lir_runtime_call: Some(LirRuntimeCall::ListIntGetitem),
             })
         }
         (WasmContainerRuntimeOp::StoreIndex, WasmContainerRuntimeFact::FlatListInt) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "list_int_setitem",
+                import: WasmRuntimeImport::ListIntSetitem,
                 lir_runtime_call: Some(LirRuntimeCall::ListIntSetitem),
             })
         }
         (WasmContainerRuntimeOp::Index, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "dict_getitem",
+                import: WasmRuntimeImport::DictGetitem,
                 lir_runtime_call: Some(LirRuntimeCall::DictGetitem),
             })
         }
         (WasmContainerRuntimeOp::Index, WasmContainerRuntimeFact::Tuple) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "tuple_getitem",
+                import: WasmRuntimeImport::TupleGetitem,
                 lir_runtime_call: Some(LirRuntimeCall::TupleGetitem),
             })
         }
         (WasmContainerRuntimeOp::StoreIndex, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "dict_setitem",
+                import: WasmRuntimeImport::DictSetitem,
                 lir_runtime_call: Some(LirRuntimeCall::DictSetitem),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::Set) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "set_contains",
+                import: WasmRuntimeImport::SetContains,
                 lir_runtime_call: Some(LirRuntimeCall::SetContains),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "dict_contains",
+                import: WasmRuntimeImport::DictContains,
                 lir_runtime_call: Some(LirRuntimeCall::DictContains),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::List) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "list_contains",
+                import: WasmRuntimeImport::ListContains,
                 lir_runtime_call: Some(LirRuntimeCall::ListContains),
             })
         }
         (WasmContainerRuntimeOp::Contains, WasmContainerRuntimeFact::Str) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "str_contains",
+                import: WasmRuntimeImport::StrContains,
                 lir_runtime_call: Some(LirRuntimeCall::StrContains),
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::List) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "len_list",
+                import: WasmRuntimeImport::LenList,
                 lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Str) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "len_str",
+                import: WasmRuntimeImport::LenStr,
                 lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Dict) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "len_dict",
+                import: WasmRuntimeImport::LenDict,
                 lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Tuple) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "len_tuple",
+                import: WasmRuntimeImport::LenTuple,
                 lir_runtime_call: None,
             })
         }
         (WasmContainerRuntimeOp::Len, WasmContainerRuntimeFact::Set) => {
             Some(WasmContainerRuntimeSelection {
-                import_name: "len_set",
+                import: WasmRuntimeImport::LenSet,
                 lir_runtime_call: None,
             })
         }

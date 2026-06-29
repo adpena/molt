@@ -1,8 +1,8 @@
 use super::super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_local_prefix_call_id};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::WasmFrameLocals;
-use crate::wasm_abi_generated::OpLoopRuntimeSinkSpec;
+use crate::wasm::container_runtime_select::selected_container_runtime_import;
+use crate::wasm_abi_generated::{OpLoopRuntimeSinkSpec, WasmRuntimeImport};
 use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use crate::{FunctionIR, OpIR};
 use wasm_encoder::Function;
@@ -30,7 +30,7 @@ pub(super) fn emit_sequence_runtime_op(
         "index" => {
             // Dispatch: list_int / dict / tuple -> generic.
             let import_key = selected_container_runtime_import(scalar_plan, op_idx, "index", op)
-                .unwrap_or("index");
+                .unwrap_or(WasmRuntimeImport::Index);
             let import_id =
                 selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
             emit_op_loop_local_prefix_call_id(
@@ -46,7 +46,7 @@ pub(super) fn emit_sequence_runtime_op(
             // Dispatch: list_int / dict -> generic.
             let import_key =
                 selected_container_runtime_import(scalar_plan, op_idx, "store_index", op)
-                    .unwrap_or("store_index");
+                    .unwrap_or(WasmRuntimeImport::StoreIndex);
             let import_id =
                 selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
             emit_op_loop_local_prefix_call_id(

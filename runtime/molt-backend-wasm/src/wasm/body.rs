@@ -1,6 +1,7 @@
 use super::WasmBackend;
 use super::const_materialization::WasmConstMaterialization;
 use super::lir_fast::LirRuntimeCall;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use std::sync::Arc;
@@ -117,9 +118,9 @@ impl WasmBody {
         })
     }
 
-    pub(crate) fn runtime_imports(&self) -> impl Iterator<Item = &'static str> + '_ {
+    pub(crate) fn runtime_imports(&self) -> impl Iterator<Item = WasmRuntimeImport> + '_ {
         self.ops.iter().filter_map(|op| match op {
-            WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)) => Some(call.import_name()),
+            WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)) => Some(call.import()),
             WasmBodyOp::ConstMaterialization(materialization) => {
                 Some(materialization.runtime_import())
             }
@@ -137,7 +138,7 @@ impl WasmBody {
         func_index: u32,
         reloc_enabled: bool,
         const_str_scratch_segment: DataSegmentRef,
-        mut import_index_for: impl FnMut(&str) -> u32,
+        mut import_index_for: impl FnMut(WasmRuntimeImport) -> u32,
         func: &mut Function,
     ) {
         for op in &self.ops {
@@ -146,21 +147,22 @@ impl WasmBody {
                     func.instruction(instruction);
                 }
                 WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)) => {
-                    let import_name = call.import_name();
-                    let import_index = import_index_for(import_name);
+                    let import = call.import();
+                    let import_index = import_index_for(import);
                     assert!(
                         import_index != u32::MAX,
-                        "LIR fast body for '{func_name}' calls runtime import '{import_name}' which was skipped/pruned from the import set"
+                        "LIR fast body for '{func_name}' calls runtime import '{}' which was skipped/pruned from the import set",
+                        import.name()
                     );
                     emit_call(func, reloc_enabled, import_index);
                 }
                 WasmBodyOp::ConstMaterialization(materialization) => {
-                    let import_name = materialization.runtime_import();
-                    let import_index = import_index_for(import_name);
+                    let import = materialization.runtime_import();
+                    let import_index = import_index_for(import);
                     assert!(
                         import_index != u32::MAX,
                         "LIR fast body for '{func_name}' materializes const through runtime import '{}' which was skipped/pruned from the import set",
-                        import_name
+                        import.name()
                     );
                     materialization.emit(
                         backend,
@@ -211,7 +213,10 @@ impl WasmBody {
                     | WasmBodyOp::ConstMaterialization(_) => None,
                 })
                 .collect(),
-            runtime_calls: self.runtime_imports().collect(),
+            runtime_calls: self
+                .runtime_imports()
+                .map(WasmRuntimeImport::name)
+                .collect(),
             bails_to_generic_path: self.bail_to_generic_reason().is_some(),
             bail_to_generic_reason: self.bail_to_generic_reason(),
         }

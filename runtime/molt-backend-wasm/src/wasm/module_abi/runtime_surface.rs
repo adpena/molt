@@ -6,6 +6,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi::{
     RESERVED_RUNTIME_CALLABLE_SPECS, runtime_callable_arity, runtime_callable_import_name,
 };
+use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_imports::IMPORT_REGISTRY;
 use crate::wasm_options::WasmCompileOptions;
@@ -30,7 +31,8 @@ impl WasmRuntimeSurfacePlan {
     ) -> Self {
         let defined_function_names: BTreeSet<&str> =
             ir.functions.iter().map(|func| func.name.as_str()).collect();
-        let known_imports: BTreeSet<&str> = IMPORT_REGISTRY.iter().map(|&(name, _)| name).collect();
+        let known_imports: BTreeSet<WasmRuntimeImport> =
+            IMPORT_REGISTRY.iter().map(|spec| spec.import).collect();
         let mut plan = Self {
             import_demand: WasmRuntimeImportDemand::new(options),
             max_func_arity: 0,
@@ -48,37 +50,41 @@ impl WasmRuntimeSurfacePlan {
         plan
     }
 
-    pub(super) fn auto_import_names(&self, import_ids: &TrackedImportIds) -> Vec<(String, usize)> {
-        let mut auto_import_names: Vec<(String, usize)> = self
+    pub(super) fn auto_imports(&self, import_ids: &TrackedImportIds) -> Vec<WasmRuntimeImport> {
+        let mut auto_imports: Vec<WasmRuntimeImport> = self
             .builtin_trampoline_specs
             .iter()
-            .map(|(runtime_name, arity)| {
-                (
-                    runtime_callable_import_name(runtime_name)
-                        .unwrap_or_else(|| {
-                            panic!("runtime callable missing generated import spec: {runtime_name}")
-                        })
-                        .to_string(),
-                    *arity,
-                )
+            .map(|(runtime_name, _arity)| {
+                let import_name = runtime_callable_import_name(runtime_name).unwrap_or_else(|| {
+                    panic!("runtime callable missing generated import spec: {runtime_name}")
+                });
+                wasm_runtime_import(import_name).unwrap_or_else(|| {
+                    panic!("runtime callable import {import_name} missing generated import token")
+                })
             })
-            .filter(|(import_name, _)| !import_ids.contains_key(import_name))
+            .filter(|&import| !import_ids.contains_key(import))
             .collect();
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
-            if !import_ids.contains_key(spec.import_name) {
-                auto_import_names.push((spec.import_name.to_string(), spec.arity));
+            let import = wasm_runtime_import(spec.import_name).unwrap_or_else(|| {
+                panic!(
+                    "reserved runtime callable import {} missing generated import token",
+                    spec.import_name
+                )
+            });
+            if !import_ids.contains_key(import) {
+                auto_imports.push(import);
             }
         }
-        auto_import_names.sort_by(|a, b| a.0.cmp(&b.0));
-        auto_import_names.dedup_by(|a, b| a.0 == b.0);
-        auto_import_names
+        auto_imports.sort_by_key(|import| import.name());
+        auto_imports.dedup();
+        auto_imports
     }
 
     fn observe_function(
         &mut self,
         func_ir: &FunctionIR,
         defined_function_names: &BTreeSet<&str>,
-        known_imports: &BTreeSet<&str>,
+        known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let is_poll = func_ir.name.ends_with("_poll");
         let scalar_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
@@ -139,7 +145,7 @@ impl WasmRuntimeSurfacePlan {
         const_strings: &BTreeMap<&str, &str>,
         runtime_lookup_vars: &BTreeSet<&str>,
         defined_function_names: &BTreeSet<&str>,
-        known_imports: &BTreeSet<&str>,
+        known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let kind = op.kind.as_str();
         self.import_demand.observe_op(
@@ -185,10 +191,11 @@ impl WasmRuntimeSurfacePlan {
             && !defined_function_names.contains(target_name.as_str())
         {
             let import_name = runtime_import_name_str(target_name);
-            if target_name.starts_with("molt_") && !known_imports.contains(import_name) {
+            let import = wasm_runtime_import(import_name);
+            if target_name.starts_with("molt_") && import.is_none() {
                 panic!("direct runtime call missing WASM ABI manifest import: {target_name}");
             }
-            if known_imports.contains(import_name) {
+            if import.is_some_and(|import| known_imports.contains(&import)) {
                 self.record_arity(
                     target_name,
                     op.args.as_ref().map_or(0, Vec::len),

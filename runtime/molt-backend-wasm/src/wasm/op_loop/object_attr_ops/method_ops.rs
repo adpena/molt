@@ -23,14 +23,22 @@ pub(super) fn emit_method_op(
             let args = op.args.as_ref().unwrap();
             let func_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
-            emit_call(func, reloc_enabled, import_ids["classmethod_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassmethodNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "staticmethod_new" => {
             let args = op.args.as_ref().unwrap();
             let func_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
-            emit_call(func, reloc_enabled, import_ids["staticmethod_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::StaticmethodNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "property_new" => {
@@ -41,7 +49,11 @@ pub(super) fn emit_method_op(
             func.instruction(&Instruction::LocalGet(getter));
             func.instruction(&Instruction::LocalGet(setter));
             func.instruction(&Instruction::LocalGet(deleter));
-            emit_call(func, reloc_enabled, import_ids["property_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::PropertyNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "bound_method_new" => {
@@ -50,14 +62,22 @@ pub(super) fn emit_method_op(
             let self_bits = locals[&args[1]];
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(self_bits));
-            emit_call(func, reloc_enabled, import_ids["bound_method_new"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::BoundMethodNew],
+            );
             store_result_or_drop(func, op, locals);
         }
         "is_bound_method" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(obj));
-            emit_call(func, reloc_enabled, import_ids["is_bound_method"]);
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsBoundMethod],
+            );
             store_result_or_drop(func, op, locals);
         }
         "call_method_ic" => {
@@ -94,7 +114,7 @@ pub(super) fn emit_method_op(
             for name in extra {
                 func.instruction(&Instruction::LocalGet(locals[name]));
             }
-            emit_call(func, reloc_enabled, import_ids[selected.import_name]);
+            emit_call(func, reloc_enabled, import_ids[selected.import]);
             store_result_or_drop(func, op, locals);
         }
         "call_super_method_ic" => {
@@ -130,7 +150,7 @@ pub(super) fn emit_method_op(
             for name in extra {
                 func.instruction(&Instruction::LocalGet(locals[name]));
             }
-            emit_call(func, reloc_enabled, import_ids[selected.import_name]);
+            emit_call(func, reloc_enabled, import_ids[selected.import]);
             store_result_or_drop(func, op, locals);
         }
         _ => return false,

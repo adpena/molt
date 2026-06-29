@@ -1,6 +1,7 @@
 use super::super::result_sink::store_result_or_drop;
 use crate::OpIR;
 use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{
@@ -83,36 +84,36 @@ pub(super) fn emit_boxed_unary_call(
     func: &mut Function,
     operand: u32,
     import_ids: &TrackedImportIds,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
 ) {
     func.instruction(&Instruction::LocalGet(operand));
-    emit_call(func, reloc_enabled, import_ids[import_name]);
+    emit_call(func, reloc_enabled, import_ids[import]);
 }
 
 pub(super) fn emit_boxed_binary_call(
     func: &mut Function,
     operands: BinaryOperands,
     import_ids: &TrackedImportIds,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
 ) {
     func.instruction(&Instruction::LocalGet(operands.lhs));
     func.instruction(&Instruction::LocalGet(operands.rhs));
-    emit_call(func, reloc_enabled, import_ids[import_name]);
+    emit_call(func, reloc_enabled, import_ids[import]);
 }
 
 pub(super) fn emit_boxed_ternary_call(
     func: &mut Function,
     operands: [u32; 3],
     import_ids: &TrackedImportIds,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
 ) {
     for operand in operands {
         func.instruction(&Instruction::LocalGet(operand));
     }
-    emit_call(func, reloc_enabled, import_ids[import_name]);
+    emit_call(func, reloc_enabled, import_ids[import]);
 }
 
 pub(super) fn emit_boxed_unary_result(
@@ -120,14 +121,14 @@ pub(super) fn emit_boxed_unary_result(
     op: &OpIR,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
 ) {
     emit_boxed_unary_call(
         func,
         unary_operand(op, locals),
         import_ids,
-        import_name,
+        import,
         reloc_enabled,
     );
     store_numeric_result(func, op, locals);
@@ -138,14 +139,14 @@ pub(super) fn emit_boxed_binary_result(
     op: &OpIR,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
 ) {
     emit_boxed_binary_call(
         func,
         binary_operands(op, locals),
         import_ids,
-        import_name,
+        import,
         reloc_enabled,
     );
     store_numeric_result(func, op, locals);
@@ -156,14 +157,14 @@ pub(super) fn emit_boxed_ternary_result(
     op: &OpIR,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
 ) {
     emit_boxed_ternary_call(
         func,
         ternary_operands(op, locals),
         import_ids,
-        import_name,
+        import,
         reloc_enabled,
     );
     store_numeric_result(func, op, locals);
@@ -177,7 +178,7 @@ pub(super) fn emit_guarded_int_binary_result_or_boxed(
     func: &mut Function,
     operands: BinaryOperands,
     import_ids: &TrackedImportIds,
-    import_name: &str,
+    import: WasmRuntimeImport,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     lane: IntFastLane,
@@ -192,7 +193,7 @@ pub(super) fn emit_guarded_int_binary_result_or_boxed(
             func,
             reloc_enabled,
             &operand_locals,
-            import_ids[import_name],
+            import_ids[import],
         );
     }
 }
@@ -202,7 +203,7 @@ pub(super) fn emit_inline_int_result_or_boxed(
     raw_result_local: u32,
     operands: BinaryOperands,
     import_ids: &TrackedImportIds,
-    import_name: &str,
+    import: WasmRuntimeImport,
     const_cache: &ConstantCache,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
@@ -211,7 +212,7 @@ pub(super) fn emit_inline_int_result_or_boxed(
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
     emit_box_int_from_local_opt(func, raw_result_local, known_raw_ints);
     func.instruction(&Instruction::Else);
-    emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
+    emit_boxed_binary_call(func, operands, import_ids, import, reloc_enabled);
     func.instruction(&Instruction::End);
 }
 
@@ -219,7 +220,7 @@ pub(super) fn emit_plain_f64_binary_result_or_boxed(
     func: &mut Function,
     operands: BinaryOperands,
     import_ids: &TrackedImportIds,
-    import_name: &str,
+    import: WasmRuntimeImport,
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
     emit_f64_result: impl FnOnce(&mut Function, u32),
@@ -232,7 +233,7 @@ pub(super) fn emit_plain_f64_binary_result_or_boxed(
     func.instruction(&Instruction::F64ReinterpretI64);
     emit_f64_result(func, locals.synthetic(WasmFrameSyntheticLocal::MoltTmp3));
     func.instruction(&Instruction::Else);
-    emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
+    emit_boxed_binary_call(func, operands, import_ids, import, reloc_enabled);
     func.instruction(&Instruction::End);
 }
 

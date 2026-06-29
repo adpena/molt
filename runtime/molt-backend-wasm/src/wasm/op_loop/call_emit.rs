@@ -43,11 +43,7 @@ pub(super) fn emit_op_loop_runtime_call(
         }
     }
 
-    emit_call(
-        func,
-        context.reloc_enabled,
-        context.import_ids[call.import_name],
-    );
+    emit_call(func, context.reloc_enabled, context.import_ids[call.import]);
     emit_op_loop_runtime_sink(context, func, op, call.sink);
 }
 

@@ -6,15 +6,17 @@ use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::object_new_bound_select::selected_object_new_bound_runtime;
 use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
-use crate::wasm_abi_generated::{op_loop_runtime_call, wasm_bulk_memory_op};
+use crate::wasm_abi_generated::{
+    WasmRuntimeImport, op_loop_runtime_call, wasm_bulk_memory_op, wasm_runtime_import,
+};
 use crate::wasm_imports::{OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
 use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 use crate::{OpIR, TrampolineKind};
 
-type RuntimeImportDepsMap = BTreeMap<&'static str, &'static [&'static str]>;
+type RuntimeImportDepsMap = BTreeMap<&'static str, &'static [WasmRuntimeImport]>;
 
 pub(super) struct WasmRuntimeImportDemand {
-    auto_required_imports: Option<BTreeSet<String>>,
+    auto_required_imports: Option<BTreeSet<WasmRuntimeImport>>,
     deps_map: RuntimeImportDepsMap,
 }
 
@@ -31,7 +33,7 @@ impl WasmRuntimeImportDemand {
         }
     }
 
-    pub(super) fn auto_required_imports(&self) -> Option<&BTreeSet<String>> {
+    pub(super) fn auto_required_imports(&self) -> Option<&BTreeSet<WasmRuntimeImport>> {
         self.auto_required_imports.as_ref()
     }
 
@@ -43,7 +45,7 @@ impl WasmRuntimeImportDemand {
         is_poll: bool,
         scalar_plan: &ScalarRepresentationPlan,
         defined_function_names: &BTreeSet<&str>,
-        known_imports: &BTreeSet<&str>,
+        known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let kind = op.kind.as_str();
         if debug_imports_enabled() && op.s_value.as_deref() == Some("__main_____f_poll") {
@@ -54,11 +56,11 @@ impl WasmRuntimeImportDemand {
         }
 
         if kind == "object_new_bound" {
-            self.require_import(selected_object_new_bound_runtime(op).import_name);
+            self.require_import(selected_object_new_bound_runtime(op).import);
             return;
         }
         if let Some(selected) = selected_method_ic_runtime(op) {
-            self.require_import(selected.import_name);
+            self.require_import(selected.import);
             return;
         }
 
@@ -72,13 +74,15 @@ impl WasmRuntimeImportDemand {
                 eprintln!("WASM_IMPORTS alloc_task deps={deps:?} func={}", func_name);
             }
             self.require_imports(deps);
-        } else if known_imports.contains(kind) {
-            self.require_import(kind);
+        } else if let Some(import) = wasm_runtime_import(kind)
+            && known_imports.contains(&import)
+        {
+            self.require_import(import);
         }
         if crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(kind)
             && op.out.is_some()
         {
-            self.require_import("inc_ref_obj");
+            self.require_import(WasmRuntimeImport::IncRefObj);
         }
 
         if kind == "builtin_func"
@@ -88,26 +92,31 @@ impl WasmRuntimeImportDemand {
                 crate::wasm_abi::runtime_callable_import_name(name).unwrap_or_else(|| {
                     panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
                 });
-            self.require_import(import_name);
+            self.require_import_name(import_name);
         }
         if kind == "call"
             && let Some(name) = op.s_value.as_ref()
             && !defined_function_names.contains(name.as_str())
         {
             let import_name = runtime_import_name_str(name);
-            if name.starts_with("molt_") && !known_imports.contains(import_name) {
+            let import = wasm_runtime_import(import_name);
+            if name.starts_with("molt_") && import.is_none() {
                 panic!("direct runtime call missing WASM ABI manifest import: {name}");
             }
-            if known_imports.contains(import_name) {
-                self.require_import(import_name);
+            if let Some(import) = import
+                && known_imports.contains(&import)
+            {
+                self.require_import(import);
             }
         }
         if kind == "call_async"
             && let Some(name) = op.s_value.as_ref()
         {
             let import_name = runtime_import_name_str(name);
-            if known_imports.contains(import_name) {
-                self.require_import(import_name);
+            if let Some(import) = wasm_runtime_import(import_name)
+                && known_imports.contains(&import)
+            {
+                self.require_import(import);
             }
         }
 
@@ -121,32 +130,30 @@ impl WasmRuntimeImportDemand {
                     func_name
                 );
             }
-            self.require_import("task_new");
+            self.require_import(WasmRuntimeImport::TaskNew);
             if op.args.as_ref().is_some_and(|args| !args.is_empty()) {
-                self.require_import("handle_resolve");
-                self.require_import("inc_ref_obj");
+                self.require_import(WasmRuntimeImport::HandleResolve);
+                self.require_import(WasmRuntimeImport::IncRefObj);
             }
             if matches!(task_kind, "future" | "coroutine") {
-                self.require_import("cancel_token_get_current");
-                self.require_import("task_register_token_owned");
+                self.require_import(WasmRuntimeImport::CancelTokenGetCurrent);
+                self.require_import(WasmRuntimeImport::TaskRegisterTokenOwned);
             }
         }
 
-        if let Some(import_name) =
-            selected_container_runtime_import(scalar_plan, op_index, kind, op)
-        {
-            self.require_import(import_name);
+        if let Some(import) = selected_container_runtime_import(scalar_plan, op_index, kind, op) {
+            self.require_import(import);
         }
 
         if runtime_surface_requires_direct_import(kind) {
-            self.require_import(kind);
+            self.require_import_name(kind);
         }
         if is_poll
             && (kind == "call_func" || kind == "invoke_ffi")
             && let Some(name) = op.s_value.as_ref()
             && name.ends_with("_poll")
         {
-            self.require_import(runtime_import_name_str(name));
+            self.require_import_name(runtime_import_name_str(name));
         }
     }
 
@@ -159,7 +166,7 @@ impl WasmRuntimeImportDemand {
             return;
         };
         if !task_kinds.is_empty() {
-            required.insert("task_new".to_string());
+            required.insert(WasmRuntimeImport::TaskNew);
         }
         if task_kinds.values().any(|kind| {
             matches!(
@@ -167,43 +174,52 @@ impl WasmRuntimeImportDemand {
                 TrampolineKind::Generator | TrampolineKind::Coroutine | TrampolineKind::AsyncGen
             )
         }) {
-            required.insert("handle_resolve".to_string());
-            required.insert("inc_ref_obj".to_string());
+            required.insert(WasmRuntimeImport::HandleResolve);
+            required.insert(WasmRuntimeImport::IncRefObj);
         }
         if task_kinds
             .values()
             .any(|kind| matches!(kind, TrampolineKind::Coroutine))
         {
-            required.insert("cancel_token_get_current".to_string());
-            required.insert("task_register_token_owned".to_string());
+            required.insert(WasmRuntimeImport::CancelTokenGetCurrent);
+            required.insert(WasmRuntimeImport::TaskRegisterTokenOwned);
         }
         if task_kinds
             .values()
             .any(|kind| matches!(kind, TrampolineKind::AsyncGen))
         {
-            required.insert("asyncgen_new".to_string());
+            required.insert(WasmRuntimeImport::AsyncgenNew);
         }
-        required.extend(
-            RESERVED_RUNTIME_CALLABLE_SPECS
-                .iter()
-                .map(|spec| spec.import_name.to_string()),
-        );
+        required.extend(RESERVED_RUNTIME_CALLABLE_SPECS.iter().map(|spec| {
+            wasm_runtime_import(spec.import_name).unwrap_or_else(|| {
+                panic!(
+                    "reserved runtime callable import {} missing generated import token",
+                    spec.import_name
+                )
+            })
+        }));
         for plan in lir_lowering_plans.values() {
             if let Some(output) = plan.lir_fast_body() {
-                required.extend(output.runtime_imports().map(str::to_string));
+                required.extend(output.runtime_imports());
             }
         }
     }
 
-    fn require_import(&mut self, name: &str) {
+    fn require_import(&mut self, import: WasmRuntimeImport) {
         if let Some(required) = self.auto_required_imports.as_mut() {
-            required.insert(name.to_string());
+            required.insert(import);
         }
     }
 
-    fn require_imports(&mut self, names: &[&str]) {
-        for &name in names {
-            self.require_import(name);
+    fn require_import_name(&mut self, name: &str) {
+        let import = wasm_runtime_import(name)
+            .unwrap_or_else(|| panic!("runtime import {name} missing generated import token"));
+        self.require_import(import);
+    }
+
+    fn require_imports(&mut self, imports: &[WasmRuntimeImport]) {
+        for &import in imports {
+            self.require_import(import);
         }
     }
 }
@@ -211,14 +227,14 @@ impl WasmRuntimeImportDemand {
 fn initial_auto_required_imports(
     options: &WasmCompileOptions,
     deps_map: &RuntimeImportDepsMap,
-) -> Option<BTreeSet<String>> {
+) -> Option<BTreeSet<WasmRuntimeImport>> {
     if options.wasm_profile != WasmProfile::Auto || !options.reloc_enabled {
         return None;
     }
 
     let mut required = BTreeSet::new();
     if let Some(structural) = deps_map.get("__structural__") {
-        required.extend(structural.iter().map(|name| (*name).to_string()));
+        required.extend(structural.iter().copied());
     }
     if let Ok(extra_required) = std::env::var("MOLT_WASM_EXTRA_REQUIRED_IMPORTS") {
         required.extend(
@@ -226,7 +242,13 @@ fn initial_auto_required_imports(
                 .split(',')
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
-                .map(str::to_string),
+                .map(|name| {
+                    wasm_runtime_import(name).unwrap_or_else(|| {
+                        panic!(
+                            "MOLT_WASM_EXTRA_REQUIRED_IMPORTS references unknown runtime import {name}"
+                        )
+                    })
+                }),
         );
     }
     Some(required)

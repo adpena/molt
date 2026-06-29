@@ -3,6 +3,7 @@ use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
     wasm_scalar_truthiness_fast_path_for_name,
@@ -273,7 +274,7 @@ fn container_import_selection_uses_typed_container_facts() {
     );
     assert_eq!(
         selected_container_runtime_import(&plan, 2, "len", &len),
-        Some("len_list")
+        Some(WasmRuntimeImport::LenList)
     );
 }
 
@@ -285,28 +286,33 @@ fn container_import_selection_uses_manifest_typed_query_matrix() {
         (
             "typed_dict_queries",
             "dict",
-            Some("dict_contains"),
-            Some("len_dict"),
+            Some(WasmRuntimeImport::DictContains),
+            Some(WasmRuntimeImport::LenDict),
         ),
         (
             "typed_list_queries",
             "list",
-            Some("list_contains"),
-            Some("len_list"),
+            Some(WasmRuntimeImport::ListContains),
+            Some(WasmRuntimeImport::LenList),
         ),
         (
             "typed_set_queries",
             "set",
-            Some("set_contains"),
-            Some("len_set"),
+            Some(WasmRuntimeImport::SetContains),
+            Some(WasmRuntimeImport::LenSet),
         ),
         (
             "typed_str_queries",
             "str",
-            Some("str_contains"),
-            Some("len_str"),
+            Some(WasmRuntimeImport::StrContains),
+            Some(WasmRuntimeImport::LenStr),
         ),
-        ("typed_tuple_queries", "tuple", None, Some("len_tuple")),
+        (
+            "typed_tuple_queries",
+            "tuple",
+            None,
+            Some(WasmRuntimeImport::LenTuple),
+        ),
     ];
 
     for (name, container_type, contains_import, len_import) in cases {
@@ -339,13 +345,13 @@ fn container_import_selection_uses_manifest_index_store_matrix() {
         (
             "typed_dict_index_store",
             "dict",
-            Some("dict_getitem"),
-            Some("dict_setitem"),
+            Some(WasmRuntimeImport::DictGetitem),
+            Some(WasmRuntimeImport::DictSetitem),
         ),
         (
             "typed_tuple_index_store",
             "tuple",
-            Some("tuple_getitem"),
+            Some(WasmRuntimeImport::TupleGetitem),
             None,
         ),
         ("typed_list_index_store", "list", None, None),
@@ -390,11 +396,11 @@ fn container_import_selection_uses_flat_list_storage_proof() {
 
     assert_eq!(
         selected_container_runtime_import(&plan, 1, "index", &index),
-        Some("list_int_getitem")
+        Some(WasmRuntimeImport::ListIntGetitem)
     );
     assert_eq!(
         selected_container_runtime_import(&plan, 2, "store_index", &set),
-        Some("list_int_setitem")
+        Some(WasmRuntimeImport::ListIntSetitem)
     );
 }
 

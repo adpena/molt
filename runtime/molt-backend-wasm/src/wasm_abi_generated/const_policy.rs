@@ -7,6 +7,8 @@ use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bit
 use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;
 use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};
 
+use super::imports::WasmRuntimeImport;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstInlineSeed {
     None,
@@ -56,7 +58,7 @@ pub(crate) enum WasmConstLirFastPolicy {
 pub(crate) struct WasmConstOpPolicySpec {
     pub(crate) kind: &'static str,
     pub(crate) inline_seed: WasmConstInlineSeed,
-    pub(crate) materializer_import: Option<&'static str>,
+    pub(crate) materializer_import: Option<WasmRuntimeImport>,
     pub(crate) literal_payload: WasmConstLiteralPayload,
     pub(crate) scalar_payload: WasmConstScalarPayload,
     pub(crate) dispatch_runtime_seed: bool,
@@ -113,7 +115,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const_not_implemented",
         inline_seed: WasmConstInlineSeed::None,
-        materializer_import: Some("not_implemented"),
+        materializer_import: Some(WasmRuntimeImport::NotImplemented),
         literal_payload: WasmConstLiteralPayload::None,
         scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
@@ -124,7 +126,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const_ellipsis",
         inline_seed: WasmConstInlineSeed::None,
-        materializer_import: Some("ellipsis"),
+        materializer_import: Some(WasmRuntimeImport::Ellipsis),
         literal_payload: WasmConstLiteralPayload::None,
         scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
@@ -135,7 +137,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const_str",
         inline_seed: WasmConstInlineSeed::None,
-        materializer_import: Some("string_from_bytes"),
+        materializer_import: Some(WasmRuntimeImport::StringFromBytes),
         literal_payload: WasmConstLiteralPayload::String,
         scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
@@ -146,7 +148,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const_bigint",
         inline_seed: WasmConstInlineSeed::None,
-        materializer_import: Some("bigint_from_str"),
+        materializer_import: Some(WasmRuntimeImport::BigintFromStr),
         literal_payload: WasmConstLiteralPayload::BigintDecimal,
         scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,
@@ -157,7 +159,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const_bytes",
         inline_seed: WasmConstInlineSeed::None,
-        materializer_import: Some("bytes_from_bytes"),
+        materializer_import: Some(WasmRuntimeImport::BytesFromBytes),
         literal_payload: WasmConstLiteralPayload::Bytes,
         scalar_payload: WasmConstScalarPayload::None,
         dispatch_runtime_seed: true,

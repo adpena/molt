@@ -1706,6 +1706,27 @@ def _rust_pascal_variant(value: str) -> str:
     return "".join(part.capitalize() for part in value.split("_"))
 
 
+def _runtime_import_variants(data: dict) -> dict[str, str]:
+    variants: dict[str, str] = {}
+    seen_variants: dict[str, str] = {}
+    for entry in data["import"]:
+        name = entry["name"]
+        variant = _rust_pascal_variant(name)
+        if variant in seen_variants:
+            raise WasmAbiManifestError(
+                "runtime import enum variant collision: "
+                f"{seen_variants[variant]!r} and {name!r} both map to {variant!r}"
+            )
+        seen_variants[variant] = name
+        variants[name] = variant
+    return variants
+
+
+def _rust_runtime_import(data: dict, import_name: str) -> str:
+    variants = _runtime_import_variants(data)
+    return f"WasmRuntimeImport::{variants[import_name]}"
+
+
 def _rust_option_str(value: str | None) -> str:
     return "None" if value is None else f'Some("{value}")'
 
@@ -1742,7 +1763,10 @@ def _render_rs_mod() -> str:
             "    WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,\n",
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
-            "pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};\n",
+            "pub(crate) use imports::{\n",
+            "    wasm_runtime_import, IMPORT_REGISTRY, OP_IMPORT_DEPS, RuntimeImportSpec,\n",
+            "    WasmRuntimeImport,\n",
+            "};\n",
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
@@ -1814,6 +1838,7 @@ def _render_rs_const_policy(data: dict) -> str:
             "use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};\n",
             "use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;\n",
             "use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};\n\n",
+            "use super::imports::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstInlineSeed {\n",
             "    None,\n",
@@ -1857,7 +1882,7 @@ def _render_rs_const_policy(data: dict) -> str:
             "pub(crate) struct WasmConstOpPolicySpec {\n",
             "    pub(crate) kind: &'static str,\n",
             "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
-            "    pub(crate) materializer_import: Option<&'static str>,\n",
+            "    pub(crate) materializer_import: Option<WasmRuntimeImport>,\n",
             "    pub(crate) literal_payload: WasmConstLiteralPayload,\n",
             "    pub(crate) scalar_payload: WasmConstScalarPayload,\n",
             "    pub(crate) dispatch_runtime_seed: bool,\n",
@@ -1882,7 +1907,12 @@ def _render_rs_const_policy(data: dict) -> str:
                 f'        kind: "{entry["kind"]}",\n',
                 f"        inline_seed: WasmConstInlineSeed::{inline_seed},\n",
                 "        materializer_import: "
-                f"{_rust_option_str(entry.get('materializer_import'))},\n",
+                + (
+                    "None"
+                    if entry.get("materializer_import") is None
+                    else f"Some({_rust_runtime_import(data, entry['materializer_import'])})"
+                )
+                + ",\n",
                 f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
                 f"        scalar_payload: WasmConstScalarPayload::{scalar_payload},\n",
                 f"        dispatch_runtime_seed: {dispatch_seed},\n",
@@ -2001,12 +2031,78 @@ def _render_rs_static_types(data: dict) -> str:
 
 
 def _render_rs_imports(data: dict) -> str:
+    import_variants = _runtime_import_variants(data)
     lines: list[str] = [_header("//")]
-    lines.append("pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[\n")
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n",
+            "pub(crate) enum WasmRuntimeImport {\n",
+        ]
+    )
     for entry in data["import"]:
-        lines.append(f'    ("{entry["name"]}", {entry["type"]}),\n')
-    lines.append("];\n\n")
-    lines.append("pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[\n")
+        lines.append(f"    {import_variants[entry['name']]},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl WasmRuntimeImport {\n",
+            "    pub(crate) const fn name(self) -> &'static str {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in data["import"]:
+        lines.append(
+            f"            Self::{import_variants[entry['name']]} => \"{entry['name']}\",\n"
+        )
+    lines.extend(
+        [
+            "        }\n",
+            "    }\n\n",
+            "    pub(crate) const fn type_idx(self) -> u32 {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in data["import"]:
+        lines.append(
+            f"            Self::{import_variants[entry['name']]} => {entry['type']},\n"
+        )
+    lines.extend(
+        [
+            "        }\n",
+            "    }\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct RuntimeImportSpec {\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
+            "    pub(crate) name: &'static str,\n",
+            "    pub(crate) type_idx: u32,\n",
+            "}\n\n",
+            "pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[\n",
+        ]
+    )
+    for entry in data["import"]:
+        lines.extend(
+            [
+                "    RuntimeImportSpec {\n",
+                f"        import: {_rust_runtime_import(data, entry['name'])},\n",
+                f"        name: \"{entry['name']}\",\n",
+                f"        type_idx: {entry['type']},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {\n",
+            "    match name {\n",
+        ]
+    )
+    for entry in data["import"]:
+        lines.append(
+            f"        \"{entry['name']}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
+        )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
+    lines.append("pub(crate) const OP_IMPORT_DEPS: &[(&str, &[WasmRuntimeImport])] = &[\n")
     for entry in data.get("op_import_dep", []):
         kind = entry["kind"]
         deps = entry["deps"]
@@ -2015,7 +2111,7 @@ def _render_rs_imports(data: dict) -> str:
             continue
         lines.append(f'    ("{kind}", &[\n')
         for dep in deps:
-            lines.append(f'        "{dep}",\n')
+            lines.append(f"        {_rust_runtime_import(data, dep)},\n")
         lines.append("    ]),\n")
     lines.append("];\n\n")
     return "".join(lines)
@@ -2094,6 +2190,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
         if "lir_variant" in entry and "lir_operand_count" in entry
     ]
     lines: list[str] = [_header("//")]
+    lines.append("use super::imports::WasmRuntimeImport;\n\n")
     lines.extend(
         [
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -2115,13 +2212,13 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
     lines.extend(
         [
             "    ];\n\n",
-            "    pub(crate) const fn import_name(self) -> &'static str {\n",
+            "    pub(crate) const fn import(self) -> WasmRuntimeImport {\n",
             "        match self {\n",
         ]
     )
     for entry in entries:
         lines.append(
-            f"            Self::{entry['variant']} => \"{entry['import_name']}\",\n"
+            f"            Self::{entry['variant']} => {_rust_runtime_import(data, entry['import_name'])},\n"
         )
     lines.extend(
         [
@@ -2199,9 +2296,9 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct OpLoopRuntimeCallSpec {\n",
-            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) args: &'static [OpLoopRuntimeArgSpec],\n",
-            "    pub(crate) required_imports: &'static [&'static str],\n",
+            "    pub(crate) required_imports: &'static [WasmRuntimeImport],\n",
             "    pub(crate) sink: OpLoopRuntimeSinkSpec,\n",
             "}\n\n",
             "#[inline]\n",
@@ -2213,7 +2310,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
         lines.extend(
             [
                 f"        \"{entry['kind']}\" => Some(OpLoopRuntimeCallSpec {{\n",
-                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 "            args: &[\n",
             ]
         )
@@ -2226,7 +2323,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             ]
         )
         for required in entry["required_imports"]:
-            lines.append(f'                "{required}",\n')
+            lines.append(f"                {_rust_runtime_import(data, required)},\n")
         lines.extend(
             [
                 "            ],\n",
@@ -2258,6 +2355,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use super::imports::WasmRuntimeImport;\n",
             "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmContainerRuntimeOp {\n",
@@ -2279,7 +2377,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmContainerRuntimeSelection {\n",
-            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,\n",
             "}\n\n",
             "#[allow(dead_code)]\n",
@@ -2306,7 +2404,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
                 f"        op: WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
                 f"        fact: WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
                 "        selection: WasmContainerRuntimeSelection {\n",
-                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        },\n",
                 "    },\n",
@@ -2348,7 +2446,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
                 f"            WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
                 f"            WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
                 "        ) => Some(WasmContainerRuntimeSelection {\n",
-                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        }),\n",
             ]
@@ -2374,6 +2472,7 @@ def _render_rs_object_new_bound_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use super::imports::WasmRuntimeImport;\n",
             "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmObjectNewBoundPayload {\n",
@@ -2386,7 +2485,7 @@ def _render_rs_object_new_bound_selector(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmObjectNewBoundSelection {\n",
-            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) lir_runtime_call: LirRuntimeCall,\n",
             "}\n\n",
             "#[allow(dead_code)]\n",
@@ -2406,7 +2505,7 @@ def _render_rs_object_new_bound_selector(data: dict) -> str:
                 "    WasmObjectNewBoundSelectorSpec {\n",
                 f"        payload: WasmObjectNewBoundPayload::{payload_variants[payload]},\n",
                 "        selection: WasmObjectNewBoundSelection {\n",
-                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 f"            lir_runtime_call: LirRuntimeCall::{entry['lir_variant']},\n",
                 "        },\n",
                 "    },\n",
@@ -2428,7 +2527,7 @@ def _render_rs_object_new_bound_selector(data: dict) -> str:
             [
                 f"        WasmObjectNewBoundPayload::{payload_variants[payload]} => {{\n",
                 "            WasmObjectNewBoundSelection {\n",
-                f"                import_name: \"{entry['import_name']}\",\n",
+                f"                import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 f"                lir_runtime_call: LirRuntimeCall::{entry['lir_variant']},\n",
                 "            }\n",
                 "        }\n",
@@ -2456,6 +2555,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use super::imports::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmMethodIcFamily {\n",
         ]
@@ -2467,7 +2567,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmMethodIcSelection {\n",
-            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
             "}\n\n",
             "#[allow(dead_code)]\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -2490,7 +2590,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
                     f"        family: WasmMethodIcFamily::{family_variants[family]},\n",
                     f"        extra_arg_count: {extra_arg_count},\n",
                     "        selection: WasmMethodIcSelection {\n",
-                    f"            import_name: \"{entry['import_name']}\",\n",
+                    f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                     "        },\n",
                     "    },\n",
                 ]
@@ -2514,7 +2614,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
                 [
                     f"        (WasmMethodIcFamily::{family_variants[family]}, {extra_arg_count}) => {{\n",
                     "            WasmMethodIcSelection {\n",
-                    f"                import_name: \"{entry['import_name']}\",\n",
+                    f"                import: {_rust_runtime_import(data, entry['import_name'])},\n",
                     "            }\n",
                     "        }\n",
                 ]
@@ -2534,6 +2634,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use super::imports::WasmRuntimeImport;\n",
             "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmNumericOpLoopKind {\n",
@@ -2546,7 +2647,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmNumericRuntimeSelection {\n",
-            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) op_loop_kind: WasmNumericOpLoopKind,\n",
             "    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,\n",
             "}\n\n",
@@ -2555,7 +2656,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
             "pub(crate) struct WasmNumericRuntimeSelectorSpec {\n",
             "    pub(crate) kind: &'static str,\n",
             "    pub(crate) selection: WasmNumericRuntimeSelection,\n",
-            "    pub(crate) deps: &'static [&'static str],\n",
+            "    pub(crate) deps: &'static [WasmRuntimeImport],\n",
             "}\n\n",
             "#[allow(dead_code)]\n",
             "pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpec] = &[\n",
@@ -2572,7 +2673,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
                 "    WasmNumericRuntimeSelectorSpec {\n",
                 f"        kind: \"{entry['kind']}\",\n",
                 "        selection: WasmNumericRuntimeSelection {\n",
-                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        },\n",
@@ -2580,7 +2681,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
             ]
         )
         for dep in entry["deps"]:
-            lines.append(f"            \"{dep}\",\n")
+            lines.append(f"            {_rust_runtime_import(data, dep)},\n")
         lines.extend(
             [
                 "        ],\n",
@@ -2606,7 +2707,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
         lines.extend(
             [
                 f"        \"{entry['kind']}\" => Some(WasmNumericRuntimeSelection {{\n",
-                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            import: {_rust_runtime_import(data, entry['import_name'])},\n",
                 f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
                 f"            lir_runtime_call: {lir_call},\n",
                 "        }),\n",

@@ -3,6 +3,7 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
+use super::imports::WasmRuntimeImport;
 use super::lir_runtime_calls::LirRuntimeCall;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,7 +14,7 @@ pub(crate) enum WasmObjectNewBoundPayload {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WasmObjectNewBoundSelection {
-    pub(crate) import_name: &'static str,
+    pub(crate) import: WasmRuntimeImport,
     pub(crate) lir_runtime_call: LirRuntimeCall,
 }
 
@@ -29,14 +30,14 @@ pub(crate) const WASM_OBJECT_NEW_BOUND_SELECTORS: &[WasmObjectNewBoundSelectorSp
     WasmObjectNewBoundSelectorSpec {
         payload: WasmObjectNewBoundPayload::Unsized,
         selection: WasmObjectNewBoundSelection {
-            import_name: "object_new_bound",
+            import: WasmRuntimeImport::ObjectNewBound,
             lir_runtime_call: LirRuntimeCall::ObjectNewBound,
         },
     },
     WasmObjectNewBoundSelectorSpec {
         payload: WasmObjectNewBoundPayload::Sized,
         selection: WasmObjectNewBoundSelection {
-            import_name: "object_new_bound_sized",
+            import: WasmRuntimeImport::ObjectNewBoundSized,
             lir_runtime_call: LirRuntimeCall::ObjectNewBoundSized,
         },
     },
@@ -48,11 +49,11 @@ pub(crate) const fn wasm_object_new_bound_selection(
 ) -> WasmObjectNewBoundSelection {
     match payload {
         WasmObjectNewBoundPayload::Unsized => WasmObjectNewBoundSelection {
-            import_name: "object_new_bound",
+            import: WasmRuntimeImport::ObjectNewBound,
             lir_runtime_call: LirRuntimeCall::ObjectNewBound,
         },
         WasmObjectNewBoundPayload::Sized => WasmObjectNewBoundSelection {
-            import_name: "object_new_bound_sized",
+            import: WasmRuntimeImport::ObjectNewBoundSized,
             lir_runtime_call: LirRuntimeCall::ObjectNewBoundSized,
         },
     }

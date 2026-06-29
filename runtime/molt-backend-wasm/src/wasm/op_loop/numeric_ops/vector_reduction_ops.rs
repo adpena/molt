@@ -30,7 +30,7 @@ pub(super) fn emit_vector_reduction_numeric_op(
     emit_simple_call(
         func,
         reloc_enabled,
-        import_ids[selection.import_name],
+        import_ids[selection.import],
         &arg_locals,
         out,
     );

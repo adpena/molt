@@ -25,17 +25,17 @@ fn peephole_instrs(input: Vec<Instruction<'static>>) -> Vec<Instruction<'static>
 
 #[test]
 fn lir_runtime_calls_are_manifest_registered_imports() {
-    let manifest_imports: std::collections::BTreeSet<&'static str> =
-        crate::wasm_imports::IMPORT_REGISTRY
-            .iter()
-            .map(|&(name, _)| name)
-            .collect();
+    let manifest_imports: std::collections::BTreeSet<_> = crate::wasm_imports::IMPORT_REGISTRY
+        .iter()
+        .map(|spec| spec.import)
+        .collect();
 
     for call in LirRuntimeCall::ALL {
-        let import_name = call.import_name();
+        let import = call.import();
         assert!(
-            manifest_imports.contains(import_name),
-            "LIR fast runtime call {call:?} must be registered in wasm_abi_manifest.toml"
+            manifest_imports.contains(&import),
+            "LIR fast runtime call {call:?} must register {} in wasm_abi_manifest.toml",
+            import.name()
         );
     }
 }

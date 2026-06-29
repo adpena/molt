@@ -1,5 +1,5 @@
-use super::common::{emit_obj_set_state_arg, emit_pending_state_value};
 use super::super::op_loop::WasmFunctionEmitContext;
+use super::common::{emit_obj_set_state_arg, emit_pending_state_value};
 use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
 use crate::OpIR;
 use crate::wasm_binary::emit_call;
@@ -39,13 +39,13 @@ pub(super) fn emit_state_transition(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["obj_set_state"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
     );
     func.instruction(&Instruction::LocalGet(future));
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["future_poll"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FuturePoll],
     );
     func.instruction(&Instruction::LocalSet(out));
     func.instruction(&Instruction::I64Const(box_pending()));
@@ -62,12 +62,12 @@ pub(super) fn emit_state_transition(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["handle_resolve"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
     );
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["sleep_register"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SleepRegister],
     );
     func.instruction(&Instruction::Drop);
     func.instruction(&Instruction::Br(return_depth));
@@ -81,7 +81,7 @@ pub(super) fn emit_state_transition(
         emit_call(
             func,
             op_emitter.reloc_enabled,
-            op_emitter.import_ids["closure_store"],
+            op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureStore],
         );
         func.instruction(&Instruction::Drop);
     }
@@ -90,7 +90,7 @@ pub(super) fn emit_state_transition(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["obj_set_state"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
     );
     func.instruction(&Instruction::Br(depth));
 }
@@ -122,13 +122,13 @@ pub(super) fn emit_state_yield(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["obj_set_state"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
     );
     func.instruction(&Instruction::LocalGet(pair));
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["inc_ref_obj"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
     );
     func.instruction(&Instruction::LocalGet(pair));
     func.instruction(&Instruction::Return);
@@ -163,7 +163,7 @@ pub(super) fn emit_chan_send_yield(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["chan_send"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ChanSend],
     );
     emit_finish_channel_yield(func, op_emitter, locals, out, next_state_id, depth);
 }
@@ -195,7 +195,7 @@ pub(super) fn emit_chan_recv_yield(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["chan_recv"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ChanRecv],
     );
     emit_finish_channel_yield(func, op_emitter, locals, out, next_state_id, depth);
 }
@@ -215,7 +215,7 @@ fn emit_prepare_pending_yield(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["obj_set_state"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
     );
 }
 
@@ -240,7 +240,7 @@ fn emit_finish_channel_yield(
     emit_call(
         func,
         op_emitter.reloc_enabled,
-        op_emitter.import_ids["obj_set_state"],
+        op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjSetState],
     );
     func.instruction(&Instruction::Br(depth));
 }

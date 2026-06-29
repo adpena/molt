@@ -38,7 +38,11 @@ pub(super) fn retain_live_object_locals(
 ) {
     for local_idx in live_object_locals {
         func.instruction(&Instruction::LocalGet(*local_idx));
-        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+        );
     }
 }
 
@@ -50,7 +54,11 @@ pub(super) fn release_live_object_locals(
 ) {
     for local_idx in live_object_locals.iter().rev() {
         func.instruction(&Instruction::LocalGet(*local_idx));
-        emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
+        );
     }
 }
 
@@ -70,7 +78,11 @@ pub(super) fn store_call_result(
 ) {
     if returns_alias_param {
         func.instruction(&Instruction::LocalTee(out));
-        emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+        );
     } else {
         func.instruction(&Instruction::LocalSet(out));
     }
@@ -104,13 +116,21 @@ pub(super) fn build_positional_callargs(
 ) {
     func.instruction(&Instruction::I64Const(args_names.len() as i64));
     func.instruction(&Instruction::I64Const(0));
-    emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallargsNew],
+    );
     func.instruction(&Instruction::LocalSet(callargs_tmp));
     for arg_name in args_names {
         let arg = locals[arg_name];
         func.instruction(&Instruction::LocalGet(callargs_tmp));
         func.instruction(&Instruction::LocalGet(arg));
-        emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallargsPushPos],
+        );
         func.instruction(&Instruction::Drop);
     }
 }
