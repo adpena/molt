@@ -9,6 +9,7 @@ pub(crate) enum WasmFunctionLoweringPlan {
 }
 
 impl WasmFunctionLoweringPlan {
+    #[cfg(test)]
     pub(crate) fn lir_fast_body(&self) -> Option<&WasmBody> {
         match self {
             Self::LirFast(body) => Some(body),

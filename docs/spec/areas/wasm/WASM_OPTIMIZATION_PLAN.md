@@ -23,12 +23,13 @@ Key characteristics of the current implementation:
 - **Direct WASM emission**: Custom `WasmBackend` struct builds WASM modules section by section (types, imports, functions, code, data, tables, exports).
 - **NaN-boxed object model**: Same 64-bit NaN-boxing scheme as native, with i64 as the universal value type.
 - **Relocatable object output**: Emits linking sections and relocation entries for `wasm-ld` to combine with the pre-compiled runtime `.wasm`.
-- **Generated and planned import surface**: `wasm_abi_manifest.toml` generates
-  the import registry/types, `wasm_imports.rs` owns static op dependency data,
-  and `wasm/module_abi/runtime_surface.rs` performs the single IR scan for
-  module ABI facts. `wasm/module_abi/runtime_import_demand.rs` owns Auto/reloc
-  required imports, while runtime surface retains direct runtime-call arity,
-  builtin trampolines, and per-module intrinsic manifests.
+- **Generated and observed import surface**: `wasm_abi_manifest.toml` generates
+  the import registry/types, loop runtime calls, host exports, and fallback
+  exports. `wasm/module_abi/runtime_surface.rs` performs the single IR scan for
+  module ABI facts, while code emission records actual import use in
+  `TrackedImportIds`. Finalization strips unobserved imports before relocation
+  and linking sections are emitted, so Auto/Pure retention is owned by emitted
+  use rather than a pre-emission dependency frontier.
 - **State machine lowering**: Generators, coroutines, and async generators use dispatch-block state machines with dense/sparse remap tables.
 - **Deterministic output**: BTreeMap used everywhere for iteration-order stability; NaN canonicalization available via `MOLT_DETERMINISTIC=1`.
 
@@ -298,7 +299,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 | Optimization | Estimated Reduction | Status |
 |---|---|---|
 | **Non-reloc Auto import stripping** (`WasmProfile::Auto`) | Workload-dependent; removes unused function imports after codegen | DONE — emitted-use ledger (`TrackedImportIds`) plus validated `strip_unused_imports` owns final non-reloc retention |
-| **Reloc Auto import declaration** (`WasmProfile::Auto` + reloc) | Enables linker GC without missing required imports | DONE — conservative pre-emission frontier is reloc-only; `MOLT_WASM_EXTRA_REQUIRED_IMPORTS` is a linker-declaration hint, not a non-reloc retention override |
+| **Reloc Auto import stripping** (`WasmProfile::Auto` + reloc) | Enables linker GC without unused runtime imports | DONE — emitted-use ledger plus padded-width function-index remap strips unused imports before relocation/linking sections |
 | **Pure capability stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | DONE (ddc8ea4c) — compile-time IO/ASYNC/TIME import family omission |
 | **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
 | **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |

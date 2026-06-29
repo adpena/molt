@@ -5,7 +5,6 @@
 //! and Full includes everything.
 
 use std::collections::BTreeSet;
-use std::sync::Mutex;
 
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
@@ -13,36 +12,6 @@ use molt_backend_wasm::test_util::{
     reserved_runtime_callable_import_names, reserved_runtime_callable_table_ref_exports,
 };
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe {
-                std::env::set_var(self.key, value);
-            },
-            None => unsafe {
-                std::env::remove_var(self.key);
-            },
-        }
-    }
-}
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -367,24 +336,7 @@ fn auto_reloc_exports_table_init_refs_and_elem_relocs() {
 }
 
 #[test]
-fn auto_non_reloc_extra_required_imports_are_stripped_when_unemitted() {
-    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-    let _extra = EnvVarGuard::set("MOLT_WASM_EXTRA_REQUIRED_IMPORTS", "socket_new");
-
-    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
-    let names = import_names(&wasm);
-
-    assert!(
-        !names.contains("socket_new"),
-        "non-reloc Auto should retain imports from emitted-use tracking only; imports={names:?}"
-    );
-}
-
-#[test]
-fn auto_reloc_extra_required_imports_remain_declared_for_linker_gc() {
-    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
-    let _extra = EnvVarGuard::set("MOLT_WASM_EXTRA_REQUIRED_IMPORTS", "socket_new");
-
+fn auto_reloc_strips_unemitted_imports_before_relocation_sections() {
     let wasm = compile_with_options(
         hello_world_ir(),
         WasmCompileOptions {
@@ -396,8 +348,22 @@ fn auto_reloc_extra_required_imports_remain_declared_for_linker_gc() {
     let names = import_names(&wasm);
 
     assert!(
-        names.contains("socket_new"),
-        "reloc Auto should preserve extra required imports for the linker; imports={names:?}"
+        !names.contains("socket_new"),
+        "reloc Auto should retain imports from emitted-use tracking only; imports={names:?}"
+    );
+    assert!(
+        names.contains("string_from_bytes"),
+        "reloc Auto should retain imports used by emitted code; imports={names:?}"
+    );
+
+    let custom_sections = custom_section_names(&wasm);
+    assert!(
+        custom_sections.contains("reloc.CODE"),
+        "relocatable emitted calls must keep code relocations after import remap; custom_sections={custom_sections:?}"
+    );
+    assert!(
+        custom_sections.contains("reloc.ELEM"),
+        "relocatable table refs must keep element relocations after import remap; custom_sections={custom_sections:?}"
     );
 }
 

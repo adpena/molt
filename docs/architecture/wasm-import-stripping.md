@@ -1,16 +1,15 @@
 # WASM Import Stripping for Pure-Computation Modules
 
 > **UPDATE 2026-03-20:** Import stripping for freestanding deployment is now implemented via `tools/wasm_stub_wasi.py` (post-link WASI import replacement with unreachable stubs). See `--target wasm-freestanding`.
-> **UPDATE 2026-06-27:** Runtime import discovery is no longer a monolithic
-> `wasm.rs` scan. The generated ABI manifest owns import names/types and static
-> op dependency data. It also owns the runtime-surface prefix/singleton
-> matchers for IR op kinds that map directly to import names, plus the
-> split/link output export policy consumed by `tools/wasm_link_format.py`.
+> **UPDATE 2026-06-29:** Runtime import discovery is no longer a monolithic
+> `wasm.rs` scan or a pre-emission dependency table. The generated ABI manifest
+> owns import names/types, loop runtime calls, host exports, fallback exports,
+> and split/link output export policy consumed by `tools/wasm_link_format.py`.
 > `wasm/module_abi/runtime_surface.rs` remains the single IR-scanning planner
-> for module ABI facts. It delegates Auto/reloc import demand to
-> `wasm/module_abi/runtime_import_demand.rs`, while retaining direct
-> runtime-call arity, builtin trampoline, class spill, and per-module intrinsic
-> manifest planning.
+> for module ABI facts. Auto and Pure register the profile-allowed import
+> surface, code emission records actual import accesses in `TrackedImportIds`,
+> and finalization strips unobserved imports for relocatable and non-relocatable
+> output before relocation/linking sections are emitted.
 
 **Date:** 2026-03-07
 **Context:** Molt WASM codegen (`runtime/molt-backend-wasm/src/wasm.rs`) now routes import
@@ -24,12 +23,13 @@ The compiled `generator.wasm` (13.1 MB) declares **90 imports** across three nam
 
 ### `molt_runtime` (internal runtime)
 Runtime host functions are declared from the generated ABI registry
-(`runtime/molt-backend-wasm/src/wasm_abi_generated/`). In Auto/reloc mode,
-`runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs`
-computes the pre-emission requirement set from IR, `OP_IMPORT_DEPS`, generated
-runtime-required import matchers, direct runtime calls, task/generator facts,
-and backend-lowered runtime calls. Full profile alone registers the whole
-registry for process-host compatibility. The generated registry covers:
+(`runtime/molt-backend-wasm/src/wasm_abi_generated/`). Full profile registers
+the whole registry for process-host compatibility. Auto and Pure profile
+register the profile-allowed registry, then `TrackedImportIds` records the
+imports that emitted code actually addresses. Finalization remaps function
+indices, preserves padded LEB operand width for relocatable calls, strips
+unobserved imports, and only then writes relocation/linking sections. The
+generated registry covers:
 - **Core:** `runtime_init`, `runtime_shutdown`, `alloc`, `print_obj`, `print_newline`
 - **Arithmetic/comparison:** `add`, `sub`, `mul`, `div`, `lt`, `gt`, `eq`, etc.
 - **Collections:** `list_*`, `dict_*`, `set_*`, `tuple_*`, `string_*`
@@ -107,11 +107,11 @@ Or use the existing `tools/wasm_strip_unused.py` (already in the repo) which can
 
 - Existing analysis: `docs/architecture/wasm-import-analysis.md` (2026-03-06)
 - Existing strip tool: `tools/wasm_strip_unused.py`
-- WASM import registry and dependency data:
+- WASM import registry and host export/fallback data:
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - WASM split/link export keep policy:
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - WASM runtime surface planner: `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs`
-- WASM runtime import-demand planner:
-  `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs`
+- WASM emitted-use import ledger: `runtime/molt-backend-wasm/src/wasm_import_tracking.rs`
+- WASM function-index remapping: `runtime/molt-backend-wasm/src/wasm_binary/code_remap.rs`
 - Browser host stubs: `strata/` or site `molt-wasm-host.ts`

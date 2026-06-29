@@ -56,11 +56,35 @@ fn remap_function_body(
             return Err("overlapping function-index operand patches".to_string());
         }
         out.extend_from_slice(&body[cursor..patch.operand_start]);
-        encode_u32_leb128(patch.new_index, &mut out);
+        encode_u32_leb128_width(
+            patch.new_index,
+            patch.operand_end - patch.operand_start,
+            &mut out,
+        )?;
         cursor = patch.operand_end;
     }
     out.extend_from_slice(&body[cursor..]);
     Ok(out)
+}
+
+fn encode_u32_leb128_width(value: u32, width: usize, out: &mut Vec<u8>) -> Result<(), String> {
+    if width == 0 {
+        return Err("function-index operand width cannot be zero".to_string());
+    }
+    let mut remaining = value;
+    for byte_index in 0..width {
+        let mut byte = (remaining & 0x7f) as u8;
+        remaining >>= 7;
+        if byte_index + 1 < width {
+            byte |= 0x80;
+        } else if remaining != 0 {
+            return Err(format!(
+                "function index {value} does not fit in original {width}-byte LEB128 operand"
+            ));
+        }
+        out.push(byte);
+    }
+    Ok(())
 }
 
 fn collect_function_index_patches(
@@ -115,6 +139,20 @@ mod tests {
         assert_eq!(
             remapped,
             vec![0x00, 0x41, 0x10, 0x1a, 0x10, 0x0c, 0xd2, 0x0d, 0x0b,]
+        );
+    }
+
+    #[test]
+    fn remap_preserves_padded_function_index_operands() {
+        let body = [
+            0x00, // local decl count
+            0x10, 0x82, 0x80, 0x80, 0x80, 0x00, // call 2, padded to 5 bytes
+            0x0b, // end
+        ];
+        let remapped = remap_function_body(&body, &|_| Ok(1)).unwrap();
+        assert_eq!(
+            remapped,
+            vec![0x00, 0x10, 0x81, 0x80, 0x80, 0x80, 0x00, 0x0b]
         );
     }
 }

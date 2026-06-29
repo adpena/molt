@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use wasm_encoder::{Function, Instruction, MemArg, ValType};
 
 use crate::TrampolineKind;
@@ -102,28 +100,6 @@ impl WasmTaskRuntimeLayout {
     pub(in crate::wasm) fn trampoline_local_types(self) -> [ValType; 4] {
         let _ = self;
         [ValType::I64, ValType::I32, ValType::I64, ValType::I32]
-    }
-
-    pub(in crate::wasm) fn extend_required_imports(
-        self,
-        required: &mut BTreeSet<WasmRuntimeImport>,
-        has_payload_slots: bool,
-    ) {
-        required.insert(WasmRuntimeImport::TaskNew);
-        if has_payload_slots {
-            required.insert(WasmRuntimeImport::HandleResolve);
-            required.insert(WasmRuntimeImport::IncRefObj);
-        }
-        match self.completion {
-            WasmTaskCompletion::ReturnTask => {}
-            WasmTaskCompletion::RegisterCancelToken => {
-                required.insert(WasmRuntimeImport::CancelTokenGetCurrent);
-                required.insert(WasmRuntimeImport::TaskRegisterTokenOwned);
-            }
-            WasmTaskCompletion::WrapAsyncGen => {
-                required.insert(WasmRuntimeImport::AsyncgenNew);
-            }
-        }
     }
 
     pub(in crate::wasm) fn emit_task_new(
@@ -277,19 +253,5 @@ mod tests {
             WasmTaskRuntimeLayout::for_alloc_task_kind(None).runtime_task_kind(),
             TASK_KIND_FUTURE
         );
-    }
-
-    #[test]
-    fn task_layout_owns_completion_imports() {
-        let mut required = BTreeSet::new();
-        WasmTaskRuntimeLayout::for_trampoline_kind(TrampolineKind::AsyncGen)
-            .expect("async generator layout")
-            .extend_required_imports(&mut required, true);
-
-        assert!(required.contains(&WasmRuntimeImport::TaskNew));
-        assert!(required.contains(&WasmRuntimeImport::HandleResolve));
-        assert!(required.contains(&WasmRuntimeImport::IncRefObj));
-        assert!(required.contains(&WasmRuntimeImport::AsyncgenNew));
-        assert!(!required.contains(&WasmRuntimeImport::CancelTokenGetCurrent));
     }
 }

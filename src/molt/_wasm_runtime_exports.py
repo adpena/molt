@@ -156,17 +156,6 @@ def canonical_intrinsic_runtime_name(name: str) -> str:
     return intrinsic_runtime_symbol_name(name)
 
 
-def wasm_runtime_required_import_names(
-    reached_intrinsic_symbols: Iterable[str] | None,
-) -> tuple[str, ...]:
-    raw_names: set[str] = set()
-    for name in reached_intrinsic_symbols or ():
-        import_name = wasm_runtime_import_name(canonical_intrinsic_runtime_name(name))
-        if import_name is not None:
-            raw_names.add(import_name)
-    return tuple(sorted(raw_names))
-
-
 def wasm_runtime_required_export_names(
     required_runtime_imports: Iterable[str] | None,
 ) -> tuple[str, ...]:
