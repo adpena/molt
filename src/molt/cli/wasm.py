@@ -60,11 +60,11 @@ def _export_wasm_table_refs(path: Path) -> None:
             exports.append((name, kind, index))
             existing_names.add(name)
 
-    additions = [
-        (f"__molt_table_ref_{slot}", 0, func_index)
-        for slot, func_index in sorted(slot_to_func.items())
-        if f"__molt_table_ref_{slot}" not in existing_names
-    ]
+    additions = []
+    for slot, func_index in sorted(slot_to_func.items()):
+        name = _wasm_artifact.wasm_table_ref_export_name(slot)
+        if name not in existing_names:
+            additions.append((name, 0, func_index))
     if not additions:
         return
 
@@ -101,9 +101,8 @@ def _effective_split_worker_table_base(
     _ = runtime_table_min
     if wasm_table_base is None:
         return None
-    inferred = _wasm_artifact._infer_wasm_table_base_from_export_names(
+    inferred = _wasm_artifact.infer_wasm_table_base_from_table_ref_exports(
         app_table_ref_signatures,
-        export_name_prefix="__molt_table_ref_",
     )
     if inferred is not None and inferred != wasm_table_base:
         raise ValueError(
@@ -246,6 +245,9 @@ def _generate_split_worker_js(
     runtime_table_ref_signatures_json = json.dumps(
         dict(runtime_table_ref_signatures or {}), sort_keys=True
     )
+    table_ref_export_prefix_json = json.dumps(
+        _wasm_artifact.WASM_TABLE_REF_EXPORT_PREFIX
+    )
     reserved_runtime_callable_base = WASM_RESERVED_RUNTIME_CALLABLE_BASE
     reserved_runtime_shared_prefix_len = (
         reserved_runtime_callable_base + WASM_RESERVED_RUNTIME_CALLABLE_COUNT * 2
@@ -339,6 +341,7 @@ export default {
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
+    const TABLE_REF_EXPORT_PREFIX = __MOLT_TABLE_REF_EXPORT_PREFIX__;
     const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
     const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
     const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
@@ -859,6 +862,26 @@ export default {
       return String(value);
     };
 
+    const tableRefExportName = (index) => `${TABLE_REF_EXPORT_PREFIX}${index}`;
+
+    const parseTableRefExportName = (name) => {
+      if (!name.startsWith(TABLE_REF_EXPORT_PREFIX)) {
+        return null;
+      }
+      const raw = name.slice(TABLE_REF_EXPORT_PREFIX.length);
+      if (raw.length === 0) {
+        return null;
+      }
+      for (let i = 0; i < raw.length; i += 1) {
+        const code = raw.charCodeAt(i);
+        if (code < 48 || code > 57) {
+          return null;
+        }
+      }
+      const index = Number(raw);
+      return Number.isInteger(index) && String(index) === raw ? index : null;
+    };
+
     const callWithSignature = (fn, signature, args) => {
       if (!signature || !Array.isArray(signature.params)) {
         return fn(...args);
@@ -876,11 +899,11 @@ export default {
       }
       const refs = [];
       for (const [name, value] of Object.entries(instance.exports)) {
-        const match = /^__molt_table_ref_(\\d+)$/.exec(name);
-        if (!match || typeof value !== "function") {
+        const refIndex = parseTableRefExportName(name);
+        if (refIndex === null || typeof value !== "function") {
           continue;
         }
-        refs.push({ index: Number(match[1]), fn: value });
+        refs.push({ index: refIndex, fn: value });
       }
       if (refs.length === 0) {
         return;
@@ -901,11 +924,10 @@ export default {
       }
       let maxIndex = -1;
       for (const name of Object.keys(instance.exports)) {
-        const match = /^__molt_table_ref_(\\d+)$/.exec(name);
-        if (!match) {
+        const idx = parseTableRefExportName(name);
+        if (idx === null) {
           continue;
         }
-        const idx = Number(match[1]);
         if (Number.isInteger(idx) && idx > maxIndex) {
           maxIndex = idx;
         }
@@ -1123,7 +1145,7 @@ export default {
       hostEnv[indirectName] = (fnIndex, ...args) => {
         const idx = Number(fnIndex);
         const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
-        const directName = `__molt_table_ref_${dispatchIdx}`;
+        const directName = tableRefExportName(dispatchIdx);
         const indirectFn = appInstance?.exports?.[indirectName];
         if (typeof indirectFn === "function") {
           try {
@@ -1267,6 +1289,10 @@ export default {
         .replace(
             "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
             runtime_table_ref_signatures_json,
+        )
+        .replace(
+            "__MOLT_TABLE_REF_EXPORT_PREFIX__",
+            table_ref_export_prefix_json,
         )
         .replace(
             "__MOLT_LEGACY_WASM_TABLE_BASE__",

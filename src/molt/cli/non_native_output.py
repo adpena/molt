@@ -42,6 +42,7 @@ from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
     _wasm_import_minima,
+    wasm_table_ref_export_signatures,
 )
 
 
@@ -525,12 +526,8 @@ def _prepare_non_native_build_result(
                 rt_table_min or 0,
                 8192,
             )
-            app_table_ref_signatures = _wasm_export_function_signatures(
-                app_wasm, export_name_prefix="__molt_table_ref_"
-            )
-            runtime_table_ref_signatures = _wasm_export_function_signatures(
-                rt_wasm, export_name_prefix="__molt_table_ref_"
-            )
+            app_table_ref_signatures = wasm_table_ref_export_signatures(app_wasm)
+            runtime_table_ref_signatures = wasm_table_ref_export_signatures(rt_wasm)
             try:
                 effective_wasm_table_base = _effective_split_worker_table_base(
                     wasm_table_base=wasm_table_base,

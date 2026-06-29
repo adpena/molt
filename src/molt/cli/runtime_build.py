@@ -1139,7 +1139,7 @@ def _ensure_runtime_wasm(
         # --remove-unused-module-elements from stripping ~MBs of dead code. The
         # public surface is fully described by the explicit
         # wasm_runtime_export_link_args() allowlist plus the post-link
-        # __molt_table_ref_* export pass (_export_wasm_table_refs), so
+        # table-ref export pass (_export_wasm_table_refs), so
         # --export-dynamic is pure bloat here.
         link_flags = f"{shared_import_flags}{runtime_exports}"
         cargo_link_flags = _wasm_link_args_response_rustflags(

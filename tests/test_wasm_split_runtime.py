@@ -573,11 +573,7 @@ def _reserved_runtime_callable_indices() -> list[int]:
 
 def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
     export_names = _collect_export_names(path)
-    ref_indices = sorted(
-        int(name.removeprefix("__molt_table_ref_"))
-        for name in export_names
-        if name.startswith("__molt_table_ref_")
-    )
+    ref_indices = wasm_artifact.wasm_table_ref_indices_from_names(export_names)
     if not ref_indices:
         return None
 

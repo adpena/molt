@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Mapping, Sequence
 
+from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
+
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
 
 WASM_SECTION_NAMES: dict[int, str] = {
@@ -874,22 +876,51 @@ def _wasm_export_function_signatures(
     return export_signatures
 
 
-def _infer_wasm_table_base_from_export_names(
+def wasm_table_ref_export_name(index: int) -> str:
+    if index < 0:
+        raise ValueError("WASM table-ref export index must be non-negative")
+    return f"{WASM_TABLE_REF_EXPORT_PREFIX}{index}"
+
+
+def parse_wasm_table_ref_export_name(name: str) -> int | None:
+    if not name.startswith(WASM_TABLE_REF_EXPORT_PREFIX):
+        return None
+    raw = name[len(WASM_TABLE_REF_EXPORT_PREFIX) :]
+    if not raw or not raw.isascii() or not raw.isdecimal():
+        return None
+    if raw != str(int(raw)):
+        return None
+    return int(raw)
+
+
+def is_wasm_table_ref_export_name(name: str) -> bool:
+    return parse_wasm_table_ref_export_name(name) is not None
+
+
+def wasm_table_ref_export_signatures(
+    path: Path,
+) -> dict[str, dict[str, object]]:
+    return _wasm_export_function_signatures(
+        path, export_name_prefix=WASM_TABLE_REF_EXPORT_PREFIX
+    )
+
+
+def infer_wasm_table_base_from_table_ref_exports(
     export_signatures: Mapping[str, Mapping[str, object]],
-    *,
-    export_name_prefix: str,
 ) -> int | None:
-    slots: list[int] = []
-    for name in export_signatures:
-        if not name.startswith(export_name_prefix):
-            continue
-        raw = name[len(export_name_prefix) :]
-        try:
-            slot = int(raw)
-        except ValueError:
-            continue
-        if slot > 0:
-            slots.append(slot)
+    slots = [
+        slot
+        for name in export_signatures
+        if (slot := parse_wasm_table_ref_export_name(name)) is not None and slot > 0
+    ]
     if not slots:
         return None
     return min(slots)
+
+
+def wasm_table_ref_indices_from_names(names: Iterable[str]) -> list[int]:
+    return sorted(
+        slot
+        for name in names
+        if (slot := parse_wasm_table_ref_export_name(name)) is not None
+    )

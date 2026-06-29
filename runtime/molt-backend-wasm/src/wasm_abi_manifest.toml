@@ -83,6 +83,7 @@ non_runtime_callable_intrinsic = [
 
 [table_layout]
 legacy_table_base = 256
+table_ref_export_prefix = "__molt_table_ref_"
 
 [[reserved_runtime_callable]]
 index = 0

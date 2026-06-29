@@ -56,6 +56,8 @@ CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA
 
 WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
 
+WASM_TABLE_REF_EXPORT_PREFIX = _WASM_ABI.WASM_TABLE_REF_EXPORT_PREFIX
+
 _CALL_INDIRECT_IMPORT_BY_ARITY = {
     int(name.removeprefix("molt_call_indirect")): name
     for name in WASM_CALL_INDIRECT_IMPORTS
@@ -75,6 +77,28 @@ def call_indirect_import_name_for_arity(arity_text: str) -> str | None:
 
 def is_call_indirect_import_name(name: str) -> bool:
     return name in _CALL_INDIRECT_IMPORT_SET
+
+
+def table_ref_export_name(index: int) -> str:
+    if index < 0:
+        raise ValueError("WASM table-ref export index must be non-negative")
+    return f"{WASM_TABLE_REF_EXPORT_PREFIX}{index}"
+
+
+def parse_table_ref_export_name(name: str) -> int | None:
+    if not name.startswith(WASM_TABLE_REF_EXPORT_PREFIX):
+        return None
+    raw = name[len(WASM_TABLE_REF_EXPORT_PREFIX) :]
+    if not raw or not raw.isascii() or not raw.isdecimal():
+        return None
+    if raw != str(int(raw)):
+        return None
+    return int(raw)
+
+
+def is_table_ref_export_name(name: str) -> bool:
+    return parse_table_ref_export_name(name) is not None
+
 
 _OUTPUT_RUNTIME_EXPORT_ALIASES = _WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
 

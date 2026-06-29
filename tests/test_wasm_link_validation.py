@@ -1014,8 +1014,9 @@ def test_strip_unused_module_function_imports_remaps_indices() -> None:
 
 
 def test_post_link_optimize_split_app_does_not_preserve_all_reference_exports() -> None:
+    table_ref = wasm_link.table_ref_export_name(7)
     module = _build_exported_runtime_module_many(
-        ["dead_user_export", "molt_main", "__molt_table_ref_7"]
+        ["dead_user_export", "molt_main", table_ref]
     )
 
     default_optimized = wasm_link._post_link_optimize(
@@ -1033,7 +1034,7 @@ def test_post_link_optimize_split_app_does_not_preserve_all_reference_exports() 
     split_exports = wasm_link._collect_exports(split_app_optimized)
     assert "dead_user_export" not in split_exports
     assert "molt_main" in split_exports
-    assert "__molt_table_ref_7" in split_exports
+    assert table_ref in split_exports
 
 
 def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> (
@@ -2256,7 +2257,7 @@ def test_append_table_ref_elements_uses_export_names_without_name_section() -> N
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_7"))
+    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(7)))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     sections.append((7, bytes(export_payload)))
@@ -2313,10 +2314,12 @@ def test_append_table_ref_elements_filters_to_allowed_output_refs() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(2))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_3"))
+    ref_3 = wasm_link.table_ref_export_name(3)
+    ref_9 = wasm_link.table_ref_export_name(9)
+    export_payload.extend(wasm_link._write_string(ref_3))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_9"))
+    export_payload.extend(wasm_link._write_string(ref_9))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(1))
     sections.append((7, bytes(export_payload)))
@@ -2335,7 +2338,7 @@ def test_append_table_ref_elements_filters_to_allowed_output_refs() -> None:
     )
     assert updated is not None
     text_refs = wasm_link._collect_function_exports(updated)
-    assert "__molt_table_ref_3" in text_refs
+    assert ref_3 in text_refs
 
     element_section = next(
         payload
@@ -2367,7 +2370,8 @@ def test_strip_internal_exports_keeps_table_ref_exports() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(2))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_7"))
+    table_ref = wasm_link.table_ref_export_name(7)
+    export_payload.extend(wasm_link._write_string(table_ref))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     export_payload.extend(wasm_link._write_string("molt_main"))
@@ -2385,7 +2389,7 @@ def test_strip_internal_exports_keeps_table_ref_exports() -> None:
     data = wasm_link._build_sections(sections)
     updated = wasm_link._strip_internal_exports(data)
     exports = wasm_link._collect_function_exports(updated or data)
-    assert "__molt_table_ref_7" in exports
+    assert table_ref in exports
     assert "molt_main" in exports
 
 
@@ -2406,7 +2410,8 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(3))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_7"))
+    table_ref = wasm_link.table_ref_export_name(7)
+    export_payload.extend(wasm_link._write_string(table_ref))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     export_payload.extend(wasm_link._write_string("molt_main"))
@@ -2430,7 +2435,7 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
         data, preserve_exports={"main_molt__ocr_tokens"}
     )
     exports = wasm_link._collect_function_exports(updated or data)
-    assert "__molt_table_ref_7" in exports
+    assert table_ref in exports
     assert "molt_main" in exports
     assert "main_molt__ocr_tokens" in exports
 
@@ -2452,7 +2457,8 @@ def test_strip_internal_exports_can_remove_linked_table_refs() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(3))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_7"))
+    table_ref = wasm_link.table_ref_export_name(7)
+    export_payload.extend(wasm_link._write_string(table_ref))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     export_payload.extend(wasm_link._write_string("molt_main"))
@@ -2477,7 +2483,7 @@ def test_strip_internal_exports_can_remove_linked_table_refs() -> None:
         preserve_table_refs=False,
     )
     exports = wasm_link._collect_function_exports(updated or b"")
-    assert "__molt_table_ref_7" not in exports
+    assert table_ref not in exports
     assert "molt_main" in exports
     assert "main_molt__ocr_tokens" in exports
 
@@ -2527,9 +2533,10 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(4))
+    table_ref = wasm_link.table_ref_export_name(7)
     for name, index in (
-        ("__molt_table_ref_7", 0),
-        ("__molt_table_ref_7", 1),
+        (table_ref, 0),
+        (table_ref, 1),
         ("molt_main", 0),
         ("molt_main", 1),
     ):
@@ -2549,9 +2556,7 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     data = wasm_link._build_sections(sections)
     updated = wasm_link._strip_internal_exports(data)
     exports = wasm_link._collect_function_exports(updated or data)
-    assert list(name for name in exports if name == "__molt_table_ref_7") == [
-        "__molt_table_ref_7"
-    ]
+    assert list(name for name in exports if name == table_ref) == [table_ref]
     assert list(name for name in exports if name == "molt_main") == ["molt_main"]
 
 
@@ -2634,7 +2639,7 @@ def test_required_linked_table_min_respects_exported_table_refs() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link._write_string("__molt_table_ref_20"))
+    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(20)))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     sections.append((7, bytes(export_payload)))
