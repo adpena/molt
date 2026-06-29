@@ -1,6 +1,6 @@
 use super::super::lir_context::LirLowerCtx;
 use super::super::lir_scalar::emit_get_boxed_for_repr;
-use super::super::runtime_calls::LirRuntimeCall;
+use super::super::runtime_calls::{LirFixedRuntimeCall, LirRuntimeCall};
 use crate::wasm::body::WasmLirFallbackReason;
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
@@ -37,15 +37,31 @@ pub(in crate::wasm::lir_fast) fn original_kind(op: &LirOp) -> Option<&str> {
     }
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_boxed_binary_runtime_call(
+pub(in crate::wasm::lir_fast) fn emit_lir_boxed_operands_runtime_call(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
     runtime_call: LirRuntimeCall,
 ) {
-    emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call, 2);
+    let operand_count = runtime_call.boxed_operand_count().unwrap_or_else(|| {
+        panic!("WASM LIR runtime call {runtime_call:?} lacks ABI boxed_operand_count")
+    });
+    emit_lir_boxed_operands_runtime_call_counted(ctx, op, runtime_call, operand_count);
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_boxed_operands_runtime_call(
+pub(in crate::wasm::lir_fast) fn emit_lir_fixed_runtime_call(
+    ctx: &mut LirLowerCtx,
+    op: &LirOp,
+    runtime_call: LirFixedRuntimeCall,
+) {
+    emit_lir_boxed_operands_runtime_call_counted(
+        ctx,
+        op,
+        runtime_call.call,
+        runtime_call.operand_count,
+    );
+}
+
+fn emit_lir_boxed_operands_runtime_call_counted(
     ctx: &mut LirLowerCtx,
     op: &LirOp,
     runtime_call: LirRuntimeCall,

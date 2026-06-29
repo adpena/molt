@@ -282,6 +282,54 @@ impl LirRuntimeCall {
             Self::IntFromI64 => "int_from_i64",
         }
     }
+
+    pub(crate) const fn boxed_operand_count(self) -> Option<usize> {
+        match self {
+            Self::Add => Some(2),
+            Self::Sub => Some(2),
+            Self::Mul => Some(2),
+            Self::Div => Some(2),
+            Self::FloorDiv => Some(2),
+            Self::Mod => Some(2),
+            Self::Eq => Some(2),
+            Self::Ne => Some(2),
+            Self::Lt => Some(2),
+            Self::Le => Some(2),
+            Self::Gt => Some(2),
+            Self::Ge => Some(2),
+            Self::Is => Some(2),
+            Self::BitAnd => Some(2),
+            Self::BitOr => Some(2),
+            Self::BitXor => Some(2),
+            Self::Invert => Some(1),
+            Self::LShift => Some(2),
+            Self::RShift => Some(2),
+            Self::Neg => Some(1),
+            Self::Pos => Some(1),
+            Self::Pow => Some(2),
+            Self::Index => Some(2),
+            Self::StoreIndex => Some(3),
+            Self::DelIndex => Some(2),
+            Self::DictGetitem => Some(2),
+            Self::DictSetitem => Some(3),
+            Self::TupleGetitem => Some(2),
+            Self::ListIntGetitem => Some(2),
+            Self::ListIntSetitem => Some(3),
+            Self::GetAttrName => Some(2),
+            Self::SetAttrName => Some(3),
+            Self::DelAttrName => Some(2),
+            Self::Iter => Some(1),
+            Self::IterNext => Some(1),
+            Self::Contains => Some(2),
+            Self::DictContains => Some(2),
+            Self::ListContains => Some(2),
+            Self::SetContains => Some(2),
+            Self::StrContains => Some(2),
+            Self::OrdAt => Some(2),
+            Self::Not => Some(1),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

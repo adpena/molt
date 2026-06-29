@@ -4407,122 +4407,152 @@ callable_arity = 3
 [[lir_runtime_call]]
 variant = "Add"
 import_name = "add"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Sub"
 import_name = "sub"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Mul"
 import_name = "mul"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Div"
 import_name = "div"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "FloorDiv"
 import_name = "floordiv"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Mod"
 import_name = "mod"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Eq"
 import_name = "eq"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Ne"
 import_name = "ne"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Lt"
 import_name = "lt"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Le"
 import_name = "le"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Gt"
 import_name = "gt"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Ge"
 import_name = "ge"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Is"
 import_name = "is"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "BitAnd"
 import_name = "bit_and"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "BitOr"
 import_name = "bit_or"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "BitXor"
 import_name = "bit_xor"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Invert"
 import_name = "invert"
+boxed_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "LShift"
 import_name = "lshift"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "RShift"
 import_name = "rshift"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Neg"
 import_name = "neg"
+boxed_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "Pos"
 import_name = "pos"
+boxed_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "Pow"
 import_name = "pow"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Index"
 import_name = "index"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "StoreIndex"
 import_name = "store_index"
+boxed_operand_count = 3
 
 [[lir_runtime_call]]
 variant = "DelIndex"
 import_name = "del_index"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "DictGetitem"
 import_name = "dict_getitem"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "DictSetitem"
 import_name = "dict_setitem"
+boxed_operand_count = 3
 
 [[lir_runtime_call]]
 variant = "TupleGetitem"
 import_name = "tuple_getitem"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "ListIntGetitem"
 import_name = "list_int_getitem"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "ListIntSetitem"
 import_name = "list_int_setitem"
+boxed_operand_count = 3
 
 [[lir_runtime_call]]
 variant = "Alloc"
@@ -4563,6 +4593,7 @@ import_name = "set_add"
 [[lir_runtime_call]]
 variant = "GetAttrName"
 import_name = "get_attr_name"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "GetAttrObjectIc"
@@ -4579,6 +4610,7 @@ import_name = "get_attr_special"
 [[lir_runtime_call]]
 variant = "SetAttrName"
 import_name = "set_attr_name"
+boxed_operand_count = 3
 
 [[lir_runtime_call]]
 variant = "SetAttrObject"
@@ -4587,6 +4619,7 @@ import_name = "set_attr_object"
 [[lir_runtime_call]]
 variant = "DelAttrName"
 import_name = "del_attr_name"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "DelAttrObject"
@@ -4595,30 +4628,37 @@ import_name = "del_attr_object"
 [[lir_runtime_call]]
 variant = "Iter"
 import_name = "iter"
+boxed_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "IterNext"
 import_name = "iter_next"
+boxed_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "Contains"
 import_name = "contains"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "DictContains"
 import_name = "dict_contains"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "ListContains"
 import_name = "list_contains"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "SetContains"
 import_name = "set_contains"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "StrContains"
 import_name = "str_contains"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "SliceNew"
@@ -4627,10 +4667,12 @@ import_name = "slice_new"
 [[lir_runtime_call]]
 variant = "OrdAt"
 import_name = "ord_at"
+boxed_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Not"
 import_name = "not"
+boxed_operand_count = 1
 
 [[lir_runtime_call]]
 variant = "IsTruthy"

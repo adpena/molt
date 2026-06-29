@@ -1,9 +1,9 @@
 use super::lir_context::LirLowerCtx;
 use super::lir_runtime_ops::{
-    LirSequenceBuilderFinish, emit_lir_alloc, emit_lir_attr, emit_lir_boxed_binary_runtime_call,
-    emit_lir_boxed_operands_runtime_call, emit_lir_build_dict, emit_lir_build_set,
-    emit_lir_build_slice, emit_lir_closure_load, emit_lir_closure_store, emit_lir_del_index,
-    emit_lir_exception_pending, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
+    LirSequenceBuilderFinish, emit_lir_alloc, emit_lir_attr, emit_lir_boxed_operands_runtime_call,
+    emit_lir_build_dict, emit_lir_build_set, emit_lir_build_slice, emit_lir_closure_load,
+    emit_lir_closure_store, emit_lir_del_index, emit_lir_exception_pending,
+    emit_lir_fixed_runtime_call, emit_lir_get_iter, emit_lir_index, emit_lir_iter_next,
     emit_lir_membership, emit_lir_object_new_bound, emit_lir_sequence_builder,
     emit_lir_store_index, emit_lir_unsupported_marker, original_kind,
 };
@@ -159,8 +159,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Div => emit_lir_binary_arith(ctx, op, ArithOp::Div),
         OpCode::FloorDiv => emit_lir_binary_arith(ctx, op, ArithOp::FloorDiv),
         OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
-        OpCode::Pow => emit_lir_boxed_binary_runtime_call(ctx, op, LirRuntimeCall::Pow),
-        OpCode::OrdAt => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::OrdAt, 2),
+        OpCode::Pow => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::Pow),
+        OpCode::OrdAt => emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::OrdAt),
         OpCode::BuildList => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::List),
         OpCode::BuildTuple => emit_lir_sequence_builder(ctx, op, LirSequenceBuilderFinish::Tuple),
         OpCode::BuildDict => emit_lir_build_dict(ctx, op),
@@ -300,7 +300,7 @@ fn emit_lir_generated_fixed_runtime_call(ctx: &mut LirLowerCtx, op: &LirOp) {
         runtime.operand_count,
         op.tir_op.operands.len()
     );
-    emit_lir_boxed_operands_runtime_call(ctx, op, runtime.call, runtime.operand_count);
+    emit_lir_fixed_runtime_call(ctx, op, runtime);
 }
 
 fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -328,7 +328,7 @@ fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
             emit_lir_identity_copy(ctx, op)
         }
         Some(kind) if let Some(runtime) = lir_fixed_runtime_call(kind) => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, runtime.call, runtime.operand_count)
+            emit_lir_fixed_runtime_call(ctx, op, runtime)
         }
         Some(_) => emit_lir_unsupported_marker(ctx, op),
         None => emit_lir_identity_copy(ctx, op),

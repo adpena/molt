@@ -14,13 +14,13 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
     let original_kind = original_kind(op);
     match (op.tir_op.opcode, original_kind) {
         (OpCode::LoadAttr, Some("get_attr_name")) => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::GetAttrName, 2)
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::GetAttrName)
         }
         (OpCode::StoreAttr, Some("set_attr_name")) => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::SetAttrName, 3)
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::SetAttrName)
         }
         (OpCode::DelAttr, Some("del_attr_name")) => {
-            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelAttrName, 2)
+            emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelAttrName)
         }
         (OpCode::LoadAttr, Some("get_attr_generic_ptr")) => {
             let obj = required_operand(op, 0, "get_attr_generic_ptr");
