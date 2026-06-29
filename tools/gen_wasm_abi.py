@@ -97,6 +97,10 @@ def _py_string(value: str) -> str:
     return repr(value)
 
 
+def _py_option_str(value: str | None) -> str:
+    return "None" if value is None else _py_string(value)
+
+
 def _rust_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -156,10 +160,8 @@ def _render_rs_mod() -> str:
             "mod method_ic_selector;\n",
             "mod numeric_runtime_selector;\n",
             "mod object_new_bound_selector;\n",
-            "mod poll_table_imports;\n",
             "mod pure_profile;\n",
             "mod reserved_runtime_callables;\n",
-            "mod runtime_callable_imports;\n",
             "mod runtime_callable_queries;\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
@@ -182,7 +184,8 @@ def _render_rs_mod() -> str:
             "    wasm_runtime_export_name, wasm_runtime_import,\n",
             "};\n",
             "pub(crate) use import_specs::{\n",
-            "    IMPORT_REGISTRY, RuntimeImportSpec,\n",
+            "    IMPORT_REGISTRY, RuntimeCallableResult, RuntimeImportSpec,\n",
+            "    poll_table_imports, runtime_callable_imports,\n",
             "};\n",
             "pub(crate) use import_tokens::WasmRuntimeImport;\n",
             "pub(crate) use lir_runtime_calls::{\n",
@@ -201,15 +204,9 @@ def _render_rs_mod() -> str:
             "    wasm_object_new_bound_selection, WasmObjectNewBoundPayload,\n",
             "    WasmObjectNewBoundSelection,\n",
             "};\n",
-            "pub(crate) use poll_table_imports::{\n",
-            "    poll_table_import_slot, POLL_TABLE_IMPORTS,\n",
-            "};\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use reserved_runtime_callables::{\n",
             "    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "};\n",
-            "pub(crate) use runtime_callable_imports::{\n",
-            "    RuntimeCallableResult, RUNTIME_CALLABLE_IMPORTS,\n",
             "};\n",
             "pub(crate) use runtime_callable_queries::{\n",
             "    runtime_callable_arity, runtime_callable_import,\n",
@@ -498,9 +495,18 @@ def _render_rs_import_metadata(data: dict) -> str:
 
 def _render_rs_import_specs(data: dict) -> str:
     lines: list[str] = [_header("//")]
+    poll_table_slot_max = max(
+        (entry["poll_table_slot"] for entry in data["import"] if "poll_table_slot" in entry),
+        default=0,
+    )
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum RuntimeCallableResult {\n",
+            "    I64,\n",
+            "    Void,\n",
+            "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeImportSpec {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
@@ -508,11 +514,18 @@ def _render_rs_import_specs(data: dict) -> str:
             "    pub(crate) runtime_name: Option<&'static str>,\n",
             "    pub(crate) runtime_export_name: &'static str,\n",
             "    pub(crate) type_idx: u32,\n",
+            "    pub(crate) poll_table_slot: Option<u32>,\n",
+            "    pub(crate) callable_arity: Option<usize>,\n",
+            "    pub(crate) callable_result: Option<RuntimeCallableResult>,\n",
             "}\n\n",
             "pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[\n",
         ]
     )
     for entry in data["import"]:
+        callable_result = "None"
+        if "callable_arity" in entry:
+            result = "Void" if entry.get("callable_result") == "void" else "I64"
+            callable_result = f"Some(RuntimeCallableResult::{result})"
         lines.extend(
             [
                 "    RuntimeImportSpec {\n",
@@ -521,17 +534,49 @@ def _render_rs_import_specs(data: dict) -> str:
                 f"        runtime_name: {_rust_option_str(entry.get('runtime_name'))},\n",
                 f"        runtime_export_name: \"{_runtime_export_name(entry)}\",\n",
                 f"        type_idx: {entry['type']},\n",
+                "        poll_table_slot: "
+                + (
+                    f"Some({entry['poll_table_slot']})"
+                    if "poll_table_slot" in entry
+                    else "None"
+                )
+                + ",\n",
+                "        callable_arity: "
+                + (
+                    f"Some({entry['callable_arity']})"
+                    if "callable_arity" in entry
+                    else "None"
+                )
+                + ",\n",
+                f"        callable_result: {callable_result},\n",
                 "    },\n",
             ]
         )
     lines.extend(
         [
             "];\n\n",
+            f"const POLL_TABLE_IMPORT_SLOT_MAX: u32 = {poll_table_slot_max};\n\n",
             "#[inline]\n",
             "pub(crate) fn runtime_import_spec(import: WasmRuntimeImport) -> &'static RuntimeImportSpec {\n",
             "    let spec = &IMPORT_REGISTRY[import as usize];\n",
             "    debug_assert_eq!(spec.import, import);\n",
             "    spec\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn poll_table_imports() -> impl Iterator<Item = &'static RuntimeImportSpec> {\n",
+            "    (1..=POLL_TABLE_IMPORT_SLOT_MAX).filter_map(poll_table_import_at_slot)\n",
+            "}\n\n",
+            "#[inline]\n",
+            "fn poll_table_import_at_slot(slot: u32) -> Option<&'static RuntimeImportSpec> {\n",
+            "    IMPORT_REGISTRY\n",
+            "        .iter()\n",
+            "        .find(|spec| spec.poll_table_slot == Some(slot))\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_callable_imports() -> impl Iterator<Item = &'static RuntimeImportSpec> {\n",
+            "    IMPORT_REGISTRY\n",
+            "        .iter()\n",
+            "        .filter(|spec| spec.callable_arity.is_some())\n",
             "}\n\n",
         ]
     )
@@ -1253,79 +1298,6 @@ def _reserved_runtime_callable_rows(data: dict) -> list[dict]:
     )
 
 
-def _render_rs_poll_table_imports(data: dict) -> str:
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct PollTableImportSpec {\n",
-            "    pub(crate) table_slot: u32,\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "}\n\n",
-            "pub(crate) const POLL_TABLE_IMPORTS: &[PollTableImportSpec] = &[\n",
-        ]
-    )
-    for slot, name in _poll_table_import_rows(data):
-        lines.extend(
-            [
-                "    PollTableImportSpec {\n",
-                f"        table_slot: {slot},\n",
-                f"        import: {_rust_runtime_import(data, name)},\n",
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn poll_table_import_slot(import: WasmRuntimeImport) -> Option<u32> {\n",
-            "    POLL_TABLE_IMPORTS\n",
-            "        .iter()\n",
-            "        .find(|spec| spec.import == import)\n",
-            "        .map(|spec| spec.table_slot)\n",
-            "}\n\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_runtime_callable_imports(data: dict) -> str:
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum RuntimeCallableResult {\n",
-            "    I64,\n",
-            "    Void,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct RuntimeCallableImportSpec {\n",
-            "    pub(crate) runtime_name: &'static str,\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) arity: usize,\n",
-            "    pub(crate) result: RuntimeCallableResult,\n",
-            "}\n\n",
-            "pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[\n",
-        ]
-    )
-    for entry in _runtime_callable_import_rows(data):
-        result = "Void" if entry.get("callable_result") == "void" else "I64"
-        lines.extend(
-            [
-                "    RuntimeCallableImportSpec {\n",
-                f'        runtime_name: "{entry["runtime_name"]}",\n',
-                f"        import: {_rust_runtime_import(data, entry['name'])},\n",
-                f'        arity: {entry["callable_arity"]},\n',
-                f"        result: RuntimeCallableResult::{result},\n",
-                "    },\n",
-            ]
-        )
-    lines.append("];\n\n")
-    return "".join(lines)
-
-
 def _render_rs_reserved_runtime_callables(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
@@ -1365,23 +1337,22 @@ def _render_rs_runtime_callable_queries(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
+            "use super::import_specs::runtime_callable_imports;\n",
             "use super::import_tokens::WasmRuntimeImport;\n",
             "use super::reserved_runtime_callables::RESERVED_RUNTIME_CALLABLE_SPECS;\n",
-            "use super::runtime_callable_imports::RUNTIME_CALLABLE_IMPORTS;\n\n",
+            "\n",
             "#[inline]\n",
             "pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeImport> {\n",
-            "    RUNTIME_CALLABLE_IMPORTS\n",
-            "        .iter()\n",
-            "        .find(|spec| spec.runtime_name == runtime_name)\n",
+            "    runtime_callable_imports()\n",
+            "        .find(|spec| spec.runtime_name == Some(runtime_name))\n",
             "        .map(|spec| spec.import)\n",
             "}\n\n",
             "#[inline]\n",
             "pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {\n",
-            "    if let Some(spec) = RUNTIME_CALLABLE_IMPORTS\n",
-            "        .iter()\n",
-            "        .find(|spec| spec.runtime_name == runtime_name)\n",
+            "    if let Some(spec) = runtime_callable_imports()\n",
+            "        .find(|spec| spec.runtime_name == Some(runtime_name))\n",
             "    {\n",
-            "        return Some(spec.arity);\n",
+            "        return spec.callable_arity;\n",
             "    }\n",
             "    RESERVED_RUNTIME_CALLABLE_SPECS\n",
             "        .iter()\n",
@@ -1611,8 +1582,6 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(data),
         "object_new_bound_selector.rs": _render_rs_object_new_bound_selector(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
-        "poll_table_imports.rs": _render_rs_poll_table_imports(data),
-        "runtime_callable_imports.rs": _render_rs_runtime_callable_imports(data),
         "reserved_runtime_callables.rs": _render_rs_reserved_runtime_callables(data),
         "runtime_callable_queries.rs": _render_rs_runtime_callable_queries(data),
         "pure_profile.rs": _render_rs_pure_profile(data),
@@ -1631,10 +1600,39 @@ def render_py(data: dict) -> str:
         )
     lines.append(")\n\n")
     lines.append(f"WASM_STATIC_TYPE_COUNT: int = {len(data['static_type'])}\n\n")
-    lines.append("WASM_IMPORT_REGISTRY: tuple[str, ...] = (\n")
+    lines.append(
+        "WASM_IMPORT_SPECS: tuple[\n"
+        "    tuple[str, str | None, str, int, int | None, int | None, str | None], ...\n"
+        "] = (\n"
+    )
     for entry in data["import"]:
-        lines.append(f'    "{entry["name"]}",\n')
+        callable_result = (
+            _py_string(entry.get("callable_result", "i64"))
+            if "callable_arity" in entry
+            else "None"
+        )
+        poll_table_slot = (
+            str(entry["poll_table_slot"]) if "poll_table_slot" in entry else "None"
+        )
+        callable_arity = (
+            str(entry["callable_arity"]) if "callable_arity" in entry else "None"
+        )
+        lines.append(
+            f"    ({_py_string(entry['name'])}, "
+            f"{_py_option_str(entry.get('runtime_name'))}, "
+            f"{_py_string(_runtime_export_name(entry))}, "
+            f"{entry['type']}, {poll_table_slot}, {callable_arity}, "
+            f"{callable_result}),\n"
+        )
     lines.append(")\n\n")
+    lines.extend(
+        [
+            "WASM_IMPORT_REGISTRY: tuple[str, ...] = tuple(\n",
+            "    name\n",
+            "    for name, _runtime_name, _runtime_export_name, _type_idx, _poll_table_slot, _callable_arity, _callable_result in WASM_IMPORT_SPECS\n",
+            ")\n\n",
+        ]
+    )
     lines.append("WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (\n")
     for entry in data.get("wasm_bulk_memory_op", []):
         lines.append(
@@ -1642,14 +1640,15 @@ def render_py(data: dict) -> str:
             f'{entry["arg_count"]}),\n'
         )
     lines.append(")\n\n")
-    poll_imports = _poll_table_import_rows(data)
-    lines.append("WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (\n")
-    for slot, name in poll_imports:
-        lines.append(f'    ({slot}, "{name}"),\n')
-    lines.append(")\n\n")
     lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = "
-        "1 + max((slot for slot, _name in WASM_POLL_TABLE_IMPORTS), default=0)\n\n"
+        "WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 1 + max(\n"
+        "    (\n"
+        "        poll_table_slot\n"
+        "        for _name, _runtime_name, _runtime_export_name, _type_idx, poll_table_slot, _callable_arity, _callable_result in WASM_IMPORT_SPECS\n"
+        "        if poll_table_slot is not None\n"
+        "    ),\n"
+        "    default=0,\n"
+        ")\n\n"
     )
     lines.append(
         "WASM_LEGACY_TABLE_BASE: int = "
@@ -1659,14 +1658,6 @@ def render_py(data: dict) -> str:
         "WASM_TABLE_REF_EXPORT_PREFIX: str = "
         f"{_py_string(data['table_layout']['table_ref_export_prefix'])}\n\n"
     )
-    lines.append("WASM_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = (\n")
-    for entry in _runtime_callable_import_rows(data):
-        result = entry.get("callable_result", "i64")
-        lines.append(
-            f'    ("{entry["runtime_name"]}", "{entry["name"]}", '
-            f'{entry["callable_arity"]}, "{result}"),\n'
-        )
-    lines.append(")\n\n")
     lines.append("WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n")
     for entry in _reserved_runtime_callable_rows(data):
         lines.append(
@@ -1681,12 +1672,18 @@ def render_py(data: dict) -> str:
     lines.extend(
         [
             "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME: dict[str, tuple[str, int, str]] = {\n",
-            "    runtime_name: (import_name, arity, result)\n",
-            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "    runtime_name: (name, callable_arity, callable_result)\n",
+            "    for name, runtime_name, _runtime_export_name, _type_idx, _poll_table_slot, callable_arity, callable_result in WASM_IMPORT_SPECS\n",
+            "    if runtime_name is not None\n",
+            "    and callable_arity is not None\n",
+            "    and callable_result is not None\n",
             "}\n\n",
             "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {\n",
-            "    import_name: (runtime_name, arity, result)\n",
-            "    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "    name: (runtime_name, callable_arity, callable_result)\n",
+            "    for name, runtime_name, _runtime_export_name, _type_idx, _poll_table_slot, callable_arity, callable_result in WASM_IMPORT_SPECS\n",
+            "    if runtime_name is not None\n",
+            "    and callable_arity is not None\n",
+            "    and callable_result is not None\n",
             "}\n\n",
             "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
             "    runtime_name: arity\n",
@@ -1694,8 +1691,9 @@ def render_py(data: dict) -> str:
             "}\n\n",
             "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
             "    **{\n",
-            "        runtime_name: arity\n",
-            "        for runtime_name, _import_name, arity, _result in WASM_RUNTIME_CALLABLE_IMPORTS\n",
+            "        runtime_name: callable_arity\n",
+            "        for _name, runtime_name, _runtime_export_name, _type_idx, _poll_table_slot, callable_arity, _callable_result in WASM_IMPORT_SPECS\n",
+            "        if runtime_name is not None and callable_arity is not None\n",
             "    },\n",
             "    **WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME,\n",
             "}\n\n",
@@ -1713,19 +1711,12 @@ def render_py(data: dict) -> str:
             "    return None if spec is None else spec[2]\n\n",
         ]
     )
-    lines.append(
-        "WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (\n"
-    )
-    static_types = data["static_type"]
-    for entry in data["import"]:
-        signature = static_types[entry["type"]]
-        lines.append(
-            f'    ("{entry["name"]}", {_py_tuple(signature["params"])}, '
-            f'{_py_tuple(signature["results"])}),\n'
-        )
-    lines.append(")\n\n")
     lines.extend(
         [
+            "WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = tuple(\n",
+            "    (name, WASM_STATIC_TYPES[type_idx][0], WASM_STATIC_TYPES[type_idx][1])\n",
+            "    for name, _runtime_name, _runtime_export_name, type_idx, _poll_table_slot, _callable_arity, _callable_result in WASM_IMPORT_SPECS\n",
+            ")\n\n",
             "WASM_IMPORT_SIGNATURE_BY_NAME: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {\n",
             "    name: (params, results)\n",
             "    for name, params, results in WASM_IMPORT_SIGNATURES\n",
@@ -1733,37 +1724,29 @@ def render_py(data: dict) -> str:
             "WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {\n",
             "    **{name: name for name, _params, _results in WASM_IMPORT_SIGNATURES},\n",
             "    **{\n",
-        ]
-    )
-    for entry in data["import"]:
-        runtime_name = entry.get("runtime_name")
-        if runtime_name is None:
-            continue
-        lines.append(f'        "{runtime_name}": "{entry["name"]}",\n')
-    lines.extend(
-        [
+            "        runtime_name: name\n",
+            "        for name, runtime_name, _runtime_export_name, _type_idx, _poll_table_slot, _callable_arity, _callable_result in WASM_IMPORT_SPECS\n",
+            "        if runtime_name is not None\n",
             "    },\n",
             "}\n\n",
-            "def wasm_import_name(name: str) -> str | None:\n",
-            "    return WASM_IMPORT_NAME_BY_LOOKUP.get(name)\n\n",
-            "WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f'    ("{entry["name"]}", "{_runtime_export_name(entry)}"),\n'
-        )
-    lines.extend(
-        [
-            ")\n\n",
             "WASM_RUNTIME_EXPORT_BY_IMPORT: dict[str, str] = {\n",
-            "    import_name: export_name\n",
-            "    for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES\n",
+            "    name: runtime_export_name\n",
+            "    for name, _runtime_name, runtime_export_name, _type_idx, _poll_table_slot, _callable_arity, _callable_result in WASM_IMPORT_SPECS\n",
             "}\n\n",
             "WASM_RUNTIME_IMPORT_BY_EXPORT: dict[str, str] = {\n",
-            "    export_name: import_name\n",
-            "    for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES\n",
+            "    runtime_export_name: name\n",
+            "    for name, _runtime_name, runtime_export_name, _type_idx, _poll_table_slot, _callable_arity, _callable_result in WASM_IMPORT_SPECS\n",
             "}\n\n",
+        ]
+    )
+    lines.extend(
+        [
+            "def wasm_import_name(name: str) -> str | None:\n",
+            "    return WASM_IMPORT_NAME_BY_LOOKUP.get(name)\n\n",
+        ]
+    )
+    lines.extend(
+        [
             "def wasm_runtime_import_name(name: str) -> str | None:\n",
             "    import_name = wasm_import_name(name)\n",
             "    if import_name is not None:\n",
