@@ -232,21 +232,31 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_thread_current_native_id"
     )
     assert imports["thread_current_native_id"]["callable_arity"] == 0
-    reserved_type_by_arity = {1: 2, 2: 3, 3: 5, 5: 12}
+    dual_use_reserved_imports = {"object_new_bound"}
     for reserved in data["reserved_runtime_callable"]:
-        reserved_import = imports[reserved["import_name"]]
-        assert reserved_import["type"] == reserved_type_by_arity[
-            reserved["callable_arity"]
-        ]
-        assert "runtime_name" not in reserved_import
-        assert "callable_arity" not in reserved_import
-        assert "callable_result" not in reserved_import
+        if reserved["import_name"] in dual_use_reserved_imports:
+            reserved_import = imports[reserved["import_name"]]
+            assert "runtime_name" not in reserved_import
+            assert "callable_arity" not in reserved_import
+            assert "callable_result" not in reserved_import
+        else:
+            assert reserved["import_name"] not in imports
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
     rendered_py = gen.render_py(data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
+    assert "use super::imports::WasmRuntimeImport;" in rendered_rs
+    assert "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_rs
+    assert "pub(crate) fn runtime_callable_import" in rendered_rs
+    assert '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)' in rendered_rs
+    assert "runtime_callable_import_name" not in rendered_rs
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
+    assert "def wasm_runtime_callable_import_name" not in rendered_py
     assert "def wasm_runtime_callable_arity" in rendered_py
     assert "def wasm_runtime_callable_result" in rendered_py
     assert "RuntimeCallableResult::Void" in rendered_rs
@@ -257,7 +267,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
-    assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
+    assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
+    assert '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
     assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
 
     wasm_abi = (
@@ -265,6 +276,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     ).read_text(encoding="utf-8")
     assert "wasm_runtime_callables.inc" not in wasm_abi
     assert "macro_rules! entry_list" not in wasm_abi
+    assert "runtime_callable_import_name" not in wasm_abi
 
     function_abi = (
         ROOT / "runtime/molt-runtime/src/builtins/functions/function_abi.rs"
@@ -275,16 +287,25 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_async_sleep_poll as *const" not in function_abi
 
 
-def test_wasm_abi_reserved_runtime_callable_import_tokens_are_fail_closed() -> None:
+def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
-    for entry in broken["import"]:
-        if entry["name"] == "type_call":
-            entry["runtime_name"] = "molt_type_call"
-            break
+    broken["import"].append({"name": "type_call", "type": 2})
     with pytest.raises(gen.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"):
+        gen.validate_loaded_manifest(broken)
+
+    broken = copy.deepcopy(data)
+    for entry in broken["import"]:
+        if entry["name"] == "object_new_bound":
+            entry["runtime_name"] = "molt_object_new_bound"
+            entry["callable_arity"] = 1
+            break
+    with pytest.raises(
+        gen.WasmAbiManifestError,
+        match="dual-use import must not duplicate callable metadata",
+    ):
         gen.validate_loaded_manifest(broken)
 
     broken = copy.deepcopy(data)
@@ -295,6 +316,21 @@ def test_wasm_abi_reserved_runtime_callable_import_tokens_are_fail_closed() -> N
     with pytest.raises(
         gen.WasmAbiManifestError,
         match="reserved runtime callable 'molt_object_new_bound'",
+    ):
+        gen.validate_loaded_manifest(broken)
+
+    broken = copy.deepcopy(data)
+    broken["import"].append(
+        {
+            "name": "shadow_type_call",
+            "type": 2,
+            "runtime_name": "molt_type_call",
+            "callable_arity": 1,
+        }
+    )
+    with pytest.raises(
+        gen.WasmAbiManifestError,
+        match="reserved runtime callable 'molt_type_call'",
     ):
         gen.validate_loaded_manifest(broken)
 
@@ -720,9 +756,14 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     assert "WASM_IMPORT_SIGNATURE_BY_NAME" in rendered_py
     assert "def wasm_import_signature" in rendered_py
     assert "def wasm_import_result_kind" in rendered_py
-    assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" in rendered_py
-    assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" in rendered_py
-    assert '"molt_exception_init", "exception_init", 2' in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
+    assert (
+        '"molt_importlib_import_transaction", '
+        '"importlib_import_transaction", 5'
+    ) in rendered_py
 
 
 def test_wasm_abi_manifest_owns_op_import_deps() -> None:
@@ -980,6 +1021,9 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     rendered_py = gen.render_py(data)
     assert "PollTableImportSpec" in rendered_rs
     assert "POLL_TABLE_IMPORTS" in rendered_rs
+    assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
+    assert "pub(crate) const fn poll_table_import_slot" in rendered_rs
+    assert "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(32)" in rendered_rs
     assert "POLL_TABLE_FUNCS" not in rendered_rs
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py

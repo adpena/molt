@@ -49,7 +49,8 @@ pub(crate) use object_new_bound_selector::{
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
+    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,
+    runtime_callable_arity, runtime_callable_import,
 };
 pub(crate) use runtime_surface::{
     GPU_INTRINSIC_MANIFEST_NAMES, runtime_surface_requires_direct_import,

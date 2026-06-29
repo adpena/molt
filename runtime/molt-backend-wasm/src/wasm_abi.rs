@@ -5,6 +5,7 @@ pub(crate) use crate::wasm_abi_generated::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, GPU_INTRINSIC_MANIFEST_NAMES,
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
+    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
@@ -93,34 +94,6 @@ pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
             static_type.results.iter().copied(),
         );
     }
-}
-
-pub(crate) fn runtime_callable_import_name(runtime_name: &str) -> Option<&'static str> {
-    RUNTIME_CALLABLE_IMPORTS
-        .iter()
-        .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.import_name))
-        .or_else(|| {
-            RESERVED_RUNTIME_CALLABLE_SPECS
-                .iter()
-                .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.import_name))
-        })
-}
-
-pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
-    RUNTIME_CALLABLE_IMPORTS
-        .iter()
-        .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.arity))
-        .or_else(|| {
-            RESERVED_RUNTIME_CALLABLE_SPECS
-                .iter()
-                .find_map(|spec| (spec.runtime_name == runtime_name).then_some(spec.arity))
-        })
-}
-
-pub(crate) fn poll_table_import_slot(import_name: &str) -> Option<u32> {
-    POLL_TABLE_IMPORTS
-        .iter()
-        .find_map(|spec| (spec.import_name == import_name).then_some(spec.table_slot))
 }
 
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.

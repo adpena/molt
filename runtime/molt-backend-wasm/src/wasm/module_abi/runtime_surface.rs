@@ -3,9 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::super::class_def_layout::ClassDefLayout;
 use super::runtime_import_demand::{WasmRuntimeImportDemand, runtime_import_name_str};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm_abi::{
-    RESERVED_RUNTIME_CALLABLE_SPECS, runtime_callable_arity, runtime_callable_import_name,
-};
+use crate::wasm_abi::{runtime_callable_arity, runtime_callable_import};
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_imports::IMPORT_REGISTRY;
@@ -55,26 +53,12 @@ impl WasmRuntimeSurfacePlan {
             .builtin_trampoline_specs
             .iter()
             .map(|(runtime_name, _arity)| {
-                let import_name = runtime_callable_import_name(runtime_name).unwrap_or_else(|| {
+                runtime_callable_import(runtime_name).unwrap_or_else(|| {
                     panic!("runtime callable missing generated import spec: {runtime_name}")
-                });
-                wasm_runtime_import(import_name).unwrap_or_else(|| {
-                    panic!("runtime callable import {import_name} missing generated import token")
                 })
             })
             .filter(|&import| !import_ids.contains_key(import))
             .collect();
-        for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
-            let import = wasm_runtime_import(spec.import_name).unwrap_or_else(|| {
-                panic!(
-                    "reserved runtime callable import {} missing generated import token",
-                    spec.import_name
-                )
-            });
-            if !import_ids.contains_key(import) {
-                auto_imports.push(import);
-            }
-        }
         auto_imports.sort_by_key(|import| import.name());
         auto_imports.dedup();
         auto_imports

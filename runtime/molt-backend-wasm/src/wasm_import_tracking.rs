@@ -47,11 +47,6 @@ impl TrackedImportIds {
         val
     }
 
-    pub(crate) fn get_name(&self, name: &str) -> Option<&u32> {
-        let key = wasm_runtime_import(name)?;
-        self.get(key)
-    }
-
     /// Check existence without marking the import as used.
     pub(crate) fn contains_key(&self, key: WasmRuntimeImport) -> bool {
         self.inner.contains_key(&key)

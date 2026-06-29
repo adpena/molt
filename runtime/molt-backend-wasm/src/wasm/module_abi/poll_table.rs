@@ -38,15 +38,12 @@ impl WasmPollTableLayout {
         }
 
         for spec in POLL_TABLE_IMPORTS {
-            let import_name = spec.import_name;
+            let import_name = spec.import.name();
             let arity = 1usize;
             let type_idx = *user_type_map
                 .get(&arity)
                 .unwrap_or_else(|| panic!("missing wrapper signature for arity {arity}"));
-            let import_idx = *backend
-                .import_ids
-                .get_name(import_name)
-                .unwrap_or_else(|| panic!("missing import for {import_name}"));
+            let import_idx = backend.import_ids[spec.import];
             backend.funcs.function(type_idx);
             let func_index = backend.func_count;
             backend.func_count += 1;
@@ -71,10 +68,10 @@ impl WasmPollTableLayout {
     ) -> Vec<u32> {
         let mut table_indices = vec![sentinel_func_idx; self.prefix_len as usize];
         for spec in POLL_TABLE_IMPORTS {
-            let name = spec.import_name;
+            let name = spec.import.name();
             let idx = table_import_wrappers.get(name).copied().unwrap_or_else(|| {
                 *import_ids
-                    .get_name(name)
+                    .get(spec.import)
                     .unwrap_or_else(|| panic!("missing poll import for {name}"))
             });
             let slot = spec.table_slot as usize;
@@ -89,10 +86,13 @@ impl WasmPollTableLayout {
 
     pub(super) fn seed_function_table_slots(&self, func_to_table_idx: &mut BTreeMap<String, u32>) {
         for spec in POLL_TABLE_IMPORTS {
-            let table_slot = poll_table_import_slot(spec.import_name).unwrap_or_else(|| {
-                panic!("missing generated poll table slot for {}", spec.import_name)
+            let table_slot = poll_table_import_slot(spec.import).unwrap_or_else(|| {
+                panic!(
+                    "missing generated poll table slot for {}",
+                    spec.import.name()
+                )
             });
-            func_to_table_idx.insert(format!("molt_{}", spec.import_name), table_slot);
+            func_to_table_idx.insert(format!("molt_{}", spec.import.name()), table_slot);
         }
     }
 }

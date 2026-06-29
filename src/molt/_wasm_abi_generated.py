@@ -3033,27 +3033,6 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "xml_tostring",
     "xml_indent",
     "xml_register_namespace",
-    "type_call",
-    "type_new",
-    "type_init",
-    "object_init",
-    "object_init_subclass",
-    "exception_new_bound",
-    "exception_init",
-    "exceptiongroup_init",
-    "types_mappingproxy_new",
-    "types_mappingproxy_init",
-    "types_method_new",
-    "types_method_init",
-    "types_simplenamespace_init",
-    "types_capsule_new",
-    "types_cell_new",
-    "types_dynamic_class_attr_init",
-    "types_coroutine",
-    "types_get_original_bases",
-    "types_prepare_class",
-    "types_resolve_bases",
-    "types_new_class",
 )
 
 WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (
@@ -5685,35 +5664,34 @@ WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
 
 WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
 
-WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS: tuple[tuple[str, str, int, str], ...] = tuple(
-    (runtime_name, import_name, arity, "i64")
-    for _index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
-)
-
-WASM_RUNTIME_CALLABLE_LOOKUP_ROWS: tuple[tuple[str, str, int, str], ...] = (
-    WASM_RUNTIME_CALLABLE_IMPORTS + WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS
-)
-
 WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME: dict[str, tuple[str, int, str]] = {
     runtime_name: (import_name, arity, result)
-    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_LOOKUP_ROWS
+    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS
 }
 
 WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT: dict[str, tuple[str, int, str]] = {
     import_name: (runtime_name, arity, result)
-    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_LOOKUP_ROWS
+    for runtime_name, import_name, arity, result in WASM_RUNTIME_CALLABLE_IMPORTS
+}
+
+WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {
+    runtime_name: arity
+    for _index, runtime_name, _import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+}
+
+WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {
+    **{
+        runtime_name: arity
+        for runtime_name, _import_name, arity, _result in WASM_RUNTIME_CALLABLE_IMPORTS
+    },
+    **WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME,
 }
 
 def wasm_runtime_callable_spec(runtime_name: str) -> tuple[str, int, str] | None:
     return WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME.get(runtime_name)
 
-def wasm_runtime_callable_import_name(runtime_name: str) -> str | None:
-    spec = wasm_runtime_callable_spec(runtime_name)
-    return None if spec is None else spec[0]
-
 def wasm_runtime_callable_arity(runtime_name: str) -> int | None:
-    spec = wasm_runtime_callable_spec(runtime_name)
-    return None if spec is None else spec[1]
+    return WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME.get(runtime_name)
 
 def wasm_runtime_callable_result(runtime_name: str) -> str | None:
     spec = wasm_runtime_callable_spec(runtime_name)
@@ -8693,27 +8671,6 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("xml_tostring", ("i64", "i64", "i64"), ("i64",)),
     ("xml_indent", ("i64", "i64", "i64"), ("i64",)),
     ("xml_register_namespace", ("i64", "i64"), ("i64",)),
-    ("type_call", ("i64",), ("i64",)),
-    ("type_new", ("i64", "i64", "i64", "i64", "i64"), ("i64",)),
-    ("type_init", ("i64", "i64", "i64", "i64", "i64"), ("i64",)),
-    ("object_init", ("i64",), ("i64",)),
-    ("object_init_subclass", ("i64",), ("i64",)),
-    ("exception_new_bound", ("i64", "i64"), ("i64",)),
-    ("exception_init", ("i64", "i64"), ("i64",)),
-    ("exceptiongroup_init", ("i64", "i64"), ("i64",)),
-    ("types_mappingproxy_new", ("i64", "i64"), ("i64",)),
-    ("types_mappingproxy_init", ("i64", "i64"), ("i64",)),
-    ("types_method_new", ("i64", "i64", "i64"), ("i64",)),
-    ("types_method_init", ("i64", "i64", "i64"), ("i64",)),
-    ("types_simplenamespace_init", ("i64", "i64", "i64"), ("i64",)),
-    ("types_capsule_new", ("i64",), ("i64",)),
-    ("types_cell_new", ("i64",), ("i64",)),
-    ("types_dynamic_class_attr_init", ("i64", "i64", "i64"), ("i64",)),
-    ("types_coroutine", ("i64",), ("i64",)),
-    ("types_get_original_bases", ("i64",), ("i64",)),
-    ("types_prepare_class", ("i64", "i64"), ("i64",)),
-    ("types_resolve_bases", ("i64", "i64"), ("i64",)),
-    ("types_new_class", ("i64", "i64"), ("i64",)),
 )
 
 WASM_IMPORT_SIGNATURE_BY_NAME: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {

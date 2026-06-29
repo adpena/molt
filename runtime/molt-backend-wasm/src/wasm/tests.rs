@@ -935,12 +935,13 @@ fn poll_table_slots_follow_manifest_slot_numbers() {
 
     let import_indices = wasm_function_import_indices(&wasm);
     let element_indices = wasm_element_function_indices(&wasm);
-    for import_name in [
-        "async_sleep_poll",
-        "promise_poll",
-        "contextlib_async_exitstack_enter_context_poll",
+    for import in [
+        WasmRuntimeImport::AsyncSleepPoll,
+        WasmRuntimeImport::PromisePoll,
+        WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll,
     ] {
-        let slot = crate::wasm_abi::poll_table_import_slot(import_name)
+        let import_name = import.name();
+        let slot = crate::wasm_abi::poll_table_import_slot(import)
             .unwrap_or_else(|| panic!("missing generated poll slot for {import_name}"));
         let func_index = *import_indices
             .get(import_name)

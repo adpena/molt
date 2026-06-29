@@ -9,6 +9,9 @@ use std::sync::Mutex;
 
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
+use molt_backend_wasm::test_util::{
+    reserved_runtime_callable_import_names, reserved_runtime_callable_table_ref_exports,
+};
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -305,30 +308,27 @@ fn auto_hello_world_includes_used_structural_imports() {
 }
 
 #[test]
-fn auto_reloc_preserves_reserved_runtime_callable_imports() {
-    let wasm = compile_with_options(
-        empty_main_ir(),
-        WasmCompileOptions {
-            wasm_profile: WasmProfile::Auto,
-            reloc_enabled: true,
-            ..WasmCompileOptions::default()
-        },
-    );
+fn auto_reloc_exports_reserved_runtime_callable_table_refs_without_imports() {
+    let options = WasmCompileOptions {
+        wasm_profile: WasmProfile::Auto,
+        reloc_enabled: true,
+        ..WasmCompileOptions::default()
+    };
+    let table_base = options.table_base;
+    let wasm = compile_with_options(empty_main_ir(), options);
     let names = import_names(&wasm);
-    for name in [
-        "type_call",
-        "type_new",
-        "type_init",
-        "object_new_bound",
-        "object_init",
-        "object_init_subclass",
-        "exception_new_bound",
-        "exception_init",
-        "exceptiongroup_init",
-    ] {
+    for name in reserved_runtime_callable_import_names() {
         assert!(
-            names.contains(name),
-            "{name} should be present as a linked-wasm structural import"
+            !names.contains(name),
+            "{name} is a reserved runtime table slot, not an app import; imports={names:?}"
+        );
+    }
+
+    let exports = function_export_names(&wasm);
+    for name in reserved_runtime_callable_table_ref_exports(table_base) {
+        assert!(
+            exports.contains(&name),
+            "{name} should be exported as a reserved runtime table ref; exports={exports:?}"
         );
     }
 }
@@ -466,24 +466,14 @@ fn auto_call_guarded_keeps_escaped_dispatch_imports() {
 }
 
 #[test]
-fn auto_profile_keeps_reserved_runtime_callable_imports() {
+fn auto_profile_omits_reserved_runtime_callable_imports() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
     let names = import_names(&wasm);
 
-    for name in [
-        "type_call",
-        "type_new",
-        "type_init",
-        "object_new_bound",
-        "object_init",
-        "object_init_subclass",
-        "exception_new_bound",
-        "exception_init",
-        "exceptiongroup_init",
-    ] {
+    for name in reserved_runtime_callable_import_names() {
         assert!(
-            names.contains(name),
-            "Auto profile must retain reserved runtime callable import {name}; imports={names:?}"
+            !names.contains(name),
+            "Auto profile must not import reserved runtime callable {name}; imports={names:?}"
         );
     }
 }

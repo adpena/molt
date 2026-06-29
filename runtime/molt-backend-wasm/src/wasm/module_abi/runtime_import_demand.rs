@@ -5,7 +5,7 @@ use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::object_new_bound_select::selected_object_new_bound_runtime;
-use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
+use crate::wasm_abi::{runtime_callable_arity, runtime_callable_import};
 use crate::wasm_abi_generated::{
     WasmRuntimeImport, op_loop_runtime_call, wasm_bulk_memory_op, wasm_runtime_import,
 };
@@ -88,11 +88,11 @@ impl WasmRuntimeImportDemand {
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
-            let import_name =
-                crate::wasm_abi::runtime_callable_import_name(name).unwrap_or_else(|| {
-                    panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
-                });
-            self.require_import_name(import_name);
+            if let Some(import) = runtime_callable_import(name) {
+                self.require_import(import);
+            } else if runtime_callable_arity(name).is_none() {
+                panic!("builtin runtime callable missing from WASM ABI manifest: {name}");
+            }
         }
         if kind == "call"
             && let Some(name) = op.s_value.as_ref()
@@ -190,14 +190,6 @@ impl WasmRuntimeImportDemand {
         {
             required.insert(WasmRuntimeImport::AsyncgenNew);
         }
-        required.extend(RESERVED_RUNTIME_CALLABLE_SPECS.iter().map(|spec| {
-            wasm_runtime_import(spec.import_name).unwrap_or_else(|| {
-                panic!(
-                    "reserved runtime callable import {} missing generated import token",
-                    spec.import_name
-                )
-            })
-        }));
         for plan in lir_lowering_plans.values() {
             if let Some(output) = plan.lir_fast_body() {
                 required.extend(output.runtime_imports());
