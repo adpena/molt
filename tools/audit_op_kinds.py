@@ -93,6 +93,7 @@ LLVM_RS = ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
 LLVM_RUNTIME_IMPORTS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs"
 )
+LLVM_RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 LLVM_PRESERVED_OPS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs"
 )
@@ -672,6 +673,55 @@ def extract_runtime_molt_symbols() -> set[str]:
     return set(extract_runtime_molt_externs())
 
 
+def _classified_runtime_import_array_body() -> str:
+    text = LLVM_RUNTIME_IMPORTS_RS.read_text(encoding="utf-8")
+    m = re.search(
+        r"CLASSIFIED_RUNTIME_IMPORTS\s*:\s*&\[RuntimeImportSignature\]\s*=\s*&\[",
+        text,
+    )
+    if m is None:
+        raise RustMatchParseError("CLASSIFIED_RUNTIME_IMPORTS array not found")
+    start = m.end()
+    depth = 1
+    i = start
+    while i < len(text) and depth > 0:
+        if text[i] == "[":
+            depth += 1
+        elif text[i] == "]":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        raise RustMatchParseError("CLASSIFIED_RUNTIME_IMPORTS array is unbalanced")
+    return text[start : i - 1]
+
+
+def extract_runtime_import_signature_constants() -> dict[str, ClassifiedRuntimeImport]:
+    """Resolve shared RuntimeImportSignature constants used by LLVM import tables."""
+    text = LLVM_RUNTIME_IMPORT_ABI_RS.read_text(encoding="utf-8")
+    out: dict[str, ClassifiedRuntimeImport] = {}
+    for const, symbol, param_count, return_abi in re.findall(
+        r"pub\(crate\)\s+const\s+([A-Z][A-Z0-9_]*)\s*:\s*"
+        r"RuntimeImportSignature\s*=\s*runtime_sig\(\s*"
+        r'"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)\s*;',
+        text,
+        re.S,
+    ):
+        out[const] = ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
+    return out
+
+
+def _insert_classified_runtime_import(
+    out: dict[str, ClassifiedRuntimeImport], classified: ClassifiedRuntimeImport
+) -> None:
+    existing = out.get(classified.symbol)
+    if existing is not None and existing != classified:
+        raise RustMatchParseError(
+            "conflicting CLASSIFIED_RUNTIME_IMPORTS entries for "
+            f"{classified.symbol}: {existing} vs {classified}"
+        )
+    out[classified.symbol] = classified
+
+
 def extract_llvm_classified_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
     """Runtime symbols the LLVM generic preserved-op fallback may declare.
 
@@ -679,14 +729,29 @@ def extract_llvm_classified_runtime_imports() -> dict[str, ClassifiedRuntimeImpo
     entry in `CLASSIFIED_RUNTIME_IMPORTS`; this audit must join both authorities
     or it can bless a runtime export that LLVM would still fail loudly.
     """
-    text = LLVM_RUNTIME_IMPORTS_RS.read_text(encoding="utf-8")
+    body = _classified_runtime_import_array_body()
+    constants = extract_runtime_import_signature_constants()
     out: dict[str, ClassifiedRuntimeImport] = {}
     for symbol, param_count, return_abi in re.findall(
         r'runtime_sig\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)',
-        text,
+        body,
         re.S,
     ):
-        out[symbol] = ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
+        _insert_classified_runtime_import(
+            out, ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
+        )
+    for line in body.splitlines():
+        stripped = line.split("//", maxsplit=1)[0].strip()
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)\s*,", stripped)
+        if match is None:
+            continue
+        const = match.group(1)
+        classified = constants.get(const)
+        if classified is None:
+            raise RustMatchParseError(
+                f"CLASSIFIED_RUNTIME_IMPORTS references unknown constant {const}"
+            )
+        _insert_classified_runtime_import(out, classified)
     return out
 
 
