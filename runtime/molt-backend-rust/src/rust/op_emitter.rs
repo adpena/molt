@@ -11,6 +11,22 @@ impl RustBackend {
             .is_some_and(|plan| plan.op_prefers_integer_runtime_lane(op))
     }
 
+    fn emit_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) {
+        let detail = self.record_unsupported_op(op, reason);
+        let detail_literal = rust_string_literal(&detail);
+        let o = out_var(op);
+        if is_assignable_var(&o) {
+            let rhs = format!("{{ compile_error!({detail_literal}); MoltValue::None }}");
+            if self.hoisted_vars.contains(&o) {
+                self.emit_line(&format!("{o} = {rhs};"));
+            } else {
+                self.emit_line(&format!("let mut {o}: MoltValue = {rhs};"));
+            }
+        } else {
+            self.emit_line(&format!("compile_error!({detail_literal});"));
+        }
+    }
+
     pub(super) fn emit_op(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let _is_hoisted = |name: &str| self.hoisted_vars.contains(name);
@@ -65,24 +81,32 @@ impl RustBackend {
                 self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
             }
             "const_bytes" => {
-                let o = out();
-                let s = op.s_value.as_deref().unwrap_or("");
-                let rhs = format!("MoltValue::Str({}.to_string())", rust_string_literal(s));
-                self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                self.emit_unsupported_op(
+                    op,
+                    "bytes literals require a Rust backend bytes value representation",
+                );
             }
             "const_bigint" => {
                 let o = out();
                 let s = op.s_value.as_deref().unwrap_or("0");
-                let rhs = format!(
-                    "MoltValue::Int({}.parse::<i64>().unwrap_or(0))",
-                    rust_string_literal(s)
-                );
-                self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                if let Ok(value) = s.parse::<i64>() {
+                    let rhs = format!("MoltValue::Int({value}i64)");
+                    self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+                } else {
+                    self.emit_unsupported_op(
+                        op,
+                        "bigint literal exceeds Rust backend i64 value representation",
+                    );
+                }
             }
             "const_not_implemented" | "const_ellipsis" => {
-                let o = out();
-                self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
-                // no comment needed — #![allow(unused)] covers it
+                self.emit_unsupported_op(
+                    op,
+                    format!(
+                        "literal `{}` requires a dedicated Rust backend value representation",
+                        op.kind
+                    ),
+                );
             }
             "box" | "box_from_raw_int" => {
                 let o = out();
@@ -784,10 +808,13 @@ impl RustBackend {
                                 "{{ let __k = {key}; if let Some((_, v)) = if let MoltValue::Dict(d) = &{obj} {{ d.iter().find(|(k,_)| molt_eq(k, &__k)) }} else {{ None }} {{ v.clone() }} else {{ {default} }} }}"
                             )
                         }
-                        _ => format!(
-                            "/* MOLT_STUB: method {obj}.{method}({}) */ MoltValue::None",
-                            call_args.join(", ")
-                        ),
+                        _ => {
+                            self.emit_unsupported_op(
+                                op,
+                                format!("unsupported method `{method}` on `{obj}`"),
+                            );
+                            return;
+                        }
                     };
                     if o == "_" || o == "none" {
                         self.emit_line(&format!("{rhs};"));
@@ -1435,13 +1462,22 @@ impl RustBackend {
                 ));
             }
 
-            "class_new" | "module_new" | "object_new" | "builtin_type" => {
+            "module_new" => {
                 let o = out();
                 self.emit_line(&declare(
                     &o,
                     "MoltValue::Dict(vec![])",
                     &self.hoisted_vars.clone(),
                 ));
+            }
+            "class_new" | "object_new" | "builtin_type" => {
+                self.emit_unsupported_op(
+                    op,
+                    format!(
+                        "{} requires a Rust backend object/type representation",
+                        op.kind
+                    ),
+                );
             }
             "bound_method_new" => {
                 let o = out();
@@ -1457,79 +1493,51 @@ impl RustBackend {
                         &self.hoisted_vars.clone(),
                     ));
                 } else {
-                    self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
+                    self.emit_unsupported_op(op, "bound_method_new requires method and self");
                 }
             }
             "alloc_class_static" | "alloc_class_trusted" | "alloc_class" => {
-                let o = out();
-                self.emit_line(&declare(
-                    &o,
-                    "MoltValue::Dict(vec![])",
-                    &self.hoisted_vars.clone(),
-                ));
+                self.emit_unsupported_op(
+                    op,
+                    format!(
+                        "{} requires a Rust backend class instance representation",
+                        op.kind
+                    ),
+                );
             }
             "object_set_class" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let obj = rust_ident(&args[0]);
-                    let class = rust_clone(&args[1]);
-                    if is_assignable_var(&obj) {
-                        self.emit_line(&format!(
-                            "molt_set_attr_name(&mut {obj}, MoltValue::Str(\"__class__\".to_string()), {class});"
-                        ));
-                        self.emit_alias_writeback(&obj);
-                    }
-                }
+                self.emit_unsupported_op(
+                    op,
+                    "object_set_class requires a Rust backend object/type representation",
+                );
             }
             "class_set_base" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let class_obj = rust_ident(&args[0]);
-                    let base = rust_clone(&args[1]);
-                    if is_assignable_var(&class_obj) {
-                        self.emit_line(&format!(
-                            "molt_set_attr_name(&mut {class_obj}, MoltValue::Str(\"__base__\".to_string()), {base});"
-                        ));
-                        self.emit_alias_writeback(&class_obj);
-                    }
-                }
+                self.emit_unsupported_op(
+                    op,
+                    "class_set_base requires a Rust backend class representation",
+                );
             }
             "class_set_layout_version" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let class_obj = rust_ident(&args[0]);
-                    let version = rust_clone(&args[1]);
-                    if is_assignable_var(&class_obj) {
-                        self.emit_line(&format!(
-                            "molt_set_attr_name(&mut {class_obj}, MoltValue::Str(\"__molt_layout_version__\".to_string()), {version});"
-                        ));
-                        self.emit_alias_writeback(&class_obj);
-                    }
-                }
+                self.emit_unsupported_op(
+                    op,
+                    "class_set_layout_version requires a Rust backend class representation",
+                );
             }
             "class_merge_layout" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
-                    let class_obj = rust_ident(&args[0]);
-                    let offsets = rust_clone(&args[1]);
-                    let size = rust_clone(&args[2]);
-                    if is_assignable_var(&class_obj) {
-                        let expr =
-                            format!("molt_class_merge_layout(&mut {class_obj}, {offsets}, {size})");
-                        if is_assignable_var(op.out.as_deref().unwrap_or("")) {
-                            let o = out();
-                            self.emit_line(&declare(&o, &expr, &self.hoisted_vars.clone()));
-                        } else {
-                            self.emit_line(&format!("{expr};"));
-                        }
-                        self.emit_alias_writeback(&class_obj);
-                    }
-                }
+                self.emit_unsupported_op(
+                    op,
+                    "class_merge_layout requires a Rust backend class representation",
+                );
             }
             "class_apply_set_name"
             | "class_layout_version"
             | "class_layout_field_count"
-            | "class_layout_slot_count" => {}
+            | "class_layout_slot_count" => {
+                self.emit_unsupported_op(
+                    op,
+                    format!("{} requires a Rust backend class representation", op.kind),
+                );
+            }
             "module_cache_get" | "module_load_cached" => {
                 let o = out();
                 let name = op
@@ -1643,12 +1651,16 @@ impl RustBackend {
             }
 
             // ── No-ops / markers ───────────────────────────────────────────────
-            "nop"
-            | "comment"
-            | "debug_label"
-            | "line"
-            | "type_assert"
-            | "br_if"
+            "nop" | "comment" | "debug_label" | "line" | "type_assert" => {
+                let o = out();
+                if o != "_" && o != "none" && !o.is_empty() {
+                    self.emit_unsupported_op(
+                        op,
+                        format!("marker op `{}` unexpectedly produces output", op.kind),
+                    );
+                }
+            }
+            "br_if"
             | "branch"
             | "alloc_task"
             | "block_on"
@@ -1665,15 +1677,10 @@ impl RustBackend {
             | "check_exception"
             | "ascii_from_obj"
             | "bridge_unavailable" => {
-                // Stub: these ops may produce an output variable in the IR.
-                // Declare it so downstream phi references compile.
-                let o = out();
-                if o != "_" && o != "none" && !o.is_empty() {
-                    self.emit_line(&format!(
-                        "let mut {o}: MoltValue = /* MOLT_STUB: {} */ MoltValue::None;",
-                        op.kind
-                    ));
-                }
+                self.emit_unsupported_op(
+                    op,
+                    format!("semantic op `{}` has no Rust backend lowering", op.kind),
+                );
             }
             "inc_ref" | "borrow" | "binding_alias" => {
                 let o = out();
@@ -1689,20 +1696,16 @@ impl RustBackend {
             }
             "dec_ref" | "release" => {}
 
-            // ── Class / instance stubs ─────────────────────────────────────────
+            // ── Instance operations without Rust lowering ─────────────────────
             "alloc_instance" | "init_instance" | "instance_set_field" | "instance_get_field"
             | "instance_has_field" => {
-                let o = out();
-                if o != "_" && o != "none" {
-                    self.emit_line(&declare(
-                        &o,
-                        "MoltValue::Dict(vec![])",
-                        &self.hoisted_vars.clone(),
-                    ));
-                }
+                self.emit_unsupported_op(
+                    op,
+                    format!("instance op `{}` has no Rust backend lowering", op.kind),
+                );
             }
 
-            // ── Exception stubs ────────────────────────────────────────────────
+            // ── Exception diagnostics ─────────────────────────────────────────
             "raise" | "reraise" => {
                 // In stub/native-Rust mode, Python exceptions cannot propagate
                 // through the Rust call stack.  Instead of silently returning
@@ -1832,17 +1835,9 @@ impl RustBackend {
                 self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
             }
 
-            // ── Catch-all stub ─────────────────────────────────────────────────
+            // ── Unsupported op diagnostics ────────────────────────────────────
             other => {
-                let o = out();
-                let kind = other;
-                if o != "_" && o != "none" && !o.is_empty() {
-                    self.emit_line(&format!(
-                        "let mut {o}: MoltValue = /* MOLT_STUB: {kind} */ MoltValue::None;"
-                    ));
-                } else {
-                    self.emit_line(&format!("/* MOLT_STUB: {kind} */"));
-                }
+                self.emit_unsupported_op(op, format!("unsupported Rust backend op `{other}`"));
             }
         }
     }

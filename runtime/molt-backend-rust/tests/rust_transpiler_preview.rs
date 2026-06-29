@@ -11,7 +11,7 @@ fn op(kind: &str) -> OpIR {
 }
 
 #[test]
-fn rust_backend_lowers_class_slots_without_stub_placeholders() {
+fn rust_backend_rejects_class_slots_without_object_representation() {
     let mut class_new = op("class_new");
     class_new.out = Some("point_cls".to_string());
 
@@ -123,19 +123,15 @@ fn rust_backend_lowers_class_slots_without_stub_placeholders() {
     };
 
     let mut backend = RustBackend::new();
-    let source = backend
+    let err = backend
         .compile_checked(&ir)
-        .expect("preview rust backend should lower class slot IR");
+        .expect_err("class slot IR requires a real Rust object/type representation");
 
-    assert!(!source.contains("MOLT_STUB: alloc_class_static"));
-    assert!(!source.contains("MOLT_STUB: bound_method_new"));
-    assert!(!source.contains("_.clone()"));
-    assert!(source.contains(
-        "molt_set_item(&mut point_obj, MoltValue::Str(\"__slot_0\".to_string()), x.clone());"
-    ));
+    assert!(err.contains("class_new requires a Rust backend object/type representation"));
     assert!(
-        source.contains("molt_get_item(&point_obj, &MoltValue::Str(\"__slot_8\".to_string()))")
+        err.contains("alloc_class_static requires a Rust backend class instance representation")
     );
+    assert!(err.contains("object_set_class requires a Rust backend object/type representation"));
 }
 
 #[test]
@@ -147,14 +143,15 @@ fn rust_backend_lowers_module_attr_round_trip() {
     attr_name.s_value = Some("Point".to_string());
     attr_name.out = Some("attr_name".to_string());
 
-    let mut class_new = op("class_new");
-    class_new.out = Some("point_cls".to_string());
+    let mut attr_value = op("const_str");
+    attr_value.s_value = Some("Point".to_string());
+    attr_value.out = Some("point_value".to_string());
 
     let mut module_set = op("module_set_attr");
     module_set.args = Some(vec![
         "module_obj".to_string(),
         "attr_name".to_string(),
-        "point_cls".to_string(),
+        "point_value".to_string(),
     ]);
 
     let mut module_get = op("module_get_attr");
@@ -169,7 +166,7 @@ fn rust_backend_lowers_module_attr_round_trip() {
             name: "molt_test_module_attrs".to_string(),
             params: Vec::new(),
             ops: vec![
-                module_new, attr_name, class_new, module_set, module_get, ret,
+                module_new, attr_name, attr_value, module_set, module_get, ret,
             ],
             param_types: None,
             source_file: None,
@@ -183,11 +180,11 @@ fn rust_backend_lowers_module_attr_round_trip() {
         .compile_checked(&ir)
         .expect("preview rust backend should lower module attr IR");
 
-    assert!(!source.contains("MOLT_STUB: module_set_attr"));
-    assert!(!source.contains("MOLT_STUB: module_get_attr"));
+    assert!(!source.contains("compile_error!"));
     assert!(
-        source
-            .contains("molt_set_attr_name(&mut module_obj, attr_name.clone(), point_cls.clone());")
+        source.contains(
+            "molt_set_attr_name(&mut module_obj, attr_name.clone(), point_value.clone());"
+        )
     );
     assert!(source.contains("molt_get_attr_name(&module_obj, &attr_name)"));
 }
@@ -297,7 +294,7 @@ fn rust_backend_stamps_target_python_version_state() {
     assert!(!source.contains(
         "fn molt_sys_set_version_info(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }"
     ));
-    assert!(!source.contains("MOLT_STUB: box"));
+    assert!(!source.contains("compile_error!"));
     assert!(source.contains("struct MoltSysVersionInfo"));
     assert!(
         source.contains("fn molt_sys_set_version_info(args: &mut Vec<MoltValue>) -> MoltValue")
@@ -310,7 +307,7 @@ fn rust_backend_stamps_target_python_version_state() {
 }
 
 #[test]
-fn rust_backend_imports_sys_version_metadata_without_stub() {
+fn rust_backend_imports_sys_version_metadata_without_placeholder_diagnostics() {
     let mut major_raw = op("const");
     major_raw.value = Some(3);
     major_raw.out = Some("major_raw".to_string());
@@ -419,7 +416,7 @@ fn rust_backend_imports_sys_version_metadata_without_stub() {
         .compile_checked(&ir)
         .expect("preview rust backend should materialize sys metadata");
 
-    assert!(!source.contains("MOLT_STUB: module_import"));
+    assert!(!source.contains("compile_error!"));
     assert!(source.contains("fn molt_import_module(name: &MoltValue) -> MoltValue"));
     assert!(source.contains("\"version_info\".to_string()"));
     assert!(source.contains("\"hexversion\".to_string()"));
@@ -427,7 +424,7 @@ fn rust_backend_imports_sys_version_metadata_without_stub() {
 }
 
 #[test]
-fn rust_backend_lowers_class_merge_layout_with_real_helper_and_result() {
+fn rust_backend_rejects_class_merge_layout_without_class_representation() {
     let mut class_new = op("class_new");
     class_new.out = Some("point_cls".to_string());
 
@@ -479,12 +476,10 @@ fn rust_backend_lowers_class_merge_layout_with_real_helper_and_result() {
     };
 
     let mut backend = RustBackend::new();
-    let source = backend
+    let err = backend
         .compile_checked(&ir)
-        .expect("preview rust backend should lower class layout merge IR");
+        .expect_err("class layout merge requires a real Rust class representation");
 
-    assert!(source.contains("fn molt_class_merge_layout("));
-    assert!(source.contains(
-        "let mut merge_result: MoltValue = molt_class_merge_layout(&mut point_cls, offsets.clone(), layout_size.clone());"
-    ));
+    assert!(err.contains("class_new requires a Rust backend object/type representation"));
+    assert!(err.contains("class_merge_layout requires a Rust backend class representation"));
 }
