@@ -2842,7 +2842,7 @@ mod tests {
         try_call_bind_ic_fast,
     };
     use super::{protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw};
-    use crate::object::builders::{alloc_function_obj, alloc_list, alloc_tuple};
+    use crate::object::builders::{alloc_list, alloc_tuple};
     use crate::{
         TYPE_ID_OBJECT, dec_ref_bits, obj_from_bits, object_type_id, ptr_from_bits, runtime_state,
     };
@@ -2906,7 +2906,7 @@ mod tests {
     #[test]
     fn call_bind_builtin_full_binding_promotes_callargs_aliased_return() {
         crate::with_gil_entry_nopanic!(_py, {
-            let func_ptr = alloc_function_obj(
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 compiled_identity_returns_arg as *const () as usize as u64,
                 1,
@@ -2947,7 +2947,7 @@ mod tests {
     #[test]
     fn call_bind_builtin_default_padded_argv_promotes_aliased_return() {
         crate::with_gil_entry_nopanic!(_py, {
-            let func_ptr = alloc_function_obj(
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 compiled_second_arg_returns_arg as *const () as usize as u64,
                 2,
@@ -3112,7 +3112,7 @@ mod tests {
     fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         crate::with_gil_entry_nopanic!(_py, {
             clear_call_bind_ic_cache();
-            let init_ptr = alloc_function_obj(
+            let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
                 1,

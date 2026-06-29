@@ -1213,7 +1213,7 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
             1,
         );
         assert!(!del_func_ptr.is_null());
-        let init_func_ptr = crate::object::builders::alloc_function_obj(
+        let init_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             c_api_test_init_stores_tag_and_borrows_self as *const () as usize as u64,
             2,

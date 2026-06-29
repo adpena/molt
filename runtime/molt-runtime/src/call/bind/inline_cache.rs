@@ -716,17 +716,12 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // the caller's TIR drop runs.
             //
             // `entry.fn_ptr` is the value stored in the function object's
-            // `fn_ptr` slot, which is NOT always a directly-callable code
-            // address: synthetic runtime functions (e.g. the inherited
-            // `object.__init__`, `object.__init_subclass__`, `type.__init__`)
-            // carry a `RUNTIME_CALLABLE_KEY_BASE`-encoded MARKER there
-            // (`0xFFFF_FF00_0000_00NN`) that must be decoded to the real
-            // intrinsic address before it can be called. The slow fixed-arity
-            // path (`call_native_fixed_arity!`) routes every such call through
-            // `function_call_target_or_legacy_ptr` precisely for this reason;
-            // the IC fast path MUST use the identical single decode authority,
-            // or it would `transmute` the raw marker and jump to `0xFFFF...NN`
-            // (SIGSEGV). Decode once here and call the resolved target.
+            // identity slot, not necessarily an executable address. Synthetic
+            // runtime functions carry a generated runtime-callable key there,
+            // while compiler-emitted native functions publish their executable
+            // address through the function call-target slot. The IC fast path
+            // uses the same required-target authority as the slow fixed-arity
+            // path and fails closed if construction did not initialize it.
             //
             // On wasm the fixed-arity call lowers through the function-table
             // trampoline (`molt_call_indirect*` / `fixed_arity_trampoline_target_ptr`),
@@ -734,9 +729,20 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // not apply there; the wasm arms below keep the stored `fn_ptr`
             // exactly as the surrounding wasm call paths already do.
             #[cfg(not(target_arch = "wasm32"))]
-            let call_addr =
-                crate::call::function::function_call_target_or_legacy_ptr(init_ptr, entry.fn_ptr)
-                    as usize as u64;
+            let call_addr = {
+                let Some(call_target) = crate::call::function::function_required_call_target_ptr(
+                    init_ptr,
+                    entry.fn_ptr,
+                ) else {
+                    dec_ref_bits(_py, inst_bits);
+                    return Some(raise_exception::<_>(
+                        _py,
+                        "RuntimeError",
+                        "type-call inline cache function target is not initialized",
+                    ));
+                };
+                call_target as usize as u64
+            };
             #[cfg(target_arch = "wasm32")]
             let call_addr = entry.fn_ptr;
             let closure_bits = function_closure_bits(init_ptr);

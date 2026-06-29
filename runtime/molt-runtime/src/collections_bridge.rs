@@ -404,7 +404,6 @@ pub extern "C" fn __molt_collections_call_callable0(call_bits: u64) -> u64 {
 
 #[cfg(all(test, feature = "stdlib_collections"))]
 mod tests {
-    use crate::object::builders::alloc_function_obj;
     use crate::{TYPE_ID_FUNCTION, dec_ref_bits, obj_from_bits, object_type_id};
     use molt_obj_model::MoltObject;
     use std::sync::Once;
@@ -428,8 +427,11 @@ mod tests {
         init_runtime();
 
         crate::with_gil_entry_nopanic!(_py, {
-            let func_ptr =
-                alloc_function_obj(_py, default_factory_marker as *const () as usize as u64, 0);
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                default_factory_marker as *const () as usize as u64,
+                0,
+            );
             assert!(!func_ptr.is_null());
             assert_eq!(unsafe { object_type_id(func_ptr) }, TYPE_ID_FUNCTION);
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
