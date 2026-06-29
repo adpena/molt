@@ -1134,7 +1134,7 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             ));
         }
 
-        // Runtime lifecycle stubs (no-ops for standalone binaries)
+        // Runtime lifecycle hooks are no-ops for standalone binaries.
         if used("molt_runtime_init(") {
             self.output.push_str(concat!(
                 "fn molt_runtime_init(_args: &mut Vec<MoltValue>) -> MoltValue { MoltValue::None }\n",

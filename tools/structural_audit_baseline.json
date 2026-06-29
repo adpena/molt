@@ -11,6 +11,7 @@
   "native_scalar_plan_authority_violations": 0.0,
   "python_stub_surfaces_total": 809.0,
   "repr_name_scalar_authority_violations": 0.0,
-  "rust_stub_surfaces_total": 57.0,
+  "rust_backend_lowering_gaps_total": 43.0,
+  "rust_stub_surfaces_total": 52.0,
   "undecomposed_god_files": 0.0
 }
