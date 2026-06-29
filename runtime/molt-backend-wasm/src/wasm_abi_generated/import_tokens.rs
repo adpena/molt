@@ -4,6 +4,7 @@
 // DO NOT EDIT BY HAND.
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(usize)]
 pub(crate) enum WasmRuntimeImport {
     TypesBootstrap,
     AbcBootstrap,

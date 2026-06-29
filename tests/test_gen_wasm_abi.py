@@ -131,6 +131,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     import_metadata = rendered_modules["import_metadata.rs"]
     import_queries = rendered_modules["import_queries.rs"]
     import_specs = rendered_modules["import_specs.rs"]
+    import_tokens = rendered_modules["import_tokens.rs"]
     assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
     assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
@@ -144,17 +145,26 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '("alloc", "molt_alloc")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
     assert "import_registry.rs" not in rendered_modules
+    assert "#[repr(usize)]" in import_tokens
     assert "runtime_name: Option<&'static str>" in import_specs
+    assert "runtime_export_name: &'static str" in import_specs
+    assert "pub(crate) fn runtime_import_spec" in import_specs
+    assert "let spec = &IMPORT_REGISTRY[import as usize]" in import_specs
+    assert "debug_assert_eq!(spec.import, import)" in import_specs
     assert 'name: "alloc"' in import_specs
     assert "runtime_name: None" in import_specs
+    assert 'runtime_export_name: "molt_alloc"' in import_specs
     assert 'name: "socket_drop"' in import_specs
     assert 'runtime_name: Some("molt_socket_drop")' in import_specs
+    assert 'runtime_export_name: "molt_socket_drop"' in import_specs
     assert "pub(crate) fn wasm_runtime_import" in import_queries
     assert "spec.name == name || spec.runtime_name == Some(name)" in import_queries
     assert '"molt_alloc" => Some(WasmRuntimeImport::Alloc)' not in import_queries
-    assert "runtime_export_name" in import_metadata
-    assert 'Self::Alloc => "molt_alloc"' in import_metadata
-    assert 'Self::SocketDrop => "molt_socket_drop"' in import_metadata
+    assert "runtime_import_spec(self).name" in import_metadata
+    assert "runtime_import_spec(self).runtime_export_name" in import_metadata
+    assert "runtime_import_spec(self).type_idx" in import_metadata
+    assert 'Self::Alloc => "molt_alloc"' not in import_metadata
+    assert 'Self::SocketDrop => "molt_socket_drop"' not in import_metadata
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
