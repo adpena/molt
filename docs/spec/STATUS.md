@@ -444,11 +444,12 @@ the implementation. For forward-looking priorities, use
 - Luau is a checked source-emission target for the current/future Luau surface;
   current OpIR support is generated in
   `docs/spec/areas/compiler/luau_support_matrix.generated.md`.
-- Luau source emission now participates in the shared TIR module phase. The
-  backend lifts the source-emission `SimpleIR` once to a `TirModule`, runs every
-  local function through the per-function TIR pipeline, then runs
-  `run_module_pipeline` (E1 inliner, generator fusion, module-slot promotion,
-  terminal DropInsertion) before fail-closed back-conversion. Guarded evidence:
+- Luau source emission now participates in the shared cached-TIR custody path.
+  `runtime/molt-tir/src/tir/pipeline_cache.rs` owns Luau's cache namespace,
+  SimpleIR-to-TIR lift, per-function TIR pipeline, module assembly,
+  `run_module_pipeline` handoff, selective fail-closed back-conversion, and
+  source-file-aware cache keying. The aggregate backend keeps only Luau target
+  policy and stats formatting. Guarded evidence:
   `luau_tir_module_pipeline_inlines_direct_local_calls`.
 - Luau `checked_add` and `checked_mul` are implemented through explicit f64
   helper contracts. `molt_checked_i64_add(a, b)` returns `(a + b, false)`,
@@ -468,13 +469,15 @@ the implementation. For forward-looking priorities, use
   `test_compile_checked_lowers_matmul_dunder_dispatch`,
   `test_compile_checked_lowers_inplace_matmul_dunder_dispatch`, and generated
   matrix statuses `implemented-exact`.
-- Native, WASM, LLVM, and Luau backend-facing lowering now run through the TIR
-  pipeline; the old environment-variable opt-out has been removed so SimpleIR
-  transport metadata cannot bypass typed-IR validation. Native, LLVM, and WASM
-  now share `runtime/molt-tir/src/tir/pipeline_cache.rs` for cached
-  SimpleIR-to-TIR custody, module-phase handoff, selective back-conversion, and
-  skip-path terminal drops, so backend code no longer owns a parallel cached TIR
-  optimization lane.
+- Native, WASM, LLVM, Luau, and fact-graph backend-facing lowering now run
+  through the TIR pipeline; the old environment-variable opt-out has been
+  removed so SimpleIR transport metadata cannot bypass typed-IR validation.
+  Native, LLVM, WASM, Luau, and fact-graph diagnostics share
+  `runtime/molt-tir/src/tir/pipeline_cache.rs` for cached SimpleIR-to-TIR
+  custody, module-phase handoff, selective back-conversion or owned-TIR return,
+  source-file-aware cache keys, and skip-path terminal drops, so backend code no
+  longer owns parallel cached TIR optimization, module assembly, or
+  back-conversion lanes.
 - Frontend midend fixed-point verification fails closed: non-convergence and
   post-convergence idempotence drift record policy diagnostics and raise instead
   of accepting the last verified round or probe output behind an env-controlled
