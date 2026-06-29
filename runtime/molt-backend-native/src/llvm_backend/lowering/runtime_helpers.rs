@@ -379,7 +379,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// The callee is declared on demand through the central runtime-import helper
     /// when it is not already in the fixed table. On-demand declarations carry
     /// only the globally valid runtime attributes; stronger facts such as
-    /// `willreturn` must be promoted into `runtime_imports.rs`.
+    /// `willreturn` must be promoted into `runtime_imports/declarations.rs`.
     pub(super) fn call_runtime_2(
         &self,
         name: &str,

@@ -3,8 +3,8 @@
 
 `MOLT_RUNTIME_INTRINSIC_SYMBOLS` is an active-profile availability set, not an
 ABI manifest. The LLVM generic preserved-op fallback may call `molt_<kind>` only
-when `runtime_imports.rs` owns an explicit `(symbol, parameter ABI, return ABI)`
-fact.
+when `runtime_imports/abi_facts.rs` owns an explicit `(symbol, parameter ABI,
+return ABI)` fact.
 
 This audit derives the generic preserved runtime surface from the frontend wire
 vocabulary and the generated TIR mapper:
@@ -39,8 +39,9 @@ if str(ROOT) not in sys.path:
 from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
 
 SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
-RUNTIME_IMPORTS_RS = (
-    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports.rs"
+RUNTIME_IMPORT_ABI_FACTS_RS = (
+    ROOT
+    / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
 
 ABI_I64_RETURNS = {"u64", "i64"}
@@ -270,7 +271,7 @@ def runtime_exports(
 
 
 def classified_abi_facts(
-    path: Path = RUNTIME_IMPORTS_RS,
+    path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
 ) -> tuple[dict[tuple[str, int], AbiFact], tuple[DuplicateAbiFact, ...]]:
     text = path.read_text(encoding="utf-8")
     facts: dict[tuple[str, int], AbiFact] = {}
@@ -407,7 +408,7 @@ def validate_classified_facts(
 def run_audit(root: Path = ROOT) -> AuditResult:
     serialization = root / SERIALIZATION_PY.relative_to(ROOT)
     op_kinds = root / OP_KINDS_GENERATED_RS.relative_to(ROOT)
-    runtime_imports = root / RUNTIME_IMPORTS_RS.relative_to(ROOT)
+    runtime_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
     runtime_roots = runtime_src_roots(root)
 
     preserved_kinds = frontend_wire_kinds(serialization) - mapped_tir_kinds(op_kinds)

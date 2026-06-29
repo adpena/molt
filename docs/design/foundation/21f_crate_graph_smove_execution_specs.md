@@ -468,8 +468,8 @@ are independent). Single agent.
 doc comment). Deps `molt-lower` + `molt-codegen-abi` + `inkwell`(opt). BEFORE native.
 
 ### 6.1 Exact partition
-`git mv` `molt-backend/src/llvm_backend/` (whole dir: `mod.rs`, `lowering.rs` 10,656, `types.rs`,
-`pgo.rs`, `runtime_imports.rs`) -> `runtime/molt-backend-llvm/src/` (the dir files become the
+`git mv` `molt-backend/src/llvm_backend/` (whole dir: `mod.rs`, `app_resolver.rs`, `lowering.rs` 10,656, `types.rs`,
+`pgo.rs`, `runtime_imports.rs`, `runtime_imports/{abi_facts,attributes,declarations}.rs`) -> `runtime/molt-backend-llvm/src/` (the dir files become the
 crate modules; `llvm_backend/mod.rs` -> `molt-backend-llvm/src/lib.rs`, or keep `mod.rs` + a thin
 `lib.rs`). Internal `crate::tir::*`/`crate::representation_plan::*`/`crate::passes::*` paths ->
 `molt_lower::{...}` / `molt_passes::{...}` / `molt_ir::{...}`; the NaN-box consumers
