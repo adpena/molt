@@ -139,7 +139,8 @@ def _render_rs_mod() -> str:
             "mod container_runtime_selector;\n",
             "mod const_policy;\n",
             "mod import_metadata;\n",
-            "mod import_registry;\n",
+            "mod import_queries;\n",
+            "mod import_specs;\n",
             "mod import_tokens;\n",
             "mod lir_runtime_calls;\n",
             "mod method_ic_selector;\n",
@@ -167,9 +168,11 @@ def _render_rs_mod() -> str:
             "    WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,\n",
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
-            "pub(crate) use import_registry::{\n",
-            "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY,\n",
-            "    RuntimeImportSpec,\n",
+            "pub(crate) use import_queries::{\n",
+            "    wasm_runtime_export_name, wasm_runtime_import,\n",
+            "};\n",
+            "pub(crate) use import_specs::{\n",
+            "    IMPORT_REGISTRY, RuntimeImportSpec,\n",
             "};\n",
             "pub(crate) use import_tokens::WasmRuntimeImport;\n",
             "pub(crate) use lir_runtime_calls::{\n",
@@ -510,7 +513,7 @@ def _render_rs_import_metadata(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_import_registry(data: dict) -> str:
+def _render_rs_import_specs(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
@@ -519,6 +522,7 @@ def _render_rs_import_registry(data: dict) -> str:
             "pub(crate) struct RuntimeImportSpec {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) name: &'static str,\n",
+            "    pub(crate) runtime_name: Option<&'static str>,\n",
             "    pub(crate) type_idx: u32,\n",
             "}\n\n",
             "pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[\n",
@@ -530,6 +534,7 @@ def _render_rs_import_registry(data: dict) -> str:
                 "    RuntimeImportSpec {\n",
                 f"        import: {_rust_runtime_import(data, entry['name'])},\n",
                 f"        name: \"{entry['name']}\",\n",
+                f"        runtime_name: {_rust_option_str(entry.get('runtime_name'))},\n",
                 f"        type_idx: {entry['type']},\n",
                 "    },\n",
             ]
@@ -537,21 +542,26 @@ def _render_rs_import_registry(data: dict) -> str:
     lines.extend(
         [
             "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {\n",
-            "    match name {\n",
         ]
     )
-    for entry in data["import"]:
-        lines.append(
-            f"        \"{entry['name']}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
-        )
-        runtime_name = entry.get("runtime_name")
-        if runtime_name is not None:
-            lines.append(
-                f"        \"{runtime_name}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
-            )
-    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
+    return "".join(lines)
+
+
+def _render_rs_import_queries(data: dict) -> str:
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "use super::import_specs::IMPORT_REGISTRY;\n",
+            "use super::import_tokens::WasmRuntimeImport;\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {\n",
+            "    IMPORT_REGISTRY\n",
+            "        .iter()\n",
+            "        .find(|spec| spec.name == name || spec.runtime_name == Some(name))\n",
+            "        .map(|spec| spec.import)\n",
+            "}\n\n",
+        ]
+    )
     lines.extend(
         [
             "#[inline]\n",
@@ -1591,7 +1601,8 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "static_types.rs": _render_rs_static_types(data),
         "import_tokens.rs": _render_rs_import_tokens(data),
         "import_metadata.rs": _render_rs_import_metadata(data),
-        "import_registry.rs": _render_rs_import_registry(data),
+        "import_specs.rs": _render_rs_import_specs(data),
+        "import_queries.rs": _render_rs_import_queries(data),
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "method_ic_selector.rs": _render_rs_method_ic_selector(data),
         "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(data),

@@ -973,6 +973,7 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
         wasm_runtime_import("molt_socket_drop"),
         Some(WasmRuntimeImport::SocketDrop)
     );
+    assert_eq!(wasm_runtime_import("molt_alloc"), None);
     assert_eq!(
         WasmRuntimeImport::ImportlibImportTransaction.runtime_export_name(),
         "molt_importlib_import_transaction"
@@ -989,6 +990,7 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
         wasm_runtime_export_name("socket_drop"),
         Some("molt_socket_drop")
     );
+    assert_eq!(wasm_runtime_export_name("molt_alloc"), None);
 }
 
 #[test]

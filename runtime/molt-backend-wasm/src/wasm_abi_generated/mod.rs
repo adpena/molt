@@ -8,7 +8,8 @@ mod call_indirect;
 mod const_policy;
 mod container_runtime_selector;
 mod import_metadata;
-mod import_registry;
+mod import_queries;
+mod import_specs;
 mod import_tokens;
 mod lir_runtime_calls;
 mod method_ic_selector;
@@ -35,9 +36,8 @@ pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
-pub(crate) use import_registry::{
-    IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_export_name, wasm_runtime_import,
-};
+pub(crate) use import_queries::{wasm_runtime_export_name, wasm_runtime_import};
+pub(crate) use import_specs::{IMPORT_REGISTRY, RuntimeImportSpec};
 pub(crate) use import_tokens::WasmRuntimeImport;
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
