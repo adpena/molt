@@ -4975,6 +4975,19 @@ import_name = "object_new_bound"
 variant = "ObjectNewBoundSized"
 import_name = "object_new_bound_sized"
 
+# Payload-size-aware object allocation helper selector. The manifest owns both
+# the direct WASM import name and the LIR runtime call variant.
+
+[[object_new_bound_selector]]
+payload = "unsized"
+import_name = "object_new_bound"
+lir_variant = "ObjectNewBound"
+
+[[object_new_bound_selector]]
+payload = "sized"
+import_name = "object_new_bound_sized"
+lir_variant = "ObjectNewBoundSized"
+
 [[lir_runtime_call]]
 variant = "ClosureLoad"
 import_name = "closure_load"
@@ -7074,10 +7087,6 @@ deps = [
   "object_new",
   "object_set_class",
 ]
-
-[[op_import_dep]]
-kind = "object_new_bound"
-deps = []
 
 [[op_import_dep]]
 kind = "object_new_bound_stack"

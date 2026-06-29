@@ -12,6 +12,9 @@ pub(crate) use crate::wasm_abi_generated::{
 #[cfg(test)]
 mod tests {
     use super::{IMPORT_REGISTRY, OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
+    use crate::wasm_abi_generated::{
+        LirRuntimeCall, WasmObjectNewBoundPayload, wasm_object_new_bound_selection,
+    };
 
     #[test]
     fn module_cache_del_is_registered_as_on_demand_wasm_import() {
@@ -64,14 +67,21 @@ mod tests {
             "object_new_bound_sized must use the binary i64,i64 -> i64 host import ABI"
         );
 
-        let op_deps = OP_IMPORT_DEPS
-            .iter()
-            .find_map(|&(kind, deps)| (kind == "object_new_bound").then_some(deps))
-            .expect("object_new_bound op must declare its WASM import dependencies");
         assert!(
-            op_deps.is_empty(),
-            "object_new_bound dependencies are selected from payload-size metadata during import collection"
+            OP_IMPORT_DEPS
+                .iter()
+                .all(|&(kind, _deps)| kind != "object_new_bound"),
+            "object_new_bound import demand is selected from payload-size metadata, not OP_IMPORT_DEPS"
         );
+        let unsized_selection = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Unsized);
+        assert_eq!(unsized_selection.import_name, "object_new_bound");
+        assert_eq!(
+            unsized_selection.lir_runtime_call,
+            LirRuntimeCall::ObjectNewBound
+        );
+        let sized = wasm_object_new_bound_selection(WasmObjectNewBoundPayload::Sized);
+        assert_eq!(sized.import_name, "object_new_bound_sized");
+        assert_eq!(sized.lir_runtime_call, LirRuntimeCall::ObjectNewBoundSized);
 
         let stack_deps = OP_IMPORT_DEPS
             .iter()

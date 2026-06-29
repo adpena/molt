@@ -2,9 +2,10 @@ use super::super::lir_context::LirLowerCtx;
 use super::super::runtime_calls::LirRuntimeCall;
 use super::call_abi::{
     LirRuntimeArg, emit_lir_runtime_call_with_args_and_result, emit_lir_runtime_result,
-    positive_i64_attr, required_i64_attr,
+    required_i64_attr,
 };
 use crate::wasm::body::WasmLirFallbackReason;
+use crate::wasm::object_new_bound_select::selected_lir_object_new_bound_runtime;
 use molt_tir::tir::lir::LirOp;
 use molt_tir::tir::ops::AttrValue;
 
@@ -30,11 +31,12 @@ pub(in crate::wasm::lir_fast) fn emit_lir_object_new_bound(ctx: &mut LirLowerCtx
     let Some(&class_ref) = op.tir_op.operands.first() else {
         panic!("ObjectNewBound requires class operand");
     };
-    if let Some(payload_size) = positive_i64_attr(op, "value") {
+    let selected = selected_lir_object_new_bound_runtime(op);
+    if let Some(payload_size) = selected.payload_size() {
         emit_lir_runtime_call_with_args_and_result(
             ctx,
             op,
-            LirRuntimeCall::ObjectNewBoundSized,
+            selected.lir_runtime_call,
             &[
                 LirRuntimeArg::BoxedOperand(class_ref),
                 LirRuntimeArg::I64Const(payload_size),
@@ -44,7 +46,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_object_new_bound(ctx: &mut LirLowerCtx
         emit_lir_runtime_call_with_args_and_result(
             ctx,
             op,
-            LirRuntimeCall::ObjectNewBound,
+            selected.lir_runtime_call,
             &[LirRuntimeArg::BoxedOperand(class_ref)],
         );
     }
