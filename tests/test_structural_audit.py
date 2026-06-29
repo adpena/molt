@@ -294,6 +294,37 @@ def test_rust_stub_surface_probe_counts_live_stubs_not_tests(tmp_path: Path):
     }
 
 
+def test_rust_backend_lowering_gap_probe_counts_unsupported_op_groups(
+    tmp_path: Path,
+):
+    rust = tmp_path / "runtime" / "molt-backend-rust" / "src" / "rust"
+    rust.mkdir(parents=True)
+    (rust / "op_emitter.rs").write_text(
+        '            "branch"\n'
+        '            | "block_on"\n'
+        '            | "bridge_unavailable" => {\n'
+        "                self.emit_unsupported_op(\n"
+        "                    op,\n"
+        '                    format!("semantic op `{}` has no Rust backend lowering", op.kind),\n'
+        "                );\n"
+        "            }\n"
+        "            other => {\n"
+        "                self.emit_unsupported_op(op, format!(\"unsupported {other}\"));\n"
+        "            }\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["rust_backend_lowering_gaps_total"] == 4
+    assert findings[0].location == (
+        "runtime/molt-backend-rust/src/rust/op_emitter.rs:4"
+    )
+    assert findings[0].detail == "L4:branch, block_on, bridge_unavailable"
+    assert findings[1].detail == "L10:catch-all Rust backend op"
+
+
 # --- 2. robustness of the scanning helpers --------------------------------
 
 

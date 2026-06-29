@@ -14,7 +14,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | handset_classifications | 0 |
 | debt_markers_total | 343 |
 | python_stub_surfaces_total | 809 |
-| rust_stub_surfaces_total | 57 |
+| rust_stub_surfaces_total | 52 |
+| rust_backend_lowering_gaps_total | 43 |
 | kitchen_sink_files | 0 |
 | max_kitchen_sink_structural_score | 0 |
 | kitchen_sink_large_regions | 0 |
@@ -28,6 +29,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
+| high | rust_backend_lowering_gap | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1680` | 17 Rust backend lowering gap(s) |
+| high | rust_backend_lowering_gap | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1702` | 5 Rust backend lowering gap(s) |
 | medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_attribute.py:51` | 75 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_named.py:251` | 67 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/frontend/visitors/call_dispatch_builtin_construc…` | 50 Python stub/NotImplemented surface(s) |
@@ -41,8 +44,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | python_stub_surface | `src/molt/frontend/visitors/async_gen.py:387` | 18 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/frontend/visitors/call_runtime_helpers.py:251` | 14 Python stub/NotImplemented surface(s) |
 | medium | rust_stub_surface | `runtime/molt-runtime/src/builtins/modules/runpy.rs:733` | 12 Rust stub/NotImplemented surface(s) |
-| medium | python_stub_surface | `src/molt/frontend/visitors/comprehensions.py:65` | 11 Python stub/NotImplemented surface(s) |
-| medium | rust_stub_surface | `runtime/molt-runtime/src/object/ops/subscript.rs:159` | 7 Rust stub/NotImplemented surface(s) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -58,6 +59,26 @@ Product board for the molt structural sweep — the first instrument of the Molt
 > MISSING-FACT-by-benchmark board lives in `call_fact_coverage.py` (representation census) + doc 46 — structural_audit does not have benchmark profiles, so it does not claim that board (no overclaiming).
 
 ## Full findings by probe
+
+### rust_backend_lowering_gap (15)
+
+| sev | what | where | action |
+| --- | --- | --- | --- |
+| high | 17 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1680` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| high | 5 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1702` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 4 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1536` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 3 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1474` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 3 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1500` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 2 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:103` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1496` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1509` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1515` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1521` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1527` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:1840` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:812` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:84` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
+| medium | 1 Rust backend lowering gap(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:96` | lower these ops through real Rust backend/runtime primitives or keep them fail-c |
 
 ### python_stub_surface (339)
 
@@ -105,13 +126,12 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 Python stub/NotImplemented surface(s) | `src/molt/frontend/lowering/loop_lowering.py:842` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | … | _299 more_ | | run `--json` for full list |
 
-### rust_stub_surface (21)
+### rust_stub_surface (19)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 12 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/modules/runpy.rs:733` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | medium | 7 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/object/ops/subscript.rs:159` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
-| medium | 4 Rust stub/NotImplemented surface(s) | `runtime/molt-backend-rust/src/rust/op_emitter.rs:788` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | medium | 4 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/micro_stubs.rs:17` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/exceptions.rs:1942` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/functions/compile_codeop.rs:1072` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
@@ -123,7 +143,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/concurrency/isolates.rs:1070` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/object/ops_memoryview.rs:405` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-backend-luau/src/luau/compile_pipeline.rs:538` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
-| low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-backend-rust/src/rust.rs:831` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-cpython-abi/src/abi_types.rs:298` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-path/src/os_ext.rs:1647` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-tk/src/tk/state.rs:546` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |

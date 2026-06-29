@@ -1346,6 +1346,80 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
     return findings
 
 
+def _rust_match_arm_text_before(lines: list[str], call_index: int) -> str:
+    arrow_index: int | None = None
+    floor = max(-1, call_index - 50)
+    for idx in range(call_index, floor, -1):
+        if "=> {" in lines[idx]:
+            arrow_index = idx
+            break
+    if arrow_index is None:
+        return lines[call_index].strip()
+    start = arrow_index
+    while start > 0:
+        previous = lines[start - 1].strip()
+        if previous.startswith('"') or previous.startswith('| "'):
+            start -= 1
+            continue
+        break
+    return "\n".join(line.strip() for line in lines[start : arrow_index + 1])
+
+
+def _rust_backend_lowering_gap_marker(arm_text: str) -> tuple[str, int]:
+    names = re.findall(r'"([a-z][a-z0-9_]*)"', arm_text)
+    if names:
+        marker = ", ".join(names[:10])
+        if len(names) > 10:
+            marker += f", ... ({len(names)} total)"
+        return marker, len(names)
+    if re.search(r"\bother\s*=>", arm_text):
+        return "catch-all Rust backend op", 1
+    if re.search(r"_\s*=>", arm_text):
+        return "method catch-all", 1
+    return "unsupported lowering diagnostic", 1
+
+
+def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
+    """Backend ops that fail closed because Rust lowering is not implemented.
+
+    These are better than fake output, but still first-class compiler debt: an
+    op has reached Rust source emission and lacks a real lowering primitive.
+    """
+    rel = Path("runtime/molt-backend-rust/src/rust/op_emitter.rs")
+    path = root / rel
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    findings: list[Finding] = []
+    for line_no, line in enumerate(lines, start=1):
+        if "self.emit_unsupported_op(" not in line:
+            continue
+        call_block = "\n".join(lines[line_no - 1 : min(len(lines), line_no + 8)])
+        if "unexpectedly produces output" in call_block:
+            continue
+        arm_text = _rust_match_arm_text_before(lines, line_no - 1)
+        marker, count = _rust_backend_lowering_gap_marker(arm_text)
+        findings.append(
+            Finding(
+                probe="rust_backend_lowering_gap",
+                severity="high" if count >= 5 else "medium",
+                title=f"{count} Rust backend lowering gap(s)",
+                location=f"{rel.as_posix()}:{line_no}",
+                detail=f"L{line_no}:{marker}",
+                suggested_action=(
+                    "lower these ops through real Rust backend/runtime primitives "
+                    "or keep them fail-closed behind an explicit unsupported-backend "
+                    "contract until the lowering is implemented"
+                ),
+                class_retired="rust-backend-lowering-gap",
+                metric=count,
+            )
+        )
+    return findings
+
+
 _NATIVE_SCALAR_PLAN_SURFACE_REL = (
     "runtime/molt-backend-native/src/native_backend/function_compiler"
 )
@@ -1628,6 +1702,7 @@ PROBES = (
     probe_debt_markers,
     probe_python_stub_surfaces,
     probe_rust_stub_surfaces,
+    probe_rust_backend_lowering_gaps,
     probe_native_scalar_plan_authority,
     probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
@@ -1663,6 +1738,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     debt = [f for f in findings if f.probe == "debt_marker"]
     python_stubs = [f for f in findings if f.probe == "python_stub_surface"]
     rust_stubs = [f for f in findings if f.probe == "rust_stub_surface"]
+    rust_backend_lowering_gaps = [
+        f for f in findings if f.probe == "rust_backend_lowering_gap"
+    ]
     kitchen_sink = [f for f in findings if f.probe == "kitchen_sink_file"]
     undecomposed = [f for f in findings if f.probe == "undecomposed_god_file"]
     native_scalar_plan = [
@@ -1697,6 +1775,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
             sum(int(f.metric) for f in python_stubs)
         ),
         "rust_stub_surfaces_total": float(sum(int(f.metric) for f in rust_stubs)),
+        "rust_backend_lowering_gaps_total": float(
+            sum(int(f.metric) for f in rust_backend_lowering_gaps)
+        ),
         "kitchen_sink_files": kitchen_sink_files,
         "max_kitchen_sink_structural_score": max_kitchen_sink_structural_score,
         "kitchen_sink_large_regions": kitchen_sink_large_regions,
