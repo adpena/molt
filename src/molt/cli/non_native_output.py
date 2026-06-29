@@ -202,7 +202,7 @@ def _browser_native_callable_manifest(
                 raise ValueError(
                     f"{export.qualified_name} direct_symbol export is missing symbol"
                 )
-            if required and export.symbol not in required:
+            if export.symbol not in required:
                 continue
             export_payload = export.digest_payload()
             export_payload["qualified_name"] = export.qualified_name
