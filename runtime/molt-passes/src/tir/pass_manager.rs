@@ -479,11 +479,11 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
             passes::branchless_count::run(f, tti)
         }),
         pass("bce", ReadOnly, |f, am, _tti| passes::bce::run(f, am)),
-        pass("vectorize", ReadOnly, |f, _am, tti| {
-            passes::vectorize::run(f, tti)
+        pass("vectorize", ReadOnly, |f, am, tti| {
+            passes::vectorize::run(f, am, tti)
         }),
-        pass("polyhedral", ReadOnly, |f, _am, tti| {
-            passes::polyhedral::run(f, tti)
+        pass("polyhedral", ReadOnly, |f, am, tti| {
+            passes::polyhedral::run(f, am, tti)
         }),
         // ── Cleanup ─────────────────────────────────────────────────
         pass("check_exception_elim", Cfg, |f, _am, _tti| {
