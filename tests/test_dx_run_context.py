@@ -10,6 +10,7 @@ from molt.dx import (
     DxProject,
     RunContext,
     development_artifacts_requested,
+    development_artifact_env,
     render_env,
 )
 from tools import run_context_env
@@ -60,6 +61,26 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(explicit_target)
     assert env["CARGO_INCREMENTAL"] == "1"
     assert env["MOLT_SESSION_ID"] == "caller-session"
+
+
+def test_development_artifact_env_session_id_overrides_ambient_session(
+    tmp_path: Path,
+) -> None:
+    env = development_artifact_env(
+        tmp_path,
+        {
+            "MOLT_SESSION_ID": "pytest-ambient",
+            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
+        },
+        session_prefix="test",
+        session_id="stable-proof",
+        create_dirs=False,
+    )
+
+    assert env["MOLT_SESSION_ID"] == "stable-proof"
+    assert env["CARGO_TARGET_DIR"] == str(
+        Path(env["MOLT_EXT_ROOT"]) / "target" / "sessions" / "stable-proof"
+    )
 
 
 def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> None:

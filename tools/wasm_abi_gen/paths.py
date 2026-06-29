@@ -15,8 +15,7 @@ OUT_RS_FILES = {
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "import_tokens.rs": OUT_RS_DIR / "import_tokens.rs",
     "import_metadata.rs": OUT_RS_DIR / "import_metadata.rs",
-    "import_specs.rs": OUT_RS_DIR / "import_specs.rs",
-    "import_queries.rs": OUT_RS_DIR / "import_queries.rs",
+    "import_registry.rs": OUT_RS_DIR / "import_registry.rs",
     "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
     "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
     "object_new_bound_selector.rs": OUT_RS_DIR / "object_new_bound_selector.rs",
@@ -24,8 +23,7 @@ OUT_RS_FILES = {
     "numeric_runtime_selector.rs": OUT_RS_DIR / "numeric_runtime_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
-    "reserved_runtime_callables.rs": OUT_RS_DIR / "reserved_runtime_callables.rs",
-    "runtime_callable_queries.rs": OUT_RS_DIR / "runtime_callable_queries.rs",
+    "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
     "pure_profile.rs": OUT_RS_DIR / "pure_profile.rs",
 }
 OUT_RUNTIME_CALLABLES_RS = (
@@ -33,7 +31,6 @@ OUT_RUNTIME_CALLABLES_RS = (
 )
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 INTRINSICS_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
-INTRINSIC_CATEGORIES = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 RUNTIME_ROOT = ROOT / "runtime"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"

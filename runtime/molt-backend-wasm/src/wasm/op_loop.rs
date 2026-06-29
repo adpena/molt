@@ -81,6 +81,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let ctx = self.ctx;
         let call_site_abi = self.call_site_abi;
         let import_ids = self.import_ids;
+        let native_callable_imports = ctx.native_callable_imports;
         let exception_handler_region_indices = self.exception_handler_region_indices;
         let frame = self.frame;
         let runtime_lookup_only_vars = frame.runtime_lookup_only_vars();
@@ -193,6 +194,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 func_ir,
                 call_site_abi,
                 import_ids,
+                native_callable_imports,
                 runtime_lookup_only_vars,
                 locals,
                 const_cache,

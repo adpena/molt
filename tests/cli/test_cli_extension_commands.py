@@ -17,7 +17,11 @@ from tests.cli.process_guard import run_cli_test_process
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _write_extension_project(project_root: Path) -> None:
+def _write_extension_project(
+    project_root: Path,
+    *,
+    extension_extra_lines: list[str] | None = None,
+) -> None:
     src_dir = project_root / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "demoext.c").write_text(
@@ -47,6 +51,7 @@ def _write_extension_project(project_root: Path) -> None:
                 'sources = ["src/demoext.c"]',
                 'capabilities = ["fs.read"]',
                 'molt_c_api_version = "1"',
+                *(extension_extra_lines or []),
                 "",
             ]
         )
@@ -677,6 +682,7 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
     assert "PyArray_ISDATETIME" in data["source_compile_only_symbols"]
     assert "PyArray_DescrFromScalar" in data["source_compile_only_symbols"]
     assert "PyArray_DescrFromType" in data["source_compile_only_symbols"]
+    assert "NPY_INT" in data["source_compile_only_symbols"]
 
 
 def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -731,6 +737,76 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         names = set(zf.namelist())
         assert "extension_manifest.json" in names
         assert manifest["extension"] in names
+
+
+def test_extension_build_emits_public_exports_in_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "extproj"
+    project_root.mkdir()
+    _write_extension_project(
+        project_root,
+        extension_extra_lines=[
+            'python_exports = ["demoext.ndimage.distance_transform_edt"]',
+            "",
+            "[[tool.molt.extension.callable_exports]]",
+            'module = "demoext.ndimage"',
+            'name = "distance_transform_edt"',
+            'binding = "direct_symbol"',
+            'abi = "molt.object_call_v1"',
+            'symbol = "molt_demoext_ndimage_distance_transform_edt"',
+            'effects = ["read", "write"]',
+            "deterministic = true",
+        ],
+    )
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    manifest_path = out_dir / "extension_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["python_exports"] == ["demoext.ndimage.distance_transform_edt"]
+    expected_callable_exports = [
+        {
+            "module": "demoext.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.object_call_v1",
+            "symbol": "molt_demoext_ndimage_distance_transform_edt",
+            "effects": ["read", "write"],
+            "deterministic": True,
+        }
+    ]
+    assert manifest["callable_exports"] == expected_callable_exports
+
+    wheel_path = next(out_dir.glob("*.whl"))
+    with zipfile.ZipFile(wheel_path) as zf:
+        embedded = json.loads(zf.read("extension_manifest.json"))
+    assert embedded["python_exports"] == manifest["python_exports"]
+    assert embedded["callable_exports"] == expected_callable_exports
 
 
 @pytest.mark.slow

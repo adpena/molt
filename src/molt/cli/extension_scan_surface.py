@@ -4,8 +4,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_PY_C_API_TOKEN_RE = re.compile(r"\bPy[A-Za-z_][A-Za-z0-9_]*\b")
-_PY_C_API_TOKEN = r"Py[A-Za-z_][A-Za-z0-9_]*"
+from molt.cli.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
+from molt.cli.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
 _CYTHON_PREPROCESSOR_DIRECTIVE_RE = re.compile(
@@ -19,29 +19,28 @@ _C_PREPROCESSOR_CONDITION_RE = re.compile(
     r"(?m)^\s*#\s*(?:if|ifdef|ifndef|elif|elifdef|elifndef)\b.*$"
 )
 _NUMPY_FAIL_FAST_SYMBOL_RE = re.compile(
-    r"_molt_numpy_unavailable_[A-Za-z0-9_]+\(\s*\"(?P<symbol>Py[A-Za-z0-9_]*)\""
+    rf"_molt_numpy_unavailable_[A-Za-z0-9_]+\(\s*\"(?P<symbol>{_C_API_TOKEN})\""
 )
-_C_DEFINE_SYMBOL_RE = re.compile(rf"^\s*#\s*define\s+(?P<symbol>{_PY_C_API_TOKEN})\b")
+_C_DEFINE_SYMBOL_RE = re.compile(rf"^\s*#\s*define\s+(?P<symbol>{_C_API_TOKEN})\b")
 _C_TAG_SYMBOL_RE = re.compile(
-    rf"\b(?:struct|enum|union)\s+(?P<symbol>{_PY_C_API_TOKEN})\b"
+    rf"\b(?:struct|enum|union)\s+(?P<symbol>{_C_API_TOKEN})\b"
 )
-_C_TOKEN_BEFORE_PAREN_RE = re.compile(rf"\b(?P<symbol>{_PY_C_API_TOKEN})\s*\(")
-_C_TOKEN_RE = re.compile(rf"\b(?P<symbol>{_PY_C_API_TOKEN})\b")
+_C_TOKEN_BEFORE_PAREN_RE = re.compile(rf"\b(?P<symbol>{_C_API_TOKEN})\s*\(")
 _CYTHON_INLINE_SYMBOL_RE = re.compile(
-    rf"^\s*cdef\s+inline\b.*\b(?P<symbol>{_PY_C_API_TOKEN})\s*\("
+    rf"^\s*cdef\s+inline\b.*\b(?P<symbol>{_C_API_TOKEN})\s*\("
 )
 _C_SINGLE_LINE_FUNCTION_SYMBOL_RE = re.compile(
     rf"(?m)^\s*(?:static\s+inline|static|inline|NPY_NO_EXPORT|PyMODINIT_FUNC)"
-    rf"[^\n;{{}}]*\b(?P<symbol>{_PY_C_API_TOKEN})\s*\([^;\n{{}}]*\)\s*\{{"
+    rf"[^\n;{{}}]*\b(?P<symbol>{_C_API_TOKEN})\s*\([^;\n{{}}]*\)\s*\{{"
 )
 _C_SPLIT_LINE_FUNCTION_SYMBOL_RE = re.compile(
     rf"(?m)^\s*(?:static\s+inline|static|inline|NPY_NO_EXPORT|PyMODINIT_FUNC)"
-    rf"[^\n;{{}}]*\n\s*(?P<symbol>{_PY_C_API_TOKEN})\s*"
+    rf"[^\n;{{}}]*\n\s*(?P<symbol>{_C_API_TOKEN})\s*"
     rf"\([^;\n{{}}]*\)\s*\n?\s*\{{"
 )
 _C_PLAIN_SPLIT_LINE_FUNCTION_SYMBOL_RE = re.compile(
     rf"(?m)^\s*[A-Za-z_][A-Za-z0-9_\s\*]*\*?\s*\n"
-    rf"\s*(?P<symbol>{_PY_C_API_TOKEN})\s*\([^;\n{{}}]*\)\s*\n?\s*\{{"
+    rf"\s*(?P<symbol>{_C_API_TOKEN})\s*\([^;\n{{}}]*\)\s*\n?\s*\{{"
 )
 _C_CONTROL_PREFIXES = (
     "if ",
@@ -63,7 +62,7 @@ def _add_py_parameter_names(header: str, symbols: set[str]) -> None:
         return
     params = header.rsplit("(", 1)[1].rsplit(")", 1)[0]
     for param in params.split(","):
-        tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(param)]
+        tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(param)]
         if len(tokens) >= 2 and tokens[-1] != tokens[0]:
             symbols.add(tokens[-1])
 
@@ -111,26 +110,26 @@ def _strip_c_like_comments_and_literals(text: str) -> str:
     return _strip_cython_hash_comments(without_string_literals)
 
 
-def _extract_py_c_api_tokens(
+def _extract_c_api_tokens(
     text: str, *, strip_py_condition_blocks: bool = True
 ) -> set[str]:
     del strip_py_condition_blocks
     sanitized = _strip_c_like_comments_and_literals(text)
     sanitized = _C_PREPROCESSOR_CONDITION_RE.sub(" ", sanitized)
     return {
-        symbol
-        for match in _PY_C_API_TOKEN_RE.finditer(sanitized)
-        if not (symbol := match.group(0)).endswith("_")
+        match.group("symbol")
+        for match in _C_API_TOKEN_RE.finditer(sanitized)
+        if not match.group("symbol").endswith("_")
     }
 
 
-def _extract_file_local_py_c_symbols(text: str) -> set[str]:
-    """Return Py* identifiers that are local to the source file.
+def _extract_file_local_c_api_symbols(text: str) -> set[str]:
+    """Return C/API identifiers that are local to the source file.
 
-    These names are not external C-API requirements, but they also must not be
+    These names are not external C/API requirements, but they also must not be
     promoted to project-wide definitions. Filtering them per file prevents a
-    local variable or parameter named like a Py* API from hiding a real missing
-    symbol in another translation unit.
+    local variable or parameter named like an ABI symbol from hiding a real
+    missing symbol in another translation unit.
     """
     local: set[str] = set()
     sanitized = _strip_preprocessor_macro_definitions(
@@ -150,7 +149,7 @@ def _extract_file_local_py_c_symbols(text: str) -> set[str]:
             if line.lstrip().startswith("static ") and "=" in line:
                 lhs = line.split("=", 1)[0]
                 if "(" not in lhs:
-                    tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(lhs)]
+                    tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)]
                     if tokens:
                         local.add(tokens[-1])
             signature_parts.append(line)
@@ -168,12 +167,12 @@ def _extract_file_local_py_c_symbols(text: str) -> set[str]:
             if "=" in line:
                 lhs = line.split("=", 1)[0]
                 if "(" not in lhs:
-                    tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(lhs)]
+                    tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)]
                     if tokens:
                         local.add(tokens[-1])
             elif line.endswith(";") and "(" not in line:
                 statement = line[:-1]
-                tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(statement)]
+                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)]
                 if tokens:
                     local.add(tokens[-1])
 
@@ -184,15 +183,15 @@ def _extract_file_local_py_c_symbols(text: str) -> set[str]:
     return local
 
 
-def _extract_project_defined_py_c_symbols(text: str) -> set[str]:
-    """Return Py* symbols defined by the scanned package itself.
+def _extract_project_defined_c_api_symbols(text: str) -> set[str]:
+    """Return C/API symbols defined by the scanned package itself.
 
-    The extension scanner gates unresolved external C-API requirements. Large
-    packages such as NumPy define many Py-prefixed C functions, macros, type
-    objects, and typedefs in their own source tree; counting those as missing
-    Molt C-API symbols makes the scan both noisy and wrong. This pass is
-    intentionally line-oriented and conservative so it stays fast on generated
-    megabyte-scale C files.
+    The extension scanner gates unresolved external C/API requirements. Large
+    packages such as NumPy define many Py-prefixed, Npy-prefixed, npy-prefixed,
+    and NPY-prefixed C functions, macros, type objects, and typedefs in their
+    own source tree; counting those as missing Molt C/API symbols makes the scan
+    both noisy and wrong. This pass is intentionally line-oriented and
+    conservative so it stays fast on generated megabyte-scale C files.
     """
     defined: set[str] = set()
     for raw_line in text.splitlines():
@@ -237,7 +236,7 @@ def _extract_project_defined_py_c_symbols(text: str) -> set[str]:
             typedef_parts.append(line)
             if ";" in line:
                 statement = " ".join(typedef_parts).split(";", 1)[0]
-                tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(statement)]
+                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)]
                 if tokens:
                     defined.add(tokens[-1])
                 typedef_parts = None
@@ -245,7 +244,7 @@ def _extract_project_defined_py_c_symbols(text: str) -> set[str]:
             typedef_parts = [line]
             if ";" in line:
                 statement = line.split(";", 1)[0]
-                tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(statement)]
+                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)]
                 if tokens:
                     defined.add(tokens[-1])
                 typedef_parts = None
@@ -258,7 +257,7 @@ def _extract_project_defined_py_c_symbols(text: str) -> set[str]:
                 and not lowered.startswith(("extern ", "static "))
             ):
                 lhs = line.split("=", 1)[0]
-                tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(lhs)]
+                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)]
                 if tokens:
                     defined.add(tokens[-1])
             elif (
@@ -268,7 +267,7 @@ def _extract_project_defined_py_c_symbols(text: str) -> set[str]:
                 and not lowered.startswith(("extern ", "static ", "typedef ", "#"))
             ):
                 statement = line[:-1]
-                tokens = [match.group("symbol") for match in _C_TOKEN_RE.finditer(statement)]
+                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)]
                 if tokens:
                     defined.add(tokens[-1])
 
@@ -289,6 +288,49 @@ def _extract_project_defined_py_c_symbols(text: str) -> set[str]:
             brace_depth = 0
 
     return defined
+
+
+def _load_c_api_scan_surface(
+    molt_root: Path,
+) -> tuple[_ExtensionScanSurface | None, Path, str | None]:
+    header_path = molt_root / "include" / "molt" / "Python.h"
+    runtime_tokens: set[str] = set()
+    numpy_tokens: set[str] = set()
+    fail_fast_tokens: set[str] = set()
+    try:
+        header_text = header_path.read_text()
+    except OSError as exc:
+        return None, header_path, str(exc)
+    runtime_tokens.update(_extract_c_api_tokens(header_text, strip_py_condition_blocks=False))
+    datetime_header = molt_root / "include" / "datetime.h"
+    if datetime_header.exists():
+        try:
+            datetime_text = datetime_header.read_text()
+        except OSError:
+            datetime_text = ""
+        if datetime_text:
+            runtime_tokens.update(
+                _extract_c_api_tokens(datetime_text, strip_py_condition_blocks=False)
+            )
+    numpy_include_root = molt_root / "include" / "numpy"
+    if numpy_include_root.exists():
+        for numpy_header in sorted(numpy_include_root.rglob("*.h")):
+            try:
+                numpy_text = numpy_header.read_text()
+            except OSError:
+                continue
+            numpy_tokens.update(
+                _extract_c_api_tokens(numpy_text, strip_py_condition_blocks=False)
+            )
+            fail_fast_tokens.update(_extract_numpy_fail_fast_symbols(numpy_text))
+    source_compile_only = numpy_tokens - runtime_tokens - fail_fast_tokens
+    surface = _ExtensionScanSurface(
+        runtime_backed=frozenset(runtime_tokens - fail_fast_tokens),
+        source_compile_only=frozenset(source_compile_only),
+        fail_fast=frozenset(fail_fast_tokens),
+        header_path=header_path,
+    )
+    return surface, header_path, None
 
 
 @dataclass(frozen=True)
@@ -320,46 +362,3 @@ def _extract_numpy_fail_fast_symbols(text: str) -> set[str]:
     return {
         match.group("symbol") for match in _NUMPY_FAIL_FAST_SYMBOL_RE.finditer(text)
     }
-
-
-def _load_py_c_api_scan_surface(
-    molt_root: Path,
-) -> tuple[_ExtensionScanSurface | None, Path, str | None]:
-    header_path = molt_root / "include" / "molt" / "Python.h"
-    runtime_tokens: set[str] = set()
-    numpy_tokens: set[str] = set()
-    fail_fast_tokens: set[str] = set()
-    try:
-        header_text = header_path.read_text()
-    except OSError as exc:
-        return None, header_path, str(exc)
-    runtime_tokens.update(_extract_py_c_api_tokens(header_text, strip_py_condition_blocks=False))
-    datetime_header = molt_root / "include" / "datetime.h"
-    if datetime_header.exists():
-        try:
-            datetime_text = datetime_header.read_text()
-        except OSError:
-            datetime_text = ""
-        if datetime_text:
-            runtime_tokens.update(
-                _extract_py_c_api_tokens(datetime_text, strip_py_condition_blocks=False)
-            )
-    numpy_include_root = molt_root / "include" / "numpy"
-    if numpy_include_root.exists():
-        for numpy_header in sorted(numpy_include_root.rglob("*.h")):
-            try:
-                numpy_text = numpy_header.read_text()
-            except OSError:
-                continue
-            numpy_tokens.update(
-                _extract_py_c_api_tokens(numpy_text, strip_py_condition_blocks=False)
-            )
-            fail_fast_tokens.update(_extract_numpy_fail_fast_symbols(numpy_text))
-    source_compile_only = numpy_tokens - runtime_tokens - fail_fast_tokens
-    surface = _ExtensionScanSurface(
-        runtime_backed=frozenset(runtime_tokens - fail_fast_tokens),
-        source_compile_only=frozenset(source_compile_only),
-        fail_fast=frozenset(fail_fast_tokens),
-        header_path=header_path,
-    )
-    return surface, header_path, None

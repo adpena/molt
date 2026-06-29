@@ -1,4 +1,4 @@
-use super::module_abi::WasmCallableCallSiteAbi;
+use super::module_abi::{WasmCallableCallSiteAbi, WasmNativeCallableImports};
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use std::collections::BTreeMap;
@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub(super) struct CompileFuncContext<'a> {
     pub(super) call_site_abi: WasmCallableCallSiteAbi<'a>,
     pub(super) import_ids: &'a TrackedImportIds,
+    pub(super) native_callable_imports: &'a WasmNativeCallableImports,
     pub(super) reloc_enabled: bool,
     /// Functions eligible for multi-value return optimization.
     /// Maps function name -> number of return values (2 or 3).

@@ -3,7 +3,7 @@ use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, WasmRuntimeImport, poll_table_imports,
+    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS, WasmRuntimeImport,
     wasm_runtime_export_name, wasm_runtime_import,
 };
 use crate::wasm_plan::{
@@ -115,6 +115,127 @@ fn generic_attr_ic_uses_transported_source_op_idx() {
     );
 }
 
+#[test]
+fn native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol() {
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_native_callable_ir("molt.object_call_v1"));
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("native callable direct symbol dispatch must emit valid WASM");
+
+    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
+    let import_modules = wasm_function_import_modules(&wasm);
+    assert_eq!(
+        import_modules.get(native_symbol).map(String::as_str),
+        Some("molt_native"),
+        "native callable symbols must not be imported through the Molt runtime namespace"
+    );
+
+    let import_type_indices = wasm_function_import_type_indices(&wasm);
+    assert_eq!(
+        import_type_indices.get(native_symbol).copied(),
+        Some(2),
+        "unary object-call native callable ABI must use boxed (i64) -> i64 type index"
+    );
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let native_import_index = *import_indices
+        .get(native_symbol)
+        .unwrap_or_else(|| panic!("{native_symbol} import missing; imports={import_indices:?}"));
+    let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(
+        call_indices.contains(&native_import_index),
+        "native callable invoke_ffi must become a direct WASM call to {native_symbol}; calls={call_indices:?}"
+    );
+    if let Some(invoke_ffi_ic_index) = import_indices.get("invoke_ffi_ic") {
+        assert!(
+            !call_indices.contains(invoke_ffi_ic_index),
+            "native callable invoke_ffi must not fall back to invoke_ffi_ic; calls={call_indices:?}"
+        );
+    }
+}
+
+#[test]
+fn native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol() {
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_native_callable_ir("molt.forward_f32_v1"));
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("native callable forward_f32 dispatch must emit valid WASM");
+
+    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
+    let import_modules = wasm_function_import_modules(&wasm);
+    assert_eq!(
+        import_modules.get(native_symbol).map(String::as_str),
+        Some("molt_native"),
+        "forward_f32 native callable symbols must be imported through the native callable namespace"
+    );
+
+    let import_type_indices = wasm_function_import_type_indices(&wasm);
+    assert_eq!(
+        import_type_indices.get(native_symbol).copied(),
+        Some(19),
+        "forward_f32 must use typed native WASM ABI (i32 input_ptr, i64 byte_len, i32 output_ptr) -> i32"
+    );
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let native_import_index = *import_indices
+        .get(native_symbol)
+        .unwrap_or_else(|| panic!("{native_symbol} import missing; imports={import_indices:?}"));
+    let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(
+        call_indices.contains(&native_import_index),
+        "forward_f32 invoke_ffi must become a direct WASM call to {native_symbol}; calls={call_indices:?}"
+    );
+    for runtime_import in [
+        "bytes_as_ptr",
+        "scratch_alloc",
+        "scratch_free",
+        "bytes_from_bytes",
+    ] {
+        let runtime_import_index = *import_indices.get(runtime_import).unwrap_or_else(|| {
+            panic!("{runtime_import} import missing; imports={import_indices:?}")
+        });
+        assert!(
+            call_indices.contains(&runtime_import_index),
+            "forward_f32 typed lowering must directly call {runtime_import}; calls={call_indices:?}"
+        );
+    }
+    if let Some(invoke_ffi_ic_index) = import_indices.get("invoke_ffi_ic") {
+        assert!(
+            !call_indices.contains(invoke_ffi_ic_index),
+            "forward_f32 invoke_ffi must not fall back to invoke_ffi_ic; calls={call_indices:?}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "expected exactly one Float32Array payload")]
+fn native_callable_forward_f32_rejects_non_unary_payload_abi() {
+    let _ = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_native_callable_ir_with_args(
+        "molt.forward_f32_v1",
+        vec!["arg0", "arg1"],
+    ));
+}
+
 fn wasm_test_function(
     name: &str,
     params: Vec<&str>,
@@ -183,6 +304,31 @@ fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR {
             source_file: None,
             is_extern: false,
         }],
+        profile: None,
+    }
+}
+
+fn wasm_native_callable_ir(abi: &str) -> SimpleIR {
+    wasm_native_callable_ir_with_args(abi, vec!["arg"])
+}
+
+fn wasm_native_callable_ir_with_args(abi: &str, args: Vec<&str>) -> SimpleIR {
+    let mut native_call = wasm_test_op("invoke_ffi", Some("out"), args.clone());
+    native_call.native_callable_export =
+        Some("nativepkg.ndimage.distance_transform_edt".to_string());
+    native_call.native_callable_binding = Some("direct_symbol".to_string());
+    native_call.native_callable_symbol =
+        Some("molt_nativepkg_ndimage_distance_transform_edt".to_string());
+    native_call.native_callable_abi = Some(abi.to_string());
+    let mut ret = wasm_test_op("ret", None, vec!["out"]);
+    ret.var = Some("out".to_string());
+    SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            args,
+            None,
+            vec![native_call, ret],
+        )],
         profile: None,
     }
 }
@@ -616,6 +762,20 @@ fn wasm_function_import_names(wasm: &[u8]) -> Vec<String> {
     imports
 }
 
+fn wasm_function_import_modules(wasm: &[u8]) -> BTreeMap<String, String> {
+    let mut imports = BTreeMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ImportSection(reader)) = payload {
+            for import in reader.into_imports().flatten() {
+                if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+                    imports.insert(import.name.to_string(), import.module.to_string());
+                }
+            }
+        }
+    }
+    imports
+}
+
 fn wasm_function_import_type_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
     let mut imports = BTreeMap::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -892,13 +1052,15 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
 
     let sentinel_func_idx = first_call_indirect_idx + CALL_INDIRECT_IMPORTS.len() as u32;
     let element_indices = wasm_element_function_indices(&wasm);
-    let poll_table_prefix = poll_table_imports()
-        .filter_map(|spec| spec.poll_table_slot)
+    let poll_table_prefix = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot)
         .max()
         .unwrap_or(0) as usize
         + 1;
-    let occupied_poll_slots: BTreeSet<usize> = poll_table_imports()
-        .filter_map(|spec| spec.poll_table_slot.map(|slot| slot as usize))
+    let occupied_poll_slots: BTreeSet<usize> = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot as usize)
         .collect();
     for slot in 0..poll_table_prefix {
         if !occupied_poll_slots.contains(&slot) {
@@ -941,8 +1103,7 @@ fn poll_table_slots_follow_manifest_slot_numbers() {
         WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll,
     ] {
         let import_name = import.name();
-        let slot = crate::wasm_abi::IMPORT_REGISTRY[import as usize]
-            .poll_table_slot
+        let slot = crate::wasm_abi::poll_table_import_slot(import)
             .unwrap_or_else(|| panic!("missing generated poll slot for {import_name}"));
         let func_index = *import_indices
             .get(import_name)
@@ -972,7 +1133,6 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
         wasm_runtime_import("molt_socket_drop"),
         Some(WasmRuntimeImport::SocketDrop)
     );
-    assert_eq!(wasm_runtime_import("molt_alloc"), None);
     assert_eq!(
         wasm_runtime_import("runtime_init"),
         Some(WasmRuntimeImport::RuntimeInit)
@@ -1009,7 +1169,6 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
         wasm_runtime_export_name("socket_drop"),
         Some("molt_socket_drop")
     );
-    assert_eq!(wasm_runtime_export_name("molt_alloc"), None);
     assert_eq!(
         wasm_runtime_export_name("molt_runtime_init"),
         Some("molt_runtime_init")

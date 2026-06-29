@@ -15,6 +15,7 @@ pub mod intrinsic_symbols;
 pub mod ir;
 pub mod ir_schema;
 pub mod json_boundary;
+pub mod native_callable_abi;
 pub mod process_diagnostics;
 pub mod repr;
 pub mod stdlib_module_symbols;

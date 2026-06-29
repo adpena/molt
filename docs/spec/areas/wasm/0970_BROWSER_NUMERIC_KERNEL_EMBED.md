@@ -1,6 +1,6 @@
 # 0970 Browser Numeric Kernel Embed
 
-Status: active contract, 2026-06-27
+Status: active contract, 2026-06-29
 
 ## Contract
 
@@ -15,9 +15,19 @@ embed artifact, not the full process host:
   program, host IO, DB/socket/process shims, and `loadMoltWasm(...).invokeExport`
   escape-hatch calls. It does not own a duplicate typed-array kernel entrypoint.
 
-Typed arrays cross the host ABI as Python `bytes`. The Python export should
-accept `bytes` plus explicit shape/length metadata, then return `bytes`.
-JavaScript decodes those bytes into the requested typed-array view.
+For ordinary Python exports, typed arrays cross the host ABI as Python `bytes`.
+The Python export should accept `bytes` plus explicit shape/length metadata,
+then return `bytes`. JavaScript decodes those bytes into the requested
+typed-array view.
+
+For package-native browser callables, `molt.forward_f32_v1` is a typed WASM ABI,
+not a boxed object ABI. The app module imports the native symbol as
+`(input_ptr: i32, byte_len: i64, output_ptr: i32) -> i32`. The backend uses the
+runtime byte/scratch authority (`bytes_as_ptr`, `scratch_alloc`,
+`bytes_from_bytes`, `scratch_free`) to bridge a bytes-backed Molt value to the
+native pointer/length call and then wraps the output buffer once.
+`browser_embed.js` satisfies that same import from plain JS by passing
+`Float32Array` input/output views over WASM memory.
 
 ## Minimal Kernel
 
@@ -133,6 +143,14 @@ boundary. Kernel A/Kernel B package semantics remain out of scope until they are
 compiled through upstream source plus ABI/C-API/object closure and lowered onto
 typed storage, SIMD, native codegen, or WebGPU/GPU kernels.
 
+Current Pact recovery evidence reinforces that boundary: plain WASM compile of
+`field_solve.py` fails at `scipy.ndimage.distance_transform_edt`; NumPy/SciPy
+source roots without package admission fail closed; package admission timed out
+after 300s; and a graph-only probe found 186 modules, zero staged native
+artifacts, and broad NumPy plus `scipy`/`scipy.ndimage` initializer closure.
+That blocker belongs to package-native object/symbol/storage closure, not to
+the browser typed-array embed API.
+
 ## Proof
 
 Pinned tests:
@@ -145,3 +163,34 @@ Pinned tests:
 The first test proves the pact-facing ABI: a JavaScript `Float32Array` reaches a
 Molt split-runtime export as `bytes`, the export returns `bytes`, and
 `browser_embed.js` decodes the result back into `Float32Array`.
+
+Native callable exports use the same browser delivery path. A WASM app that
+imports a sidecar-declared `direct_symbol` through the `molt.forward_f32_v1` ABI
+gets a `molt_native.<symbol>` import. Split-runtime `manifest.json` records the
+same authority under `abi.browser_embed.native_callables.symbols[<symbol>]`,
+including the ABI token, canonical browser signature, and sidecar export
+provenance. Packaging filters that table to actual `app.wasm` `molt_native`
+imports and fails closed when an imported symbol is absent from the staged native
+artifact plan. Linked WASM packaging stages the reachable external
+`wasm_relocatable_object`/`static_archive` bytes into
+`external_static_packages/<plan-digest>/`, passes those staged objects or
+archives into `wasm-ld`, and fingerprints the staged artifact, sidecar manifest,
+and support-file bytes for link reuse. `browser_embed.js` requires packaged
+`molt_native` imports to be present in that manifest table and rejects
+signature/token drift, then satisfies them from `nativeCallables` through the
+typed `(input_ptr, byte_len, output_ptr) -> status` ABI. The JS implementation
+receives `Float32Array` input and output views over WASM linear memory and
+either fills the output view or returns a same-length `Float32Array` for the
+adapter to copy. There is no duplicate boxed `forward_f32_v1` lane. Full
+NumPy/SciPy ndarray storage, dtype, stride, and multi-buffer custody remain
+separate work.
+
+Additional narrow proofs:
+
+- `tests/test_wasm_browser_embed.py::test_browser_embed_forward_f32_native_callable_import_adapter`
+- `cargo test -p molt-backend-wasm --features wasm-backend native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol --lib`
+
+Recovery note, 2026-06-29: the native callable ABI and plain JS adapter proofs
+are green. The source-build browser proof entered a long WASM compile and the
+tool session disappeared before a captured pytest footer. The test remains the
+pinned source-build proof, but this recovery does not claim it green.

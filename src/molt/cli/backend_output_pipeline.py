@@ -99,6 +99,9 @@ def _emit_backend_pipeline_outputs(
                 profile=profile,
                 warnings=prepared_build_preamble.warnings,
                 precompile=precompile,
+                split_runtime=output_layout.split_runtime,
+                native_artifact_plan=native_artifact_plan,
+                artifacts_root=artifacts_root,
             )
         )
         if prepared_non_native_result_error is not None:
