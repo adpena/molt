@@ -850,6 +850,26 @@ runtime_name = "molt_function_set_defaults"
 callable_arity = 3
 
 [[import]]
+name = "gpu_thread_id"
+type = 0
+
+[[import]]
+name = "gpu_block_id"
+type = 0
+
+[[import]]
+name = "gpu_block_dim"
+type = 0
+
+[[import]]
+name = "gpu_grid_dim"
+type = 0
+
+[[import]]
+name = "gpu_barrier"
+type = 0
+
+[[import]]
 name = "require_intrinsic_runtime"
 type = 3
 runtime_name = "molt_require_intrinsic_runtime"
@@ -4613,6 +4633,1064 @@ type = 5
 runtime_name = "molt_ws_wait_new"
 callable_arity = 3
 
+# LIR-fast runtime-call enum authority. Each row references a canonical import
+# above; preserved Copy runtime services use the import name as their
+# `_original_kind` key and carry only the operand count here.
+
+[[lir_runtime_call]]
+variant = "Add"
+import_name = "add"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Sub"
+import_name = "sub"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Mul"
+import_name = "mul"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Div"
+import_name = "div"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "FloorDiv"
+import_name = "floordiv"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Mod"
+import_name = "mod"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Eq"
+import_name = "eq"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Ne"
+import_name = "ne"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Lt"
+import_name = "lt"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Le"
+import_name = "le"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Gt"
+import_name = "gt"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Ge"
+import_name = "ge"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Is"
+import_name = "is"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "BitAnd"
+import_name = "bit_and"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "BitOr"
+import_name = "bit_or"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "BitXor"
+import_name = "bit_xor"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Invert"
+import_name = "invert"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "LShift"
+import_name = "lshift"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "RShift"
+import_name = "rshift"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Neg"
+import_name = "neg"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "Pos"
+import_name = "pos"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "Pow"
+import_name = "pow"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Index"
+import_name = "index"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "StoreIndex"
+import_name = "store_index"
+boxed_operand_count = 3
+
+[[lir_runtime_call]]
+variant = "DelIndex"
+import_name = "del_index"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "DictGetitem"
+import_name = "dict_getitem"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "DictSetitem"
+import_name = "dict_setitem"
+boxed_operand_count = 3
+
+[[lir_runtime_call]]
+variant = "TupleGetitem"
+import_name = "tuple_getitem"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "ListIntGetitem"
+import_name = "list_int_getitem"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "ListIntSetitem"
+import_name = "list_int_setitem"
+boxed_operand_count = 3
+
+[[lir_runtime_call]]
+variant = "Alloc"
+import_name = "alloc"
+
+[[lir_runtime_call]]
+variant = "ListBuilderNew"
+import_name = "list_builder_new"
+
+[[lir_runtime_call]]
+variant = "ListBuilderAppend"
+import_name = "list_builder_append"
+
+[[lir_runtime_call]]
+variant = "ListBuilderFinish"
+import_name = "list_builder_finish"
+
+[[lir_runtime_call]]
+variant = "TupleBuilderFinish"
+import_name = "tuple_builder_finish"
+
+[[lir_runtime_call]]
+variant = "DictNew"
+import_name = "dict_new"
+
+[[lir_runtime_call]]
+variant = "DictSet"
+import_name = "dict_set"
+
+[[lir_runtime_call]]
+variant = "SetNew"
+import_name = "set_new"
+
+[[lir_runtime_call]]
+variant = "SetAdd"
+import_name = "set_add"
+
+[[lir_runtime_call]]
+variant = "GetAttrName"
+import_name = "get_attr_name"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "GetAttrObjectIc"
+import_name = "get_attr_object_ic"
+
+[[lir_runtime_call]]
+variant = "GetAttrPtr"
+import_name = "get_attr_ptr"
+
+[[lir_runtime_call]]
+variant = "GetAttrSpecial"
+import_name = "get_attr_special"
+
+[[lir_runtime_call]]
+variant = "SetAttrName"
+import_name = "set_attr_name"
+boxed_operand_count = 3
+
+[[lir_runtime_call]]
+variant = "SetAttrObject"
+import_name = "set_attr_object"
+
+[[lir_runtime_call]]
+variant = "DelAttrName"
+import_name = "del_attr_name"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "DelAttrObject"
+import_name = "del_attr_object"
+
+[[lir_runtime_call]]
+variant = "Iter"
+import_name = "iter"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "IterNext"
+import_name = "iter_next"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "Contains"
+import_name = "contains"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "DictContains"
+import_name = "dict_contains"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "ListContains"
+import_name = "list_contains"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "SetContains"
+import_name = "set_contains"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "StrContains"
+import_name = "str_contains"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "SliceNew"
+import_name = "slice_new"
+
+[[lir_runtime_call]]
+variant = "OrdAt"
+import_name = "ord_at"
+boxed_operand_count = 2
+
+[[lir_runtime_call]]
+variant = "Not"
+import_name = "not"
+boxed_operand_count = 1
+
+[[lir_runtime_call]]
+variant = "IsTruthy"
+import_name = "is_truthy"
+
+[[lir_runtime_call]]
+variant = "ExceptionPending"
+import_name = "exception_pending"
+
+[[lir_runtime_call]]
+variant = "FunctionDefaultsVersion"
+import_name = "function_defaults_version"
+
+[[lir_runtime_call]]
+variant = "HandleResolve"
+import_name = "handle_resolve"
+
+[[lir_runtime_call]]
+variant = "ModuleImport"
+import_name = "module_import"
+
+[[lir_runtime_call]]
+variant = "ModuleImportStar"
+import_name = "module_import_star"
+
+[[lir_runtime_call]]
+variant = "ModuleNew"
+import_name = "module_new"
+
+[[lir_runtime_call]]
+variant = "BridgeUnavailable"
+import_name = "bridge_unavailable"
+
+[[lir_runtime_call]]
+variant = "ContextNull"
+import_name = "context_null"
+
+[[lir_runtime_call]]
+variant = "ContextEnter"
+import_name = "context_enter"
+
+[[lir_runtime_call]]
+variant = "ContextExit"
+import_name = "context_exit"
+
+[[lir_runtime_call]]
+variant = "ContextUnwind"
+import_name = "context_unwind"
+
+[[lir_runtime_call]]
+variant = "ContextDepth"
+import_name = "context_depth"
+
+[[lir_runtime_call]]
+variant = "ContextUnwindTo"
+import_name = "context_unwind_to"
+
+[[lir_runtime_call]]
+variant = "ContextClosing"
+import_name = "context_closing"
+
+[[lir_runtime_call]]
+variant = "ObjectNewBound"
+import_name = "object_new_bound"
+
+[[lir_runtime_call]]
+variant = "ObjectNewBoundSized"
+import_name = "object_new_bound_sized"
+
+[[lir_runtime_call]]
+variant = "ClosureLoad"
+import_name = "closure_load"
+
+[[lir_runtime_call]]
+variant = "ClosureStore"
+import_name = "closure_store"
+
+[[lir_runtime_call]]
+variant = "ModuleCacheGet"
+import_name = "module_cache_get"
+
+[[lir_runtime_call]]
+variant = "ModuleCacheSet"
+import_name = "module_cache_set"
+
+[[lir_runtime_call]]
+variant = "ModuleCacheDel"
+import_name = "module_cache_del"
+
+[[lir_runtime_call]]
+variant = "ModuleGetAttr"
+import_name = "module_get_attr"
+
+[[lir_runtime_call]]
+variant = "ModuleImportFrom"
+import_name = "module_import_from"
+
+[[lir_runtime_call]]
+variant = "ModuleGetGlobal"
+import_name = "module_get_global"
+
+[[lir_runtime_call]]
+variant = "ModuleGetName"
+import_name = "module_get_name"
+
+[[lir_runtime_call]]
+variant = "ModuleSetAttr"
+import_name = "module_set_attr"
+
+[[lir_runtime_call]]
+variant = "ModuleDelGlobal"
+import_name = "module_del_global"
+
+[[lir_runtime_call]]
+variant = "ModuleDelGlobalIfPresent"
+import_name = "module_del_global_if_present"
+
+[[lir_runtime_call]]
+variant = "IncRefObj"
+import_name = "inc_ref_obj"
+
+[[lir_runtime_call]]
+variant = "DecRefObj"
+import_name = "dec_ref_obj"
+
+[[lir_runtime_call]]
+variant = "IntFromI64"
+import_name = "int_from_i64"
+
+# Container-specialized runtime import selector. The compiler supplies the
+# proven operation plus storage/type fact; generic fallback is owned by callers
+# when no row is present.
+
+[[container_runtime_selector]]
+op = "index"
+fact = "flat_list_int"
+import_name = "list_int_getitem"
+lir_variant = "ListIntGetitem"
+
+[[container_runtime_selector]]
+op = "store_index"
+fact = "flat_list_int"
+import_name = "list_int_setitem"
+lir_variant = "ListIntSetitem"
+
+[[container_runtime_selector]]
+op = "index"
+fact = "dict"
+import_name = "dict_getitem"
+lir_variant = "DictGetitem"
+
+[[container_runtime_selector]]
+op = "index"
+fact = "tuple"
+import_name = "tuple_getitem"
+lir_variant = "TupleGetitem"
+
+[[container_runtime_selector]]
+op = "store_index"
+fact = "dict"
+import_name = "dict_setitem"
+lir_variant = "DictSetitem"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "set"
+import_name = "set_contains"
+lir_variant = "SetContains"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "dict"
+import_name = "dict_contains"
+lir_variant = "DictContains"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "list"
+import_name = "list_contains"
+lir_variant = "ListContains"
+
+[[container_runtime_selector]]
+op = "contains"
+fact = "str"
+import_name = "str_contains"
+lir_variant = "StrContains"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "list"
+import_name = "len_list"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "str"
+import_name = "len_str"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "dict"
+import_name = "len_dict"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "tuple"
+import_name = "len_tuple"
+
+[[container_runtime_selector]]
+op = "len"
+fact = "set"
+import_name = "len_set"
+
+# Fixed op-loop runtime-call authority. These rows cover runtime calls whose
+# WASM emission is exactly: local-prefix/op-value args, one tracked import call,
+# and a result/drop/none sink. Control protocols, builders, arena alloc,
+# selected-import dispatch, ICs, native-EH, and multi-call adapters stay out.
+
+[[op_loop_runtime_call]]
+kind = "gpu_thread_id"
+import_name = "gpu_thread_id"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_block_id"
+import_name = "gpu_block_id"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_block_dim"
+import_name = "gpu_block_dim"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_grid_dim"
+import_name = "gpu_grid_dim"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gpu_barrier"
+import_name = "gpu_barrier"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "import"
+import_name = "module_import"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ModuleImport"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_import"
+import_name = "module_import"
+args = ["local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "module_import_star"
+import_name = "module_import_star"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleImportStar"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_new"
+import_name = "module_new"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ModuleNew"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "function_defaults_version"
+import_name = "function_defaults_version"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "FunctionDefaultsVersion"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_cache_get"
+import_name = "module_cache_get"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ModuleCacheGet"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_cache_set"
+import_name = "module_cache_set"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleCacheSet"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_cache_del"
+import_name = "module_cache_del"
+args = ["local:0"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleCacheDel"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "module_get_attr"
+import_name = "module_get_attr"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleGetAttr"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_import_from"
+import_name = "module_import_from"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleImportFrom"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_get_global"
+import_name = "module_get_global"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleGetGlobal"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_get_name"
+import_name = "module_get_name"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ModuleGetName"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_set_attr"
+import_name = "module_set_attr"
+args = ["local:0", "local:1", "local:2"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleSetAttr"
+lir_operand_count = 3
+
+[[op_loop_runtime_call]]
+kind = "module_del_global"
+import_name = "module_del_global"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleDelGlobal"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "module_del_global_if_present"
+import_name = "module_del_global_if_present"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+lir_variant = "ModuleDelGlobalIfPresent"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "bridge_unavailable"
+import_name = "bridge_unavailable"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "BridgeUnavailable"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_null"
+import_name = "context_null"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextNull"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_enter"
+import_name = "context_enter"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextEnter"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_exit"
+import_name = "context_exit"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ContextExit"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "context_unwind"
+import_name = "context_unwind"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextUnwind"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "context_depth"
+import_name = "context_depth"
+args = []
+sink = "result_or_drop"
+lir_variant = "ContextDepth"
+lir_operand_count = 0
+
+[[op_loop_runtime_call]]
+kind = "context_unwind_to"
+import_name = "context_unwind_to"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+lir_variant = "ContextUnwindTo"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "context_closing"
+import_name = "context_closing"
+args = ["local:0"]
+sink = "result_or_drop"
+lir_variant = "ContextClosing"
+lir_operand_count = 1
+
+[[op_loop_runtime_call]]
+kind = "abs"
+import_name = "abs_builtin"
+args = ["local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "guard_tag"
+import_name = "guard_type"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "alloc_class"
+import_name = "alloc_class"
+args = ["op_value_i64:alloc_class missing payload size", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "alloc_class_trusted"
+import_name = "alloc_class_trusted"
+args = ["op_value_i64:alloc_class_trusted missing payload size", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "alloc_class_static"
+import_name = "alloc_class_static"
+args = ["op_value_i64:alloc_class_static missing payload size", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "string_format"
+import_name = "format_builtin"
+args = ["local:0", "local:1"]
+sink = "non_none_result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_finally_pending_observer"
+import_name = "exception_last_pending"
+args = []
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_new_builtin"
+import_name = "exception_new_builtin"
+args = ["op_value_i64:exception_new_builtin missing tag value", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_new_builtin_empty"
+import_name = "exception_new_builtin_empty"
+args = ["op_value_i64:exception_new_builtin_empty missing tag value"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "exception_new_builtin_one"
+import_name = "exception_new_builtin_one"
+args = ["op_value_i64:exception_new_builtin_one missing tag value", "local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gen_send"
+import_name = "generator_send"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gen_throw"
+import_name = "generator_throw"
+args = ["local:0", "local:1"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "gen_close"
+import_name = "generator_close"
+args = ["local:0"]
+sink = "result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "chan_drop"
+import_name = "chan_drop"
+args = ["local:0"]
+sink = "drop"
+
+[[op_loop_runtime_call]]
+kind = "spawn"
+import_name = "spawn"
+args = ["local:0"]
+sink = "none"
+
+[[op_loop_runtime_call]]
+kind = "print_newline"
+import_name = "print_newline"
+args = []
+sink = "none"
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 0
+kinds = [
+  "errno_constants",
+  "promise_new",
+  "cancel_token_get_current",
+  "cancelled",
+  "cancel_current",
+  "exception_stack_clear",
+  "exception_stack_enter",
+  "exception_stack_depth",
+  "exception_last",
+  "exception_last_pending",
+  "exception_active",
+  "exception_current",
+  "exception_clear",
+  "asyncgen_shutdown",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 1
+kinds = [
+  "not",
+  "id",
+  "file_close",
+  "file_flush",
+  "chan_new",
+  "cancel_token_new",
+  "cancel_token_clone",
+  "cancel_token_drop",
+  "cancel_token_cancel",
+  "future_cancel",
+  "future_cancel_clear",
+  "block_on",
+  "cancel_token_is_cancelled",
+  "cancel_token_set_current",
+  "asyncgen_new",
+  "is_generator",
+  "is_callable",
+  "iter",
+  "aiter",
+  "iter_next",
+  "anext",
+  "list_clear",
+  "list_copy",
+  "list_reverse",
+  "tuple_from_list",
+  "dict_from_obj",
+  "dict_clear",
+  "dict_copy",
+  "dict_popitem",
+  "dict_keys",
+  "dict_values",
+  "dict_items",
+  "set_pop",
+  "exception_stack_exit",
+  "exception_stack_set_depth",
+  "exception_enter_handler",
+  "exception_resolve_captured",
+  "exceptiongroup_combine",
+  "exception_kind",
+  "exception_class",
+  "exception_message",
+  "exception_context_set",
+  "exception_set_last",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 2
+kinds = [
+  "is",
+  "file_open",
+  "file_read",
+  "file_write",
+  "future_cancel_msg",
+  "promise_set_result",
+  "promise_set_exception",
+  "task_register_token_owned",
+  "env_get",
+  "del_index",
+  "list_append",
+  "list_int_new",
+  "list_fill_new",
+  "list_pop",
+  "list_extend",
+  "list_remove",
+  "list_count",
+  "list_index",
+  "tuple_count",
+  "dict_update",
+  "dict_setdefault_empty_list",
+  "dict_update_kwstar",
+  "set_add",
+  "set_add_probe",
+  "frozenset_add",
+  "set_discard",
+  "set_remove",
+  "set_update",
+  "set_intersection_update",
+  "set_difference_update",
+  "set_symdiff_update",
+  "exception_new",
+  "exception_new_from_class",
+  "exceptiongroup_match",
+  "exception_set_cause",
+  "exception_set_value",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 3
+kinds = [
+  "thread_submit",
+  "slice",
+  "slice_new",
+  "list_from_range",
+  "range_new",
+  "list_insert",
+  "dict_get",
+  "dict_inc",
+  "dict_str_int_inc",
+  "dict_setdefault",
+  "callargs_push_kw",
+  "enumerate",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 4
+kinds = [
+  "list_index_range",
+  "dict_pop",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "result_or_drop"
+arg_count = 2
+kinds = [
+  "callargs_push_pos",
+  "callargs_expand_star",
+  "callargs_expand_kwstar",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 1
+kinds = [
+  "ord",
+  "chr",
+  "string_lower",
+  "string_upper",
+  "string_capitalize",
+  "bytes_from_obj",
+  "bytearray_from_obj",
+  "float_from_obj",
+  "intarray_from_seq",
+  "memoryview_new",
+  "memoryview_tobytes",
+  "str_from_obj",
+  "repr_from_obj",
+  "ascii_from_obj",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 2
+kinds = [
+  "ord_at",
+  "string_join",
+  "string_split",
+  "string_split_validate",
+  "string_strip",
+  "string_lstrip",
+  "string_rstrip",
+  "bytes_split",
+  "bytearray_split",
+  "buffer2d_matmul",
+  "bytes_find",
+  "bytearray_find",
+  "string_find",
+  "string_startswith",
+  "bytes_startswith",
+  "bytearray_startswith",
+  "string_endswith",
+  "bytes_endswith",
+  "bytearray_endswith",
+  "string_count",
+  "bytes_count",
+  "bytearray_count",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 3
+kinds = [
+  "string_split_field",
+  "string_split_field_len",
+  "string_split_max",
+  "bytes_split_max",
+  "bytearray_split_max",
+  "bytes_from_str",
+  "bytearray_from_str",
+  "int_from_obj",
+  "int_from_str_of_obj",
+  "complex_from_obj",
+  "buffer2d_new",
+  "buffer2d_get",
+  "string_split_ws_dict_inc",
+  "taq_ingest_line",
+  "string_split_field_start",
+  "string_split_field_end",
+  "string_split_field_is_ascii",
+  "string_split_field_to_int",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 4
+kinds = [
+  "string_split_field_eq",
+  "string_split_field_len_from_bounds",
+  "bytes_replace",
+  "string_replace",
+  "bytearray_replace",
+  "buffer2d_set",
+  "memoryview_cast",
+  "string_split_sep_dict_inc",
+  "bytearray_fill_range",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 5
+kinds = [
+  "string_split_field_ord_at_bounds",
+  "statistics_mean_slice",
+  "statistics_stdev_slice",
+]
+
+[[op_loop_runtime_call_group]]
+sink = "non_none_result_or_drop"
+arg_count = 6
+kinds = [
+  "bytes_find_slice",
+  "bytearray_find_slice",
+  "string_find_slice",
+  "string_startswith_slice",
+  "bytes_startswith_slice",
+  "bytearray_startswith_slice",
+  "string_endswith_slice",
+  "bytes_endswith_slice",
+  "bytearray_endswith_slice",
+  "string_count_slice",
+  "bytes_count_slice",
+  "bytearray_count_slice",
+]
+
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.
 
@@ -5016,7 +6094,11 @@ host_exports = [
   "molt_exception_kind",
   "molt_exception_last",
   "molt_exception_message",
+  "molt_gpu_barrier",
+  "molt_gpu_block_dim",
+  "molt_gpu_block_id",
   "molt_gpu_broadcast_binary_contiguous",
+  "molt_gpu_grid_dim",
   "molt_gpu_linear_contiguous",
   "molt_gpu_linear_split_last_dim_contiguous",
   "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
@@ -5033,6 +6115,7 @@ host_exports = [
   "molt_gpu_tensor__zeros",
   "molt_gpu_tensor_from_buffer",
   "molt_gpu_tensor_from_parts",
+  "molt_gpu_thread_id",
   "molt_handle_resolve",
   "molt_header_size",
   "molt_object_repr",
@@ -5046,6 +6129,57 @@ host_exports = [
   "molt_traceback_format_exc",
   "molt_type_tag_of_bits",
 ]
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_broadcast_binary_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_linear_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_linear_split_last_dim_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_matmul_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_permute_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_repeat_axis_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_rms_norm_last_axis_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_rope_apply_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_softmax_last_axis_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_squared_relu_gate_interleaved_contiguous"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor_from_buffer"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor_from_parts"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__tensor_concat_first_dim"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__tensor_scatter_rows"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__tensor_take_rows"
+
+[[gpu_intrinsic_manifest_name]]
+name = "molt_gpu_tensor__zeros"
 
 [[runtime_import_fallback]]
 import = "fast_list_append"
@@ -5771,6 +6905,36 @@ deps = [
 kind = "print"
 deps = [
   "print_obj",
+]
+
+[[op_import_dep]]
+kind = "gpu_thread_id"
+deps = [
+  "gpu_thread_id",
+]
+
+[[op_import_dep]]
+kind = "gpu_block_id"
+deps = [
+  "gpu_block_id",
+]
+
+[[op_import_dep]]
+kind = "gpu_block_dim"
+deps = [
+  "gpu_block_dim",
+]
+
+[[op_import_dep]]
+kind = "gpu_grid_dim"
+deps = [
+  "gpu_grid_dim",
+]
+
+[[op_import_dep]]
+kind = "gpu_barrier"
+deps = [
+  "gpu_barrier",
 ]
 
 [[op_import_dep]]

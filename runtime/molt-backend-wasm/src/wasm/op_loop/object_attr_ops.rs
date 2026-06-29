@@ -1,5 +1,8 @@
 use super::super::context::CompileFuncContext;
-use super::*;
+use crate::wasm::{WasmBackend, WasmFrameLocals};
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::Function;
 
 #[path = "object_attr_ops/attribute_ops.rs"]
 mod attribute_ops;

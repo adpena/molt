@@ -50,7 +50,7 @@ impl<'a> SsaContext<'a> {
                         attrs,
                         source_span: None,
                     };
-                    self.stamp_source_site(&mut const_op, op_idx);
+                    self.stamp_source_identity(&mut const_op, op_idx);
                     self.pending_inline_consts.push(const_op);
                     operands.push(vid);
                 } else if let Ok(float_val) = a.parse::<f64>() {
@@ -66,7 +66,7 @@ impl<'a> SsaContext<'a> {
                         attrs,
                         source_span: None,
                     };
-                    self.stamp_source_site(&mut const_op, op_idx);
+                    self.stamp_source_identity(&mut const_op, op_idx);
                     self.pending_inline_consts.push(const_op);
                     operands.push(vid);
                 } else {
@@ -83,7 +83,7 @@ impl<'a> SsaContext<'a> {
                         attrs,
                         source_span: None,
                     };
-                    self.stamp_source_site(&mut const_op, op_idx);
+                    self.stamp_source_identity(&mut const_op, op_idx);
                     self.pending_inline_consts.push(const_op);
                     operands.push(vid);
                 }
@@ -281,7 +281,7 @@ impl<'a> SsaContext<'a> {
             attrs,
             source_span: None,
         };
-        self.stamp_source_site(&mut tir_op, op_idx);
+        self.stamp_source_identity(&mut tir_op, op_idx);
         tir_op
     }
 }

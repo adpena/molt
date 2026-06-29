@@ -236,7 +236,8 @@ pub(in crate::wasm) fn build_dispatch_control_maps(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{build_dispatch_control_maps, has_non_linear_control_flow};
+    use crate::OpIR;
 
     fn op(kind: &str, value: Option<i64>) -> OpIR {
         OpIR {

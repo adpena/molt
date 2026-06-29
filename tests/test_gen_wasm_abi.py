@@ -81,6 +81,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     data = gen.load_manifest()
     manifest_names = {entry["name"] for entry in data["import"]}
     host_exports = set(data["runtime_export_policy"]["host_exports"])
+    gpu_manifest_names = {entry["name"] for entry in data["gpu_intrinsic_manifest_name"]}
     fallback_specs = {entry["import"]: entry for entry in data["runtime_import_fallback"]}
 
     runtime_exports_path = ROOT / "src/molt/_wasm_runtime_exports.py"
@@ -95,6 +96,10 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "molt_set_wasm_table_base",
         "molt_gpu_matmul_contiguous",
     } <= host_exports
+    assert {
+        "molt_gpu_matmul_contiguous",
+        "molt_gpu_tensor__zeros",
+    } <= gpu_manifest_names <= host_exports
     assert fallback_specs["fast_dict_get"] == {
         "import": "fast_dict_get",
         "strategy": "call_bind_ic",
@@ -112,6 +117,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
 
     rendered_py = gen.render_py(data)
+    rendered_rs = _rendered_rs(gen, data)
+    assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
+    assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
@@ -296,6 +304,145 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
     assert imports["molt_logging_basic_config"]["callable_arity"] == 4
 
 
+def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    calls = {entry["variant"]: entry for entry in data["lir_runtime_call"]}
+    op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
+
+    assert calls["Add"]["import_name"] == "add"
+    assert calls["Add"]["boxed_operand_count"] == 2
+    assert calls["FloorDiv"]["import_name"] == "floordiv"
+    assert calls["Neg"]["boxed_operand_count"] == 1
+    assert calls["StoreIndex"]["boxed_operand_count"] == 3
+    assert calls["GetAttrName"]["boxed_operand_count"] == 2
+    assert calls["Iter"]["boxed_operand_count"] == 1
+    assert calls["ModuleImportStar"] == {
+        "variant": "ModuleImportStar",
+        "import_name": "module_import_star",
+    }
+    assert calls["ContextDepth"] == {
+        "variant": "ContextDepth",
+        "import_name": "context_depth",
+    }
+    assert calls["IntFromI64"]["import_name"] == "int_from_i64"
+    assert op_loop_calls["module_import_star"]["lir_variant"] == "ModuleImportStar"
+    assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
+    assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
+    assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
+    assert op_loop_calls["gpu_thread_id"] == {
+        "kind": "gpu_thread_id",
+        "import_name": "gpu_thread_id",
+        "args": [],
+        "sink": "result_or_drop",
+    }
+    assert op_loop_calls["gpu_barrier"] == {
+        "kind": "gpu_barrier",
+        "import_name": "gpu_barrier",
+        "args": [],
+        "sink": "result_or_drop",
+    }
+
+    rendered_rs = _rendered_rs(gen, data)
+    assert "enum LirRuntimeCall" in rendered_rs
+    assert "Self::FloorDiv => \"floordiv\"" in rendered_rs
+    assert "pub(crate) const fn boxed_operand_count" in rendered_rs
+    assert "Self::StoreIndex => Some(3)" in rendered_rs
+    assert "Self::ModuleImport => \"module_import\"" in rendered_rs
+    assert "Self::ModuleImport => Some" not in rendered_rs
+    assert "lir_fixed_runtime_call" in rendered_rs
+    assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_rs
+
+    broken = copy.deepcopy(data)
+    broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken)
+    broken_count = copy.deepcopy(data)
+    broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
+    with pytest.raises(gen.WasmAbiManifestError, match="boxed_operand_count"):
+        gen.validate_loaded_manifest(broken_count)
+
+    local_facade = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/runtime_calls.rs"
+    ).read_text(encoding="utf-8")
+    assert "enum LirRuntimeCall" not in local_facade
+    assert "match kind" not in local_facade
+    assert "lir_fixed_runtime_call" in local_facade
+    assert "LirFixedRuntimeCall" in local_facade
+    assert "crate::wasm_abi_generated::LirRuntimeCall" in local_facade
+
+    call_abi = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/lir_fast/lir_runtime_ops/call_abi.rs"
+    ).read_text(encoding="utf-8")
+    assert "boxed_operand_count().unwrap_or_else" in call_abi
+    assert "runtime_call, 2" not in call_abi
+
+
+def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    selectors = {
+        (entry["op"], entry["fact"]): (
+            entry["import_name"],
+            entry.get("lir_variant"),
+        )
+        for entry in data["container_runtime_selector"]
+    }
+
+    assert selectors == {
+        ("index", "flat_list_int"): ("list_int_getitem", "ListIntGetitem"),
+        ("store_index", "flat_list_int"): (
+            "list_int_setitem",
+            "ListIntSetitem",
+        ),
+        ("index", "dict"): ("dict_getitem", "DictGetitem"),
+        ("index", "tuple"): ("tuple_getitem", "TupleGetitem"),
+        ("store_index", "dict"): ("dict_setitem", "DictSetitem"),
+        ("contains", "set"): ("set_contains", "SetContains"),
+        ("contains", "dict"): ("dict_contains", "DictContains"),
+        ("contains", "list"): ("list_contains", "ListContains"),
+        ("contains", "str"): ("str_contains", "StrContains"),
+        ("len", "list"): ("len_list", None),
+        ("len", "str"): ("len_str", None),
+        ("len", "dict"): ("len_dict", None),
+        ("len", "tuple"): ("len_tuple", None),
+        ("len", "set"): ("len_set", None),
+    }
+
+    rendered_rs_modules = gen.render_rs_modules(data)
+    rendered_selector_rs = rendered_rs_modules["container_runtime_selector.rs"]
+    rendered_mod_rs = rendered_rs_modules["mod.rs"]
+    rendered_py = gen.render_py(data)
+    assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_selector_rs
+    assert "WasmContainerRuntimeFact::FlatListInt" in rendered_selector_rs
+    assert "LirRuntimeCall::ListIntGetitem" in rendered_selector_rs
+    assert "wasm_container_runtime_selection" in rendered_selector_rs
+    assert "mod container_runtime_selector;" in rendered_mod_rs
+    assert "WasmContainerRuntimeOp" in rendered_mod_rs
+    assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_py
+    assert (
+        '("index", "flat_list_int", "list_int_getitem", "ListIntGetitem")'
+        in rendered_py
+    )
+
+    broken_duplicate = copy.deepcopy(data)
+    broken_duplicate["container_runtime_selector"].append(
+        copy.deepcopy(broken_duplicate["container_runtime_selector"][0])
+    )
+    with pytest.raises(gen.WasmAbiManifestError, match="duplicate container_runtime_selector"):
+        gen.validate_loaded_manifest(broken_duplicate)
+
+    broken_import = copy.deepcopy(data)
+    broken_import["container_runtime_selector"][0]["import_name"] = "not_a_real_import"
+    with pytest.raises(gen.WasmAbiManifestError, match="references unknown import"):
+        gen.validate_loaded_manifest(broken_import)
+
+    broken_lir = copy.deepcopy(data)
+    broken_lir["container_runtime_selector"][0]["lir_variant"] = "DictGetitem"
+    with pytest.raises(gen.WasmAbiManifestError, match="does not match lir_variant"):
+        gen.validate_loaded_manifest(broken_lir)
+
+
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -316,6 +463,9 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     assert "WASM_IMPORT_SIGNATURE_BY_NAME" in rendered_py
     assert "def wasm_import_signature" in rendered_py
     assert "def wasm_import_result_kind" in rendered_py
+    assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" in rendered_py
+    assert '"molt_exception_init", "exception_init", 2' in rendered_py
 
 
 def test_wasm_abi_manifest_owns_op_import_deps() -> None:
@@ -327,6 +477,8 @@ def test_wasm_abi_manifest_owns_op_import_deps() -> None:
     assert "module_cache_del" not in op_deps["__structural__"]
     assert op_deps["module_cache_del"] == ["module_cache_del"]
     assert op_deps["print"] == ["print_obj"]
+    assert op_deps["gpu_thread_id"] == ["gpu_thread_id"]
+    assert op_deps["gpu_barrier"] == ["gpu_barrier"]
     assert op_deps["object_new_bound"] == []
     assert op_deps["object_new_bound_stack"] == ["object_new_bound_sized"]
 
@@ -412,13 +564,19 @@ def test_wasm_abi_manifest_owns_runtime_surface_required_import_matchers() -> No
     assert "WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES" in rendered_py
     assert "runtime_surface_requires_direct_import" in rendered_py
 
-    runtime_surface = (
+    runtime_import_demand = (
         ROOT
-        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs"
+        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
     ).read_text(encoding="utf-8")
-    assert "REQUIRED_IMPORT_PREFIXES" not in runtime_surface
-    assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_surface
-    assert "runtime_surface_requires_direct_import(kind)" in runtime_surface
+    assert "REQUIRED_IMPORT_PREFIXES" not in runtime_import_demand
+    assert "REQUIRED_IMPORT_SINGLETONS" not in runtime_import_demand
+    assert "runtime_surface_requires_direct_import(kind)" in runtime_import_demand
+
+    host_surface = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs"
+    ).read_text(encoding="utf-8")
+    assert "GPU_INTRINSIC_MANIFEST_NAMES" in host_surface
+    assert "DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES" not in host_surface
 
 
 def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
@@ -462,12 +620,11 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "WASM_RESERVED_RUNTIME_CALLABLE_BASE" in rendered_py
 
     callable_layout = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_layout.rs"
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs"
     ).read_text(encoding="utf-8")
-    assert "POLL_TABLE_FUNCS" not in callable_layout
-    assert "POLL_TABLE_IMPORTS" in callable_layout
-    assert "poll_table_import_slot(spec.import_name)" in callable_layout
-    assert "spec.table_slot as usize" in callable_layout
+    assert "poll_table.seed_function_table_slots(&mut func_to_table_idx)" in callable_layout
+    assert "for spec in RESERVED_RUNTIME_CALLABLE_SPECS" in callable_layout
+    assert "table_index: table_base + table_slot" in callable_layout
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:

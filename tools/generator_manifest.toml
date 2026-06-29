@@ -80,7 +80,9 @@ tool = "tools/gen_wasm_abi.py"
 outputs = [
   "runtime/molt-backend-wasm/src/wasm_abi_generated/call_indirect.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/const_policy.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/container_runtime_selector.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/imports.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/lir_runtime_calls.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/mod.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/pure_profile.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_callables.rs",

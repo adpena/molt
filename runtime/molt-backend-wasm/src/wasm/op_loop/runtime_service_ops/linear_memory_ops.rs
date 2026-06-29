@@ -1,4 +1,6 @@
-use super::*;
+use super::RuntimeServiceOpContext;
+use crate::OpIR;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_linear_memory_runtime_op(
     context: &RuntimeServiceOpContext<'_>,

@@ -114,6 +114,7 @@ mod tests {
                 kind: "const".to_string(),
                 value: Some(7),
                 out: Some("x".to_string()),
+                source_op_idx: Some(42),
                 ..OpIR::default()
             },
             op_args("ret", &["x"]),
@@ -126,6 +127,10 @@ mod tests {
                     && op.end_col_offset == Some(9)
             }),
             "SimpleIR -> TIR -> SimpleIR must preserve source-site coordinates"
+        );
+        assert!(
+            result.iter().any(|op| op.source_op_idx == Some(42)),
+            "SimpleIR -> TIR -> SimpleIR must preserve transported source op identity"
         );
     }
 

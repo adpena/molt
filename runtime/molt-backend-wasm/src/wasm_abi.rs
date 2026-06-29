@@ -2,7 +2,8 @@ use std::iter::ExactSizeIterator;
 use wasm_encoder::{TypeSection, ValType};
 
 pub(crate) use crate::wasm_abi_generated::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS,
+    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, GPU_INTRINSIC_MANIFEST_NAMES,
+    POLL_TABLE_IMPORTS,
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,
     RuntimeCallableResult, STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,
 };
@@ -127,8 +128,8 @@ pub(crate) fn poll_table_import_slot(import_name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use wasm_encoder::Module;
+    use super::{STATIC_TYPE_COUNT, emit_static_type_section};
+    use wasm_encoder::{Module, TypeSection};
     use wasmparser::{CompositeInnerType, Parser, Payload};
 
     fn static_type_section_signatures() -> Vec<(usize, usize)> {

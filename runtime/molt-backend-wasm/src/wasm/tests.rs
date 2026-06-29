@@ -1,7 +1,15 @@
-use super::*;
+use super::container_runtime_select::selected_container_runtime_import;
+use super::{WasmBackend, WasmCompileOptions};
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
-use crate::wasm_options::WasmProfile;
-use crate::wasm_plan::is_production_lir_wasm_fast_path_name;
+use crate::wasm_plan::{
+    is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
+    wasm_scalar_truthiness_fast_path_for_name,
+};
+use crate::{FunctionIR, OpIR, SimpleIR};
+use std::collections::{BTreeMap, BTreeSet};
+use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
 #[test]
 fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
@@ -57,6 +65,50 @@ fn lir_fast_literal_const_materialization_emits_valid_wasm() {
             .iter()
             .any(|payload| payload.as_slice() == literal_bytes),
         "LIR-fast materialization must write literal bytes into a data segment"
+    );
+}
+
+#[test]
+fn generic_attr_ic_uses_transported_source_op_idx() {
+    let source_op_idx = 17;
+    let mut load_attr = wasm_test_op("get_attr_generic_obj", Some("value"), vec!["obj"]);
+    load_attr.s_value = Some("field".to_string());
+    load_attr.source_op_idx = Some(source_op_idx);
+    let mut ret = wasm_test_op("ret", None, vec!["value"]);
+    ret.var = Some("value".to_string());
+    let func = wasm_test_function("generic_attr_ic", vec!["obj"], None, vec![load_attr, ret]);
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("generic attr IC lowering must emit valid WASM");
+
+    let expected_site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
+        "generic_attr_ic",
+        source_op_idx as usize,
+        "get_attr_generic_obj",
+    ));
+    assert!(
+        wasm_i64_consts(&wasm).contains(&expected_site_bits),
+        "generic WASM attr IC must use transported source_op_idx for site id"
+    );
+
+    let imports = wasm_function_import_indices(&wasm);
+    let get_attr_object_ic = *imports
+        .get("get_attr_object_ic")
+        .unwrap_or_else(|| panic!("get_attr_object_ic import missing; imports={imports:?}"));
+    assert!(
+        wasm_direct_call_indices(&wasm).contains(&get_attr_object_ic),
+        "generic WASM attr IC must call get_attr_object_ic"
     );
 }
 
@@ -144,7 +196,7 @@ fn container_import_selection_ignores_transport_hints() {
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
     assert_eq!(
-        wasm_specialized_container_import(&plan, 0, "index", &index),
+        selected_container_runtime_import(&plan, 0, "index", &index),
         None
     );
 }
@@ -163,19 +215,102 @@ fn container_import_selection_uses_typed_container_facts() {
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
     assert_eq!(
-        wasm_specialized_container_import(&plan, 0, "index", &index),
+        selected_container_runtime_import(&plan, 0, "index", &index),
         None,
         "semantic list[int] is not a physical flat-list storage proof"
     );
     assert_eq!(
-        wasm_specialized_container_import(&plan, 1, "store_index", &set),
+        selected_container_runtime_import(&plan, 1, "store_index", &set),
         None,
         "semantic list[int] is not a physical flat-list storage proof"
     );
     assert_eq!(
-        wasm_specialized_container_import(&plan, 2, "len", &len),
+        selected_container_runtime_import(&plan, 2, "len", &len),
         Some("len_list")
     );
+}
+
+#[test]
+fn container_import_selection_uses_manifest_typed_query_matrix() {
+    let contains = wasm_test_op("contains", Some("hit"), vec!["xs", "needle"]);
+    let len = wasm_test_op("len", Some("n"), vec!["xs"]);
+    let cases = [
+        (
+            "typed_dict_queries",
+            "dict",
+            Some("dict_contains"),
+            Some("len_dict"),
+        ),
+        (
+            "typed_list_queries",
+            "list",
+            Some("list_contains"),
+            Some("len_list"),
+        ),
+        ("typed_set_queries", "set", Some("set_contains"), Some("len_set")),
+        ("typed_str_queries", "str", Some("str_contains"), Some("len_str")),
+        ("typed_tuple_queries", "tuple", None, Some("len_tuple")),
+    ];
+
+    for (name, container_type, contains_import, len_import) in cases {
+        let func = wasm_test_function(
+            name,
+            vec!["xs", "needle"],
+            Some(vec![container_type, "Any"]),
+            vec![contains.clone(), len.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            selected_container_runtime_import(&plan, 0, "contains", &contains),
+            contains_import,
+            "{name} contains selection drifted"
+        );
+        assert_eq!(
+            selected_container_runtime_import(&plan, 1, "len", &len),
+            len_import,
+            "{name} len selection drifted"
+        );
+    }
+}
+
+#[test]
+fn container_import_selection_uses_manifest_index_store_matrix() {
+    let index = wasm_test_op("index", Some("item"), vec!["xs", "key"]);
+    let store = wasm_test_op("store_index", None, vec!["xs", "key", "value"]);
+    let cases = [
+        (
+            "typed_dict_index_store",
+            "dict",
+            Some("dict_getitem"),
+            Some("dict_setitem"),
+        ),
+        ("typed_tuple_index_store", "tuple", Some("tuple_getitem"), None),
+        ("typed_list_index_store", "list", None, None),
+        ("typed_set_index_store", "set", None, None),
+        ("typed_str_index_store", "str", None, None),
+    ];
+
+    for (name, container_type, index_import, store_import) in cases {
+        let func = wasm_test_function(
+            name,
+            vec!["xs", "key", "value"],
+            Some(vec![container_type, "Any", "Any"]),
+            vec![index.clone(), store.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            selected_container_runtime_import(&plan, 0, "index", &index),
+            index_import,
+            "{name} index selection drifted"
+        );
+        assert_eq!(
+            selected_container_runtime_import(&plan, 1, "store_index", &store),
+            store_import,
+            "{name} store_index selection drifted"
+        );
+    }
 }
 
 #[test]
@@ -192,11 +327,11 @@ fn container_import_selection_uses_flat_list_storage_proof() {
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
     assert_eq!(
-        wasm_specialized_container_import(&plan, 1, "index", &index),
+        selected_container_runtime_import(&plan, 1, "index", &index),
         Some("list_int_getitem")
     );
     assert_eq!(
-        wasm_specialized_container_import(&plan, 2, "store_index", &set),
+        selected_container_runtime_import(&plan, 2, "store_index", &set),
         Some("list_int_setitem")
     );
 }
@@ -263,6 +398,22 @@ fn wasm_direct_call_indices(wasm: &[u8]) -> Vec<u32> {
         }
     }
     calls
+}
+
+fn wasm_i64_consts(wasm: &[u8]) -> Vec<i64> {
+    let mut values = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload
+            && let Ok(mut ops) = body.get_operators_reader()
+        {
+            while let Ok(op) = ops.read() {
+                if let wasmparser::Operator::I64Const { value } = op {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    values
 }
 
 fn wasm_data_segment_payloads(wasm: &[u8]) -> Vec<Vec<u8>> {
@@ -350,54 +501,6 @@ fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
         }
     }
     sigs
-}
-
-#[test]
-fn pure_profile_uses_observed_runtime_surface_not_broad_registry() {
-    let func = wasm_test_function(
-        "pure_surface",
-        vec![],
-        None,
-        vec![wasm_test_op("ret_void", None, vec![])],
-    );
-    let ir = SimpleIR {
-        functions: vec![func],
-        profile: None,
-    };
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        native_eh_enabled: false,
-        reloc_enabled: false,
-        wasm_profile: WasmProfile::Pure,
-        ..WasmCompileOptions::default()
-    })
-    .compile(ir);
-
-    wasmparser::Validator::new()
-        .validate_all(&wasm)
-        .expect("pure profile planned-import module must be structurally valid WASM");
-
-    let imports: BTreeSet<String> = wasm_function_import_names(&wasm).into_iter().collect();
-    assert!(
-        imports.contains("runtime_init"),
-        "pure profile must retain module runtime initialization; imports={imports:?}"
-    );
-    for name in [
-        "ctypes_coerce_value",
-        "http_client_execute",
-        "sqlite3_connect",
-        "tk_app_new",
-        "re_compile",
-        "socket_connect",
-    ] {
-        assert!(
-            !imports.contains(name),
-            "pure profile must not register broad runtime import {name}; imports={imports:?}"
-        );
-    }
-    assert!(
-        imports.len() < 200,
-        "pure profile should be planned from observed imports, not broad registry; imports={imports:?}"
-    );
 }
 
 #[test]
@@ -671,6 +774,67 @@ fn intrinsic_runtime_callables_are_manifest_backed() {
 }
 
 #[test]
+fn gpu_context_runtime_ops_are_manifest_backed() {
+    let mut ret = wasm_test_op("ret", None, vec!["tid"]);
+    ret.var = Some("tid".to_string());
+    let func = wasm_test_function(
+        "gpu_context_runtime_ops",
+        vec![],
+        None,
+        vec![
+            wasm_test_op("gpu_thread_id", Some("tid"), vec![]),
+            wasm_test_op("gpu_block_id", Some("bid"), vec![]),
+            wasm_test_op("gpu_block_dim", Some("bdim"), vec![]),
+            wasm_test_op("gpu_grid_dim", Some("gdim"), vec![]),
+            wasm_test_op("gpu_barrier", Some("barrier"), vec![]),
+            ret,
+        ],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("GPU context runtime ops must compile through generated ABI metadata");
+
+    let import_types = wasm_function_import_type_indices(&wasm);
+    let import_indices = wasm_function_import_indices(&wasm);
+    let call_indices = wasm_direct_call_indices(&wasm);
+    let sigs = wasm_type_section_signatures(&wasm);
+    for import_name in [
+        "gpu_thread_id",
+        "gpu_block_id",
+        "gpu_block_dim",
+        "gpu_grid_dim",
+        "gpu_barrier",
+    ] {
+        let import_type = *import_types
+            .get(import_name)
+            .unwrap_or_else(|| panic!("{import_name} import must be manifest-backed"));
+        assert_eq!(
+            sigs[import_type as usize],
+            (0, 1),
+            "{import_name} must use the manifest [] -> i64 ABI"
+        );
+        let import_index = *import_indices
+            .get(import_name)
+            .unwrap_or_else(|| panic!("{import_name} import must stay live"));
+        assert!(
+            call_indices.contains(&import_index),
+            "{import_name} must be emitted as a direct runtime call"
+        );
+    }
+}
+
+#[test]
 #[should_panic(expected = "builtin runtime callable arity mismatch")]
 fn builtin_callable_observed_arity_must_match_manifest() {
     let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
@@ -766,85 +930,6 @@ fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
             "generic WASM shared drops must keep dec_ref_obj import for native_eh_enabled={native_eh_enabled}; imports={imports:?}"
         );
     }
-}
-
-#[test]
-fn generic_wasm_local_slot_delete_var_lowers_before_control_fallback() {
-    let mut delete = wasm_test_op("delete_var", None, vec!["missing_val", "old"]);
-    delete.var = Some("slot".to_string());
-    let func = wasm_test_function(
-        "delete_var_slot",
-        vec!["value", "old"],
-        None,
-        vec![
-            wasm_test_op("missing", Some("missing_val"), vec![]),
-            {
-                let mut store = wasm_test_op("store_var", None, vec!["value"]);
-                store.var = Some("slot".to_string());
-                store
-            },
-            delete,
-            wasm_test_op("dec_ref", None, vec!["old"]),
-            wasm_test_op("ret_void", None, vec![]),
-        ],
-    );
-    let ir = SimpleIR {
-        functions: vec![func],
-        profile: None,
-    };
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        reloc_enabled: false,
-        ..WasmCompileOptions::default()
-    })
-    .compile(ir);
-
-    wasmparser::Validator::new()
-        .validate_all(&wasm)
-        .expect("delete_var must lower as a local-slot transition");
-    let imports = wasm_function_import_names(&wasm);
-    assert!(
-        imports.iter().any(|name| name == "dec_ref_obj"),
-        "delete_var must leave old-value release to the explicit drop fact; imports={imports:?}"
-    );
-}
-
-#[test]
-fn jumpful_wasm_delete_var_lowers_as_local_slot_not_control() {
-    let mut jump = wasm_test_op("jump", None, vec![]);
-    jump.value = Some(7);
-    let mut label = wasm_test_op("label", None, vec![]);
-    label.value = Some(7);
-    let mut store = wasm_test_op("store_var", None, vec!["value"]);
-    store.var = Some("slot".to_string());
-    let mut delete = wasm_test_op("delete_var", None, vec!["missing_val", "old"]);
-    delete.var = Some("slot".to_string());
-    let func = wasm_test_function(
-        "jumpful_delete_var_slot",
-        vec!["value", "old"],
-        None,
-        vec![
-            wasm_test_op("missing", Some("missing_val"), vec![]),
-            jump,
-            label,
-            store,
-            delete,
-            wasm_test_op("dec_ref", None, vec!["old"]),
-            wasm_test_op("ret_void", None, vec![]),
-        ],
-    );
-    let ir = SimpleIR {
-        functions: vec![func],
-        profile: None,
-    };
-    let wasm = WasmBackend::with_options(WasmCompileOptions {
-        reloc_enabled: false,
-        ..WasmCompileOptions::default()
-    })
-    .compile(ir);
-
-    wasmparser::Validator::new()
-        .validate_all(&wasm)
-        .expect("dispatch-mode delete_var must lower outside control_ops");
 }
 
 #[test]

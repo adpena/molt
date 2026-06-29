@@ -1,5 +1,8 @@
+use super::WasmBackend;
 use super::control_flow::has_non_linear_control_flow;
-use super::*;
+use crate::SimpleIR;
+use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped;
+use crate::wasm_plan::detect_multi_return_candidates;
 
 impl WasmBackend {
     pub fn compile(self, ir: SimpleIR) -> Vec<u8> {
