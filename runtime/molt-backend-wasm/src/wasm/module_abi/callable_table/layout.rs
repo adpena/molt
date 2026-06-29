@@ -6,8 +6,9 @@ use super::super::poll_table::WasmPollTableLayout;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use super::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS};
-use crate::wasm_abi_generated::wasm_runtime_import;
+use crate::wasm_abi::{
+    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, wasm_runtime_import,
+};
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
@@ -163,10 +164,7 @@ impl WasmBackend {
             table_indices.push(*target_index);
         }
         for runtime_name in direct_import_call_specs.keys() {
-            let import_name = runtime_name
-                .strip_prefix("molt_")
-                .unwrap_or(runtime_name.as_str());
-            let import = wasm_runtime_import(import_name).unwrap_or_else(|| {
+            let import = wasm_runtime_import(runtime_name).unwrap_or_else(|| {
                 panic!("missing direct runtime import token for {runtime_name}")
             });
             let import_idx = self.import_ids[import];

@@ -1,4 +1,4 @@
-use crate::wasm_abi_generated::CALL_INDIRECT_IMPORTS;
+use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, wasm_runtime_export_name};
 use crate::wasm_data::{DataRelocSite, DataSegmentInfo};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -242,7 +242,9 @@ pub(crate) fn add_reloc_sections(
     let mut import_names: Vec<String> = Vec::new();
     for (idx, name) in func_imports.iter().enumerate() {
         let flags = SymbolTable::WASM_SYM_UNDEFINED | SymbolTable::WASM_SYM_EXPLICIT_NAME;
-        let symbol_name = format!("molt_{name}");
+        let symbol_name = wasm_runtime_export_name(name)
+            .unwrap_or_else(|| panic!("missing generated runtime export for import {name}"))
+            .to_string();
         import_names.push(symbol_name);
         let name_ref = import_names.last().unwrap();
         sym_tab.function(flags, idx as u32, Some(name_ref));

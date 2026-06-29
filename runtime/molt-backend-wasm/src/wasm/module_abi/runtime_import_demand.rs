@@ -5,10 +5,10 @@ use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::object_new_bound_select::selected_object_new_bound_runtime;
-use crate::wasm_abi::{runtime_callable_arity, runtime_callable_import};
-use crate::wasm_abi_generated::{
-    WasmRuntimeImport, op_loop_runtime_call, wasm_bulk_memory_op, wasm_runtime_import,
+use crate::wasm_abi::{
+    WasmRuntimeImport, runtime_callable_arity, runtime_callable_import, wasm_runtime_import,
 };
+use crate::wasm_abi_generated::{op_loop_runtime_call, wasm_bulk_memory_op};
 use crate::wasm_imports::{OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
 use crate::wasm_options::{WasmCompileOptions, WasmProfile};
 use crate::{OpIR, TrampolineKind};

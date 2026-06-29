@@ -31,7 +31,8 @@ pub(crate) use container_runtime_selector::{
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
 pub(crate) use imports::{
-    IMPORT_REGISTRY, OP_IMPORT_DEPS, RuntimeImportSpec, WasmRuntimeImport, wasm_runtime_import,
+    IMPORT_REGISTRY, OP_IMPORT_DEPS, RuntimeImportSpec, WasmRuntimeImport,
+    wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,

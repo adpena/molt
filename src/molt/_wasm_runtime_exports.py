@@ -9,6 +9,8 @@ from ._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
+    wasm_runtime_export_name,
+    wasm_runtime_import_name,
 )
 
 _INTRINSIC_CALL_RE = re.compile(
@@ -19,16 +21,19 @@ _INTRINSIC_SYMBOL_RE = re.compile(
     r'IntrinsicSpec\s*\{\s*name:\s*"(?P<name>[^"]+)"\s*,\s*symbol:\s*"(?P<symbol>[^"]+)"',
     re.DOTALL,
 )
-def _normalize_runtime_export_name(name: str) -> str:
-    return name if name.startswith("molt_") else f"molt_{name}"
+def _runtime_export_name_or_fail(name: str) -> str:
+    export_name = wasm_runtime_export_name(name)
+    if export_name is None:
+        raise ValueError(f"unknown WASM runtime import/export name: {name}")
+    return export_name
 
 
 @lru_cache(maxsize=1)
 def _runtime_import_fallback_exports() -> dict[str, tuple[str, ...]]:
-    return {
-        _normalize_runtime_export_name(import_name): tuple(exports)
-        for import_name, exports in WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS
-    }
+    fallback_exports: dict[str, tuple[str, ...]] = {}
+    for import_name, exports in WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS:
+        fallback_exports[_runtime_export_name_or_fail(import_name)] = tuple(exports)
+    return fallback_exports
 
 
 @lru_cache(maxsize=1)
@@ -153,23 +158,28 @@ def canonical_intrinsic_runtime_name(name: str) -> str:
 def wasm_runtime_required_import_names(
     resolved_modules: Iterable[str] | None,
 ) -> tuple[str, ...]:
-    raw_names = {
-        canonical_intrinsic_runtime_name(name).removeprefix("molt_")
-        for name in _resolved_runtime_owned_intrinsic_exports(resolved_modules)
-    }
-    known = set(wasm_runtime_import_names())
-    return tuple(sorted(raw_names & known))
+    raw_names: set[str] = set()
+    for name in _resolved_runtime_owned_intrinsic_exports(resolved_modules):
+        import_name = wasm_runtime_import_name(canonical_intrinsic_runtime_name(name))
+        if import_name is not None:
+            raw_names.add(import_name)
+    return tuple(sorted(raw_names))
 
 
 def wasm_runtime_required_export_names(
     required_runtime_imports: Iterable[str] | None,
 ) -> tuple[str, ...]:
     if required_runtime_imports is None:
-        return tuple(sorted(f"molt_{name}" for name in wasm_runtime_import_names()))
+        return tuple(
+            sorted(
+                _runtime_export_name_or_fail(name)
+                for name in wasm_runtime_import_names()
+            )
+        )
     export_names = set(WASM_RUNTIME_HOST_EXPORTS)
     fallback_exports = _runtime_import_fallback_exports()
     for raw_name in required_runtime_imports:
-        name = _normalize_runtime_export_name(raw_name)
+        name = _runtime_export_name_or_fail(raw_name)
         export_names.add(name)
         export_names.update(fallback_exports.get(name, ()))
     return tuple(sorted(export_names))
@@ -184,7 +194,10 @@ def wasm_runtime_missing_required_exports(
     available = set(export_names)
     missing: set[str] = set()
     for raw_name in required_runtime_imports:
-        name = _normalize_runtime_export_name(raw_name)
+        name = wasm_runtime_export_name(raw_name)
+        if name is None:
+            missing.add(raw_name)
+            continue
         if name in available:
             continue
         fallback_exports = _runtime_import_fallback_exports().get(name)
@@ -199,7 +212,10 @@ def wasm_runtime_export_link_args(
     resolved_modules: Iterable[str] | None = None,
 ) -> str:
     if required_runtime_imports is None:
-        export_names = {f"molt_{name}" for name in wasm_runtime_import_names()}
+        export_names = {
+            _runtime_export_name_or_fail(name)
+            for name in wasm_runtime_import_names()
+        }
         export_names.update(WASM_RUNTIME_HOST_EXPORTS)
         export_names.update(
             canonical_intrinsic_runtime_name(name)
