@@ -28,8 +28,8 @@ from molt.cli.default_paths import _default_molt_bin
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli.external_native import (
-    _parse_external_static_packages,
     _resolve_external_package_native_artifact_plan,
+    _resolve_import_admission_policy,
 )
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
@@ -44,8 +44,6 @@ from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_modul
 from molt.cli.module_resolution import _stdlib_root_path
 from molt.cli.module_source import _source_content_sha256
 from molt.cli.models import (
-    _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _ImportAdmissionPolicy,
     _ResolvedBuildEntry,
     _WrapperBuildContract,
 )
@@ -166,16 +164,15 @@ def _wrapper_build_dependency_fingerprints(
     stdlib_root = _stdlib_root_path()
     module_reasons: dict[str, set[str]] = {}
     with _scoped_environ_updates(env):
-        admitted_packages, admission_error = _parse_external_static_packages(
-            os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
+        target = _wrapper_build_target(build_args)
+        import_admission_policy, admission_error = _resolve_import_admission_policy(
+            external_module_roots=resolved_build_entry.external_module_roots,
+            json_output=False,
+            defer_native_artifacts=True,
+            target=target,
         )
-        if admission_error is not None:
+        if admission_error is not None or import_admission_policy is None:
             return None
-        import_admission_policy = _ImportAdmissionPolicy(
-            external_roots=resolved_build_entry.external_module_roots,
-            admitted_external_packages=admitted_packages,
-            native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-        )
         try:
             prepared_module_graph, prepared_module_graph_error = (
                 _prepare_entry_module_graph(
@@ -188,7 +185,7 @@ def _wrapper_build_dependency_fingerprints(
                     diagnostics_enabled=False,
                     module_reasons=module_reasons,
                     json_output=False,
-                    target=_wrapper_build_target(build_args),
+                    target=target,
                     import_admission_policy=import_admission_policy,
                     target_python=resolved_build_entry.target_python,
                     capability_config_digest=capability_config_digest,
