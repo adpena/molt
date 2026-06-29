@@ -7,6 +7,7 @@ mod bulk_memory_ops;
 mod call_indirect;
 mod const_policy;
 mod container_runtime_selector;
+mod import_registry;
 mod imports;
 mod lir_runtime_calls;
 mod method_ic_selector;
@@ -30,10 +31,10 @@ pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
-pub(crate) use imports::{
-    IMPORT_REGISTRY, RuntimeImportSpec, WasmRuntimeImport, wasm_runtime_export_name,
-    wasm_runtime_import,
+pub(crate) use import_registry::{
+    IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_export_name, wasm_runtime_import,
 };
+pub(crate) use imports::WasmRuntimeImport;
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
     OpLoopRuntimeSinkSpec, lir_fixed_runtime_call, op_loop_runtime_call,

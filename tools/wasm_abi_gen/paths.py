@@ -14,6 +14,7 @@ OUT_RS_FILES = {
     "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",
     "imports.rs": OUT_RS_DIR / "imports.rs",
+    "import_registry.rs": OUT_RS_DIR / "import_registry.rs",
     "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
     "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
     "object_new_bound_selector.rs": OUT_RS_DIR / "object_new_bound_selector.rs",
