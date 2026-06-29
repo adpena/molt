@@ -249,6 +249,13 @@ _DEAD_MODULE_ELIMINATION_SAFELIST: frozenset[str] = frozenset(
     }
 )
 
+_PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST: frozenset[str] = frozenset(
+    {
+        "builtins",
+        "sys",
+    }
+)
+
 
 def _compute_reachable_modules(
     entry_module: str,
@@ -256,10 +263,14 @@ def _compute_reachable_modules(
     module_names: Collection[str],
     *,
     extra_roots: Collection[str] = (),
+    safelist: Collection[str] | None = None,
 ) -> set[str]:
     reachable: set[str] = set()
     queue: deque[str] = deque()
     module_name_set = set(module_names)
+    seed_safelist = (
+        _DEAD_MODULE_ELIMINATION_SAFELIST if safelist is None else safelist
+    )
 
     def _seed(name: str) -> None:
         if name in reachable:
@@ -268,7 +279,7 @@ def _compute_reachable_modules(
         queue.append(name)
 
     _seed(entry_module)
-    for safe in _DEAD_MODULE_ELIMINATION_SAFELIST:
+    for safe in seed_safelist:
         if safe in module_name_set:
             _seed(safe)
     for root in extra_roots:
@@ -297,12 +308,14 @@ def _apply_dead_module_elimination(
     module_names: Collection[str],
     *,
     extra_roots: Collection[str] = (),
+    safelist: Collection[str] | None = None,
 ) -> tuple[list[str], list[list[str]], int]:
     reachable = _compute_reachable_modules(
         entry_module,
         module_deps,
         module_names,
         extra_roots=extra_roots,
+        safelist=safelist,
     )
     filtered_order = [m for m in module_order if m in reachable]
     filtered_layers = [[m for m in layer if m in reachable] for layer in module_layers]
