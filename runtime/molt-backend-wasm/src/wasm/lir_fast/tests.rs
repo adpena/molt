@@ -9,7 +9,10 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use crate::wasm::body::{WasmBodyOps, WasmLirFallbackReason};
-use molt_codegen_abi::{CANONICAL_NAN_BITS, INT_MASK, QNAN_TAG_INT_I64, QNAN_TAG_MASK_I64};
+use molt_codegen_abi::{
+    CANONICAL_NAN_BITS, INT_MASK, QNAN_TAG_INT_I64, QNAN_TAG_MASK_I64, box_int_bits, box_none_bits,
+    stable_ic_site_id,
+};
 use std::collections::HashMap;
 use wasm_encoder::{Instruction, ValType};
 
@@ -527,6 +530,1381 @@ fn dynbox_pow_stays_lir_fast_runtime_call() {
         "DynBox pow must dispatch through the typed runtime helper; got {:?}",
         output.runtime_calls
     );
+}
+
+#[test]
+fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
+    let mut index_func = TirFunction::new(
+        "index_dynbox".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let index_result = index_func.fresh_value();
+    index_func.value_types.insert(index_result, TirType::DynBox);
+    let entry = index_func.blocks.get_mut(&index_func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Index,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![index_result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![index_result],
+    };
+
+    let output = lower_tir_to_wasm(&index_func).test_view();
+    assert!(
+        !output.bails_to_generic_path,
+        "DynBox index must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"index"),
+        "DynBox index must dispatch through the boxed index helper; got {:?}",
+        output.runtime_calls
+    );
+
+    let mut store_func = TirFunction::new(
+        "store_index_dynbox".into(),
+        vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let entry = store_func.blocks.get_mut(&store_func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::StoreIndex,
+        operands: vec![ValueId(0), ValueId(1), ValueId(2)],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![ValueId(0)],
+    };
+
+    let output = lower_tir_to_wasm(&store_func).test_view();
+    assert!(
+        !output.bails_to_generic_path,
+        "DynBox store_index must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"store_index"),
+        "DynBox store_index must dispatch through the boxed store helper; got {:?}",
+        output.runtime_calls
+    );
+
+    let mut del_func = TirFunction::new(
+        "del_index_dynbox".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let entry = del_func.blocks.get_mut(&del_func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::DelIndex,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![ValueId(0)],
+    };
+
+    let output = lower_tir_to_wasm(&del_func).test_view();
+    assert!(
+        !output.bails_to_generic_path,
+        "DynBox del_index must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"del_index"),
+        "DynBox del_index must dispatch through the boxed delete helper; got {:?}",
+        output.runtime_calls
+    );
+}
+
+#[test]
+fn typed_dict_and_tuple_index_select_specialized_runtime_calls() {
+    let cases = [
+        (
+            "dict_index",
+            TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
+            "dict_getitem",
+        ),
+        (
+            "tuple_index",
+            TirType::Tuple(vec![TirType::DynBox]),
+            "tuple_getitem",
+        ),
+    ];
+
+    for (name, container_type, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![container_type, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result_id = func.fresh_value();
+        func.value_types.insert(result_id, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Index,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must use {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.contains(&"index"),
+            "{name} must not fall back to the generic index helper"
+        );
+    }
+}
+
+#[test]
+fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() {
+    let index_cases = [
+        ("list_index_generic", TirType::List(Box::new(TirType::DynBox))),
+        ("set_index_generic", TirType::Set(Box::new(TirType::DynBox))),
+        ("str_index_generic", TirType::Str),
+    ];
+
+    for (name, container_type) in index_cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![container_type, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result_id = func.fresh_value();
+        func.value_types.insert(result_id, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Index,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&"index"),
+            "{name} must use generic index; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.iter().any(|call| matches!(
+                *call,
+                "dict_getitem" | "tuple_getitem" | "list_int_getitem"
+            )),
+            "{name} must not use an unsupported specialized index helper"
+        );
+    }
+
+    let store_cases = [
+        (
+            "list_store_generic",
+            TirType::List(Box::new(TirType::DynBox)),
+        ),
+        ("set_store_generic", TirType::Set(Box::new(TirType::DynBox))),
+        ("tuple_store_generic", TirType::Tuple(vec![TirType::DynBox])),
+        ("str_store_generic", TirType::Str),
+    ];
+
+    for (name, container_type) in store_cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![container_type, TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::StoreIndex,
+            operands: vec![ValueId(0), ValueId(1), ValueId(2)],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&"store_index"),
+            "{name} must use generic store_index; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.iter().any(|call| matches!(
+                *call,
+                "dict_setitem" | "list_int_setitem"
+            )),
+            "{name} must not use an unsupported specialized store helper"
+        );
+    }
+}
+
+#[test]
+fn dynbox_iterator_helpers_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("get_iter_dynbox", OpCode::GetIter, "iter"),
+        ("iter_next_dynbox", OpCode::IterNext, "iter_next"),
+    ];
+
+    for (name, opcode, runtime_call) in cases {
+        let mut func = TirFunction::new(name.into(), vec![TirType::DynBox], TirType::DynBox);
+        let result_id = func.fresh_value();
+        func.value_types.insert(result_id, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn membership_uses_contains_runtime_call_and_not_in_inverts_bool() {
+    let cases = [
+        ("in_dynbox", OpCode::In, false),
+        ("not_in_dynbox", OpCode::NotIn, true),
+    ];
+
+    for (name, opcode, expect_inversion) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::Bool,
+        );
+        let result_id = func.fresh_value();
+        func.value_types.insert(result_id, TirType::Bool);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&"contains"),
+            "{name} must call contains(container, item); got {:?}",
+            output.runtime_calls
+        );
+        assert_eq!(
+            output
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::I32Eqz)),
+            expect_inversion,
+            "{name} must invert only for NotIn"
+        );
+    }
+}
+
+#[test]
+fn typed_membership_selects_specialized_contains_runtime_calls() {
+    let cases = [
+        (
+            "dict_contains",
+            TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
+            "dict_contains",
+        ),
+        (
+            "list_contains",
+            TirType::List(Box::new(TirType::DynBox)),
+            "list_contains",
+        ),
+        (
+            "set_contains",
+            TirType::Set(Box::new(TirType::DynBox)),
+            "set_contains",
+        ),
+        ("str_contains", TirType::Str, "str_contains"),
+    ];
+
+    for (name, container_type, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![container_type, TirType::DynBox],
+            TirType::Bool,
+        );
+        let result_id = func.fresh_value();
+        func.value_types.insert(result_id, TirType::Bool);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::In,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.contains(&"contains"),
+            "{name} must not fall back to the generic contains helper"
+        );
+    }
+}
+
+#[test]
+fn build_slice_stays_lir_fast_and_pads_missing_bounds_with_none() {
+    let mut func = TirFunction::new(
+        "build_slice_missing_step".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::BuildSlice,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "BuildSlice must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"slice_new"),
+        "BuildSlice must call the slice_new ABI helper; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64Const(bits) if *bits == box_none_bits())),
+        "BuildSlice must pad a missing step operand with the ABI None bits"
+    );
+}
+
+#[test]
+fn ord_at_stays_lir_fast_with_boxed_result_carrier() {
+    let mut func = TirFunction::new(
+        "ord_at_dynbox".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::OrdAt,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "OrdAt must stay in the LIR fast lane after boxed carrier authority is fixed"
+    );
+    assert!(
+        output.runtime_calls.contains(&"ord_at"),
+        "OrdAt must call the ord_at ABI helper; got {:?}",
+        output.runtime_calls
+    );
+}
+
+#[test]
+fn raw_index_result_refuses_boxed_runtime_bits() {
+    let mut func = TirFunction::new(
+        "raw_index_result".into(),
+        vec![TirType::DynBox, TirType::I64],
+        TirType::I64,
+    );
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::I64);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Index,
+        operands: vec![ValueId(0), ValueId(1)],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let repr = HashMap::from([
+        (ValueId(0), Repr::DynBox),
+        (ValueId(1), Repr::RawI64Safe),
+        (result_id, Repr::RawI64Safe),
+    ]);
+    let vr = crate::representation_plan::value_range_for(&func);
+    let lir = lower_function_to_lir_with_inline_proof(&func, &repr, &vr);
+    let output = lower_lir_to_wasm(&lir).test_view();
+
+    assert!(
+        output.bails_to_generic_path,
+        "raw index result must not store boxed runtime bits into an I64 carrier"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
+    );
+}
+
+fn make_fixed_runtime_service_func(
+    name: &str,
+    opcode: OpCode,
+    operand_count: usize,
+    has_result: bool,
+) -> TirFunction {
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![TirType::DynBox; operand_count],
+        if has_result {
+            TirType::DynBox
+        } else {
+            TirType::None
+        },
+    );
+    let result_id = has_result.then(|| {
+        let id = func.fresh_value();
+        func.value_types.insert(id, TirType::DynBox);
+        id
+    });
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode,
+        operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+        results: result_id.into_iter().collect(),
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: result_id.into_iter().collect(),
+    };
+    func
+}
+
+fn make_copy_original_kind_runtime_func(
+    name: &str,
+    original_kind: &str,
+    operand_count: usize,
+    has_result: bool,
+) -> TirFunction {
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![TirType::DynBox; operand_count],
+        if has_result {
+            TirType::DynBox
+        } else {
+            TirType::None
+        },
+    );
+    let result_id = has_result.then(|| {
+        let id = func.fresh_value();
+        func.value_types.insert(id, TirType::DynBox);
+        id
+    });
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+        results: result_id.into_iter().collect(),
+        attrs: {
+            let mut m = AttrDict::new();
+            m.insert(
+                "_original_kind".into(),
+                AttrValue::Str(original_kind.into()),
+            );
+            m
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: result_id.into_iter().collect(),
+    };
+    func
+}
+
+#[test]
+fn exception_pending_stays_lir_fast_with_bool_result_adapter() {
+    let mut func = TirFunction::new("exception_pending".into(), vec![], TirType::Bool);
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::Bool);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ExceptionPending,
+        operands: vec![],
+        results: vec![result_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "exception_pending must stay in the LIR fast lane"
+    );
+    assert_eq!(output.result_types, vec![ValType::I32]);
+    assert!(
+        output.runtime_calls.contains(&"exception_pending"),
+        "exception_pending must call the typed runtime import; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64Ne)),
+        "exception_pending raw i64 flag must be adapted to a Bool1 result"
+    );
+}
+
+#[test]
+fn fixed_runtime_service_and_module_ops_stay_lir_fast_runtime_calls() {
+    let cases = [
+        (
+            "function_defaults_version",
+            OpCode::FunctionDefaultsVersion,
+            1,
+            true,
+            "function_defaults_version",
+        ),
+        ("module_import", OpCode::Import, 1, true, "module_import"),
+        (
+            "module_cache_get",
+            OpCode::ModuleCacheGet,
+            1,
+            true,
+            "module_cache_get",
+        ),
+        (
+            "module_cache_set",
+            OpCode::ModuleCacheSet,
+            2,
+            false,
+            "module_cache_set",
+        ),
+        (
+            "module_cache_del",
+            OpCode::ModuleCacheDel,
+            1,
+            false,
+            "module_cache_del",
+        ),
+        (
+            "module_get_attr",
+            OpCode::ModuleGetAttr,
+            2,
+            true,
+            "module_get_attr",
+        ),
+        (
+            "module_import_from",
+            OpCode::ModuleImportFrom,
+            2,
+            true,
+            "module_import_from",
+        ),
+        (
+            "module_get_global",
+            OpCode::ModuleGetGlobal,
+            2,
+            true,
+            "module_get_global",
+        ),
+        (
+            "module_get_name",
+            OpCode::ModuleGetName,
+            2,
+            true,
+            "module_get_name",
+        ),
+        (
+            "module_set_attr",
+            OpCode::ModuleSetAttr,
+            3,
+            false,
+            "module_set_attr",
+        ),
+        (
+            "module_del_global",
+            OpCode::ModuleDelGlobal,
+            2,
+            false,
+            "module_del_global",
+        ),
+        (
+            "module_del_global_if_present",
+            OpCode::ModuleDelGlobalIfPresent,
+            2,
+            false,
+            "module_del_global_if_present",
+        ),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+        let func = make_fixed_runtime_service_func(name, opcode, operand_count, has_result);
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert_eq!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Drop)),
+            !has_result,
+            "{name} must drop the runtime sentinel exactly when TIR has no result"
+        );
+    }
+}
+
+#[test]
+fn preserved_copy_runtime_service_imports_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("module_new", "module_new", 1, true, "module_new"),
+        (
+            "module_import_star",
+            "module_import_star",
+            2,
+            true,
+            "module_import_star",
+        ),
+        (
+            "bridge_unavailable",
+            "bridge_unavailable",
+            1,
+            true,
+            "bridge_unavailable",
+        ),
+        ("context_null", "context_null", 1, true, "context_null"),
+        ("context_enter", "context_enter", 1, true, "context_enter"),
+        ("context_exit", "context_exit", 2, true, "context_exit"),
+        (
+            "context_unwind",
+            "context_unwind",
+            1,
+            true,
+            "context_unwind",
+        ),
+        ("context_depth", "context_depth", 0, true, "context_depth"),
+        (
+            "context_unwind_to",
+            "context_unwind_to",
+            2,
+            true,
+            "context_unwind_to",
+        ),
+        (
+            "context_closing",
+            "context_closing",
+            1,
+            true,
+            "context_closing",
+        ),
+    ];
+
+    for (name, original_kind, operand_count, has_result, runtime_call) in cases {
+        let func =
+            make_copy_original_kind_runtime_func(name, original_kind, operand_count, has_result);
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} preserved Copy runtime service must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn unsupported_preserved_copy_runtime_service_bails_instead_of_aliasing_operand() {
+    let func = make_copy_original_kind_runtime_func(
+        "exception_new_builtin_empty",
+        "exception_new_builtin_empty",
+        0,
+        true,
+    );
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        output.bails_to_generic_path,
+        "unsupported preserved Copy runtime service must fail closed to generic emission"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
+    );
+    assert!(
+        !output
+            .runtime_calls
+            .contains(&"exception_new_builtin_empty"),
+        "unsupported preserved Copy runtime service must not fake a partial LIR runtime call"
+    );
+}
+
+#[test]
+fn heap_alloc_stays_lir_fast_through_immediate_runtime_call() {
+    let mut func = TirFunction::new("heap_alloc".into(), vec![], TirType::DynBox);
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Alloc,
+        operands: vec![],
+        results: vec![result_id],
+        attrs: {
+            let mut m = AttrDict::new();
+            m.insert("value".into(), AttrValue::Int(32));
+            m
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "ordinary heap Alloc must stay in the LIR fast lane"
+    );
+    assert!(
+        output.runtime_calls.contains(&"alloc"),
+        "heap Alloc must call alloc; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64Const(32))),
+        "heap Alloc must pass its size attr as an immediate"
+    );
+}
+
+#[test]
+fn arena_eligible_alloc_stays_explicit_generic_fallback() {
+    let mut func = TirFunction::new("arena_alloc".into(), vec![], TirType::DynBox);
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Alloc,
+        operands: vec![],
+        results: vec![result_id],
+        attrs: {
+            let mut m = AttrDict::new();
+            m.insert("value".into(), AttrValue::Int(32));
+            m.insert("arena_eligible".into(), AttrValue::Bool(true));
+            m
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        output.bails_to_generic_path,
+        "arena-eligible Alloc must not be heap-lowered until LIR owns arena locals"
+    );
+    assert_eq!(
+        output.bail_to_generic_reason,
+        Some(WasmLirFallbackReason::UnsupportedOperation)
+    );
+    assert!(
+        !output.runtime_calls.contains(&"alloc"),
+        "arena-eligible Alloc must not silently fall back to heap alloc"
+    );
+}
+
+#[test]
+fn object_new_bound_stays_lir_fast_and_selects_sized_helper_from_payload_attr() {
+    let cases = [
+        (
+            "object_new_bound_unsized",
+            None,
+            "object_new_bound",
+            "object_new_bound_sized",
+        ),
+        (
+            "object_new_bound_sized",
+            Some(24),
+            "object_new_bound_sized",
+            "object_new_bound",
+        ),
+    ];
+
+    for (name, payload_size, expected_call, absent_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox],
+            TirType::UserClass("Point".into()),
+        );
+        let result_id = func.fresh_value();
+        func.value_types
+            .insert(result_id, TirType::UserClass("Point".into()));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![ValueId(0)],
+            results: vec![result_id],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+                if let Some(size) = payload_size {
+                    m.insert("value".into(), AttrValue::Int(size));
+                }
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&expected_call),
+            "{name} must call {expected_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            !output.runtime_calls.contains(&absent_call),
+            "{name} must not also call {absent_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn closure_offset_ops_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("closure_load", OpCode::ClosureLoad, 1, true, "closure_load"),
+        (
+            "closure_store",
+            OpCode::ClosureStore,
+            2,
+            false,
+            "closure_store",
+        ),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; operand_count],
+            if has_result {
+                TirType::DynBox
+            } else {
+                TirType::None
+            },
+        );
+        let result_id = has_result.then(|| {
+            let id = func.fresh_value();
+            func.value_types.insert(id, TirType::DynBox);
+            id
+        });
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: result_id.into_iter().collect(),
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("value".into(), AttrValue::Int(16));
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: result_id.into_iter().collect(),
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&"handle_resolve"),
+            "{name} must resolve closure object bits before offset access; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::I64Const(16))),
+            "{name} must pass the closure offset attr as an immediate"
+        );
+    }
+}
+
+#[test]
+fn aggregate_builders_stay_lir_fast_runtime_calls() {
+    let cases = [
+        (
+            "build_list",
+            OpCode::BuildList,
+            3,
+            vec![
+                ("list_builder_new", 1),
+                ("list_builder_append", 3),
+                ("list_builder_finish", 1),
+            ],
+        ),
+        (
+            "build_tuple",
+            OpCode::BuildTuple,
+            2,
+            vec![
+                ("list_builder_new", 1),
+                ("list_builder_append", 2),
+                ("tuple_builder_finish", 1),
+            ],
+        ),
+        (
+            "build_dict",
+            OpCode::BuildDict,
+            4,
+            vec![("dict_new", 1), ("dict_set", 2)],
+        ),
+        (
+            "build_set",
+            OpCode::BuildSet,
+            3,
+            vec![("set_new", 1), ("set_add", 3)],
+        ),
+    ];
+
+    for (name, opcode, operand_count, expected_calls) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; operand_count],
+            TirType::DynBox,
+        );
+        let result_id = func.fresh_value();
+        func.value_types.insert(result_id, TirType::DynBox);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        for (runtime_call, expected_count) in expected_calls {
+            let actual_count = output
+                .runtime_calls
+                .iter()
+                .filter(|&&call| call == runtime_call)
+                .count();
+            assert_eq!(
+                actual_count, expected_count,
+                "{name} runtime call {runtime_call} count mismatch: {:?}",
+                output.runtime_calls
+            );
+        }
+    }
+}
+
+#[test]
+fn operand_name_attrs_stay_lir_fast_runtime_calls() {
+    let cases = [
+        ("get_attr_name", OpCode::LoadAttr, 2, true, "get_attr_name"),
+        (
+            "set_attr_name",
+            OpCode::StoreAttr,
+            3,
+            false,
+            "set_attr_name",
+        ),
+        ("del_attr_name", OpCode::DelAttr, 2, false, "del_attr_name"),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; operand_count],
+            if has_result {
+                TirType::DynBox
+            } else {
+                TirType::None
+            },
+        );
+        let result_id = has_result.then(|| {
+            let id = func.fresh_value();
+            func.value_types.insert(id, TirType::DynBox);
+            id
+        });
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: result_id.into_iter().collect(),
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("_original_kind".into(), AttrValue::Str(name.into()));
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: result_id.into_iter().collect(),
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} must call {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+    }
+}
+
+#[test]
+fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
+    let cases = [
+        (
+            "get_attr_generic_ptr",
+            OpCode::LoadAttr,
+            1,
+            true,
+            vec!["handle_resolve", "get_attr_ptr"],
+        ),
+        (
+            "get_attr_special_obj",
+            OpCode::LoadAttr,
+            1,
+            true,
+            vec!["get_attr_special"],
+        ),
+        (
+            "set_attr_generic_ptr",
+            OpCode::StoreAttr,
+            2,
+            false,
+            vec!["set_attr_object"],
+        ),
+        (
+            "set_attr_generic_obj",
+            OpCode::StoreAttr,
+            2,
+            false,
+            vec!["set_attr_object"],
+        ),
+        (
+            "del_attr_generic_ptr",
+            OpCode::DelAttr,
+            1,
+            false,
+            vec!["del_attr_object"],
+        ),
+        (
+            "del_attr_generic_obj",
+            OpCode::DelAttr,
+            1,
+            false,
+            vec!["del_attr_object"],
+        ),
+    ];
+
+    for (name, opcode, operand_count, has_result, runtime_calls) in cases {
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox; operand_count],
+            if has_result {
+                TirType::DynBox
+            } else {
+                TirType::None
+            },
+        );
+        let result_id = has_result.then(|| {
+            let id = func.fresh_value();
+            func.value_types.insert(id, TirType::DynBox);
+            id
+        });
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
+            results: result_id.into_iter().collect(),
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("_original_kind".into(), AttrValue::Str(name.into()));
+                m.insert("name".into(), AttrValue::Str("field".into()));
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: result_id.into_iter().collect(),
+        };
+
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert!(
+            !output.bails_to_generic_path,
+            "{name} must stay in the LIR fast lane"
+        );
+        assert!(
+            output.data_ptr_i32_literals.contains(&b"field".to_vec()),
+            "{name} must carry the literal name as a LIR data pointer; got {:?}",
+            output.data_ptr_i32_literals
+        );
+        for runtime_call in runtime_calls {
+            assert!(
+                output.runtime_calls.contains(&runtime_call),
+                "{name} must call {runtime_call}; got {:?}",
+                output.runtime_calls
+            );
+        }
+    }
+}
+
+#[test]
+fn generic_obj_literal_name_attr_uses_source_site_ic_id() {
+    let func_name = "generic_obj_literal_name_attr";
+    let source_op_idx = 23usize;
+    let mut func = TirFunction::new(func_name.into(), vec![TirType::DynBox], TirType::DynBox);
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::LoadAttr,
+        operands: vec![ValueId(0)],
+        results: vec![result_id],
+        attrs: {
+            let mut m = AttrDict::new();
+            m.insert(
+                "_original_kind".into(),
+                AttrValue::Str("get_attr_generic_obj".into()),
+            );
+            m.insert("name".into(), AttrValue::Str("field".into()));
+            m.insert(
+                "_source_op_idx".into(),
+                AttrValue::Int(source_op_idx as i64),
+            );
+            m
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert!(
+        !output.bails_to_generic_path,
+        "get_attr_generic_obj must stay in the LIR fast lane when source op identity is carried"
+    );
+    assert!(
+        output.runtime_calls.contains(&"get_attr_object_ic"),
+        "get_attr_generic_obj must call get_attr_object_ic; got {:?}",
+        output.runtime_calls
+    );
+    assert!(
+        output.data_ptr_i32_literals.contains(&b"field".to_vec()),
+        "get_attr_generic_obj must carry the literal name as a LIR data pointer; got {:?}",
+        output.data_ptr_i32_literals
+    );
+    let expected_site_bits = box_int_bits(stable_ic_site_id(
+        func_name,
+        source_op_idx,
+        "get_attr_generic_obj",
+    ));
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|inst| matches!(inst, Instruction::I64Const(bits) if *bits == expected_site_bits)),
+        "get_attr_generic_obj must use source op identity for the IC site id"
+    );
+}
+
+#[test]
+#[should_panic(expected = "get_attr_generic_obj requires source op index")]
+fn generic_obj_literal_name_attr_without_source_op_index_fails_closed() {
+    let mut func = TirFunction::new(
+        "get_attr_generic_obj_without_source".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    let result_id = func.fresh_value();
+    func.value_types.insert(result_id, TirType::DynBox);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::LoadAttr,
+        operands: vec![ValueId(0)],
+        results: vec![result_id],
+        attrs: {
+            let mut m = AttrDict::new();
+            m.insert(
+                "_original_kind".into(),
+                AttrValue::Str("get_attr_generic_obj".into()),
+            );
+            m.insert("name".into(), AttrValue::Str("field".into()));
+            m
+        },
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result_id],
+    };
+
+    let _ = lower_tir_to_wasm(&func);
 }
 
 #[test]
@@ -1181,8 +2559,8 @@ fn make_add_two_params_func() -> TirFunction {
     func
 }
 
-fn make_add_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
-    let mut func = TirFunction::new("add_two_consts".into(), vec![], TirType::I64);
+fn make_binary_two_consts_func(name: &str, opcode: OpCode, lhs: i64, rhs: i64) -> TirFunction {
+    let mut func = TirFunction::new(name.into(), vec![], TirType::I64);
     let lhs_id = func.fresh_value();
     let rhs_id = func.fresh_value();
     let result_id = func.fresh_value();
@@ -1201,7 +2579,7 @@ fn make_add_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
     }
     entry.ops.push(TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::Add,
+        opcode,
         operands: vec![lhs_id, rhs_id],
         results: vec![result_id],
         attrs: AttrDict::new(),
@@ -1209,6 +2587,43 @@ fn make_add_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
     });
     entry.terminator = Terminator::Return {
         values: vec![result_id],
+    };
+    func
+}
+
+fn make_add_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
+    make_binary_two_consts_func("add_two_consts", OpCode::Add, lhs, rhs)
+}
+
+fn make_checked_mul_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
+    let mut func = TirFunction::new("checked_mul_two_consts".into(), vec![], TirType::I64);
+    let lhs_id = func.fresh_value();
+    let rhs_id = func.fresh_value();
+    let product_id = func.fresh_value();
+    let flag_id = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    for (id, value) in [(lhs_id, lhs), (rhs_id, rhs)] {
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(value));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![id],
+            attrs,
+            source_span: None,
+        });
+    }
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CheckedMul,
+        operands: vec![lhs_id, rhs_id],
+        results: vec![product_id, flag_id],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![product_id],
     };
     func
 }
@@ -1387,9 +2802,56 @@ fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
     );
 }
 
+fn has_native_binary_instruction(instructions: &[Instruction<'static>], opcode: OpCode) -> bool {
+    instructions.iter().any(|instruction| match opcode {
+        OpCode::Add => matches!(instruction, Instruction::I64Add),
+        OpCode::Sub => matches!(instruction, Instruction::I64Sub),
+        OpCode::Mul => matches!(instruction, Instruction::I64Mul),
+        other => panic!("unsupported native binary assertion for {other:?}"),
+    })
+}
+
+#[test]
+fn checked_overflow_triples_use_opcode_specific_runtime_helpers_without_generic_bail() {
+    let cases = [
+        ("checked_add_overflow_triple", OpCode::Add, 20, 22, "add"),
+        ("checked_sub_overflow_triple", OpCode::Sub, 42, 20, "sub"),
+        ("checked_mul_overflow_triple", OpCode::Mul, 6, 7, "mul"),
+    ];
+
+    for (name, opcode, lhs, rhs, runtime_call) in cases {
+        let func = make_binary_two_consts_func(name, opcode, lhs, rhs);
+        let output = lower_tir_to_wasm(&func).test_view();
+
+        assert_eq!(
+            output.bail_to_generic_reason, None,
+            "{name} must stay in the LIR fast body"
+        );
+        assert!(
+            has_native_binary_instruction(&output.instructions, opcode),
+            "{name} must emit the hot raw WASM instruction for {opcode:?}"
+        );
+        assert!(
+            output.runtime_calls.contains(&runtime_call),
+            "{name} overflow side channel must dispatch through {runtime_call}; got {:?}",
+            output.runtime_calls
+        );
+        for other in ["add", "sub", "mul"] {
+            if other != runtime_call {
+                assert!(
+                    !output.runtime_calls.contains(&other),
+                    "{name} must not call the {other} helper for a {opcode:?} overflow side channel; got {:?}",
+                    output.runtime_calls
+                );
+            }
+        }
+    }
+}
+
 /// The perf-preservation direction: when BOTH operands are proven
 /// `RawI64Safe`, the fast `i64.add` is still emitted (the checked-overflow
-/// triple), and no boxed runtime `Call` is needed for the add itself.
+/// triple). The cold overflow-box side channel is a typed runtime call, not a
+/// generic body bail.
 #[test]
 fn proven_raw_i64_add_still_emits_native_i64_add() {
     let func = make_add_two_consts_func(20, 22);
@@ -1406,6 +2868,46 @@ fn proven_raw_i64_add_still_emits_native_i64_add() {
         has_operand_add,
         "range-proven const add must emit an operand-pair native i64.add, got {:?}",
         output.instructions
+    );
+    assert_eq!(output.bail_to_generic_reason, None);
+    assert!(
+        output.runtime_calls.contains(&"add"),
+        "checked-overflow cold side channel must use the typed add helper"
+    );
+}
+
+#[test]
+fn checked_mul_raw_i64_emits_exact_wasm_overflow_flag_without_generic_bail() {
+    let func = make_checked_mul_two_consts_func(6, 7);
+    let output = lower_tir_to_wasm(&func).test_view();
+
+    assert_eq!(
+        output.bail_to_generic_reason, None,
+        "raw checked_mul must stay in the LIR fast body"
+    );
+    assert!(
+        !output.runtime_calls.contains(&"mul"),
+        "raw CheckedMul produces a raw carrier and must not route through boxed molt_mul"
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64Mul)),
+        "raw CheckedMul must emit the wrapping i64.mul product"
+    );
+    assert!(
+        output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::I64DivS)),
+        "raw CheckedMul must emit the exact product/lhs overflow check"
+    );
+    assert!(
+        output.instructions.iter().any(
+            |instruction| matches!(instruction, Instruction::I64Const(value) if *value == i64::MIN)
+        ),
+        "raw CheckedMul must guard the i64::MIN / -1 division trap"
     );
 }
 

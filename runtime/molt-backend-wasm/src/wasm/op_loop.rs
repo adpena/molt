@@ -1,12 +1,19 @@
-use super::call_site_abi::WasmCallSiteAbi;
 use super::constant_ops::{ConstantOpContext, emit_constant_op};
 use super::context::CompileFuncContext;
 use super::control_flow::ControlKind;
 use super::function_frame::WasmFunctionFrame;
-use super::multi_return_layout::WasmMultiReturnLayout;
-use super::*;
+use super::module_abi::WasmCallableCallSiteAbi;
+use super::{WasmBackend, WasmFrameLocals};
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
+use crate::{FunctionIR, OpIR};
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
+use wasm_encoder::Function;
 
 mod builder_ops;
+mod call_emit;
 mod call_ops;
 mod control_ops;
 mod core_runtime_ops;
@@ -30,7 +37,7 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,
     pub(super) func_ir: &'a FunctionIR,
     pub(super) ctx: &'a CompileFuncContext<'ctx>,
-    pub(super) call_site_abi: &'a WasmCallSiteAbi<'ctx>,
+    pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'ctx>,
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) frame: &'a WasmFunctionFrame,

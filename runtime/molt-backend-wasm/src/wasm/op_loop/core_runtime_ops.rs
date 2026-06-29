@@ -1,5 +1,14 @@
 use super::super::multi_return_layout::WasmMultiReturnLayout;
-use super::*;
+use super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_runtime_call};
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi_generated::op_loop_runtime_call;
+use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
+use crate::wasm_values::emit_box_bool_from_i32;
+use crate::{FunctionIR, OpIR};
+use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
 #[path = "core_runtime_ops/aggregate_ops.rs"]
 mod aggregate_ops;
@@ -22,6 +31,16 @@ pub(super) fn emit_core_runtime_op(
     ops: &[OpIR],
     op_idx: usize,
 ) -> bool {
+    let call_context = OpLoopRuntimeCallContext {
+        import_ids,
+        locals,
+        reloc_enabled,
+    };
+    if let Some(call) = op_loop_runtime_call(op.kind.as_str()) {
+        emit_op_loop_runtime_call(&call_context, func, op, call);
+        return true;
+    }
+
     if aggregate_ops::emit_aggregate_runtime_op(
         func,
         op,
@@ -90,50 +109,6 @@ pub(super) fn emit_core_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
-        "function_defaults_version" => {
-            // Read a function object's __defaults__/__kwdefaults__
-            // mutation version stamp as a NaN-boxed inline int
-            // (`molt_function_defaults_version(func)`).  Produced by
-            // the compile-time defaults-devirt deopt guard; consumed
-            // by its `== 0` compare (baked literal vs live read).
-            // Non-foldable: it observes mutable runtime state.
-            let args = op.args.as_ref().unwrap();
-            let func_local = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(func_local));
-            emit_call(func, reloc_enabled, import_ids["function_defaults_version"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "is" => {
-            let args = op.args.as_ref().unwrap();
-            let lhs = locals[&args[0]];
-            let rhs = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(lhs));
-            func.instruction(&Instruction::LocalGet(rhs));
-            emit_call(func, reloc_enabled, import_ids["is"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "not" => {
-            let args = op.args.as_ref().unwrap();
-            let val = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["not"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         "bool" | "cast_bool" | "builtin_bool" => {
             let args = op.args.as_ref().unwrap();
             let val = locals[&args[0]];
@@ -148,18 +123,6 @@ pub(super) fn emit_core_runtime_op(
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             emit_box_bool_from_i32(func);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "abs" => {
-            let args = op.args.as_ref().unwrap();
-            let val = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(val));
-            emit_call(func, reloc_enabled, import_ids["abs_builtin"]);
             if let Some(out) = op.out.as_ref() {
                 let res = locals[out];
                 func.instruction(&Instruction::LocalSet(res));
@@ -219,20 +182,6 @@ pub(super) fn emit_core_runtime_op(
                 func.instruction(&Instruction::Drop);
             }
         }
-        "guard_type" | "guard_tag" => {
-            let args = op.args.as_ref().unwrap();
-            let val = locals[&args[0]];
-            let expected = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(val));
-            func.instruction(&Instruction::LocalGet(expected));
-            emit_call(func, reloc_enabled, import_ids["guard_type"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
         "guard_layout" | "guard_dict_shape" => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
@@ -257,9 +206,6 @@ pub(super) fn emit_core_runtime_op(
                 emit_call(func, reloc_enabled, import_ids["print_obj"]);
             }
         }
-        "print_newline" => {
-            emit_call(func, reloc_enabled, import_ids["print_newline"]);
-        }
         "alloc" | "stack_alloc" => {
             // Arena fast path: NoEscape allocations marked
             // `arena_eligible` go through `molt_arena_alloc_object`
@@ -278,77 +224,6 @@ pub(super) fn emit_core_runtime_op(
             }
             if let Some(out) = op.out.as_ref() {
                 func.instruction(&Instruction::LocalSet(locals[out]));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "alloc_class" => {
-            let args = op.args.as_ref().unwrap();
-            let class_bits = locals[&args[0]];
-            func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            func.instruction(&Instruction::LocalGet(class_bits));
-            emit_call(func, reloc_enabled, import_ids["alloc_class"]);
-            if let Some(out) = op.out.as_ref() {
-                func.instruction(&Instruction::LocalSet(locals[out]));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "alloc_class_trusted" => {
-            let args = op.args.as_ref().unwrap();
-            let class_bits = locals[&args[0]];
-            func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            func.instruction(&Instruction::LocalGet(class_bits));
-            emit_call(func, reloc_enabled, import_ids["alloc_class_trusted"]);
-            if let Some(out) = op.out.as_ref() {
-                func.instruction(&Instruction::LocalSet(locals[out]));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "alloc_class_static" => {
-            let args = op.args.as_ref().unwrap();
-            let class_bits = locals[&args[0]];
-            func.instruction(&Instruction::I64Const(op.value.unwrap()));
-            func.instruction(&Instruction::LocalGet(class_bits));
-            emit_call(func, reloc_enabled, import_ids["alloc_class_static"]);
-            if let Some(out) = op.out.as_ref() {
-                func.instruction(&Instruction::LocalSet(locals[out]));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "id" => {
-            let args = op.args.as_ref().unwrap();
-            let arg = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(arg));
-            emit_call(func, reloc_enabled, import_ids["id"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "env_get" => {
-            let args = op.args.as_ref().unwrap();
-            let key = locals[&args[0]];
-            let default = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(key));
-            func.instruction(&Instruction::LocalGet(default));
-            emit_call(func, reloc_enabled, import_ids["env_get"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
-        }
-        "errno_constants" => {
-            emit_call(func, reloc_enabled, import_ids["errno_constants"]);
-            if let Some(out) = op.out.as_ref() {
-                let res = locals[out];
-                func.instruction(&Instruction::LocalSet(res));
             } else {
                 func.instruction(&Instruction::Drop);
             }

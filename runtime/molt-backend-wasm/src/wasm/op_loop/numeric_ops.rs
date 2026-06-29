@@ -1,9 +1,17 @@
-use super::*;
+use crate::OpIR;
+use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::WasmFrameLocals;
+use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::ConstantCache;
+use std::collections::BTreeMap;
+use wasm_encoder::Function;
 
 #[path = "numeric_ops/additive_ops.rs"]
 mod additive_ops;
 #[path = "numeric_ops/bitwise_ops.rs"]
 mod bitwise_ops;
+#[path = "numeric_ops/common.rs"]
+mod common;
 #[path = "numeric_ops/comparison_ops.rs"]
 mod comparison_ops;
 #[path = "numeric_ops/division_ops.rs"]

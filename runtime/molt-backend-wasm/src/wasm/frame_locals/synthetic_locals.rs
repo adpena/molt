@@ -73,7 +73,8 @@ impl WasmFrameLocals {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
+    use wasm_encoder::ValType;
 
     #[test]
     fn synthetic_locals_are_typed_and_classified_by_frame_locals() {

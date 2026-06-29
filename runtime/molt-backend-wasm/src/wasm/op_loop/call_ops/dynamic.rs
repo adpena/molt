@@ -3,7 +3,12 @@ use super::site::{
     emit_pending_exception_return, release_live_object_locals, retain_live_object_locals,
     spill_call_args,
 };
-use super::*;
+use super::{CallOpContext, CallOpEmission};
+use crate::OpIR;
+use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_binary::{emit_call, emit_table_index_i64};
+use crate::wasm_values::box_bool;
+use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(super) fn emit_dynamic_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,

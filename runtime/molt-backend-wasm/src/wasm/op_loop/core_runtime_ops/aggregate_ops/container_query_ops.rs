@@ -1,6 +1,10 @@
-use super::super::super::result_sink::store_result_or_drop;
-use super::super::super::*;
+use super::super::super::call_emit::emit_op_loop_local_prefix_call_id;
 use super::AggregateRuntimeContext;
+use crate::OpIR;
+use crate::wasm::container_runtime_select::selected_container_runtime_import;
+use crate::wasm_abi_generated::OpLoopRuntimeSinkSpec;
+use crate::wasm_import_tracking::selected_import_id;
+use wasm_encoder::Function;
 
 pub(super) fn emit_container_query_op(
     func: &mut Function,
@@ -8,37 +12,40 @@ pub(super) fn emit_container_query_op(
     ctx: &AggregateRuntimeContext<'_>,
 ) -> bool {
     let import_ids = ctx.import_ids;
-    let locals = ctx.locals;
-    let reloc_enabled = ctx.reloc_enabled;
+    let call_context = ctx.op_loop_call_context();
 
     match op.kind.as_str() {
         "contains" => {
-            let args = op.args.as_ref().unwrap();
-            let container = locals[&args[0]];
-            let item = locals[&args[1]];
-            func.instruction(&Instruction::LocalGet(container));
-            func.instruction(&Instruction::LocalGet(item));
             let import_key =
-                wasm_specialized_container_import(ctx.scalar_plan, ctx.op_idx, "contains", op)
+                selected_container_runtime_import(ctx.scalar_plan, ctx.op_idx, "contains", op)
                     .unwrap_or("contains");
             let import_id =
                 selected_import_id(import_ids, import_key, &ctx.func_ir.name, op.kind.as_str());
-            emit_call(func, reloc_enabled, import_id);
-            store_result_or_drop(func, op, locals);
+            emit_op_loop_local_prefix_call_id(
+                &call_context,
+                func,
+                op,
+                import_id,
+                2,
+                OpLoopRuntimeSinkSpec::ResultOrDrop,
+            );
         }
         "len" => {
-            let args = op.args.as_ref().unwrap();
-            let arg = locals[&args[0]];
-            func.instruction(&Instruction::LocalGet(arg));
             // Dispatch to specialized fast-path len when container
             // type is known, skipping the 18-type dispatch.
             let import_key =
-                wasm_specialized_container_import(ctx.scalar_plan, ctx.op_idx, "len", op)
+                selected_container_runtime_import(ctx.scalar_plan, ctx.op_idx, "len", op)
                     .unwrap_or("len");
             let import_id =
                 selected_import_id(import_ids, import_key, &ctx.func_ir.name, op.kind.as_str());
-            emit_call(func, reloc_enabled, import_id);
-            store_result_or_drop(func, op, locals);
+            emit_op_loop_local_prefix_call_id(
+                &call_context,
+                func,
+                op,
+                import_id,
+                1,
+                OpLoopRuntimeSinkSpec::ResultOrDrop,
+            );
         }
         _ => return false,
     }

@@ -5,7 +5,9 @@
 
 mod call_indirect;
 mod const_policy;
+mod container_runtime_selector;
 mod imports;
+mod lir_runtime_calls;
 mod pure_profile;
 mod runtime_callables;
 mod runtime_surface;
@@ -17,11 +19,21 @@ pub(crate) use const_policy::{
     WasmConstRawIntEffect, WasmConstScalarValue, wasm_const_op_policy,
     wasm_const_op_policy_for_opcode,
 };
+pub(crate) use container_runtime_selector::{
+    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
+    wasm_container_runtime_op, wasm_container_runtime_selection,
+};
 pub(crate) use imports::{IMPORT_REGISTRY, OP_IMPORT_DEPS};
+pub(crate) use lir_runtime_calls::{
+    LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
+    OpLoopRuntimeSinkSpec, lir_fixed_runtime_call, op_loop_runtime_call,
+};
 pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,
 };
-pub(crate) use runtime_surface::runtime_surface_requires_direct_import;
+pub(crate) use runtime_surface::{
+    GPU_INTRINSIC_MANIFEST_NAMES, runtime_surface_requires_direct_import,
+};
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};

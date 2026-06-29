@@ -165,7 +165,8 @@ fn defined_and_used_value_vars(ops: &[OpIR]) -> (BTreeSet<String>, BTreeSet<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::collect_read_vars;
+    use crate::OpIR;
 
     fn op(kind: &str, args: Option<Vec<&str>>, var: Option<&str>, out: Option<&str>) -> OpIR {
         OpIR {

@@ -45,7 +45,8 @@ impl WasmFrameLocals {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{WasmFrameAnonymousLocal, WasmFrameLocals};
+    use wasm_encoder::ValType;
 
     #[test]
     fn anonymous_frame_locals_are_allocated_with_purpose_metadata() {

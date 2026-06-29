@@ -18,18 +18,21 @@ impl WasmBackend {
     pub(super) fn emit_runtime_import_surface(
         &mut self,
         ir: &SimpleIR,
-        lir_lowering_plans: &crate::wasm_plan::WasmFunctionLoweringPlans,
+        lir_lowering_plans: &crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         task_kinds: &BTreeMap<String, TrampolineKind>,
     ) -> WasmRuntimeImportEmission {
         let runtime_surface =
             WasmRuntimeSurfacePlan::build(ir, lir_lowering_plans, task_kinds, &self.options);
-        let planned_required = runtime_surface.planned_required_imports.clone();
+        let auto_required = runtime_surface
+            .import_demand
+            .auto_required_imports()
+            .cloned();
         let mut registrar = RuntimeImportRegistrar {
             imports: &mut self.imports,
             import_ids: &mut self.import_ids,
             import_idx: 0,
             is_pure: self.options.wasm_profile == WasmProfile::Pure,
-            planned_required,
+            planned_required: auto_required,
         };
 
         for &(name, type_idx) in crate::wasm_imports::IMPORT_REGISTRY {

@@ -157,7 +157,7 @@ fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
         preprocess_backend_tir_input,
     );
     assert!(
-        run.optimized_tir_by_name.contains_key(&func.name),
+        run.cached_tir.contains_function(&func.name),
         "shared TIR runner must return optimized TIR custody for '{}'",
         func.name
     );

@@ -88,6 +88,11 @@ pub struct OpIR {
     /// Inline-cache site index for attribute access acceleration.
     /// Assigned by the frontend for `get_attr_generic_ptr` ops.
     pub ic_index: Option<i64>,
+    /// Stable source operation index for backend inline-cache site identity.
+    /// This is assigned by the SimpleIR -> TIR lift and transported back
+    /// through TIR -> SimpleIR so backends do not reconstruct IC identity from
+    /// their local stream order.
+    pub source_op_idx: Option<i64>,
     /// Column offset (0-based) for traceback caret annotations.
     /// Carried by `line` ops from the frontend AST node's `col_offset`.
     pub col_offset: Option<i64>,
@@ -392,6 +397,7 @@ impl OpIR {
             container_type: optional_string(obj, "container_type", ctx)?,
             type_hint: optional_string(obj, "type_hint", ctx)?,
             ic_index,
+            source_op_idx: optional_i64(obj, "source_op_idx", ctx)?,
             col_offset: optional_i64(obj, "col_offset", ctx)?,
             end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
             source_line: optional_i64(obj, "source_line", ctx)?,

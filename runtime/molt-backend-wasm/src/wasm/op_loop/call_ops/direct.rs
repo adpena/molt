@@ -2,7 +2,12 @@ use super::site::{
     collect_live_object_locals_for_call, push_call_args, release_live_object_locals,
     retain_live_object_locals, store_call_result,
 };
-use super::*;
+use super::{CallOpContext, CallOpEmission};
+use crate::OpIR;
+use crate::wasm_abi::TASK_KIND_FUTURE;
+use crate::wasm_binary::{emit_call, emit_return_call, emit_table_index_i64};
+use std::collections::BTreeMap;
+use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_direct_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,

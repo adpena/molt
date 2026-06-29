@@ -1,12 +1,3 @@
-use super::control_flow::ControlKind;
-use super::op_loop::WasmFunctionEmitContext;
-use super::*;
-use block_layout::{build_dispatch_block_map, build_dispatch_blocks};
-use state_remap::{
-    build_dense_state_remap_table, build_sparse_state_remap_entries, build_state_resume_maps,
-    emit_sparse_state_remap_lookup,
-};
-
 mod block_layout;
 mod common;
 mod emit;

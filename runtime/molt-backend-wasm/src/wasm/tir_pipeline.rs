@@ -13,7 +13,7 @@ pub(super) fn run_tir_pipeline(ir: &mut SimpleIR) {
     // TIR optimization pipeline.
     // TIR is mandatory for backend-facing functions; bypassing it would let
     // SimpleIR transport metadata become a hidden representation authority.
-    let optimized_tir_by_name = {
+    let mut cached_tir = {
         let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
         let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
         let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
@@ -39,9 +39,8 @@ pub(super) fn run_tir_pipeline(ir: &mut SimpleIR) {
             None,
             None,
         );
-        run.optimized_tir_by_name
+        run.cached_tir
     };
-    let mut optimized_tir_by_name = optimized_tir_by_name;
 
     // WASM links the whole program into one module: there is no shared-stdlib
     // external partition, so every body is locally owned and the inliner is
@@ -53,7 +52,7 @@ pub(super) fn run_tir_pipeline(ir: &mut SimpleIR) {
     let mut stage_observer = emit_wasm_tir_pipeline_stage;
     let _module_run = crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
         &mut ir.functions,
-        &mut optimized_tir_by_name,
+        &mut cached_tir,
         crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
             target_info: &wasm_tti,
             module_name: "wasm_module",

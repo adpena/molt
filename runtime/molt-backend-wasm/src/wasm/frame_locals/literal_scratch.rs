@@ -190,7 +190,9 @@ impl WasmFrameLocals {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{WasmFrameLocalKind, WasmFrameLocals, WasmLiteralPayload};
+    use crate::wasm::const_materialization::WasmConstOpPolicy;
+    use wasm_encoder::ValType;
 
     #[test]
     fn literal_scratch_locals_are_owned_and_reused_by_frame_locals() {
