@@ -780,6 +780,33 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"runtime_export_policy host export {name!r} must start with 'molt_'"
             )
 
+    gpu_intrinsic_manifest_names = data.get("gpu_intrinsic_manifest_name", [])
+    if not isinstance(gpu_intrinsic_manifest_names, list) or not gpu_intrinsic_manifest_names:
+        raise WasmAbiManifestError(
+            "manifest must define gpu_intrinsic_manifest_name entries"
+        )
+    seen_gpu_intrinsic_manifest_names: set[str] = set()
+    host_export_set = set(host_exports)
+    for idx, entry in enumerate(gpu_intrinsic_manifest_names):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"gpu_intrinsic_manifest_name entry {idx} must be a table"
+            )
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.startswith("molt_gpu_"):
+            raise WasmAbiManifestError(
+                f"gpu_intrinsic_manifest_name entry {idx} has invalid name"
+            )
+        if name in seen_gpu_intrinsic_manifest_names:
+            raise WasmAbiManifestError(
+                f"duplicate GPU intrinsic manifest name {name!r}"
+            )
+        if name not in host_export_set:
+            raise WasmAbiManifestError(
+                f"GPU intrinsic manifest name {name!r} must also be a runtime host export"
+            )
+        seen_gpu_intrinsic_manifest_names.add(name)
+
     fallback_entries = data.get("runtime_import_fallback", [])
     if not isinstance(fallback_entries, list):
         raise WasmAbiManifestError("runtime_import_fallback must be a list of tables")
@@ -1001,7 +1028,9 @@ def _render_rs_mod() -> str:
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
             "    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult,\n",
             "};\n",
-            "pub(crate) use runtime_surface::runtime_surface_requires_direct_import;\n",
+            "pub(crate) use runtime_surface::{\n",
+            "    runtime_surface_requires_direct_import, GPU_INTRINSIC_MANIFEST_NAMES,\n",
+            "};\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
             "};\n",
@@ -1406,6 +1435,14 @@ def _render_rs_runtime_surface(data: dict) -> str:
     )
     for name in data["runtime_export_policy"]["host_exports"]:
         lines.append(f'    "{name}",\n')
+    lines.append("];\n\n")
+    lines.extend(
+        [
+            "pub(crate) const GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[\n",
+        ]
+    )
+    for entry in data.get("gpu_intrinsic_manifest_name", []):
+        lines.append(f'    "{entry["name"]}",\n')
     lines.append("];\n\n")
     lines.extend(
         [
@@ -1903,6 +1940,10 @@ def render_py(data: dict) -> str:
     for name in data["runtime_export_policy"]["host_exports"]:
         lines.append(f'        "{name}",\n')
     lines.append("    }\n")
+    lines.append(")\n\n")
+    lines.append("WASM_GPU_INTRINSIC_MANIFEST_NAMES: tuple[str, ...] = (\n")
+    for entry in data.get("gpu_intrinsic_manifest_name", []):
+        lines.append(f'    "{entry["name"]}",\n')
     lines.append(")\n\n")
     lines.append(
         "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
