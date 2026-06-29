@@ -986,6 +986,7 @@ def build(
                 output=output,
                 emit_ir=emit_ir,
                 type_facts_path=type_facts_path,
+                tree_shake=tree_shake,
             )
         )
         if prepared_frontend_pipeline_error is not None:
