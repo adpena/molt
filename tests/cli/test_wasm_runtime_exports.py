@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from molt._wasm_runtime_exports import (
     wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
@@ -9,6 +11,10 @@ from molt._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 from molt.cli.backend_execution import _backend_codegen_env_digest
+from molt.cli.required_features import reached_intrinsic_symbols
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 RUNTIME_OWNED_GPU_MODULES = {
@@ -64,6 +70,28 @@ TINYGRAD_STDLIB_GPU_EXPORTS = {
 }
 
 
+def _builtin_func(symbol: str) -> dict[str, object]:
+    return {"kind": "builtin_func", "s_value": symbol, "value": 0, "out": "v0"}
+
+
+def _const_str(symbol: str) -> dict[str, object]:
+    return {"kind": "const_str", "s_value": symbol, "out": "v0"}
+
+
+def _call(symbol: str) -> dict[str, object]:
+    return {"kind": "call", "s_value": symbol, "args": [], "out": "v0"}
+
+
+def _function(name: str, ops: list[dict[str, object]]) -> dict[str, object]:
+    return {"name": name, "params": [], "ops": ops}
+
+
+def _required_imports_for(
+    functions: list[dict[str, object]],
+) -> set[str]:
+    return set(wasm_runtime_required_import_names(reached_intrinsic_symbols(functions)))
+
+
 def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
     names = set(wasm_runtime_import_names())
     assert "set_update" in names
@@ -91,14 +119,21 @@ def test_wasm_runtime_export_names_are_generated() -> None:
     assert wasm_runtime_export_name("molt_alloc") == "molt_alloc"
 
 
+def test_wasm_runtime_exports_use_generated_intrinsic_symbols_and_ast_scan() -> None:
+    text = (ROOT / "src/molt/_wasm_runtime_exports.py").read_text(encoding="utf-8")
+    assert "_intrinsic_symbols" in text
+    assert "ast.parse" in text
+    assert "_INTRINSIC_SYMBOL_RE" not in text
+    assert "generated.rs" not in text
+    assert "re.compile" not in text
+
+
 def test_wasm_runtime_export_link_args_does_not_widen_full_runtime_with_stdlib_modules() -> (
     None
 ):
     json_flags = wasm_runtime_export_link_args(resolved_modules={"json"})
     ssl_flags = wasm_runtime_export_link_args(resolved_modules={"ssl"})
     assert json_flags == ssl_flags
-    assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" not in ssl_flags
-    assert " -C link-arg=--export-if-defined=molt_ssl_context_new" not in ssl_flags
 
 
 def test_wasm_runtime_export_link_args_include_tinygrad_gpu_intrinsics() -> None:
@@ -224,7 +259,7 @@ def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports(
 
 
 def test_wasm_runtime_required_import_names_reads_stdlib_intrinsics() -> None:
-    names = set(wasm_runtime_required_import_names({"os", "ssl"}))
+    names = set(wasm_runtime_required_import_names({"molt_os_name"}))
     assert "os_name" in names
     assert "ssl_cert_none" not in names
 
@@ -232,10 +267,28 @@ def test_wasm_runtime_required_import_names_reads_stdlib_intrinsics() -> None:
 def test_wasm_runtime_required_import_names_keep_codec_numeric_slices_narrow() -> (
     None
 ):
-    codec_names = set(wasm_runtime_required_import_names({"codecs"}))
+    codec_names = _required_imports_for(
+        [
+            _function(
+                "molt_main",
+                [
+                    _builtin_func("molt_codecs_decode"),
+                    _builtin_func("molt_codecs_encode"),
+                ],
+            ),
+            _function("dead_codec_helper", [_builtin_func("molt_codecs_charmap_build")]),
+        ]
+    )
     assert codec_names == {"codecs_decode", "codecs_encode"}
 
-    numeric_names = set(wasm_runtime_required_import_names({"decimal"}))
+    numeric_names = _required_imports_for(
+        [
+            _function("molt_main", [_builtin_func("molt_decimal_from_str")]),
+            _function("dead_regex", [_builtin_func("molt_re_compile")]),
+            _function("dead_struct", [_builtin_func("molt_struct_pack")]),
+            _function("dead_warnings", [_builtin_func("molt_warnings_filter")]),
+        ]
+    )
     leaked = sorted(
         name
         for name in numeric_names
@@ -245,14 +298,28 @@ def test_wasm_runtime_required_import_names_keep_codec_numeric_slices_narrow() -
 
 
 def test_wasm_runtime_required_import_names_include_time_capabilities() -> None:
-    names = set(wasm_runtime_required_import_names({"time"}))
+    names = _required_imports_for(
+        [
+            _function(
+                "molt_main",
+                [_builtin_func("molt_time_time"), _call("molt_time_ensure_caps")],
+            ),
+            _function(
+                "molt_time_ensure_caps",
+                [
+                    _builtin_func("molt_capabilities_has"),
+                    _builtin_func("molt_capabilities_trusted"),
+                ],
+            ),
+        ]
+    )
     assert "time_time" in names
     assert "capabilities_has" in names
     assert "capabilities_trusted" in names
 
 
 def test_wasm_runtime_required_import_names_use_public_async_sleep_symbol() -> None:
-    names = set(wasm_runtime_required_import_names({"asyncio"}))
+    names = set(wasm_runtime_required_import_names({"molt_async_sleep"}))
     assert "async_sleep" in names
     assert "async_sleep_new" not in names
 

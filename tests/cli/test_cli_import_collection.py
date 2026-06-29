@@ -11350,7 +11350,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_backend_compile, "wasm_runtime_required_import_names", lambda modules: ()
+        cli_backend_compile, "wasm_runtime_required_import_names", lambda symbols: ()
     )
     monkeypatch.setattr(
         cli_backend_compile,
@@ -11401,6 +11401,7 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
         ensure_runtime_wasm_shared=ensure_shared,
         ensure_runtime_wasm_reloc=ensure_reloc,
         resolved_modules=frozenset(),
+        ir={"functions": []},
         warnings=[],
     )
 
@@ -11431,7 +11432,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_backend_compile, "wasm_runtime_required_import_names", lambda modules: ()
+        cli_backend_compile, "wasm_runtime_required_import_names", lambda symbols: ()
     )
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda _path: 4096)
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_memory_min_bytes", lambda _path: 8192)
@@ -11474,6 +11475,7 @@ def test_prepare_backend_dispatch_linked_table_base_uses_shared_runtime_prefix(
         ensure_runtime_wasm_shared=ensure_shared,
         ensure_runtime_wasm_reloc=ensure_reloc,
         resolved_modules=frozenset(),
+        ir={"functions": []},
         warnings=[],
     )
 
@@ -11503,7 +11505,7 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
     monkeypatch.setattr(cli_backend_binary, "_ensure_backend_binary", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
-        cli_backend_compile, "wasm_runtime_required_import_names", lambda modules: ()
+        cli_backend_compile, "wasm_runtime_required_import_names", lambda symbols: ()
     )
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_data_end", lambda path: None)
     monkeypatch.setattr(cli_backend_compile, "_read_wasm_memory_min_bytes", lambda path: None)
@@ -11545,6 +11547,7 @@ def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min
         ensure_runtime_wasm_shared=ensure_shared,
         ensure_runtime_wasm_reloc=ensure_reloc,
         resolved_modules=frozenset(),
+        ir={"functions": []},
         warnings=[],
     )
 

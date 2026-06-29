@@ -242,6 +242,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             backend_daemon_config_digest=None,
             warnings=[],
         ),
+        ir={"functions": []},
         resolved_modules=frozenset(),
         json_output=True,
         verbose=False,

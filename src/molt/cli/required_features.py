@@ -51,7 +51,12 @@ from __future__ import annotations
 from collections import deque
 from typing import Iterable, Mapping, Sequence
 
+from molt._intrinsic_symbols import INTRINSIC_SYMBOL_NAMES, intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+
+_RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
+    INTRINSIC_SYMBOL_NAMES.values()
+)
 
 # ---------------------------------------------------------------------------
 # Reachability primitives - mirror ``molt-tir`` ``eliminate_dead_functions``.
@@ -233,8 +238,30 @@ def reached_intrinsic_symbols_by_feature(
     the feature that defines them. Core/ungated/resolver-only symbols map to
     ``None`` and are dropped (they are always linkable, never a requirement).
     """
-    reachable = reachable_function_names(functions, extra_roots=extra_roots)
+    symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
     by_feature: dict[str, set[str]] = {}
+    for symbol in symbols:
+        feature = link_affecting_feature_gate_for_symbol(symbol)
+        if feature is None:
+            continue
+        by_feature.setdefault(feature, set()).add(symbol)
+    return by_feature
+
+
+def reached_intrinsic_symbols(
+    functions: Sequence[Mapping[str, object]],
+    *,
+    extra_roots: Iterable[str] = (),
+) -> frozenset[str]:
+    """Runtime intrinsic symbols referenced by reached SimpleIR.
+
+    This is the backend-uniform symbol fact below ``RequiredLinkFeatures``: it
+    keeps core/ungated intrinsic symbols as well as link-affecting ones so
+    consumers such as the WASM auto-import seed can reuse the same reachability
+    closure without re-scanning source modules.
+    """
+    reachable = reachable_function_names(functions, extra_roots=extra_roots)
+    symbols: set[str] = set()
     for func in functions:
         name = func.get("name")
         if not isinstance(name, str) or name not in reachable:
@@ -250,11 +277,11 @@ def reached_intrinsic_symbols_by_feature(
             symbol = op.get("s_value")
             if not isinstance(symbol, str):
                 continue
-            feature = link_affecting_feature_gate_for_symbol(symbol)
-            if feature is None:
+            canonical = intrinsic_runtime_symbol_name(symbol)
+            if canonical not in _RUNTIME_INTRINSIC_SYMBOL_NAMES:
                 continue
-            by_feature.setdefault(feature, set()).add(symbol)
-    return by_feature
+            symbols.add(canonical)
+    return frozenset(symbols)
 
 
 def required_link_features(
