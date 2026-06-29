@@ -151,20 +151,6 @@ def _run_external_tool(
     return result
 
 
-# SHA-256 integrity hashes for known runtime binaries.  When a filename appears
-# in this dict the linker will verify the on-disk file matches the expected hash
-# before passing it to wasm-ld.  Populate entries when cutting a release:
-#
-#   python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" molt_runtime.wasm
-#
-# Pin SHA-256 hashes of known-good runtime binaries.  The linker will reject
-# any runtime whose hash does not match.  Update this dict when cutting a
-# release or after rebuilding the runtime (run: shasum -a 256 molt_runtime.wasm).
-RUNTIME_EXPECTED_HASHES: dict[str, str] = {
-    "molt_runtime.wasm": "e410e7ca631478696d95302d3d7634ffea5d0633b0a6fb74b891e80bfeb5992b",
-}
-
-
 def _default_runtime_path() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
@@ -222,13 +208,14 @@ def _verify_runtime_integrity(path: Path) -> None:
         if part == "..":
             raise SystemExit(f"Runtime path contains '..' traversal component: {path}")
 
-    filename = path.name
     sidecar_mismatch: tuple[str, str] | None = None
+    missing_sidecar_digest: str | None = None
     for attempt in range(_RUNTIME_INTEGRITY_PAIR_ATTEMPTS):
         data = path.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         sidecar_expected = _read_runtime_integrity_sidecar(path)
         if sidecar_expected is None:
+            missing_sidecar_digest = digest
             break
         if digest == sidecar_expected:
             return
@@ -245,31 +232,19 @@ def _verify_runtime_integrity(path: Path) -> None:
             f"  actual   SHA-256: {digest}\n"
         )
 
-    if not RUNTIME_EXPECTED_HASHES:
-        raise SystemExit(
-            "Runtime integrity check failed for "
-            f"{path}\n  no sidecar was found at "
-            f"{_runtime_integrity_sidecar_path(path)}\n"
-            "  RUNTIME_EXPECTED_HASHES is empty; publish an integrity sidecar "
-            "or pin the runtime SHA-256."
-        )
-
-    if filename not in RUNTIME_EXPECTED_HASHES:
-        raise SystemExit(
-            "Runtime integrity check failed for "
-            f"{path}\n  no sidecar was found at "
-            f"{_runtime_integrity_sidecar_path(path)}\n"
-            f"  runtime file {filename!r} has no pinned SHA-256 hash in "
-            "RUNTIME_EXPECTED_HASHES."
-        )
-
-    expected = RUNTIME_EXPECTED_HASHES[filename]
-    if digest != expected:
-        raise SystemExit(
-            f"Runtime integrity check failed for {path}\n"
-            f"  expected SHA-256: {expected}\n"
-            f"  actual   SHA-256: {digest}\n"
-        )
+    digest_line = (
+        f"  actual   SHA-256: {missing_sidecar_digest}\n"
+        if missing_sidecar_digest is not None
+        else ""
+    )
+    raise SystemExit(
+        "Runtime integrity check failed for "
+        f"{path}\n  no sidecar was found at "
+        f"{_runtime_integrity_sidecar_path(path)}\n"
+        f"{digest_line}"
+        "  publish the matching .sha256 sidecar; hardcoded runtime hash pins "
+        "are not supported."
+    )
 
 
 def _read_wasm_bytes_with_retry(
