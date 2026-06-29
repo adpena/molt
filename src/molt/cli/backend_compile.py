@@ -8,8 +8,6 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, Sequence
 
-from molt._wasm_runtime_exports import wasm_runtime_required_import_names
-from molt.cli import required_features as _required_features
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
@@ -323,17 +321,6 @@ def _prepare_backend_dispatch(
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
     if is_wasm and backend_env is not None:
-        functions = ir.get("functions")
-        reached_intrinsics = (
-            _required_features.reached_intrinsic_symbols(functions)
-            if isinstance(functions, list)
-            else frozenset()
-        )
-        extra_required_imports = wasm_runtime_required_import_names(reached_intrinsics)
-        if extra_required_imports:
-            backend_env["MOLT_WASM_EXTRA_REQUIRED_IMPORTS"] = ",".join(
-                extra_required_imports
-            )
         layout_probe_path: Path | None = None
         if reloc_requested and linked and runtime_reloc_wasm is not None:
             if not ensure_runtime_wasm_reloc(None):

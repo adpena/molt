@@ -12,7 +12,6 @@ mod finalize;
 mod host_surface;
 mod imports;
 mod poll_table;
-mod runtime_import_demand;
 mod runtime_surface;
 mod type_layout;
 
@@ -42,7 +41,7 @@ impl WasmBackend {
         let WasmRuntimeImportEmission {
             runtime_surface,
             next_type_idx,
-        } = self.emit_runtime_import_surface(&ir, &lir_lowering_plans, &task_kinds);
+        } = self.emit_runtime_import_surface(&ir);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,

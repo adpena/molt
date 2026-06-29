@@ -37,11 +37,9 @@ impl WasmBackend {
         // the final SimpleIR stream, so fusion belongs after the TIR roundtrip
         // and module-phase inliner have produced that stream (identical placement
         // contract to the native backend, which fuses immediately before
-        // `compile_func`). The fused op kinds are import dependencies via
-        // OP_IMPORT_DEPS, so this must precede module-level runtime surface planning.
-        // The IC ops are recognized as non-removable by `eliminate_dead_ops`
-        // because method dispatch runs arbitrary user code, so the dead-op pass
-        // below preserves them.
+        // `compile_func`). The fused op kinds are recognized as non-removable by
+        // `eliminate_dead_ops` because method dispatch runs arbitrary user code,
+        // so the dead-op pass below preserves them.
         for func_ir in &mut ir.functions {
             crate::passes::fuse_method_dispatch(func_ir);
         }

@@ -487,13 +487,12 @@ the implementation. For forward-looking priorities, use
   closure before convergence is measured; cap exhaustion is a non-convergence
   failure, so CSE-created dead pure definitions cannot leak into a follow-on
   proof round.
-- WASM `Auto` import retention is split by output form. Non-relocatable Auto
-  registers the canonical import registry, records actual import lookups during
-  code emission through `TrackedImportIds`, and validates serialized-module
-  stripping before replacing bytes. Relocatable Auto keeps the conservative
-  pre-emission dependency frontier for linker declarations, including
-  `MOLT_WASM_EXTRA_REQUIRED_IMPORTS`; that knob no longer forces unused imports
-  to survive non-reloc Auto stripping.
+- WASM `Auto` import retention is emission-owned for relocatable and
+  non-relocatable output. Auto registers the canonical import registry, records
+  actual import lookups during code emission through `TrackedImportIds`, remaps
+  function indices while preserving padded LEB operands, and strips unobserved
+  imports before relocation/linking sections are emitted. The deleted
+  pre-emission import scanner no longer owns a parallel dependency frontier.
 - The TIR RC drop-insertion substrate is implemented as a terminal drop phase
   (`runtime/molt-passes/src/tir/drop_phase.rs`) backed by
   representation-filtered liveness (`tir/passes/liveness.rs`) and

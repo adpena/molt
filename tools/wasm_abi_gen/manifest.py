@@ -737,37 +737,6 @@ def _validate_numeric_runtime_selectors(
     return selectors
 
 
-def _expand_numeric_runtime_selector_op_deps(
-    data: dict,
-    selectors: list[dict],
-) -> list[dict]:
-    raw_op_deps = data.get("op_import_dep", [])
-    if not isinstance(raw_op_deps, list):
-        raise WasmAbiManifestError("op_import_dep must be a list of tables")
-    selector_deps = {entry["kind"]: entry["deps"] for entry in selectors}
-    expanded: list[dict] = []
-    for idx, entry in enumerate(raw_op_deps):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(f"op_import_dep entry {idx} must be a table")
-        kind = entry.get("kind")
-        if entry.get("_derived_from") == "numeric_runtime_selector":
-            continue
-        if kind in selector_deps:
-            raise WasmAbiManifestError(
-                f"op_import_dep {kind!r} is owned by numeric_runtime_selector"
-            )
-        expanded.append(entry)
-    for kind, deps in selector_deps.items():
-        expanded.append(
-            {
-                "kind": kind,
-                "deps": deps,
-                "_derived_from": "numeric_runtime_selector",
-            }
-        )
-    return expanded
-
-
 def _validate_val_type_list(
     entry_kind: str, entry_idx: int, field: str, value: object
 ) -> list[str]:
@@ -1308,58 +1277,11 @@ def validate_loaded_manifest(data: dict) -> dict:
         lir_import_by_variant,
     )
     data["numeric_runtime_selector"] = numeric_runtime_selectors
-    data["op_import_dep"] = _expand_numeric_runtime_selector_op_deps(
-        data,
-        numeric_runtime_selectors,
-    )
-
-    op_import_deps = data.get("op_import_dep", [])
-    if not isinstance(op_import_deps, list):
-        raise WasmAbiManifestError("op_import_dep must be a list of tables")
-    seen_op_import_kinds: set[str] = set()
-    for idx, entry in enumerate(op_import_deps):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(f"op_import_dep entry {idx} must be a table")
-        kind = entry.get("kind")
-        deps = entry.get("deps")
-        if not isinstance(kind, str) or not kind:
-            raise WasmAbiManifestError(f"op_import_dep entry {idx} has invalid kind")
-        if kind in seen_op_import_kinds:
-            raise WasmAbiManifestError(f"duplicate op_import_dep kind {kind!r}")
-        if kind in seen_op_loop_runtime_kinds:
-            raise WasmAbiManifestError(
-                f"op_import_dep {kind!r} duplicates generated op_loop_runtime_call demand"
-            )
-        if kind in seen_bulk_memory_kinds:
-            raise WasmAbiManifestError(
-                f"op_import_dep {kind!r} duplicates generated wasm_bulk_memory_op demand"
-            )
-        seen_op_import_kinds.add(kind)
-        if not isinstance(deps, list):
-            raise WasmAbiManifestError(
-                f"op_import_dep {kind!r} must define deps as a list"
-            )
-        seen_deps: set[str] = set()
-        for dep_idx, dep in enumerate(deps):
-            if not isinstance(dep, str) or not dep:
-                raise WasmAbiManifestError(
-                    f"op_import_dep {kind!r} has invalid dep at index {dep_idx}"
-                )
-            if dep in seen_deps:
-                raise WasmAbiManifestError(
-                    f"op_import_dep {kind!r} repeats import {dep!r}"
-                )
-            seen_deps.add(dep)
-            if dep not in seen_imports:
-                raise WasmAbiManifestError(
-                    f"op_import_dep {kind!r} references unknown import {dep!r}"
-                )
 
     const_op_policies = data.get("const_op_policy", [])
     if not isinstance(const_op_policies, list):
         raise WasmAbiManifestError("const_op_policy must be a list of tables")
     seen_const_policy_kinds: set[str] = set()
-    op_deps_by_kind = {entry["kind"]: entry["deps"] for entry in op_import_deps}
     for idx, entry in enumerate(const_op_policies):
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(f"const_op_policy entry {idx} must be a table")
@@ -1410,12 +1332,6 @@ def validate_loaded_manifest(data: dict) -> dict:
                     f"const_op_policy {kind!r} references unknown import "
                     f"{materializer_import!r}"
                 )
-            if materializer_import not in op_deps_by_kind.get(kind, []):
-                raise WasmAbiManifestError(
-                    f"const_op_policy {kind!r} materializer_import "
-                    f"{materializer_import!r} must appear in op_import_dep deps"
-                )
-
         parse_scalar_literal = entry.get("parse_scalar_literal", False)
         if not isinstance(parse_scalar_literal, bool):
             raise WasmAbiManifestError(
@@ -1478,68 +1394,6 @@ def validate_loaded_manifest(data: dict) -> dict:
         if prefix in seen_prefixes:
             raise WasmAbiManifestError(f"duplicate Pure-profile skip prefix {prefix!r}")
         seen_prefixes.add(prefix)
-
-    required_prefixes = data.get("runtime_required_import_prefix", [])
-    if not isinstance(required_prefixes, list):
-        raise WasmAbiManifestError(
-            "runtime_required_import_prefix must be a list of tables"
-        )
-    seen_required_prefixes: set[str] = set()
-    for idx, entry in enumerate(required_prefixes):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"runtime_required_import_prefix entry {idx} must be a table"
-            )
-        prefix = entry.get("prefix")
-        if not isinstance(prefix, str) or not prefix:
-            raise WasmAbiManifestError(
-                f"runtime_required_import_prefix entry {idx} has invalid prefix"
-            )
-        if prefix in seen_required_prefixes:
-            raise WasmAbiManifestError(
-                f"duplicate runtime-required import prefix {prefix!r}"
-            )
-        if not any(import_name.startswith(prefix) for import_name in seen_imports):
-            raise WasmAbiManifestError(
-                f"runtime-required import prefix {prefix!r} matches no imports"
-            )
-        seen_required_prefixes.add(prefix)
-
-    required_singletons = data.get("runtime_required_import_singleton", [])
-    if not isinstance(required_singletons, list):
-        raise WasmAbiManifestError(
-            "runtime_required_import_singleton must be a list of tables"
-        )
-    seen_required_singletons: set[str] = set()
-    for idx, entry in enumerate(required_singletons):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"runtime_required_import_singleton entry {idx} must be a table"
-            )
-        name = entry.get("name")
-        if not isinstance(name, str) or not name:
-            raise WasmAbiManifestError(
-                f"runtime_required_import_singleton entry {idx} has invalid name"
-            )
-        if name in seen_required_singletons:
-            raise WasmAbiManifestError(
-                f"duplicate runtime-required import singleton {name!r}"
-            )
-        if name not in seen_imports:
-            raise WasmAbiManifestError(
-                f"runtime-required import singleton {name!r} is not a known import"
-            )
-        matching_prefixes = [
-            prefix
-            for prefix in seen_required_prefixes
-            if name.startswith(prefix)
-        ]
-        if matching_prefixes:
-            raise WasmAbiManifestError(
-                f"runtime-required import singleton {name!r} is already covered "
-                f"by prefix {sorted(matching_prefixes)[0]!r}"
-            )
-        seen_required_singletons.add(name)
 
     output_export_policy = data.get("output_export_policy")
     if not isinstance(output_export_policy, dict):
