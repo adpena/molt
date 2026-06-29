@@ -98,8 +98,7 @@ impl WasmRuntimeImportDemand {
             && let Some(name) = op.s_value.as_ref()
             && !defined_function_names.contains(name.as_str())
         {
-            let import_name = runtime_import_name_str(name);
-            let import = wasm_runtime_import(import_name);
+            let import = wasm_runtime_import(name);
             if name.starts_with("molt_") && import.is_none() {
                 panic!("direct runtime call missing WASM ABI manifest import: {name}");
             }
@@ -112,8 +111,7 @@ impl WasmRuntimeImportDemand {
         if kind == "call_async"
             && let Some(name) = op.s_value.as_ref()
         {
-            let import_name = runtime_import_name_str(name);
-            if let Some(import) = wasm_runtime_import(import_name)
+            if let Some(import) = wasm_runtime_import(name)
                 && known_imports.contains(&import)
             {
                 self.require_import(import);
@@ -153,7 +151,7 @@ impl WasmRuntimeImportDemand {
             && let Some(name) = op.s_value.as_ref()
             && name.ends_with("_poll")
         {
-            self.require_import_name(runtime_import_name_str(name));
+            self.require_import_name(name);
         }
     }
 
@@ -251,8 +249,4 @@ fn debug_imports_enabled() -> bool {
         std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
         Some("1")
     )
-}
-
-pub(super) fn runtime_import_name_str(runtime_name: &str) -> &str {
-    runtime_name.strip_prefix("molt_").unwrap_or(runtime_name)
 }

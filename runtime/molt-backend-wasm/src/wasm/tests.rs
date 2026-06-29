@@ -3,7 +3,7 @@ use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
-use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
     wasm_scalar_truthiness_fast_path_for_name,
@@ -951,6 +951,26 @@ fn poll_table_slots_follow_manifest_slot_numbers() {
             "poll import {import_name} must occupy manifest table slot {slot}"
         );
     }
+}
+
+#[test]
+fn runtime_import_aliases_follow_manifest_runtime_names() {
+    assert_eq!(
+        wasm_runtime_import("importlib_import_transaction"),
+        Some(WasmRuntimeImport::ImportlibImportTransaction)
+    );
+    assert_eq!(
+        wasm_runtime_import("molt_importlib_import_transaction"),
+        Some(WasmRuntimeImport::ImportlibImportTransaction)
+    );
+    assert_eq!(
+        wasm_runtime_import("socket_drop"),
+        Some(WasmRuntimeImport::SocketDrop)
+    );
+    assert_eq!(
+        wasm_runtime_import("molt_socket_drop"),
+        Some(WasmRuntimeImport::SocketDrop)
+    );
 }
 
 #[test]

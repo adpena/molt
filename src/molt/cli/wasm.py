@@ -144,23 +144,14 @@ def _runtime_import_result_kinds_from_manifest(
     return result_kinds
 
 
-def _runtime_manifest_lookup_names(import_name: str) -> tuple[str, ...]:
-    if import_name.startswith("molt_"):
-        return (import_name, import_name.removeprefix("molt_"))
-    return (import_name, f"molt_{import_name}")
-
-
 def _runtime_import_signature_from_manifest(
     import_name: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    for lookup_name in _runtime_manifest_lookup_names(import_name):
-        signature = wasm_import_signature(lookup_name)
-        if signature is not None:
-            return signature
-    for lookup_name in _runtime_manifest_lookup_names(import_name):
-        spec = wasm_runtime_callable_spec(lookup_name)
-        if spec is None:
-            continue
+    signature = wasm_import_signature(import_name)
+    if signature is not None:
+        return signature
+    spec = wasm_runtime_callable_spec(import_name)
+    if spec is not None:
         _import_name, arity, result = spec
         params = tuple("i64" for _ in range(arity))
         results: tuple[str, ...] = () if result == "void" else ("i64",)
@@ -169,14 +160,12 @@ def _runtime_import_signature_from_manifest(
 
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
-    for lookup_name in _runtime_manifest_lookup_names(import_name):
-        result_kind = wasm_import_result_kind(lookup_name)
-        if result_kind is not None:
-            return result_kind
-    for lookup_name in _runtime_manifest_lookup_names(import_name):
-        result = wasm_runtime_callable_result(lookup_name)
-        if result is not None:
-            return "nil" if result == "void" else result
+    result_kind = wasm_import_result_kind(import_name)
+    if result_kind is not None:
+        return result_kind
+    result = wasm_runtime_callable_result(import_name)
+    if result is not None:
+        return "nil" if result == "void" else result
     return None
 
 

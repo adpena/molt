@@ -258,12 +258,18 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
     assert '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)' in rendered_rs
+    assert (
+        '"socket_drop" => Some(WasmRuntimeImport::SocketDrop),\n'
+        '        "molt_socket_drop" => Some(WasmRuntimeImport::SocketDrop),'
+    ) in rendered_rs
     assert "runtime_callable_import_name" not in rendered_rs
     assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_RUNTIME" in rendered_py
+    assert "WASM_RUNTIME_CALLABLE_IMPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
+    assert "def wasm_runtime_callable_spec(name: str)" in rendered_py
     assert "def wasm_runtime_callable_import_name" not in rendered_py
     assert "def wasm_runtime_callable_arity" in rendered_py
     assert "def wasm_runtime_callable_result" in rendered_py
@@ -355,6 +361,19 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
     with pytest.raises(
         manifest.WasmAbiManifestError,
         match="reserved runtime callable 'molt_type_call'",
+    ):
+        manifest.validate_loaded_manifest(broken)
+
+
+def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+
+    broken = copy.deepcopy(data)
+    broken["import"].append({"name": "molt_socket_drop", "type": 2})
+    with pytest.raises(
+        manifest.WasmAbiManifestError,
+        match="runtime import aliases collide with canonical import names",
     ):
         manifest.validate_loaded_manifest(broken)
 
@@ -778,6 +797,9 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     rendered_py = gen.render_py(data)
     assert "WASM_IMPORT_SIGNATURES" in rendered_py
     assert "WASM_IMPORT_SIGNATURE_BY_NAME" in rendered_py
+    assert "WASM_IMPORT_NAME_BY_LOOKUP" in rendered_py
+    assert '"molt_socket_drop": "socket_drop",' in rendered_py
+    assert "def wasm_import_name" in rendered_py
     assert "def wasm_import_signature" in rendered_py
     assert "def wasm_import_result_kind" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py

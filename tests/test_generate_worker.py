@@ -568,6 +568,8 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
     )
 
     import_names = {
+        "abc_bootstrap",
+        "socket_drop",
         "function_set_builtin",
         "molt_abc_bootstrap",
         "molt_importlib_import_transaction",
@@ -576,6 +578,8 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
     }
 
     assert _runtime_import_result_kinds_from_manifest(import_names) == {
+        "abc_bootstrap": "i64",
+        "socket_drop": "nil",
         "function_set_builtin": "i64",
         "molt_abc_bootstrap": "i64",
         "molt_importlib_import_transaction": "i64",
@@ -583,6 +587,8 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
         "string_from_bytes": "i32",
     }
     assert _runtime_import_signatures_from_manifest(import_names) == {
+        "abc_bootstrap": {"params": [], "result": "i64"},
+        "socket_drop": {"params": ["i64"], "result": "nil"},
         "function_set_builtin": {"params": ["i64"], "result": "i64"},
         "molt_abc_bootstrap": {"params": [], "result": "i64"},
         "molt_importlib_import_transaction": {

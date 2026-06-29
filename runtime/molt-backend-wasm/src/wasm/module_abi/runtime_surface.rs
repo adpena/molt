@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
-use super::runtime_import_demand::{WasmRuntimeImportDemand, runtime_import_name_str};
+use super::runtime_import_demand::WasmRuntimeImportDemand;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_abi::{runtime_callable_arity, runtime_callable_import};
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
@@ -174,8 +174,7 @@ impl WasmRuntimeSurfacePlan {
             && let Some(target_name) = op.s_value.as_ref()
             && !defined_function_names.contains(target_name.as_str())
         {
-            let import_name = runtime_import_name_str(target_name);
-            let import = wasm_runtime_import(import_name);
+            let import = wasm_runtime_import(target_name);
             if target_name.starts_with("molt_") && import.is_none() {
                 panic!("direct runtime call missing WASM ABI manifest import: {target_name}");
             }

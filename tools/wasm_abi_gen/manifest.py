@@ -949,6 +949,12 @@ def validate_loaded_manifest(data: dict) -> dict:
                     f"duplicate poll table slot {poll_table_slot}"
                 )
             seen_poll_slots.add(poll_table_slot)
+    runtime_import_alias_collisions = seen_imports & seen_runtime_callables
+    if runtime_import_alias_collisions:
+        raise WasmAbiManifestError(
+            "runtime import aliases collide with canonical import names: "
+            + ", ".join(sorted(runtime_import_alias_collisions))
+        )
     if seen_poll_slots:
         expected_poll_slots = set(range(1, max(seen_poll_slots) + 1))
         if seen_poll_slots != expected_poll_slots:
