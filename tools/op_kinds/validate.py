@@ -1408,6 +1408,28 @@ def _validate_simpleir_control_kinds(data: dict) -> None:
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: terminator requires structural"
             )
+        if row["wasm_dispatch_block_leader"] and not row["wasm_split_barrier"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: wasm dispatch block leader requires wasm split barrier"
+            )
+        if row["wasm_dispatch_block_terminator"] and not row["wasm_split_barrier"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: wasm dispatch block terminator requires wasm split barrier"
+            )
+        if row["wasm_stateful_dispatch"] and not row["wasm_split_barrier"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: wasm stateful dispatch requires wasm split barrier"
+            )
+        if row["wasm_state_resume_after"] and not (
+            row["wasm_stateful_dispatch"] and row["suspend"]
+        ):
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: wasm resume-after requires suspend and stateful dispatch"
+            )
+        if row["wasm_state_resume_at"] and not row["wasm_dispatch_block_leader"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: wasm resume-at requires dispatch block leader"
+            )
         if not any(row[field] for field in _SIMPLEIR_CONTROL_FACT_FIELDS):
             raise OpKindTableError(
                 f"simpleir_control_kind {kind}: at least one fact must be true"

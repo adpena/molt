@@ -1,4 +1,5 @@
 use crate::OpIR;
+use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_split_barrier;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy)]
@@ -37,41 +38,8 @@ pub(in crate::wasm) fn loop_continue_depth(control_stack: &[ControlKind]) -> Opt
 }
 
 pub(in crate::wasm) fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
-    ops.iter().any(|op| {
-        matches!(
-            op.kind.as_str(),
-            "if" | "else"
-                | "end_if"
-                | "loop_start"
-                | "loop_index_start"
-                | "loop_break_if_true"
-                | "loop_break_if_false"
-                | "loop_break_if_exception"
-                | "loop_break"
-                | "loop_continue"
-                | "loop_end"
-                | "for_iter_start"
-                | "for_iter_end"
-                | "while_start"
-                | "while_end"
-                | "try_start"
-                | "try_end"
-                | "async_for_start"
-                | "async_for_end"
-                | "jump"
-                | "br_if"
-                | "label"
-                | "state_switch"
-                | "state_transition"
-                | "state_yield"
-                | "chan_send_yield"
-                | "chan_recv_yield"
-                | "state_label"
-                | "check_exception"
-                | "ret"
-                | "ret_void"
-        )
-    })
+    ops.iter()
+        .any(|op| simpleir_kind_is_wasm_split_barrier(op.kind.as_str()))
 }
 
 #[derive(Default)]
