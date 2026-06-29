@@ -210,6 +210,7 @@ def _generate_split_worker_js(
     shared_table_initial: int,
     shared_table_base: int | None,
     runtime_import_names: Iterable[str] | None = None,
+    runtime_export_signatures: Mapping[str, Mapping[str, object]] | None = None,
     app_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
     runtime_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> str:
@@ -231,6 +232,9 @@ def _generate_split_worker_js(
     )
     runtime_import_signatures_json = json.dumps(
         runtime_import_signatures, sort_keys=True
+    )
+    runtime_export_signatures_json = json.dumps(
+        dict(runtime_export_signatures or {}), sort_keys=True
     )
     call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
     runtime_import_fallbacks_json = json.dumps(
@@ -330,6 +334,7 @@ export default {
     const NONE_BITS = QNAN | TAG_NONE;
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
+    const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
     const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
@@ -823,6 +828,24 @@ export default {
       return value;
     };
 
+    const normalizeI64BridgeValue = (value, label) => {
+      if (typeof value === "bigint") {
+        return value;
+      }
+      if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+        throw new TypeError(`Expected integer for ${label}, got ${value}`);
+      }
+      return BigInt.asUintN(64, BigInt(value));
+    };
+
+    const callIsolateImportExport = (fn, args) => {
+      if (args.length !== 1) {
+        throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
+      }
+      const handle = normalizeI64BridgeValue(args[0], "molt_isolate_import handle");
+      return normalizeI64BridgeValue(fn(handle), "molt_isolate_import result");
+    };
+
     const formatDebugValue = (value) => {
       if (typeof value === "bigint") {
         return `${value}n`;
@@ -950,18 +973,20 @@ export default {
         const exportName = entry.name.startsWith("molt_")
           ? entry.name
           : `molt_${entry.name}`;
+        const signature = runtimeImportSignatures[entry.name] || null;
+        const resultKind = runtimeImportResultKinds[entry.name] || null;
         let fn = runtimeInstance.exports[exportName];
+        let callSignature = runtimeExportSignatures[entry.name] || signature;
         if (typeof fn !== "function") {
           fn = runtimeFallback(entry.name);
+          callSignature = signature;
         }
         if (typeof fn !== "function") {
           throw new Error(`molt_runtime missing export ${exportName}`);
         }
-        const signature = runtimeImportSignatures[entry.name] || null;
-        const resultKind = runtimeImportResultKinds[entry.name] || null;
         imports[entry.name] = (...args) => {
-          const callArgs = signature && Array.isArray(signature.params)
-            ? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))
+          const callArgs = callSignature && Array.isArray(callSignature.params)
+            ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
             : args;
           let out;
           try {
@@ -1040,7 +1065,7 @@ export default {
         if (!appInstance || !appInstance.exports.molt_isolate_import) {
           throw new Error("molt_isolate_import called before app instantiation");
         }
-        return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));
+        return callIsolateImportExport(appInstance.exports.molt_isolate_import, args);
       },
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
@@ -1222,6 +1247,10 @@ export default {
         .replace(
             "__MOLT_RUNTIME_IMPORT_SIGNATURES__",
             runtime_import_signatures_json,
+        )
+        .replace(
+            "__MOLT_RUNTIME_EXPORT_SIGNATURES__",
+            runtime_export_signatures_json,
         )
         .replace(
             "__MOLT_RUNTIME_IMPORT_FALLBACKS__",

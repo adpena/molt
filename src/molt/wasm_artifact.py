@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Iterable, Literal, Mapping, Sequence
 
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
 
@@ -830,8 +830,16 @@ def _read_wasm_function_export_map(
 
 
 def _wasm_export_function_signatures(
-    path: Path, *, export_name_prefix: str
+    path: Path,
+    *,
+    export_name_prefix: str | None = None,
+    export_names: Iterable[str] | None = None,
 ) -> dict[str, dict[str, object]]:
+    if (export_name_prefix is None) == (export_names is None):
+        raise ValueError(
+            "exactly one of export_name_prefix or export_names must be provided"
+        )
+    export_name_set = set(export_names or ())
     sections = _parse_wasm_file_sections(path)
     type_signatures = _read_wasm_type_signatures(sections)
     imports, _ = _read_wasm_import_function_type_indices(sections)
@@ -842,7 +850,11 @@ def _wasm_export_function_signatures(
 
     export_signatures: dict[str, dict[str, object]] = {}
     for export_name, function_index in exports.items():
-        if not export_name.startswith(export_name_prefix):
+        if export_name_prefix is not None and not export_name.startswith(
+            export_name_prefix
+        ):
+            continue
+        if export_names is not None and export_name not in export_name_set:
             continue
         type_index = function_type_indices.get(function_index)
         if type_index is None:

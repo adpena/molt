@@ -528,7 +528,6 @@ pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
-pub use crate::builtins::scipy_ndimage::*;
 pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;

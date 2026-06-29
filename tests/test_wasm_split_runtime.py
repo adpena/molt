@@ -1921,6 +1921,9 @@ class TestManifestJson:
         assert manifest_abi["signatures"] == self._worker_json_const(
             worker_js, "runtimeImportSignatures"
         )
+        assert manifest_abi["runtime_export_signatures"] == self._worker_json_const(
+            worker_js, "runtimeExportSignatures"
+        )
         assert manifest_abi["result_kinds"] == self._worker_json_const(
             worker_js, "runtimeImportResultKinds"
         )

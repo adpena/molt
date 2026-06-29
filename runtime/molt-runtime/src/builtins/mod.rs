@@ -77,7 +77,6 @@ pub(crate) mod platform;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
-pub(crate) mod scipy_ndimage;
 pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;

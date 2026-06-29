@@ -310,6 +310,13 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         shared_table_initial=16,
         shared_table_base=32,
         runtime_import_names={"function_set_builtin", "string_from_bytes"},
+        runtime_export_signatures={
+            "function_set_builtin": {"params": ["i64"], "result": "i64"},
+            "string_from_bytes": {
+                "params": ["i64", "i64", "i64"],
+                "result": "i64",
+            },
+        },
         app_table_ref_signatures={
             "__molt_table_ref_1": {"params": ["i64"], "result": "i64"}
         },
@@ -326,6 +333,10 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     )
     assert (
         'const runtimeImportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"}};'
+        in content
+    )
+    assert (
+        'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64"], "result": "i64"}};'
         in content
     )
     assert "const runtimeImportFallbacks =" in content
@@ -345,24 +356,58 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
     assert "const resultKind = runtimeImportResultKinds[entry.name] || null;" in content
     assert "const signature = runtimeImportSignatures[entry.name] || null;" in content
+    assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in content
     assert "fn = runtimeFallback(entry.name);" in content
+    assert "callSignature = signature;" in content
     assert 'entry.name === "fast_dict_get"' not in content
     assert (
-        "? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))"
+        "? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))"
         in content
     )
     assert "const callArgs = args.map((value, index) =>" in content
-    assert "normalizeValueForKind(value, signature.params[index] || null)" in content
+    assert "normalizeValueForKind(value, callSignature.params[index] || null)" in content
     assert "return normalizeImportResult(out, resultKind);" in content
     assert "const callWithSignature = (fn, signature, args) => {" in content
     assert "value === undefined || value === null" in content
     assert "? NONE_BITS" in content
+    assert "const callIsolateImportExport = (fn, args) => {" in content
+    assert "molt_isolate_import expects one i64 handle" in content
     assert (
-        "return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));"
+        "return callIsolateImportExport(appInstance.exports.molt_isolate_import, args);"
         in content
     )
     assert "molt_runtime: buildRuntimeImports(appModule, rtInstance)," in content
     assert "const runtimeAbiExports = (exports) => {" not in content
+
+
+def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    surfaces = {
+        "wasm/browser_embed.js": "normalizeI64BridgeValue",
+        "wasm/browser_host.js": "normalizeIsolateImportI64",
+        "wasm/run_wasm.js": "runtimeImportToBigInt",
+        "src/molt/cli/wasm.py": "normalizeI64BridgeValue",
+    }
+    forbidden = (
+        ".exports.molt_isolate_import(...args)",
+        ".exports.molt_isolate_import(...callArgs)",
+    )
+    for rel, helper in surfaces.items():
+        content = (root / rel).read_text(encoding="utf-8")
+        assert "const callIsolateImportExport = (fn, args) => {" in content
+        assert helper in content
+        assert "molt_isolate_import expects one i64 handle" in content
+        for needle in forbidden:
+            assert needle not in content
+    browser_embed = (root / "wasm/browser_embed.js").read_text(encoding="utf-8")
+    assert (
+        "const runtimeExportSignatures = runtimeImports.runtime_export_signatures || {};"
+        in browser_embed
+    )
+    assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in browser_embed
+    assert "normalizeValueForKind(value, callSignature.params[index] || null)" in browser_embed
 
 
 def test_effective_split_worker_table_base_uses_backend_authority() -> None:
@@ -498,6 +543,7 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
     import_names = {
         "function_set_builtin",
         "molt_abc_bootstrap",
+        "molt_exception_init",
         "molt_socket_drop",
         "string_from_bytes",
     }
@@ -505,12 +551,14 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
     assert _runtime_import_result_kinds_from_manifest(import_names) == {
         "function_set_builtin": "i64",
         "molt_abc_bootstrap": "i64",
+        "molt_exception_init": "i64",
         "molt_socket_drop": "nil",
         "string_from_bytes": "i32",
     }
     assert _runtime_import_signatures_from_manifest(import_names) == {
         "function_set_builtin": {"params": ["i64"], "result": "i64"},
         "molt_abc_bootstrap": {"params": [], "result": "i64"},
+        "molt_exception_init": {"params": ["i64", "i64"], "result": "i64"},
         "molt_socket_drop": {"params": ["i64"], "result": "nil"},
         "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
@@ -526,6 +574,11 @@ def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:
         wasm_path, export_name_prefix="__molt_table_ref_"
     ) == {
         "__molt_table_ref_7": {"params": ["i64"], "result": "i64"},
+        "__molt_table_ref_8": {"params": ["i32", "i64", "i32"], "result": "i32"},
+    }
+    assert _wasm_export_function_signatures(
+        wasm_path, export_names={"__molt_table_ref_8"}
+    ) == {
         "__molt_table_ref_8": {"params": ["i32", "i64", "i32"], "result": "i32"},
     }
 
