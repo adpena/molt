@@ -18,13 +18,13 @@ use crate::builtins::attr::{
 use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::methods::{
-    asyncgen_method_bits, complex_method_bits, coroutine_method_bits, float_method_bits,
-    generator_method_bits, int_method_bits, object_method_bits, property_method_bits,
-    range_method_bits, type_method_bits,
+    asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
+    object_method_bits, property_method_bits, range_method_bits, type_method_bits,
 };
 use crate::*;
 
 mod mutation;
+mod scalar_attrs;
 
 pub(crate) use mutation::{
     dataclass_delattr_raw_unchecked, dataclass_setattr_raw_unchecked, del_attr_ptr,
@@ -34,6 +34,7 @@ pub use mutation::{
     molt_del_attr_generic, molt_del_attr_name, molt_del_attr_object, molt_del_attr_ptr,
     molt_set_attr_generic, molt_set_attr_name, molt_set_attr_object, molt_set_attr_ptr,
 };
+pub(crate) use scalar_attrs::{is_numeric_scalar_attr_receiver, resolve_scalar_attr};
 
 const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 5;
 
@@ -114,7 +115,7 @@ static ATTR_LOOKUP_TRACE_LINES: AtomicUsize = AtomicUsize::new(0);
 /// Cached `MOLT_TRACE_ATTR_LOOKUP` flag.
 ///
 /// `attr_lookup_ptr` is on the hot path of EVERY attribute access (`obj.attr`,
-/// `self.x`, method binding, dataclass field reads, ...) — one of the most
+/// `self.x`, method binding, dataclass field reads, ...) - one of the most
 /// frequent operations in any Python program. Reading the env var directly per
 /// lookup (`std::env::var`) takes the libc environ lock (`__findenv_locked`)
 /// and heap-allocates a `String` each time; profiling a dataclass-heavy ETL
@@ -595,7 +596,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                         return Some(func_bits);
                     }
                     if val_type_id == TYPE_ID_PROPERTY {
-                        // Property on a class (not instance) — return the descriptor itself.
+                        // Property on a class (not instance) - return the descriptor itself.
                         inc_ref_bits(_py, val_bits);
                         return Some(val_bits);
                     }
@@ -1032,169 +1033,6 @@ unsafe fn type_attr_lookup_ptr_inner(
         }
         None
     }
-}
-
-/// Which builtin numeric scalar class a receiver belongs to, for
-/// [`resolve_scalar_method`].
-///
-/// `Bool` is distinct from `Int` only for class selection (`bool`'s own class vs
-/// `int`'s); its *methods* come from the int method table because, per CPython,
-/// `bool` inherits `int`.
-#[derive(Clone, Copy)]
-enum ScalarKind {
-    Int,
-    Bool,
-    Float,
-}
-
-fn numeric_scalar_kind_from_bits(obj_bits: u64) -> Option<ScalarKind> {
-    let obj = obj_from_bits(obj_bits);
-    if obj.is_float() {
-        return Some(ScalarKind::Float);
-    }
-    if obj.is_bool() {
-        return Some(ScalarKind::Bool);
-    }
-    if obj.is_int() {
-        return Some(ScalarKind::Int);
-    }
-    if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-        match unsafe { object_type_id(ptr) } {
-            TYPE_ID_BIGINT => return Some(ScalarKind::Int),
-            TYPE_ID_FLOAT => return Some(ScalarKind::Float),
-            _ => {}
-        }
-    }
-    None
-}
-
-pub(crate) fn is_numeric_scalar_attr_receiver(obj_bits: u64) -> bool {
-    numeric_scalar_kind_from_bits(obj_bits).is_some()
-}
-
-fn scalar_class_bits(_py: &PyToken<'_>, kind: ScalarKind) -> u64 {
-    let builtins = builtin_classes(_py);
-    match kind {
-        ScalarKind::Int => builtins.int,
-        ScalarKind::Bool => builtins.bool,
-        ScalarKind::Float => builtins.float,
-    }
-}
-
-/// Resolve `name` as a bound method on a numeric/bool scalar receiver
-/// `self_bits` of the given `kind`, returning an owned bound-method reference, or
-/// `None` when neither the scalar's own type nor `object` exposes such a method.
-///
-/// This is the method half of the single numeric scalar attribute authority. The
-/// receiver classifier in [`resolve_scalar_attr`] sends inline int/bool/float and
-/// heap bigint/NaN-float through this same binder, so `getattr`,
-/// `getattr(_, default)`, `hasattr`, and direct `object.__getattribute__` can
-/// never disagree about which numeric methods a scalar exposes. The lookup order
-/// (curated own-type methods -> own class -> `object`) mirrors the MRO so
-/// inherited dunders such as `object.__init__`/`object.__hash__` resolve on
-/// scalars.
-/// Bind a curated builtin class attribute `attr_bits` (as returned by
-/// `int_method_bits`/`float_method_bits`/`builtin_class_method_bits`) to a scalar
-/// receiver `self_bits` whose own class is `class_bits`, mirroring the descriptor
-/// protocol for the kinds those tables can yield:
-/// * a `classmethod` (e.g. `int.from_bytes`) binds to the class — passing it to
-///   `molt_bound_method_new` directly would raise "bound method expects callable
-///   object" because a classmethod object is not itself callable;
-/// * a `staticmethod` yields the bare underlying function;
-/// * a plain function binds to the receiver value.
-///
-/// Inline scalars have no heap instance pointer, so [`attr::descriptor_bind`]
-/// (which binds plain functions to a heap `instance_ptr`) cannot be used here;
-/// this is the scalar-value analogue, matching the classmethod/staticmethod idiom
-/// already used for builtin-class dict descriptors elsewhere in this module.
-fn bind_scalar_class_attr(
-    _py: &PyToken<'_>,
-    attr_bits: u64,
-    self_bits: u64,
-    class_bits: u64,
-) -> u64 {
-    if let Some(attr_ptr) = maybe_ptr_from_bits(attr_bits) {
-        match unsafe { object_type_id(attr_ptr) } {
-            TYPE_ID_CLASSMETHOD => {
-                let func_bits = unsafe { classmethod_func_bits(attr_ptr) };
-                return molt_bound_method_new(func_bits, class_bits);
-            }
-            TYPE_ID_STATICMETHOD => {
-                let func_bits = unsafe { staticmethod_func_bits(attr_ptr) };
-                inc_ref_bits(_py, func_bits);
-                return func_bits;
-            }
-            _ => {}
-        }
-    }
-    molt_bound_method_new(attr_bits, self_bits)
-}
-
-fn resolve_scalar_method(
-    _py: &PyToken<'_>,
-    self_bits: u64,
-    kind: ScalarKind,
-    name: &str,
-) -> Option<u64> {
-    let builtins = builtin_classes(_py);
-    let class_bits = scalar_class_bits(_py, kind);
-    // Direct (curated) method table. `bool` shares int's methods.
-    let direct = match kind {
-        ScalarKind::Int | ScalarKind::Bool => int_method_bits(_py, name),
-        ScalarKind::Float => float_method_bits(_py, name),
-    };
-    if let Some(func_bits) = direct {
-        return Some(bind_scalar_class_attr(
-            _py, func_bits, self_bits, class_bits,
-        ));
-    }
-    // Class-based fallback: the scalar's own class (which also exposes
-    // classmethods such as `int.from_bytes`), then `object` for the universally
-    // inherited dunders. Each result is bound through the descriptor protocol so
-    // classmethods bind to the class rather than tripping `molt_bound_method_new`.
-    if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, name) {
-        return Some(bind_scalar_class_attr(
-            _py, func_bits, self_bits, class_bits,
-        ));
-    }
-    if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, name) {
-        return Some(bind_scalar_class_attr(
-            _py, func_bits, self_bits, class_bits,
-        ));
-    }
-    None
-}
-
-/// Resolve `attr_name` on a scalar receiver. Numeric scalars include inline
-/// int/bool/float plus heap bigint and heap NaN-float. Returns the attribute as
-/// an owned reference (the receiver's class for `__class__`, otherwise a bound
-/// method), or `None` when the scalar type exposes no such attribute.
-///
-/// This is shared by every numeric-scalar attribute path:
-/// `molt_get_attr_name`, `molt_get_attr_name_default`, `molt_has_attr_name`,
-/// `molt_get_attr_object`, `attr_lookup_ptr`, and `molt_object_getattribute`.
-/// Non-numeric immediates keep the historical `__class__` behavior here so
-/// callers that handle pointer objects elsewhere still have one immediate-value
-/// resolver.
-pub(crate) fn resolve_scalar_attr(
-    _py: &PyToken<'_>,
-    obj_bits: u64,
-    attr_name: &str,
-) -> Option<u64> {
-    if let Some(kind) = numeric_scalar_kind_from_bits(obj_bits) {
-        let class_bits = scalar_class_bits(_py, kind);
-        if attr_name == "__class__" {
-            inc_ref_bits(_py, class_bits);
-            return Some(class_bits);
-        }
-        return resolve_scalar_method(_py, obj_bits, kind, attr_name);
-    }
-    if maybe_ptr_from_bits(obj_bits).is_none() && attr_name == "__class__" {
-        let class_bits = type_of_bits(_py, obj_bits);
-        inc_ref_bits(_py, class_bits);
-        return Some(class_bits);
-    }
-    None
 }
 
 #[unsafe(no_mangle)]
@@ -3467,7 +3305,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     && !obj_from_bits(out).is_none()
                     && !exception_pending(_py)
                 {
-                    // Only cache class-level (MRO) results — not instance attributes.
+                    // Only cache class-level (MRO) results - not instance attributes.
                     // Check whether this result came from the class MRO by doing a
                     // class-only lookup and comparing the result.
                     let class_bits = if type_id == TYPE_ID_TYPE {
