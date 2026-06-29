@@ -35,6 +35,7 @@ OUT_RUNTIME_CALLABLES_RS = (
 )
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 INTRINSICS_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+INTRINSIC_CATEGORIES = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 RUNTIME_ROOT = ROOT / "runtime"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
