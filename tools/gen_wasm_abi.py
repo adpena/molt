@@ -138,8 +138,9 @@ def _render_rs_mod() -> str:
             "mod call_indirect;\n",
             "mod container_runtime_selector;\n",
             "mod const_policy;\n",
+            "mod import_metadata;\n",
             "mod import_registry;\n",
-            "mod imports;\n",
+            "mod import_tokens;\n",
             "mod lir_runtime_calls;\n",
             "mod method_ic_selector;\n",
             "mod numeric_runtime_selector;\n",
@@ -167,7 +168,7 @@ def _render_rs_mod() -> str:
             "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY,\n",
             "    RuntimeImportSpec,\n",
             "};\n",
-            "pub(crate) use imports::WasmRuntimeImport;\n",
+            "pub(crate) use import_tokens::WasmRuntimeImport;\n",
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
@@ -238,7 +239,7 @@ def _render_rs_const_policy(data: dict) -> str:
             "use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};\n",
             "use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;\n",
             "use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};\n\n",
-            "use super::imports::WasmRuntimeImport;\n\n",
+            "use super::import_tokens::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstInlineSeed {\n",
             "    None,\n",
@@ -430,7 +431,7 @@ def _render_rs_static_types(data: dict) -> str:
     return "".join(lines)
 
 
-def _render_rs_imports(data: dict) -> str:
+def _render_rs_import_tokens(data: dict) -> str:
     import_variants = _runtime_import_variants(data)
     lines: list[str] = [_header("//")]
     lines.extend(
@@ -444,6 +445,17 @@ def _render_rs_imports(data: dict) -> str:
     lines.extend(
         [
             "}\n\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_import_metadata(data: dict) -> str:
+    import_variants = _runtime_import_variants(data)
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "use super::import_tokens::WasmRuntimeImport;\n\n",
             "impl WasmRuntimeImport {\n",
             "    pub(crate) const fn name(self) -> &'static str {\n",
             "        match self {\n",
@@ -492,7 +504,7 @@ def _render_rs_import_registry(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
-            "use super::imports::WasmRuntimeImport;\n\n",
+            "use super::import_tokens::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeImportSpec {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
@@ -614,7 +626,7 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
         if "lir_variant" in entry and "lir_operand_count" in entry
     ]
     lines: list[str] = [_header("//")]
-    lines.append("use super::imports::WasmRuntimeImport;\n\n")
+    lines.append("use super::import_tokens::WasmRuntimeImport;\n\n")
     lines.extend(
         [
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -779,7 +791,7 @@ def _render_rs_container_runtime_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
-            "use super::imports::WasmRuntimeImport;\n",
+            "use super::import_tokens::WasmRuntimeImport;\n",
             "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmContainerRuntimeOp {\n",
@@ -896,7 +908,7 @@ def _render_rs_object_new_bound_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
-            "use super::imports::WasmRuntimeImport;\n",
+            "use super::import_tokens::WasmRuntimeImport;\n",
             "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmObjectNewBoundPayload {\n",
@@ -979,7 +991,7 @@ def _render_rs_method_ic_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
-            "use super::imports::WasmRuntimeImport;\n\n",
+            "use super::import_tokens::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmMethodIcFamily {\n",
         ]
@@ -1058,7 +1070,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
-            "use super::imports::WasmRuntimeImport;\n",
+            "use super::import_tokens::WasmRuntimeImport;\n",
             "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmNumericOpLoopKind {\n",
@@ -1220,7 +1232,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
     )
     lines.extend(
         [
-            "use super::imports::WasmRuntimeImport;\n\n",
+            "use super::import_tokens::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct PollTableImportSpec {\n",
             "    pub(crate) table_slot: u32,\n",
@@ -1559,7 +1571,8 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "container_runtime_selector.rs": _render_rs_container_runtime_selector(data),
         "const_policy.rs": _render_rs_const_policy(data),
         "static_types.rs": _render_rs_static_types(data),
-        "imports.rs": _render_rs_imports(data),
+        "import_tokens.rs": _render_rs_import_tokens(data),
+        "import_metadata.rs": _render_rs_import_metadata(data),
         "import_registry.rs": _render_rs_import_registry(data),
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "method_ic_selector.rs": _render_rs_method_ic_selector(data),
