@@ -126,14 +126,8 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert browser_abi["table_layout"]["legacy_table_base"] == 256
     assert "fast_list_append" in browser_abi["runtime_import_fallbacks"]
     runtime_imports = manifest["abi"]["runtime_imports"]
-    assert runtime_imports["signatures"]["molt_exception_init"] == {
-        "params": ["i64", "i64"],
-        "result": "i64",
-    }
-    assert runtime_imports["runtime_export_signatures"]["molt_exception_init"] == {
-        "params": ["i64", "i64"],
-        "result": "i64",
-    }
+    assert "molt_exception_init" not in runtime_imports["signatures"]
+    assert "molt_exception_init" not in runtime_imports["runtime_export_signatures"]
 
     handler = type("_EmbedHandler", (_StaticDirHandler,), {"root": out_dir})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)

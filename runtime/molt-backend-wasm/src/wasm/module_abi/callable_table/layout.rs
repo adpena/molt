@@ -7,6 +7,7 @@ use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use super::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS};
+use crate::wasm_abi_generated::wasm_runtime_import;
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
 impl WasmBackend {
@@ -99,18 +100,15 @@ impl WasmBackend {
 
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
             let runtime_name = spec.runtime_name.to_string();
-            let wrapper_idx = *builtin_wrapper_indices
-                .get(&runtime_name)
-                .unwrap_or_else(|| panic!("reserved runtime wrapper missing for {runtime_name}"));
             func_to_table_idx.insert(
                 runtime_name.clone(),
                 reserved_runtime_callable_table_start + spec.index,
             );
-            func_to_index.insert(runtime_name, wrapper_idx);
-            table_indices.push(wrapper_idx);
+            func_to_index.insert(runtime_name, sentinel_func_idx);
+            table_indices.push(sentinel_func_idx);
         }
 
-        let mut compact_builtin_entries: Vec<(String, u32)> = Vec::new();
+        let mut compact_builtin_entries: Vec<u32> = Vec::new();
         let mut compact_slot = 0u32;
         for callable in runtime_callable_plan.compact_builtin_runtime_callables() {
             let runtime_key = callable.runtime_name.clone();
@@ -123,7 +121,7 @@ impl WasmBackend {
             } else {
                 let import_idx = self
                     .import_ids
-                    .get_name(callable.import_name.as_str())
+                    .get(callable.import)
                     .copied()
                     .unwrap_or(sentinel_func_idx);
                 let safe = if import_idx == u32::MAX {
@@ -134,7 +132,7 @@ impl WasmBackend {
                 func_to_index.insert(runtime_key, safe);
                 safe
             };
-            compact_builtin_entries.push((callable.import_name.clone(), target_index));
+            compact_builtin_entries.push(target_index);
             compact_slot += 1;
         }
         debug_assert_eq!(
@@ -144,13 +142,12 @@ impl WasmBackend {
 
         let user_func_start = self.func_count;
         let user_func_count = ir.functions.len() as u32;
-        let builtin_trampoline_count = RESERVED_RUNTIME_CALLABLE_COUNT
-            + runtime_callable_plan.compact_builtin_trampoline_count();
+        let compact_builtin_trampoline_count =
+            runtime_callable_plan.compact_builtin_trampoline_count();
         let builtin_trampoline_start = user_func_start + user_func_count;
-        let user_trampoline_start = builtin_trampoline_start + builtin_trampoline_count;
-        let reserved_runtime_trampoline_func_start = builtin_trampoline_start;
-        let compact_builtin_trampoline_func_start =
-            reserved_runtime_trampoline_func_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+        let compact_builtin_trampoline_func_start = builtin_trampoline_start;
+        let user_trampoline_start =
+            compact_builtin_trampoline_func_start + compact_builtin_trampoline_count;
 
         let mut func_to_trampoline_idx = BTreeMap::new();
         let mut trampoline_entries = Vec::new();
@@ -160,44 +157,19 @@ impl WasmBackend {
                 runtime_name,
                 reserved_runtime_trampoline_table_start + spec.index,
             );
-            let expected_func_index = reserved_runtime_trampoline_func_start + spec.index;
-            let name = spec.runtime_name;
-            let target_func_index = *func_to_index
-                .get(name)
-                .unwrap_or_else(|| panic!("reserved runtime trampoline target missing for {name}"));
-            let table_slot = *func_to_table_idx.get(name).unwrap_or_else(|| {
-                panic!("reserved runtime trampoline table slot missing for {name}")
-            });
-            push_trampoline_entry(
-                &mut table_indices,
-                &mut trampoline_entries,
-                WasmCallableTrampolineEntry {
-                    name: name.to_string(),
-                    expected_func_index,
-                    target_func_index,
-                    table_index: table_base + table_slot,
-                    spec: TrampolineSpec {
-                        arity: spec.arity,
-                        has_closure: false,
-                        kind: TrampolineKind::Plain,
-                        closure_size: 0,
-                        target_has_ret: true,
-                    },
-                    multi_return_count: None,
-                },
-            );
+            table_indices.push(sentinel_func_idx);
         }
-        for (_import_name, target_index) in &compact_builtin_entries {
+        for target_index in &compact_builtin_entries {
             table_indices.push(*target_index);
         }
         for runtime_name in direct_import_call_specs.keys() {
             let import_name = runtime_name
                 .strip_prefix("molt_")
                 .unwrap_or(runtime_name.as_str());
-            let import_idx = *self
-                .import_ids
-                .get_name(import_name)
-                .unwrap_or_else(|| panic!("missing direct runtime import for {runtime_name}"));
+            let import = wasm_runtime_import(import_name).unwrap_or_else(|| {
+                panic!("missing direct runtime import token for {runtime_name}")
+            });
+            let import_idx = self.import_ids[import];
             if import_idx == u32::MAX {
                 panic!("direct runtime import unexpectedly stripped for {runtime_name}");
             }
