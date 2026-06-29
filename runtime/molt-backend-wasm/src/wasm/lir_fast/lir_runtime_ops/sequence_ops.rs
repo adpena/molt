@@ -3,24 +3,22 @@ use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::LirRuntimeCall;
 use super::call_abi::{emit_lir_boxed_operands_runtime_call, emit_lir_runtime_result};
 use crate::wasm::body::WasmLirFallbackReason;
+use crate::wasm::container_runtime_select::selected_lir_container_runtime_call;
+use crate::wasm_abi_generated::WasmContainerRuntimeOp;
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirOp, LirRepr};
-use molt_tir::tir::types::TirType;
 use wasm_encoder::Instruction;
 
 pub(in crate::wasm::lir_fast) fn emit_lir_index(ctx: &mut LirLowerCtx, op: &LirOp) {
     let Some(&container) = op.tir_op.operands.first() else {
         return;
     };
-    let runtime_call = if ctx.has_flat_list_int_storage(container) {
-        LirRuntimeCall::ListIntGetitem
-    } else {
-        match ctx.type_of(container) {
-            Some(TirType::Dict(_, _)) => LirRuntimeCall::DictGetitem,
-            Some(TirType::Tuple(_)) => LirRuntimeCall::TupleGetitem,
-            _ => LirRuntimeCall::Index,
-        }
-    };
+    let runtime_call = selected_lir_container_runtime_call(
+        WasmContainerRuntimeOp::Index,
+        ctx.has_flat_list_int_storage(container),
+        ctx.type_of(container),
+    )
+    .unwrap_or(LirRuntimeCall::Index);
     emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call, 2);
 }
 
@@ -28,14 +26,12 @@ pub(in crate::wasm::lir_fast) fn emit_lir_store_index(ctx: &mut LirLowerCtx, op:
     let Some(&container) = op.tir_op.operands.first() else {
         return;
     };
-    let runtime_call = if ctx.has_flat_list_int_storage(container) {
-        LirRuntimeCall::ListIntSetitem
-    } else {
-        match ctx.type_of(container) {
-            Some(TirType::Dict(_, _)) => LirRuntimeCall::DictSetitem,
-            _ => LirRuntimeCall::StoreIndex,
-        }
-    };
+    let runtime_call = selected_lir_container_runtime_call(
+        WasmContainerRuntimeOp::StoreIndex,
+        ctx.has_flat_list_int_storage(container),
+        ctx.type_of(container),
+    )
+    .unwrap_or(LirRuntimeCall::StoreIndex);
     emit_lir_boxed_operands_runtime_call(ctx, op, runtime_call, 3);
 }
 
@@ -75,7 +71,13 @@ pub(in crate::wasm::lir_fast) fn emit_lir_membership(
     let container = op.tir_op.operands[0];
     emit_get_boxed_for_repr(ctx, container);
     emit_get_boxed_for_repr(ctx, op.tir_op.operands[1]);
-    ctx.emit_runtime_call(lir_contains_call_for_container(ctx.type_of(container)));
+    let runtime_call = selected_lir_container_runtime_call(
+        WasmContainerRuntimeOp::Contains,
+        false,
+        ctx.type_of(container),
+    )
+    .unwrap_or(LirRuntimeCall::Contains);
+    ctx.emit_runtime_call(runtime_call);
     if !invert {
         emit_lir_runtime_result(ctx, op);
         return;
@@ -100,15 +102,5 @@ pub(in crate::wasm::lir_fast) fn emit_lir_membership(
             ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
             ctx.emit_set(result.id);
         }
-    }
-}
-
-fn lir_contains_call_for_container(container_ty: Option<&TirType>) -> LirRuntimeCall {
-    match container_ty {
-        Some(TirType::Dict(_, _)) => LirRuntimeCall::DictContains,
-        Some(TirType::List(_)) => LirRuntimeCall::ListContains,
-        Some(TirType::Set(_)) => LirRuntimeCall::SetContains,
-        Some(TirType::Str) => LirRuntimeCall::StrContains,
-        _ => LirRuntimeCall::Contains,
     }
 }

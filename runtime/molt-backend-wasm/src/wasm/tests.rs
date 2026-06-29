@@ -1,10 +1,11 @@
+use super::container_runtime_select::selected_container_runtime_import;
 use super::{WasmBackend, WasmCompileOptions};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS};
 use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
-    wasm_scalar_truthiness_fast_path_for_name, wasm_specialized_container_import,
+    wasm_scalar_truthiness_fast_path_for_name,
 };
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
@@ -195,7 +196,7 @@ fn container_import_selection_ignores_transport_hints() {
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
     assert_eq!(
-        wasm_specialized_container_import(&plan, 0, "index", &index),
+        selected_container_runtime_import(&plan, 0, "index", &index),
         None
     );
 }
@@ -214,19 +215,102 @@ fn container_import_selection_uses_typed_container_facts() {
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
     assert_eq!(
-        wasm_specialized_container_import(&plan, 0, "index", &index),
+        selected_container_runtime_import(&plan, 0, "index", &index),
         None,
         "semantic list[int] is not a physical flat-list storage proof"
     );
     assert_eq!(
-        wasm_specialized_container_import(&plan, 1, "store_index", &set),
+        selected_container_runtime_import(&plan, 1, "store_index", &set),
         None,
         "semantic list[int] is not a physical flat-list storage proof"
     );
     assert_eq!(
-        wasm_specialized_container_import(&plan, 2, "len", &len),
+        selected_container_runtime_import(&plan, 2, "len", &len),
         Some("len_list")
     );
+}
+
+#[test]
+fn container_import_selection_uses_manifest_typed_query_matrix() {
+    let contains = wasm_test_op("contains", Some("hit"), vec!["xs", "needle"]);
+    let len = wasm_test_op("len", Some("n"), vec!["xs"]);
+    let cases = [
+        (
+            "typed_dict_queries",
+            "dict",
+            Some("dict_contains"),
+            Some("len_dict"),
+        ),
+        (
+            "typed_list_queries",
+            "list",
+            Some("list_contains"),
+            Some("len_list"),
+        ),
+        ("typed_set_queries", "set", Some("set_contains"), Some("len_set")),
+        ("typed_str_queries", "str", Some("str_contains"), Some("len_str")),
+        ("typed_tuple_queries", "tuple", None, Some("len_tuple")),
+    ];
+
+    for (name, container_type, contains_import, len_import) in cases {
+        let func = wasm_test_function(
+            name,
+            vec!["xs", "needle"],
+            Some(vec![container_type, "Any"]),
+            vec![contains.clone(), len.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            selected_container_runtime_import(&plan, 0, "contains", &contains),
+            contains_import,
+            "{name} contains selection drifted"
+        );
+        assert_eq!(
+            selected_container_runtime_import(&plan, 1, "len", &len),
+            len_import,
+            "{name} len selection drifted"
+        );
+    }
+}
+
+#[test]
+fn container_import_selection_uses_manifest_index_store_matrix() {
+    let index = wasm_test_op("index", Some("item"), vec!["xs", "key"]);
+    let store = wasm_test_op("store_index", None, vec!["xs", "key", "value"]);
+    let cases = [
+        (
+            "typed_dict_index_store",
+            "dict",
+            Some("dict_getitem"),
+            Some("dict_setitem"),
+        ),
+        ("typed_tuple_index_store", "tuple", Some("tuple_getitem"), None),
+        ("typed_list_index_store", "list", None, None),
+        ("typed_set_index_store", "set", None, None),
+        ("typed_str_index_store", "str", None, None),
+    ];
+
+    for (name, container_type, index_import, store_import) in cases {
+        let func = wasm_test_function(
+            name,
+            vec!["xs", "key", "value"],
+            Some(vec![container_type, "Any", "Any"]),
+            vec![index.clone(), store.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            selected_container_runtime_import(&plan, 0, "index", &index),
+            index_import,
+            "{name} index selection drifted"
+        );
+        assert_eq!(
+            selected_container_runtime_import(&plan, 1, "store_index", &store),
+            store_import,
+            "{name} store_index selection drifted"
+        );
+    }
 }
 
 #[test]
@@ -243,11 +327,11 @@ fn container_import_selection_uses_flat_list_storage_proof() {
     let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
     assert_eq!(
-        wasm_specialized_container_import(&plan, 1, "index", &index),
+        selected_container_runtime_import(&plan, 1, "index", &index),
         Some("list_int_getitem")
     );
     assert_eq!(
-        wasm_specialized_container_import(&plan, 2, "store_index", &set),
+        selected_container_runtime_import(&plan, 2, "store_index", &set),
         Some("list_int_setitem")
     );
 }

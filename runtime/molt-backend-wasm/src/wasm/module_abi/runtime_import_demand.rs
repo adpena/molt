@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::representation_plan::ScalarRepresentationPlan;
+use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm::lir_fast::WasmFunctionLoweringPlans;
 use crate::wasm_abi::RESERVED_RUNTIME_CALLABLE_SPECS;
 use crate::wasm_imports::{OP_IMPORT_DEPS, runtime_surface_requires_direct_import};
 use crate::wasm_options::{WasmCompileOptions, WasmProfile};
-use crate::wasm_plan::wasm_specialized_container_import;
 use crate::{OpIR, TrampolineKind};
 
 type RuntimeImportDepsMap = BTreeMap<&'static str, &'static [&'static str]>;
@@ -127,7 +127,7 @@ impl WasmRuntimeImportDemand {
         }
 
         if let Some(import_name) =
-            wasm_specialized_container_import(scalar_plan, op_index, kind, op)
+            selected_container_runtime_import(scalar_plan, op_index, kind, op)
         {
             self.require_import(import_name);
         }
