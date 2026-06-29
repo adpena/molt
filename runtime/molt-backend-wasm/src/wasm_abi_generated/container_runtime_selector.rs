@@ -3,7 +3,7 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
-use super::imports::WasmRuntimeImport;
+use super::import_tokens::WasmRuntimeImport;
 use super::lir_runtime_calls::LirRuntimeCall;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

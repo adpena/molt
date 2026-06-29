@@ -7,7 +7,7 @@ use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bit
 use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;
 use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};
 
-use super::imports::WasmRuntimeImport;
+use super::import_tokens::WasmRuntimeImport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WasmConstInlineSeed {
