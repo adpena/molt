@@ -29,6 +29,10 @@ def _load_gen_wasm_abi():
     return module
 
 
+def _raw_manifest(gen) -> dict:
+    return tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+
+
 def _rendered_rs(gen, data) -> str:
     return "".join(gen.render_rs_modules(data).values())
 
@@ -412,7 +416,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
 
 def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:
     gen = _load_gen_wasm_abi()
-    data = gen.load_manifest()
+    data = _raw_manifest(gen)
 
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "type_call", "type": 2})
@@ -460,7 +464,7 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
 
 def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
     gen = _load_gen_wasm_abi()
-    data = gen.load_manifest()
+    data = _raw_manifest(gen)
 
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "molt_socket_drop", "type": 2})
