@@ -29,6 +29,7 @@ OUT_RS_FILES = {
     "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
     "object_new_bound_selector.rs": OUT_RS_DIR / "object_new_bound_selector.rs",
     "method_ic_selector.rs": OUT_RS_DIR / "method_ic_selector.rs",
+    "numeric_runtime_selector.rs": OUT_RS_DIR / "numeric_runtime_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
     "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
@@ -118,6 +119,35 @@ WASM_BULK_MEMORY_INSTRUCTIONS = {
 OBJECT_NEW_BOUND_SELECTOR_PAYLOADS = ("unsized", "sized")
 METHOD_IC_SELECTOR_FAMILIES = ("method", "super_method")
 METHOD_IC_MAX_EXTRA_ARGS = 4
+NUMERIC_OP_LOOP_VARIANTS = (
+    "Add",
+    "Sub",
+    "Mul",
+    "TrueDiv",
+    "FloorDiv",
+    "Mod",
+    "Matmul",
+    "Pow",
+    "PowMod",
+    "Round",
+    "Trunc",
+    "BitAnd",
+    "BitOr",
+    "BitXor",
+    "Invert",
+    "Neg",
+    "Pos",
+    "LShift",
+    "RShift",
+    "Lt",
+    "Le",
+    "Gt",
+    "Ge",
+    "Eq",
+    "Ne",
+    "StringEq",
+    "VectorReduction",
+)
 CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
 
@@ -480,6 +510,126 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
                     "sink": sink,
                 }
             )
+    return expanded
+
+
+def _validate_numeric_runtime_selectors(
+    data: dict,
+    seen_imports: set[str],
+    lir_import_by_variant: dict[str, str],
+) -> list[dict]:
+    selectors = data.get("numeric_runtime_selector", [])
+    if not isinstance(selectors, list):
+        raise WasmAbiManifestError("numeric_runtime_selector must be a list of tables")
+    seen_kinds: set[str] = set()
+    for idx, entry in enumerate(selectors):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector entry {idx} must be a table"
+            )
+        kind = entry.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector entry {idx} has invalid kind"
+            )
+        if kind in seen_kinds:
+            raise WasmAbiManifestError(
+                f"duplicate numeric_runtime_selector kind {kind!r}"
+            )
+        seen_kinds.add(kind)
+        import_name = entry.get("import_name")
+        if not isinstance(import_name, str) or not import_name:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} has invalid import_name"
+            )
+        if import_name not in seen_imports:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} references unknown import "
+                f"{import_name!r}"
+            )
+        op_loop_variant = entry.get("op_loop_variant")
+        if op_loop_variant not in NUMERIC_OP_LOOP_VARIANTS:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} has invalid "
+                f"op_loop_variant {op_loop_variant!r}"
+            )
+        deps = entry.get("deps")
+        if deps is None:
+            deps = [import_name]
+        else:
+            deps = _validate_string_list(
+                f"numeric_runtime_selector {kind!r}", "deps", deps
+            )
+        if import_name not in deps:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} deps must include selected "
+                f"import {import_name!r}"
+            )
+        for dep in deps:
+            if dep not in seen_imports:
+                raise WasmAbiManifestError(
+                    f"numeric_runtime_selector {kind!r} deps reference "
+                    f"unknown import {dep!r}"
+                )
+        entry["deps"] = deps
+        lir_variant = entry.get("lir_variant")
+        lir_operand_count = entry.get("lir_operand_count")
+        if lir_variant is None:
+            if lir_operand_count is not None:
+                raise WasmAbiManifestError(
+                    f"numeric_runtime_selector {kind!r} cannot define "
+                    "lir_operand_count without lir_variant"
+                )
+            continue
+        if not isinstance(lir_variant, str) or lir_variant not in lir_import_by_variant:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} has invalid "
+                f"lir_variant {lir_variant!r}"
+            )
+        if lir_import_by_variant[lir_variant] != import_name:
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} import {import_name!r} "
+                f"does not match lir_variant {lir_variant!r} import "
+                f"{lir_import_by_variant[lir_variant]!r}"
+            )
+        if lir_operand_count is not None and (
+            not isinstance(lir_operand_count, int) or lir_operand_count < 0
+        ):
+            raise WasmAbiManifestError(
+                f"numeric_runtime_selector {kind!r} has invalid "
+                "lir_operand_count"
+            )
+    return selectors
+
+
+def _expand_numeric_runtime_selector_op_deps(
+    data: dict,
+    selectors: list[dict],
+) -> list[dict]:
+    raw_op_deps = data.get("op_import_dep", [])
+    if not isinstance(raw_op_deps, list):
+        raise WasmAbiManifestError("op_import_dep must be a list of tables")
+    selector_deps = {entry["kind"]: entry["deps"] for entry in selectors}
+    expanded: list[dict] = []
+    for idx, entry in enumerate(raw_op_deps):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(f"op_import_dep entry {idx} must be a table")
+        kind = entry.get("kind")
+        if entry.get("_derived_from") == "numeric_runtime_selector":
+            continue
+        if kind in selector_deps:
+            raise WasmAbiManifestError(
+                f"op_import_dep {kind!r} is owned by numeric_runtime_selector"
+            )
+        expanded.append(entry)
+    for kind, deps in selector_deps.items():
+        expanded.append(
+            {
+                "kind": kind,
+                "deps": deps,
+                "_derived_from": "numeric_runtime_selector",
+            }
+        )
     return expanded
 
 
@@ -988,6 +1138,17 @@ def validate_loaded_manifest(data: dict) -> dict:
             "method_ic_selector must declare exactly the method/super arity grid; "
             f"missing={missing}, extra={extra}"
         )
+
+    numeric_runtime_selectors = _validate_numeric_runtime_selectors(
+        data,
+        seen_imports,
+        lir_import_by_variant,
+    )
+    data["numeric_runtime_selector"] = numeric_runtime_selectors
+    data["op_import_dep"] = _expand_numeric_runtime_selector_op_deps(
+        data,
+        numeric_runtime_selectors,
+    )
 
     op_import_deps = data.get("op_import_dep", [])
     if not isinstance(op_import_deps, list):
@@ -1560,6 +1721,7 @@ def _render_rs_mod() -> str:
             "mod imports;\n",
             "mod lir_runtime_calls;\n",
             "mod method_ic_selector;\n",
+            "mod numeric_runtime_selector;\n",
             "mod object_new_bound_selector;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
@@ -1588,6 +1750,10 @@ def _render_rs_mod() -> str:
             "};\n",
             "pub(crate) use method_ic_selector::{\n",
             "    wasm_method_ic_selection, WasmMethodIcFamily, WasmMethodIcSelection,\n",
+            "};\n",
+            "pub(crate) use numeric_runtime_selector::{\n",
+            "    wasm_numeric_runtime_selection, WasmNumericOpLoopKind,\n",
+            "    WasmNumericRuntimeSelection,\n",
             "};\n",
             "pub(crate) use object_new_bound_selector::{\n",
             "    wasm_object_new_bound_selection, WasmObjectNewBoundPayload,\n",
@@ -1922,6 +2088,11 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
     op_loop_lir_entries = [
         entry for entry in op_loop_entries if "lir_variant" in entry
     ]
+    numeric_lir_entries = [
+        entry
+        for entry in data.get("numeric_runtime_selector", [])
+        if "lir_variant" in entry and "lir_operand_count" in entry
+    ]
     lines: list[str] = [_header("//")]
     lines.extend(
         [
@@ -1992,6 +2163,15 @@ def _render_rs_lir_runtime_calls(data: dict) -> str:
             ]
         )
     for entry in op_loop_lir_entries:
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(LirFixedRuntimeCall {{\n",
+                f"            call: LirRuntimeCall::{entry['lir_variant']},\n",
+                f"            operand_count: {entry['lir_operand_count']},\n",
+                "        }),\n",
+            ]
+        )
+    for entry in numeric_lir_entries:
         lines.extend(
             [
                 f"        \"{entry['kind']}\" => Some(LirFixedRuntimeCall {{\n",
@@ -2342,6 +2522,99 @@ def _render_rs_method_ic_selector(data: dict) -> str:
     lines.extend(
         [
             "        _ => unreachable!(\"method IC selector grid is generated exhaustively\"),\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
+def _render_rs_numeric_runtime_selector(data: dict) -> str:
+    selectors = data.get("numeric_runtime_selector", [])
+    lines: list[str] = [_header("//")]
+    lines.extend(
+        [
+            "use super::lir_runtime_calls::LirRuntimeCall;\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmNumericOpLoopKind {\n",
+        ]
+    )
+    for variant in NUMERIC_OP_LOOP_VARIANTS:
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmNumericRuntimeSelection {\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) op_loop_kind: WasmNumericOpLoopKind,\n",
+            "    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct WasmNumericRuntimeSelectorSpec {\n",
+            "    pub(crate) kind: &'static str,\n",
+            "    pub(crate) selection: WasmNumericRuntimeSelection,\n",
+            "    pub(crate) deps: &'static [&'static str],\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpec] = &[\n",
+        ]
+    )
+    for entry in selectors:
+        lir_call = (
+            "None"
+            if entry.get("lir_variant") is None
+            else f"Some(LirRuntimeCall::{entry['lir_variant']})"
+        )
+        lines.extend(
+            [
+                "    WasmNumericRuntimeSelectorSpec {\n",
+                f"        kind: \"{entry['kind']}\",\n",
+                "        selection: WasmNumericRuntimeSelection {\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
+                f"            lir_runtime_call: {lir_call},\n",
+                "        },\n",
+                "        deps: &[\n",
+            ]
+        )
+        for dep in entry["deps"]:
+            lines.append(f"            \"{dep}\",\n")
+        lines.extend(
+            [
+                "        ],\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn wasm_numeric_runtime_selection(\n",
+            "    kind: &str,\n",
+            ") -> Option<WasmNumericRuntimeSelection> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in selectors:
+        lir_call = (
+            "None"
+            if entry.get("lir_variant") is None
+            else f"Some(LirRuntimeCall::{entry['lir_variant']})"
+        )
+        lines.extend(
+            [
+                f"        \"{entry['kind']}\" => Some(WasmNumericRuntimeSelection {{\n",
+                f"            import_name: \"{entry['import_name']}\",\n",
+                f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
+                f"            lir_runtime_call: {lir_call},\n",
+                "        }),\n",
+            ]
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
             "    }\n",
             "}\n",
         ]
@@ -2703,6 +2976,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "imports.rs": _render_rs_imports(data),
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data),
         "method_ic_selector.rs": _render_rs_method_ic_selector(data),
+        "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(data),
         "object_new_bound_selector.rs": _render_rs_object_new_bound_selector(data),
         "runtime_surface.rs": _render_rs_runtime_surface(data),
         "runtime_callables.rs": _render_rs_runtime_callables(data),
@@ -2876,6 +3150,22 @@ def render_py(data: dict) -> str:
         lines.append(
             f'    ("{entry["family"]}", {entry["extra_arg_count"]}, '
             f'"{entry["import_name"]}"),\n'
+        )
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_NUMERIC_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None, int | None, tuple[str, ...]], ...] = (\n"
+    )
+    for entry in data.get("numeric_runtime_selector", []):
+        lir_variant = entry.get("lir_variant")
+        lir_variant_repr = "None" if lir_variant is None else f'"{lir_variant}"'
+        lir_operand_count = entry.get("lir_operand_count")
+        lir_operand_count_repr = (
+            "None" if lir_operand_count is None else str(lir_operand_count)
+        )
+        lines.append(
+            f'    ("{entry["kind"]}", "{entry["import_name"]}", '
+            f'"{entry["op_loop_variant"]}", {lir_variant_repr}, '
+            f'{lir_operand_count_repr}, {_py_tuple(entry["deps"])}),\n'
         )
     lines.append(")\n\n")
     lines.append("WASM_REQUIRED_RUNTIME_IMPORT_PREFIXES: tuple[str, ...] = (\n")

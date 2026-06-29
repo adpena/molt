@@ -10,6 +10,7 @@ mod container_runtime_selector;
 mod imports;
 mod lir_runtime_calls;
 mod method_ic_selector;
+mod numeric_runtime_selector;
 mod object_new_bound_selector;
 mod pure_profile;
 mod runtime_callables;
@@ -36,6 +37,9 @@ pub(crate) use lir_runtime_calls::{
 };
 pub(crate) use method_ic_selector::{
     WasmMethodIcFamily, WasmMethodIcSelection, wasm_method_ic_selection,
+};
+pub(crate) use numeric_runtime_selector::{
+    WasmNumericOpLoopKind, WasmNumericRuntimeSelection, wasm_numeric_runtime_selection,
 };
 pub(crate) use object_new_bound_selector::{
     WasmObjectNewBoundPayload, WasmObjectNewBoundSelection, wasm_object_new_bound_selection,

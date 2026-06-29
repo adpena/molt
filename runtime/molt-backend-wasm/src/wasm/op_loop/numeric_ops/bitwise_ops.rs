@@ -6,6 +6,7 @@ use super::common::{
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
 use crate::wasm_values::{
@@ -15,48 +16,31 @@ use crate::wasm_values::{
 use std::collections::BTreeMap;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
-#[derive(Clone, Copy)]
-enum SimpleBitwiseOp {
-    Or,
-    And,
-    Xor,
-}
-
-impl SimpleBitwiseOp {
-    fn from_kind(kind: &str) -> Option<(Self, &'static str)> {
-        match kind {
-            "bit_or" => Some((Self::Or, "bit_or")),
-            "inplace_bit_or" => Some((Self::Or, "inplace_bit_or")),
-            "bit_and" => Some((Self::And, "bit_and")),
-            "inplace_bit_and" => Some((Self::And, "inplace_bit_and")),
-            "bit_xor" => Some((Self::Xor, "bit_xor")),
-            "inplace_bit_xor" => Some((Self::Xor, "inplace_bit_xor")),
-            _ => None,
-        }
-    }
-
-    fn emit_i64(self, func: &mut Function) {
-        match self {
-            Self::Or => func.instruction(&Instruction::I64Or),
-            Self::And => func.instruction(&Instruction::I64And),
-            Self::Xor => func.instruction(&Instruction::I64Xor),
-        };
-    }
+fn emit_i64_bitwise(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
+    match op_loop_kind {
+        WasmNumericOpLoopKind::BitOr => func.instruction(&Instruction::I64Or),
+        WasmNumericOpLoopKind::BitAnd => func.instruction(&Instruction::I64And),
+        WasmNumericOpLoopKind::BitXor => func.instruction(&Instruction::I64Xor),
+        _ => unreachable!("non-bitwise numeric selector routed to bitwise emitter"),
+    };
 }
 
 #[allow(unused_variables)]
 pub(super) fn emit_bitwise_numeric_op(
     func: &mut Function,
     op: &OpIR,
+    selection: WasmNumericRuntimeSelection,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     const_cache: &ConstantCache,
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-) -> bool {
-    if let Some((bitwise_op, import_name)) = SimpleBitwiseOp::from_kind(op.kind.as_str()) {
-        emit_simple_bitwise_op(
+) {
+    match selection.op_loop_kind {
+        WasmNumericOpLoopKind::BitAnd
+        | WasmNumericOpLoopKind::BitOr
+        | WasmNumericOpLoopKind::BitXor => emit_simple_bitwise_op(
             func,
             op,
             import_ids,
@@ -65,61 +49,45 @@ pub(super) fn emit_bitwise_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
-            bitwise_op,
-            import_name,
-        );
-        return true;
-    }
-
-    match op.kind.as_str() {
-        "invert" => emit_boxed_unary_result(func, op, import_ids, locals, "invert", reloc_enabled),
-        "neg" | "unary_neg" => {
-            emit_boxed_unary_result(func, op, import_ids, locals, "neg", reloc_enabled)
-        }
-        "pos" | "unary_pos" => {
-            emit_boxed_unary_result(func, op, import_ids, locals, "pos", reloc_enabled)
-        }
-        "lshift" | "shl" | "inplace_lshift" => {
-            let import_name = if op.kind == "inplace_lshift" {
-                "inplace_lshift"
-            } else {
-                "lshift"
-            };
-            emit_shift_op(
+            selection.op_loop_kind,
+            selection.import_name,
+        ),
+        WasmNumericOpLoopKind::Invert | WasmNumericOpLoopKind::Neg | WasmNumericOpLoopKind::Pos => {
+            emit_boxed_unary_result(
                 func,
                 op,
                 import_ids,
                 locals,
-                const_cache,
-                scalar_plan,
+                selection.import_name,
                 reloc_enabled,
-                known_raw_ints,
-                import_name,
-                ShiftDirection::Left,
-            );
+            )
         }
-        "rshift" | "shr" | "inplace_rshift" => {
-            let import_name = if op.kind == "inplace_rshift" {
-                "inplace_rshift"
-            } else {
-                "rshift"
-            };
-            emit_shift_op(
-                func,
-                op,
-                import_ids,
-                locals,
-                const_cache,
-                scalar_plan,
-                reloc_enabled,
-                known_raw_ints,
-                import_name,
-                ShiftDirection::Right,
-            );
-        }
-        _ => return false,
+        WasmNumericOpLoopKind::LShift => emit_shift_op(
+            func,
+            op,
+            import_ids,
+            locals,
+            const_cache,
+            scalar_plan,
+            reloc_enabled,
+            known_raw_ints,
+            selection.import_name,
+            ShiftDirection::Left,
+        ),
+        WasmNumericOpLoopKind::RShift => emit_shift_op(
+            func,
+            op,
+            import_ids,
+            locals,
+            const_cache,
+            scalar_plan,
+            reloc_enabled,
+            known_raw_ints,
+            selection.import_name,
+            ShiftDirection::Right,
+        ),
+        _ => unreachable!("non-bitwise numeric selector routed to bitwise emitter"),
     }
-    true
 }
 
 fn emit_simple_bitwise_op(
@@ -131,7 +99,7 @@ fn emit_simple_bitwise_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
-    bitwise_op: SimpleBitwiseOp,
+    bitwise_op: WasmNumericOpLoopKind,
     import_name: &str,
 ) {
     let operands = binary_operands(op, locals);
@@ -153,7 +121,7 @@ fn emit_simple_bitwise_op(
                     const_cache,
                     known_raw_ints,
                 );
-                bitwise_op.emit_i64(func);
+                emit_i64_bitwise(func, bitwise_op);
                 func.instruction(&Instruction::LocalSet(temps.result));
                 emit_inline_int_result_or_boxed(
                     func,
