@@ -134,7 +134,7 @@ pub fn class_set_new(_py: &CoreGilToken, class_bits: u64, new_fn_bits: u64) {
 
 pub fn alloc_function(_py: &CoreGilToken, fn_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let ptr = crate::alloc_function_obj(py, fn_ptr, arity);
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }

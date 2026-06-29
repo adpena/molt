@@ -190,7 +190,7 @@ pub extern "C" fn molt_itertools_class_set_new(class_bits: u64, new_fn_bits: u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
