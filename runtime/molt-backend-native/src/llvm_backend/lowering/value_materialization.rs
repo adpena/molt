@@ -1141,6 +1141,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
+    pub(super) fn ensure_runtime_import(
+        &self,
+        signature: RuntimeImportSignature,
+    ) -> FunctionValue<'ctx> {
+        match signature.return_abi {
+            RuntimeReturnAbi::I64 => {
+                self.ensure_runtime_i64_fn(signature.name, signature.param_count)
+            }
+            RuntimeReturnAbi::Void => {
+                self.ensure_runtime_void_fn(signature.name, signature.param_count)
+            }
+        }
+    }
+
     pub(super) fn unbox_ptr_bits(
         &self,
         bits: inkwell::values::IntValue<'ctx>,
@@ -1176,7 +1190,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         call_name: &str,
     ) -> BasicValueEnum<'ctx> {
         let i64_ty = self.backend.context.i64_type();
-        let task_new_fn = self.ensure_runtime_i64_fn("molt_task_new", 3);
+        let task_new_fn = self.ensure_runtime_import(MOLT_TASK_NEW);
         let task_bits = self
             .backend
             .builder
@@ -1206,7 +1220,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_int_to_ptr(task_ptr_bits, ptr_ty, "task_obj_ptr")
             .unwrap();
         let payload_base_words = (payload_base / 8) as usize;
-        let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+        let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
         for (idx, &arg_id) in payload_operands.iter().enumerate() {
             let arg_bits = self.materialize_dynbox_operand(arg_id);
             let field_ptr = unsafe {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_import_abi::{MOLT_DEC_REF, NATIVE_RUNTIME_HELPER_IMPORTS};
 
 #[test]
 fn native_compiles_canonical_bare_get_attr() {
@@ -68,11 +69,35 @@ fn native_backend_can_opt_in_trace_imports() {
 fn native_backend_import_ids_are_cached_by_symbol() {
     let mut backend = SimpleBackend::new();
 
-    let first = backend.import_func_id("molt_dec_ref", &[types::I64], &[]);
-    let second = backend.import_func_id("molt_dec_ref", &[types::I64], &[]);
+    let first = SimpleBackend::import_runtime_func_id_split(
+        &mut backend.module,
+        &mut backend.import_ids,
+        MOLT_DEC_REF,
+    );
+    let second = SimpleBackend::import_runtime_func_id_split(
+        &mut backend.module,
+        &mut backend.import_ids,
+        MOLT_DEC_REF,
+    );
 
     assert_eq!(first, second);
     assert_eq!(backend.import_ids.len(), 1);
+}
+
+#[test]
+fn native_runtime_helper_import_descriptors_are_unique() {
+    let names: BTreeSet<&str> = NATIVE_RUNTIME_HELPER_IMPORTS
+        .iter()
+        .map(|signature| signature.name)
+        .collect();
+
+    assert_eq!(names.len(), NATIVE_RUNTIME_HELPER_IMPORTS.len());
+    assert!(names.contains("molt_inc_ref_obj"));
+    assert!(names.contains("molt_dec_ref_obj"));
+    assert!(names.contains("molt_task_new"));
+    assert!(names.contains("molt_cancel_token_get_current"));
+    assert!(names.contains("molt_task_register_token_owned"));
+    assert!(names.contains("molt_asyncgen_new"));
 }
 
 #[test]

@@ -121,6 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let tramp_id = SimpleBackend::ensure_trampoline(
                 &mut *module,
                 &mut *trampoline_ids,
+                &mut *import_ids,
                 func_name,
                 Linkage::Import,
                 TrampolineSpec {
@@ -201,6 +202,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let tramp_id = SimpleBackend::ensure_trampoline(
                 &mut *module,
                 &mut *trampoline_ids,
+                &mut *import_ids,
                 func_name,
                 Linkage::Export,
                 TrampolineSpec {
@@ -306,6 +308,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let tramp_id = SimpleBackend::ensure_trampoline(
                 &mut *module,
                 &mut *trampoline_ids,
+                &mut *import_ids,
                 func_name,
                 Linkage::Export,
                 TrampolineSpec {

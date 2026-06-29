@@ -1,6 +1,7 @@
 use super::*;
 use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
+use crate::runtime_import_abi::{MOLT_DEC_REF, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ};
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
 // (decomposition program M1). Scalar carrier/boxing helpers live in
@@ -449,32 +450,26 @@ impl SimpleBackend {
             BTreeSet::new()
         };
 
-        let _local_dec_ref = import_func_ref(
+        let _local_dec_ref = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            "molt_dec_ref",
-            &[types::I64],
-            &[],
+            MOLT_DEC_REF,
         );
-        let local_dec_ref_obj = import_func_ref(
+        let local_dec_ref_obj = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            "molt_dec_ref_obj",
-            &[types::I64],
-            &[],
+            MOLT_DEC_REF_OBJ,
         );
-        let local_inc_ref_obj = import_func_ref(
+        let local_inc_ref_obj = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
-            "molt_inc_ref_obj",
-            &[types::I64],
-            &[],
+            MOLT_INC_REF_OBJ,
         );
 
         // Import the exception-pending function for check_exception.

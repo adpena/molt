@@ -28,6 +28,14 @@
 //!   neither read nor write memory — pure functions of their arguments.
 //!   Enables full redundancy elimination.
 
+#[cfg(all(feature = "llvm", test))]
+use crate::runtime_import_abi::TRAMPOLINE_RUNTIME_IMPORTS;
+#[cfg(feature = "llvm")]
+use crate::runtime_import_abi::{
+    MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ,
+    MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED, RuntimeImportSignature, RuntimeReturnAbi,
+    runtime_sig,
+};
 #[cfg(feature = "llvm")]
 use inkwell::attributes::{Attribute, AttributeLoc};
 #[cfg(feature = "llvm")]
@@ -108,35 +116,6 @@ fn add_memory_read(ctx: &Context, func: FunctionValue<'_>) {
     );
 }
 
-#[cfg(feature = "llvm")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeReturnAbi {
-    I64,
-    Void,
-}
-
-#[cfg(feature = "llvm")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeImportSignature {
-    pub name: &'static str,
-    /// `runtime_sig` facts are exact all-`i64` parameter ABI facts.
-    pub param_count: usize,
-    pub return_abi: RuntimeReturnAbi,
-}
-
-#[cfg(feature = "llvm")]
-const fn runtime_sig(
-    name: &'static str,
-    param_count: usize,
-    return_abi: RuntimeReturnAbi,
-) -> RuntimeImportSignature {
-    RuntimeImportSignature {
-        name,
-        param_count,
-        return_abi,
-    }
-}
-
 /// Runtime symbols that lowering may declare on demand, plus fixed-table symbols
 /// whose return ABI is needed by generic preserved-op lowering.
 ///
@@ -145,7 +124,7 @@ const fn runtime_sig(
 /// The table exists to make the remaining conservative surface explicit and to
 /// prevent typo/new-symbol drift from silently creating extern declarations.
 #[cfg(feature = "llvm")]
-pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
+pub(crate) const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_abs_builtin", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_aiter", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_ascii_from_obj", 1, RuntimeReturnAbi::I64),
@@ -254,7 +233,7 @@ pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_str_from_obj", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_string_join", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_super_new", 2, RuntimeReturnAbi::I64),
-    runtime_sig("molt_task_new", 3, RuntimeReturnAbi::I64),
+    MOLT_TASK_NEW,
     runtime_sig("molt_tuple_from_list", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_type_of", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_unpack_sequence", 3, RuntimeReturnAbi::I64),
@@ -298,7 +277,7 @@ pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_alloc_class_trusted", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_anext", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_asyncgen_locals_register", 3, RuntimeReturnAbi::I64),
-    runtime_sig("molt_asyncgen_new", 1, RuntimeReturnAbi::I64),
+    MOLT_ASYNCGEN_NEW,
     runtime_sig("molt_asyncgen_shutdown", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_block_on", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_bound_method_new", 2, RuntimeReturnAbi::I64),
@@ -340,7 +319,7 @@ pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_cancel_token_cancel", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_token_clone", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_token_drop", 1, RuntimeReturnAbi::I64),
-    runtime_sig("molt_cancel_token_get_current", 0, RuntimeReturnAbi::I64),
+    MOLT_CANCEL_TOKEN_GET_CURRENT,
     runtime_sig("molt_cancel_token_is_cancelled", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_token_new", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_cancel_token_set_current", 1, RuntimeReturnAbi::I64),
@@ -466,7 +445,7 @@ pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_string_strip", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_string_upper", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_taq_ingest_line", 3, RuntimeReturnAbi::I64),
-    runtime_sig("molt_task_register_token_owned", 2, RuntimeReturnAbi::I64),
+    MOLT_TASK_REGISTER_TOKEN_OWNED,
     runtime_sig("molt_thread_submit", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_trace_enter_slot", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_trace_exit", 0, RuntimeReturnAbi::I64),
@@ -476,7 +455,7 @@ pub const CLASSIFIED_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
 ];
 
 #[cfg(feature = "llvm")]
-pub fn classified_runtime_import_return_abi(
+pub(crate) fn classified_runtime_import_return_abi(
     name: &str,
     param_count: usize,
 ) -> Option<RuntimeReturnAbi> {
@@ -487,12 +466,25 @@ pub fn classified_runtime_import_return_abi(
 }
 
 #[cfg(feature = "llvm")]
-pub fn is_classified_runtime_import(
+pub(crate) fn is_classified_runtime_import(
     name: &str,
     param_count: usize,
     return_abi: RuntimeReturnAbi,
 ) -> bool {
     classified_runtime_import_return_abi(name, param_count) == Some(return_abi)
+}
+
+#[cfg(feature = "llvm")]
+fn runtime_function_type<'ctx>(
+    ctx: &'ctx Context,
+    signature: RuntimeImportSignature,
+) -> FunctionType<'ctx> {
+    let i64_ty = ctx.i64_type();
+    let params = vec![i64_ty.into(); signature.param_count];
+    match signature.return_abi {
+        RuntimeReturnAbi::I64 => i64_ty.fn_type(&params, false),
+        RuntimeReturnAbi::Void => ctx.void_type().fn_type(&params, false),
+    }
 }
 
 /// Declare a runtime symbol that is not in the fixed import table yet.
@@ -502,7 +494,7 @@ pub fn is_classified_runtime_import(
 /// Stronger facts such as `willreturn` must be encoded by adding the symbol to
 /// `declare_runtime_functions` so the central table owns that proof.
 #[cfg(feature = "llvm")]
-pub fn declare_conservative_runtime_function<'ctx>(
+pub(crate) fn declare_conservative_runtime_function<'ctx>(
     ctx: &'ctx Context,
     module: &Module<'ctx>,
     name: &str,
@@ -524,7 +516,7 @@ pub fn declare_conservative_runtime_function<'ctx>(
 /// Each function is annotated with LLVM attributes to enable
 /// interprocedural optimization.  See module-level documentation.
 #[cfg(feature = "llvm")]
-pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) {
+pub(crate) fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) {
     let i64_ty = ctx.i64_type();
     let i32_ty = ctx.i32_type();
     let void_ty = ctx.void_type();
@@ -699,17 +691,16 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // These mutate refcount fields in heap objects.  No memory attribute.
     // dec_ref may trigger deallocation chains but always returns.
     {
-        let fn_ty = void_ty.fn_type(&[i64_ty.into()], false);
         let inc = module.add_function(
-            "molt_inc_ref_obj",
-            fn_ty,
+            MOLT_INC_REF_OBJ.name,
+            runtime_function_type(ctx, MOLT_INC_REF_OBJ),
             Some(inkwell::module::Linkage::External),
         );
         add_nounwind(ctx, inc);
         add_willreturn(ctx, inc);
         let dec = module.add_function(
-            "molt_dec_ref_obj",
-            fn_ty,
+            MOLT_DEC_REF_OBJ.name,
+            runtime_function_type(ctx, MOLT_DEC_REF_OBJ),
             Some(inkwell::module::Linkage::External),
         );
         add_nounwind(ctx, dec);
@@ -1491,6 +1482,52 @@ mod tests {
         assert!(module.get_function("molt_inplace_add").is_some());
         assert!(module.get_function("molt_inplace_sub").is_some());
         assert!(module.get_function("molt_inplace_mul").is_some());
+    }
+
+    #[test]
+    fn shared_runtime_helper_imports_have_llvm_abi_authority() {
+        let ctx = Context::create();
+        let module = ctx.create_module("test_shared_runtime_helpers");
+        declare_runtime_functions(&ctx, &module);
+
+        for signature in TRAMPOLINE_RUNTIME_IMPORTS {
+            let func = module.get_function(signature.name).unwrap_or_else(|| {
+                assert_eq!(
+                    classified_runtime_import_return_abi(signature.name, signature.param_count),
+                    Some(signature.return_abi),
+                    "{} should be declared or classified",
+                    signature.name
+                );
+                declare_conservative_runtime_function(
+                    &ctx,
+                    &module,
+                    signature.name,
+                    runtime_function_type(&ctx, *signature),
+                )
+            });
+            assert_eq!(func.count_params() as usize, signature.param_count);
+            match signature.return_abi {
+                RuntimeReturnAbi::I64 => {
+                    let ret_ty = func
+                        .get_type()
+                        .get_return_type()
+                        .unwrap_or_else(|| panic!("{} should return i64", signature.name));
+                    assert!(
+                        ret_ty.is_int_type(),
+                        "{} should return an integer",
+                        signature.name
+                    );
+                    assert_eq!(ret_ty.into_int_type().get_bit_width(), 64);
+                }
+                RuntimeReturnAbi::Void => {
+                    assert!(
+                        func.get_type().get_return_type().is_none(),
+                        "{} should return void",
+                        signature.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]

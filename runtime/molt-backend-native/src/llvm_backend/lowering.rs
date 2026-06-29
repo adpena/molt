@@ -21,11 +21,15 @@ use molt_codegen_abi as nanbox;
 use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::runtime_imports::{
-    RuntimeReturnAbi, classified_runtime_import_return_abi, declare_conservative_runtime_function,
+    classified_runtime_import_return_abi, declare_conservative_runtime_function,
     is_classified_runtime_import,
 };
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
+#[cfg(feature = "llvm")]
+use crate::runtime_import_abi::{
+    MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, MOLT_TASK_NEW, RuntimeImportSignature, RuntimeReturnAbi,
+};
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
 #[cfg(feature = "llvm")]

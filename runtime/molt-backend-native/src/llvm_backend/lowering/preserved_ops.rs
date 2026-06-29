@@ -1733,7 +1733,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // Take owned ownership of the borrowed attribute result (mirrors
                 // the native get-attr ref-adjust). `molt_inc_ref_obj` is a no-op
                 // for NaN-boxed immediates, so this is safe for any tag.
-                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+                let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
                 self.backend
                     .builder
                     .build_call(
@@ -1761,7 +1761,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 let src_val = self.resolve(src_id);
                 let src_bits = self.ensure_i64(src_val);
-                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+                let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
                 self.backend
                     .builder
                     .build_call(inc_fn, &[src_bits.into()], "")
@@ -1790,7 +1790,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 let src_val = self.resolve(src_id);
                 let src_bits = self.ensure_i64(src_val);
-                let dec_fn = self.ensure_runtime_void_fn("molt_dec_ref_obj", 1);
+                let dec_fn = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
                 self.backend
                     .builder
                     .build_call(dec_fn, &[src_bits.into()], "")

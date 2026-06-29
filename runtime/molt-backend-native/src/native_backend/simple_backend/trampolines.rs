@@ -1,10 +1,15 @@
 use super::*;
+use crate::runtime_import_abi::{
+    MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_INC_REF_OBJ, MOLT_TASK_NEW,
+    MOLT_TASK_REGISTER_TOKEN_OWNED,
+};
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
     pub(crate) fn ensure_trampoline(
         module: &mut ObjectModule,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
+        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         func_name: &str,
         linkage: Linkage,
         spec: TrampolineSpec,
@@ -83,11 +88,8 @@ impl SimpleBackend {
                     panic!("generator closure size too small for trampoline");
                 }
 
-                let mut inc_ref_obj_sig = module.make_signature();
-                inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
-                let inc_ref_obj_callee = module
-                    .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
-                    .unwrap();
+                let inc_ref_obj_callee =
+                    Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
                 let local_inc_ref_obj =
                     module.declare_func_in_func(inc_ref_obj_callee, builder.func);
 
@@ -100,14 +102,8 @@ impl SimpleBackend {
                 let poll_ref = module.declare_func_in_func(poll_id, builder.func);
                 let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
 
-                let mut task_sig = module.make_signature();
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.returns.push(AbiParam::new(types::I64));
-                let task_callee = module
-                    .declare_function("molt_task_new", Linkage::Import, &task_sig)
-                    .unwrap();
+                let task_callee =
+                    Self::import_runtime_func_id_split(module, import_ids, MOLT_TASK_NEW);
                 let task_local = module.declare_func_in_func(task_callee, builder.func);
                 let size_val = builder.ins().iconst(types::I64, closure_size);
                 let kind_val = builder.ins().iconst(types::I64, TASK_KIND_GENERATOR);
@@ -162,14 +158,8 @@ impl SimpleBackend {
                 let poll_ref = module.declare_func_in_func(poll_id, builder.func);
                 let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
 
-                let mut task_sig = module.make_signature();
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.returns.push(AbiParam::new(types::I64));
-                let task_callee = module
-                    .declare_function("molt_task_new", Linkage::Import, &task_sig)
-                    .unwrap();
+                let task_callee =
+                    Self::import_runtime_func_id_split(module, import_ids, MOLT_TASK_NEW);
                 let task_local = module.declare_func_in_func(task_callee, builder.func);
                 let size_val = builder.ins().iconst(types::I64, closure_size);
                 let kind_val = builder.ins().iconst(types::I64, TASK_KIND_COROUTINE);
@@ -178,11 +168,8 @@ impl SimpleBackend {
                     .call(task_local, &[poll_addr, size_val, kind_val]);
                 let obj = builder.inst_results(call)[0];
                 if payload_slots > 0 {
-                    let mut inc_ref_obj_sig = module.make_signature();
-                    inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
-                    let inc_ref_obj_callee = module
-                        .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
-                        .unwrap();
+                    let inc_ref_obj_callee =
+                        Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
                     let local_inc_ref_obj =
                         module.declare_func_in_func(inc_ref_obj_callee, builder.func);
                     let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
@@ -213,22 +200,20 @@ impl SimpleBackend {
                     }
                 }
 
-                let mut get_sig = module.make_signature();
-                get_sig.returns.push(AbiParam::new(types::I64));
-                let get_callee = module
-                    .declare_function("molt_cancel_token_get_current", Linkage::Import, &get_sig)
-                    .unwrap();
+                let get_callee = Self::import_runtime_func_id_split(
+                    module,
+                    import_ids,
+                    MOLT_CANCEL_TOKEN_GET_CURRENT,
+                );
                 let get_local = module.declare_func_in_func(get_callee, builder.func);
                 let get_call = builder.ins().call(get_local, &[]);
                 let current_token = builder.inst_results(get_call)[0];
 
-                let mut reg_sig = module.make_signature();
-                reg_sig.params.push(AbiParam::new(types::I64));
-                reg_sig.params.push(AbiParam::new(types::I64));
-                reg_sig.returns.push(AbiParam::new(types::I64));
-                let reg_callee = module
-                    .declare_function("molt_task_register_token_owned", Linkage::Import, &reg_sig)
-                    .unwrap();
+                let reg_callee = Self::import_runtime_func_id_split(
+                    module,
+                    import_ids,
+                    MOLT_TASK_REGISTER_TOKEN_OWNED,
+                );
                 let reg_local = module.declare_func_in_func(reg_callee, builder.func);
                 builder.ins().call(reg_local, &[obj, current_token]);
 
@@ -244,11 +229,8 @@ impl SimpleBackend {
                     panic!("async generator closure size too small for trampoline");
                 }
 
-                let mut inc_ref_obj_sig = module.make_signature();
-                inc_ref_obj_sig.params.push(AbiParam::new(types::I64));
-                let inc_ref_obj_callee = module
-                    .declare_function("molt_inc_ref_obj", Linkage::Import, &inc_ref_obj_sig)
-                    .unwrap();
+                let inc_ref_obj_callee =
+                    Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
                 let local_inc_ref_obj =
                     module.declare_func_in_func(inc_ref_obj_callee, builder.func);
 
@@ -261,14 +243,8 @@ impl SimpleBackend {
                 let poll_ref = module.declare_func_in_func(poll_id, builder.func);
                 let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
 
-                let mut task_sig = module.make_signature();
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.params.push(AbiParam::new(types::I64));
-                task_sig.returns.push(AbiParam::new(types::I64));
-                let task_callee = module
-                    .declare_function("molt_task_new", Linkage::Import, &task_sig)
-                    .unwrap();
+                let task_callee =
+                    Self::import_runtime_func_id_split(module, import_ids, MOLT_TASK_NEW);
                 let task_local = module.declare_func_in_func(task_callee, builder.func);
                 let size_val = builder.ins().iconst(types::I64, closure_size);
                 let kind_val = builder.ins().iconst(types::I64, TASK_KIND_GENERATOR);
@@ -303,12 +279,8 @@ impl SimpleBackend {
                     builder.ins().call(local_inc_ref_obj, &[arg_val]);
                 }
 
-                let mut asyncgen_sig = module.make_signature();
-                asyncgen_sig.params.push(AbiParam::new(types::I64));
-                asyncgen_sig.returns.push(AbiParam::new(types::I64));
-                let asyncgen_callee = module
-                    .declare_function("molt_asyncgen_new", Linkage::Import, &asyncgen_sig)
-                    .unwrap();
+                let asyncgen_callee =
+                    Self::import_runtime_func_id_split(module, import_ids, MOLT_ASYNCGEN_NEW);
                 let asyncgen_local = module.declare_func_in_func(asyncgen_callee, builder.func);
                 let asyncgen_call = builder.ins().call(asyncgen_local, &[obj]);
                 let asyncgen_obj = builder.inst_results(asyncgen_call)[0];

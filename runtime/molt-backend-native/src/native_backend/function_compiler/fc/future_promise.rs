@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::runtime_import_abi::MOLT_TASK_REGISTER_TOKEN_OWNED;
 
 /// Single-source kind authority for [`handle_future_promise_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -302,12 +303,10 @@ pub(in crate::native_backend::function_compiler) fn handle_future_promise_op(
                 representation_plan,
             )
             .expect("Token not found");
-            let callee = SimpleBackend::import_func_id_split(
+            let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_task_register_token_owned",
-                &[types::I64, types::I64],
-                &[types::I64],
+                MOLT_TASK_REGISTER_TOKEN_OWNED,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[*task, *token]);
