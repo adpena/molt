@@ -301,14 +301,17 @@ def _scoped_lowering_input_view(
             known_modules_scope_source = known_modules
         else:
             known_modules_scope_source = known_modules_sorted
+        always_known_modules: Collection[str] = ()
+        if source_modules is not None:
+            always_known_modules = _always_known_modules(
+                known_modules_scope_source,
+                source_modules,
+            )
         scoped_known_modules = _scoped_known_modules(
             module_name,
             module_deps=module_deps,
             known_modules=known_modules_scope_source,
-            always_known_modules=_always_known_modules(
-                known_modules_scope_source,
-                source_modules if source_modules is not None else module_deps,
-            ),
+            always_known_modules=always_known_modules,
             module_dep_closures=module_dep_closures,
         )
     if (
