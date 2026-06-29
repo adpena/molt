@@ -260,6 +260,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 // SSA-last-use.
                 defines_del: attr_bool(&op.attrs, "defines_del"),
                 bound_local: attr_bool(&op.attrs, "bound_local"),
+                native_callable_export: attr_str(&op.attrs, "native_callable_export"),
+                native_callable_binding: attr_str(&op.attrs, "native_callable_binding"),
+                native_callable_symbol: attr_str(&op.attrs, "native_callable_symbol"),
+                native_callable_abi: attr_str(&op.attrs, "native_callable_abi"),
                 ..OpIR::default()
             })
         }
@@ -343,6 +347,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                         task_kind: attr_str(&op.attrs, "task_kind"),
                         container_type: attr_str(&op.attrs, "container_type"),
                         ic_index: attr_int(&op.attrs, "ic_index"),
+                        native_callable_export: attr_str(&op.attrs, "native_callable_export"),
+                        native_callable_binding: attr_str(&op.attrs, "native_callable_binding"),
+                        native_callable_symbol: attr_str(&op.attrs, "native_callable_symbol"),
+                        native_callable_abi: attr_str(&op.attrs, "native_callable_abi"),
                         ..OpIR::default()
                     });
                 }

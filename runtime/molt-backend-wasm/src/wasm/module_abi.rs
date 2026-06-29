@@ -2,6 +2,7 @@ use super::WasmBackend;
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
 use imports::WasmRuntimeImportEmission;
+use native_callables::WasmNativeCallableImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
 
 use crate::SimpleIR;
@@ -11,12 +12,14 @@ mod callable_table;
 mod finalize;
 mod host_surface;
 mod imports;
+mod native_callables;
 mod poll_table;
 mod runtime_surface;
 mod type_layout;
 
 pub(in crate::wasm) use callable_table::WasmCallableCallSiteAbi;
 use finalize::WasmModuleFinalizationInput;
+pub(in crate::wasm) use native_callables::{WasmNativeCallableImport, WasmNativeCallableImports};
 use type_layout::WasmModuleTypeLayout;
 
 impl WasmBackend {
@@ -40,8 +43,12 @@ impl WasmBackend {
         let reloc_enabled = self.options.reloc_enabled;
         let WasmRuntimeImportEmission {
             runtime_surface,
-            next_type_idx,
+            next_type_idx: next_type_idx_after_runtime,
         } = self.emit_runtime_import_surface(&ir);
+        let WasmNativeCallableImportEmission {
+            imports: native_callable_imports,
+            next_type_idx,
+        } = self.emit_native_callable_import_surface(&ir, next_type_idx_after_runtime);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
@@ -96,6 +103,7 @@ impl WasmBackend {
                 &return_alias_summaries,
             ),
             import_ids: &import_ids,
+            native_callable_imports: &native_callable_imports,
             reloc_enabled,
             multi_return_candidates: &multi_return_candidates,
             class_def_spill_offset: host_surface.class_def_spill_offset,

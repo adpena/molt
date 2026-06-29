@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import builtins as py_builtins
 import contextlib
+from dataclasses import replace
 import hashlib
 import io
 import importlib
@@ -44,6 +45,13 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import typecheck as cli_typecheck
+from molt.cli.models import (
+    _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    _ExternalNativeCallableExport,
+    _ExternalPackageNativeArtifact,
+    _ExternalPackageNativeArtifactPlan,
+)
+from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from tests.cli.process_guard import (
@@ -790,6 +798,60 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
     assert "nativepkg._native" in import_plan.known_modules
     assert "nativepkg._native" not in import_plan.module_graph
+    assert "nativepkg._native" not in import_plan.compile_modules
+
+
+def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        manifest_overrides={"python_exports": ["nativepkg.dynamic"]},
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.dynamic"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert import_plan.native_artifact_plan.artifacts
+    assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
+    assert "nativepkg._native" in import_plan.known_modules
     assert "nativepkg._native" not in import_plan.compile_modules
 
 
@@ -2287,7 +2349,7 @@ def _write_external_native_package(
     *,
     package: str = "nativepkg",
     artifact_name: str = "_native.so",
-    artifact_bytes: bytes = b"native-extension",
+    artifact_bytes: bytes | None = None,
     write_manifest: bool = True,
     checksum_override: str | None = None,
     manifest_overrides: dict[str, Any] | None = None,
@@ -2301,6 +2363,13 @@ def _write_external_native_package(
         encoding="utf-8",
     )
     artifact_path = package_dir / artifact_name
+    if artifact_bytes is None:
+        if artifact_name.endswith(".molt.wasm"):
+            artifact_bytes = _wasm_exporting_i64_unary_symbol(
+                f"PyInit_{artifact_name.split('.', 1)[0]}"
+            )
+        else:
+            artifact_bytes = b"native-extension"
     artifact_path.write_bytes(artifact_bytes)
     manifest_path = package_dir / "extension_manifest.json"
     if write_manifest:
@@ -2343,7 +2412,12 @@ def _write_external_native_artifact(
         if not parent_init.exists():
             parent_init.write_text("", encoding="utf-8")
     artifact_path = artifact_dir / (artifact_name or f"{module_parts[-1]}.so")
-    payload = artifact_bytes or f"{relative_module}-extension".encode("utf-8")
+    if artifact_bytes is not None:
+        payload = artifact_bytes
+    elif artifact_path.name.endswith(".molt.wasm"):
+        payload = _wasm_exporting_i64_unary_symbol(f"PyInit_{module_parts[-1]}")
+    else:
+        payload = f"{relative_module}-extension".encode("utf-8")
     artifact_path.write_bytes(payload)
     manifest_path = artifact_path.with_name(
         artifact_path.name + ".extension_manifest.json"
@@ -2356,6 +2430,52 @@ def _write_external_native_artifact(
     _apply_manifest_overrides(manifest, manifest_overrides)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return artifact_path, manifest_path
+
+
+def _wasm_exporting_i64_unary_symbol(
+    symbol: str,
+    *,
+    imports: tuple[str, ...] = (),
+) -> bytes:
+    def uleb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            out.append(byte | 0x80 if value else byte)
+            if not value:
+                return bytes(out)
+
+    def wasm_string(value: str) -> bytes:
+        encoded = value.encode("utf-8")
+        return uleb(len(encoded)) + encoded
+
+    def section(section_id: int, payload: bytes) -> bytes:
+        return bytes([section_id]) + uleb(len(payload)) + payload
+
+    type_section = uleb(1) + b"\x60" + uleb(1) + b"\x7e" + uleb(1) + b"\x7e"
+    import_section = b""
+    if imports:
+        import_section = section(
+            2,
+            uleb(len(imports))
+            + b"".join(
+                wasm_string("env") + wasm_string(import_name) + b"\x00" + uleb(0)
+                for import_name in imports
+            ),
+        )
+    function_section = uleb(1) + uleb(0)
+    export_section = uleb(1) + wasm_string(symbol) + b"\x00" + uleb(len(imports))
+    body = uleb(0) + b"\x42\x00\x0b"
+    code_section = uleb(1) + uleb(len(body)) + body
+    return (
+        b"\x00asm\x01\x00\x00\x00"
+        + section(1, type_section)
+        + import_section
+        + section(3, function_section)
+        + section(7, export_section)
+        + section(10, code_section)
+    )
 
 
 def _write_source_only_external_package(
@@ -2431,7 +2551,6 @@ def test_external_static_package_wasm_artifact_plan_is_manifest_led(
     external_root, artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
         artifact_name="_native.molt.wasm",
-        artifact_bytes=b"wasm-relocatable-object",
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -2469,7 +2588,7 @@ def test_external_package_artifact_specific_manifests_allow_same_directory_modul
     modules = ("_nd_image", "_ni_label")
     for module in modules:
         artifact_path = ndimage_dir / f"{module}.molt.wasm"
-        payload = f"{module}-wasm".encode("utf-8")
+        payload = _wasm_exporting_i64_unary_symbol(f"PyInit_{module}")
         artifact_path.write_bytes(payload)
         manifest = _libmolt_source_manifest_fields(
             module=f"nativepkg.ndimage.{module}",
@@ -2552,11 +2671,13 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
+    native_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
     _write_external_native_artifact(
         external_root,
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(native_symbol),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -2568,7 +2689,7 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
                     "name": "distance_transform_edt",
                     "binding": "direct_symbol",
                     "abi": "molt.forward_f32_v1",
-                    "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+                    "symbol": native_symbol,
                     "effects": ["read", "write"],
                     "deterministic": True,
                 }
@@ -2596,11 +2717,836 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
             "name": "distance_transform_edt",
             "binding": "direct_symbol",
             "abi": "molt.forward_f32_v1",
-            "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            "symbol": native_symbol,
             "effects": ["read", "write"],
             "deterministic": True,
         }
     }
+
+
+def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol("molt_nativepkg_other"),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "direct_symbol",
+                    "abi": "molt.forward_f32_v1",
+                    "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage.distance_transform_edt"},
+    )
+
+    assert plan is None
+    assert any(
+        "direct_symbol callable exports are absent from "
+        "_nd_image.molt.wasm function exports: "
+        "molt_nativepkg_ndimage_distance_transform_edt" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_closure(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.a",
+        artifact_bytes=b"archive-bytes",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "static_archive",
+            "object_closure": {"defined_symbols": [], "objects": []},
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "direct_symbol",
+                    "abi": "molt.forward_f32_v1",
+                    "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage.distance_transform_edt"},
+    )
+
+    assert plan is None
+    assert any(
+        "static_archive direct_symbol callable exports require "
+        "object_closure.defined_symbols" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    native_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.a",
+        artifact_bytes=b"archive-bytes",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "static_archive",
+            "object_closure": {"defined_symbols": [native_symbol]},
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "direct_symbol",
+                    "abi": "molt.forward_f32_v1",
+                    "symbol": native_symbol,
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage.distance_transform_edt"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert plan.native_callable_export_names() == frozenset(
+        {"nativepkg.ndimage.distance_transform_edt"}
+    )
+
+
+def test_external_native_artifact_plan_records_c_api_symbol_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("PyLong_FromLong",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyLong_FromLong", "PyArray_NDIM"],
+                "undefined_symbols": ["PyLong_FromLong"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    board = {
+        symbol.symbol: symbol.digest_payload()
+        for symbol in plan.artifacts[0].c_api_symbols
+    }
+    assert board["PyLong_FromLong"] == {
+        "symbol": "PyLong_FromLong",
+        "status": "runtime_backed",
+        "primitive_class": "numeric_scalars",
+        "source": "required_c_api_symbols+undefined_symbols",
+    }
+    assert board["PyArray_NDIM"] == {
+        "symbol": "PyArray_NDIM",
+        "status": "source_compile_only",
+        "primitive_class": "numpy_c_api",
+        "source": "required_c_api_symbols",
+    }
+
+
+def test_external_native_artifact_plan_records_required_only_numpy_c_api_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder"
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": [
+                    "PyArray_BoolDType",
+                    "PyDataType_ISBOOL",
+                    "PyDimMem_RENEW",
+                ],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.core._multiarray_umath"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    board = {
+        symbol.symbol: symbol.digest_payload()
+        for symbol in plan.artifacts[0].c_api_symbols
+    }
+    assert board == {
+        "PyArray_BoolDType": {
+            "symbol": "PyArray_BoolDType",
+            "status": "source_compile_only",
+            "primitive_class": "numpy_c_api",
+            "source": "required_c_api_symbols",
+        },
+        "PyDataType_ISBOOL": {
+            "symbol": "PyDataType_ISBOOL",
+            "status": "source_compile_only",
+            "primitive_class": "numpy_c_api",
+            "source": "required_c_api_symbols",
+        },
+        "PyDimMem_RENEW": {
+            "symbol": "PyDimMem_RENEW",
+            "status": "source_compile_only",
+            "primitive_class": "numpy_c_api",
+            "source": "required_c_api_symbols",
+        },
+    }
+
+
+def test_external_native_artifact_plan_records_imported_numpy_c_api_package_native(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("npy_cabs",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["npy_cabs"],
+                "undefined_symbols": ["npy_cabs"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.core._multiarray_umath"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].c_api_symbols] == [
+        {
+            "symbol": "npy_cabs",
+            "status": "package_native",
+            "primitive_class": "numpy_c_api",
+            "source": "runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
+def test_external_native_artifact_plan_records_imported_cpython_c_api_link(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("PyOS_strtol",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["PyOS_strtol"],
+                "required_c_api_symbols": ["PyOS_strtol"],
+                "undefined_symbols": ["PyOS_strtol"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.core._multiarray_umath"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].c_api_symbols] == [
+        {
+            "symbol": "PyOS_strtol",
+            "status": "cpython_abi_link",
+            "primitive_class": "python_c_api",
+            "source": "required_c_api_symbols+runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
+def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("PyLong_FromLong",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyLong_FromLong"],
+                "undefined_symbols": [],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "_nd_image.molt.wasm imports symbols absent from "
+        "object_closure.undefined_symbols: PyLong_FromLong" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("PyLong_FromLong",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyLong_FromLong"],
+                "objects": [
+                    {
+                        "object": "0_entry.o",
+                        "defined_symbols": ["PyInit__nd_image"],
+                        "undefined_symbols": [
+                            "NI_Correlate",
+                            "PyLong_FromLong",
+                        ],
+                        "required_capsules": [],
+                    },
+                    {
+                        "object": "1_filters.o",
+                        "defined_symbols": ["NI_Correlate"],
+                        "undefined_symbols": [],
+                        "required_capsules": [],
+                    },
+                ],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.ndimage._nd_image"
+    ]
+
+
+def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_imported(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol("molt_nativepkg_placeholder"),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyLong_FromLong"],
+                "undefined_symbols": ["PyLong_FromLong"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "object_closure.undefined_symbols names symbols absent from "
+        "_nd_image.molt.wasm imports: PyLong_FromLong" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("molt_alloc",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["molt_alloc"],
+                "undefined_symbols": ["molt_alloc"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
+        {
+            "symbol": "molt_alloc",
+            "status": "runtime_backed",
+            "primitive_class": "wasm_runtime_import",
+            "source": "runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
+def test_external_native_artifact_plan_records_external_link_symbol_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("malloc",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["malloc"],
+                "undefined_symbols": ["malloc"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
+        {
+            "symbol": "malloc",
+            "status": "external_link",
+            "primitive_class": "wasm_libc_link_import",
+            "source": "runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
+def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("molt_cpython_abi_date_from_date",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["molt_cpython_abi_date_from_date"],
+                "undefined_symbols": ["molt_cpython_abi_date_from_date"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.core._multiarray_umath"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
+        {
+            "symbol": "molt_cpython_abi_date_from_date",
+            "status": "external_link",
+            "primitive_class": "molt_cpython_abi_link_import",
+            "source": "runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
+def test_external_native_artifact_plan_records_package_native_symbol_board(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("BOOL_absolute",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["BOOL_absolute"],
+                "objects": [
+                    {
+                        "object": "umathmodule.o",
+                        "defined_symbols": ["PyInit__multiarray_umath"],
+                        "undefined_symbols": ["BOOL_absolute"],
+                        "required_capsules": [],
+                    }
+                ],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.core._multiarray_umath"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
+        {
+            "symbol": "BOOL_absolute",
+            "status": "package_native",
+            "primitive_class": "native_package_symbol",
+            "source": "runtime_symbols+undefined_symbols",
+        }
+    ]
+
+
+def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("molt_alloc",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "undefined_symbols": ["molt_alloc"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "object_closure undefined ABI symbol 'molt_alloc' is generated "
+        "runtime-backed but missing from object_closure.runtime_symbols" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_rejects_unknown_runtime_abi_symbol(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("molt_future_magic",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "runtime_symbols": ["molt_future_magic"],
+                "undefined_symbols": ["molt_future_magic"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "object_closure runtime ABI symbol 'molt_future_magic' is not in "
+        "the generated WASM ABI/link import surface" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_rejects_missing_c_api_symbol(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyCode_NewWithPosOnlyArgs"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "object_closure required C-API symbol 'PyCode_NewWithPosOnlyArgs' "
+        "is missing; primitive_class=python_c_api" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_rejects_undefined_source_compile_only_symbol(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_placeholder",
+            imports=("PyArray_NDIM",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyArray_NDIM"],
+                "undefined_symbols": ["PyArray_NDIM"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "object_closure undefined C-API symbol 'PyArray_NDIM' is "
+        "source_compile_only; primitive_class=numpy_c_api" in error
+        for error in errors
+    )
+
+
+def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "direct_symbol",
+                    "abi": "molt.forward_f33_v1",
+                    "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+                    "effects": ["read", "write"],
+                    "deterministic": True,
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert plan is None
+    assert any(
+        "callable_exports[0].abi must be one of: "
+        "molt.object_call_v1, molt.forward_f32_v1" in error
+        for error in errors
+    )
 
 
 def test_source_recompiled_static_package_requires_native_artifact_candidate_pregraph(
@@ -3096,7 +4042,6 @@ def test_wasm_external_static_package_allows_deferred_static_link_artifact(
     external_root, _artifact_path, _manifest_path = _write_external_native_package(
         tmp_path,
         artifact_name="_native.molt.wasm",
-        artifact_bytes=b"wasm-relocatable-object",
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
             "platform_tag": "wasm32_wasip1",
@@ -3160,6 +4105,43 @@ def test_external_native_artifact_plan_closes_over_capsule_providers(
     by_module = {artifact.module: artifact for artifact in plan.artifacts}
     assert by_module["nativepkg.consumer"].required_capsules == (capsule,)
     assert by_module["nativepkg.core._multiarray_umath"].provided_capsules == (capsule,)
+
+
+def test_reachable_native_artifact_plan_keeps_capsule_providers(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        manifest_overrides={"provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        manifest_overrides={
+            "python_exports": ["nativepkg.run"],
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.run"},
+    )
+    assert errors == []
+    assert plan is not None
+
+    reachable = plan.with_reachable_imports({"nativepkg.run"})
+
+    assert [artifact.module for artifact in reachable.artifacts] == [
+        "nativepkg.consumer",
+        "nativepkg.core._multiarray_umath",
+    ]
 
 
 def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
@@ -3631,18 +4613,14 @@ def test_frontend_known_modules_do_not_authorize_native_python_direct_calls() ->
     )
 
 
-@pytest.mark.parametrize("binding", ["module_attr", "direct_symbol"])
-def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata(
-    binding: str,
-) -> None:
+def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
         "name": "distance_transform_edt",
-        "binding": binding,
+        "binding": "direct_symbol",
         "abi": "molt.forward_f32_v1",
+        "symbol": "molt_scipy_ndimage_distance_transform_edt",
     }
-    if binding == "direct_symbol":
-        export["symbol"] = "molt_scipy_ndimage_distance_transform_edt"
 
     ops = _frontend_main_ops_for_import_source(
         "from scipy.ndimage import distance_transform_edt\n"
@@ -3673,15 +4651,13 @@ def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata(
     ]
     assert len(invoke_ops) == 1
     invoke_op = invoke_ops[0]
-    assert invoke_op["native_callable_binding"] == binding
+    assert len(invoke_op["args"]) == 1
+    assert invoke_op["native_callable_binding"] == "direct_symbol"
     assert invoke_op["native_callable_abi"] == "molt.forward_f32_v1"
-    if binding == "direct_symbol":
-        assert (
-            invoke_op["native_callable_symbol"]
-            == "molt_scipy_ndimage_distance_transform_edt"
-        )
-    else:
-        assert "native_callable_symbol" not in invoke_op
+    assert (
+        invoke_op["native_callable_symbol"]
+        == "molt_scipy_ndimage_distance_transform_edt"
+    )
     assert all(op.get("kind") != "call_bind" for op in ops)
     assert all(
         not (
@@ -3690,6 +4666,36 @@ def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata(
         )
         for op in ops
     )
+
+
+def test_frontend_native_callable_module_attr_export_fails_closed() -> None:
+    export: dict[str, object] = {
+        "module": "scipy.ndimage",
+        "name": "distance_transform_edt",
+        "binding": "module_attr",
+        "abi": "molt.forward_f32_v1",
+    }
+
+    with pytest.raises(CompatibilityError, match="module_attr binding"):
+        _frontend_main_ops_for_import_source(
+            "from scipy.ndimage import distance_transform_edt\n"
+            "mask = 1\n"
+            "result = distance_transform_edt(mask)\n",
+            module_name="field_solve",
+            parse_codec="json",
+            known_modules={"field_solve", "scipy", "scipy.ndimage"},
+            direct_call_modules={"field_solve"},
+            stdlib_allowlist=set(),
+            known_func_defaults={
+                "scipy.ndimage": {
+                    "distance_transform_edt": {
+                        "params": 1,
+                        "defaults": [],
+                    }
+                }
+            },
+            native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
+        )
 
 
 def test_collect_imports_module_init_scan_skips_function_body_imports() -> None:
@@ -3722,6 +4728,44 @@ def test_collect_imports_prunes_type_checking_branches() -> None:
         assert "os" in imports
         assert "typing" not in imports
         assert "warnings" not in imports
+
+
+def test_collect_imports_prunes_type_checking_alias_branches() -> None:
+    tree = ast.parse(
+        "from typing import TYPE_CHECKING as TC\n"
+        "import typing as typing_alias\n"
+        "if TC:\n"
+        "    import warnings\n"
+        "else:\n"
+        "    import os\n"
+        "if typing_alias.TYPE_CHECKING:\n"
+        "    import re\n"
+    )
+
+    for mode in ("full", "module_init"):
+        imports = cli_module_import_scanner._collect_imports(
+            tree, import_scan_mode=cast(Any, mode)
+        )
+        assert "os" in imports
+        assert "typing" in imports
+        assert "typing.TYPE_CHECKING" not in imports
+        assert "warnings" not in imports
+        assert "re" not in imports
+
+
+def test_collect_imports_type_checking_alias_rebind_stops_pruning() -> None:
+    tree = ast.parse(
+        "from typing import TYPE_CHECKING as TC\n"
+        "TC = dynamic_flag\n"
+        "if TC:\n"
+        "    import warnings\n"
+    )
+
+    imports = cli_module_import_scanner._collect_imports(tree)
+
+    assert "typing" not in imports
+    assert "typing.TYPE_CHECKING" not in imports
+    assert "warnings" in imports
 
 
 def test_molt_os_module_init_imports_do_not_pull_typing() -> None:
@@ -13468,10 +14512,17 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     shared_required: list[frozenset[str]] = []
 
     _install_fake_wasm_link_runner(monkeypatch)
+
+    def collect_import_names(path: Path, module_name: str) -> set[str]:
+        del path
+        if module_name == "molt_runtime":
+            return {"alloc", "molt_fast_list_append"}
+        return set()
+
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
-        lambda path, module_name: {"alloc", "molt_fast_list_append"},
+        collect_import_names,
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
@@ -13518,13 +14569,61 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
     _write_split_runtime_vfs_support(tmp_path)
+    native_callable_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    artifact_path = package_dir / "_ndimage.molt.wasm"
+    artifact_bytes = b"\0asm\x01\0\0\0native"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest_path = package_dir / "extension_manifest.json"
+    manifest_bytes = b'{"runtime_linkage":"static_link"}\n'
+    manifest_path.write_bytes(manifest_bytes)
+    native_artifact_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg._ndimage",
+                package_dir=package_dir,
+                path=artifact_path,
+                manifest_path=manifest_path,
+                extension_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                capabilities=(),
+                abi_tag="molt_abi1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="distance_transform_edt",
+                        binding="direct_symbol",
+                        abi="molt.forward_f32_v1",
+                        symbol=native_callable_symbol,
+                        deterministic=True,
+                    ),
+                ),
+            ),
+        )
+    )
     shared_required: list[frozenset[str]] = []
+    link_calls: list[list[str]] = []
 
-    _install_fake_wasm_link_runner(monkeypatch)
+    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+
+    def collect_import_names(path: Path, module_name: str) -> set[str]:
+        del path
+        if module_name == "molt_runtime":
+            return {"alloc", "molt_fast_list_append"}
+        if module_name == "molt_native":
+            return {native_callable_symbol}
+        return set()
+
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
-        lambda path, module_name: {"alloc", "molt_fast_list_append"},
+        collect_import_names,
     )
     monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
     monkeypatch.setattr(
@@ -13565,11 +14664,117 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
+        native_artifact_plan=native_artifact_plan,
     )
 
     assert err is None
     assert prepared is not None
     assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
+    assert len(link_calls) == 1
+    link_cmd = link_calls[0]
+    assert "--native-object" in link_cmd
+    staged_native_input = Path(link_cmd[link_cmd.index("--native-object") + 1])
+    assert staged_native_input.exists()
+    assert staged_native_input != artifact_path
+    assert staged_native_input.read_bytes() == artifact_bytes
+    assert "external_static_packages" in staged_native_input.parts
+    assert prepared.artifacts is not None
+    assert prepared.artifacts["external_native_artifact_0"] == str(staged_native_input)
+    manifest = json.loads((output_wasm.parent / "manifest.json").read_text())
+    native_callables = manifest["abi"]["browser_embed"]["native_callables"]
+    assert native_callables["module"] == "molt_native"
+    symbol_payload = native_callables["symbols"][native_callable_symbol]
+    assert symbol_payload["abi"] == "molt.forward_f32_v1"
+    assert symbol_payload["binding"] == "direct_symbol"
+    assert symbol_payload["signature"] == {
+        "params": ["bytes.float32"],
+        "result": "bytes.float32",
+    }
+    assert symbol_payload["exports"][0]["qualified_name"] == (
+        "nativepkg.ndimage.distance_transform_edt"
+    )
+    assert symbol_payload["exports"][0]["artifact"]["manifest_sha256"] == hashlib.sha256(
+        manifest_bytes
+    ).hexdigest()
+
+
+def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    _write_split_runtime_vfs_support(tmp_path)
+    missing_symbol = "molt_nativepkg_missing"
+
+    _install_fake_wasm_link_runner(monkeypatch)
+
+    def collect_import_names(path: Path, module_name: str) -> set[str]:
+        del path
+        if module_name == "molt_runtime":
+            return {"alloc"}
+        if module_name == "molt_native":
+            return {missing_symbol}
+        return set()
+
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_collect_wasm_module_import_names",
+        collect_import_names,
+    )
+    monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_runtime_import_result_kinds_from_manifest",
+        lambda _names: {},
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_runtime_import_signatures_from_manifest",
+        lambda _names: {},
+    )
+    monkeypatch.setattr(
+        cli_non_native_output, "_wasm_export_function_signatures", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        cli_non_native_output, "_effective_split_worker_table_base", lambda **kwargs: 8192
+    )
+    monkeypatch.setattr(cli_non_native_output, "_generate_split_worker_js", lambda **kwargs: "// worker")
+
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=False,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda required=None: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_cargo_profile="dev-fast",
+        molt_root=tmp_path,
+        split_runtime=True,
+        precompile=False,
+        native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    )
+
+    assert prepared is None
+    assert err == 2
+    captured = capsys.readouterr()
+    assert "Split-runtime native callable manifest invalid" in captured.err
+    assert missing_symbol in captured.err
 
 
 def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_table_refs(
@@ -13588,10 +14793,17 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     _write_split_runtime_vfs_support(tmp_path)
 
     _install_fake_wasm_link_runner(monkeypatch)
+
+    def collect_import_names(path: Path, module_name: str) -> set[str]:
+        del path
+        if module_name == "molt_runtime":
+            return {"alloc", "molt_fast_list_append"}
+        return set()
+
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
-        lambda path, module_name: {"alloc", "molt_fast_list_append"},
+        collect_import_names,
     )
     monkeypatch.setattr(cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1))
     monkeypatch.setattr(

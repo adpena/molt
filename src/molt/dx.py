@@ -614,7 +614,7 @@ def development_artifact_env(
 
     env = dict(os.environ if base is None else base)
     if session_id:
-        env.setdefault("MOLT_SESSION_ID", session_id)
+        env["MOLT_SESSION_ID"] = session_id
     env = RunContext(
         repo_root,
         session_prefix=session_prefix,

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli.atomic_io import (
@@ -20,7 +20,13 @@ from molt.cli.atomic_io import (
 )
 from molt.cli.build_results import _write_link_fingerprint_if_needed
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.models import BuildProfile, _PreparedNonNativeResult
+from molt.cli.external_native import _stage_external_package_native_artifacts_for_build
+from molt.cli.models import (
+    BuildProfile,
+    _ExternalPackageNativeArtifactPlan,
+    _PreparedNonNativeResult,
+    _StagedExternalPackageNativeArtifact,
+)
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
@@ -38,6 +44,7 @@ from molt.cli.wasm import (
     _runtime_import_signatures_from_manifest,
     _split_runtime_browser_abi_from_manifest,
 )
+from molt.native_callable_abi import native_callable_browser_signature
 from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
@@ -166,6 +173,110 @@ def _generate_snapshot_header(
         print(f"Wrote snapshot header: {snapshot_path}", file=sys.stderr)
 
 
+def _browser_native_callable_manifest(
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan | None,
+    *,
+    required_symbols: Collection[str] = (),
+) -> dict[str, Any]:
+    required = frozenset(required_symbols)
+    symbols: dict[str, dict[str, Any]] = {}
+    if native_artifact_plan is None:
+        if required:
+            missing = ", ".join(sorted(required))
+            raise ValueError(
+                "app imports native callable symbol(s) without staged native "
+                f"artifact custody: {missing}"
+            )
+        return {"module": "molt_native", "symbols": symbols}
+    for artifact in native_artifact_plan.artifacts:
+        artifact_payload = {
+            "package": artifact.package,
+            "module": artifact.module,
+            "manifest_sha256": artifact.manifest_sha256,
+            "extension_sha256": artifact.extension_sha256,
+        }
+        for export in artifact.callable_exports:
+            if export.binding != "direct_symbol":
+                continue
+            if not export.symbol:
+                raise ValueError(
+                    f"{export.qualified_name} direct_symbol export is missing symbol"
+                )
+            if required and export.symbol not in required:
+                continue
+            export_payload = export.digest_payload()
+            export_payload["qualified_name"] = export.qualified_name
+            export_payload["artifact"] = artifact_payload
+            existing = symbols.get(export.symbol)
+            if existing is None:
+                symbols[export.symbol] = {
+                    "abi": export.abi,
+                    "binding": "direct_symbol",
+                    "signature": native_callable_browser_signature(export.abi),
+                    "exports": [export_payload],
+                }
+                continue
+            if existing.get("abi") != export.abi:
+                raise ValueError(
+                    f"native symbol {export.symbol!r} has conflicting callable "
+                    f"ABIs {existing.get('abi')!r} and {export.abi!r}"
+                )
+            existing_exports = existing.setdefault("exports", [])
+            if not isinstance(existing_exports, list):
+                raise ValueError(
+                    f"native symbol {export.symbol!r} manifest exports were corrupted"
+            )
+            existing_exports.append(export_payload)
+    missing_required = sorted(required - symbols.keys())
+    if missing_required:
+        missing = ", ".join(missing_required)
+        raise ValueError(
+            "app imports native callable symbol(s) missing from staged native "
+            f"artifact plan: {missing}"
+        )
+    for symbol in symbols:
+        symbols[symbol]["exports"] = sorted(
+            symbols[symbol]["exports"],
+            key=lambda item: item["qualified_name"],
+        )
+    return {
+        "module": "molt_native",
+        "symbols": {symbol: symbols[symbol] for symbol in sorted(symbols)},
+    }
+
+
+def _wasm_static_link_native_artifact_inputs(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> tuple[Path, ...]:
+    out: list[Path] = []
+    for artifact in artifacts:
+        if artifact.runtime_linkage != "static_link" or artifact.artifact_kind not in {
+            "wasm_relocatable_object",
+            "static_archive",
+        }:
+            raise ValueError(
+                "linked WASM external native artifacts must be wasm32 static_link "
+                f"objects/archives; got {artifact.module}="
+                f"{artifact.runtime_linkage}/{artifact.artifact_kind}"
+            )
+        out.append(artifact.staged_path)
+    return tuple(out)
+
+
+def _external_native_artifact_fingerprint_inputs(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> tuple[Path, ...]:
+    return tuple(
+        path
+        for artifact in artifacts
+        for path in (
+            artifact.staged_path,
+            artifact.staged_manifest_path,
+            *artifact.staged_support_paths,
+        )
+    )
+
+
 def _prepare_non_native_build_result(
     *,
     is_rust_transpile: bool,
@@ -191,6 +302,8 @@ def _prepare_non_native_build_result(
     project_root: Path | None = None,
     profile: BuildProfile = "dev",
     warnings: list[str] | None = None,
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan | None = None,
+    artifacts_root: Path | None = None,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -220,6 +333,46 @@ def _prepare_non_native_build_result(
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         staged_runtime_wasm: Path | None = None
         if linked:
+            staged_external_native_artifacts: tuple[
+                _StagedExternalPackageNativeArtifact, ...
+            ] = ()
+            external_native_fingerprint_inputs: tuple[Path, ...] = ()
+            wasm_static_link_native_inputs: tuple[Path, ...] = ()
+            if native_artifact_plan is not None and native_artifact_plan.artifacts:
+                try:
+                    staged_external_native_artifacts = (
+                        _stage_external_package_native_artifacts_for_build(
+                            native_artifact_plan,
+                            artifacts_root=artifacts_root or output_wasm.parent,
+                        )
+                    )
+                    wasm_static_link_native_inputs = (
+                        _wasm_static_link_native_artifact_inputs(
+                            staged_external_native_artifacts
+                        )
+                    )
+                    external_native_fingerprint_inputs = (
+                        _external_native_artifact_fingerprint_inputs(
+                            staged_external_native_artifacts
+                        )
+                    )
+                except (OSError, ValueError) as exc:
+                    return None, _fail(
+                        f"Failed to stage external native artifacts for WASM link: {exc}",
+                        json_output,
+                        command="build",
+                    )
+                if staged_external_native_artifacts:
+                    artifacts["external_static_packages_root"] = str(
+                        staged_external_native_artifacts[0].runtime_root
+                    )
+                    for index, artifact in enumerate(staged_external_native_artifacts):
+                        artifacts[f"external_native_artifact_{index}"] = str(
+                            artifact.staged_path
+                        )
+                        artifacts[f"external_native_artifact_{index}_manifest"] = str(
+                            artifact.staged_manifest_path
+                        )
             required_runtime_exports = _collect_wasm_module_import_names(
                 output_wasm, "molt_runtime"
             )
@@ -277,6 +430,8 @@ def _prepare_non_native_build_result(
                 "--output",
                 str(resolved_linked_output),
             ]
+            for native_input in wasm_static_link_native_inputs:
+                link_cmd.extend(["--native-object", str(native_input)])
             if _split_runtime:
                 split_dir = output_wasm.parent
                 link_cmd.extend(
@@ -300,7 +455,12 @@ def _prepare_non_native_build_result(
             stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
             link_fingerprint = _link_pipeline._link_fingerprint(
                 project_root=link_project_root,
-                inputs=[output_wasm, runtime_reloc_wasm, tool],
+                inputs=[
+                    output_wasm,
+                    runtime_reloc_wasm,
+                    tool,
+                    *external_native_fingerprint_inputs,
+                ],
                 link_cmd=link_cmd,
                 stored_fingerprint=stored_link_fingerprint,
             )
@@ -508,6 +668,9 @@ def _prepare_non_native_build_result(
             app_runtime_import_names = _collect_wasm_module_import_names(
                 app_wasm, "molt_runtime"
             )
+            app_native_callable_import_names = _collect_wasm_module_import_names(
+                app_wasm, "molt_native"
+            )
             app_runtime_import_result_kinds = (
                 _runtime_import_result_kinds_from_manifest(app_runtime_import_names)
             )
@@ -541,6 +704,20 @@ def _prepare_non_native_build_result(
                     command="build",
                 )
 
+            try:
+                native_callables_manifest = _browser_native_callable_manifest(
+                    native_artifact_plan,
+                    required_symbols=app_native_callable_import_names,
+                )
+            except ValueError as exc:
+                return None, _fail(
+                    f"Split-runtime native callable manifest invalid: {exc}",
+                    json_output,
+                    command="build",
+                )
+            browser_embed_abi = _split_runtime_browser_abi_from_manifest()
+            browser_embed_abi["native_callables"] = native_callables_manifest
+
             manifest_data = {
                 "version": 2,
                 "mode": "split-runtime",
@@ -556,7 +733,7 @@ def _prepare_non_native_build_result(
                         "runtime_export_signatures": app_runtime_export_signatures,
                         "result_kinds": app_runtime_import_result_kinds,
                     },
-                    "browser_embed": _split_runtime_browser_abi_from_manifest(),
+                    "browser_embed": browser_embed_abi,
                     "table_refs": {
                         "app": app_table_ref_signatures,
                         "runtime": runtime_table_ref_signatures,

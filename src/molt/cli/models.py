@@ -655,6 +655,8 @@ class _ExternalPackageNativeArtifact:
     required_capsules: tuple[str, ...] = ()
     python_exports: tuple[str, ...] = ()
     callable_exports: tuple["_ExternalNativeCallableExport", ...] = ()
+    abi_symbols: tuple["_ExternalNativeAbiSymbol", ...] = ()
+    c_api_symbols: tuple["_ExternalNativeCapiSymbol", ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
         return {
@@ -682,6 +684,44 @@ class _ExternalPackageNativeArtifact:
             "callable_exports": [
                 export.digest_payload() for export in self.callable_exports
             ],
+            "abi_symbols": [
+                symbol.digest_payload() for symbol in self.abi_symbols
+            ],
+            "c_api_symbols": [
+                symbol.digest_payload() for symbol in self.c_api_symbols
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class _ExternalNativeAbiSymbol:
+    symbol: str
+    status: str
+    primitive_class: str
+    source: str
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "status": self.status,
+            "primitive_class": self.primitive_class,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class _ExternalNativeCapiSymbol:
+    symbol: str
+    status: str
+    primitive_class: str
+    source: str
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "status": self.status,
+            "primitive_class": self.primitive_class,
+            "source": self.source,
         }
 
 
@@ -768,6 +808,7 @@ class _ExternalPackageNativeArtifactPlan:
             return _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
 
         reachable: list[_ExternalPackageNativeArtifact] = []
+        reachable_keys: set[tuple[str, Path]] = set()
         for artifact in self.artifacts:
             providers = (
                 artifact.module,
@@ -780,6 +821,26 @@ class _ExternalPackageNativeArtifactPlan:
                 for provider_name in providers
             ):
                 reachable.append(artifact)
+                reachable_keys.add((artifact.module, artifact.path))
+        while True:
+            required_capsules = frozenset(
+                capsule
+                for artifact in reachable
+                for capsule in artifact.required_capsules
+            )
+            if not required_capsules:
+                break
+            added = False
+            for artifact in self.artifacts:
+                key = (artifact.module, artifact.path)
+                if key in reachable_keys:
+                    continue
+                if required_capsules.intersection(artifact.provided_capsules):
+                    reachable.append(artifact)
+                    reachable_keys.add(key)
+                    added = True
+            if not added:
+                break
         if len(reachable) == len(self.artifacts):
             return self
         return _ExternalPackageNativeArtifactPlan(artifacts=tuple(reachable))
@@ -820,6 +881,8 @@ class _StagedExternalPackageNativeArtifact:
     required_capsules: tuple[str, ...] = ()
     python_exports: tuple[str, ...] = ()
     callable_exports: tuple[_ExternalNativeCallableExport, ...] = ()
+    abi_symbols: tuple[_ExternalNativeAbiSymbol, ...] = ()
+    c_api_symbols: tuple[_ExternalNativeCapiSymbol, ...] = ()
 
     def json_payload(self) -> dict[str, Any]:
         return {
@@ -849,6 +912,12 @@ class _StagedExternalPackageNativeArtifact:
             "python_exports": list(self.python_exports),
             "callable_exports": [
                 export.digest_payload() for export in self.callable_exports
+            ],
+            "abi_symbols": [
+                symbol.digest_payload() for symbol in self.abi_symbols
+            ],
+            "c_api_symbols": [
+                symbol.digest_payload() for symbol in self.c_api_symbols
             ],
         }
 

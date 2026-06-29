@@ -63,7 +63,7 @@ ops: `matmul, sin, cos, tanh, exp, maximum, argmax, reshape, stack`.
 separatrix eigvectors → curvature → distance field. Fixture: `lstar_sample.npz`. Reference:
 `reference_outputs.npz`.
 ops: `distance_transform_edt, gaussian_filter, maximum_filter, minimum_filter, label` +
-`argmax, sort, gradient, percentile, argsort, where, bincount, clip, linalg.eigh`.
+`argmax, sort, gradient, percentile, lexsort, where, clip, stack, linalg.eigh`.
 
 **Done = `python check_parity.py candidate_outputs.npz` → PASS**, where `candidate_outputs.npz`
 is your WASM run of `field_solve(lstar_sample)`. (And for Kernel B: WASM `levelset_argmax` ==
@@ -116,10 +116,12 @@ to ~fp32 rounding; a larger drift means the op diverged — please surface it, d
 - comma10k class order (for the viz palette): 0=Road 1=Lane 2=Undrivable 3=Movable 4=MyCar.
 
 ## The two asks that unblock the rest
-1. A prebuilt **`molt-embed` example .wasm + 5-line JS loader** we can dogfood without a
-   from-source Rust/WASM build (the pact machine is still sharing one GPU with a live score-run).
-2. Compile **Kernel A first** (it's the scipy.ndimage stress-test + the interactive payload);
-   then Kernel B (pure numpy). PASS on `check_parity.py` is the milestone.
+1. Keep the browser-forward dogfood lane source-built through the existing
+   `wasm/browser_embed.js` authority; prebuilt WASM belongs in a release
+   artifact pipeline, not as checked-in example blobs.
+2. Compile **Kernel A first** through package-native NumPy/SciPy closure (it is
+   the scipy.ndimage stress-test + the interactive payload); then Kernel B. PASS
+   on `check_parity.py` is the milestone.
 
 Provenance: generated under numpy 1.26.4 / scipy 1.17.1. `lstar_sample.npz` is a deterministic
 *synthetic* road-scene partition (sufficient for numerical parity); a real witness-φ bundle

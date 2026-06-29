@@ -1,4 +1,5 @@
 use super::{WasmFrameControlMode, WasmFunctionFrame, WasmFunctionFramePlan};
+use crate::native_callable_abi::NATIVE_CALLABLE_ABI_FORWARD_F32_V1;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::context::CompileFuncContext;
@@ -94,6 +95,7 @@ impl WasmFunctionFramePlan {
         );
 
         let mut needs_field_fast = false;
+        let mut needs_native_forward_f32 = false;
         let mut needs_alloc_resolve = false;
         let has_arena_eligible = func_ir.ops.iter().any(|op| op.arena_eligible == Some(true));
         let scalar_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
@@ -169,6 +171,12 @@ impl WasmFunctionFramePlan {
             match op.kind.as_str() {
                 "store" | "store_init" | "load" | "guarded_load" | "guarded_field_get"
                 | "guarded_field_set" | "guarded_field_init" => needs_field_fast = true,
+                "invoke_ffi"
+                    if op.native_callable_abi.as_deref()
+                        == Some(NATIVE_CALLABLE_ABI_FORWARD_F32_V1) =>
+                {
+                    needs_native_forward_f32 = true;
+                }
                 kind if simpleir_kind_is_wasm_stateful_dispatch(kind) => stateful = true,
                 "jump" | "label" => saw_jump_or_label = true,
                 "alloc_task" => {
@@ -200,12 +208,15 @@ impl WasmFunctionFramePlan {
             }
         }
 
-        if needs_field_fast {
+        if needs_field_fast || needs_native_forward_f32 {
             locals.ensure_synthetic(
                 WasmFrameSyntheticLocal::WasmTmp0,
                 &mut local_types,
                 &mut local_count,
             );
+        }
+
+        if needs_field_fast {
             locals.ensure_synthetic(
                 WasmFrameSyntheticLocal::WasmTmp1,
                 &mut local_types,

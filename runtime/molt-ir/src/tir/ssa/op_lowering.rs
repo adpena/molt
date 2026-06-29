@@ -157,6 +157,18 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.effect_proof {
             attrs.insert("effect_proof".into(), AttrValue::Str(v.clone()));
         }
+        if let Some(ref v) = op.native_callable_export {
+            attrs.insert("native_callable_export".into(), AttrValue::Str(v.clone()));
+        }
+        if let Some(ref v) = op.native_callable_binding {
+            attrs.insert("native_callable_binding".into(), AttrValue::Str(v.clone()));
+        }
+        if let Some(ref v) = op.native_callable_symbol {
+            attrs.insert("native_callable_symbol".into(), AttrValue::Str(v.clone()));
+        }
+        if let Some(ref v) = op.native_callable_abi {
+            attrs.insert("native_callable_abi".into(), AttrValue::Str(v.clone()));
+        }
         // Finalizer fact for `object_new_bound`: the instance's class defines
         // `__del__` (frontend-resolved through the MRO, excluding `object`). The
         // escape pass reads this to keep the instance heap-allocated with a live

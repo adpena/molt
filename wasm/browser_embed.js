@@ -10,6 +10,8 @@ const TAG_INT = 0x0001000000000000n;
 const TAG_MASK = 0x0007000000000000n;
 const INT_MASK = (1n << 47n) - 1n;
 const TYPE_TAG_BYTES = 6;
+const TABLE_REF_EXPORT_PREFIX = '__molt_table_ref_';
+const NATIVE_CALLABLE_IMPORT_MODULE = 'molt_native';
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 
@@ -158,6 +160,89 @@ const requireIntegerField = (source, name) => {
   return value;
 };
 
+const NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 = 'molt.object_call_v1';
+const NATIVE_CALLABLE_ABI_FORWARD_F32_V1 = 'molt.forward_f32_v1';
+
+const nativeCallableBrowserSignature = (abi) => {
+  if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALL_V1) {
+    return { params: ['molt.value...'], result: 'molt.value' };
+  }
+  if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
+    return { params: ['bytes.float32'], result: 'bytes.float32' };
+  }
+  throw new Error(`unsupported browser native callable ABI: ${abi}`);
+};
+
+const requireNativeCallableSignature = (symbol, abi, rawSignature) => {
+  if (!rawSignature || typeof rawSignature !== 'object' || Array.isArray(rawSignature)) {
+    throw new Error(
+      `manifest.abi.browser_embed.native_callables.symbols.${symbol}.signature must be an object`,
+    );
+  }
+  const expected = nativeCallableBrowserSignature(abi);
+  if (
+    !Array.isArray(rawSignature.params) ||
+    rawSignature.params.length !== expected.params.length ||
+    rawSignature.params.some((value, index) => value !== expected.params[index]) ||
+    rawSignature.result !== expected.result
+  ) {
+    throw new Error(
+      `manifest.abi.browser_embed.native_callables.symbols.${symbol}.signature ` +
+        `must match ${abi}`,
+    );
+  }
+  return { params: [...expected.params], result: expected.result };
+};
+
+const nativeCallableManifestFromAbi = (raw) => {
+  if (raw === undefined || raw === null) {
+    return { module: NATIVE_CALLABLE_IMPORT_MODULE, symbols: {}, authoritative: false };
+  }
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('manifest.abi.browser_embed.native_callables must be an object');
+  }
+  const module = raw.module || NATIVE_CALLABLE_IMPORT_MODULE;
+  if (module !== NATIVE_CALLABLE_IMPORT_MODULE) {
+    throw new Error(
+      `manifest.abi.browser_embed.native_callables.module must be ${NATIVE_CALLABLE_IMPORT_MODULE}`,
+    );
+  }
+  const symbols = raw.symbols || {};
+  if (!symbols || typeof symbols !== 'object' || Array.isArray(symbols)) {
+    throw new Error('manifest.abi.browser_embed.native_callables.symbols must be an object');
+  }
+  const normalizedSymbols = {};
+  for (const [symbol, spec] of Object.entries(symbols)) {
+    if (typeof symbol !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(symbol)) {
+      throw new Error(
+        `manifest.abi.browser_embed.native_callables has invalid symbol ${String(symbol)}`,
+      );
+    }
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+      throw new Error(
+        `manifest.abi.browser_embed.native_callables.symbols.${symbol} must be an object`,
+      );
+    }
+    if (spec.binding !== undefined && spec.binding !== 'direct_symbol') {
+      throw new Error(
+        `manifest.abi.browser_embed.native_callables.symbols.${symbol}.binding must be direct_symbol`,
+      );
+    }
+    if (typeof spec.abi !== 'string' || spec.abi.length === 0) {
+      throw new Error(
+        `manifest.abi.browser_embed.native_callables.symbols.${symbol}.abi must be a string`,
+      );
+    }
+    const signature = requireNativeCallableSignature(symbol, spec.abi, spec.signature);
+    normalizedSymbols[symbol] = { ...spec, signature };
+  }
+  return {
+    module: NATIVE_CALLABLE_IMPORT_MODULE,
+    symbols: normalizedSymbols,
+    authoritative: true,
+  };
+};
+
 const browserAbiFromManifest = (manifest) => {
   const abi = manifest?.abi?.browser_embed;
   if (!abi || typeof abi !== 'object') {
@@ -190,6 +275,7 @@ const browserAbiFromManifest = (manifest) => {
   return {
     callIndirectImports,
     runtimeImportFallbacks,
+    nativeCallables: nativeCallableManifestFromAbi(abi.native_callables),
     tableLayout: {
       legacyTableBase,
       reservedRuntimeCallableBase,
@@ -472,6 +558,140 @@ const makeHostArg = (runtime, memory, value) => {
   throw new Error(`unsupported Molt browser embed argument: ${Object.prototype.toString.call(value)}`);
 };
 
+const nativeCallableMap = (value) => {
+  if (!value) return {};
+  if (typeof value !== 'object') {
+    throw new Error('nativeCallables must be an object keyed by native symbol');
+  }
+  return value;
+};
+
+const nativeCallableAbiMap = (value) => {
+  if (!value) return {};
+  if (typeof value !== 'object') {
+    throw new Error('nativeCallableAbis must be an object keyed by native symbol');
+  }
+  return value;
+};
+
+const nativeCallableManifestFromOptions = (options) => {
+  if (options.nativeCallableManifest !== undefined) {
+    return nativeCallableManifestFromAbi(options.nativeCallableManifest);
+  }
+  const manifestNativeCallables =
+    options.manifest?.abi?.browser_embed?.native_callables ||
+    options.manifest?.abi?.native_callables;
+  return nativeCallableManifestFromAbi(manifestNativeCallables);
+};
+
+const byteLengthFromWasm = (symbol, rawLength) => {
+  const byteLength = typeof rawLength === 'bigint' ? Number(rawLength) : Number(rawLength);
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+    throw new Error(`${symbol} ${NATIVE_CALLABLE_ABI_FORWARD_F32_V1} byte length is invalid`);
+  }
+  if (byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+    throw new Error(
+      `${symbol} ${NATIVE_CALLABLE_ABI_FORWARD_F32_V1} byte length ` +
+        `${byteLength} is not divisible by ${Float32Array.BYTES_PER_ELEMENT}`,
+    );
+  }
+  return byteLength;
+};
+
+const copyForwardF32Result = (symbol, result, output) => {
+  if (result === undefined || result === output) {
+    return;
+  }
+  const values = Array.isArray(result) ? new Float32Array(result) : result;
+  if (!(values instanceof Float32Array)) {
+    throw new Error(`${symbol} ${NATIVE_CALLABLE_ABI_FORWARD_F32_V1} must return or fill Float32Array`);
+  }
+  if (values.length !== output.length) {
+    throw new Error(
+      `${symbol} ${NATIVE_CALLABLE_ABI_FORWARD_F32_V1} returned ${values.length} values; ` +
+        `expected ${output.length}`,
+    );
+  }
+  output.set(values);
+};
+
+const callForwardF32Native = (state, symbol, impl, args) => {
+  if (args.length !== 3) {
+    throw new Error(
+      `${symbol} ${NATIVE_CALLABLE_ABI_FORWARD_F32_V1} expects (inputPtr, byteLength, outputPtr)`,
+    );
+  }
+  const inputPtr = memoryOffset32(args[0], `${symbol} input pointer`);
+  const byteLength = byteLengthFromWasm(symbol, args[1]);
+  const outputPtr = memoryOffset32(args[2], `${symbol} output pointer`);
+  const input = new Float32Array(
+    state.memory.buffer,
+    inputPtr,
+    byteLength / Float32Array.BYTES_PER_ELEMENT,
+  );
+  const output = new Float32Array(
+    state.memory.buffer,
+    outputPtr,
+    byteLength / Float32Array.BYTES_PER_ELEMENT,
+  );
+  const result = impl(input, output, {
+    abi: NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
+    byteLength,
+    memory: state.memory,
+    runtimeInstance: state.runtimeInstance,
+    symbol,
+  });
+  copyForwardF32Result(symbol, result, output);
+  return 0;
+};
+
+export const createMoltNativeCallableImports = (state, appImports, options = {}) => {
+  const callables = nativeCallableMap(options.nativeCallables);
+  const abiBySymbol = nativeCallableAbiMap(options.nativeCallableAbis);
+  const manifestCallables = nativeCallableManifestFromOptions(options);
+  const manifestSymbols = manifestCallables.symbols || {};
+  const manifestAuthoritative = Boolean(
+    options.requireNativeCallableManifest || manifestCallables.authoritative,
+  );
+  const imports = {};
+  for (const entry of appImports?.funcImports || []) {
+    if (entry.module !== NATIVE_CALLABLE_IMPORT_MODULE) {
+      continue;
+    }
+    const symbol = entry.name;
+    const manifestSpec = manifestSymbols[symbol] || null;
+    if (manifestAuthoritative && !manifestSpec) {
+      throw new Error(
+        `app native callable import ${symbol} missing from ` +
+          'manifest.abi.browser_embed.native_callables.symbols',
+      );
+    }
+    imports[symbol] = (...args) => {
+      const impl = callables[symbol];
+      if (typeof impl !== 'function') {
+        throw new Error(`missing browser native callable implementation for ${symbol}`);
+      }
+      const manifestAbi = manifestSpec?.abi || null;
+      const overrideAbi = abiBySymbol[symbol] || impl.abi || options.nativeCallableAbi || null;
+      if (manifestAbi && overrideAbi && manifestAbi !== overrideAbi) {
+        throw new Error(
+          `browser native callable ABI override for ${symbol} conflicts with manifest: ` +
+            `${overrideAbi} != ${manifestAbi}`,
+        );
+      }
+      const abi = overrideAbi || manifestAbi || NATIVE_CALLABLE_ABI_OBJECT_CALL_V1;
+      if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALL_V1) {
+        return impl(...args);
+      }
+      if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
+        return callForwardF32Native(state, symbol, impl, args);
+      }
+      throw new Error(`unsupported browser native callable ABI for ${symbol}: ${abi}`);
+    };
+  }
+  return imports;
+};
+
 const installTableRefs = (instance, table) => {
   if (!instance || !table) {
     return;
@@ -561,6 +781,18 @@ const normalizeImportResult = (value, resultKind) => {
   }
   return value;
 };
+
+const callWithSignature = (fn, signature, args) => {
+  if (!signature || !Array.isArray(signature.params)) {
+    return fn(...args);
+  }
+  const callArgs = args.map((value, index) =>
+    normalizeValueForKind(value, signature.params[index] || null));
+  const out = fn(...callArgs);
+  return normalizeImportResult(out, signature.result || null);
+};
+
+const tableRefExportName = (index) => `${TABLE_REF_EXPORT_PREFIX}${index}`;
 
 const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi) => {
   const imports = {};
@@ -725,6 +957,8 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
   const stubZeroI64 = () => 0n;
   const sharedTableBase = manifest?.wasm_table_base ?? null;
   const tableLayout = browserAbi.tableLayout;
+  const appTableRefSignatures = manifest?.abi?.table_refs?.app || {};
+  const runtimeTableRefSignatures = manifest?.abi?.table_refs?.runtime || {};
   const remapLegacyRuntimeSharedIdx = (idx) => {
     if (sharedTableBase === null || sharedTableBase <= tableLayout.legacyTableBase) {
       return idx;
@@ -740,11 +974,47 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
   const callIndirect = (name) => (fnIndex, ...args) => {
     const idx = Number(fnIndex);
     const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
+    const directName = tableRefExportName(dispatchIdx);
     const tableFn = state.table ? state.table.get(dispatchIdx) : null;
-    if (typeof tableFn !== 'function') {
-      throw new Error(`${name} missing table entry at ${dispatchIdx}`);
+    if (typeof tableFn === 'function') {
+      const signature =
+        appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+      try {
+        return callWithSignature(tableFn, signature, args);
+      } catch (err) {
+        const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        const fnName = tableFn.name || '<anon>';
+        throw new Error(
+          `${name} shared-table entry failed at idx=${dispatchIdx}: ${detail}; ` +
+            `fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`,
+        );
+      }
     }
-    return tableFn(...args);
+    const rtDirectFn = state.runtimeInstance?.exports?.[directName];
+    if (typeof rtDirectFn === 'function') {
+      try {
+        return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
+      } catch (err) {
+        const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        throw new Error(
+          `${name} runtime direct export ${directName} failed: ${detail}; ` +
+            `fnLen=${rtDirectFn.length}; argsLen=${args.length}`,
+        );
+      }
+    }
+    const indirectFn = state.appInstance?.exports?.[name];
+    if (typeof indirectFn === 'function') {
+      try {
+        return indirectFn(fnIndex, ...args);
+      } catch (err) {
+        const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        throw new Error(
+          `${name} app export failed at idx=${idx}: ${detail}; ` +
+            `fnLen=${indirectFn.length}; argsLen=${args.length}`,
+        );
+      }
+    }
+    throw new Error(`${name} missing table entry at ${dispatchIdx}`);
   };
   const env = {
     memory: state.memory,
@@ -932,8 +1202,15 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   }
   installTableRefs(runtimeInstance, table);
   const appModule = await WebAssembly.compile(appBytes);
+  const moltNative = createMoltNativeCallableImports(state, appImports, {
+    ...options,
+    manifest,
+    nativeCallableManifest: browserAbi.nativeCallables,
+    requireNativeCallableManifest: true,
+  });
   const appInstance = await WebAssembly.instantiate(appModule, {
     env,
+    molt_native: moltNative,
     wasi_snapshot_preview1: wasi,
     molt_runtime: buildRuntimeImports(appModule, runtimeInstance, manifest, browserAbi),
   });

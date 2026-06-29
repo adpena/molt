@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
+from molt.compat import CompatibilityError
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 
 
@@ -74,7 +77,7 @@ def test_invoke_ffi_bridge_lane_marker_lowers_to_s_value() -> None:
 def test_invoke_ffi_native_callable_metadata_lowers_to_schema_fields() -> None:
     op = MoltOp(
         kind="INVOKE_FFI",
-        args=[MoltValue("callee"), MoltValue("arg0")],
+        args=[MoltValue("arg0")],
         result=MoltValue("out"),
         metadata={
             "native_callable_export": "scipy.ndimage.distance_transform_edt",
@@ -86,7 +89,7 @@ def test_invoke_ffi_native_callable_metadata_lowers_to_schema_fields() -> None:
     lowered = _map_single(op)
     assert lowered == {
         "kind": "invoke_ffi",
-        "args": ["callee", "arg0"],
+        "args": ["arg0"],
         "out": "out",
         "native_callable_export": "scipy.ndimage.distance_transform_edt",
         "native_callable_binding": "direct_symbol",
@@ -337,7 +340,7 @@ def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
 
         assert len(invoke_ops) == 1
         invoke_op = invoke_ops[0]
-        assert len(invoke_op["args"]) == 2
+        assert len(invoke_op["args"]) == 1
         assert invoke_op["native_callable_export"] == (
             "nativepkg.ndimage.distance_transform_edt"
         )
@@ -348,3 +351,77 @@ def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
             == "molt_nativepkg_ndimage_distance_transform_edt"
         )
         assert invoke_op["source_line"] == 2
+
+
+def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "direct_symbol",
+                "abi": "molt.forward_f33_v1",
+                "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            }
+        },
+        fallback_policy="bridge",
+    )
+
+    with pytest.raises(CompatibilityError, match="known ABI tokens"):
+        gen.visit(
+            ast.parse(
+                "import nativepkg.ndimage as ndi\n"
+                "value = ndi.distance_transform_edt(data)\n"
+            )
+        )
+
+
+def test_native_callable_fixed_arity_rejects_bad_payload_count_before_invoke_ffi() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "direct_symbol",
+                "abi": "molt.forward_f32_v1",
+                "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            }
+        },
+        fallback_policy="bridge",
+    )
+
+    with pytest.raises(CompatibilityError, match="expects 1 ABI payload"):
+        gen.visit(
+            ast.parse(
+                "import nativepkg.ndimage as ndi\n"
+                "value = ndi.distance_transform_edt(data, sampling)\n"
+            )
+        )
+
+
+def test_native_callable_module_attr_export_fails_before_invoke_ffi() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "module_attr",
+                "abi": "molt.forward_f32_v1",
+            }
+        },
+        fallback_policy="bridge",
+    )
+
+    with pytest.raises(CompatibilityError, match="module_attr binding"):
+        gen.visit(
+            ast.parse(
+                "import nativepkg.ndimage as ndi\n"
+                "value = ndi.distance_transform_edt(data)\n"
+            )
+        )

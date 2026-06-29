@@ -1,4 +1,5 @@
 use crate::OpIR;
+use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, is_known_native_callable_abi};
 use crate::tir::effect_proof::{EffectProof, simple_ir_effect_proof};
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
@@ -292,6 +293,11 @@ fn validate_native_callable_fields(op: &OpIR) -> Result<(), String> {
         ));
     };
     validate_clean_symbol(abi, "invoke_ffi native_callable_abi")?;
+    if !is_known_native_callable_abi(abi) {
+        return Err(format!(
+            "invoke_ffi native callable export `{export_name}` has unknown native_callable_abi `{abi}`; expected one of: {NATIVE_CALLABLE_ABI_CHOICES}"
+        ));
+    }
     if binding == "direct_symbol" {
         let Some(symbol) = op.native_callable_symbol.as_deref() else {
             return Err(format!(

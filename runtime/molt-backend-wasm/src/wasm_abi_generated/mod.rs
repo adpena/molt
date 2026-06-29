@@ -8,16 +8,14 @@ mod call_indirect;
 mod const_policy;
 mod container_runtime_selector;
 mod import_metadata;
-mod import_queries;
-mod import_specs;
+mod import_registry;
 mod import_tokens;
 mod lir_runtime_calls;
 mod method_ic_selector;
 mod numeric_runtime_selector;
 mod object_new_bound_selector;
 mod pure_profile;
-mod reserved_runtime_callables;
-mod runtime_callable_queries;
+mod runtime_callables;
 mod runtime_surface;
 mod static_types;
 
@@ -34,10 +32,8 @@ pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
-pub(crate) use import_queries::{wasm_runtime_export_name, wasm_runtime_import};
-pub(crate) use import_specs::{
-    IMPORT_REGISTRY, RuntimeCallableResult, RuntimeImportSpec, poll_table_imports,
-    runtime_callable_imports,
+pub(crate) use import_registry::{
+    IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use import_tokens::WasmRuntimeImport;
 pub(crate) use lir_runtime_calls::{
@@ -54,9 +50,10 @@ pub(crate) use object_new_bound_selector::{
     WasmObjectNewBoundPayload, WasmObjectNewBoundSelection, wasm_object_new_bound_selection,
 };
 pub(crate) use pure_profile::pure_profile_skips_import;
-pub(crate) use reserved_runtime_callables::{
-    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+pub(crate) use runtime_callables::{
+    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,
+    runtime_callable_arity, runtime_callable_import,
 };
-pub(crate) use runtime_callable_queries::{runtime_callable_arity, runtime_callable_import};
 pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};

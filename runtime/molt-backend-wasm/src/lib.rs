@@ -11,8 +11,8 @@ pub use molt_ir::stdlib_module_symbols::{
 };
 pub use molt_ir::{
     FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, PgoProfileIR, SimpleIR, debug_artifacts,
-    intrinsic_symbols, ir, ir_schema, json_boundary, process_diagnostics, repr,
-    stdlib_module_symbols, validate_simple_ir,
+    intrinsic_symbols, ir, ir_schema, json_boundary, native_callable_abi, process_diagnostics,
+    repr, stdlib_module_symbols, validate_simple_ir,
 };
 pub use molt_tir::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
