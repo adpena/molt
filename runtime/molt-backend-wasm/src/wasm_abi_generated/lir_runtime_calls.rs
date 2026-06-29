@@ -285,53 +285,1787 @@ impl LirRuntimeCall {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LirPreservedCopyRuntimeCall {
+pub(crate) struct LirFixedRuntimeCall {
     pub(crate) call: LirRuntimeCall,
     pub(crate) operand_count: usize,
 }
 
 #[inline]
-pub(crate) fn preserved_copy_runtime_call(kind: &str) -> Option<LirPreservedCopyRuntimeCall> {
+pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {
     match kind {
-        "module_import_star" => Some(LirPreservedCopyRuntimeCall {
+        "import" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleImport,
+            operand_count: 1,
+        }),
+        "module_import_star" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImportStar,
             operand_count: 2,
         }),
-        "module_new" => Some(LirPreservedCopyRuntimeCall {
+        "module_new" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleNew,
             operand_count: 1,
         }),
-        "bridge_unavailable" => Some(LirPreservedCopyRuntimeCall {
+        "function_defaults_version" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::FunctionDefaultsVersion,
+            operand_count: 1,
+        }),
+        "module_cache_get" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleCacheGet,
+            operand_count: 1,
+        }),
+        "module_cache_set" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleCacheSet,
+            operand_count: 2,
+        }),
+        "module_cache_del" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleCacheDel,
+            operand_count: 1,
+        }),
+        "module_get_attr" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleGetAttr,
+            operand_count: 2,
+        }),
+        "module_import_from" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleImportFrom,
+            operand_count: 2,
+        }),
+        "module_get_global" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleGetGlobal,
+            operand_count: 2,
+        }),
+        "module_get_name" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleGetName,
+            operand_count: 2,
+        }),
+        "module_set_attr" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleSetAttr,
+            operand_count: 3,
+        }),
+        "module_del_global" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleDelGlobal,
+            operand_count: 2,
+        }),
+        "module_del_global_if_present" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::ModuleDelGlobalIfPresent,
+            operand_count: 2,
+        }),
+        "bridge_unavailable" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::BridgeUnavailable,
             operand_count: 1,
         }),
-        "context_null" => Some(LirPreservedCopyRuntimeCall {
+        "context_null" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextNull,
             operand_count: 1,
         }),
-        "context_enter" => Some(LirPreservedCopyRuntimeCall {
+        "context_enter" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextEnter,
             operand_count: 1,
         }),
-        "context_exit" => Some(LirPreservedCopyRuntimeCall {
+        "context_exit" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextExit,
             operand_count: 2,
         }),
-        "context_unwind" => Some(LirPreservedCopyRuntimeCall {
+        "context_unwind" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextUnwind,
             operand_count: 1,
         }),
-        "context_depth" => Some(LirPreservedCopyRuntimeCall {
+        "context_depth" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextDepth,
             operand_count: 0,
         }),
-        "context_unwind_to" => Some(LirPreservedCopyRuntimeCall {
+        "context_unwind_to" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextUnwindTo,
             operand_count: 2,
         }),
-        "context_closing" => Some(LirPreservedCopyRuntimeCall {
+        "context_closing" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextClosing,
             operand_count: 1,
+        }),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OpLoopRuntimeArgSpec {
+    Local(usize),
+    OpValueI64(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OpLoopRuntimeSinkSpec {
+    ResultOrDrop,
+    NonNoneResultOrDrop,
+    Drop,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OpLoopRuntimeCallSpec {
+    pub(crate) import_name: &'static str,
+    pub(crate) args: &'static [OpLoopRuntimeArgSpec],
+    pub(crate) sink: OpLoopRuntimeSinkSpec,
+}
+
+#[inline]
+pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> {
+    match kind {
+        "import" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_import",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_import" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_import",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_import_star" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_import_star",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_new",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "function_defaults_version" => Some(OpLoopRuntimeCallSpec {
+            import_name: "function_defaults_version",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_cache_get" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_cache_get",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_cache_set" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_cache_set",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "module_cache_del" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_cache_del",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "module_get_attr" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_get_attr",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_import_from" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_import_from",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_get_global" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_get_global",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_get_name" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_get_name",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "module_set_attr" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_set_attr",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "module_del_global" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_del_global",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "module_del_global_if_present" => Some(OpLoopRuntimeCallSpec {
+            import_name: "module_del_global_if_present",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bridge_unavailable" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bridge_unavailable",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_null" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_null",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_enter" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_enter",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_exit" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_exit",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_unwind" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_unwind",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_depth" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_depth",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_unwind_to" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_unwind_to",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "context_closing" => Some(OpLoopRuntimeCallSpec {
+            import_name: "context_closing",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "abs" => Some(OpLoopRuntimeCallSpec {
+            import_name: "abs_builtin",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "guard_tag" => Some(OpLoopRuntimeCallSpec {
+            import_name: "guard_type",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "alloc_class" => Some(OpLoopRuntimeCallSpec {
+            import_name: "alloc_class",
+            args: &[
+                OpLoopRuntimeArgSpec::OpValueI64("alloc_class missing payload size"),
+                OpLoopRuntimeArgSpec::Local(0),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "alloc_class_trusted" => Some(OpLoopRuntimeCallSpec {
+            import_name: "alloc_class_trusted",
+            args: &[
+                OpLoopRuntimeArgSpec::OpValueI64("alloc_class_trusted missing payload size"),
+                OpLoopRuntimeArgSpec::Local(0),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "alloc_class_static" => Some(OpLoopRuntimeCallSpec {
+            import_name: "alloc_class_static",
+            args: &[
+                OpLoopRuntimeArgSpec::OpValueI64("alloc_class_static missing payload size"),
+                OpLoopRuntimeArgSpec::Local(0),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "string_format" => Some(OpLoopRuntimeCallSpec {
+            import_name: "format_builtin",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "exception_finally_pending_observer" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_last_pending",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_new_builtin" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_new_builtin",
+            args: &[
+                OpLoopRuntimeArgSpec::OpValueI64("exception_new_builtin missing tag value"),
+                OpLoopRuntimeArgSpec::Local(0),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_new_builtin_empty" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_new_builtin_empty",
+            args: &[OpLoopRuntimeArgSpec::OpValueI64(
+                "exception_new_builtin_empty missing tag value",
+            )],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_new_builtin_one" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_new_builtin_one",
+            args: &[
+                OpLoopRuntimeArgSpec::OpValueI64("exception_new_builtin_one missing tag value"),
+                OpLoopRuntimeArgSpec::Local(0),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gen_send" => Some(OpLoopRuntimeCallSpec {
+            import_name: "generator_send",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gen_throw" => Some(OpLoopRuntimeCallSpec {
+            import_name: "generator_throw",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "gen_close" => Some(OpLoopRuntimeCallSpec {
+            import_name: "generator_close",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "chan_drop" => Some(OpLoopRuntimeCallSpec {
+            import_name: "chan_drop",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::Drop,
+        }),
+        "spawn" => Some(OpLoopRuntimeCallSpec {
+            import_name: "spawn",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::None,
+        }),
+        "print_newline" => Some(OpLoopRuntimeCallSpec {
+            import_name: "print_newline",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::None,
+        }),
+        "errno_constants" => Some(OpLoopRuntimeCallSpec {
+            import_name: "errno_constants",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "promise_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "promise_new",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_get_current" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_get_current",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancelled" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancelled",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_current" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_current",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_stack_clear" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_stack_clear",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_stack_enter" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_stack_enter",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_stack_depth" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_stack_depth",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_last" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_last",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_last_pending" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_last_pending",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_active" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_active",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_current" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_current",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_clear" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_clear",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "asyncgen_shutdown" => Some(OpLoopRuntimeCallSpec {
+            import_name: "asyncgen_shutdown",
+            args: &[],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "not" => Some(OpLoopRuntimeCallSpec {
+            import_name: "not",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "id" => Some(OpLoopRuntimeCallSpec {
+            import_name: "id",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "file_close" => Some(OpLoopRuntimeCallSpec {
+            import_name: "file_close",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "file_flush" => Some(OpLoopRuntimeCallSpec {
+            import_name: "file_flush",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "chan_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "chan_new",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_new",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_clone" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_clone",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_drop" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_drop",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_cancel" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_cancel",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "future_cancel" => Some(OpLoopRuntimeCallSpec {
+            import_name: "future_cancel",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "future_cancel_clear" => Some(OpLoopRuntimeCallSpec {
+            import_name: "future_cancel_clear",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "block_on" => Some(OpLoopRuntimeCallSpec {
+            import_name: "block_on",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_is_cancelled" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_is_cancelled",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "cancel_token_set_current" => Some(OpLoopRuntimeCallSpec {
+            import_name: "cancel_token_set_current",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "asyncgen_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "asyncgen_new",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "is_generator" => Some(OpLoopRuntimeCallSpec {
+            import_name: "is_generator",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "is_callable" => Some(OpLoopRuntimeCallSpec {
+            import_name: "is_callable",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "iter" => Some(OpLoopRuntimeCallSpec {
+            import_name: "iter",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "aiter" => Some(OpLoopRuntimeCallSpec {
+            import_name: "aiter",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "iter_next" => Some(OpLoopRuntimeCallSpec {
+            import_name: "iter_next",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "anext" => Some(OpLoopRuntimeCallSpec {
+            import_name: "anext",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_clear" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_clear",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_copy" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_copy",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_reverse" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_reverse",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "tuple_from_list" => Some(OpLoopRuntimeCallSpec {
+            import_name: "tuple_from_list",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_clear" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_clear",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_copy" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_copy",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_popitem" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_popitem",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_keys" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_keys",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_values" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_values",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_items" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_items",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_pop" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_pop",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_stack_exit" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_stack_exit",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_stack_set_depth" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_stack_set_depth",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_enter_handler" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_enter_handler",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_resolve_captured" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_resolve_captured",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exceptiongroup_combine" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exceptiongroup_combine",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_kind" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_kind",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_class" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_class",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_message" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_message",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_context_set" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_context_set",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_set_last" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_set_last",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "is" => Some(OpLoopRuntimeCallSpec {
+            import_name: "is",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "file_open" => Some(OpLoopRuntimeCallSpec {
+            import_name: "file_open",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "file_read" => Some(OpLoopRuntimeCallSpec {
+            import_name: "file_read",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "file_write" => Some(OpLoopRuntimeCallSpec {
+            import_name: "file_write",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "future_cancel_msg" => Some(OpLoopRuntimeCallSpec {
+            import_name: "future_cancel_msg",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "promise_set_result" => Some(OpLoopRuntimeCallSpec {
+            import_name: "promise_set_result",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "promise_set_exception" => Some(OpLoopRuntimeCallSpec {
+            import_name: "promise_set_exception",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "task_register_token_owned" => Some(OpLoopRuntimeCallSpec {
+            import_name: "task_register_token_owned",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "env_get" => Some(OpLoopRuntimeCallSpec {
+            import_name: "env_get",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "del_index" => Some(OpLoopRuntimeCallSpec {
+            import_name: "del_index",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_append" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_append",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_int_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_int_new",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_fill_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_fill_new",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_pop" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_pop",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_extend" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_extend",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_remove" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_remove",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_count" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_count",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_index" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_index",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "tuple_count" => Some(OpLoopRuntimeCallSpec {
+            import_name: "tuple_count",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_update" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_update",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_setdefault_empty_list" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_setdefault_empty_list",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_update_kwstar" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_update_kwstar",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_add" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_add",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_add_probe" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_add_probe",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "frozenset_add" => Some(OpLoopRuntimeCallSpec {
+            import_name: "frozenset_add",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_discard" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_discard",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_remove" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_remove",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_update" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_update",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_intersection_update" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_intersection_update",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_difference_update" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_difference_update",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "set_symdiff_update" => Some(OpLoopRuntimeCallSpec {
+            import_name: "set_symdiff_update",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_new",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_new_from_class" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_new_from_class",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exceptiongroup_match" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exceptiongroup_match",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_set_cause" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_set_cause",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "exception_set_value" => Some(OpLoopRuntimeCallSpec {
+            import_name: "exception_set_value",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "thread_submit" => Some(OpLoopRuntimeCallSpec {
+            import_name: "thread_submit",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "slice_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "slice_new",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_from_range" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_from_range",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "range_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "range_new",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_insert" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_insert",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_get" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_get",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_inc" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_inc",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_str_int_inc" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_str_int_inc",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_setdefault" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_setdefault",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "callargs_push_kw" => Some(OpLoopRuntimeCallSpec {
+            import_name: "callargs_push_kw",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "enumerate" => Some(OpLoopRuntimeCallSpec {
+            import_name: "enumerate",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "list_index_range" => Some(OpLoopRuntimeCallSpec {
+            import_name: "list_index_range",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_pop" => Some(OpLoopRuntimeCallSpec {
+            import_name: "dict_pop",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "callargs_push_pos" => Some(OpLoopRuntimeCallSpec {
+            import_name: "callargs_push_pos",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "callargs_expand_star" => Some(OpLoopRuntimeCallSpec {
+            import_name: "callargs_expand_star",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "callargs_expand_kwstar" => Some(OpLoopRuntimeCallSpec {
+            import_name: "callargs_expand_kwstar",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "ord" => Some(OpLoopRuntimeCallSpec {
+            import_name: "ord",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "chr" => Some(OpLoopRuntimeCallSpec {
+            import_name: "chr",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_lower" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_lower",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_upper" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_upper",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_capitalize" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_capitalize",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "float_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "float_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "intarray_from_seq" => Some(OpLoopRuntimeCallSpec {
+            import_name: "intarray_from_seq",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "memoryview_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "memoryview_new",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "memoryview_tobytes" => Some(OpLoopRuntimeCallSpec {
+            import_name: "memoryview_tobytes",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "str_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "str_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "repr_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "repr_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "ascii_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "ascii_from_obj",
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "ord_at" => Some(OpLoopRuntimeCallSpec {
+            import_name: "ord_at",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_join" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_join",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_validate" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_validate",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_strip" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_strip",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_lstrip" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_lstrip",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_rstrip" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_rstrip",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_split" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_split",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_split" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_split",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "buffer2d_matmul" => Some(OpLoopRuntimeCallSpec {
+            import_name: "buffer2d_matmul",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_find" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_find",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_find" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_find",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_find" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_find",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_startswith" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_startswith",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_startswith" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_startswith",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_startswith" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_startswith",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_endswith" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_endswith",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_endswith" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_endswith",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_endswith" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_endswith",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_count" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_count",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_count" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_count",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_count" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_count",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_len" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_len",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_max" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_max",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_split_max" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_split_max",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_split_max" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_split_max",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_from_str" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_from_str",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_from_str" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_from_str",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "int_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "int_from_obj",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "int_from_str_of_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "int_from_str_of_obj",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "complex_from_obj" => Some(OpLoopRuntimeCallSpec {
+            import_name: "complex_from_obj",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "buffer2d_new" => Some(OpLoopRuntimeCallSpec {
+            import_name: "buffer2d_new",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "buffer2d_get" => Some(OpLoopRuntimeCallSpec {
+            import_name: "buffer2d_get",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_ws_dict_inc" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_ws_dict_inc",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "taq_ingest_line" => Some(OpLoopRuntimeCallSpec {
+            import_name: "taq_ingest_line",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_start" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_start",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_end" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_end",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_is_ascii" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_is_ascii",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_to_int" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_to_int",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_eq" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_eq",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_len_from_bounds" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_len_from_bounds",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_replace" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_replace",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_replace" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_replace",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_replace" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_replace",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "buffer2d_set" => Some(OpLoopRuntimeCallSpec {
+            import_name: "buffer2d_set",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "memoryview_cast" => Some(OpLoopRuntimeCallSpec {
+            import_name: "memoryview_cast",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_sep_dict_inc" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_sep_dict_inc",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_fill_range" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_fill_range",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_split_field_ord_at_bounds" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_split_field_ord_at_bounds",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "statistics_mean_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "statistics_mean_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "statistics_stdev_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "statistics_stdev_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_find_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_find_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_find_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_find_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_find_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_find_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_startswith_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_startswith_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_startswith_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_startswith_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_startswith_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_startswith_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_endswith_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_endswith_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_endswith_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_endswith_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_endswith_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_endswith_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "string_count_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "string_count_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytes_count_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytes_count_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
+        }),
+        "bytearray_count_slice" => Some(OpLoopRuntimeCallSpec {
+            import_name: "bytearray_count_slice",
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+                OpLoopRuntimeArgSpec::Local(5),
+            ],
+            sink: OpLoopRuntimeSinkSpec::NonNoneResultOrDrop,
         }),
         _ => None,
     }

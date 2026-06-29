@@ -193,26 +193,29 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     calls = {entry["variant"]: entry for entry in data["lir_runtime_call"]}
+    op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
 
     assert calls["Add"]["import_name"] == "add"
     assert calls["FloorDiv"]["import_name"] == "floordiv"
     assert calls["ModuleImportStar"] == {
         "variant": "ModuleImportStar",
         "import_name": "module_import_star",
-        "preserved_copy_operand_count": 2,
     }
     assert calls["ContextDepth"] == {
         "variant": "ContextDepth",
         "import_name": "context_depth",
-        "preserved_copy_operand_count": 0,
     }
     assert calls["IntFromI64"]["import_name"] == "int_from_i64"
+    assert op_loop_calls["module_import_star"]["lir_variant"] == "ModuleImportStar"
+    assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
+    assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
+    assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
 
     rendered_rs = _rendered_rs(gen, data)
     assert "enum LirRuntimeCall" in rendered_rs
     assert "Self::FloorDiv => \"floordiv\"" in rendered_rs
-    assert "preserved_copy_runtime_call" in rendered_rs
-    assert '"context_depth" => Some(LirPreservedCopyRuntimeCall' in rendered_rs
+    assert "lir_fixed_runtime_call" in rendered_rs
+    assert '"context_depth" => Some(LirFixedRuntimeCall' in rendered_rs
 
     broken = copy.deepcopy(data)
     broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
@@ -224,6 +227,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     ).read_text(encoding="utf-8")
     assert "enum LirRuntimeCall" not in local_facade
     assert "match kind" not in local_facade
+    assert "lir_fixed_runtime_call" in local_facade
     assert "crate::wasm_abi_generated::LirRuntimeCall" in local_facade
 
 
@@ -395,9 +399,11 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     ).read_text(encoding="utf-8")
     assert "POLL_TABLE_FUNCS" not in callable_table
     callable_layout = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_layout.rs"
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs"
     ).read_text(encoding="utf-8")
-    assert "spec.table_slot" in callable_layout
+    assert "poll_table.seed_function_table_slots(&mut func_to_table_idx)" in callable_layout
+    assert "for spec in RESERVED_RUNTIME_CALLABLE_SPECS" in callable_layout
+    assert "table_index: table_base + table_slot" in callable_layout
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:

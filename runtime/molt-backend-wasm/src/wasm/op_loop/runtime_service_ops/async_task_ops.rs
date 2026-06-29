@@ -1,5 +1,4 @@
 use super::RuntimeServiceOpContext;
-use super::call_emit::{RuntimeServiceArg::Local, RuntimeServiceCall, emit_runtime_service_call};
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm_abi::{
@@ -13,11 +12,6 @@ pub(super) fn emit_async_task_runtime_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    if let Some(call) = async_task_runtime_call(op.kind.as_str()) {
-        emit_runtime_service_call(context, func, op, call);
-        return true;
-    }
-
     let call_site_abi = context.call_site_abi;
     let import_ids = context.import_ids;
     let locals = context.locals;
@@ -104,43 +98,4 @@ pub(super) fn emit_async_task_runtime_op(
         _ => return false,
     }
     true
-}
-
-fn async_task_runtime_call(kind: &str) -> Option<RuntimeServiceCall<'static>> {
-    Some(match kind {
-        "cancel_token_new" => RuntimeServiceCall::result("cancel_token_new", &[Local(0)]),
-        "cancel_token_clone" => RuntimeServiceCall::result("cancel_token_clone", &[Local(0)]),
-        "cancel_token_drop" => RuntimeServiceCall::result("cancel_token_drop", &[Local(0)]),
-        "cancel_token_cancel" => RuntimeServiceCall::result("cancel_token_cancel", &[Local(0)]),
-        "future_cancel" => RuntimeServiceCall::result("future_cancel", &[Local(0)]),
-        "future_cancel_msg" => {
-            RuntimeServiceCall::result("future_cancel_msg", &[Local(0), Local(1)])
-        }
-        "future_cancel_clear" => RuntimeServiceCall::result("future_cancel_clear", &[Local(0)]),
-        "promise_new" => RuntimeServiceCall::result("promise_new", &[]),
-        "promise_set_result" => {
-            RuntimeServiceCall::result("promise_set_result", &[Local(0), Local(1)])
-        }
-        "promise_set_exception" => {
-            RuntimeServiceCall::result("promise_set_exception", &[Local(0), Local(1)])
-        }
-        "thread_submit" => {
-            RuntimeServiceCall::result("thread_submit", &[Local(0), Local(1), Local(2)])
-        }
-        "task_register_token_owned" => {
-            RuntimeServiceCall::result("task_register_token_owned", &[Local(0), Local(1)])
-        }
-        "spawn" => RuntimeServiceCall::no_result("spawn", &[Local(0)]),
-        "cancel_token_is_cancelled" => {
-            RuntimeServiceCall::result("cancel_token_is_cancelled", &[Local(0)])
-        }
-        "cancel_token_set_current" => {
-            RuntimeServiceCall::result("cancel_token_set_current", &[Local(0)])
-        }
-        "cancel_token_get_current" => RuntimeServiceCall::result("cancel_token_get_current", &[]),
-        "cancelled" => RuntimeServiceCall::result("cancelled", &[]),
-        "cancel_current" => RuntimeServiceCall::result("cancel_current", &[]),
-        "block_on" => RuntimeServiceCall::result("block_on", &[Local(0)]),
-        _ => return None,
-    })
 }
