@@ -1417,10 +1417,12 @@ callable_arity = 1
 [[import]]
 name = "runtime_init"
 type = 0
+runtime_name = "molt_runtime_init"
 
 [[import]]
 name = "runtime_shutdown"
 type = 0
+runtime_name = "molt_runtime_shutdown"
 
 [[import]]
 name = "sys_set_version_info"
