@@ -68,7 +68,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
 use super::counted_loop::{self, CountedLoop};
-use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
+use crate::tir::analysis::{Analysis, LoopForest};
+use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
@@ -182,16 +183,13 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         return Vec::new();
     }
 
-    let mut header_ids: Vec<BlockId> = func
-        .loop_roles
-        .iter()
-        .filter_map(|(bid, role)| (*role == LoopRole::LoopHeader).then_some(*bid))
-        .collect();
-    header_ids.sort_by_key(|b| b.0);
+    let loop_forest = <LoopForest as Analysis>::compute(func);
 
     let mut candidates = Vec::new();
-    for header_id in header_ids {
-        let Some(loop_info) = counted_loop::recognize_counted_loop(func, header_id) else {
+    for &header_id in &loop_forest.headers {
+        let Some(loop_info) =
+            counted_loop::recognize_counted_loop_with_loop_forest(func, header_id, &loop_forest)
+        else {
             continue;
         };
         if !loop_info.has_material_exit {
