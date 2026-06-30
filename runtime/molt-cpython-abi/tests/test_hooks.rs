@@ -128,6 +128,22 @@ fn test_stub_bytes_data_null_out_len() {
 }
 
 #[test]
+fn test_stub_buffer_hooks_fail_closed_and_clear_view() {
+    init();
+    let h = hooks_or_stubs();
+    let mut view = molt_cpython_abi::hooks::MoltBufferView {
+        data: 1usize as *mut u8,
+        len: 8,
+        readonly: 0,
+        ..molt_cpython_abi::hooks::MoltBufferView::default()
+    };
+    assert_eq!(unsafe { (h.buffer_acquire)(0, &mut view) }, -1);
+    assert!(view.data.is_null());
+    assert_eq!(unsafe { (h.buffer_release)(&mut view) }, 0);
+    assert!(view.data.is_null());
+}
+
+#[test]
 fn test_stub_classify_heap() {
     init();
     let h = hooks_or_stubs();

@@ -18,9 +18,13 @@ from pathlib import Path
 TOOLS_ROOT = Path(__file__).resolve().parent
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
+SRC_ROOT = TOOLS_ROOT.parent / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
 import artifact_publish  # noqa: E402
+from molt.cli import wasm_toolchain  # noqa: E402
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
@@ -33,6 +37,7 @@ from wasm_link_format import (  # noqa: E402
     SYMBOL_DUMP_RE as SYMBOL_DUMP_RE,
     SYMBOL_KIND_FUNCTION as SYMBOL_KIND_FUNCTION,
     SYMTAB_SUBSECTION_ID as SYMTAB_SUBSECTION_ID,
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES as WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORTS as WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
     WASM_MAGIC as WASM_MAGIC,
     WASM_VERSION as WASM_VERSION,
@@ -101,8 +106,10 @@ from wasm_link_edit import (  # noqa: E402
     _rename_export_names as _rename_export_names,
     _required_linked_table_min as _required_linked_table_min,
     _restore_output_export_aliases as _restore_output_export_aliases,
+    _rewrite_native_runtime_imports as _rewrite_native_runtime_imports,
     _rewrite_memory_min as _rewrite_memory_min,
     _rewrite_output_imports as _rewrite_output_imports,
+    _rewrite_runtime_import_module_namespace as _rewrite_runtime_import_module_namespace,
     _rewrite_table_import_min as _rewrite_table_import_min,
     _split_app_reference_function_exports as _split_app_reference_function_exports,
     _strip_internal_exports as _strip_internal_exports,
@@ -489,6 +496,206 @@ def _read_link_allowlist_symbols(path: Path) -> list[str]:
     ]
 
 
+_COMPILER_RT_LINK_IMPORT_CLASS = "wasm_compiler_rt_link_import"
+_DEFAULT_SPLIT_APP_GLOBAL_BASE = 64 * 1024 * 1024
+
+
+def _external_native_host_link_imports() -> tuple[str, ...]:
+    return tuple(
+        symbol
+        for symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORTS
+        if WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
+        != _COMPILER_RT_LINK_IMPORT_CLASS
+    )
+
+
+def _compiler_rt_link_imports() -> frozenset[str]:
+    return frozenset(
+        symbol
+        for symbol, primitive_class in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.items()
+        if primitive_class == _COMPILER_RT_LINK_IMPORT_CLASS
+    )
+
+
+def _native_wasm_import_names(path: Path) -> set[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return set()
+    if not _is_wasm_binary(data):
+        return set()
+    try:
+        return {
+            name for _module, name, kind, _desc in _collect_imports(data) if kind == 0
+        }
+    except ValueError:
+        return set()
+
+
+def _compiler_rt_imports_required_by_native_objects(
+    native_objects: Sequence[Path],
+) -> frozenset[str]:
+    compiler_rt_imports = _compiler_rt_link_imports()
+    return frozenset(
+        sorted(
+            name
+            for native_object in native_objects
+            for name in _native_wasm_import_names(native_object)
+            if name in compiler_rt_imports
+        )
+    )
+
+
+def _is_compiler_rt_provider_path(path: Path) -> bool:
+    return path.name == "libcompiler_builtins.rlib" or (
+        path.name.startswith("libcompiler_builtins-") and path.suffix == ".rlib"
+    )
+
+
+def _compiler_rt_provider_inputs(
+    native_objects: Sequence[Path],
+    required_symbols: frozenset[str],
+) -> tuple[Path, ...]:
+    if not required_symbols:
+        return ()
+    if any(_is_compiler_rt_provider_path(path) for path in native_objects):
+        return ()
+    provider = wasm_toolchain.wasm_compiler_builtins_archive()
+    if provider is None:
+        missing = ", ".join(sorted(required_symbols))
+        raise ValueError(
+            "wasm_compiler_rt_link_import symbols require Rust wasm32-wasip1 "
+            f"libcompiler_builtins provider; missing provider for: {missing}"
+        )
+    provider = provider.resolve(strict=False)
+    if not provider.exists():
+        raise ValueError(
+            f"wasm_compiler_rt_link_import provider does not exist: {provider}"
+        )
+    return (provider,)
+
+
+def _resolve_native_link_inputs(native_objects: Sequence[Path]) -> tuple[Path, ...]:
+    native_inputs = tuple(native_objects)
+    required_compiler_rt = _compiler_rt_imports_required_by_native_objects(
+        native_inputs
+    )
+    return (
+        *native_inputs,
+        *_compiler_rt_provider_inputs(native_inputs, required_compiler_rt),
+    )
+
+
+def _read_const_i32_init_expr(data: bytes, offset: int) -> tuple[int, int]:
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF while reading data offset expression")
+    opcode = data[offset]
+    offset += 1
+    if opcode != 0x41:
+        raise ValueError(
+            f"Unsupported data offset expression opcode 0x{opcode:02x}; "
+            "expected i32.const"
+        )
+    value, offset = _read_varsint(data, offset)
+    if offset >= len(data):
+        raise ValueError("Unexpected EOF after data offset expression")
+    terminator = data[offset]
+    offset += 1
+    if terminator != 0x0B:
+        raise ValueError(
+            f"Unsupported data offset expression terminator 0x{terminator:02x}; "
+            "expected end"
+        )
+    return value, offset
+
+
+def _active_data_segment_min(data: bytes) -> int | None:
+    minimum: int | None = None
+    for section_id, payload in _parse_sections(data):
+        if section_id != 11:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            flags, offset = _read_varuint(payload, offset)
+            if flags == 1:
+                size, offset = _read_varuint(payload, offset)
+                offset += size
+                continue
+            if flags == 2:
+                _memory_index, offset = _read_varuint(payload, offset)
+            elif flags != 0:
+                raise ValueError(f"Unsupported data segment flags: {flags}")
+            data_offset, offset = _read_const_i32_init_expr(payload, offset)
+            size, offset = _read_varuint(payload, offset)
+            offset += size
+            if data_offset >= 0:
+                minimum = data_offset if minimum is None else min(minimum, data_offset)
+    return minimum
+
+
+def _split_app_global_base(output_data: bytes) -> int:
+    active_min = _active_data_segment_min(output_data)
+    if active_min is not None and active_min > 0:
+        return active_min
+    return _DEFAULT_SPLIT_APP_GLOBAL_BASE
+
+
+def _public_output_export_symbol_map(
+    output_data: bytes,
+    *,
+    preserved_output_exports: Sequence[str],
+    export_symbol_map: Mapping[str, str],
+) -> dict[str, str]:
+    public_export_map = {
+        name: export_symbol_map[name]
+        for name in preserved_output_exports
+        if name in export_symbol_map
+    }
+    public_export_map.update(
+        {
+            name: export_symbol_map[name]
+            for name in (
+                "molt_host_init",
+                "molt_main",
+                "molt_table_init",
+                "molt_set_wasm_table_base",
+            )
+            if name in export_symbol_map
+        }
+    )
+    public_export_map.update(
+        {
+            name: export_symbol_map[name]
+            for name in _collect_function_exports(output_data)
+            if is_table_ref_export_name(name) and name in export_symbol_map
+        }
+    )
+    return public_export_map
+
+
+def _restore_public_output_exports(
+    data: bytes,
+    public_export_map: Mapping[str, str],
+) -> bytes:
+    restored = data
+    updated = _ensure_function_exports_by_symbol_names(restored, public_export_map)
+    if updated is not None:
+        restored = updated
+    rename_map = {
+        symbol_name: public_name
+        for public_name, symbol_name in public_export_map.items()
+        if symbol_name != public_name
+    }
+    updated = _rename_export_names(restored, rename_map)
+    if updated is not None:
+        restored = updated
+    updated = _restore_output_export_aliases(restored)
+    if updated is not None:
+        restored = updated
+    return restored
+
+
 def _compose_wasm_ld_allowlist(
     *,
     base_allowlist: Path,
@@ -505,7 +712,10 @@ def _compose_wasm_ld_allowlist(
     if not native_objects:
         return base_allowlist
     symbols = sorted(
-        {*_read_link_allowlist_symbols(base_allowlist), *WASM_EXTERNAL_NATIVE_LINK_IMPORTS}
+        {
+            *_read_link_allowlist_symbols(base_allowlist),
+            *_external_native_host_link_imports(),
+        }
     )
     composed = Path(temp_dir.name) / "wasm_allowed_imports.external_native.txt"
     composed.write_text(
@@ -513,6 +723,44 @@ def _compose_wasm_ld_allowlist(
             [
                 "# @generated transaction-local by tools/wasm_link.py",
                 "# runtime allowlist + generated external native link imports",
+                *symbols,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return composed
+
+
+def _compose_split_runtime_native_allowlist(
+    *,
+    base_allowlist: Path,
+    native_objects: Sequence[Path],
+    runtime_exports: set[str],
+    temp_dir: tempfile.TemporaryDirectory,
+) -> Path:
+    """Return the deployed split-app allowlist for static native extensions.
+
+    The monolithic validation link resolves Molt ABI symbols against the runtime
+    stub. The deployed split app deliberately leaves those same symbols as
+    ``molt_runtime`` imports, so wasm-ld must allow the generated runtime export
+    surface only for that transaction-local app link.
+    """
+    if not native_objects:
+        return base_allowlist
+    symbols = sorted(
+        {
+            *_read_link_allowlist_symbols(base_allowlist),
+            *_external_native_host_link_imports(),
+            *runtime_exports,
+        }
+    )
+    composed = Path(temp_dir.name) / "wasm_allowed_imports.split_runtime_native.txt"
+    composed.write_text(
+        "\n".join(
+            [
+                "# @generated transaction-local by tools/wasm_link.py",
+                "# split-runtime native app imports: host + external-native + runtime ABI",
                 *symbols,
                 "",
             ]
@@ -1021,8 +1269,16 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
     try:
         app_imports = _collect_module_imports(app_data, "molt_runtime")
         rt_exports = _collect_function_exports(rt_data)
+        app_memory_min = _memory_import_min(app_data)
     except ValueError as exc:
         print(f"Failed to parse split-runtime staged output: {exc}", file=sys.stderr)
+        return False
+    if app_memory_min is None:
+        print(
+            "Split-runtime app must import env.memory; a private app memory "
+            "breaks pointer-bearing runtime ABI calls.",
+            file=sys.stderr,
+        )
         return False
     missing: list[str] = []
     for name in app_imports:
@@ -1180,6 +1436,11 @@ def _run_wasm_ld(
             print(f"Native WASM link input not found: {native_object}", file=sys.stderr)
             return 1
     try:
+        native_objects = _resolve_native_link_inputs(tuple(native_objects))
+    except ValueError as exc:
+        print(f"Wasm link failed: {exc}", file=sys.stderr)
+        return 1
+    try:
         runtime_exports = _collect_exports(runtime.read_bytes())
     except ValueError as exc:
         print(
@@ -1222,6 +1483,7 @@ def _run_wasm_ld(
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
     output_data = output.read_bytes()
+    output_memory_min = _memory_import_min(output_data)
     preserved_output_exports = _collect_preserved_output_export_names(output_data)
     export_symbol_map = _collect_output_export_symbol_map(output_data)
     user_export_symbol_names = [
@@ -1233,19 +1495,50 @@ def _run_wasm_ld(
     if rewritten is None:
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
+    native_link_inputs, native_force_exports = _rewrite_native_runtime_imports(
+        tuple(native_objects),
+        runtime_exports,
+        temp_dir,
+    )
+    force_exports.extend(native_force_exports)
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
     if allowlist_override is not None:
-        allowlist = allowlist_override
+        base_allowlist = allowlist_override
     else:
-        allowlist = Path(__file__).parent / "wasm_allowed_imports.txt"
-    if not allowlist.exists():
-        print(f"Allowlist not found: {allowlist}", file=sys.stderr)
+        base_allowlist = Path(__file__).parent / "wasm_allowed_imports.txt"
+    if not base_allowlist.exists():
+        print(f"Allowlist not found: {base_allowlist}", file=sys.stderr)
         return 1
     allowlist = _compose_wasm_ld_allowlist(
-        base_allowlist=allowlist,
+        base_allowlist=base_allowlist,
         native_objects=native_objects,
         temp_dir=temp_dir,
     )
+    split_native_allowlist = _compose_split_runtime_native_allowlist(
+        base_allowlist=base_allowlist,
+        native_objects=native_link_inputs,
+        runtime_exports=runtime_exports,
+        temp_dir=temp_dir,
+    )
+    stub_link_rewritten_path = rewritten_path
+    stub_link_native_inputs = native_link_inputs
+    if split_runtime and native_objects:
+        # The validation link resolves Molt ABI imports against a generated
+        # runtime stub in the normal wasm-ld symbol namespace. The deployed
+        # split app keeps the same imports as ``molt_runtime`` ABI edges.
+        stub_rewrite = _rewrite_runtime_import_module_namespace(
+            rewritten_path,
+            source_module="molt_runtime",
+            target_module="env",
+            runtime_exports=runtime_exports,
+            temp_dir=temp_dir,
+            filename="output_stub_link_imports.wasm",
+        )
+        if stub_rewrite is None:
+            return 1
+        stub_link_rewritten_path, stub_force_exports = stub_rewrite
+        force_exports.extend(stub_force_exports)
+        stub_link_native_inputs = tuple(native_objects)
     staged_outputs: list[Path] = []
     work_linked = artifact_publish.staged_output_path(linked)
     staged_outputs.append(work_linked)
@@ -1365,21 +1658,32 @@ def _run_wasm_ld(
     cmd += [
         "-o",
         str(work_linked),
-        str(rewritten_path),
+        str(stub_link_rewritten_path),
         str(link_runtime_path),
     ]
-    cmd.extend(str(native_object) for native_object in native_objects)
+    cmd.extend(str(native_object) for native_object in stub_link_native_inputs)
 
     split_native_app_path: Path | None = None
     split_native_app_cmd: list[str] | None = None
     if split_runtime and native_objects:
         split_native_app_path = Path(temp_dir.name) / "app_native_linked.wasm"
+        split_app_global_base = _split_app_global_base(output_data)
+        split_native_prefix = [
+            f"--allow-undefined-file={split_native_allowlist}"
+            if part.startswith("--allow-undefined-file=")
+            else "--no-stack-first"
+            if part == "--stack-first"
+            else part
+            for part in cmd[: cmd.index("-o")]
+        ]
         split_native_app_cmd = [
-            *cmd[: cmd.index("-o")],
+            *split_native_prefix,
+            "--import-memory",
+            f"--global-base={split_app_global_base}",
             "-o",
             str(split_native_app_path),
             str(rewritten_path),
-            *(str(native_object) for native_object in native_objects),
+            *(str(native_object) for native_object in native_link_inputs),
         ]
 
     res = _run_external_tool(cmd, capture_output=True, text=True)
@@ -1422,44 +1726,17 @@ def _run_wasm_ld(
         if canonical_linked_bytes != linked_bytes:
             work_linked.write_bytes(canonical_linked_bytes)
             linked_bytes = canonical_linked_bytes
-        public_export_map = {
-            name: export_symbol_map[name]
-            for name in preserved_output_exports
-            if name in export_symbol_map
-        }
-        public_export_map.update(
-            {
-                name: export_symbol_map[name]
-                for name in ("molt_host_init", "molt_main", "molt_table_init")
-                if name in export_symbol_map
-            }
+        public_export_map = _public_output_export_symbol_map(
+            output_data,
+            preserved_output_exports=preserved_output_exports,
+            export_symbol_map=export_symbol_map,
         )
-        public_export_map.update(
-            {
-                name: export_symbol_map[name]
-                for name in _collect_function_exports(output_data)
-                if is_table_ref_export_name(name) and name in export_symbol_map
-            }
-        )
-        updated = _ensure_function_exports_by_symbol_names(
+        restored_linked_bytes = _restore_public_output_exports(
             linked_bytes, public_export_map
         )
-        if updated is not None:
-            work_linked.write_bytes(updated)
-            linked_bytes = updated
-        rename_map = {
-            export_symbol_map[name]: name
-            for name in preserved_output_exports
-            if name in export_symbol_map and export_symbol_map[name] != name
-        }
-        updated = _rename_export_names(linked_bytes, rename_map)
-        if updated is not None:
-            work_linked.write_bytes(updated)
-            linked_bytes = updated
-        updated = _restore_output_export_aliases(linked_bytes)
-        if updated is not None:
-            work_linked.write_bytes(updated)
-            linked_bytes = updated
+        if restored_linked_bytes != linked_bytes:
+            work_linked.write_bytes(restored_linked_bytes)
+            linked_bytes = restored_linked_bytes
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
@@ -1520,7 +1797,6 @@ def _run_wasm_ld(
             if updated is not None:
                 work_linked.write_bytes(updated)
                 linked_bytes = updated
-        output_memory_min = _memory_import_min(output.read_bytes())
         if output_memory_min is not None:
             try:
                 updated = _rewrite_memory_min(linked_bytes, output_memory_min)
@@ -1652,6 +1928,12 @@ def _run_wasm_ld(
                 if canonical_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(canonical_rewritten_data)
                     rewritten_data = canonical_rewritten_data
+                restored_rewritten_data = _restore_public_output_exports(
+                    rewritten_data, public_export_map
+                )
+                if restored_rewritten_data != rewritten_data:
+                    split_native_app_path.write_bytes(restored_rewritten_data)
+                    rewritten_data = restored_rewritten_data
             else:
                 # For split-runtime without external native objects, the app
                 # artifact must remain unlinked while preserving the runtime ABI
@@ -1664,10 +1946,21 @@ def _run_wasm_ld(
                 rewritten_data = rewritten_path.read_bytes()
             optimized_app = _optimize_split_app_module(
                 rewritten_data,
-                reference_data=output.read_bytes(),
+                reference_data=output_data,
                 optimize=optimize,
                 optimize_level=optimize_level,
             )
+            if output_memory_min is not None:
+                try:
+                    updated = _rewrite_memory_min(optimized_app, output_memory_min)
+                except ValueError as exc:
+                    print(
+                        f"Failed to rewrite split app memory min: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if updated is not None:
+                    optimized_app = updated
             if native_objects:
                 native_imports = _collect_module_imports(optimized_app, "molt_native")
                 if native_imports:

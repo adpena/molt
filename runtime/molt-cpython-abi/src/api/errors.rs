@@ -5,7 +5,7 @@
 //! most common format codes: `i`, `l`, `d`, `f`, `s`, `z`, `s#`, `O`, `p`,
 //! `n`, `L`, `K`, `b`, `B`, `H`, `I`, `k`, `y`, `y#`, `C`.
 
-use crate::abi_types::{Py_ssize_t, PyObject};
+use crate::abi_types::{Py_ssize_t, PyBaseExceptionObject, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, c_void};
@@ -67,13 +67,22 @@ pub unsafe extern "C" fn PyErr_Print() {
 }
 
 /// Set a ValueError with formatted message.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Format(
     exc_type: *mut PyObject,
     format: *const c_char,
     // variadic — we capture only the format string for the common case
 ) -> *mut PyObject {
     unsafe { PyErr_SetString(exc_type, format) };
+    ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetFromErrno(exc_type: *mut PyObject) -> *mut PyObject {
+    let message = std::io::Error::last_os_error().to_string();
+    let c_message = std::ffi::CString::new(message).unwrap_or_else(|_| {
+        std::ffi::CString::new("operating system error").expect("static string has no nul")
+    });
+    unsafe { PyErr_SetString(exc_type, c_message.as_ptr()) };
     ptr::null_mut()
 }
 
@@ -191,6 +200,53 @@ pub unsafe extern "C" fn PyErr_GivenExceptionMatches(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut PyObject) -> c_int {
+    if exc.is_null() {
+        return -1;
+    }
+    let base = exc.cast::<PyBaseExceptionObject>();
+    unsafe {
+        if !tb.is_null() {
+            crate::api::refcount::Py_INCREF(tb);
+        }
+        let old = (*base).traceback;
+        (*base).traceback = tb;
+        if !old.is_null() {
+            crate::api::refcount::Py_DECREF(old);
+        }
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mut PyObject) {
+    if exc.is_null() {
+        unsafe { crate::api::refcount::Py_XDECREF(context) };
+        return;
+    }
+    let base = exc.cast::<PyBaseExceptionObject>();
+    unsafe {
+        let old = (*base).context;
+        (*base).context = context;
+        crate::api::refcount::Py_XDECREF(old);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_SetCause(exc: *mut PyObject, cause: *mut PyObject) {
+    if exc.is_null() {
+        unsafe { crate::api::refcount::Py_XDECREF(cause) };
+        return;
+    }
+    let base = exc.cast::<PyBaseExceptionObject>();
+    unsafe {
+        let old = (*base).cause;
+        (*base).cause = cause;
+        crate::api::refcount::Py_XDECREF(old);
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_WarnEx(
     _category: *mut PyObject,
     _message: *const c_char,
@@ -209,6 +265,11 @@ pub unsafe extern "C" fn PyErr_WriteUnraisable(obj: *mut PyObject) {
         }
     });
     unsafe { PyErr_Clear() };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_CheckSignals() -> c_int {
+    0
 }
 
 // ─── PyArg_ParseTuple ─────────────────────────────────────────────────────

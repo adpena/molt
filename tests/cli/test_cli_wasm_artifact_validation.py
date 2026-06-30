@@ -98,6 +98,105 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
     assert "D <_CLOCK_THREAD_CPUTIME_ID>" in exports
 
 
+def test_ensure_runtime_wasm_artifact_all_exports_satisfies_later_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm"
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_ensure_runtime_wasm(runtime_wasm: Path, **kwargs: object) -> bool:
+        calls.append({"runtime_wasm": runtime_wasm, **kwargs})
+        return True
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_ensure_runtime_wasm",
+        fake_ensure_runtime_wasm,
+        raising=True,
+    )
+    ensure_kwargs = {
+        "runtime_state": runtime_state,
+        "reloc": True,
+        "json_output": True,
+        "cargo_profile": "dev-fast",
+        "cargo_timeout": 5.0,
+        "project_root": tmp_path,
+        "simd_enabled": True,
+        "freestanding": False,
+    }
+
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_exports=None,
+    )
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_exports={"molt_add"},
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["required_exports"] is None
+    assert runtime_state.runtime_reloc_wasm_ready_export_sets == {None}
+
+
+def test_ensure_runtime_wasm_artifact_caches_exact_export_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm"
+    )
+    required_exports_by_call: list[frozenset[str] | None] = []
+
+    def fake_ensure_runtime_wasm(runtime_wasm: Path, **kwargs: object) -> bool:
+        del runtime_wasm
+        required_exports = kwargs["required_exports"]
+        required_exports_by_call.append(
+            None if required_exports is None else frozenset(required_exports)
+        )
+        return True
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_ensure_runtime_wasm",
+        fake_ensure_runtime_wasm,
+        raising=True,
+    )
+    ensure_kwargs = {
+        "runtime_state": runtime_state,
+        "reloc": True,
+        "json_output": True,
+        "cargo_profile": "dev-fast",
+        "cargo_timeout": 5.0,
+        "project_root": tmp_path,
+        "simd_enabled": True,
+        "freestanding": False,
+    }
+
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_exports={"molt_add"},
+    )
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_exports={"molt_add"},
+    )
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_exports={"molt_sub"},
+    )
+
+    assert required_exports_by_call == [
+        frozenset({"molt_add"}),
+        frozenset({"molt_sub"}),
+    ]
+    assert runtime_state.runtime_reloc_wasm_ready_export_sets == {
+        frozenset({"molt_add"}),
+        frozenset({"molt_sub"}),
+    }
+
+
 def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -602,7 +701,7 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         "stdlib_logging_ext",
         "builtin_contextvars",
     } <= cmd_features
-    assert "stdlib_micro" not in cmd_features
+    assert "stdlib_micro" in cmd_features
     assert "sqlite" not in cmd_features
     assert "sqlite" not in fingerprint_features
 

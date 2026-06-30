@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use molt_cpython_abi::abi_types::MoltTypeTag;
 use molt_cpython_abi::{MoltBufferView as AbiMoltBufferView, RuntimeHooks};
 use molt_obj_model::MoltObject;
+use num_traits::ToPrimitive;
 
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
-use crate::builtins::numbers::{int_bits_from_i64, int_bits_from_i128, to_i64};
+use crate::builtins::numbers::{int_bits_from_i64, int_bits_from_i128, to_bigint, to_i64};
 use crate::concurrency::gil::with_gil;
 use crate::object::builders::{
     alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
@@ -21,7 +22,7 @@ use crate::object::layout::{
     function_set_call_target_ptr, function_set_dict_bits, function_set_trampoline_ptr,
     module_dict_bits, seq_vec, seq_vec_ref,
 };
-use crate::object::ops::dict_set_in_place;
+use crate::object::ops::{dict_del_in_place, dict_set_in_place};
 use crate::object::type_ids::{
     TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET,
     TYPE_ID_STRING, TYPE_ID_TUPLE,
@@ -77,6 +78,46 @@ unsafe extern "C" fn hook_int_from_u64(value: u64) -> u64 {
 
 unsafe extern "C" fn hook_int_as_i64(bits: u64) -> i64 {
     with_gil(|_py| to_i64(MoltObject::from_bits(bits)).unwrap_or(-1))
+}
+
+unsafe extern "C" fn hook_int_as_i64_checked(bits: u64, out: *mut i64) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    with_gil(|_py| match to_i64(MoltObject::from_bits(bits)) {
+        Some(value) => {
+            unsafe {
+                *out = value;
+            }
+            0
+        }
+        None => -1,
+    })
+}
+
+unsafe extern "C" fn hook_int_as_u64_checked(bits: u64, out: *mut u64) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    with_gil(|_py| {
+        let obj = MoltObject::from_bits(bits);
+        if let Some(value) = to_i64(obj) {
+            if value < 0 {
+                return -1;
+            }
+            unsafe {
+                *out = value as u64;
+            }
+            return 0;
+        }
+        if let Some(value) = to_bigint(obj).and_then(|value| value.to_u64()) {
+            unsafe {
+                *out = value;
+            }
+            return 0;
+        }
+        -1
+    })
 }
 
 unsafe extern "C" fn hook_alloc_list() -> u64 {
@@ -220,6 +261,24 @@ unsafe extern "C" fn hook_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
     0
 }
 
+unsafe extern "C" fn hook_dict_del(dict_bits: u64, key_bits: u64) -> i32 {
+    with_gil(|_py| {
+        let obj = MoltObject::from_bits(dict_bits);
+        let ptr = match obj.as_ptr() {
+            Some(p) => p,
+            None => return -1,
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+            return -1;
+        }
+        if unsafe { dict_del_in_place(&_py, ptr, key_bits) } {
+            0
+        } else {
+            -1
+        }
+    })
+}
+
 unsafe extern "C" fn hook_dict_len(bits: u64) -> usize {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
@@ -357,6 +416,44 @@ unsafe extern "C" fn hook_buffer_release(view: *mut AbiMoltBufferView) -> i32 {
         *view = AbiMoltBufferView::default();
     }
     rc
+}
+
+unsafe extern "C" fn hook_object_get_attr(obj_bits: u64, name_bits: u64) -> u64 {
+    crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits)
+}
+
+unsafe extern "C" fn hook_object_set_attr(obj_bits: u64, name_bits: u64, value_bits: u64) -> i32 {
+    match crate::builtins::attributes::molt_set_attr_name(obj_bits, name_bits, value_bits) {
+        0 => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> u64 {
+    crate::molt_format_builtin(obj_bits, spec_bits)
+}
+
+unsafe extern "C" fn hook_sys_get_object_borrowed(name_data: *const u8, name_len: usize) -> u64 {
+    if name_data.is_null() {
+        return 0;
+    }
+    let name = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_data, name_len) })
+    {
+        Ok(name) => name,
+        Err(_) => return 0,
+    };
+    match name {
+        "argv" => crate::molt_sys_argv(),
+        "builtin_module_names" => crate::molt_sys_builtin_module_names(),
+        "executable" => crate::molt_sys_executable(),
+        "flags" => crate::molt_sys_flags_payload(),
+        "hexversion" => crate::molt_sys_hexversion(),
+        "modules" => crate::molt_sys_modules(),
+        "path" => crate::molt_sys_path(),
+        "version" => crate::molt_sys_version(),
+        "version_info" => crate::molt_sys_version_info(),
+        _ => 0,
+    }
 }
 
 unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
@@ -678,6 +775,8 @@ pub fn register_cpython_hooks() {
         int_from_i64: hook_int_from_i64,
         int_from_u64: hook_int_from_u64,
         int_as_i64: hook_int_as_i64,
+        int_as_i64_checked: hook_int_as_i64_checked,
+        int_as_u64_checked: hook_int_as_u64_checked,
         alloc_list: hook_alloc_list,
         list_append: hook_list_append,
         list_len: hook_list_len,
@@ -689,11 +788,16 @@ pub fn register_cpython_hooks() {
         alloc_dict: hook_alloc_dict,
         dict_set: hook_dict_set,
         dict_get: hook_dict_get,
+        dict_del: hook_dict_del,
         dict_len: hook_dict_len,
         str_data: hook_str_data,
         bytes_data: hook_bytes_data,
         buffer_acquire: hook_buffer_acquire,
         buffer_release: hook_buffer_release,
+        object_get_attr: hook_object_get_attr,
+        object_set_attr: hook_object_set_attr,
+        object_format: hook_object_format,
+        sys_get_object_borrowed: hook_sys_get_object_borrowed,
         classify_heap: hook_classify_heap,
         inc_ref: hook_inc_ref,
         dec_ref: hook_dec_ref,

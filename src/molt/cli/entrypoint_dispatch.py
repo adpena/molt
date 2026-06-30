@@ -25,6 +25,7 @@ from molt.cli.deps import deps, install, install_add, vendor
 from molt.cli.dx_cli import handle_dx_command
 from molt.cli.extension_audit import extension_audit
 from molt.cli.extension_scan import extension_scan
+from molt.cli.extension_seal import extension_seal
 from molt.cli.maintenance import clean, show_config
 from molt.cli.models import BuildProfile
 from molt.cli.native_toolchain import _run_bolt_post_link
@@ -400,15 +401,66 @@ def _dispatch_entrypoint_command(
                 or extension_cfg.get("molt_abi")
                 or extension_cfg.get("molt-abi")
             )
+            source_plan = extension_cfg.get("source_plan") or extension_cfg.get(
+                "source-plan"
+            )
+            source_plan_target = extension_cfg.get(
+                "source_plan_target"
+            ) or extension_cfg.get("source-plan-target")
+            source_plan_source_root = extension_cfg.get(
+                "source_plan_source_root"
+            ) or extension_cfg.get("source-plan-source-root")
+            source_plan_build_root = extension_cfg.get(
+                "source_plan_build_root"
+            ) or extension_cfg.get("source-plan-build-root")
+            source_plan_compile_commands = extension_cfg.get(
+                "source_plan_compile_commands"
+            ) or extension_cfg.get("source-plan-compile-commands")
             return _commands.extension_build(
                 project=args.project or extension_cfg.get("project"),
                 out_dir=args.out_dir
                 or extension_cfg.get("out_dir")
                 or extension_cfg.get("out-dir"),
+                module=args.module
+                or extension_cfg.get("module")
+                or extension_cfg.get("extension_module")
+                or extension_cfg.get("extension-module"),
                 molt_abi=molt_abi,
                 capabilities=capabilities,
+                provided_capsules=args.provided_capsules
+                or extension_cfg.get("provided_capsules")
+                or extension_cfg.get("provided-capsules"),
+                python_export=args.python_export
+                or extension_cfg.get("python_exports")
+                or extension_cfg.get("python-exports"),
+                callable_export_json=args.callable_export_json
+                or extension_cfg.get("callable_exports")
+                or extension_cfg.get("callable-exports"),
                 deterministic=deterministic,
                 target=args.target or extension_cfg.get("target"),
+                source_plan=args.source_plan or source_plan,
+                source_plan_target=args.source_plan_target or source_plan_target,
+                source_plan_source_root=(
+                    args.source_plan_source_root or source_plan_source_root
+                ),
+                source_plan_build_root=(
+                    args.source_plan_build_root or source_plan_build_root
+                ),
+                source_plan_compile_commands=(
+                    args.source_plan_compile_commands
+                    or source_plan_compile_commands
+                ),
+                abi_tier=args.abi_tier
+                or extension_cfg.get("abi_tier")
+                or extension_cfg.get("abi-tier"),
+                json_output=args.json,
+                verbose=args.verbose,
+            )
+        if args.extension_command == "metadata":
+            return _commands.extension_metadata(
+                target=args.target,
+                out_dir=args.out_dir,
+                abi_tier=args.abi_tier,
                 json_output=args.json,
                 verbose=args.verbose,
             )
@@ -432,11 +484,47 @@ def _dispatch_entrypoint_command(
                     or extension_cfg.get("require-checksum"),
                     False,
                 )
+            require_artifact_file = args.require_artifact_file
+            if not require_artifact_file:
+                require_artifact_file = _coerce_bool(
+                    extension_cfg.get("require_artifact_file")
+                    or extension_cfg.get("require-artifact-file"),
+                    False,
+                )
+            require_object_closure = args.require_object_closure
+            if not require_object_closure:
+                require_object_closure = _coerce_bool(
+                    extension_cfg.get("require_object_closure")
+                    or extension_cfg.get("require-object-closure"),
+                    False,
+                )
             return extension_audit(
                 path=args.path,
                 require_capabilities=require_capabilities,
                 require_abi=require_abi,
                 require_checksum=require_checksum,
+                require_loader_kind=args.require_loader_kind
+                or extension_cfg.get("require_loader_kind")
+                or extension_cfg.get("require-loader-kind"),
+                require_runtime_linkage=args.require_runtime_linkage
+                or extension_cfg.get("require_runtime_linkage")
+                or extension_cfg.get("require-runtime-linkage"),
+                require_artifact_kind=args.require_artifact_kind
+                or extension_cfg.get("require_artifact_kind")
+                or extension_cfg.get("require-artifact-kind"),
+                require_artifact_file=require_artifact_file,
+                require_object_closure=require_object_closure,
+                require_python_export=args.require_python_export,
+                require_callable_export=args.require_callable_export,
+                json_output=args.json,
+                verbose=args.verbose,
+            )
+        if args.extension_command == "seal":
+            return extension_seal(
+                path=args.path,
+                out_dir=args.out_dir,
+                python_export=args.python_export,
+                callable_export_json=args.callable_export_json,
                 json_output=args.json,
                 verbose=args.verbose,
             )
@@ -457,7 +545,7 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         return _fail(
-            "Missing extension subcommand (build|audit|scan).",
+            "Missing extension subcommand (build|metadata|audit|scan).",
             args.json,
             command="extension",
         )

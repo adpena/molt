@@ -5,7 +5,7 @@ use crate::bridge::{GLOBAL_BRIDGE, read_bridge_header_bits};
 use crate::hooks;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_long};
 use std::ptr;
 
 /// Resolve a `*mut PyObject` produced by this bridge to its underlying Molt
@@ -49,6 +49,27 @@ pub unsafe extern "C" fn PyModule_New(name: *const c_char) -> *mut PyObject {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_NewObject(name: *mut PyObject) -> *mut PyObject {
+    if name.is_null() {
+        return ptr::null_mut();
+    }
+    let name_ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8(name) };
+    unsafe { PyModule_New(name_ptr) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_Check(module: *mut PyObject) -> c_int {
+    if module.is_null() {
+        return 0;
+    }
+    let ob_type = unsafe { (*module).ob_type };
+    if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyModule_Type) {
+        return 1;
+    }
+    GLOBAL_BRIDGE.lock().pyobj_to_handle(module).is_some() as c_int
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObject {
     if module.is_null() {
         return ptr::null_mut();
@@ -65,6 +86,29 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     // mapping bridge silently ignores.  Wire a dedicated `module_dict_bits`
     // hook before claiming PyDict_SetItemString-on-module support.
     module
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_GetState(_module: *mut PyObject) -> *mut std::ffi::c_void {
+    ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyState_AddModule(module: *mut PyObject, def: *mut PyModuleDef) -> c_int {
+    if module.is_null() || def.is_null() {
+        return -1;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyState_FindModule(_def: *mut PyModuleDef) -> *mut PyObject {
+    ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyState_RemoveModule(def: *mut PyModuleDef) -> c_int {
+    if def.is_null() { -1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]
@@ -101,12 +145,35 @@ pub unsafe extern "C" fn PyModule_AddObject(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_AddObjectRef(
+    module: *mut PyObject,
+    name: *const c_char,
+    value: *mut PyObject,
+) -> c_int {
+    if value.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyModule_AddObjectRef value must not be NULL".as_ptr(),
+            );
+        }
+        return -1;
+    }
+    unsafe { crate::api::refcount::Py_INCREF(value) };
+    let rc = unsafe { PyModule_AddObject(module, name, value) };
+    if rc != 0 {
+        unsafe { crate::api::refcount::Py_DECREF(value) };
+    }
+    rc
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyModule_AddIntConstant(
     module: *mut PyObject,
     name: *const c_char,
-    value: i64,
+    value: c_long,
 ) -> c_int {
-    let obj = unsafe { crate::api::numbers::PyLong_FromLongLong(value) };
+    let obj = unsafe { crate::api::numbers::PyLong_FromLongLong(value as i64) };
     unsafe { PyModule_AddObject(module, name, obj) }
 }
 

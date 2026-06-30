@@ -36,7 +36,8 @@ def test_agent_coordination_init_writes_report_and_json(
     payload = json.loads((task_dir / "coordination.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert payload["agent"] == "agent-a"
-    assert payload["session_id"] == "stdlib-lane"
+    assert payload["session_id"].startswith("agent-stdlib-lane-")
+    assert payload["dx_env"]["MOLT_SESSION_ID"] == payload["session_id"]
     assert payload["proof_role"] == "reducer"
     assert payload["planned_proof_lane"] == "tests/differential/stdlib/json_basic.py"
     assert payload["owned_paths"] == ["src/molt/stdlib/json.py"]
@@ -465,3 +466,131 @@ def test_codex_stall_report_omits_child_output_and_argv_by_default(
     assert payload["command"]["argv_recorded"] is False
     assert "argv" not in payload["command"]
     assert payload["streams"]["combined"]["byte_count"] > 0
+
+
+def test_codex_crash_classifies_responses_retry_control_c(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "logs" / "agents" / "codex_crash" / "retry.json"
+    crash_text = (
+        "An error has occurred\n"
+        "Codex crashed with the following error:\n\n"
+        "  (code=3221225786, signal=null).\n"
+        'Most recent error: {"timestamp":"2026-06-30T16:56:31.824250Z",'
+        '"level":"WARN","fields":{"message":"stream disconnected - retrying '
+        'sampling request (1/5 in 206ms)..."},"target":'
+        '"codex_core::responses_retry"}'
+    )
+
+    rc = agent_coordination.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "codex-crash",
+            "--out",
+            str(report),
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+            "--runtime-cache-root",
+            str(tmp_path / "runtime-cache"),
+            "--crash-text",
+            crash_text,
+        ]
+    )
+
+    assert rc == 0
+    report_text = report.read_text(encoding="utf-8")
+    assert "An error has occurred" not in report_text
+    payload = json.loads(report_text)
+    assert payload["privacy"]["records_raw_crash_text"] is False
+    assert "raw_crash_text" not in payload
+    assert payload["parsed"]["code"] == 3221225786
+    assert payload["parsed"]["signal"] == "null"
+    assert payload["parsed"]["most_recent_error"]["target"] == (
+        "codex_core::responses_retry"
+    )
+    assert {item["id"] for item in payload["classification"]} == {
+        "windows_status_control_c_exit",
+        "responses_retry_stream_disconnected",
+    }
+    assert payload["plugin_manifests"]["default_prompt_violation_count"] == 0
+
+
+def test_codex_crash_reports_default_prompt_manifest_pressure(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    runtime_cache = tmp_path / "runtime-cache"
+    manifest = (
+        codex_home
+        / "plugins"
+        / "cache"
+        / "bad-plugin"
+        / ".codex-plugin"
+        / "plugin.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "bad-plugin",
+                "interface": {
+                    "defaultPrompt": [
+                        "one",
+                        "two",
+                        "three",
+                        "four",
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = tmp_path / "logs" / "agents" / "codex_crash" / "manifest.json"
+    crash_error = {
+        "timestamp": "2026-06-30T02:51:17.910404Z",
+        "level": "WARN",
+        "fields": {
+            "message": "ignoring interface.defaultPrompt: maximum of 3 prompts is supported",
+            "path": str(manifest),
+        },
+        "target": "codex_core_plugins::manifest",
+    }
+    crash_text = (
+        "Codex crashed with the following error:\n"
+        "  (code=3221225786, signal=null).\n"
+        f"Most recent error: {json.dumps(crash_error)}"
+    )
+
+    rc = agent_coordination.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "codex-crash",
+            "--out",
+            str(report),
+            "--codex-home",
+            str(codex_home),
+            "--runtime-cache-root",
+            str(runtime_cache),
+            "--crash-text",
+            crash_text,
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert {item["id"] for item in payload["classification"]} == {
+        "windows_status_control_c_exit",
+        "plugin_default_prompt_manifest_warning",
+    }
+    assert payload["parsed"]["most_recent_error"]["path"] == str(manifest)
+    assert payload["plugin_manifests"]["manifest_count_scanned"] == 1
+    assert payload["plugin_manifests"]["default_prompt_violation_count"] == 1
+    assert payload["plugin_manifests"]["default_prompt_violations"] == [
+        {
+            "limit": 3,
+            "path": str(manifest),
+            "prompt_count": 4,
+        }
+    ]

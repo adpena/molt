@@ -14,10 +14,11 @@ import tempfile
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Sequence, cast
 
 from molt.dx import DxConfigError, DxProject
 from molt.cli import build_inputs as _build_inputs
+from molt.cli import source_extensions as _source_extensions
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
     _build_args_has_capabilities_flag,
@@ -26,7 +27,12 @@ from molt.cli.arg_helpers import (
     _extract_emit_arg,
     _resolve_binary_output,
 )
-from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json, _atomic_zip_file
+from molt.cli.atomic_io import (
+    _atomic_copy_file,
+    _atomic_write_bytes,
+    _atomic_write_json,
+    _atomic_zip_file,
+)
 from molt.cli.backend_cache import _native_object_global_symbol_sets
 from molt.cli.capability_spec import (
     CapabilityInput,
@@ -45,15 +51,10 @@ from molt.cli.config_resolution import (
     STDLIB_PROFILE_CHOICES,
     _config_value,
 )
-from molt.cli.c_api_symbols import is_c_api_external_requirement, is_c_api_symbol
+from molt.cli.c_api_symbols import is_c_api_symbol
 from molt.cli.deps import _load_toml, _normalize_name
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.env_paths import _base_env
-from molt.cli.extension_scan_surface import (
-    _extract_c_api_tokens,
-    _extract_file_local_c_api_symbols,
-    _extract_project_defined_c_api_symbols,
-)
 from molt.cli.extension_manifest import (
     _MOLT_C_API_VERSION_RE,
     _coerce_str_list,
@@ -70,7 +71,10 @@ from molt.cli.extension_manifest import (
     _wheel_version_token,
     _write_zip_member,
 )
-from molt.cli.external_native import _wasm_static_link_runtime_symbols_for_imports
+from molt.cli.external_native import (
+    _source_recompiled_external_package_root,
+    _wasm_static_link_runtime_symbols_for_imports,
+)
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
@@ -93,6 +97,14 @@ from molt.cli.project_roots import (
 )
 from molt.cli.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import _ensure_rustup_target
+from molt.cli.source_extension_toolchain import (
+    _materialize_source_extension_target_metadata,
+    _normalize_source_extension_abi_tier,
+    _normalize_source_extension_metadata_target,
+    _resolve_source_extension_wasm_toolchain,
+    _source_extension_include_dirs_for_abi_tier,
+    _source_extension_python_header_for_abi_tier,
+)
 from molt.cli.wrapper_build import (
     _build_args_has_python_version_flag,
     _run_wrapper_build,
@@ -135,32 +147,6 @@ def _extension_source_text_by_path(source_paths: list[Path]) -> dict[Path, str]:
         source_path: source_path.read_text(encoding="utf-8", errors="replace")
         for source_path in source_paths
     }
-
-
-def _extension_source_required_c_api_symbols(
-    source_text_by_path: Mapping[Path, str],
-) -> tuple[str, ...]:
-    file_local_symbols_by_path: dict[Path, set[str]] = {}
-    project_defined_symbols: set[str] = set()
-    for source_path, source_text in source_text_by_path.items():
-        file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
-            source_text
-        )
-        project_defined_symbols.update(
-            _extract_project_defined_c_api_symbols(source_text)
-        )
-    required: set[str] = set()
-    for source_path, source_text in source_text_by_path.items():
-        required.update(
-            {
-                symbol
-                for symbol in _extract_c_api_tokens(source_text)
-                if is_c_api_external_requirement(symbol)
-            }
-            - file_local_symbols_by_path[source_path]
-            - project_defined_symbols
-        )
-    return tuple(sorted(required))
 
 
 def _shared_library_defines_symbol(path: Path, symbol: str) -> tuple[bool, str | None]:
@@ -1600,6 +1586,188 @@ def profile(
     )
 
 
+def extension_metadata(
+    *,
+    target: str | None = None,
+    out_dir: str | None = None,
+    abi_tier: str | None = None,
+    json_output: bool = False,
+    verbose: bool = False,
+) -> int:
+    del verbose
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "extension-metadata")
+    if root_error is not None:
+        return root_error
+    assert root is not None
+    try:
+        target_triple = _normalize_source_extension_metadata_target(target)
+        normalized_abi_tier = _normalize_source_extension_abi_tier(abi_tier)
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="extension-metadata")
+
+    output_root = Path(out_dir).expanduser() if out_dir else Path("dist")
+    if not output_root.is_absolute():
+        output_root = (Path.cwd() / output_root).absolute()
+    metadata, errors = _materialize_source_extension_target_metadata(
+        molt_root=root,
+        out_dir=output_root,
+        target_triple=target_triple,
+        abi_tier=normalized_abi_tier,
+    )
+    if metadata is None:
+        return _fail(
+            "Source-extension target metadata errors: " + "; ".join(errors),
+            json_output,
+            command="extension-metadata",
+        )
+    data = dict(metadata.payload)
+    data["paths"] = dict(data["paths"])
+    data["paths"]["out_dir"] = str(metadata.out_dir)
+    data["paths"]["pkg_config_dir"] = str(metadata.pkg_config_dir)
+    data["paths"]["python_pc"] = str(metadata.python_pc)
+    data["paths"]["meson_cross"] = str(metadata.meson_cross)
+    data["paths"]["sidecar"] = str(metadata.sidecar)
+    data["digest"] = metadata.digest
+    if json_output:
+        _emit_json(_json_payload("extension-metadata", "ok", data=data), True)
+    else:
+        print(f"Wrote source-extension target metadata: {metadata.sidecar}")
+        print(f"Meson cross file: {metadata.meson_cross}")
+        print(f"Python pkg-config: {metadata.python_pc}")
+    return 0
+
+
+def _source_plan_include_paths_for_abi(
+    include_paths: Sequence[Path],
+    *,
+    python_header: Path,
+) -> list[Path]:
+    selected_python_header = python_header.resolve()
+    filtered: list[Path] = []
+    for include_path in include_paths:
+        candidate_python_header = (include_path / "Python.h").resolve()
+        if (
+            candidate_python_header.is_file()
+            and candidate_python_header != selected_python_header
+        ):
+            continue
+        filtered.append(include_path)
+    return filtered
+
+
+def _source_plan_abi_include_order(
+    abi_include_roots: Sequence[Path],
+    *,
+    python_header: Path,
+) -> tuple[Path, list[Path]]:
+    python_include_root = python_header.resolve().parent
+    fallback_roots: list[Path] = []
+    seen = {python_include_root}
+    for include_root in abi_include_roots:
+        resolved = include_root.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        fallback_roots.append(include_root)
+    return python_include_root, fallback_roots
+
+
+def _target_pointer_size_bytes(target_triple: str | None) -> int | None:
+    target = (target_triple or "").lower()
+    if target.startswith("wasm32"):
+        return 4
+    if target.startswith("wasm64"):
+        return 8
+    return None
+
+
+def _source_plan_target_fact_overlay_include_paths(
+    include_paths: Sequence[Path],
+    *,
+    build_tmp: Path,
+    target_triple: str | None,
+) -> list[Path]:
+    pointer_size = _target_pointer_size_bytes(target_triple)
+    if pointer_size is None:
+        return []
+    for include_path in include_paths:
+        numpy_config = include_path / "_numpyconfig.h"
+        if not numpy_config.is_file():
+            continue
+        try:
+            text = numpy_config.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if (
+            "#define NPY_SIZEOF_PY_INTPTR_T -1" not in text
+            and "#define NPY_SIZEOF_PY_LONG_LONG -1" not in text
+        ):
+            continue
+        overlay_dir = build_tmp / "source_plan_target_facts" / "numpy_core"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        (overlay_dir / "_numpyconfig.h").write_text(
+            "\n".join(
+                [
+                    "#ifndef MOLT_SOURCE_EXTENSION_NUMPY_TARGET_FACTS_OVERLAY_H",
+                    "#define MOLT_SOURCE_EXTENSION_NUMPY_TARGET_FACTS_OVERLAY_H",
+                    '#include_next "_numpyconfig.h"',
+                    "#if defined(NPY_SIZEOF_PY_INTPTR_T) && NPY_SIZEOF_PY_INTPTR_T < 0",
+                    "#undef NPY_SIZEOF_PY_INTPTR_T",
+                    f"#define NPY_SIZEOF_PY_INTPTR_T {pointer_size}",
+                    "#endif",
+                    "#if defined(NPY_SIZEOF_PY_LONG_LONG) && NPY_SIZEOF_PY_LONG_LONG < 0",
+                    "#undef NPY_SIZEOF_PY_LONG_LONG",
+                    "#define NPY_SIZEOF_PY_LONG_LONG 8",
+                    "#endif",
+                    "#endif",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return [overlay_dir]
+    return []
+
+
+_SOURCE_EXTENSION_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++", ".mm"}
+
+
+def _tool_basename_variant(path: str, *, basename: str) -> str:
+    candidate = Path(path)
+    replacement = basename + candidate.suffix
+    if candidate.parent == Path("."):
+        return replacement
+    return str(candidate.with_name(replacement))
+
+
+def _source_extension_compile_command_for_source(
+    *,
+    source_path: Path,
+    cc_cmd: Sequence[str],
+) -> list[str]:
+    command = list(cc_cmd)
+    if source_path.suffix.lower() not in _SOURCE_EXTENSION_CPP_SUFFIXES or not command:
+        return command
+
+    tool = Path(command[0]).name.lower()
+    if tool in {"zig", "zig.exe"}:
+        if len(command) >= 2 and command[1] in {"cc", "c++"}:
+            command[1] = "c++"
+        else:
+            command.insert(1, "c++")
+        return command
+
+    if tool in {"clang", "clang.exe"}:
+        variant = _tool_basename_variant(command[0], basename="clang++")
+        resolved = shutil.which(variant) or shutil.which(Path(variant).name)
+        if resolved is not None:
+            command[0] = resolved
+        else:
+            command[0] = variant
+    return command
+
+
 def _extension_export_package(module_parts: list[str]) -> str:
     return module_parts[0]
 
@@ -1645,11 +1813,21 @@ def _extension_manifest_public_exports(
 def extension_build(
     project: str | None = None,
     out_dir: str | None = None,
+    module: str | None = None,
     molt_abi: str | None = None,
     capabilities: CapabilityInput | None = None,
+    provided_capsules: str | list[str] | None = None,
+    python_export: str | list[str] | None = None,
+    callable_export_json: str | list[str] | None = None,
     deterministic: bool = True,
     profile: BuildProfile = "release",
     target: str | None = None,
+    source_plan: str | None = None,
+    source_plan_target: str | None = None,
+    source_plan_source_root: str | None = None,
+    source_plan_build_root: str | None = None,
+    source_plan_compile_commands: str | None = None,
+    abi_tier: str | None = None,
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -1665,9 +1843,24 @@ def extension_build(
 
     pyproject = _load_toml(project_root / "pyproject.toml")
     project_meta = pyproject.get("project")
-    extension_meta = _config_value(pyproject, ["tool", "molt", "extension"])
+    extension_meta_raw = _config_value(pyproject, ["tool", "molt", "extension"])
     errors: list[str] = []
     warnings: list[str] = []
+    cli_extension_config = any(
+        value is not None
+        for value in (
+            module,
+            source_plan,
+            source_plan_target,
+            source_plan_source_root,
+            source_plan_build_root,
+            source_plan_compile_commands,
+            abi_tier,
+            provided_capsules,
+            python_export,
+            callable_export_json,
+        )
+    )
 
     if not isinstance(project_meta, dict):
         return _fail(
@@ -1675,12 +1868,53 @@ def extension_build(
             json_output,
             command="extension-build",
         )
-    if not isinstance(extension_meta, dict):
+    if not isinstance(extension_meta_raw, dict):
+        if cli_extension_config:
+            extension_meta: dict[str, Any] = {}
+        else:
+            return _fail(
+                "pyproject.toml must contain [tool.molt.extension], or pass "
+                "--module and --source-plan for an upstream build-plan target.",
+                json_output,
+                command="extension-build",
+            )
+    else:
+        extension_meta = extension_meta_raw
+
+    if source_plan is not None and module is None and "module" not in extension_meta:
         return _fail(
-            "pyproject.toml must contain [tool.molt.extension].",
+            "--source-plan requires --module when [tool.molt.extension].module "
+            "is not configured.",
             json_output,
             command="extension-build",
         )
+
+    cli_python_exports = _coerce_str_list(
+        python_export,
+        "--python-export",
+        errors,
+    )
+    callable_export_json_items = _coerce_str_list(
+        callable_export_json,
+        "--callable-export-json",
+        errors,
+    )
+    cli_callable_exports: list[dict[str, Any]] = []
+    for index, item in enumerate(callable_export_json_items):
+        try:
+            payload = json.loads(item)
+        except json.JSONDecodeError as exc:
+            errors.append(f"--callable-export-json[{index}] must be JSON: {exc}")
+            continue
+        if not isinstance(payload, dict):
+            errors.append(f"--callable-export-json[{index}] must be a JSON object")
+            continue
+        cli_callable_exports.append(payload)
+    extension_export_meta: dict[str, Any] = dict(extension_meta)
+    if cli_python_exports:
+        extension_export_meta["python_exports"] = cli_python_exports
+    if cli_callable_exports:
+        extension_export_meta["callable_exports"] = cli_callable_exports
 
     project_name = project_meta.get("name")
     project_version = project_meta.get("version")
@@ -1689,56 +1923,150 @@ def extension_build(
     if not isinstance(project_version, str) or not project_version.strip():
         errors.append("project.version must be a non-empty string")
 
-    module_name = extension_meta.get("module")
+    module_name = module or extension_meta.get("module")
     if not isinstance(module_name, str):
-        errors.append("tool.molt.extension.module must be a string")
+        errors.append("tool.molt.extension.module or --module must be a string")
         module_name = ""
     module_parts = _module_parts(module_name)
     if module_parts is None:
         errors.append("tool.molt.extension.module must be a dotted Python identifier")
         module_parts = ["extension"]
 
-    raw_sources = _coerce_str_list(
-        extension_meta.get("sources"),
-        "tool.molt.extension.sources",
-        errors,
-        allow_empty=False,
-    )
-    if not raw_sources:
-        errors.append("tool.molt.extension.sources must include at least one source")
     source_paths: list[Path] = []
-    for entry in raw_sources:
-        source_path = Path(entry).expanduser()
-        if not source_path.is_absolute():
-            source_path = (project_root / source_path).absolute()
-        if not source_path.exists() or not source_path.is_file():
-            errors.append(f"source file not found: {source_path}")
-            continue
-        source_paths.append(source_path)
-
-    include_dirs_raw = _coerce_str_list(
-        extension_meta.get("include_dirs") or extension_meta.get("include-dirs"),
-        "tool.molt.extension.include_dirs",
-        errors,
-    )
     include_paths: list[Path] = []
-    for entry in include_dirs_raw:
-        include_path = Path(entry).expanduser()
-        if not include_path.is_absolute():
-            include_path = (project_root / include_path).absolute()
-        include_paths.append(include_path)
+    compile_args: list[str] = []
+    link_args: list[str] = []
+    loaded_source_plan: _source_extensions._SourceExtensionBuildPlan | None = None
+    source_plan_config_raw = extension_meta.get("source_plan") or extension_meta.get(
+        "source-plan"
+    )
+    source_plan_config: dict[str, Any] | None = None
+    if source_plan_config_raw is not None:
+        if not isinstance(source_plan_config_raw, dict):
+            errors.append("tool.molt.extension.source_plan must be a table")
+        else:
+            source_plan_config = dict(source_plan_config_raw)
+    if source_plan is not None:
+        source_plan_config = dict(source_plan_config or {})
+        source_plan_config["path"] = source_plan
+    if source_plan_target is not None:
+        source_plan_config = dict(source_plan_config or {})
+        source_plan_config["target"] = source_plan_target
+    if source_plan_source_root is not None:
+        source_plan_config = dict(source_plan_config or {})
+        source_plan_config["source_root"] = source_plan_source_root
+    if source_plan_build_root is not None:
+        source_plan_config = dict(source_plan_config or {})
+        source_plan_config["build_root"] = source_plan_build_root
+    if source_plan_compile_commands is not None:
+        source_plan_config = dict(source_plan_config or {})
+        source_plan_config["compile_commands"] = source_plan_compile_commands
 
-    compile_args = _coerce_str_list(
-        extension_meta.get("extra_compile_args")
-        or extension_meta.get("extra-compile-args"),
-        "tool.molt.extension.extra_compile_args",
-        errors,
+    if source_plan_config is None:
+        raw_sources = _coerce_str_list(
+            extension_meta.get("sources"),
+            "tool.molt.extension.sources",
+            errors,
+            allow_empty=False,
+        )
+        if not raw_sources:
+            errors.append(
+                "tool.molt.extension.sources must include at least one source"
+            )
+        for entry in raw_sources:
+            source_path = Path(entry).expanduser()
+            if not source_path.is_absolute():
+                source_path = (project_root / source_path).absolute()
+            if not source_path.exists() or not source_path.is_file():
+                errors.append(f"source file not found: {source_path}")
+                continue
+            source_paths.append(source_path)
+
+        include_dirs_raw = _coerce_str_list(
+            extension_meta.get("include_dirs") or extension_meta.get("include-dirs"),
+            "tool.molt.extension.include_dirs",
+            errors,
+        )
+        for entry in include_dirs_raw:
+            include_path = Path(entry).expanduser()
+            if not include_path.is_absolute():
+                include_path = (project_root / include_path).absolute()
+            include_paths.append(include_path)
+
+        compile_args = _coerce_str_list(
+            extension_meta.get("extra_compile_args")
+            or extension_meta.get("extra-compile-args"),
+            "tool.molt.extension.extra_compile_args",
+            errors,
+        )
+        link_args = _coerce_str_list(
+            extension_meta.get("extra_link_args")
+            or extension_meta.get("extra-link-args"),
+            "tool.molt.extension.extra_link_args",
+            errors,
+        )
+    else:
+        manual_authority_fields = [
+            field
+            for field in (
+                "sources",
+                "include_dirs",
+                "include-dirs",
+                "extra_compile_args",
+                "extra-compile-args",
+                "extra_link_args",
+                "extra-link-args",
+            )
+            if field in extension_meta
+        ]
+        if manual_authority_fields:
+            errors.append(
+                "tool.molt.extension.source_plan plus compile_commands.json is "
+                "the source/arg authority; remove parallel manual fields: "
+                + ", ".join(sorted(manual_authority_fields))
+            )
+        if not errors:
+            loaded_source_plan, source_plan_errors = (
+                _source_extensions._load_source_extension_build_plan(
+                    project_root=project_root,
+                    module_name=module_name,
+                    plan_config=source_plan_config,
+                )
+            )
+            errors.extend(source_plan_errors)
+        if loaded_source_plan is not None:
+            source_paths = [
+                unit.source_path for unit in loaded_source_plan.compile_units
+            ]
+            include_paths = list(loaded_source_plan.include_dirs)
+            compile_args = list(loaded_source_plan.compile_args)
+            link_args = list(loaded_source_plan.link_args)
+
+    provided_capsules_input: str | list[str] | None = provided_capsules
+    if provided_capsules_input is None:
+        configured_provided_capsules = extension_meta.get(
+            "provided_capsules"
+        ) or extension_meta.get("provided-capsules")
+    else:
+        configured_provided_capsules = provided_capsules_input
+    provided_capsules_tuple = tuple(
+        sorted(
+            set(
+                _coerce_str_list(
+                    configured_provided_capsules,
+                    "tool.molt.extension.provided_capsules",
+                    errors,
+                )
+            )
+        )
     )
-    link_args = _coerce_str_list(
-        extension_meta.get("extra_link_args") or extension_meta.get("extra-link-args"),
-        "tool.molt.extension.extra_link_args",
-        errors,
-    )
+    try:
+        normalized_abi_tier = _normalize_source_extension_abi_tier(
+            abi_tier or extension_meta.get("abi_tier") or extension_meta.get("abi-tier")
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        normalized_abi_tier = "source-compat"
 
     effects = _normalize_effects(extension_meta.get("effects"))
     determinism_mode = "deterministic" if deterministic else "nondet"
@@ -1784,6 +2112,13 @@ def extension_build(
             errors.append("target must be 'native', 'wasm', or a Rust target triple")
         runtime_target_triple = normalized_target
         manifest_target_triple = normalized_target
+    if loaded_source_plan is not None:
+        errors.extend(
+            _source_extensions._validate_source_extension_build_plan_target(
+                loaded_source_plan,
+                target_triple=runtime_target_triple,
+            )
+        )
 
     capability_input: CapabilityInput | None = capabilities
     if capability_input is None:
@@ -1805,10 +2140,23 @@ def extension_build(
             capabilities_list = spec.capabilities or []
             capability_profiles = spec.profiles
     python_exports, callable_exports = _extension_manifest_public_exports(
-        extension_meta,
+        extension_export_meta,
         package=_extension_export_package(module_parts),
         errors=errors,
     )
+    source_recompiled_root = _source_recompiled_external_package_root(
+        ".".join(module_parts)
+    )
+    if wasm_static_link and source_recompiled_root and not (
+        python_exports or callable_exports
+    ):
+        errors.append(
+            "WASM source-recompiled extension builds for "
+            f"{source_recompiled_root!r} must declare tool.molt.extension."
+            "python_exports or tool.molt.extension.callable_exports; native "
+            "artifact reachability is manifest-symbol custody, not package "
+            "directory ancestry"
+        )
 
     cwd_root = _find_project_root(Path.cwd())
     molt_root = _find_molt_root(project_root, cwd_root)
@@ -1848,33 +2196,37 @@ def extension_build(
             command="extension-build",
         )
 
-    try:
-        source_text_by_path = _extension_source_text_by_path(source_paths)
-        source_required_c_api_symbols = _extension_source_required_c_api_symbols(
-            source_text_by_path
-        )
-        inferred_callable_exports = _infer_module_attr_callable_export_payloads(
-            source_text_by_path.values(),
-            python_exports=python_exports,
-            explicit_callable_exports=callable_exports,
-            effects=effects,
-            deterministic=determinism_mode == "deterministic",
-        )
-        if inferred_callable_exports:
-            callable_exports = [
-                *callable_exports,
-                *[dict(export) for export in inferred_callable_exports],
-            ]
-            callable_exports = sorted(
-                callable_exports,
-                key=lambda export: (str(export.get("module")), str(export.get("name"))),
+    source_c_api_requirements: (
+        _source_extensions._SourceExtensionCAPIRequirements | None
+    ) = None
+    if loaded_source_plan is None:
+        try:
+            source_text_by_path = _extension_source_text_by_path(source_paths)
+            inferred_callable_exports = _infer_module_attr_callable_export_payloads(
+                source_text_by_path.values(),
+                python_exports=python_exports,
+                explicit_callable_exports=callable_exports,
+                effects=effects,
+                deterministic=determinism_mode == "deterministic",
             )
-    except OSError as exc:
-        return _fail(
-            f"Failed scanning extension C/API source surface: {exc}",
-            json_output,
-            command="extension-build",
-        )
+            if inferred_callable_exports:
+                callable_exports = [
+                    *callable_exports,
+                    *[dict(export) for export in inferred_callable_exports],
+                ]
+                callable_exports = sorted(
+                    callable_exports,
+                    key=lambda export: (
+                        str(export.get("module")),
+                        str(export.get("name")),
+                    ),
+                )
+        except OSError as exc:
+            return _fail(
+                f"Failed scanning extension C/API source surface: {exc}",
+                json_output,
+                command="extension-build",
+            )
 
     output_root = Path(out_dir).expanduser() if out_dir else Path("dist")
     if not output_root.is_absolute():
@@ -1884,13 +2236,65 @@ def extension_build(
     if runtime_target_triple:
         _ensure_rustup_target(runtime_target_triple, warnings)
 
-    include_root = molt_root / "include"
-    if not include_root.exists():
+    abi_include_roots = _source_extension_include_dirs_for_abi_tier(
+        molt_root=molt_root,
+        abi_tier=normalized_abi_tier,
+    )
+    missing_abi_include_roots = [
+        include_root for include_root in abi_include_roots if not include_root.exists()
+    ]
+    if missing_abi_include_roots:
         return _fail(
-            f"Missing Molt header root: {include_root}",
+            "Missing Molt ABI header roots: "
+            + ", ".join(str(path) for path in missing_abi_include_roots),
             json_output,
             command="extension-build",
         )
+    python_header = _source_extension_python_header_for_abi_tier(
+        molt_root=molt_root,
+        abi_tier=normalized_abi_tier,
+    )
+    if loaded_source_plan is None:
+        source_c_api_requirements, capi_error = (
+            _source_extensions._source_extension_required_c_api_by_source(
+                molt_root=molt_root,
+                source_paths=source_paths,
+                python_header=python_header,
+                definition_header_roots=[
+                    *include_paths,
+                    project_root,
+                    *(source_path.parent for source_path in source_paths),
+                ],
+                compile_args_by_source={
+                    source_path: compile_args for source_path in source_paths
+                },
+                preprocessor_defined_symbols=[
+                    (
+                        "MOLT_EXTENSION_WASM_STATIC_LINK"
+                        if wasm_static_link
+                        else "MOLT_EXTENSION_HOST_ABI"
+                    )
+                ],
+            )
+        )
+        if capi_error is not None:
+            return _fail(capi_error, json_output, command="extension-build")
+        assert source_c_api_requirements is not None
+        missing_c_api = list(source_c_api_requirements.missing_symbols)
+        fail_fast_c_api = list(source_c_api_requirements.fail_fast_symbols)
+        if missing_c_api or fail_fast_c_api:
+            details: list[str] = []
+            if missing_c_api:
+                details.append("missing: " + ", ".join(missing_c_api[:16]))
+            if fail_fast_c_api:
+                details.append("fail-fast: " + ", ".join(fail_fast_c_api[:16]))
+            return _fail(
+                "Reachable source extension C/API symbols are unsupported ("
+                + "; ".join(details)
+                + ")",
+                json_output,
+                command="extension-build",
+            )
 
     cc = os.environ.get("CC", "clang")
     cc_cmd = shlex.split(cc)
@@ -1900,48 +2304,73 @@ def extension_build(
             json_output,
             command="extension-build",
         )
+    wasi_sysroot: Path | None = None
     if wasm_static_link:
-        wasm_cc = os.environ.get("MOLT_WASM_CC")
-        if wasm_cc:
-            cc_cmd = shlex.split(wasm_cc)
-        if not cc_cmd:
-            return _fail(
-                "Compiler command is empty. Set MOLT_WASM_CC, CC, or install clang.",
-                json_output,
-                command="extension-build",
-            )
-        target_arg = runtime_target_triple or "wasm32-wasip1"
-        has_target_arg = any(
-            part == "-target" or part.startswith("--target") for part in cc_cmd
-        )
-        if not has_target_arg:
-            tool_name = Path(cc_cmd[0]).name.lower()
-            if tool_name in {"zig", "zig.exe"}:
-                cc_cmd.extend(["-target", target_arg])
-            else:
-                cc_cmd.append(f"--target={target_arg}")
-        explicit_sysroot = _sysroot_arg_value([*cc_cmd, *compile_args])
-        if explicit_sysroot is None:
-            wasi_sysroot = resolve_wasi_sysroot()
-            if wasi_sysroot is None:
+        if loaded_source_plan is not None:
+            wasm_toolchain = _resolve_source_extension_wasm_toolchain()
+            if not wasm_toolchain.ok:
                 return _fail(
-                    "WASM extension build requires a WASI sysroot containing "
-                    "include/errno.h. Set MOLT_WASI_SYSROOT, WASI_SYSROOT, "
-                    "or WASI_SDK_PATH.",
+                    "WASM source-extension build requires a valid wasm compiler "
+                    "and linker toolchain: " + wasm_toolchain.detail,
                     json_output,
                     command="extension-build",
                 )
-            cc_cmd.append(f"--sysroot={wasi_sysroot}")
+            cc_cmd = list(wasm_toolchain.compiler_cmd)
+            target_arg = runtime_target_triple or "wasm32-wasip1"
+            if wasm_toolchain.compiler_kind == "zig":
+                normalized = _zig_target_query(target_arg)
+                if normalized != target_arg:
+                    warnings.append(
+                        f"Zig target normalized to {normalized} from {target_arg}."
+                    )
+                target_arg = normalized
+            cc_cmd.extend(["-target", target_arg])
+            wasi_sysroot = wasm_toolchain.wasi_sysroot
         else:
-            wasi_sysroot = normalize_wasi_sysroot(explicit_sysroot)
-            if wasi_sysroot is None:
+            wasm_cc = os.environ.get("MOLT_WASM_CC")
+            if wasm_cc:
+                cc_cmd = shlex.split(wasm_cc)
+            if not cc_cmd:
                 return _fail(
-                    "WASM extension build sysroot is invalid or incomplete: "
-                    f"{explicit_sysroot!r} does not contain include/errno.h.",
+                    "Compiler command is empty. Set MOLT_WASM_CC, CC, or install clang.",
                     json_output,
                     command="extension-build",
                 )
-        if "-wasm-enable-sjlj" not in [*cc_cmd, *compile_args]:
+            target_arg = runtime_target_triple or "wasm32-wasip1"
+            has_target_arg = any(
+                part == "-target" or part.startswith("--target") for part in cc_cmd
+            )
+            if not has_target_arg:
+                tool_name = Path(cc_cmd[0]).name.lower()
+                if tool_name in {"zig", "zig.exe"}:
+                    cc_cmd.extend(["-target", target_arg])
+                else:
+                    cc_cmd.append(f"--target={target_arg}")
+            explicit_sysroot = _sysroot_arg_value([*cc_cmd, *compile_args])
+            if explicit_sysroot is None:
+                wasi_sysroot = resolve_wasi_sysroot()
+                if wasi_sysroot is None:
+                    return _fail(
+                        "WASM extension build requires a WASI sysroot containing "
+                        "include/errno.h. Set MOLT_WASI_SYSROOT, WASI_SYSROOT, "
+                        "or WASI_SDK_PATH.",
+                        json_output,
+                        command="extension-build",
+                    )
+                cc_cmd.append(f"--sysroot={wasi_sysroot}")
+            else:
+                wasi_sysroot = normalize_wasi_sysroot(explicit_sysroot)
+                if wasi_sysroot is None:
+                    return _fail(
+                        "WASM extension build sysroot is invalid or incomplete: "
+                        f"{explicit_sysroot!r} does not contain include/errno.h.",
+                        json_output,
+                        command="extension-build",
+                    )
+        if loaded_source_plan is None and "-wasm-enable-sjlj" not in [
+            *cc_cmd,
+            *compile_args,
+        ]:
             cc_cmd.extend(["-mllvm", "-wasm-enable-sjlj"])
     elif runtime_target_triple:
         cross_cc = os.environ.get("MOLT_CROSS_CC")
@@ -2003,23 +2432,84 @@ def extension_build(
     with tempfile.TemporaryDirectory(prefix="molt_ext_build_", dir=output_root) as td:
         build_tmp = Path(td)
         object_paths: list[Path] = []
+        object_facts: list[_source_extensions._SourceExtensionObjectFact] = []
         for idx, source_path in enumerate(source_paths):
+            plan_unit = (
+                loaded_source_plan.compile_units[idx]
+                if loaded_source_plan is not None
+                else None
+            )
+            unit_include_paths = (
+                list(plan_unit.include_dirs) if plan_unit is not None else include_paths
+            )
+            if plan_unit is not None:
+                unit_include_paths = _source_plan_include_paths_for_abi(
+                    unit_include_paths,
+                    python_header=python_header,
+                )
+                unit_include_paths = [
+                    *_source_plan_target_fact_overlay_include_paths(
+                        unit_include_paths,
+                        build_tmp=build_tmp,
+                        target_triple=runtime_target_triple,
+                    ),
+                    *unit_include_paths,
+                ]
+            unit_compile_args = (
+                list(plan_unit.compile_args) if plan_unit is not None else compile_args
+            )
+            unit_cc_cmd = (
+                _source_extension_compile_command_for_source(
+                    source_path=source_path,
+                    cc_cmd=cc_cmd,
+                )
+                if plan_unit is not None
+                else list(cc_cmd)
+            )
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
-            cmd = [*cc_cmd, "-c", str(source_path), "-o", str(object_path)]
+            cmd = [*unit_cc_cmd, "-c", str(source_path), "-o", str(object_path)]
             if wasm_static_link:
                 cmd.append("-DMOLT_EXTENSION_WASM_STATIC_LINK=1")
             else:
                 cmd.append("-DMOLT_EXTENSION_HOST_ABI=1")
-            cmd.extend(["-I", str(include_root), "-I", str(project_root)])
-            for include_path in include_paths:
-                cmd.extend(["-I", str(include_path)])
+            if plan_unit is not None:
+                python_include_root, fallback_abi_include_roots = (
+                    _source_plan_abi_include_order(
+                        abi_include_roots,
+                        python_header=python_header,
+                    )
+                )
+                cmd.extend(["-I", str(python_include_root)])
+                cmd.extend(["-I", str(project_root)])
+                for include_path in unit_include_paths:
+                    cmd.extend(["-I", str(include_path)])
+                for include_path in fallback_abi_include_roots:
+                    cmd.extend(["-I", str(include_path)])
+            else:
+                for include_path in abi_include_roots:
+                    cmd.extend(["-I", str(include_path)])
+                cmd.extend(["-I", str(project_root)])
+                for include_path in unit_include_paths:
+                    cmd.extend(["-I", str(include_path)])
             if os.name != "nt" and not wasm_static_link:
                 cmd.append("-fPIC")
             if deterministic:
                 prefix = str(project_root)
                 cmd.append(f"-ffile-prefix-map={prefix}=.")
                 cmd.append(f"-fdebug-prefix-map={prefix}=.")
-            cmd.extend(compile_args)
+            if plan_unit is not None:
+                cmd.extend(
+                    _source_extensions._source_extension_gc_compile_args(
+                        target_triple=runtime_target_triple,
+                    )
+                )
+                cmd.extend(
+                    _source_extensions._source_extension_wasm_compile_args(
+                        target_triple=runtime_target_triple,
+                        cc_cmd=unit_cc_cmd,
+                    )
+                )
+            cmd.extend(unit_compile_args)
             result = _run_completed_command(
                 cmd,
                 cwd=project_root,
@@ -2038,16 +2528,99 @@ def extension_build(
                 )
             compile_commands.append(cmd)
             object_paths.append(object_path)
+            if loaded_source_plan is not None:
+                object_fact, object_fact_error = (
+                    _source_extensions._source_extension_object_fact(
+                        source_path=source_path,
+                        object_path=object_path,
+                    )
+                )
+                if object_fact_error is not None:
+                    return _fail(
+                        object_fact_error,
+                        json_output,
+                        command="extension-build",
+                    )
+                assert object_fact is not None
+                object_facts.append(object_fact)
+
+        source_plan_object_closure: (
+            _source_extensions._SourceExtensionObjectClosure | None
+        ) = None
+        if loaded_source_plan is not None:
+            source_plan_object_closure, object_closure_errors = (
+                _source_extensions._compute_source_extension_object_closure(
+                    init_symbol=init_symbol,
+                    object_facts=object_facts,
+                )
+            )
+            if object_closure_errors:
+                return _fail(
+                    "Source extension object closure errors: "
+                    + "; ".join(object_closure_errors),
+                    json_output,
+                    command="extension-build",
+                )
+            assert source_plan_object_closure is not None
+            object_paths = [
+                fact.object_path for fact in source_plan_object_closure.objects
+            ]
+            (
+                source_c_api_requirements,
+                capi_error,
+            ) = _source_extensions._source_extension_required_c_api_by_source(
+                molt_root=molt_root,
+                source_paths=[
+                    fact.source_path for fact in source_plan_object_closure.objects
+                ],
+                python_header=python_header,
+                definition_header_roots=[
+                    *loaded_source_plan.include_dirs,
+                    *(
+                        fact.source_path.parent
+                        for fact in source_plan_object_closure.objects
+                    ),
+                ],
+                compile_args_by_source={
+                    unit.source_path: unit.compile_args
+                    for unit in loaded_source_plan.compile_units
+                },
+                preprocessor_defined_symbols=[
+                    (
+                        "MOLT_EXTENSION_WASM_STATIC_LINK"
+                        if wasm_static_link
+                        else "MOLT_EXTENSION_HOST_ABI"
+                    )
+                ],
+            )
+            if capi_error is not None:
+                return _fail(capi_error, json_output, command="extension-build")
+            assert source_c_api_requirements is not None
+            missing_c_api = list(source_c_api_requirements.missing_symbols)
+            fail_fast_c_api = list(source_c_api_requirements.fail_fast_symbols)
+            if missing_c_api or fail_fast_c_api:
+                details: list[str] = []
+                if missing_c_api:
+                    details.append("missing: " + ", ".join(missing_c_api[:16]))
+                if fail_fast_c_api:
+                    details.append("fail-fast: " + ", ".join(fail_fast_c_api[:16]))
+                return _fail(
+                    "Reachable source extension C/API symbols are unsupported ("
+                    + "; ".join(details)
+                    + ")",
+                    json_output,
+                    command="extension-build",
+                )
 
         built_extension = build_tmp / module_rel
         built_extension.parent.mkdir(parents=True, exist_ok=True)
         if wasm_static_link:
-            if link_args:
+            if link_args and loaded_source_plan is None:
                 warnings.append(
                     "Ignoring extra_link_args for wasm relocatable object output; "
                     "static-link custody is resolved by the final wasm linker."
                 )
-            if len(object_paths) == 1:
+            if loaded_source_plan is None and len(object_paths) == 1:
                 _atomic_copy_file(object_paths[0], built_extension)
             else:
                 wasm_ld_cmd = shlex.split(os.environ.get("MOLT_WASM_LD", "wasm-ld"))
@@ -2060,10 +2633,17 @@ def extension_build(
                 link_command = [
                     *wasm_ld_cmd,
                     "-r",
+                    *(
+                        ["--allow-undefined", "--no-entry"]
+                        if loaded_source_plan is not None
+                        else []
+                    ),
                     *[str(path) for path in object_paths],
                     "-o",
                     str(built_extension),
                 ]
+                if loaded_source_plan is not None:
+                    link_command.extend(link_args)
                 link_result = _run_completed_command(
                     link_command,
                     cwd=project_root,
@@ -2090,6 +2670,13 @@ def extension_build(
                 runtime_target_triple is None and sys.platform.startswith("linux")
             ):
                 link_command.append("-ldl")
+            if loaded_source_plan is not None:
+                link_command.extend(
+                    _source_extensions._source_extension_gc_link_args(
+                        cc_cmd=cc_cmd,
+                        target_triple=runtime_target_triple,
+                    )
+                )
             link_command.extend(link_args)
             link_result = _run_completed_command(
                 link_command,
@@ -2115,25 +2702,36 @@ def extension_build(
                 command="extension-build",
             )
         if wasm_static_link:
-            try:
+            if source_plan_object_closure is not None:
                 wasm_defined_symbols = sorted(
                     {
-                        export.name
-                        for export in read_wasm_function_exports(built_extension)
+                        symbol
+                        for fact in source_plan_object_closure.objects
+                        for symbol in fact.defined_symbols
                     }
                 )
-                wasm_import_symbols = sorted(
-                    {
-                        wasm_import.name
-                        for wasm_import in read_wasm_imports(built_extension)
-                    }
-                )
-            except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
-                return _fail(
-                    f"Built wasm extension artifact is not a readable wasm object: {exc}",
-                    json_output,
-                    command="extension-build",
-                )
+                wasm_import_symbols = list(source_plan_object_closure.runtime_symbols)
+            else:
+                try:
+                    wasm_defined_symbols = sorted(
+                        {
+                            export.name
+                            for export in read_wasm_function_exports(built_extension)
+                        }
+                    )
+                    wasm_import_symbols = sorted(
+                        {
+                            wasm_import.name
+                            for wasm_import in read_wasm_imports(built_extension)
+                        }
+                    )
+                except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
+                    return _fail(
+                        "Built wasm extension artifact is not a readable wasm object: "
+                        f"{exc}",
+                        json_output,
+                        command="extension-build",
+                    )
             direct_symbols = sorted(
                 {
                     str(export.get("symbol"))
@@ -2180,6 +2778,7 @@ def extension_build(
             "sources": [str(path) for path in source_paths],
             "molt_c_api_version": abi_version,
             "abi_tag": abi_tag,
+            "abi_tier": normalized_abi_tier,
             "python_tag": python_tag,
             "target_triple": target_triple,
             "platform_tag": platform_tag,
@@ -2187,6 +2786,7 @@ def extension_build(
             "init_symbol": init_symbol,
             "runtime_linkage": runtime_linkage,
             "artifact_kind": artifact_kind,
+            "provided_capsules": list(provided_capsules_tuple),
             "capabilities": capabilities_list,
             "capability_profiles": capability_profiles,
             "deterministic": deterministic,
@@ -2200,13 +2800,45 @@ def extension_build(
                 "wasi_sysroot": wasi_sysroot_path,
                 "runtime_linkage": runtime_linkage,
                 "artifact_kind": artifact_kind,
-                "include_dirs": [str(include_root), str(project_root)]
+                "include_dirs": [str(path) for path in abi_include_roots]
+                + [str(project_root)]
                 + [str(path) for path in include_paths],
+                "python_header": str(python_header),
                 "extra_compile_args": compile_args,
                 "extra_link_args": link_args,
             },
         }
-        if wasm_static_link:
+        if source_c_api_requirements is not None:
+            manifest_payload["build"]["source_c_api_scan"] = (
+                source_c_api_requirements.manifest_payload()
+            )
+        if loaded_source_plan is not None:
+            manifest_payload["source_plan"] = loaded_source_plan.manifest_payload()
+            manifest_payload["build"]["source_plan_digest"] = loaded_source_plan.digest
+            manifest_payload["build"]["object_count"] = len(object_facts)
+            manifest_payload["build"]["linked_object_count"] = len(object_paths)
+            assert source_plan_object_closure is not None
+            manifest_payload["build"]["object_closure_sha256"] = (
+                source_plan_object_closure.closure_sha256
+            )
+            assert source_c_api_requirements is not None
+            manifest_payload["object_closure"] = (
+                source_plan_object_closure.manifest_payload(
+                    required_c_api_by_source=(
+                        source_c_api_requirements.required_by_source
+                    ),
+                    required_capsules_by_source=(
+                        source_c_api_requirements.required_capsules_by_source
+                    ),
+                    project_generated_c_api_by_source=(
+                        source_c_api_requirements.project_generated_c_api_by_source
+                    ),
+                    project_generated_c_api_prefixes=(
+                        source_c_api_requirements.project_generated_c_api_prefixes
+                    ),
+                )
+            )
+        elif wasm_static_link:
             object_closure: dict[str, Any] = {
                 "defined_symbols": wasm_defined_symbols,
                 "undefined_symbols": wasm_import_symbols,
@@ -2217,7 +2849,15 @@ def extension_build(
             if runtime_symbols:
                 object_closure["runtime_symbols"] = list(runtime_symbols)
             required_c_api_symbols = sorted(
-                set(source_required_c_api_symbols)
+                set(
+                    symbol
+                    for symbols in (
+                        source_c_api_requirements.required_by_source.values()
+                        if source_c_api_requirements is not None
+                        else ()
+                    )
+                    for symbol in symbols
+                )
                 | {
                     symbol
                     for symbol in wasm_import_symbols
@@ -2226,6 +2866,35 @@ def extension_build(
             )
             if required_c_api_symbols:
                 object_closure["required_c_api_symbols"] = required_c_api_symbols
+            if source_c_api_requirements is not None:
+                required_capsules = sorted(
+                    {
+                        capsule
+                        for capsules in (
+                            source_c_api_requirements.required_capsules_by_source.values()
+                        )
+                        for capsule in capsules
+                    }
+                )
+                if required_capsules:
+                    object_closure["required_capsules"] = required_capsules
+                project_generated_symbols = sorted(
+                    {
+                        symbol
+                        for symbols in (
+                            source_c_api_requirements.project_generated_c_api_by_source.values()
+                        )
+                        for symbol in symbols
+                    }
+                )
+                if project_generated_symbols:
+                    object_closure["project_generated_c_api_symbols"] = (
+                        project_generated_symbols
+                    )
+                if source_c_api_requirements.project_generated_c_api_prefixes:
+                    object_closure["project_generated_c_api_prefixes"] = list(
+                        source_c_api_requirements.project_generated_c_api_prefixes
+                    )
             manifest_payload["object_closure"] = object_closure
         if python_exports:
             manifest_payload["python_exports"] = python_exports
@@ -2285,6 +2954,27 @@ def extension_build(
         )
     manifest_path = output_root / "extension_manifest.json"
     _atomic_write_json(manifest_path, sidecar_payload, sort_keys=True, indent=2)
+    extracted_extension_path = output_root / extension_archive_path
+    _atomic_write_bytes(extracted_extension_path, extension_bytes)
+    extracted_package_init_files: list[Path] = []
+    for index in range(1, len(module_parts)):
+        source_init = project_root.joinpath(*module_parts[:index], "__init__.py")
+        if not source_init.exists() or not source_init.is_file():
+            continue
+        dest_init = output_root.joinpath(*module_parts[:index], "__init__.py")
+        _atomic_copy_file(source_init, dest_init)
+        extracted_package_init_files.append(dest_init)
+    artifact_manifest_payload = dict(sidecar_payload)
+    artifact_manifest_payload["extension"] = extracted_extension_path.name
+    artifact_manifest_path = extracted_extension_path.with_name(
+        extracted_extension_path.name + ".extension_manifest.json"
+    )
+    _atomic_write_json(
+        artifact_manifest_path,
+        artifact_manifest_payload,
+        sort_keys=True,
+        indent=2,
+    )
 
     if json_output:
         payload = _json_payload(
@@ -2294,9 +2984,15 @@ def extension_build(
                 "project": str(project_root),
                 "wheel": str(wheel_path),
                 "manifest": str(manifest_path),
+                "extension_artifact": str(extracted_extension_path),
+                "artifact_manifest": str(artifact_manifest_path),
+                "extracted_package_init_files": [
+                    str(path) for path in extracted_package_init_files
+                ],
                 "module": ".".join(module_parts),
                 "molt_c_api_version": abi_version,
                 "abi_tag": abi_tag,
+                "abi_tier": normalized_abi_tier,
                 "target_triple": target_triple,
                 "build_target": runtime_target_triple or "native",
                 "platform_tag": platform_tag,
@@ -2308,6 +3004,19 @@ def extension_build(
                 "capability_profiles": capability_profiles,
                 "wheel_sha256": wheel_sha,
                 "extension_sha256": extension_sha,
+                "object_closure_sha256": (
+                    source_plan_object_closure.closure_sha256
+                    if source_plan_object_closure is not None
+                    else None
+                ),
+                "object_count": len(object_facts),
+                "linked_object_count": len(object_paths),
+                "provided_capsules": list(provided_capsules_tuple),
+                "source_plan_digest": (
+                    loaded_source_plan.digest
+                    if loaded_source_plan is not None
+                    else None
+                ),
             },
             warnings=warnings,
         )
@@ -2315,10 +3024,24 @@ def extension_build(
     else:
         print(f"Built extension wheel: {wheel_path}")
         print(f"Wrote extension manifest: {manifest_path}")
+        print(f"Wrote extension artifact: {extracted_extension_path}")
+        print(f"Wrote artifact manifest: {artifact_manifest_path}")
         if verbose:
             print(f"Target triple: {target_triple}")
             print(f"Build target: {runtime_target_triple or 'native'}")
             print(f"Molt C API version: {abi_version}")
+            print(f"Extension ABI tier: {normalized_abi_tier}")
             print(f"Capabilities: {json.dumps(capabilities_list)}")
             print(f"Compile steps: {len(compile_commands)}")
+            if source_plan_object_closure is not None:
+                print(
+                    "Source extension object closure: "
+                    f"{len(source_plan_object_closure.objects)}/{len(object_facts)} "
+                    "objects"
+                )
+            if extracted_package_init_files:
+                print(
+                    "Copied package init files: "
+                    + ", ".join(str(path) for path in extracted_package_init_files)
+                )
     return 0

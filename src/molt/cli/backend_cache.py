@@ -64,6 +64,11 @@ def _native_nm_command(nm_bin: str, path: Path) -> list[str]:
     return [nm_bin, "-g", str(path)]
 
 
+def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{result.stdout}\n{result.stderr}".lower()
+    return "no symbols" in text
+
+
 def _native_object_global_symbols_result(
     path: Path,
     *,
@@ -87,6 +92,8 @@ def _native_object_global_symbols_result(
             continue
         if result.returncode == 0 and result.stdout.strip():
             return result
+        if _nm_result_reports_no_symbols(result):
+            return subprocess.CompletedProcess(result.args, 0, "", "")
         last_failure = result
     if last_failure is not None and last_failure.returncode == 0:
         return last_failure
@@ -102,6 +109,8 @@ def _native_object_global_symbol_sets(path: Path) -> tuple[set[str], set[str]] |
     for raw_line in result.stdout.splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        if line.lower().endswith(": no symbols") or line.lower() == "no symbols":
             continue
         parts = line.split()
         if len(parts) >= 2:

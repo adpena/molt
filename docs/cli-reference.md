@@ -426,7 +426,25 @@ molt extension scan                      # Scan for C API usage
 `molt extension build --target wasm` emits a `.molt.wasm` static-link artifact
 plus `extension_manifest.json` with `runtime_linkage = "static_link"`,
 `artifact_kind = "wasm_relocatable_object"`, and object-closure symbol custody
-for package admission and final WASM linking.
+for package admission and final WASM linking. Source-plan builds also include
+`build.source_c_api_scan` and per-object C/API fields that distinguish
+runtime-backed symbols, required NumPy/C-API source macros, package-defined
+symbols, and package-generated token-paste helpers. `molt extension scan
+--json` exposes the same primitive-class and `project_generated_*` boards so
+preflight diagnostics match build-time admission.
+
+`molt extension audit` can enforce public export custody before graph discovery:
+use `--require-python-export numpy` for package-root owners and
+`--require-callable-export scipy.ndimage.distance_transform_edt` for native
+callable ABI owners. Missing entries fail immediately with the rebuild flag
+needed to publish a manifest-symbol-owned artifact instead of letting stale
+sidecars trigger broad import closure or fake Python call lowering.
+For static-link package artifacts, combine those with
+`--require-loader-kind libmolt_source`, `--require-runtime-linkage static_link`,
+`--require-artifact-kind wasm_relocatable_object`, `--require-artifact-file`,
+`--require-object-closure`, and `--require-checksum` to verify the sidecar
+points at the exact `.molt.wasm` bytes and reachable object-closure board the
+WASM linker will consume.
 
 #### `molt verify`
 
@@ -528,7 +546,7 @@ falls back to the host process version when a target is selected.
 | `MOLT_HASH_SEED` | Override the hash seed for deterministic builds. |
 | `MOLT_STDLIB_PROFILE` | Default stdlib profile (`full` or `micro`). |
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
-| `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, and their package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
+| `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, WASM static-link artifact manifests must declare `python_exports` or `callable_exports`, required package-root imports such as `numpy` must be covered by matching `python_exports`, and package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
 | `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
 | `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
@@ -538,6 +556,8 @@ falls back to the host process version when a target is selected.
 | `MOLT_SYSROOT` | Sysroot path for native linking. |
 | `MOLT_CROSS_SYSROOT` | Sysroot path for cross-compilation. |
 | `MOLT_CROSS_CC` | Cross-compiler path for cross-compilation. |
+| `MOLT_WASM_CC` | WASM C/C++ compiler command for source-plan extension builds. It is preferred over `MOLT_CROSS_CC` for WASM source-extension custody and must compile a tiny WASI probe including `<errno.h>` before upstream package compilation starts. |
+| `WASI_SYSROOT` / `WASI_SDK_PATH` | WASI headers/libs for clang-based WASM source-extension builds. `zig cc` can satisfy this through its bundled sysroot. |
 | `MOLT_ARCH` | Override target architecture. |
 | `MOLT_MACOSX_DEPLOYMENT_TARGET` | macOS deployment target version. |
 
@@ -701,7 +721,7 @@ molt deploy cloudflare app.py --wrangler-args "--env production"
 
 The `cloudflare` deploy target automatically:
 1. Builds with `--target wasm --split-runtime`.
-2. Generates `worker.js`, `browser_embed.js`, `app.wasm`, `molt_runtime.wasm`, and `manifest.json`.
+2. Generates `worker.js`, `browser_embed.js`, `loader_bridge.js`, `app.wasm`, `molt_runtime.wasm`, and `manifest.json`.
 3. Runs `wrangler deploy` (requires `wrangler` in PATH and a Wrangler config file, typically the generated `wrangler.jsonc`).
 
 ### Roblox

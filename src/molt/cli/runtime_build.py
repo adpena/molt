@@ -543,6 +543,12 @@ def _ensure_runtime_wasm_artifact(
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
     )
+    requested_exports = None if required_exports is None else frozenset(required_exports)
+    ready_export_sets = (
+        runtime_state.runtime_reloc_wasm_ready_export_sets
+        if reloc
+        else runtime_state.runtime_wasm_ready_export_sets
+    )
     ready = (
         runtime_state.runtime_reloc_wasm_ready
         if reloc
@@ -550,7 +556,10 @@ def _ensure_runtime_wasm_artifact(
     )
     if runtime_path is None:
         return True
+    if None in ready_export_sets or requested_exports in ready_export_sets:
+        return True
     if ready and required_exports is None:
+        ready_export_sets.add(None)
         return True
     if not _ensure_runtime_wasm(
         runtime_path,
@@ -570,6 +579,7 @@ def _ensure_runtime_wasm_artifact(
         runtime_state.runtime_reloc_wasm_ready = True
     else:
         runtime_state.runtime_wasm_ready = True
+    ready_export_sets.add(requested_exports)
     return True
 
 

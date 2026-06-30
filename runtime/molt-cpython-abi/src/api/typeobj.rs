@@ -1,6 +1,6 @@
 //! Type object API — PyType_Ready, PyType_GenericAlloc, Py_TYPE checks.
 
-use crate::abi_types::{Py_TPFLAGS_READY, Py_ssize_t, PyObject, PyTypeObject};
+use crate::abi_types::{Py_TPFLAGS_READY, Py_ssize_t, PyObject, PyType_Spec, PyTypeObject};
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -26,28 +26,12 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GenericAlloc(
     tp: *mut PyTypeObject,
-    _nitems: Py_ssize_t,
+    nitems: Py_ssize_t,
 ) -> *mut PyObject {
     if tp.is_null() {
         return ptr::null_mut();
     }
-    // Allocate basic size + nitems * itemsize.
-    // For now, allocate a minimal PyObject header.
-    let layout = std::alloc::Layout::from_size_align(
-        std::mem::size_of::<PyObject>(),
-        std::mem::align_of::<PyObject>(),
-    )
-    .expect("layout");
-    let raw = unsafe { std::alloc::alloc_zeroed(layout) };
-    if raw.is_null() {
-        return ptr::null_mut();
-    }
-    let obj = raw as *mut PyObject;
-    unsafe {
-        (*obj).ob_refcnt = 1;
-        (*obj).ob_type = tp;
-    }
-    obj
+    unsafe { crate::api::memory::molt_object_alloc(tp, nitems) }
 }
 
 #[unsafe(no_mangle)]
@@ -59,6 +43,65 @@ pub unsafe extern "C" fn PyType_GenericNew(
     unsafe { PyType_GenericAlloc(tp, 0) }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromSpecWithBases(
+    spec: *mut PyType_Spec,
+    bases: *mut PyObject,
+) -> *mut PyObject {
+    if spec.is_null() {
+        return ptr::null_mut();
+    }
+    let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    unsafe {
+        ty.ob_base.ob_base.ob_refcnt = 1;
+        ty.ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
+        ty.ob_base.ob_size = 0;
+        ty.tp_name = (*spec).name;
+        ty.tp_basicsize = (*spec).basicsize as Py_ssize_t;
+        ty.tp_itemsize = (*spec).itemsize as Py_ssize_t;
+        ty.tp_flags = (*spec).flags as std::os::raw::c_ulong | Py_TPFLAGS_READY;
+        ty.tp_base = &raw mut crate::abi_types::PyBaseObject_Type;
+        ty.tp_bases = bases;
+        ty.tp_alloc = Some(PyType_GenericAlloc);
+        ty.tp_new = Some(PyType_GenericNew);
+    }
+    Box::into_raw(ty).cast::<PyObject>()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromModuleAndSpec(
+    _module: *mut PyObject,
+    spec: *mut PyType_Spec,
+    bases: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { PyType_FromSpecWithBases(spec, bases) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromMetaclass(
+    _metaclass: *mut PyTypeObject,
+    module: *mut PyObject,
+    spec: *mut PyType_Spec,
+    bases: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { PyType_FromModuleAndSpec(module, spec, bases) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let type_type = &raw mut crate::abi_types::PyType_Type;
+    if std::ptr::eq(op, type_type.cast::<PyObject>()) {
+        return 1;
+    }
+    std::ptr::eq(unsafe { (*op).ob_type }, type_type) as c_int
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_Modified(_tp: *mut PyTypeObject) {}
+
 /// Py_TYPE(op) — return ob_type pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _Py_TYPE(op: *mut PyObject) -> *mut PyTypeObject {
@@ -66,6 +109,32 @@ pub unsafe extern "C" fn _Py_TYPE(op: *mut PyObject) -> *mut PyTypeObject {
         return ptr::null_mut();
     }
     unsafe { (*op).ob_type }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Type(op: *mut PyObject) -> *mut PyObject {
+    if op.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyObject_Type called with NULL".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let tp = unsafe { (*op).ob_type };
+    if tp.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"object has NULL type".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let type_obj = tp.cast::<PyObject>();
+    unsafe { crate::api::refcount::Py_INCREF(type_obj) };
+    type_obj
 }
 
 #[unsafe(no_mangle)]

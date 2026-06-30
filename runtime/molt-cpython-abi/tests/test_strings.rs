@@ -111,6 +111,26 @@ fn test_unicode_as_utf8_and_size_null() {
     assert!(ptr.is_null());
 }
 
+#[test]
+fn test_unicode_as_ascii_string_null_returns_null() {
+    init();
+    let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsASCIIString(ptr::null_mut()) };
+    assert!(py.is_null());
+}
+
+#[test]
+fn test_unicode_from_encoded_object_null_returns_null() {
+    init();
+    let py = unsafe {
+        molt_cpython_abi::api::strings::PyUnicode_FromEncodedObject(
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+        )
+    };
+    assert!(py.is_null());
+}
+
 // ---------------------------------------------------------------------------
 // PyUnicode_GetLength
 // ---------------------------------------------------------------------------
@@ -168,6 +188,31 @@ fn test_compare_with_ascii_null_string() {
     };
     assert_eq!(result, -1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+}
+
+#[test]
+fn test_unicode_compare_null_operand_returns_minus_one() {
+    init();
+    let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"abc".as_ptr()) };
+    let result = unsafe { molt_cpython_abi::api::strings::PyUnicode_Compare(py, ptr::null_mut()) };
+    assert_eq!(result, -1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+}
+
+#[test]
+fn test_unicode_contains_null_operand_returns_minus_one() {
+    init();
+    let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"abc".as_ptr()) };
+    let result = unsafe { molt_cpython_abi::api::strings::PyUnicode_Contains(py, ptr::null_mut()) };
+    assert_eq!(result, -1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+}
+
+#[test]
+fn test_unicode_substring_null_returns_null() {
+    init();
+    let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_Substring(ptr::null_mut(), 0, 1) };
+    assert!(py.is_null());
 }
 
 // ---------------------------------------------------------------------------
@@ -265,4 +310,44 @@ fn test_bytes_size_null() {
     init();
     let size = unsafe { molt_cpython_abi::api::strings::PyBytes_Size(ptr::null_mut()) };
     assert_eq!(size, -1);
+}
+
+// ---------------------------------------------------------------------------
+// PyByteArray
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bytearray_from_string_has_mutable_storage() {
+    init();
+    let py = unsafe {
+        molt_cpython_abi::api::strings::PyByteArray_FromStringAndSize(c"abc".as_ptr(), 3)
+    };
+    assert!(!py.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::strings::PyByteArray_Check(py) },
+        1
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::strings::PyByteArray_Size(py) },
+        3
+    );
+    let data = unsafe { molt_cpython_abi::api::strings::PyByteArray_AsString(py) };
+    assert!(!data.is_null());
+    unsafe {
+        *data.add(1) = b'Z' as std::os::raw::c_char;
+        assert_eq!(*data.add(0), b'a' as std::os::raw::c_char);
+        assert_eq!(*data.add(1), b'Z' as std::os::raw::c_char);
+        assert_eq!(*data.add(2), b'c' as std::os::raw::c_char);
+        assert_eq!(*data.add(3), 0);
+        molt_cpython_abi::api::refcount::Py_DECREF(py);
+    }
+}
+
+#[test]
+fn test_bytearray_negative_len_returns_null() {
+    init();
+    let py = unsafe {
+        molt_cpython_abi::api::strings::PyByteArray_FromStringAndSize(c"abc".as_ptr(), -1)
+    };
+    assert!(py.is_null());
 }

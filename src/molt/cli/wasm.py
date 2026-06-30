@@ -9,9 +9,9 @@ import molt.wasm_artifact as _wasm_artifact
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_LEGACY_TABLE_BASE,
-    WASM_POLL_TABLE_IMPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLES,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
     wasm_import_result_kind,
     wasm_import_signature,
@@ -94,17 +94,6 @@ def _export_wasm_table_refs(path: Path) -> None:
     _atomic_write_bytes(path, _wasm_artifact._build_wasm_sections(rebuilt_sections))
 
 
-def _wasm_table_first_live_slot() -> int:
-    slots = [
-        slot
-        for slot, _name in WASM_POLL_TABLE_IMPORTS
-        if isinstance(slot, int) and slot > 0
-    ]
-    if WASM_RESERVED_RUNTIME_CALLABLE_BASE > 0:
-        slots.append(WASM_RESERVED_RUNTIME_CALLABLE_BASE)
-    return min(slots, default=0)
-
-
 def _effective_split_worker_table_base(
     *,
     wasm_table_base: int | None,
@@ -117,17 +106,12 @@ def _effective_split_worker_table_base(
     first_exported_slot = _wasm_artifact.infer_wasm_table_base_from_table_ref_exports(
         app_table_ref_signatures,
     )
-    if first_exported_slot is not None:
-        first_live_slot = _wasm_table_first_live_slot()
-        inferred = first_exported_slot - first_live_slot
-    else:
-        inferred = None
+    inferred = first_exported_slot
     if inferred is not None and inferred != wasm_table_base:
         raise ValueError(
             "backend wasm_table_base "
             f"{wasm_table_base} disagrees with table-ref export base {inferred} "
-            f"(first exported slot {first_exported_slot}, "
-            f"first live slot {first_live_slot})"
+            f"(first exported slot {first_exported_slot})"
         )
     return wasm_table_base
 
@@ -202,9 +186,22 @@ def _runtime_import_fallbacks_from_manifest() -> dict[str, dict[str, object]]:
     }
 
 
+def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
+    return [
+        {
+            "index": index,
+            "runtime_export": runtime_name,
+            "import_name": import_name,
+            "arity": arity,
+        }
+        for index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+    ]
+
+
 def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
     return {
         "call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS),
+        "reserved_runtime_callables": _reserved_runtime_callables_from_manifest(),
         "runtime_import_fallbacks": _runtime_import_fallbacks_from_manifest(),
         "table_layout": {
             "legacy_table_base": WASM_LEGACY_TABLE_BASE,
@@ -255,6 +252,10 @@ def _generate_split_worker_js(
     )
     runtime_table_ref_signatures_json = json.dumps(
         dict(runtime_table_ref_signatures or {}), sort_keys=True
+    )
+    reserved_runtime_callables_json = json.dumps(
+        _reserved_runtime_callables_from_manifest(),
+        sort_keys=True,
     )
     table_ref_export_prefix_json = json.dumps(
         _wasm_artifact.WASM_TABLE_REF_EXPORT_PREFIX
@@ -350,6 +351,7 @@ export default {
     const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
     const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
+    const reservedRuntimeCallables = __MOLT_RESERVED_RUNTIME_CALLABLES__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
     const TABLE_REF_EXPORT_PREFIX = __MOLT_TABLE_REF_EXPORT_PREFIX__;
@@ -904,6 +906,21 @@ export default {
       return normalizeImportResult(out, signature.result || null);
     };
 
+    const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {
+      const match = /^molt_call_indirect(\\d+)$/.exec(name);
+      if (!match) {
+        return null;
+      }
+      const arity = Number(match[1]);
+      if (!Number.isInteger(arity) || arity < 0) {
+        return null;
+      }
+      return {
+        params: Array.from({ length: arity + (includeIndex ? 1 : 0) }, () => "i64"),
+        result: "i64",
+      };
+    };
+
     const installTableRefs = (instance, table) => {
       if (!instance || !table) {
         return;
@@ -960,6 +977,74 @@ export default {
         return idx - LEGACY_WASM_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
       }
       return idx;
+    };
+
+    const reservedRuntimeCallableForTableIndex = (idx) => {
+      if (!Number.isInteger(idx) || __MOLT_SHARED_TABLE_BASE__ === null) {
+        return null;
+      }
+      const directStart = __MOLT_SHARED_TABLE_BASE__ + RESERVED_RUNTIME_CALLABLE_BASE;
+      const trampolineStart = directStart + reservedRuntimeCallables.length;
+      let offset = idx - directStart;
+      let trampoline = false;
+      if (offset < 0 || offset >= reservedRuntimeCallables.length) {
+        offset = idx - trampolineStart;
+        trampoline = true;
+      }
+      if (offset < 0 || offset >= reservedRuntimeCallables.length) {
+        return null;
+      }
+      const spec = reservedRuntimeCallables.find((entry) => entry.index === offset);
+      return spec ? { ...spec, trampoline } : null;
+    };
+
+    const readRuntimeCallargsVector = (ptr, len) => {
+      const count = Number(len);
+      if (!Number.isInteger(count) || count < 0) {
+        throw new Error(`reserved runtime trampoline arg count must be non-negative, got ${len}`);
+      }
+      const base = Number(ptr);
+      if (!Number.isInteger(base) || base < 0) {
+        throw new Error(`reserved runtime trampoline argv pointer must be non-negative, got ${ptr}`);
+      }
+      const view = new DataView(wasmMemory.buffer);
+      const args = [];
+      for (let idx = 0; idx < count; idx += 1) {
+        args.push(view.getBigUint64(base + idx * 8, true));
+      }
+      return args;
+    };
+
+    const callReservedRuntimeCallable = (entry, indirectName, args) => {
+      const fn = rtInstance?.exports?.[entry.runtime_export];
+      if (typeof fn !== "function") {
+        throw new Error(`${indirectName} reserved runtime callable ${entry.runtime_export} is not exported`);
+      }
+      let callArgs = args;
+      if (entry.trampoline) {
+        if (args.length !== 3) {
+          throw new Error(
+            `${indirectName} reserved runtime trampoline ${entry.runtime_export} expects closure, argv, argc; got ${args.length} args`,
+          );
+        }
+        const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
+        if (closureBits !== 0n) {
+          throw new Error(
+            `${indirectName} reserved runtime trampoline ${entry.runtime_export} does not accept closure bits ${closureBits}`,
+          );
+        }
+        callArgs = readRuntimeCallargsVector(args[1], args[2]);
+      }
+      if (callArgs.length !== entry.arity) {
+        throw new Error(
+          `${indirectName} reserved runtime callable ${entry.runtime_export} arity mismatch: expected ${entry.arity}, got ${callArgs.length}`,
+        );
+      }
+      return callWithSignature(
+        fn,
+        { params: Array.from({ length: entry.arity }, () => "i64"), result: "i64" },
+        callArgs,
+      );
     };
 
     const buildRuntimeImports = (module, runtimeInstance) => {
@@ -1157,10 +1242,27 @@ export default {
         const idx = Number(fnIndex);
         const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
         const directName = tableRefExportName(dispatchIdx);
+        const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);
+        if (reservedRuntimeCallable) {
+          try {
+            return callReservedRuntimeCallable(
+              reservedRuntimeCallable,
+              indirectName,
+              args,
+            );
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            throw new Error(`${indirectName} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
+          }
+        }
         const indirectFn = appInstance?.exports?.[indirectName];
         if (typeof indirectFn === "function") {
           try {
-            return indirectFn(fnIndex, ...args);
+            return callWithSignature(
+              indirectFn,
+              callIndirectObjectSignature(indirectName, { includeIndex: true }),
+              [fnIndex, ...args],
+            );
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
@@ -1169,7 +1271,7 @@ export default {
         const tableFn = sharedTable.get(dispatchIdx);
         if (typeof tableFn === "function") {
           try {
-            const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+            const signature = callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
             return callWithSignature(tableFn, signature, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
@@ -1180,7 +1282,7 @@ export default {
         const rtDirectFn = rtInstance?.exports?.[directName];
         if (typeof rtDirectFn === "function") {
           try {
-            return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
+            return callWithSignature(rtDirectFn, callIndirectObjectSignature(indirectName) || runtimeTableRefSignatures[directName], args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
@@ -1291,6 +1393,10 @@ export default {
         .replace(
             "__MOLT_CALL_INDIRECT_IMPORTS__",
             call_indirect_imports_json,
+        )
+        .replace(
+            "__MOLT_RESERVED_RUNTIME_CALLABLES__",
+            reserved_runtime_callables_json,
         )
         .replace(
             "__MOLT_APP_TABLE_REF_SIGNATURES__",

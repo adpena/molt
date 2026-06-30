@@ -17,6 +17,13 @@ pub struct WasmBackend {
     pub(in crate::wasm) memories: MemorySection,
     pub(in crate::wasm) tables: TableSection,
     pub(in crate::wasm) func_count: u32,
+    /// Number of imported functions before the first defined function body.
+    ///
+    /// Relocatable data-pointer sites are recorded against defined-function
+    /// body ordinals, not absolute function indices, because import stripping
+    /// can shrink the imported-function prefix before reloc sections are
+    /// attached.
+    pub(in crate::wasm) func_import_count: u32,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     // Wrapped in TrackedImportIds to record which imports are actually referenced
     // during code emission (see MOLT_WASM_IMPORT_AUDIT).
@@ -51,6 +58,7 @@ impl WasmBackend {
             memories: MemorySection::new(),
             tables: TableSection::new(),
             func_count: 0,
+            func_import_count: 0,
             import_ids: TrackedImportIds::new(BTreeMap::new()),
             data_segments: WasmDataSegments::new(options.data_base),
             molt_main_index: None,

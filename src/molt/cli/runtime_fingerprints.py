@@ -231,6 +231,7 @@ def _runtime_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
         project_root / "runtime/molt-runtime/src",
         project_root / "runtime/molt-runtime/Cargo.toml",
         project_root / "runtime/molt-runtime/build.rs",
+        project_root / "runtime/build_support",
         project_root / "runtime/molt-cpython-abi/src",
         project_root / "runtime/molt-cpython-abi/shims",
         project_root / "runtime/molt-cpython-abi/Cargo.toml",

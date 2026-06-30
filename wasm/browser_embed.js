@@ -1,5 +1,5 @@
-const WASM_MAGIC = 0x6d736100;
-const WASM_VERSION = 0x1;
+import './loader_bridge.js';
+
 const ENOSYS = 38;
 const EINVAL = 22;
 const ENOMEM = 12;
@@ -15,108 +15,24 @@ const NATIVE_CALLABLE_IMPORT_MODULE = 'molt_native';
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 
-const readVarUint = (view, offset) => {
-  let result = 0;
-  let shift = 0;
-  let pos = offset;
-  while (true) {
-    if (pos >= view.length) {
-      throw new Error('Unexpected EOF while reading varuint');
-    }
-    const byte = view[pos++];
-    result |= (byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) {
-      break;
-    }
-    shift += 7;
-  }
-  return { value: result >>> 0, offset: pos };
-};
+const {
+  callIndirectObjectSignature,
+  callIsolateImportExport,
+  callReservedRuntimeCallable,
+  callRuntimeByteSpanOutImport,
+  callRuntimeObjectArrayArgImport,
+  callWithWasmSignature: callWithSignature,
+  installWasmTagImports,
+  normalizeImportResult,
+  normalizeValueForKind,
+  parseWasmImports: parseMoltWasmImports,
+  remapLegacyRuntimeSharedTableIndex,
+  reservedRuntimeCallableForTableIndex,
+  runtimeImportByteSpanOutNames,
+  runtimeImportObjectArrayArgNames,
+} = globalThis.MoltWasmLoaderBridge;
 
-const readString = (view, offset) => {
-  const lenRes = readVarUint(view, offset);
-  const len = lenRes.value;
-  const start = lenRes.offset;
-  const end = start + len;
-  if (end > view.length) {
-    throw new Error('Unexpected EOF while reading string');
-  }
-  return { value: UTF8_DECODER.decode(view.subarray(start, end)), offset: end };
-};
-
-const readLimits = (view, offset) => {
-  if (offset >= view.length) {
-    throw new Error('Unexpected EOF while reading limits');
-  }
-  const flags = view[offset++];
-  const minRes = readVarUint(view, offset);
-  let max = null;
-  offset = minRes.offset;
-  if (flags & 0x1) {
-    const maxRes = readVarUint(view, offset);
-    max = maxRes.value;
-    offset = maxRes.offset;
-  }
-  return { min: minRes.value, max, offset };
-};
-
-export const parseMoltWasmImports = (buffer) => {
-  const view = new Uint8Array(buffer);
-  const header = new DataView(view.buffer, view.byteOffset, view.byteLength);
-  if (header.getUint32(0, true) !== WASM_MAGIC) {
-    throw new Error('Invalid WASM header');
-  }
-  if (header.getUint32(4, true) !== WASM_VERSION) {
-    throw new Error('Unsupported WASM version');
-  }
-  let offset = 8;
-  const result = { funcImports: [], memory: null, table: null };
-  while (offset < view.length) {
-    const sectionId = view[offset++];
-    const sizeRes = readVarUint(view, offset);
-    const size = sizeRes.value;
-    offset = sizeRes.offset;
-    const end = offset + size;
-    if (end > view.length) {
-      throw new Error('Unexpected EOF while reading section');
-    }
-    if (sectionId !== 2) {
-      offset = end;
-      continue;
-    }
-    let inner = offset;
-    const countRes = readVarUint(view, inner);
-    let count = countRes.value;
-    inner = countRes.offset;
-    while (count > 0) {
-      const moduleRes = readString(view, inner);
-      const module = moduleRes.value;
-      inner = moduleRes.offset;
-      const nameRes = readString(view, inner);
-      const name = nameRes.value;
-      inner = nameRes.offset;
-      const kind = view[inner++];
-      if (kind === 0) {
-        inner = readVarUint(view, inner).offset;
-        result.funcImports.push({ module, name });
-      } else if (kind === 1) {
-        inner += 1;
-        const limits = readLimits(view, inner);
-        inner = limits.offset;
-        result.table = { min: limits.min, max: limits.max };
-      } else if (kind === 2) {
-        const limits = readLimits(view, inner);
-        inner = limits.offset;
-        result.memory = { min: limits.min, max: limits.max };
-      } else {
-        inner = readVarUint(view, inner).offset;
-      }
-      count -= 1;
-    }
-    offset = end;
-  }
-  return result;
-};
+export { parseMoltWasmImports };
 
 const mergeLimits = (left, right, label) => {
   if (!left) return right;
@@ -152,10 +68,14 @@ const makeTable = (limits, initial = null) => {
   return new WebAssembly.Table(descriptor);
 };
 
-const requireIntegerField = (source, name) => {
+const requireIntegerField = (
+  source,
+  name,
+  path = 'manifest.abi.browser_embed.table_layout',
+) => {
   const value = source?.[name];
   if (!Number.isInteger(value)) {
-    throw new Error(`manifest.abi.browser_embed.table_layout.${name} must be an integer`);
+    throw new Error(`${path}.${name} must be an integer`);
   }
   return value;
 };
@@ -276,9 +196,56 @@ const browserAbiFromManifest = (manifest) => {
     tableLayout,
     'reserved_runtime_callable_count',
   );
+  if (!Array.isArray(abi.reserved_runtime_callables)) {
+    throw new Error('manifest.abi.browser_embed.reserved_runtime_callables must be an array');
+  }
+  if (abi.reserved_runtime_callables.length !== reservedRuntimeCallableCount) {
+    throw new Error(
+      'manifest.abi.browser_embed.reserved_runtime_callables length must match ' +
+        'table_layout.reserved_runtime_callable_count',
+    );
+  }
+  const reservedRuntimeCallables = [];
+  const reservedIndices = new Set();
+  for (const entry of abi.reserved_runtime_callables) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('manifest.abi.browser_embed.reserved_runtime_callables entries must be objects');
+    }
+    const entryPath = 'manifest.abi.browser_embed.reserved_runtime_callables entry';
+    const index = requireIntegerField(entry, 'index', entryPath);
+    if (index < 0 || index >= reservedRuntimeCallableCount || reservedIndices.has(index)) {
+      throw new Error(
+        `manifest.abi.browser_embed.reserved_runtime_callables has invalid index ${index}`,
+      );
+    }
+    reservedIndices.add(index);
+    if (typeof entry.runtime_export !== 'string' || !entry.runtime_export.startsWith('molt_')) {
+      throw new Error(
+        'manifest.abi.browser_embed.reserved_runtime_callables entry runtime_export must be a molt_ export name',
+      );
+    }
+    if (typeof entry.import_name !== 'string' || entry.import_name.length === 0) {
+      throw new Error(
+        'manifest.abi.browser_embed.reserved_runtime_callables entry import_name must be a string',
+      );
+    }
+    const arity = requireIntegerField(entry, 'arity', entryPath);
+    if (arity < 0) {
+      throw new Error(
+        'manifest.abi.browser_embed.reserved_runtime_callables entry arity must be non-negative',
+      );
+    }
+    reservedRuntimeCallables.push({
+      index,
+      runtimeExport: entry.runtime_export,
+      importName: entry.import_name,
+      arity,
+    });
+  }
   return {
     callIndirectImports,
     runtimeImportFallbacks,
+    reservedRuntimeCallables,
     nativeCallables: nativeCallableManifestFromAbi(abi.native_callables),
     tableLayout: {
       legacyTableBase,
@@ -358,6 +325,19 @@ const writeU32ToMemory = (memory, ptr, value) => {
   if (!Number.isFinite(addr) || addr === 0) return false;
   new DataView(memory.buffer).setUint32(addr, Number(value) >>> 0, true);
   return true;
+};
+
+const readBytesFromMemory = (memory, ptr, len) => {
+  if (!memory) return new Uint8Array(0);
+  const addr = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr >>> 0);
+  const size = typeof len === 'bigint' ? Number(len) : Number(len >>> 0);
+  if (!Number.isFinite(addr) || !Number.isFinite(size) || addr === 0 || size <= 0) {
+    return new Uint8Array(0);
+  }
+  if (addr < 0 || addr + size > memory.buffer.byteLength) {
+    throw new Error(`app/runtime memory bridge read out of bounds ptr=${addr} len=${size}`);
+  }
+  return new Uint8Array(memory.buffer, addr, size);
 };
 
 const memoryOffset32 = (ptr, label) => {
@@ -752,6 +732,31 @@ const installTableRefs = (instance, table) => {
   }
 };
 
+const snapshotTablePrefix = (table, length) => {
+  if (!table || !Number.isInteger(length) || length <= 0) {
+    return null;
+  }
+  const end = Math.min(length, table.length);
+  const entries = new Array(end);
+  for (let idx = 0; idx < end; idx += 1) {
+    entries[idx] = table.get(idx);
+  }
+  return entries;
+};
+
+const restoreTablePrefix = (table, snapshot) => {
+  if (!table || !snapshot) {
+    return;
+  }
+  const end = Math.min(snapshot.length, table.length);
+  for (let idx = 0; idx < end; idx += 1) {
+    const expected = snapshot[idx];
+    if (table.get(idx) !== expected) {
+      table.set(idx, expected);
+    }
+  }
+};
+
 const ensureTableCapacityForExportedRefs = (instance, table) => {
   if (!instance || !table) {
     return;
@@ -772,64 +777,9 @@ const ensureTableCapacityForExportedRefs = (instance, table) => {
   }
 };
 
-const normalizeI64Result = (value) => {
-  if (value === undefined || value === null) {
-    return 0n;
-  }
-  return typeof value === 'bigint' ? value : BigInt(value);
-};
-
-const normalizeI64BridgeValue = (value, label) => {
-  if (typeof value === 'bigint') {
-    return value;
-  }
-  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
-    throw new TypeError(`Expected integer for ${label}, got ${value}`);
-  }
-  return BigInt.asUintN(64, BigInt(value));
-};
-
-const callIsolateImportExport = (fn, args) => {
-  if (args.length !== 1) {
-    throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
-  }
-  const handle = normalizeI64BridgeValue(args[0], 'molt_isolate_import handle');
-  return normalizeI64BridgeValue(fn(handle), 'molt_isolate_import result');
-};
-
-const normalizeValueForKind = (value, kind) => {
-  if (kind === 'i64') {
-    return normalizeI64Result(value);
-  }
-  if (kind === 'i32') {
-    return typeof value === 'bigint' ? Number(value) : Number(value);
-  }
-  return value;
-};
-
-const normalizeImportResult = (value, resultKind) => {
-  if (resultKind === 'i64') {
-    return normalizeI64Result(value);
-  }
-  if (resultKind === 'i32') {
-    return typeof value === 'bigint' ? Number(value) : Number(value);
-  }
-  return value;
-};
-
-const callWithSignature = (fn, signature, args) => {
-  if (!signature || !Array.isArray(signature.params)) {
-    return fn(...args);
-  }
-  const callArgs = args.map((value, index) =>
-    normalizeValueForKind(value, signature.params[index] || null));
-  const out = fn(...callArgs);
-  return normalizeImportResult(out, signature.result || null);
-};
-
 const tableRefExportName = (index) => `${TABLE_REF_EXPORT_PREFIX}${index}`;
 
-const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi) => {
+const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, options = {}) => {
   const imports = {};
   const runtimeImports = manifest?.abi?.runtime_imports || {};
   const manifestNames = new Set(runtimeImports.names || []);
@@ -903,6 +853,44 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi) =
       }
       const callArgs = args.map((value, index) =>
         normalizeValueForKind(value, callSignature.params[index] || null));
+      const runtimeMemory =
+        typeof options.runtimeMemoryProvider === 'function'
+          ? options.runtimeMemoryProvider()
+          : null;
+      const appMemory =
+        typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
+      if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
+        const bridgedResult = callRuntimeByteSpanOutImport({
+          runtime: runtimeInstance,
+          runtimeMemory,
+          appMemory,
+          fn,
+          args: callArgs,
+          name: entry.name,
+          readBytesFromMemory,
+          allocRuntimeTempBytes,
+          freeRuntimeTempBytes,
+          writeU64ToMemory: (memory, ptr, value, name) => {
+            const outPtr = memoryOffset32(ptr, `${name} out pointer`);
+            new DataView(memory.buffer).setBigUint64(outPtr, value, true);
+          },
+        });
+        return normalizeImportResult(bridgedResult, resultKind);
+      }
+      if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
+        const bridgedResult = callRuntimeObjectArrayArgImport({
+          runtime: runtimeInstance,
+          runtimeMemory,
+          appMemory,
+          fn,
+          args: callArgs,
+          name: entry.name,
+          readBytesFromMemory,
+          allocRuntimeTempBytes,
+          freeRuntimeTempBytes,
+        });
+        return normalizeImportResult(bridgedResult, resultKind);
+      }
       return normalizeImportResult(fn(...callArgs), resultKind);
     };
   }
@@ -995,25 +983,43 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
   const appTableRefSignatures = manifest?.abi?.table_refs?.app || {};
   const runtimeTableRefSignatures = manifest?.abi?.table_refs?.runtime || {};
   const remapLegacyRuntimeSharedIdx = (idx) => {
-    if (sharedTableBase === null || sharedTableBase <= tableLayout.legacyTableBase) {
-      return idx;
-    }
-    if (
-      idx >= tableLayout.legacyTableBase + tableLayout.reservedRuntimeCallableBase &&
-      idx < tableLayout.legacyTableBase + tableLayout.reservedRuntimeSharedPrefixLen
-    ) {
-      return idx - tableLayout.legacyTableBase + sharedTableBase;
-    }
-    return idx;
+    return remapLegacyRuntimeSharedTableIndex(idx, {
+      sharedTableBase,
+      legacyTableBase: tableLayout.legacyTableBase,
+      reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
+      reservedRuntimeCallableCount: browserAbi.reservedRuntimeCallables.length,
+    });
   };
   const callIndirect = (name) => (fnIndex, ...args) => {
     const idx = Number(fnIndex);
     const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
     const directName = tableRefExportName(dispatchIdx);
+    const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
+      sharedTableBase,
+      reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
+      reservedRuntimeCallables: browserAbi.reservedRuntimeCallables,
+    });
+    if (reservedRuntimeCallable) {
+      try {
+        return callReservedRuntimeCallable({
+          runtimeExports: state.runtimeInstance?.exports,
+          memory: state.memory,
+          entry: reservedRuntimeCallable,
+          indirectName: name,
+          args,
+        });
+      } catch (err) {
+        const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
+      }
+    }
     const tableFn = state.table ? state.table.get(dispatchIdx) : null;
     if (typeof tableFn === 'function') {
       const signature =
-        appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+        callIndirectObjectSignature(name) ||
+        appTableRefSignatures[directName] ||
+        runtimeTableRefSignatures[directName] ||
+        null;
       try {
         return callWithSignature(tableFn, signature, args);
       } catch (err) {
@@ -1028,7 +1034,11 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
     const rtDirectFn = state.runtimeInstance?.exports?.[directName];
     if (typeof rtDirectFn === 'function') {
       try {
-        return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
+        return callWithSignature(
+          rtDirectFn,
+          callIndirectObjectSignature(name) || runtimeTableRefSignatures[directName],
+          args,
+        );
       } catch (err) {
         const detail = err && typeof err.message === 'string' ? err.message : String(err);
         throw new Error(
@@ -1040,7 +1050,11 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
     const indirectFn = state.appInstance?.exports?.[name];
     if (typeof indirectFn === 'function') {
       try {
-        return indirectFn(fnIndex, ...args);
+        return callWithSignature(
+          indirectFn,
+          callIndirectObjectSignature(name, { includeIndex: true }),
+          [fnIndex, ...args],
+        );
       } catch (err) {
         const detail = err && typeof err.message === 'string' ? err.message : String(err);
         throw new Error(
@@ -1219,15 +1233,34 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     appInstance: null,
     runtimeInstance: null,
     memory,
+    appMemory: null,
+    table,
+  };
+  const appHostState = {
+    get appInstance() {
+      return state.appInstance;
+    },
+    get runtimeInstance() {
+      return state.runtimeInstance;
+    },
+    get memory() {
+      return state.appMemory || state.memory;
+    },
+    set memory(value) {
+      state.appMemory = value;
+    },
     table,
   };
   const env = buildMinimalEnv(state, manifest, browserAbi, options.log || null);
-  const wasi = buildMinimalWasi(state, options.log || null);
+  const runtimeWasi = buildMinimalWasi(state, options.log || null);
+  const appWasi = buildMinimalWasi(appHostState, options.log || null);
   const runtimeModule = await WebAssembly.compile(runtimeBytes);
-  const runtimeInstance = await WebAssembly.instantiate(runtimeModule, {
+  const runtimeImportObject = {
     env,
-    wasi_snapshot_preview1: wasi,
-  });
+    wasi_snapshot_preview1: runtimeWasi,
+  };
+  installWasmTagImports(runtimeImportObject, runtimeImports);
+  const runtimeInstance = await WebAssembly.instantiate(runtimeModule, runtimeImportObject);
   state.runtimeInstance = runtimeInstance;
   if (manifest.wasm_table_base !== null && manifest.wasm_table_base !== undefined) {
     const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
@@ -1236,21 +1269,37 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     }
   }
   installTableRefs(runtimeInstance, table);
+  const runtimeTablePrefix = snapshotTablePrefix(
+    table,
+    runtimeImports.table ? runtimeImports.table.min : 0,
+  );
   const appModule = await WebAssembly.compile(appBytes);
-  const moltNative = createMoltNativeCallableImports(state, appImports, {
+  const moltNative = createMoltNativeCallableImports(appHostState, appImports, {
     ...options,
     manifest,
     nativeCallableManifest: browserAbi.nativeCallables,
     requireNativeCallableManifest: true,
   });
-  const appInstance = await WebAssembly.instantiate(appModule, {
+  const appImportObject = {
     env,
     molt_native: moltNative,
-    wasi_snapshot_preview1: wasi,
-    molt_runtime: buildRuntimeImports(appModule, runtimeInstance, manifest, browserAbi),
-  });
+    wasi_snapshot_preview1: appWasi,
+    molt_runtime: buildRuntimeImports(appModule, runtimeInstance, manifest, browserAbi, {
+      runtimeMemoryProvider: () => state.memory,
+      appMemoryProvider: () => appHostState.memory,
+    }),
+  };
+  installWasmTagImports(appImportObject, appImports);
+  const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
   state.appInstance = appInstance;
+  appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
   ensureTableCapacityForExportedRefs(appInstance, table);
+  restoreTablePrefix(table, runtimeTablePrefix);
+  if (typeof appInstance.exports.molt_table_init === 'function') {
+    appInstance.exports.molt_table_init();
+  }
+  restoreTablePrefix(table, runtimeTablePrefix);
+  installTableRefs(appInstance, table);
   return {
     appInstance,
     runtimeInstance,

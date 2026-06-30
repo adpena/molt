@@ -163,10 +163,13 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "def wasm_runtime_import_name" in rendered_py
     assert "def wasm_runtime_export_name" in rendered_py
     assert '("alloc", "molt_alloc")' in rendered_py
+    assert "if name in WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert '("runtime_init", "molt_runtime_init")' in rendered_py
     assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
     assert "runtime_export_name" in rendered_rs
+    assert "RUNTIME_HOST_EXPORTS" in rendered_rs
+    assert ".find(|export| *export == name)" in rendered_rs
     assert 'Self::Alloc => "molt_alloc"' in rendered_rs
     assert 'Self::RuntimeInit => "molt_runtime_init"' in rendered_rs
     assert (
@@ -178,6 +181,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         in rendered_rs
     )
     assert 'Self::SocketDrop => "molt_socket_drop"' in rendered_rs
+    rendered_namespace: dict[str, object] = {}
+    exec(rendered_py, rendered_namespace)
+    assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
+    assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
+    assert rendered_namespace["wasm_import_signature"]("molt_none") is None
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:

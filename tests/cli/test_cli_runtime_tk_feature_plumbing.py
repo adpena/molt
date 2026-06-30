@@ -111,6 +111,7 @@ def test_runtime_source_paths_include_runtime_leaf_crates() -> None:
     assert ROOT / "runtime/molt-runtime-stringprep/src" in paths
     assert ROOT / "runtime/molt-runtime-stringprep/Cargo.toml" in paths
     assert ROOT / "runtime/molt-runtime-http/src" in paths
+    assert ROOT / "runtime/build_support" in paths
     assert ROOT / "runtime/Cargo.toml" in paths
     assert ROOT / "runtime/Cargo.lock" in paths
 
@@ -126,7 +127,9 @@ def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
     assert "stdlib_ast" not in features
     assert "stdlib_unicode_names" not in features
     assert "stdlib_logging_ext" in features
-    assert "stdlib_serial" in features
+    assert "stdlib_serial" not in features
+    assert "stdlib_crypto" not in features
+    assert "stdlib_compression" not in features
 
 
 def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
@@ -135,7 +138,12 @@ def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
         target_triple="wasm32-wasip1",
     )
 
-    assert set(features) == set(RUNTIME_FEATURES._WASM_RUNTIME_FULL_FEATURES)
+    assert set(features) == set(
+        RUNTIME_FEATURES._ALL_BUILTIN_FEATURES
+    ) | RUNTIME_FEATURES.profile_link_features(
+        "full",
+        target_triple="wasm32-wasip1",
+    )
     assert "sqlite" not in features
     assert "stdlib_tk" not in features
     assert "stdlib_net" not in features

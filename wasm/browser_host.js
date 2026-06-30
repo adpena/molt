@@ -1,5 +1,5 @@
-const WASM_MAGIC = 0x6d736100;
-const WASM_VERSION = 0x1;
+import './loader_bridge.js';
+
 const ENOSYS = 38;
 const EINVAL = 22;
 const ENOMEM = 12;
@@ -55,6 +55,32 @@ const WASI_OFLAGS_TRUNC = 8;
 const WASI_WHENCE_SET = 0;
 const WASI_WHENCE_CUR = 1;
 const WASI_WHENCE_END = 2;
+const LEGACY_WASM_TABLE_BASE = 256;
+const RESERVED_RUNTIME_CALLABLE_BASE = 33;
+const reservedRuntimeCallables = [
+  { index: 0, runtimeExport: 'molt_type_call', arity: 1 },
+  { index: 1, runtimeExport: 'molt_type_new', arity: 5 },
+  { index: 2, runtimeExport: 'molt_type_init', arity: 5 },
+  { index: 3, runtimeExport: 'molt_object_new_bound', arity: 1 },
+  { index: 4, runtimeExport: 'molt_object_init', arity: 1 },
+  { index: 5, runtimeExport: 'molt_object_init_subclass', arity: 1 },
+  { index: 6, runtimeExport: 'molt_exception_new_bound', arity: 2 },
+  { index: 7, runtimeExport: 'molt_exception_init', arity: 2 },
+  { index: 8, runtimeExport: 'molt_exceptiongroup_init', arity: 2 },
+  { index: 9, runtimeExport: 'molt_types_mappingproxy_new', arity: 2 },
+  { index: 10, runtimeExport: 'molt_types_mappingproxy_init', arity: 2 },
+  { index: 11, runtimeExport: 'molt_types_method_new', arity: 3 },
+  { index: 12, runtimeExport: 'molt_types_method_init', arity: 3 },
+  { index: 13, runtimeExport: 'molt_types_simplenamespace_init', arity: 3 },
+  { index: 14, runtimeExport: 'molt_types_capsule_new', arity: 1 },
+  { index: 15, runtimeExport: 'molt_types_cell_new', arity: 1 },
+  { index: 16, runtimeExport: 'molt_types_dynamic_class_attr_init', arity: 3 },
+  { index: 17, runtimeExport: 'molt_types_coroutine', arity: 1 },
+  { index: 18, runtimeExport: 'molt_types_get_original_bases', arity: 1 },
+  { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
+  { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
+  { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
+];
 
 let browserVfsModulePromise = null;
 const loadBrowserVfsModule = () => {
@@ -90,6 +116,23 @@ const traceBrowserWasi =
   process &&
   process.env &&
   process.env.MOLT_WASM_TRACE_WASI === '1';
+
+const {
+  callIndirectObjectSignature,
+  callIsolateImportExport,
+  callReservedRuntimeCallable,
+  callRuntimeByteSpanOutImport,
+  callRuntimeObjectArrayArgImport,
+  callWithWasmSignature,
+  installWasmTagImports,
+  parseWasmImports,
+  remapLegacyRuntimeSharedTableIndex,
+  reservedRuntimeCallableForTableIndex,
+  runtimeImportByteSpanOutNames,
+  runtimeImportObjectArrayArgNames,
+} = globalThis.MoltWasmLoaderBridge;
+
+export { parseWasmImports };
 
 const readVarUint = (view, offset) => {
   let result = 0;
@@ -159,66 +202,6 @@ const readLimits = (view, offset) => {
   return { min: minRes.value, max, offset };
 };
 
-const parseWasmImports = (buffer) => {
-  const view = new Uint8Array(buffer);
-  const header = new DataView(view.buffer, view.byteOffset, view.byteLength);
-  if (header.getUint32(0, true) !== WASM_MAGIC) {
-    throw new Error('Invalid WASM header');
-  }
-  if (header.getUint32(4, true) !== WASM_VERSION) {
-    throw new Error('Unsupported WASM version');
-  }
-  let offset = 8;
-  const result = { funcImports: [], memory: null, table: null };
-  while (offset < view.length) {
-    const sectionId = view[offset++];
-    const sizeRes = readVarUint(view, offset);
-    const size = sizeRes.value;
-    offset = sizeRes.offset;
-    const end = offset + size;
-    if (end > view.length) {
-      throw new Error('Unexpected EOF while reading section');
-    }
-    if (sectionId !== 2) {
-      offset = end;
-      continue;
-    }
-    let inner = offset;
-    const countRes = readVarUint(view, inner);
-    let count = countRes.value;
-    inner = countRes.offset;
-    while (count > 0) {
-      const moduleRes = readString(view, inner);
-      const module = moduleRes.value;
-      inner = moduleRes.offset;
-      const nameRes = readString(view, inner);
-      const name = nameRes.value;
-      inner = nameRes.offset;
-      const kind = view[inner++];
-      if (kind === 0) {
-        const typeRes = readVarUint(view, inner);
-        inner = typeRes.offset;
-        result.funcImports.push({ module, name });
-      } else if (kind === 1) {
-        inner += 1;
-        const limits = readLimits(view, inner);
-        inner = limits.offset;
-        result.table = { min: limits.min, max: limits.max };
-      } else if (kind === 2) {
-        const limits = readLimits(view, inner);
-        inner = limits.offset;
-        result.memory = { min: limits.min, max: limits.max };
-      } else {
-        const skip = readVarUint(view, inner);
-        inner = skip.offset;
-      }
-      count -= 1;
-    }
-    offset = end;
-  }
-  return result;
-};
-
 const mergeLimits = (left, right, label) => {
   if (!left) return right;
   if (!right) return left;
@@ -251,7 +234,7 @@ const skipImportDesc = (view, offset, kind) => {
     return pos + 2;
   }
   if (kind === 4) {
-    pos += 1;
+    pos = readVarUint(view, pos).offset;
     return readVarUint(view, pos).offset;
   }
   throw new Error(`Unknown import kind ${kind}`);
@@ -493,6 +476,31 @@ const installTableRefs = (instance, table) => {
   }
   for (const ref of refs) {
     table.set(ref.index, ref.fn);
+  }
+};
+
+const snapshotTablePrefix = (table, length) => {
+  if (!table || !Number.isInteger(length) || length <= 0) {
+    return null;
+  }
+  const end = Math.min(length, table.length);
+  const entries = new Array(end);
+  for (let idx = 0; idx < end; idx += 1) {
+    entries[idx] = table.get(idx);
+  }
+  return entries;
+};
+
+const restoreTablePrefix = (table, snapshot) => {
+  if (!table || !snapshot) {
+    return;
+  }
+  const end = Math.min(snapshot.length, table.length);
+  for (let idx = 0; idx < end; idx += 1) {
+    const expected = snapshot[idx];
+    if (table.get(idx) !== expected) {
+      table.set(idx, expected);
+    }
   }
 };
 
@@ -1590,7 +1598,7 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
   return env;
 };
 
-const buildRuntimeImports = (outputImports, runtimeInstance) => {
+const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
   const imports = {};
   const runtimeExport = (name) => {
     const fn = runtimeInstance.exports[name];
@@ -1636,6 +1644,39 @@ const buildRuntimeImports = (outputImports, runtimeInstance) => {
       }
       if (typeof fn !== 'function') {
         throw new Error(`molt_runtime missing export ${exportName}`);
+      }
+      const runtimeMemory =
+        typeof options.runtimeMemoryProvider === 'function'
+          ? options.runtimeMemoryProvider()
+          : null;
+      const appMemory =
+        typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
+      if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
+        return callRuntimeByteSpanOutImport({
+          runtime: runtimeInstance,
+          runtimeMemory,
+          appMemory,
+          fn,
+          args,
+          name: entry.name,
+          readBytesFromMemory,
+          allocRuntimeTempBytes,
+          freeRuntimeTempBytes,
+          writeU64ToMemory,
+        });
+      }
+      if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
+        return callRuntimeObjectArrayArgImport({
+          runtime: runtimeInstance,
+          runtimeMemory,
+          appMemory,
+          fn,
+          args,
+          name: entry.name,
+          readBytesFromMemory,
+          allocRuntimeTempBytes,
+          freeRuntimeTempBytes,
+        });
       }
       return fn(...args);
     };
@@ -4035,6 +4076,7 @@ export const loadMoltWasm = async (options = {}) => {
     }
     const env = buildEnv(memory, table, linkedCallIndirect, logFn, overrides);
     const importObject = { env, wasi_snapshot_preview1: buildWasiStub(state, logFn, options) };
+    installWasmTagImports(importObject, linkedImports);
     const result = await WebAssembly.instantiate(linkedBytes, importObject);
     const instance = result.instance;
     for (const name of linkedCallIndirectNames) {
@@ -4092,12 +4134,13 @@ export const loadMoltWasm = async (options = {}) => {
   const runtimeImports = parseWasmImports(runtimeBytes);
   const detectedWasmTableBase = extractWasmTableBase(wasmBytes);
   state.wasmTableBase = detectedWasmTableBase;
-  if (!outputImports.memory || !runtimeImports.memory) {
-    throw new Error('Direct-link wasm requires shared memory imports');
+  if (!outputImports.table || !runtimeImports.table || !runtimeImports.memory) {
+    throw new Error('Direct-link wasm requires split-runtime shared table plus runtime memory imports');
   }
   const memory = makeMemory(mergeLimits(outputImports.memory, runtimeImports.memory, 'memory'));
   const table = makeTable(mergeLimits(outputImports.table, runtimeImports.table, 'table'));
   state.memory = memory;
+  const appState = { ...state, memory };
   let outputInstance = null;
   const callIndirectNames = runtimeImports.funcImports
     .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
@@ -4110,42 +4153,51 @@ export const loadMoltWasm = async (options = {}) => {
     callIndirect[name] = (...args) => {
       const rawIdx = args[0];
       const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-      const fn = table ? table.get(idx) : null;
+      const dispatchIdx = remapLegacyRuntimeSharedTableIndex(idx, {
+        sharedTableBase: detectedWasmTableBase,
+        legacyTableBase: LEGACY_WASM_TABLE_BASE,
+        reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+        reservedRuntimeCallableCount: reservedRuntimeCallables.length,
+      });
+      const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
+        sharedTableBase: detectedWasmTableBase,
+        reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+        reservedRuntimeCallables,
+      });
+      if (reservedRuntimeCallable) {
+        try {
+          return callReservedRuntimeCallable({
+            runtimeExports: state.runtimeInstance?.exports,
+            memory,
+            entry: reservedRuntimeCallable,
+            indirectName: name,
+            args: args.slice(1),
+          });
+        } catch (err) {
+          const detail = err && typeof err.message === 'string' ? err.message : String(err);
+          throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
+        }
+      }
+      const fn = table ? table.get(dispatchIdx) : null;
       if (traceCallIndirect) {
         console.error(
-          `[molt wasm] ${name} idx=${idx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
+          `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
         );
       }
       if (typeof fn !== 'function') {
-        throw new Error(`${name} missing table entry at ${idx}`);
+        throw new Error(`${name} missing table entry at ${dispatchIdx}`);
       }
-      return fn(...args.slice(1));
+      return callWithWasmSignature(fn, callIndirectObjectSignature(name), args.slice(1));
     };
   }
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
-  const normalizeIsolateImportI64 = (value, label) => {
-    if (typeof value === 'bigint') {
-      return value;
-    }
-    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
-      throw new TypeError(`Expected integer for ${label}, got ${value}`);
-    }
-    return BigInt.asUintN(64, BigInt(value));
-  };
-  const callIsolateImportExport = (fn, args) => {
-    if (args.length !== 1) {
-      throw new TypeError(`molt_isolate_import expects one i64 handle, got ${args.length}`);
-    }
-    const handle = normalizeIsolateImportI64(args[0], 'molt_isolate_import handle');
-    return normalizeIsolateImportI64(fn(handle), 'molt_isolate_import result');
-  };
   env.molt_isolate_import = (...args) => {
     if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
       throw new Error('molt_isolate_import used before output instantiation');
     }
     return callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
   };
-  const outputModule = await WebAssembly.instantiate(wasmBytes, {
+  const outputImportObject = {
     molt_runtime: buildRuntimeImports(outputImports, {
       exports: new Proxy(
         {},
@@ -4158,18 +4210,27 @@ export const loadMoltWasm = async (options = {}) => {
           },
         },
       ),
+    }, {
+      runtimeMemoryProvider: () => state.memory,
+      appMemoryProvider: () => appState.memory,
     }),
     env: {
       memory,
       __indirect_function_table: table,
     },
-  });
+    wasi_snapshot_preview1: buildWasiStub(appState, logFn, options),
+  };
+  installWasmTagImports(outputImportObject, outputImports);
+  const outputModule = await WebAssembly.instantiate(wasmBytes, outputImportObject);
   outputInstance = outputModule.instance;
+  appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
 
-  const runtimeModule = await WebAssembly.instantiate(runtimeBytes, {
+  const runtimeImportObject = {
     env,
     wasi_snapshot_preview1: buildWasiStub(state, logFn, options),
-  });
+  };
+  installWasmTagImports(runtimeImportObject, runtimeImports);
+  const runtimeModule = await WebAssembly.instantiate(runtimeBytes, runtimeImportObject);
   const runtimeInstance = runtimeModule.instance;
   if (detectedWasmTableBase !== null) {
     const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
@@ -4178,8 +4239,18 @@ export const loadMoltWasm = async (options = {}) => {
     }
   }
   installTableRefs(runtimeInstance, table);
+  const runtimeTablePrefix = snapshotTablePrefix(
+    table,
+    runtimeImports.table ? runtimeImports.table.min : 0,
+  );
   state.runtimeInstance = runtimeInstance;
   ensureTableCapacityForExportedRefs(outputInstance, table);
+  restoreTablePrefix(table, runtimeTablePrefix);
+  if (typeof outputModule.instance.exports.molt_table_init === 'function') {
+    outputModule.instance.exports.molt_table_init();
+  }
+  restoreTablePrefix(table, runtimeTablePrefix);
+  installTableRefs(outputInstance, table);
   return {
     instance: outputModule.instance,
     memory,

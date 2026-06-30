@@ -11,41 +11,46 @@
  * SIMD optimisations in the Rust side handle the hot-path type dispatch.
  */
 
+#include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* Forward declarations for Rust-implemented helpers. */
-typedef struct _MoltPyObject PyObject;
+typedef struct _object PyObject;
 typedef ptrdiff_t Py_ssize_t;
-
-extern PyObject PyExc_TypeError;
-extern PyObject PyExc_ValueError;
-extern PyObject PyExc_NotImplementedError;
-extern PyObject Py_None;
-
-extern void PyErr_SetString(PyObject *exc, const char *message);
-extern void Py_INCREF(PyObject *op);
-extern void Py_DECREF(PyObject *op);
-extern PyObject *PyLong_FromLong(long value);
-extern PyObject *PyLong_FromLongLong(long long value);
-extern PyObject *PyLong_FromUnsignedLong(unsigned long value);
-extern PyObject *PyLong_FromUnsignedLongLong(unsigned long long value);
-extern PyObject *PyFloat_FromDouble(double value);
-extern PyObject *PyBool_FromLong(long value);
-extern PyObject *PyUnicode_FromStringAndSize(const char *value, Py_ssize_t size);
-extern PyObject *PyBytes_FromStringAndSize(const char *value, Py_ssize_t size);
-extern PyObject *PyTuple_New(Py_ssize_t size);
-extern int PyTuple_SetItem(PyObject *tuple, Py_ssize_t index, PyObject *value);
-extern int PyTuple_Check(PyObject *op);
-extern PyObject *PyObject_CallObject(PyObject *callable, PyObject *args);
-extern PyObject *PyObject_GetAttrString(PyObject *op, const char *name);
 
 /* Maximum number of output pointers PyArg_ParseTuple can write. */
 #define MOLT_PYARG_MAX_OUTS 32
+#define MOLT_VARARG_MAX_ARGS 64
+
+extern PyObject *PyObject_GetAttr(PyObject *op, PyObject *name);
+extern PyObject *PyObject_GetAttrString(PyObject *op, const char *name);
+extern PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObject *kwargs);
+extern PyObject *PyTuple_New(Py_ssize_t size);
+extern int PyTuple_SetItem(PyObject *op, Py_ssize_t i, PyObject *value);
+extern PyObject *PyLong_FromLong(long value);
+extern PyObject *PyLong_FromUnsignedLong(unsigned long value);
+extern PyObject *PyLong_FromLongLong(long long value);
+extern PyObject *PyLong_FromUnsignedLongLong(unsigned long long value);
+extern PyObject *PyLong_FromSsize_t(Py_ssize_t value);
+extern PyObject *PyFloat_FromDouble(double value);
+extern PyObject *PyBool_FromLong(long value);
+extern PyObject *PyUnicode_FromString(const char *s);
+extern PyObject *PyUnicode_FromStringAndSize(const char *s, Py_ssize_t size);
+extern const char *PyUnicode_AsUTF8(PyObject *op);
+extern PyObject *PyObject_Repr(PyObject *op);
+extern PyObject *PyObject_Str(PyObject *op);
+extern PyObject *PyBytes_FromStringAndSize(const char *s, Py_ssize_t size);
+extern int PyErr_WarnEx(PyObject *category, const char *message, Py_ssize_t stack_level);
+extern void PyErr_SetString(PyObject *exc_type, const char *message);
+extern void Py_INCREF(PyObject *op);
+extern void Py_DECREF(PyObject *op);
+extern PyObject Py_None;
+extern PyObject PyExc_TypeError;
 
 /*
  * Rust entry point — called with a flat array of output void* pointers.
@@ -59,13 +64,14 @@ extern int molt_pyarg_parse_tuple_inner(
 
 /*
  * Count the number of output pointers a format string requires.
- * Stops at '|', ':', ';', or end of string.
+ * Stops at ':', ';', or end of string. Optional fields after '|' still have
+ * output pointers when present, so collect them for the shared Rust parser.
  */
 static int count_format_outs(const char *fmt) {
     int count = 0;
     for (const char *p = fmt; *p; p++) {
         char c = *p;
-        if (c == '|' || c == ':' || c == ';') break;
+        if (c == ':' || c == ';') break;
         switch (c) {
         case 's': case 'z': case 'y':
             count++;
@@ -106,6 +112,252 @@ static int collect_and_dispatch(
     return molt_pyarg_parse_tuple_inner(args, format, outs, n);
 }
 
+int PyArg_VaParseTupleAndKeywords(
+    PyObject *args,
+    PyObject *kwargs,
+    const char *format,
+    char **kwlist,
+    va_list vargs)
+{
+    (void)kwargs;
+    (void)kwlist;
+    va_list ap;
+    va_copy(ap, vargs);
+    int result = collect_and_dispatch(args, format, ap);
+    va_end(ap);
+    return result;
+}
+
+PyObject *PyTuple_Pack(Py_ssize_t n, ...) {
+    if (n < 0 || n > MOLT_VARARG_MAX_ARGS) return NULL;
+    PyObject *tuple = PyTuple_New(n);
+    if (tuple == NULL) return NULL;
+
+    va_list ap;
+    va_start(ap, n);
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = va_arg(ap, PyObject *);
+        if (item == NULL) {
+            va_end(ap);
+            Py_DECREF(tuple);
+            return NULL;
+        }
+        Py_INCREF(item);
+        if (PyTuple_SetItem(tuple, i, item) != 0) {
+            Py_DECREF(item);
+            va_end(ap);
+            Py_DECREF(tuple);
+            return NULL;
+        }
+    }
+    va_end(ap);
+    return tuple;
+}
+
+static void molt_buildvalue_skip_separators(const char **cursor) {
+    while (**cursor == ' ' || **cursor == '\t' || **cursor == '\n' ||
+           **cursor == '\r' || **cursor == ',') {
+        (*cursor)++;
+    }
+}
+
+static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap);
+
+static PyObject *molt_buildvalue_parse_tuple(const char **cursor, va_list *ap) {
+    PyObject *items[MOLT_VARARG_MAX_ARGS];
+    Py_ssize_t len = 0;
+    for (;;) {
+        molt_buildvalue_skip_separators(cursor);
+        if (**cursor == ')') {
+            (*cursor)++;
+            break;
+        }
+        if (**cursor == '\0') {
+            PyErr_SetString(&PyExc_TypeError, "unterminated tuple format in Py_BuildValue");
+            goto error;
+        }
+        if (len >= MOLT_VARARG_MAX_ARGS) {
+            PyErr_SetString(&PyExc_TypeError, "too many Py_BuildValue tuple items");
+            goto error;
+        }
+        items[len] = molt_buildvalue_parse_item(cursor, ap);
+        if (items[len] == NULL) goto error;
+        len++;
+        molt_buildvalue_skip_separators(cursor);
+    }
+
+    PyObject *tuple = PyTuple_New(len);
+    if (tuple == NULL) goto error;
+    for (Py_ssize_t i = 0; i < len; i++) {
+        if (PyTuple_SetItem(tuple, i, items[i]) != 0) {
+            Py_DECREF(items[i]);
+            for (Py_ssize_t j = i + 1; j < len; j++) Py_DECREF(items[j]);
+            Py_DECREF(tuple);
+            return NULL;
+        }
+        items[i] = NULL;
+    }
+    return tuple;
+
+error:
+    for (Py_ssize_t i = 0; i < len; i++) {
+        if (items[i] != NULL) Py_DECREF(items[i]);
+    }
+    return NULL;
+}
+
+static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
+    molt_buildvalue_skip_separators(cursor);
+    char code = **cursor;
+    if (code == '\0') {
+        PyErr_SetString(&PyExc_TypeError, "unexpected end of format in Py_BuildValue");
+        return NULL;
+    }
+    if (code == '(') {
+        (*cursor)++;
+        return molt_buildvalue_parse_tuple(cursor, ap);
+    }
+    (*cursor)++;
+    switch (code) {
+    case 'O': {
+        PyObject *obj = va_arg(*ap, PyObject *);
+        if (obj == NULL) {
+            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue 'O' received NULL");
+            return NULL;
+        }
+        Py_INCREF(obj);
+        return obj;
+    }
+    case 'N': {
+        PyObject *obj = va_arg(*ap, PyObject *);
+        if (obj == NULL) {
+            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue 'N' received NULL");
+            return NULL;
+        }
+        return obj;
+    }
+    case 'i':
+        return PyLong_FromLong((long)va_arg(*ap, int));
+    case 'l':
+        return PyLong_FromLong(va_arg(*ap, long));
+    case 'n':
+        return PyLong_FromSsize_t(va_arg(*ap, Py_ssize_t));
+    case 'k':
+        return PyLong_FromUnsignedLong(va_arg(*ap, unsigned long));
+    case 'K':
+        return PyLong_FromUnsignedLongLong(va_arg(*ap, unsigned long long));
+    case 'L':
+        return PyLong_FromLongLong(va_arg(*ap, long long));
+    case 'd':
+    case 'f':
+        return PyFloat_FromDouble(va_arg(*ap, double));
+    case 'p':
+        return PyBool_FromLong(va_arg(*ap, int) != 0);
+    case 's':
+    case 'z': {
+        const char *text = va_arg(*ap, const char *);
+        int has_len = (**cursor == '#');
+        if (text == NULL && code == 'z') {
+            Py_INCREF(&Py_None);
+            return &Py_None;
+        }
+        if (text == NULL) {
+            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue string argument is NULL");
+            return NULL;
+        }
+        if (has_len) {
+            (*cursor)++;
+            Py_ssize_t len = va_arg(*ap, Py_ssize_t);
+            return PyUnicode_FromStringAndSize(text, len);
+        }
+        return PyUnicode_FromString(text);
+    }
+    case 'y': {
+        const char *bytes = va_arg(*ap, const char *);
+        int has_len = (**cursor == '#');
+        if (bytes == NULL) {
+            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue bytes argument is NULL");
+            return NULL;
+        }
+        Py_ssize_t len = has_len ? va_arg(*ap, Py_ssize_t) : (Py_ssize_t)strlen(bytes);
+        if (has_len) (*cursor)++;
+        return PyBytes_FromStringAndSize(bytes, len);
+    }
+    default:
+        PyErr_SetString(&PyExc_TypeError, "unsupported format unit in Py_BuildValue");
+        return NULL;
+    }
+}
+
+PyObject *Py_VaBuildValue(const char *format, va_list vargs) {
+    if (format == NULL) {
+        PyErr_SetString(&PyExc_TypeError, "format must not be NULL");
+        return NULL;
+    }
+    va_list ap;
+    va_copy(ap, vargs);
+    const char *cursor = format;
+    PyObject *items[MOLT_VARARG_MAX_ARGS];
+    Py_ssize_t len = 0;
+
+    for (;;) {
+        molt_buildvalue_skip_separators(&cursor);
+        if (*cursor == '\0') break;
+        if (len >= MOLT_VARARG_MAX_ARGS) {
+            PyErr_SetString(&PyExc_TypeError, "too many Py_BuildValue items");
+            goto error;
+        }
+        items[len] = molt_buildvalue_parse_item(&cursor, &ap);
+        if (items[len] == NULL) goto error;
+        len++;
+    }
+    va_end(ap);
+
+    if (len == 0) {
+        Py_INCREF(&Py_None);
+        return &Py_None;
+    }
+    if (len == 1) {
+        return items[0];
+    }
+    PyObject *tuple = PyTuple_New(len);
+    if (tuple == NULL) goto post_va_error;
+    for (Py_ssize_t i = 0; i < len; i++) {
+        if (PyTuple_SetItem(tuple, i, items[i]) != 0) {
+            Py_DECREF(items[i]);
+            for (Py_ssize_t j = i + 1; j < len; j++) Py_DECREF(items[j]);
+            Py_DECREF(tuple);
+            return NULL;
+        }
+        items[i] = NULL;
+    }
+    return tuple;
+
+error:
+    va_end(ap);
+post_va_error:
+    for (Py_ssize_t i = 0; i < len; i++) {
+        if (items[i] != NULL) Py_DECREF(items[i]);
+    }
+    return NULL;
+}
+
+PyObject *Py_BuildValue(const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = Py_VaBuildValue(format, ap);
+    va_end(ap);
+    return result;
+}
+
+PyObject *_Py_BuildValue_SizeT(const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = Py_VaBuildValue(format, ap);
+    va_end(ap);
+    return result;
+}
+
 int PyArg_ParseTuple(PyObject *args, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
@@ -121,25 +373,11 @@ int PyArg_ParseTupleAndKeywords(
     char **kwlist,
     ...)
 {
-    (void)kwargs;
-    (void)kwlist;
     va_list ap;
     va_start(ap, kwlist);
-    int result = collect_and_dispatch(args, format, ap);
+    int result = PyArg_VaParseTupleAndKeywords(args, kwargs, format, kwlist, ap);
     va_end(ap);
     return result;
-}
-
-int PyArg_VaParseTupleAndKeywords(
-    PyObject *args,
-    PyObject *kwargs,
-    const char *format,
-    char **kwlist,
-    va_list ap)
-{
-    (void)kwargs;
-    (void)kwlist;
-    return collect_and_dispatch(args, format, ap);
 }
 
 int PyArg_UnpackTuple(
@@ -170,616 +408,362 @@ int PyArg_UnpackTuple(
     return molt_pyarg_parse_tuple_inner(args, fmt, outs, take);
 }
 
-int PyOS_snprintf(char *str, size_t size, const char *format, ...) {
-    va_list ap;
-    va_start(ap, format);
-    int result = vsnprintf(str, size, format, ap);
-    va_end(ap);
-    return result;
-}
+static PyObject *molt_call_with_collected_args(PyObject *callable, va_list ap) {
+    PyObject *items[MOLT_VARARG_MAX_ARGS];
+    int n = 0;
+    for (;;) {
+        PyObject *item = va_arg(ap, PyObject *);
+        if (item == NULL) break;
+        if (n >= MOLT_VARARG_MAX_ARGS) return NULL;
+        items[n++] = item;
+    }
 
-static void molt_set_type_error(const char *message) {
-    PyErr_SetString(&PyExc_TypeError, message);
-}
-
-static int format_to_buffer(const char *format, va_list ap, char **out, size_t *out_len) {
-    char stack_buf[1024];
-    va_list copy;
-    int needed;
-    *out = NULL;
-    *out_len = 0;
-    if (format == NULL) {
-        format = "";
-    }
-    va_copy(copy, ap);
-    needed = vsnprintf(stack_buf, sizeof(stack_buf), format, copy);
-    va_end(copy);
-    if (needed < 0) {
-        PyErr_SetString(&PyExc_ValueError, "failed to format CPython ABI message");
-        return 0;
-    }
-    if ((size_t)needed < sizeof(stack_buf)) {
-        char *buf = (char *)malloc((size_t)needed + 1);
-        if (buf == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "out of memory in Molt CPython ABI");
-            return 0;
-        }
-        memcpy(buf, stack_buf, (size_t)needed + 1);
-        *out = buf;
-        *out_len = (size_t)needed;
-        return 1;
-    }
-    char *buf = (char *)malloc((size_t)needed + 1);
-    if (buf == NULL) {
-        PyErr_SetString(&PyExc_TypeError, "out of memory in Molt CPython ABI");
-        return 0;
-    }
-    va_copy(copy, ap);
-    (void)vsnprintf(buf, (size_t)needed + 1, format, copy);
-    va_end(copy);
-    *out = buf;
-    *out_len = (size_t)needed;
-    return 1;
-}
-
-PyObject *PyErr_FormatV(PyObject *exc, const char *format, va_list ap) {
-    char *message;
-    size_t len;
-    (void)len;
-    if (!format_to_buffer(format, ap, &message, &len)) {
-        return NULL;
-    }
-    PyErr_SetString(exc != NULL ? exc : &PyExc_TypeError, message);
-    free(message);
-    return NULL;
-}
-
-int PyErr_WarnFormat(
-    PyObject *category,
-    Py_ssize_t stack_level,
-    const char *format,
-    ...)
-{
-    va_list ap;
-    char *message;
-    size_t len;
-    (void)category;
-    (void)stack_level;
-    va_start(ap, format);
-    int ok = format_to_buffer(format, ap, &message, &len);
-    va_end(ap);
-    if (!ok) {
-        return -1;
-    }
-    free(message);
-    return 0;
-}
-
-static PyObject *molt_new_none(void) {
-    Py_INCREF(&Py_None);
-    return &Py_None;
-}
-
-struct object_vec {
-    PyObject **items;
-    size_t len;
-    size_t capacity;
-};
-
-static void object_vec_dispose(struct object_vec *vec) {
-    if (vec->items != NULL) {
-        for (size_t i = 0; i < vec->len; i++) {
-            if (vec->items[i] != NULL) {
-                Py_DECREF(vec->items[i]);
-            }
-        }
-    }
-    free(vec->items);
-    vec->items = NULL;
-    vec->len = 0;
-    vec->capacity = 0;
-}
-
-static int object_vec_push(struct object_vec *vec, PyObject *item) {
-    if (item == NULL) {
-        return 0;
-    }
-    if (vec->len == vec->capacity) {
-        size_t new_capacity = vec->capacity == 0 ? 8 : vec->capacity * 2;
-        PyObject **grown =
-            (PyObject **)realloc(vec->items, new_capacity * sizeof(PyObject *));
-        if (grown == NULL) {
-            Py_DECREF(item);
-            PyErr_SetString(&PyExc_TypeError, "out of memory in Molt CPython ABI");
-            return 0;
-        }
-        vec->items = grown;
-        vec->capacity = new_capacity;
-    }
-    vec->items[vec->len++] = item;
-    return 1;
-}
-
-static void skip_buildvalue_separators(const char **cursor) {
-    while (**cursor == ' ' || **cursor == '\t' || **cursor == '\n' ||
-           **cursor == '\r' || **cursor == ',') {
-        (*cursor)++;
-    }
-}
-
-static PyObject *tuple_from_owned_items(struct object_vec *vec) {
-    PyObject *tuple = PyTuple_New((Py_ssize_t)vec->len);
-    if (tuple == NULL) {
-        return NULL;
-    }
-    for (size_t i = 0; i < vec->len; i++) {
-        PyObject *item = vec->items[i];
-        vec->items[i] = NULL;
-        if (PyTuple_SetItem(tuple, (Py_ssize_t)i, item) < 0) {
-            Py_DECREF(item);
+    PyObject *tuple = PyTuple_New((Py_ssize_t)n);
+    if (tuple == NULL) return NULL;
+    for (int i = 0; i < n; i++) {
+        Py_INCREF(items[i]);
+        if (PyTuple_SetItem(tuple, (Py_ssize_t)i, items[i]) != 0) {
+            Py_DECREF(items[i]);
             Py_DECREF(tuple);
             return NULL;
         }
     }
-    return tuple;
-}
-
-static PyObject *parse_buildvalue_item(const char **cursor, va_list *ap);
-
-static PyObject *parse_buildvalue_tuple(const char **cursor, va_list *ap) {
-    struct object_vec vec = {0};
-    PyObject *tuple = NULL;
-    for (;;) {
-        PyObject *item;
-        skip_buildvalue_separators(cursor);
-        if (**cursor == ')') {
-            (*cursor)++;
-            tuple = tuple_from_owned_items(&vec);
-            object_vec_dispose(&vec);
-            return tuple;
-        }
-        if (**cursor == '\0') {
-            object_vec_dispose(&vec);
-            molt_set_type_error("unterminated tuple format in Py_BuildValue");
-            return NULL;
-        }
-        item = parse_buildvalue_item(cursor, ap);
-        if (item == NULL || !object_vec_push(&vec, item)) {
-            object_vec_dispose(&vec);
-            return NULL;
-        }
-    }
-}
-
-static PyObject *parse_buildvalue_item(const char **cursor, va_list *ap) {
-    char code;
-    skip_buildvalue_separators(cursor);
-    code = **cursor;
-    if (code == '\0') {
-        molt_set_type_error("unexpected end of format in Py_BuildValue");
-        return NULL;
-    }
-    (*cursor)++;
-
-    if (code == '(') {
-        return parse_buildvalue_tuple(cursor, ap);
-    }
-    if (code == '[' || code == '{') {
-        molt_set_type_error("list and dict Py_BuildValue formats need Molt container ABI custody");
-        return NULL;
-    }
-
-    switch (code) {
-    case 'O':
-    case 'S':
-    case 'U': {
-        PyObject *obj = va_arg(*ap, PyObject *);
-        if (obj == NULL) {
-            molt_set_type_error("Py_BuildValue object argument must not be NULL");
-            return NULL;
-        }
-        Py_INCREF(obj);
-        return obj;
-    }
-    case 'N': {
-        PyObject *obj = va_arg(*ap, PyObject *);
-        if (obj == NULL) {
-            molt_set_type_error("Py_BuildValue 'N' argument must not be NULL");
-            return NULL;
-        }
-        return obj;
-    }
-    case 'i':
-    case 'b':
-    case 'B':
-    case 'h':
-    case 'H':
-        return PyLong_FromLong((long)va_arg(*ap, int));
-    case 'l':
-        return PyLong_FromLong(va_arg(*ap, long));
-    case 'n':
-        return PyLong_FromLongLong((long long)va_arg(*ap, Py_ssize_t));
-    case 'k':
-        return PyLong_FromUnsignedLong(va_arg(*ap, unsigned long));
-    case 'K':
-        return PyLong_FromUnsignedLongLong(va_arg(*ap, unsigned long long));
-    case 'L':
-        return PyLong_FromLongLong(va_arg(*ap, long long));
-    case 'd':
-    case 'f':
-        return PyFloat_FromDouble(va_arg(*ap, double));
-    case 'p':
-        return PyBool_FromLong((long)(va_arg(*ap, int) != 0));
-    case 'c': {
-        unsigned char ch = (unsigned char)va_arg(*ap, int);
-        return PyBytes_FromStringAndSize((const char *)&ch, 1);
-    }
-    case 's':
-    case 'z':
-    case 'y': {
-        const char *text = va_arg(*ap, const char *);
-        int has_length = (**cursor == '#');
-        Py_ssize_t len;
-        if (has_length) {
-            (*cursor)++;
-            len = va_arg(*ap, Py_ssize_t);
-            if (len < 0) {
-                PyErr_SetString(&PyExc_ValueError, "negative length in Py_BuildValue");
-                return NULL;
-            }
-        } else {
-            len = text == NULL ? 0 : (Py_ssize_t)strlen(text);
-        }
-        if (text == NULL && code == 'z') {
-            return molt_new_none();
-        }
-        if (text == NULL) {
-            molt_set_type_error("Py_BuildValue string argument must not be NULL");
-            return NULL;
-        }
-        if (code == 'y') {
-            return PyBytes_FromStringAndSize(text, len);
-        }
-        return PyUnicode_FromStringAndSize(text, len);
-    }
-    default: {
-        char message[128];
-        snprintf(
-            message,
-            sizeof(message),
-            "unsupported Py_BuildValue format unit '%c' in Molt CPython ABI",
-            code);
-        molt_set_type_error(message);
-        return NULL;
-    }
-    }
-}
-
-static PyObject *buildvalue_from_va_list(const char *format, va_list *ap) {
-    const char *cursor;
-    struct object_vec vec = {0};
-    PyObject *result = NULL;
-    if (format == NULL) {
-        molt_set_type_error("Py_BuildValue format must not be NULL");
-        return NULL;
-    }
-    cursor = format;
-    for (;;) {
-        PyObject *item;
-        skip_buildvalue_separators(&cursor);
-        if (*cursor == '\0') {
-            break;
-        }
-        item = parse_buildvalue_item(&cursor, ap);
-        if (item == NULL || !object_vec_push(&vec, item)) {
-            object_vec_dispose(&vec);
-            return NULL;
-        }
-    }
-    if (vec.len == 0) {
-        object_vec_dispose(&vec);
-        return molt_new_none();
-    }
-    if (vec.len == 1) {
-        result = vec.items[0];
-        vec.items[0] = NULL;
-        object_vec_dispose(&vec);
-        return result;
-    }
-    result = tuple_from_owned_items(&vec);
-    object_vec_dispose(&vec);
+    PyObject *result = PyObject_Call(callable, tuple, NULL);
+    Py_DECREF(tuple);
     return result;
 }
 
-PyObject *Py_BuildValue(const char *format, ...) {
-    va_list ap;
-    PyObject *result;
-    va_start(ap, format);
-    result = buildvalue_from_va_list(format, &ap);
-    va_end(ap);
-    return result;
+static int molt_callfunction_format_starts_tuple(const char *format) {
+    if (format == NULL) return 0;
+    while (*format == ' ' || *format == '\t' || *format == '\n' ||
+           *format == '\r' || *format == ',') {
+        format++;
+    }
+    return *format == '(';
 }
 
-static PyObject *call_with_format_args(
-    PyObject *callable,
-    const char *format,
-    va_list *ap)
-{
-    PyObject *args_obj;
-    PyObject *call_args;
-    PyObject *result;
-    if (callable == NULL) {
-        molt_set_type_error("callable must not be NULL");
-        return NULL;
+static int molt_callfunction_top_level_item_count(const char *format) {
+    if (format == NULL) return 0;
+    const char *cursor = format;
+    int count = 0;
+    while (*cursor != '\0') {
+        molt_buildvalue_skip_separators(&cursor);
+        if (*cursor == '\0') break;
+        if (*cursor == '(') return -1;
+        count++;
+        cursor++;
+        if (*cursor == '#') cursor++;
     }
-    if (format == NULL || format[0] == '\0') {
-        return PyObject_CallObject(callable, NULL);
-    }
-    args_obj = buildvalue_from_va_list(format, ap);
-    if (args_obj == NULL) {
-        return NULL;
-    }
-    if (PyTuple_Check(args_obj)) {
-        call_args = args_obj;
-        Py_INCREF(call_args);
-    } else {
-        struct object_vec vec = {0};
-        Py_INCREF(args_obj);
-        if (!object_vec_push(&vec, args_obj)) {
-            Py_DECREF(args_obj);
-            return NULL;
-        }
-        call_args = tuple_from_owned_items(&vec);
-        object_vec_dispose(&vec);
-        if (call_args == NULL) {
-            Py_DECREF(args_obj);
-            return NULL;
-        }
-    }
-    result = PyObject_CallObject(callable, call_args);
-    Py_DECREF(call_args);
-    Py_DECREF(args_obj);
-    return result;
+    return count;
 }
 
 PyObject *PyObject_CallFunction(PyObject *callable, const char *format, ...) {
+    if (callable == NULL) return NULL;
+
+    PyObject *args = NULL;
+    if (format == NULL || format[0] == '\0') {
+        args = PyTuple_New(0);
+    }
+    else {
+        va_list ap;
+        va_start(ap, format);
+        PyObject *built = Py_VaBuildValue(format, ap);
+        va_end(ap);
+        if (built == NULL) return NULL;
+
+        int top_level_count = molt_callfunction_top_level_item_count(format);
+        if (molt_callfunction_format_starts_tuple(format) || top_level_count != 1) {
+            args = built;
+        }
+        else {
+            args = PyTuple_Pack(1, built);
+            Py_DECREF(built);
+        }
+    }
+
+    if (args == NULL) return NULL;
+    PyObject *result = PyObject_Call(callable, args, NULL);
+    Py_DECREF(args);
+    return result;
+}
+
+PyObject *PyObject_CallFunctionObjArgs(PyObject *callable, ...) {
+    if (callable == NULL) return NULL;
     va_list ap;
-    PyObject *result;
-    va_start(ap, format);
-    result = call_with_format_args(callable, format, &ap);
+    va_start(ap, callable);
+    PyObject *result = molt_call_with_collected_args(callable, ap);
     va_end(ap);
     return result;
 }
 
-PyObject *PyObject_CallMethod(
-    PyObject *obj,
-    const char *name,
-    const char *format,
-    ...)
-{
+PyObject *PyObject_CallMethodObjArgs(PyObject *callable, PyObject *name, ...) {
+    if (callable == NULL || name == NULL) return NULL;
+    PyObject *method = PyObject_GetAttr(callable, name);
+    if (method == NULL) return NULL;
+
     va_list ap;
-    PyObject *method;
-    PyObject *result;
-    if (obj == NULL || name == NULL) {
-        molt_set_type_error("object and method name must not be NULL");
-        return NULL;
-    }
-    method = PyObject_GetAttrString(obj, name);
-    if (method == NULL) {
-        return NULL;
-    }
-    va_start(ap, format);
-    result = call_with_format_args(method, format, &ap);
+    va_start(ap, name);
+    PyObject *result = molt_call_with_collected_args(method, ap);
     va_end(ap);
     Py_DECREF(method);
     return result;
 }
 
-PyObject *PyObject_CallFunctionObjArgs(PyObject *callable, ...) {
-    va_list ap;
-    struct object_vec vec = {0};
-    PyObject *args;
-    PyObject *result;
-    if (callable == NULL) {
-        molt_set_type_error("callable must not be NULL");
-        return NULL;
-    }
-    va_start(ap, callable);
-    for (;;) {
-        PyObject *arg = va_arg(ap, PyObject *);
-        if (arg == NULL) {
-            break;
-        }
-        Py_INCREF(arg);
-        if (!object_vec_push(&vec, arg)) {
-            va_end(ap);
-            object_vec_dispose(&vec);
-            return NULL;
-        }
-    }
-    va_end(ap);
-    args = tuple_from_owned_items(&vec);
-    object_vec_dispose(&vec);
-    if (args == NULL) {
-        return NULL;
-    }
-    result = PyObject_CallObject(callable, args);
-    Py_DECREF(args);
+PyObject *PyObject_CallMethod(
+    PyObject *callable,
+    const char *name,
+    const char *format,
+    ...)
+{
+    if (callable == NULL || name == NULL) return NULL;
+    if (format != NULL && format[0] != '\0') return NULL;
+    PyObject *method = PyObject_GetAttrString(callable, name);
+    if (method == NULL) return NULL;
+    PyObject *result = PyObject_Call(method, NULL, NULL);
+    Py_DECREF(method);
     return result;
 }
 
-static int append_bytes(char **buf, size_t *len, size_t *cap, const char *src, size_t n) {
-    if (*len + n + 1 > *cap) {
-        size_t new_cap = *cap == 0 ? 128 : *cap;
-        while (*len + n + 1 > new_cap) {
-            new_cap *= 2;
-        }
-        char *grown = (char *)realloc(*buf, new_cap);
-        if (grown == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "out of memory in PyUnicode_FromFormat");
-            return 0;
-        }
-        *buf = grown;
-        *cap = new_cap;
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} MoltUnicodeFormatBuffer;
+
+static int molt_unicode_format_reserve(MoltUnicodeFormatBuffer *buf, size_t extra) {
+    if (extra > (size_t)-1 - buf->len) return 0;
+    size_t need = buf->len + extra + 1;
+    if (need <= buf->cap) return 1;
+    size_t cap = buf->cap == 0 ? 64 : buf->cap;
+    while (cap < need) {
+        if (cap > (size_t)-1 / 2) return 0;
+        cap *= 2;
     }
-    memcpy(*buf + *len, src, n);
-    *len += n;
-    (*buf)[*len] = '\0';
+    char *data = (char *)realloc(buf->data, cap);
+    if (data == NULL) return 0;
+    buf->data = data;
+    buf->cap = cap;
     return 1;
 }
 
-static int append_cstr(char **buf, size_t *len, size_t *cap, const char *src) {
-    return append_bytes(buf, len, cap, src == NULL ? "(null)" : src, src == NULL ? 6 : strlen(src));
+static int molt_unicode_format_append_bytes(
+    MoltUnicodeFormatBuffer *buf,
+    const char *data,
+    size_t len)
+{
+    if (!molt_unicode_format_reserve(buf, len)) return 0;
+    if (len != 0) memcpy(buf->data + buf->len, data, len);
+    buf->len += len;
+    buf->data[buf->len] = '\0';
+    return 1;
 }
 
-static int append_formatted_int(
-    char **buf,
-    size_t *len,
-    size_t *cap,
-    const char *fmt,
+static int molt_unicode_format_append_cstr(
+    MoltUnicodeFormatBuffer *buf,
+    const char *text)
+{
+    if (text == NULL) text = "(null)";
+    return molt_unicode_format_append_bytes(buf, text, strlen(text));
+}
+
+static int molt_unicode_format_append_signed(
+    MoltUnicodeFormatBuffer *buf,
     long long value)
 {
-    char tmp[64];
-    int n = snprintf(tmp, sizeof(tmp), fmt, value);
-    return n >= 0 && append_bytes(buf, len, cap, tmp, (size_t)n);
+    char scratch[64];
+    int n = snprintf(scratch, sizeof(scratch), "%lld", value);
+    if (n < 0 || (size_t)n >= sizeof(scratch)) return 0;
+    return molt_unicode_format_append_bytes(buf, scratch, (size_t)n);
 }
 
-static int append_formatted_uint(
-    char **buf,
-    size_t *len,
-    size_t *cap,
-    const char *fmt,
-    unsigned long long value)
+static int molt_unicode_format_append_object(
+    MoltUnicodeFormatBuffer *buf,
+    PyObject *object,
+    int repr)
 {
-    char tmp[64];
-    int n = snprintf(tmp, sizeof(tmp), fmt, value);
-    return n >= 0 && append_bytes(buf, len, cap, tmp, (size_t)n);
+    if (object == NULL) return 0;
+    PyObject *rendered = repr ? PyObject_Repr(object) : PyObject_Str(object);
+    if (rendered == NULL) return 0;
+    const char *text = PyUnicode_AsUTF8(rendered);
+    int ok = text != NULL && molt_unicode_format_append_cstr(buf, text);
+    Py_DECREF(rendered);
+    return ok;
 }
 
-static PyObject *unicode_from_format_v(const char *format, va_list *ap) {
-    char *buf = NULL;
-    size_t len = 0;
-    size_t cap = 0;
-    const char *p;
-    PyObject *result;
-    if (format == NULL) {
-        molt_set_type_error("format must not be NULL");
-        return NULL;
-    }
-    for (p = format; *p != '\0'; p++) {
+static int molt_unicode_format_fill(
+    MoltUnicodeFormatBuffer *buf,
+    const char *format,
+    va_list vargs)
+{
+    if (format == NULL) return 0;
+    va_list ap;
+    va_copy(ap, vargs);
+    const char *p = format;
+    while (*p != '\0') {
         if (*p != '%') {
-            if (!append_bytes(&buf, &len, &cap, p, 1)) {
-                free(buf);
-                return NULL;
-            }
+            if (!molt_unicode_format_append_bytes(buf, p, 1)) goto error;
+            p++;
             continue;
         }
         p++;
         if (*p == '%') {
-            if (!append_bytes(&buf, &len, &cap, "%", 1)) {
-                free(buf);
-                return NULL;
-            }
+            if (!molt_unicode_format_append_bytes(buf, "%", 1)) goto error;
+            p++;
             continue;
         }
-
-        int long_count = 0;
-        int ssize = 0;
-        if (*p == 'z') {
-            ssize = 1;
+        while (*p == '#' || *p == '0' || *p == '-' || *p == ' ' || *p == '+') p++;
+        while (*p >= '0' && *p <= '9') p++;
+        if (*p == '.') {
             p++;
-        } else {
-            while (*p == 'l' && long_count < 2) {
+            while (*p >= '0' && *p <= '9') p++;
+        }
+        int long_count = 0;
+        int size_modifier = 0;
+        if (*p == 'z') {
+            size_modifier = 1;
+            p++;
+        }
+        else {
+            while (*p == 'l') {
                 long_count++;
                 p++;
             }
         }
-
-        switch (*p) {
+        char spec = *p++;
+        switch (spec) {
         case 's':
-            if (!append_cstr(&buf, &len, &cap, va_arg(*ap, const char *))) {
-                free(buf);
-                return NULL;
-            }
+            if (!molt_unicode_format_append_cstr(buf, va_arg(ap, const char *))) goto error;
+            break;
+        case 'S':
+            if (!molt_unicode_format_append_object(buf, va_arg(ap, PyObject *), 0)) goto error;
+            break;
+        case 'R':
+            if (!molt_unicode_format_append_object(buf, va_arg(ap, PyObject *), 1)) goto error;
             break;
         case 'd':
         case 'i':
-            if (ssize) {
-                if (!append_formatted_int(&buf, &len, &cap, "%lld", (long long)va_arg(*ap, Py_ssize_t))) {
-                    free(buf);
-                    return NULL;
-                }
-            } else if (long_count == 2) {
-                if (!append_formatted_int(&buf, &len, &cap, "%lld", va_arg(*ap, long long))) {
-                    free(buf);
-                    return NULL;
-                }
-            } else if (long_count == 1) {
-                if (!append_formatted_int(&buf, &len, &cap, "%ld", va_arg(*ap, long))) {
-                    free(buf);
-                    return NULL;
-                }
-            } else if (!append_formatted_int(&buf, &len, &cap, "%d", va_arg(*ap, int))) {
-                free(buf);
-                return NULL;
+            if (size_modifier) {
+                if (!molt_unicode_format_append_signed(buf, (long long)va_arg(ap, Py_ssize_t))) goto error;
+            }
+            else if (long_count >= 2) {
+                if (!molt_unicode_format_append_signed(buf, va_arg(ap, long long))) goto error;
+            }
+            else if (long_count == 1) {
+                if (!molt_unicode_format_append_signed(buf, (long long)va_arg(ap, long))) goto error;
+            }
+            else {
+                if (!molt_unicode_format_append_signed(buf, (long long)va_arg(ap, int))) goto error;
             }
             break;
-        case 'u':
-            if (ssize) {
-                if (!append_formatted_uint(&buf, &len, &cap, "%llu", (unsigned long long)va_arg(*ap, Py_ssize_t))) {
-                    free(buf);
-                    return NULL;
-                }
-            } else if (long_count == 2) {
-                if (!append_formatted_uint(&buf, &len, &cap, "%llu", va_arg(*ap, unsigned long long))) {
-                    free(buf);
-                    return NULL;
-                }
-            } else if (long_count == 1) {
-                if (!append_formatted_uint(&buf, &len, &cap, "%lu", va_arg(*ap, unsigned long))) {
-                    free(buf);
-                    return NULL;
-                }
-            } else if (!append_formatted_uint(&buf, &len, &cap, "%u", va_arg(*ap, unsigned int))) {
-                free(buf);
-                return NULL;
-            }
-            break;
-        case 'p': {
-            char tmp[32];
-            int n = snprintf(tmp, sizeof(tmp), "%p", va_arg(*ap, void *));
-            if (n < 0 || !append_bytes(&buf, &len, &cap, tmp, (size_t)n)) {
-                free(buf);
-                return NULL;
-            }
-            break;
-        }
-        default: {
-            char message[128];
-            snprintf(
-                message,
-                sizeof(message),
-                "unsupported PyUnicode_FromFormat unit '%%%c' in Molt CPython ABI",
-                *p == '\0' ? '?' : *p);
-            molt_set_type_error(message);
-            free(buf);
-            return NULL;
-        }
+        default:
+            goto error;
         }
     }
-    if (buf == NULL && !append_bytes(&buf, &len, &cap, "", 0)) {
+    va_end(ap);
+    return 1;
+
+error:
+    va_end(ap);
+    return 0;
+}
+
+PyObject *PyUnicode_FromFormatV(const char *format, va_list vargs) {
+    MoltUnicodeFormatBuffer buf = {0};
+    if (!molt_unicode_format_fill(&buf, format, vargs)) {
+        free(buf.data);
         return NULL;
     }
-    result = PyUnicode_FromStringAndSize(buf, (Py_ssize_t)len);
-    free(buf);
+    PyObject *result = PyUnicode_FromStringAndSize(buf.data == NULL ? "" : buf.data, (Py_ssize_t)buf.len);
+    free(buf.data);
     return result;
 }
 
 PyObject *PyUnicode_FromFormat(const char *format, ...) {
+    if (format == NULL) return NULL;
     va_list ap;
-    PyObject *result;
     va_start(ap, format);
-    result = unicode_from_format_v(format, &ap);
+    PyObject *result = PyUnicode_FromFormatV(format, ap);
     va_end(ap);
     return result;
+}
+
+PyObject *PyErr_FormatV(PyObject *type, const char *format, va_list vargs) {
+    MoltUnicodeFormatBuffer buf = {0};
+    if (molt_unicode_format_fill(&buf, format, vargs)) {
+        PyErr_SetString(type, buf.data == NULL ? "" : buf.data);
+        free(buf.data);
+    }
+    else {
+        free(buf.data);
+        PyErr_SetString(type, format == NULL ? "" : format);
+    }
+    return NULL;
+}
+
+PyObject *PyErr_Format(PyObject *type, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    PyObject *result = PyErr_FormatV(type, format, ap);
+    va_end(ap);
+    return result;
+}
+
+int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va) {
+    return vsnprintf(str, size, format, va);
+}
+
+int PyOS_snprintf(char *str, size_t size, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int result = PyOS_vsnprintf(str, size, format, ap);
+    va_end(ap);
+    return result;
+}
+
+double PyOS_string_to_double(const char *str, char **endptr, PyObject *overflow_exception) {
+    if (str == NULL) {
+        if (endptr != NULL) {
+            *endptr = NULL;
+        }
+        return -1.0;
+    }
+
+    errno = 0;
+    char *local_end = NULL;
+    double result = strtod(str, &local_end);
+    if (endptr != NULL) {
+        *endptr = local_end;
+    }
+    if (errno == ERANGE && overflow_exception != NULL &&
+        (result == HUGE_VAL || result == -HUGE_VAL)) {
+        PyErr_SetString(overflow_exception, "float overflow");
+    }
+    return result;
+}
+
+long PyOS_strtol(const char *str, char **endptr, int base) {
+    if (str == NULL) {
+        if (endptr != NULL) {
+            *endptr = NULL;
+        }
+        errno = EINVAL;
+        return 0;
+    }
+    return strtol(str, endptr, base);
+}
+
+unsigned long PyOS_strtoul(const char *str, char **endptr, int base) {
+    if (str == NULL) {
+        if (endptr != NULL) {
+            *endptr = NULL;
+        }
+        errno = EINVAL;
+        return 0;
+    }
+    return strtoul(str, endptr, base);
+}
+
+int PyErr_WarnFormat(PyObject *category, Py_ssize_t stack_level, const char *format, ...) {
+    if (format == NULL) return PyErr_WarnEx(category, "", stack_level);
+    return PyErr_WarnEx(category, format, stack_level);
 }
