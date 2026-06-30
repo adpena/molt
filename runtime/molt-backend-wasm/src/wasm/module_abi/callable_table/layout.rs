@@ -275,31 +275,6 @@ impl WasmBackend {
             );
         }
 
-        for func_ir in &ir.functions {
-            for (op_idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "call_async" | "alloc_task") {
-                    let Some(target_name) = op.s_value.as_deref() else {
-                        panic!(
-                            "wasm {} target missing in func '{}' op {}",
-                            op.kind, func_ir.name, op_idx
-                        );
-                    };
-                    if !target_name.ends_with("_poll") {
-                        panic!(
-                            "wasm {} target '{}' in func '{}' op {} is not a poll function; expected *_poll table target",
-                            op.kind, target_name, func_ir.name, op_idx
-                        );
-                    }
-                    if !func_to_table_idx.contains_key(target_name) {
-                        panic!(
-                            "wasm {} target '{}' in func '{}' op {} is not table-addressable; expected poll function/table target",
-                            op.kind, target_name, func_ir.name, op_idx
-                        );
-                    }
-                }
-            }
-        }
-
         if let Ok(raw_slot) = std::env::var("MOLT_DEBUG_WASM_TABLE_SLOT")
             && let Ok(target_slot) = raw_slot.parse::<u32>()
         {

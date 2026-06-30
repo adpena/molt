@@ -8,13 +8,64 @@ import zipfile
 from pathlib import Path
 
 import molt.cli as cli
+import molt.wasm_artifact as wasm_artifact
 from molt.cli import commands as cli_commands
+from molt.cli import wasm_toolchain as cli_wasm_toolchain
 import pytest
 
 from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _write_fake_wasi_sysroot(root: Path) -> Path:
+    sysroot = root / "wasi-sysroot"
+    include_dir = sysroot / "include"
+    include_dir.mkdir(parents=True)
+    (include_dir / "errno.h").write_text("#define EINVAL 28\n")
+    return sysroot
+
+
+def _wasm_exporting_i64_unary_symbol(
+    symbol: str,
+    *,
+    imports: tuple[str, ...] = (),
+) -> bytes:
+    def uleb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            out.append(byte | 0x80 if value else byte)
+            if not value:
+                return bytes(out)
+
+    def wasm_string(value: str) -> bytes:
+        encoded = value.encode("utf-8")
+        return uleb(len(encoded)) + encoded
+
+    def section(section_id: int, payload: bytes) -> bytes:
+        return bytes([section_id]) + uleb(len(payload)) + payload
+
+    type_section = uleb(1) + b"\x60" + uleb(1) + b"\x7e" + uleb(1) + b"\x7e"
+    import_entries = b"".join(
+        wasm_string("env") + wasm_string(import_name) + b"\x00" + uleb(0)
+        for import_name in imports
+    )
+    import_section = section(2, uleb(len(imports)) + import_entries) if imports else b""
+    function_section = uleb(1) + uleb(0)
+    export_section = uleb(1) + wasm_string(symbol) + b"\x00" + uleb(len(imports))
+    body = uleb(0) + b"\x42\x00\x0b"
+    code_section = uleb(1) + uleb(len(body)) + body
+    return (
+        b"\x00asm\x01\x00\x00\x00"
+        + section(1, type_section)
+        + import_section
+        + section(3, function_section)
+        + section(7, export_section)
+        + section(10, code_section)
+    )
 
 
 def _write_extension_project(
@@ -126,16 +177,36 @@ def _write_extension_numpy_project(project_root: Path) -> None:
             [
                 "#include <Python.h>",
                 "#include <numpy/arrayobject.h>",
+                "#include <numpy/npy_math.h>",
                 "",
                 "static int numpy_probe(PyObject *obj) {",
                 "    PyArrayObject *arr = (PyArrayObject *)obj;",
                 "    PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);",
                 "    PyArray_Descr *scalar_descr = PyArray_DescrFromScalar(obj);",
+                "    npy_cdouble complex_value = {0};",
                 "    npy_intp ndim = PyArray_NDIM(arr);",
                 "    npy_intp size = PyArray_SIZE(arr);",
                 "    int is_int = PyTypeNum_ISINTEGER(PyArray_TYPE(arr));",
                 "    int scalar_check = PyArray_CheckScalar(obj);",
                 "    int is_datetime = PyArray_ISDATETIME(arr);",
+                "    enum NPY_TYPES array_type = NPY_DOUBLE;",
+                "    int notype = NPY_NOTYPE;",
+                "    int behaved = NPY_ARRAY_BEHAVED_NS;",
+                "    int branch = NPY_UNLIKELY(size < 0);",
+                "    unsigned int max_u8 = NPY_MAX_UBYTE;",
+                "    int min_i8 = NPY_MIN_BYTE;",
+                "    double real = npy_creal(complex_value);",
+                "    double imag = npy_cimag(complex_value);",
+                "    NPY_BEGIN_THREADS_DEF;",
+                "    NPY_ALLOW_C_API_DEF;",
+                "    NPY_BEGIN_THREADS;",
+                "    NPY_END_THREADS;",
+                "    NPY_BEGIN_THREADS_THRESHOLDED(size);",
+                "    NPY_END_THREADS;",
+                "    NPY_ALLOW_C_API;",
+                "    NPY_DISABLE_C_API;",
+                "    NPY_CSETREAL(&complex_value, real);",
+                "    NPY_CSETIMAG(&complex_value, imag);",
                 "    (void)PyArray_CastScalarToCtype;",
                 "    if (descr != NULL) {",
                 "        PyMem_Free(descr);",
@@ -143,7 +214,7 @@ def _write_extension_numpy_project(project_root: Path) -> None:
                 "    if (scalar_descr != NULL) {",
                 "        PyMem_Free(scalar_descr);",
                 "    }",
-                "    return (int)(ndim + size + is_int + scalar_check + is_datetime);",
+                "    return (int)(ndim + size + is_int + scalar_check + is_datetime + array_type + notype + behaved + branch + max_u8 + min_i8 + real + imag);",
                 "}",
                 "",
                 "int demoext_numpy_ready(void) {",
@@ -564,6 +635,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
         assert data["symbol_status"][symbol] == "project_defined"
     assert "PyParam" not in data["required_symbols"]
     assert "PyLocalTemp" not in data["required_symbols"]
+    assert "PyTypeObject" not in data["required_symbols"]
+    assert "Python" not in data["required_symbols"]
     assert "PyLocal_Type" not in data["project_defined_symbols"]
     assert "PyLong_FromLong" in data["required_symbols"]
     assert data["symbol_status"]["PyLong_FromLong"] == "runtime_backed"
@@ -675,6 +748,7 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
     assert "PyArray_CastScalarToCtype" in data["source_compile_only_symbols"]
     assert "PyArray_NDIM" in data["source_compile_only_symbols"]
     assert data["symbol_status"]["PyArray_NDIM"] == "source_compile_only"
+    assert data["symbol_primitive_class"]["PyArray_NDIM"] == "numpy_c_api"
     assert "PyArray_SIZE" in data["source_compile_only_symbols"]
     assert "PyArray_TYPE" in data["source_compile_only_symbols"]
     assert "PyTypeNum_ISINTEGER" in data["source_compile_only_symbols"]
@@ -683,6 +757,32 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
     assert "PyArray_DescrFromScalar" in data["source_compile_only_symbols"]
     assert "PyArray_DescrFromType" in data["source_compile_only_symbols"]
     assert "NPY_INT" in data["source_compile_only_symbols"]
+    assert "NPY_NOTYPE" in data["source_compile_only_symbols"]
+    assert "NPY_ARRAY_BEHAVED_NS" in data["source_compile_only_symbols"]
+    assert "npy_creal" in data["source_compile_only_symbols"]
+    assert "npy_cimag" in data["source_compile_only_symbols"]
+    assert data["symbol_primitive_class"]["NPY_INT"] == "numpy_c_api"
+    assert data["symbol_primitive_class"]["npy_creal"] == "numpy_c_api"
+    assert data["primitive_class_counts"]["numpy_c_api"] >= 1
+    assert "numpy_c_api" in data["symbols_by_primitive_class"]
+
+
+def test_cpython_abi_variadic_shim_does_not_export_header_inline_stubs() -> None:
+    shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
+
+    forbidden_runtime_stubs = {
+        "Py_BuildValue",
+        "PyErr_FormatV",
+        "PyErr_WarnFormat",
+        "PyUnicode_FromFormat",
+        "PyObject_CallFunction",
+        "PyObject_CallFunctionObjArgs",
+        "PyObject_CallMethod",
+    }
+    for symbol in forbidden_runtime_stubs:
+        assert f"{symbol}(" not in shim
+    assert "PyOS_snprintf(" in shim
+    assert "vsnprintf(str, size, format, ap)" in shim
 
 
 def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -732,6 +832,7 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     assert manifest["loader_kind"] == "libmolt_source"
     assert manifest["init_symbol"] == "PyInit_demoext"
     assert manifest["runtime_linkage"] == "host_resolved"
+    assert manifest["artifact_kind"] == "shared_library"
 
     with zipfile.ZipFile(wheel_path) as zf:
         names = set(zf.namelist())
@@ -759,6 +860,11 @@ def test_extension_build_emits_public_exports_in_manifest(
             'effects = ["read", "write"]',
             "deterministic = true",
         ],
+    )
+    source_path = project_root / "src" / "demoext.c"
+    source_path.write_text(
+        source_path.read_text()
+        + "\nstatic PyTypeObject PyLocal_Type = {0};\n"
     )
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -806,6 +912,94 @@ def test_extension_build_emits_public_exports_in_manifest(
     with zipfile.ZipFile(wheel_path) as zf:
         embedded = json.loads(zf.read("extension_manifest.json"))
     assert embedded["python_exports"] == manifest["python_exports"]
+    assert embedded["callable_exports"] == expected_callable_exports
+
+
+def test_extension_build_infers_module_attr_callable_exports_from_pymethoddef(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "extproj"
+    project_root.mkdir()
+    _write_extension_project(
+        project_root,
+        extension_extra_lines=[
+            'python_exports = ["demoext.ndimage.distance_transform_edt"]',
+        ],
+    )
+    source_path = project_root / "src" / "demoext.c"
+    source_path.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <molt/molt.h>",
+                "int demoext_version(void) { return (int)molt_c_api_version(); }",
+                "static PyObject *demo_distance_transform_edt(PyObject *self, PyObject *args) {",
+                "    (void)self;",
+                "    (void)args;",
+                "    return PyLong_FromLong(1);",
+                "}",
+                "static PyMethodDef demoext_methods[] = {",
+                '    {"distance_transform_edt", demo_distance_transform_edt, METH_VARARGS, "EDT"},',
+                "    {NULL, NULL, 0, NULL},",
+                "};",
+                "static PyModuleDef demoext_module = {",
+                "    PyModuleDef_HEAD_INIT,",
+                '    "demoext",',
+                "    NULL,",
+                "    -1,",
+                "    demoext_methods,",
+                "};",
+                "PyMODINIT_FUNC PyInit_demoext(void) {",
+                "    return PyModule_Create(&demoext_module);",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    expected_callable_exports = [
+        {
+            "module": "demoext.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "module_attr",
+            "abi": "molt.object_callargs_v1",
+            "effects": [],
+            "deterministic": False,
+        }
+    ]
+    assert manifest["python_exports"] == ["demoext.ndimage.distance_transform_edt"]
+    assert manifest["callable_exports"] == expected_callable_exports
+    wheel_path = next(out_dir.glob("*.whl"))
+    with zipfile.ZipFile(wheel_path) as zf:
+        embedded = json.loads(zf.read("extension_manifest.json"))
     assert embedded["callable_exports"] == expected_callable_exports
 
 
@@ -892,20 +1086,234 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["target_triple"] == target
     assert manifest["runtime_linkage"] == "host_resolved"
+    assert manifest["artifact_kind"] == "shared_library"
 
 
-def test_extension_build_rejects_wasm_target(tmp_path: Path) -> None:
+def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
     project_root = tmp_path / "extproj"
     project_root.mkdir()
-    _write_extension_project(project_root)
+    native_symbol = "molt_demoext_ndimage_distance_transform_edt"
+    _write_extension_project(
+        project_root,
+        extension_extra_lines=[
+            'python_exports = ["demoext.ndimage.distance_transform_edt"]',
+            "",
+            "[[tool.molt.extension.callable_exports]]",
+            'module = "demoext.ndimage"',
+            'name = "distance_transform_edt"',
+            'binding = "direct_symbol"',
+            'abi = "molt.object_call_v1"',
+            f'symbol = "{native_symbol}"',
+            'effects = ["read"]',
+            "deterministic = true",
+        ],
+    )
+    wasm_imports = (
+        "molt_alloc",
+        "molt_cpython_abi_date_from_date",
+        "PyOS_strtol",
+        "malloc",
+    )
+    wasm_bytes = _wasm_exporting_i64_unary_symbol(
+        native_symbol,
+        imports=wasm_imports,
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(wasm_bytes)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_wasi_sysroot",
+        lambda: wasi_sysroot,
+        raising=True,
+    )
+
+    out_dir = project_root / "dist"
     rc = cli_commands.extension_build(
         project=str(project_root),
-        out_dir=str(project_root / "dist"),
+        out_dir=str(out_dir),
         target="wasm",
+        deterministic=False,
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["target_triple"] == "wasm32-wasip1"
+    assert payload["data"]["runtime_linkage"] == "static_link"
+    assert payload["data"]["artifact_kind"] == "wasm_relocatable_object"
+    assert any("--target=wasm32-wasip1" in cmd for cmd in commands)
+    assert any(f"--sysroot={wasi_sysroot}" in cmd for cmd in commands)
+    assert any("-wasm-enable-sjlj" in cmd for cmd in commands)
+
+    artifact_path = out_dir / "demoext.molt.wasm"
+    assert artifact_path.exists()
+    assert artifact_path.read_bytes() == wasm_bytes
+    assert [
+        export.name for export in wasm_artifact.read_wasm_function_exports(artifact_path)
+    ] == [native_symbol]
+
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["target_triple"] == "wasm32-wasip1"
+    assert manifest["runtime_linkage"] == "static_link"
+    assert manifest["artifact_kind"] == "wasm_relocatable_object"
+    assert manifest["build"]["wasi_sysroot"] == str(wasi_sysroot)
+    assert manifest["extension"] == "demoext.molt.wasm"
+    assert manifest["extension_sha256"] == hashlib.sha256(wasm_bytes).hexdigest()
+    object_closure = manifest["object_closure"]
+    assert object_closure["defined_symbols"] == [native_symbol]
+    assert object_closure["undefined_symbols"] == sorted(wasm_imports)
+    assert object_closure["runtime_symbols"] == sorted(wasm_imports)
+    assert "PyModule_Create" in object_closure["required_c_api_symbols"]
+    assert "PyOS_strtol" in object_closure["required_c_api_symbols"]
+    assert "PyInit_demoext" not in object_closure["required_c_api_symbols"]
+    assert "PyMODINIT_FUNC" not in object_closure["required_c_api_symbols"]
+    assert "PyTypeObject" not in object_closure["required_c_api_symbols"]
+    assert "Python" not in object_closure["required_c_api_symbols"]
+    assert manifest["callable_exports"] == [
+        {
+            "module": "demoext.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "direct_symbol",
+            "abi": "molt.object_call_v1",
+            "symbol": native_symbol,
+            "effects": ["read"],
+            "deterministic": True,
+        }
+    ]
+
+    wheel_path = next(out_dir.glob("*.whl"))
+    with zipfile.ZipFile(wheel_path) as zf:
+        assert manifest["extension"] in set(zf.namelist())
+        embedded = json.loads(zf.read("extension_manifest.json"))
+    assert embedded["runtime_linkage"] == "static_link"
+    assert embedded["artifact_kind"] == "wasm_relocatable_object"
+    assert embedded["object_closure"] == manifest["object_closure"]
+
+
+def test_extension_build_wasm_target_rejects_missing_direct_symbol(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "extproj"
+    project_root.mkdir()
+    native_symbol = "molt_demoext_ndimage_distance_transform_edt"
+    _write_extension_project(
+        project_root,
+        extension_extra_lines=[
+            'python_exports = ["demoext.ndimage.distance_transform_edt"]',
+            "",
+            "[[tool.molt.extension.callable_exports]]",
+            'module = "demoext.ndimage"',
+            'name = "distance_transform_edt"',
+            'binding = "direct_symbol"',
+            'abi = "molt.object_call_v1"',
+            f'symbol = "{native_symbol}"',
+            "deterministic = true",
+        ],
+    )
+    wasm_bytes = _wasm_exporting_i64_unary_symbol("molt_wrong_symbol")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(wasm_bytes)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_wasi_sysroot",
+        lambda: wasi_sysroot,
+        raising=True,
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        target="wasm",
+        deterministic=False,
         json_output=False,
         verbose=False,
     )
+
     assert rc != 0
+    assert not (out_dir / "extension_manifest.json").exists()
+    assert not (out_dir / "demoext.molt.wasm").exists()
+
+
+def test_extension_build_wasm_target_requires_wasi_sysroot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "extproj"
+    project_root.mkdir()
+    _write_extension_project(project_root)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_wasi_sysroot",
+        lambda: None,
+        raising=True,
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        target="wasm",
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc != 0
+    assert commands == []
+    assert not (out_dir / "extension_manifest.json").exists()
+
+
+def test_wasi_sysroot_resolver_accepts_target_specific_include_layout(
+    tmp_path: Path,
+) -> None:
+    sysroot = tmp_path / "wasi-sysroot-33.0+m"
+    include_dir = sysroot / "include" / "wasm32-wasip1"
+    include_dir.mkdir(parents=True)
+    (include_dir / "errno.h").write_text("#define EINVAL 28\n")
+
+    assert cli_wasm_toolchain.normalize_wasi_sysroot(sysroot) == sysroot.resolve(
+        strict=False
+    )
+    assert cli_wasm_toolchain.normalize_wasi_sysroot(include_dir) == sysroot.resolve(
+        strict=False
+    )
 
 
 @pytest.mark.parametrize(

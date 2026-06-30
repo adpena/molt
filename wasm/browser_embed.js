@@ -161,11 +161,15 @@ const requireIntegerField = (source, name) => {
 };
 
 const NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 = 'molt.object_call_v1';
+const NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1 = 'molt.object_callargs_v1';
 const NATIVE_CALLABLE_ABI_FORWARD_F32_V1 = 'molt.forward_f32_v1';
 
 const nativeCallableBrowserSignature = (abi) => {
   if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALL_V1) {
     return { params: ['molt.value...'], result: 'molt.value' };
+  }
+  if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1) {
+    return { params: ['molt.callargs'], result: 'molt.value' };
   }
   if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
     return { params: ['bytes.float32'], result: 'bytes.float32' };
@@ -645,6 +649,34 @@ const callForwardF32Native = (state, symbol, impl, args) => {
   return 0;
 };
 
+const normalizeMoltValueHandle = (symbol, abi, value, label) => {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value)) {
+    return BigInt.asUintN(64, BigInt(value));
+  }
+  throw new TypeError(
+    `${symbol} ${abi} ${label} must be a Molt value handle (i64 BigInt)`,
+  );
+};
+
+const callObjectNative = (state, symbol, impl, args, abi, expectedArity = null) => {
+  if (expectedArity !== null && args.length !== expectedArity) {
+    throw new Error(`${symbol} ${abi} expects ${expectedArity} Molt value handle argument(s)`);
+  }
+  const callArgs = args.map((arg, index) =>
+    normalizeMoltValueHandle(symbol, abi, arg, `arg${index}`));
+  const result = impl(...callArgs, {
+    abi,
+    arity: callArgs.length,
+    memory: state.memory,
+    runtimeInstance: state.runtimeInstance,
+    symbol,
+  });
+  return normalizeMoltValueHandle(symbol, abi, result, 'result');
+};
+
 export const createMoltNativeCallableImports = (state, appImports, options = {}) => {
   const callables = nativeCallableMap(options.nativeCallables);
   const abiBySymbol = nativeCallableAbiMap(options.nativeCallableAbis);
@@ -681,7 +713,10 @@ export const createMoltNativeCallableImports = (state, appImports, options = {})
       }
       const abi = overrideAbi || manifestAbi || NATIVE_CALLABLE_ABI_OBJECT_CALL_V1;
       if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALL_V1) {
-        return impl(...args);
+        return callObjectNative(state, symbol, impl, args, abi);
+      }
+      if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1) {
+        return callObjectNative(state, symbol, impl, args, abi, 1);
       }
       if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
         return callForwardF32Native(state, symbol, impl, args);

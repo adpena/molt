@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from molt._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_IMPORT_REGISTRY,
     WASM_LINK_ALLOWED_IMPORTS,
+    WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES,
     WASM_RUNTIME_HOST_EXPORTS,
     wasm_runtime_export_name,
 )
@@ -65,6 +67,7 @@ _EXTERNAL_PACKAGE_ARTIFACT_SUFFIXES = (
     *_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES,
     *_EXTERNAL_PACKAGE_STATIC_LINK_ARTIFACT_SUFFIXES,
 )
+_EXTERNAL_PACKAGE_STATIC_SUPPORT_SUFFIXES = (".molt.wasm", ".o", ".a")
 _EXTERNAL_PACKAGE_NATIVE_SOURCE_SUFFIXES = (
     ".c",
     ".cc",
@@ -80,42 +83,6 @@ _EXTERNAL_PACKAGE_NATIVE_SOURCE_SUFFIXES = (
 _SOURCE_RECOMPILED_EXTERNAL_PACKAGE_ROOTS = frozenset({"numpy", "scipy"})
 _EXTERNAL_PACKAGE_EXTENSION_MANIFEST = "extension_manifest.json"
 _EXTERNAL_PACKAGE_ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"
-_WASM_TOOLCHAIN_LINK_IMPORTS = frozenset(
-    {
-        "__indirect_function_table",
-        "__memory_base",
-        "__stack_pointer",
-        "__table_base",
-        "__tls_base",
-    }
-)
-_WASM_LIBC_LINK_IMPORTS = frozenset(
-    {
-        "abort",
-        "calloc",
-        "cos",
-        "exp",
-        "fabs",
-        "floor",
-        "free",
-        "log",
-        "malloc",
-        "memchr",
-        "memcmp",
-        "memcpy",
-        "memmove",
-        "memset",
-        "pow",
-        "realloc",
-        "sin",
-        "sqrt",
-        "strcmp",
-        "strlen",
-        "strncmp",
-        "tan",
-    }
-)
-_WASM_EXTERNAL_LINK_IMPORTS = _WASM_TOOLCHAIN_LINK_IMPORTS | _WASM_LIBC_LINK_IMPORTS
 _WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES = ("molt_cpython_abi_",)
 
 
@@ -376,8 +343,79 @@ def _required_manifest_str(
     value = manifest.get(field_name)
     if isinstance(value, str) and value.strip():
         return value.strip()
-    errors.append(f"extension_manifest.json missing non-empty {field_name!r}")
+    errors.append(f"extension_manifest.json {field_name} must be a non-empty string")
     return ""
+
+
+def _manifest_support_file_sha256(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+    package_source_root: Path,
+    errors: list[str],
+) -> tuple[tuple[str, str], ...]:
+    raw_support_files = manifest.get("support_files")
+    if raw_support_files is None:
+        return ()
+    if not isinstance(raw_support_files, list):
+        errors.append("extension_manifest.json support_files must be a list")
+        return ()
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_support_files):
+        label = f"extension_manifest.json support_files[{index}]"
+        if not isinstance(item, Mapping):
+            errors.append(f"{label} must be an object")
+            continue
+        rel_value = item.get("path")
+        sha_value = item.get("sha256")
+        if not isinstance(rel_value, str) or not rel_value.strip():
+            errors.append(f"{label}.path must be a non-empty relative path")
+            continue
+        rel_text = rel_value.replace("\\", "/").strip()
+        rel_path = Path(rel_text)
+        if rel_path.is_absolute() or any(part in {"", ".", ".."} for part in rel_path.parts):
+            errors.append(f"{label}.path escapes the package root: {rel_value!r}")
+            continue
+        if not (
+            rel_text.endswith(".molt.wasm")
+            or Path(rel_text).suffix in _EXTERNAL_PACKAGE_STATIC_SUPPORT_SUFFIXES
+        ):
+            errors.append(
+                f"{label}.path must name a wasm static-link support artifact "
+                "(.molt.wasm, .o, or .a)"
+            )
+            continue
+        if not isinstance(sha_value, str) or not re.fullmatch(
+            r"[0-9a-fA-F]{64}", sha_value.strip()
+        ):
+            errors.append(f"{label}.sha256 must be a lowercase SHA-256 hex digest")
+            continue
+        if rel_text in seen:
+            errors.append(f"{label}.path duplicates support file {rel_text!r}")
+            continue
+        support_path = (package_source_root / rel_path).resolve()
+        try:
+            support_path.relative_to(package_source_root.resolve())
+        except ValueError:
+            errors.append(f"{label}.path escapes the package root: {rel_value!r}")
+            continue
+        if not support_path.is_file():
+            errors.append(
+                f"{label}.path does not exist relative to {manifest_path.parent}: "
+                f"{rel_text}"
+            )
+            continue
+        expected = sha_value.strip().lower()
+        actual = _sha256_file(support_path).lower()
+        if actual != expected:
+            errors.append(
+                f"{label}.sha256 mismatch for {rel_text}: expected {expected}, got {actual}"
+            )
+            continue
+        seen.add(rel_text)
+        out.append((rel_text, expected))
+    return tuple(sorted(out))
 
 
 def _manifest_str_tuple(
@@ -503,7 +541,7 @@ def _wasm_runtime_backed_abi_symbols() -> frozenset[str]:
 
 def _abi_primitive_class(symbol: str) -> str:
     if symbol in WASM_LINK_ALLOWED_IMPORTS:
-        return "wasm_host_import"
+        return WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES[symbol]
     if symbol in WASM_IMPORT_REGISTRY or wasm_runtime_export_name(symbol) is not None:
         return "wasm_runtime_import"
     if symbol in WASM_RUNTIME_HOST_EXPORTS:
@@ -512,16 +550,33 @@ def _abi_primitive_class(symbol: str) -> str:
 
 
 def _external_link_primitive_class(symbol: str) -> str:
+    primitive_class = WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
+    if primitive_class is not None:
+        return primitive_class
     if symbol.startswith(_WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES):
         return "molt_cpython_abi_link_import"
-    if symbol in _WASM_TOOLCHAIN_LINK_IMPORTS:
-        return "wasm_toolchain_link_import"
-    return "wasm_libc_link_import"
+    raise AssertionError(f"unknown external native link import: {symbol!r}")
 
 
 def _is_external_link_import(symbol: str) -> bool:
-    return symbol in _WASM_EXTERNAL_LINK_IMPORTS or symbol.startswith(
-        _WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES
+    return (
+        symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+        or symbol.startswith(_WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES)
+    )
+
+
+def _wasm_static_link_runtime_symbols_for_imports(
+    import_symbols: Collection[str],
+) -> tuple[str, ...]:
+    runtime_backed_symbols = _wasm_runtime_backed_abi_symbols()
+    return tuple(
+        sorted(
+            symbol
+            for symbol in import_symbols
+            if symbol in runtime_backed_symbols
+            or _is_external_link_import(symbol)
+            or is_c_api_symbol(symbol)
+        )
     )
 
 
@@ -670,14 +725,11 @@ def _object_closure_c_api_symbol_board(
         else:
             status = surface.status_for(symbol)
         primitive_class = c_api_primitive_class(symbol)
-        if (
-            symbol in runtime_symbols
-            and symbol in undefined_symbols
-            and status in {"source_compile_only", "missing"}
-        ):
+        if symbol in runtime_symbols and symbol in undefined_symbols:
             if primitive_class == "numpy_c_api":
-                status = "package_native"
-            else:
+                if status in {"source_compile_only", "missing"}:
+                    status = "package_native"
+            elif status not in {"project_defined", "fail_fast"}:
                 status = "cpython_abi_link"
         if (
             status == "missing"
@@ -915,6 +967,13 @@ def _validate_external_package_native_artifact(
         package=package,
         errors=errors,
     )
+    package_source_root = _external_package_source_root(package_dir, package)
+    manifest_support_file_sha256 = _manifest_support_file_sha256(
+        manifest,
+        manifest_path=manifest_path,
+        package_source_root=package_source_root,
+        errors=errors,
+    )
     wasm_import_symbols, wasm_import_errors = _wasm_relocatable_import_symbols(
         package=package,
         artifact_path=artifact_path,
@@ -954,10 +1013,13 @@ def _validate_external_package_native_artifact(
     if errors:
         return None, errors
     assert c_api_symbols is not None
-    support_file_sha256 = _external_native_support_file_sha256(
+    package_init_support_file_sha256 = _external_native_support_file_sha256(
         package=package,
         package_dir=package_dir,
         module=module_name,
+    )
+    support_file_sha256 = tuple(
+        sorted({*package_init_support_file_sha256, *manifest_support_file_sha256})
     )
     return (
         _ExternalPackageNativeArtifact(
@@ -1511,11 +1573,28 @@ def _external_native_support_source_paths_for(
 def _external_native_support_source_paths(
     artifact: _ExternalPackageNativeArtifact,
 ) -> tuple[Path, ...]:
-    return _external_native_support_source_paths_for(
+    out: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(path)
+
+    for path in _external_native_support_source_paths_for(
         package=artifact.package,
         package_dir=artifact.package_dir,
         module=artifact.module,
+    ):
+        add(path)
+    package_source_root = _external_package_source_root(
+        artifact.package_dir,
+        artifact.package,
     )
+    for rel_path, _sha256 in artifact.support_file_sha256:
+        add(package_source_root / Path(rel_path))
+    return tuple(out)
 
 
 def _external_native_support_file_sha256(

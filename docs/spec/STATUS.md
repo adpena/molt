@@ -135,7 +135,11 @@ the implementation. For forward-looking priorities, use
   admission now fails before graph expansion when an admitted external package
   contains native-source or host-extension markers but lacks wasm32
   `static_link` `libmolt_source` artifact manifests; raw NumPy/SciPy-style
-  source roots are not treated as linkable package evidence. Native builds
+  source roots are not treated as linkable package evidence. `molt extension
+  build --target wasm` now produces that static-link artifact shape by emitting
+  a wasm32 `.molt.wasm` object, validating declared direct-symbol callable
+  exports against binary function exports, and publishing sidecar
+  `object_closure` custody. Native builds
   publish the validated artifact, sidecar, package `__init__.py` chain, and
   runtime extension shim candidates
   into a deterministic `external_static_packages/<plan-digest>/` runtime root;

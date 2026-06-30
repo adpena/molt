@@ -209,21 +209,8 @@ def _module_imports_host_call_indirect(sections: list[tuple[int, bytes]]) -> boo
             offset += 1
             if kind == 0:  # function
                 _, offset = _read_varuint(payload, offset)
-            elif kind == 1:  # table
-                offset += 1
-                flags, offset = _read_varuint(payload, offset)
-                _, offset = _read_varuint(payload, offset)
-                if flags & 0x1:
-                    _, offset = _read_varuint(payload, offset)
-            elif kind == 2:  # memory
-                flags, offset = _read_varuint(payload, offset)
-                _, offset = _read_varuint(payload, offset)
-                if flags & 0x1:
-                    _, offset = _read_varuint(payload, offset)
-            elif kind == 3:  # global
-                offset += 2
             else:
-                raise ValueError(f"Unknown import kind {kind}")
+                offset = _parse_import_desc(payload, offset, kind)
             if (
                 kind == 0
                 and module_name == "env"

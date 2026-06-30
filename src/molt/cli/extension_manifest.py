@@ -9,12 +9,14 @@ import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterable, Sequence
 from typing import Any, Mapping
 
 from molt.cli.capability_spec import _split_tokens
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
 from molt.native_callable_abi import (
+    NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
     native_callable_abi_choices,
     normalize_native_callable_abi,
 )
@@ -29,6 +31,11 @@ _PYTHON_DOTTED_NAME_RE = re.compile(
 )
 _PYTHON_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _NATIVE_SYMBOL_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]*")
+_PYMETHODDEF_ENTRY_RE = re.compile(
+    r"\{\s*\"(?P<name>(?:\\.|[^\"\\])+)\"\s*,"
+    r"(?P<body>[^{};]*?\bMETH_[A-Z_]+[^{};]*?)\}",
+    re.DOTALL,
+)
 _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
@@ -284,6 +291,73 @@ def _manifest_callable_exports(
         seen.add(export.qualified_name)
         exports.append(export)
     return tuple(sorted(exports, key=lambda export: export.qualified_name))
+
+
+def _decode_c_string_fragment(value: str) -> str:
+    try:
+        return bytes(value, "utf-8").decode("unicode_escape")
+    except UnicodeDecodeError:
+        return value
+
+
+def _py_methoddef_names(source_text: str) -> frozenset[str]:
+    return frozenset(
+        name
+        for match in _PYMETHODDEF_ENTRY_RE.finditer(source_text)
+        if (name := _decode_c_string_fragment(match.group("name")))
+        and _PYTHON_IDENTIFIER_RE.fullmatch(name) is not None
+    )
+
+
+def _infer_module_attr_callable_export_payloads(
+    source_texts: Iterable[str],
+    *,
+    python_exports: Sequence[str],
+    explicit_callable_exports: Sequence[Mapping[str, Any]],
+    effects: Sequence[str],
+    deterministic: bool,
+) -> tuple[dict[str, Any], ...]:
+    """Infer module-attribute callable exports from admitted C extension source.
+
+    ``python_exports`` grants package/import visibility.  If the same exported
+    attribute is backed by a PyMethodDef entry in the admitted extension source,
+    the extension module itself owns executable call dispatch through module
+    attribute lookup.  This produces ABI metadata without inventing direct
+    symbols or package-specific Python shims.
+    """
+
+    method_names: set[str] = set()
+    for source_text in source_texts:
+        method_names.update(_py_methoddef_names(source_text))
+    if not method_names:
+        return ()
+
+    explicit_names = {
+        f"{module}.{name}"
+        for export in explicit_callable_exports
+        if isinstance((module := export.get("module")), str)
+        and isinstance((name := export.get("name")), str)
+    }
+    normalized_effects = tuple(sorted({effect.strip() for effect in effects if effect.strip()}))
+    inferred: list[_ExternalNativeCallableExport] = []
+    for qualified_name in sorted(set(python_exports)):
+        if qualified_name in explicit_names or "." not in qualified_name:
+            continue
+        module, name = qualified_name.rsplit(".", 1)
+        if name not in method_names:
+            continue
+        inferred.append(
+            _ExternalNativeCallableExport(
+                module=module,
+                name=name,
+                binding="module_attr",
+                symbol=None,
+                abi=NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
+                effects=normalized_effects,
+                deterministic=deterministic,
+            )
+        )
+    return tuple(export.digest_payload() for export in inferred)
 
 
 def _load_manifest(path: Path) -> dict[str, Any] | None:

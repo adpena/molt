@@ -32,6 +32,7 @@ from molt.cli import build_diagnostics as cli_build_diagnostics
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
+from molt.cli import c_api_symbols as cli_c_api_symbols
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
@@ -45,11 +46,14 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import typecheck as cli_typecheck
+from molt.cli import wasm_toolchain as cli_wasm_toolchain
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalNativeCallableExport,
+    _ExternalNativeAbiSymbol,
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
+    _StagedExternalPackageNativeArtifact,
 )
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
@@ -2576,6 +2580,55 @@ def test_external_static_package_wasm_artifact_plan_is_manifest_led(
     assert artifact.artifact_kind == "wasm_relocatable_object"
 
 
+def test_external_static_package_wasm_manifest_support_archives_are_link_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, manifest_path = _write_external_native_package(
+        tmp_path,
+        artifact_name="_native.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+        },
+    )
+    support_archive = external_root / "nativepkg" / "_loops.a"
+    support_archive.write_bytes(b"!<arch>\nloops")
+    support_sha = hashlib.sha256(support_archive.read_bytes()).hexdigest()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["support_files"] = [
+        {
+            "path": "nativepkg/_loops.a",
+            "sha256": support_sha,
+        }
+    ]
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert error is None
+    assert policy is not None
+    artifact = policy.native_artifact_plan.artifacts[0]
+    assert ("nativepkg/_loops.a", support_sha) in artifact.support_file_sha256
+    staged = cli._stage_external_package_native_artifacts_for_build(
+        policy.native_artifact_plan,
+        artifacts_root=tmp_path / "artifacts",
+    )
+    assert len(staged) == 1
+    staged_archive = staged[0].runtime_root / "nativepkg" / "_loops.a"
+    assert staged_archive in staged[0].staged_support_paths
+    assert staged_archive.read_bytes() == support_archive.read_bytes()
+    assert staged_archive in (
+        cli_non_native_output._wasm_static_link_native_artifact_inputs(staged)
+    )
+
+
 def test_external_package_artifact_specific_manifests_allow_same_directory_modules(
     tmp_path: Path,
 ) -> None:
@@ -2665,6 +2718,9 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
     assert plan.artifacts[0].python_exports == (
         "nativepkg.ndimage.distance_transform_edt",
     )
+    assert plan.native_python_export_names() == frozenset(
+        {"nativepkg.ndimage.distance_transform_edt"}
+    )
 
 
 def test_external_native_artifact_plan_selects_callable_exported_imports(
@@ -2719,6 +2775,56 @@ def test_external_native_artifact_plan_selects_callable_exported_imports(
             "abi": "molt.forward_f32_v1",
             "symbol": native_symbol,
             "effects": ["read", "write"],
+            "deterministic": True,
+        }
+    }
+
+
+def test_external_native_artifact_plan_selects_module_attr_callable_exports(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "gaussian_filter",
+                    "binding": "module_attr",
+                    "abi": "molt.object_callargs_v1",
+                    "effects": [],
+                    "deterministic": True,
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage.gaussian_filter"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "nativepkg.ndimage._nd_image",
+    ]
+    assert plan.native_callable_exports_by_qualified_name() == {
+        "nativepkg.ndimage.gaussian_filter": {
+            "module": "nativepkg.ndimage",
+            "name": "gaussian_filter",
+            "binding": "module_attr",
+            "abi": "molt.object_callargs_v1",
+            "effects": [],
             "deterministic": True,
         }
     }
@@ -2848,6 +2954,37 @@ def test_external_native_artifact_plan_accepts_archive_callable_defined_symbol(
     assert plan.native_callable_export_names() == frozenset(
         {"nativepkg.ndimage.distance_transform_edt"}
     )
+
+
+def test_c_api_primitive_class_contract_buckets_shared_surfaces() -> None:
+    cases = {
+        "PyArray_NDIM": "numpy_c_api",
+        "npy_intp": "numpy_c_api",
+        "NPY_INT": "numpy_c_api",
+        "_Pyx_PyObject_Call": "cython_runtime_helper",
+        "PyCapsule_Import": "capsules",
+        "PyErr_SetString": "exceptions",
+        "Py_INCREF": "refcount",
+        "PyMem_Malloc": "memory_allocator",
+        "PyObject_GetBuffer": "buffer_protocol",
+        "PyImport_ImportModule": "import_system",
+        "PyModule_Create2": "module_state",
+        "PyGILState_Ensure": "gil_threading",
+        "PyUnicode_FromString": "unicode_text",
+        "PyBytes_FromStringAndSize": "bytes_bytearray",
+        "PyObject_Call": "call_protocol",
+        "PyDescr_NewGetSet": "descriptor_protocol",
+        "PyMapping_GetItemString": "iterator_mapping_helpers",
+        "PyLong_FromLong": "numeric_scalars",
+        "PyCode_New": "code_frame_eval",
+        "PyType_Ready": "object_type_lifecycle",
+        "PyOS_strtol": "python_c_api",
+    }
+
+    assert {
+        symbol: cli_c_api_symbols.c_api_primitive_class(symbol)
+        for symbol in cases
+    } == cases
 
 
 def test_external_native_artifact_plan_records_c_api_symbol_board(
@@ -3463,7 +3600,7 @@ def test_external_native_artifact_plan_rejects_missing_c_api_symbol(
     assert plan is None
     assert any(
         "object_closure required C-API symbol 'PyCode_NewWithPosOnlyArgs' "
-        "is missing; primitive_class=python_c_api" in error
+        "is missing; primitive_class=code_frame_eval" in error
         for error in errors
     )
 
@@ -3544,7 +3681,8 @@ def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
     assert plan is None
     assert any(
         "callable_exports[0].abi must be one of: "
-        "molt.object_call_v1, molt.forward_f32_v1" in error
+        "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1"
+        in error
         for error in errors
     )
 
@@ -4613,6 +4751,36 @@ def test_frontend_known_modules_do_not_authorize_native_python_direct_calls() ->
     )
 
 
+def test_frontend_from_import_known_child_module_does_not_authorize_python_direct_call() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy import ndimage\n"
+        "mask = 1\n"
+        "result = ndimage.distance_transform_edt(mask)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        known_func_defaults={
+            "scipy.ndimage": {
+                "distance_transform_edt": {
+                    "params": 1,
+                    "defaults": [],
+                }
+            }
+        },
+    )
+
+    assert any(op.get("kind") in {"call_bind", "call_indirect"} for op in ops)
+    assert all(
+        not (
+            op.get("kind") == "call"
+            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+        )
+        for op in ops
+    )
+
+
 def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
@@ -4668,7 +4836,248 @@ def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata() -> None
     )
 
 
-def test_frontend_native_callable_module_attr_export_fails_closed() -> None:
+def test_frontend_native_callable_export_lowers_from_imported_child_module_attr() -> None:
+    export: dict[str, object] = {
+        "module": "scipy.ndimage",
+        "name": "distance_transform_edt",
+        "binding": "direct_symbol",
+        "abi": "molt.object_call_v1",
+        "symbol": "molt_scipy_ndimage_distance_transform_edt",
+    }
+
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy import ndimage\n"
+        "mask = 1\n"
+        "result = ndimage.distance_transform_edt(mask)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        known_func_defaults={
+            "scipy.ndimage": {
+                "distance_transform_edt": {
+                    "params": 1,
+                    "defaults": [],
+                }
+            }
+        },
+        native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
+    )
+
+    invoke_ops = [
+        op
+        for op in ops
+        if op.get("kind") == "invoke_ffi"
+        and op.get("native_callable_export")
+        == "scipy.ndimage.distance_transform_edt"
+    ]
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert len(invoke_op["args"]) == 1
+    assert invoke_op["native_callable_binding"] == "direct_symbol"
+    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
+    assert (
+        invoke_op["native_callable_symbol"]
+        == "molt_scipy_ndimage_distance_transform_edt"
+    )
+    assert all(op.get("kind") != "call_bind" for op in ops)
+    assert all(op.get("kind") != "call_indirect" for op in ops)
+    assert all(
+        not (
+            op.get("kind") == "call"
+            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+        )
+        for op in ops
+    )
+
+
+def test_frontend_native_callable_callargs_export_lowers_keyword_child_module_attr() -> None:
+    export: dict[str, object] = {
+        "module": "scipy.ndimage",
+        "name": "gaussian_filter",
+        "binding": "direct_symbol",
+        "abi": "molt.object_callargs_v1",
+        "symbol": "molt_scipy_ndimage_gaussian_filter",
+    }
+
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy import ndimage\n"
+        "mask = 1\n"
+        "result = ndimage.gaussian_filter(mask, sigma=1.5)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        native_callable_exports={"scipy.ndimage.gaussian_filter": export},
+    )
+
+    invoke_ops = [
+        op
+        for op in ops
+        if op.get("kind") == "invoke_ffi"
+        and op.get("native_callable_export") == "scipy.ndimage.gaussian_filter"
+    ]
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert len(invoke_op["args"]) == 1
+    assert invoke_op["native_callable_binding"] == "direct_symbol"
+    assert invoke_op["native_callable_abi"] == "molt.object_callargs_v1"
+    assert invoke_op["native_callable_symbol"] == "molt_scipy_ndimage_gaussian_filter"
+    assert any(op.get("kind") == "callargs_new" for op in ops)
+    assert any(op.get("kind") == "callargs_push_pos" for op in ops)
+    assert any(op.get("kind") == "callargs_push_kw" for op in ops)
+    assert all(op.get("kind") != "call_bind" for op in ops)
+    assert all(op.get("kind") != "call_indirect" for op in ops)
+
+
+def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
+    exports: dict[str, dict[str, object]] = {
+        "scipy.ndimage.distance_transform_edt": {
+            "module": "scipy.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "module_attr",
+            "abi": "molt.object_call_v1",
+        },
+        "scipy.ndimage.gaussian_filter": {
+            "module": "scipy.ndimage",
+            "name": "gaussian_filter",
+            "binding": "module_attr",
+            "abi": "molt.object_callargs_v1",
+        },
+        "scipy.ndimage.maximum_filter": {
+            "module": "scipy.ndimage",
+            "name": "maximum_filter",
+            "binding": "module_attr",
+            "abi": "molt.object_callargs_v1",
+        },
+        "scipy.ndimage.minimum_filter": {
+            "module": "scipy.ndimage",
+            "name": "minimum_filter",
+            "binding": "module_attr",
+            "abi": "molt.object_callargs_v1",
+        },
+        "scipy.ndimage.label": {
+            "module": "scipy.ndimage",
+            "name": "label",
+            "binding": "module_attr",
+            "abi": "molt.object_call_v1",
+        },
+    }
+
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy import ndimage\n"
+        "from scipy.ndimage import distance_transform_edt, gaussian_filter\n"
+        "mask = 1\n"
+        "a = distance_transform_edt(mask)\n"
+        "b = ndimage.distance_transform_edt(mask)\n"
+        "c = gaussian_filter(mask, sigma=1.5)\n"
+        "d = ndimage.gaussian_filter(mask, sigma=2.0)\n"
+        "e = ndimage.maximum_filter(mask, size=15)\n"
+        "f = ndimage.minimum_filter(mask, size=11)\n"
+        "g = ndimage.label(mask)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        native_callable_exports=exports,
+    )
+
+    expected_counts = {
+        "scipy.ndimage.distance_transform_edt": 2,
+        "scipy.ndimage.gaussian_filter": 2,
+        "scipy.ndimage.maximum_filter": 1,
+        "scipy.ndimage.minimum_filter": 1,
+        "scipy.ndimage.label": 1,
+    }
+    invoke_ops_by_export = {
+        name: [
+            op
+            for op in ops
+            if op.get("kind") == "invoke_ffi"
+            and op.get("native_callable_export") == name
+        ]
+        for name in expected_counts
+    }
+
+    assert {name: len(items) for name, items in invoke_ops_by_export.items()} == (
+        expected_counts
+    )
+    for export_name, invoke_ops in invoke_ops_by_export.items():
+        spec = exports[export_name]
+        for invoke_op in invoke_ops:
+            assert invoke_op["native_callable_binding"] == "module_attr"
+            assert invoke_op["native_callable_abi"] == spec["abi"]
+            assert "native_callable_symbol" not in invoke_op
+            assert len(invoke_op["args"]) == 2
+    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 4
+    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 4
+    assert all(op.get("kind") != "call_bind" for op in ops)
+    assert all(op.get("kind") != "call_indirect" for op in ops)
+    assert all(
+        not (
+            op.get("kind") == "call"
+            and isinstance(op.get("s_value"), str)
+            and op["s_value"].startswith("scipy__ndimage__")
+        )
+        for op in ops
+    )
+
+
+def test_frontend_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
+    export: dict[str, object] = {
+        "module": "scipy.ndimage",
+        "name": "distance_transform_edt",
+        "binding": "module_attr",
+        "abi": "molt.object_call_v1",
+    }
+
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy.ndimage import distance_transform_edt\n"
+        "mask = 1\n"
+        "result = distance_transform_edt(mask)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        known_func_defaults={
+            "scipy.ndimage": {
+                "distance_transform_edt": {
+                    "params": 1,
+                    "defaults": [],
+                }
+            }
+        },
+        native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
+    )
+
+    invoke_ops = [
+        op
+        for op in ops
+        if op.get("kind") == "invoke_ffi"
+        and op.get("native_callable_export")
+        == "scipy.ndimage.distance_transform_edt"
+    ]
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert len(invoke_op["args"]) == 2
+    assert invoke_op["native_callable_binding"] == "module_attr"
+    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
+    assert "native_callable_symbol" not in invoke_op
+    assert all(op.get("kind") != "call_bind" for op in ops)
+    assert all(
+        not (
+            op.get("kind") == "call"
+            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+        )
+        for op in ops
+    )
+
+
+def test_frontend_native_callable_module_attr_rejects_memory_abi() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
         "name": "distance_transform_edt",
@@ -4676,7 +5085,7 @@ def test_frontend_native_callable_module_attr_export_fails_closed() -> None:
         "abi": "molt.forward_f32_v1",
     }
 
-    with pytest.raises(CompatibilityError, match="module_attr binding"):
+    with pytest.raises(CompatibilityError, match="module_attr memory ABI"):
         _frontend_main_ops_for_import_source(
             "from scipy.ndimage import distance_transform_edt\n"
             "mask = 1\n"
@@ -4696,6 +5105,35 @@ def test_frontend_native_callable_module_attr_export_fails_closed() -> None:
             },
             native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
         )
+
+
+def test_frontend_native_python_export_without_callable_metadata_fails_closed() -> None:
+    sources = [
+        "from scipy.ndimage import distance_transform_edt\n"
+        "mask = 1\n"
+        "result = distance_transform_edt(mask)\n",
+        "from scipy import ndimage\n"
+        "mask = 1\n"
+        "result = ndimage.distance_transform_edt(mask)\n",
+    ]
+
+    for source in sources:
+        with pytest.raises(
+            CompatibilityError,
+            match=(
+                "native Python export 'scipy\\.ndimage\\.distance_transform_edt' "
+                "has no callable ABI metadata"
+            ),
+        ):
+            _frontend_main_ops_for_import_source(
+                source,
+                module_name="field_solve",
+                parse_codec="json",
+                known_modules={"field_solve", "scipy", "scipy.ndimage"},
+                direct_call_modules={"field_solve"},
+                stdlib_allowlist=set(),
+                native_python_exports={"scipy.ndimage.distance_transform_edt"},
+            )
 
 
 def test_collect_imports_module_init_scan_skips_function_body_imports() -> None:
@@ -9010,6 +9448,83 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     assert miss is None
 
 
+def test_persisted_module_lowering_rejects_missing_local_function_reference(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = 1\n")
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+    result = {
+        "functions": [
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [
+                    {
+                        "kind": "call",
+                        "s_value": "pkg__init_metadata",
+                        "args": [],
+                        "out": "v0",
+                    }
+                ],
+            }
+        ],
+        "func_code_ids": {},
+        "local_class_names": [],
+        "local_classes": {},
+        "midend_policy_outcomes_by_function": {},
+        "midend_pass_stats_by_function": {},
+        "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+    }
+
+    issue = cli_module_cache._module_lowering_local_reference_issue(
+        "pkg", result["functions"]
+    )
+    assert issue is not None
+    assert "pkg__init_metadata" in issue
+    assert (
+        cli_module_cache._module_lowering_local_reference_issue(
+            "pkg",
+            [
+                {
+                    "name": "molt_main",
+                    "params": [],
+                    "ops": [
+                        {
+                            "kind": "call",
+                            "s_value": "other__init_metadata",
+                            "args": [],
+                            "out": "v0",
+                        }
+                    ],
+                }
+            ],
+        )
+        is None
+    )
+
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result=result,
+    )
+
+    assert (
+        cli._read_persisted_module_lowering(
+            tmp_path,
+            module_path,
+            module_name="pkg",
+            is_package=False,
+            context_digest=context_digest,
+        )
+        is None
+    )
+
+
 def test_persisted_module_lowering_tracks_source_content(
     tmp_path: Path,
 ) -> None:
@@ -10323,6 +10838,39 @@ def test_scoped_lowering_input_view_carries_native_callable_exports() -> None:
     )
 
 
+def test_scoped_lowering_input_view_carries_native_python_exports() -> None:
+    scoped_view = cli._scoped_lowering_input_view(
+        "main",
+        module_deps={"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
+        known_modules={"main", "nativepkg.ndimage"},
+        direct_call_modules={"main"},
+        known_func_defaults={},
+        known_func_kinds={},
+        native_python_exports={
+            "nativepkg.ndimage.distance_transform_edt",
+            "unrelatedpkg.run",
+        },
+        pgo_hot_function_names=(),
+        type_facts=None,
+        module_dep_closures={
+            "main": frozenset({"main", "nativepkg.ndimage"}),
+            "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
+        },
+        known_modules_sorted=("main", "nativepkg.ndimage"),
+        source_modules=("main", "nativepkg.ndimage"),
+    )
+
+    assert scoped_view.native_python_exports == (
+        "nativepkg.ndimage.distance_transform_edt",
+    )
+    assert scoped_view.native_python_exports_payload == [
+        "nativepkg.ndimage.distance_transform_edt"
+    ]
+    assert scoped_view.native_python_exports_set == frozenset(
+        {"nativepkg.ndimage.distance_transform_edt"}
+    )
+
+
 def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -10330,6 +10878,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
+        native_python_exports=("alpha.native_call",),
         pgo_hot_function_names=("main::hot",),
         type_facts=None,
     )
@@ -10372,6 +10921,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
     assert tuple(payload["pgo_hot_functions"]) == ("main::hot",)
     assert set(payload["known_func_defaults"]) == {"main"}
     assert set(payload["known_func_kinds"]) == {"main"}
+    assert tuple(payload["native_python_exports"]) == ("alpha.native_call",)
 
 
 def test_module_worker_payload_reuses_precomputed_scoped_inputs(
@@ -10381,6 +10931,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
+        native_python_exports=("alpha.native_call",),
         pgo_hot_function_names=("main::hot",),
         type_facts=None,
     )
@@ -10422,6 +10973,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     assert payload["pgo_hot_functions"] == ["main::hot"]
     assert set(payload["known_func_defaults"]) == {"main"}
     assert set(payload["known_func_kinds"]) == {"main"}
+    assert payload["native_python_exports"] == ["alpha.native_call"]
 
 
 def test_load_cached_module_lowering_result_reuses_precomputed_views(
@@ -10515,6 +11067,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
             known_modules=("alpha", "main"),
             known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
             known_func_kinds={"main": {"run": "sync"}},
+            native_python_exports=("alpha.native_call",),
             pgo_hot_function_names=("main::hot",),
             type_facts=None,
         ),
@@ -10525,6 +11078,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     assert gen.known_modules == {"alpha", "main"}
     assert gen.known_func_defaults == {"main": {"run": {"params": 0, "defaults": []}}}
     assert gen.known_func_kinds == {"main": {"run": "sync"}}
+    assert gen.native_python_exports == {"alpha.native_call"}
     assert gen.midend_hot_functions == {"main::hot"}
     assert gen.classes["MainClass"]["module"] == "main"
 
@@ -10623,6 +11177,52 @@ def test_module_lowering_context_digest_includes_native_callable_exports() -> No
         "main",
         Path("/tmp/main.py"),
         native_callable_exports=export_b,
+        **common,
+    )
+
+    assert digest_a is not None
+    assert digest_b is not None
+    assert digest_a != digest_b
+
+
+def test_module_lowering_context_digest_includes_native_python_exports() -> None:
+    common: dict[str, object] = {
+        "logical_source_path": "/tmp/main.py",
+        "entry_override": None,
+        "known_classes_snapshot": {},
+        "parse_codec": "json",
+        "type_hint_policy": "ignore",
+        "fallback_policy": "error",
+        "type_facts": None,
+        "enable_phi": True,
+        "known_modules": {"main", "nativepkg.ndimage"},
+        "direct_call_modules": {"main"},
+        "stdlib_allowlist": set(),
+        "known_func_defaults": {},
+        "known_func_kinds": {},
+        "module_deps": {"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
+        "module_is_namespace": False,
+        "module_chunking": False,
+        "module_chunk_max_ops": 0,
+        "optimization_profile": "dev",
+        "pgo_hot_function_names": set(),
+        "module_dep_closures": {
+            "main": frozenset({"main", "nativepkg.ndimage"}),
+            "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
+        },
+        "path_stat": os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    }
+
+    digest_a = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        native_python_exports={"nativepkg.ndimage.distance_transform_edt"},
+        **common,
+    )
+    digest_b = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        native_python_exports={"nativepkg.ndimage.gaussian_filter"},
         **common,
     )
 
@@ -12348,8 +12948,10 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         module_dep_closures={"entry": set()},
         has_back_edges=False,
         known_modules={"entry"},
+        direct_call_modules={"entry"},
         known_func_defaults={},
         known_func_kinds={},
+        native_callable_exports={},
         pgo_hot_function_names=set(),
         generated_module_source_paths={},
         entry_module="entry",
@@ -12362,12 +12964,71 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         target_triple=None,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
+        source_recompiled_external_packages=set(),
     )
 
     assert failure is None
     assert config is not None
     assert config.module_chunking is True
     assert config.module_chunk_max_ops == 1400
+
+
+def test_prepare_frontend_lowering_config_skips_ty_for_source_recompiled_native_packages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "entry.py"
+    source_path.write_text("from scipy.ndimage import distance_transform_edt\n", encoding="utf-8")
+    warnings: list[str] = []
+
+    def fail_collect(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ty/type-fact collection must not run")
+
+    monkeypatch.setattr(
+        cli_frontend_pipeline._typecheck,
+        "_collect_type_facts_for_build",
+        fail_collect,
+    )
+
+    config, failure = cli_frontend_pipeline._prepare_frontend_lowering_config(
+        type_facts_path=None,
+        type_hint_policy="check",
+        module_graph={"entry": source_path},
+        source_path=source_path,
+        json_output=True,
+        warnings=warnings,
+        module_deps={"entry": set()},
+        module_dep_closures={"entry": frozenset()},
+        has_back_edges=False,
+        known_modules={"entry", "scipy", "scipy.ndimage"},
+        direct_call_modules={"entry"},
+        known_func_defaults={},
+        known_func_kinds={},
+        native_callable_exports={},
+        pgo_hot_function_names=set(),
+        generated_module_source_paths={},
+        entry_module="entry",
+        namespace_module_names=set(),
+        module_source_catalog=cli_module_source._build_module_source_catalog(
+            {"entry": source_path},
+            module_sources={
+                "entry": "from scipy.ndimage import distance_transform_edt\n"
+            },
+        ),
+        is_wasm=True,
+        target_triple="wasm32-wasip1",
+        frontend_parallel_details={},
+        frontend_phase_timeout=None,
+        source_recompiled_external_packages={"scipy"},
+    )
+
+    assert failure is None
+    assert config is not None
+    assert config.type_facts is None
+    assert warnings == [
+        "source-recompiled external native packages use package/native artifact "
+        "custody instead of ty-derived type facts; continuing with guarded hints."
+    ]
 
 
 def test_duration_ms_from_ns_clamps_and_converts() -> None:
@@ -14712,8 +15373,179 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert native_callables["symbols"] == {}
 
 
+def test_prepare_non_native_build_result_links_cpython_abi_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    artifact_path = package_dir / "_multiarray_umath.molt.wasm"
+    artifact_bytes = b"\0asm\x01\0\0\0native"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest_path = package_dir / "extension_manifest.json"
+    manifest_bytes = b'{"runtime_linkage":"static_link"}\n'
+    manifest_path.write_bytes(manifest_bytes)
+    cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
+    cpython_abi_provider.parent.mkdir(parents=True)
+    cpython_abi_provider.write_bytes(b"!<arch>\nprovider")
+    libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
+    libc_provider.parent.mkdir(parents=True)
+    libc_provider.write_bytes(b"!<arch>\nlibc")
+    native_artifact_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.core._multiarray_umath",
+                package_dir=package_dir,
+                path=artifact_path,
+                manifest_path=manifest_path,
+                extension_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                capabilities=(),
+                abi_tag="molt_abi1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                abi_symbols=(
+                    _ExternalNativeAbiSymbol(
+                        symbol="printf",
+                        status="external_link",
+                        primitive_class="wasm_libc_link_import",
+                        source="undefined_symbols",
+                    ),
+                    _ExternalNativeAbiSymbol(
+                        symbol="molt_cpython_abi_date_from_date",
+                        status="external_link",
+                        primitive_class="molt_cpython_abi_link_import",
+                        source="undefined_symbols",
+                    ),
+                ),
+            ),
+        )
+    )
+    link_calls: list[list[str]] = []
+    provider_calls: list[dict[str, object]] = []
+
+    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_collect_wasm_module_import_names",
+        lambda _path, _module_name: set(),
+    )
+
+    def fake_provider(**kwargs: object) -> Path:
+        provider_calls.append(dict(kwargs))
+        return cpython_abi_provider
+
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_ensure_wasm_cpython_abi_staticlib",
+        fake_provider,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_wasm_toolchain,
+        "wasm_wasi_libc_archive",
+        lambda: libc_provider,
+        raising=True,
+    )
+
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda required=None: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_cargo_profile="release-fast",
+        molt_root=tmp_path,
+        split_runtime=False,
+        precompile=False,
+        native_artifact_plan=native_artifact_plan,
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert provider_calls == [
+        {
+            "project_root": tmp_path,
+            "json_output": True,
+            "cargo_profile": "release-fast",
+            "cargo_timeout": None,
+        }
+    ]
+    assert len(link_calls) == 1
+    link_cmd = link_calls[0]
+    native_inputs = [
+        Path(link_cmd[index + 1])
+        for index, arg in enumerate(link_cmd)
+        if arg == "--native-object"
+    ]
+    assert cpython_abi_provider in native_inputs
+    assert libc_provider in native_inputs
+    staged_native_inputs = [
+        path for path in native_inputs if "external_static_packages" in path.parts
+    ]
+    assert len(staged_native_inputs) == 1
+    assert staged_native_inputs[0].read_bytes() == artifact_bytes
+
+
+def test_wasm_static_link_native_artifact_inputs_include_linkable_support_paths(
+    tmp_path: Path,
+) -> None:
+    artifact_path = tmp_path / "pkg" / "_native.molt.wasm"
+    manifest_path = tmp_path / "pkg" / "_native.molt.wasm.extension_manifest.json"
+    support_archive = tmp_path / "pkg" / "_native_support.a"
+    support_python = tmp_path / "pkg" / "__init__.py"
+    for path in (artifact_path, manifest_path, support_archive, support_python):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    staged = _StagedExternalPackageNativeArtifact(
+        package="nativepkg",
+        module="nativepkg._native",
+        runtime_root=tmp_path,
+        source_path=artifact_path,
+        source_manifest_path=manifest_path,
+        staged_path=artifact_path,
+        staged_manifest_path=manifest_path,
+        staged_support_paths=(support_archive, support_python),
+        extension_sha256="0" * 64,
+        manifest_sha256="1" * 64,
+        capabilities=(),
+        abi_tag="molt_abi1",
+        target_triple="wasm32-wasip1",
+        platform_tag="wasm32_wasip1",
+        runtime_linkage="static_link",
+        artifact_kind="wasm_relocatable_object",
+    )
+
+    assert cli_non_native_output._wasm_static_link_native_artifact_inputs((staged,)) == (
+        artifact_path,
+        support_archive,
+    )
+
+
 def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> None:
     native_callable_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
+    object_call_symbol = "molt_nativepkg_ndimage_label"
+    object_callargs_symbol = "molt_nativepkg_ndimage_gaussian_filter"
     package_dir = tmp_path / "site" / "nativepkg"
     package_dir.mkdir(parents=True)
     artifact_path = package_dir / "_ndimage.molt.wasm"
@@ -14747,6 +15579,22 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
                         symbol=native_callable_symbol,
                         deterministic=True,
                     ),
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="label",
+                        binding="direct_symbol",
+                        abi="molt.object_call_v1",
+                        symbol=object_call_symbol,
+                        deterministic=True,
+                    ),
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="gaussian_filter",
+                        binding="direct_symbol",
+                        abi="molt.object_callargs_v1",
+                        symbol=object_callargs_symbol,
+                        deterministic=True,
+                    ),
                 ),
             ),
         )
@@ -14760,6 +15608,14 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
         native_artifact_plan,
         required_symbols={native_callable_symbol},
     )
+    object_manifest = cli_non_native_output._browser_native_callable_manifest(
+        native_artifact_plan,
+        required_symbols={object_call_symbol},
+    )
+    callargs_manifest = cli_non_native_output._browser_native_callable_manifest(
+        native_artifact_plan,
+        required_symbols={object_callargs_symbol},
+    )
 
     assert empty_manifest == {"module": "molt_native", "symbols": {}}
     symbol_payload = required_manifest["symbols"][native_callable_symbol]
@@ -14770,6 +15626,22 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
     }
     assert symbol_payload["exports"][0]["qualified_name"] == (
         "nativepkg.ndimage.distance_transform_edt"
+    )
+    object_payload = object_manifest["symbols"][object_call_symbol]
+    assert object_payload["abi"] == "molt.object_call_v1"
+    assert object_payload["signature"] == {
+        "params": ["molt.value..."],
+        "result": "molt.value",
+    }
+    assert object_payload["exports"][0]["qualified_name"] == "nativepkg.ndimage.label"
+    callargs_payload = callargs_manifest["symbols"][object_callargs_symbol]
+    assert callargs_payload["abi"] == "molt.object_callargs_v1"
+    assert callargs_payload["signature"] == {
+        "params": ["molt.callargs"],
+        "result": "molt.value",
+    }
+    assert callargs_payload["exports"][0]["qualified_name"] == (
+        "nativepkg.ndimage.gaussian_filter"
     )
 
 
@@ -15545,9 +16417,12 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             type_facts=None,
             enable_phi=False,
             known_modules=set(),
+            direct_call_modules=set(),
             stdlib_allowlist=set(),
             known_func_defaults={},
             known_func_kinds={},
+            native_callable_exports={},
+            native_python_exports=(),
             module_deps={},
             source_modules=(),
             module_chunk_max_ops=0,
@@ -16287,11 +17162,36 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     ]
 
 
-def test_browser_deploy_profile_defaults_to_full_wasm_profile() -> None:
+def test_browser_deploy_profile_defaults_to_auto_wasm_profile() -> None:
     assert (
         cli_build_output_layout._DEPLOY_PROFILE_DEFAULTS["browser"]["wasm_profile"]
-        == "full"
+        == "auto"
     )
+
+
+def test_build_cli_defaults_to_auto_wasm_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    seen_profiles: list[str | None] = []
+
+    def fake_build(*args: object, **kwargs: object) -> int:
+        del args
+        seen_profiles.append(cast(str | None, kwargs.get("wasm_profile")))
+        return 0
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["molt", "build", "--target", "wasm", str(entry)],
+    )
+
+    assert cli.main() == 0
+    assert seen_profiles == ["auto"]
 
 
 def test_build_cli_defaults_to_micro_stdlib_profile(

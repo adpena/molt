@@ -33,5 +33,6 @@ pub mod numbers;
 pub mod object;
 pub mod refcount;
 pub mod sequences;
+pub mod source_closure;
 pub mod strings;
 pub mod typeobj;

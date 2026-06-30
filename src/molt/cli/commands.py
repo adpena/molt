@@ -45,15 +45,22 @@ from molt.cli.config_resolution import (
     STDLIB_PROFILE_CHOICES,
     _config_value,
 )
+from molt.cli.c_api_symbols import is_c_api_external_requirement, is_c_api_symbol
 from molt.cli.deps import _load_toml, _normalize_name
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.env_paths import _base_env
+from molt.cli.extension_scan_surface import (
+    _extract_c_api_tokens,
+    _extract_file_local_c_api_symbols,
+    _extract_project_defined_c_api_symbols,
+)
 from molt.cli.extension_manifest import (
     _MOLT_C_API_VERSION_RE,
     _coerce_str_list,
     _default_molt_c_api_version,
     _extension_binary_suffix,
     _host_target_triple,
+    _infer_module_attr_callable_export_payloads,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
     _module_parts,
@@ -63,6 +70,7 @@ from molt.cli.extension_manifest import (
     _wheel_version_token,
     _write_zip_member,
 )
+from molt.cli.external_native import _wasm_static_link_runtime_symbols_for_imports
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
@@ -89,6 +97,8 @@ from molt.cli.wrapper_build import (
     _build_args_has_python_version_flag,
     _run_wrapper_build,
 )
+from molt.cli.wasm_toolchain import normalize_wasi_sysroot, resolve_wasi_sysroot
+from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
 
 def _resolve_python_exe(python_exe: str | None) -> str:
@@ -104,6 +114,53 @@ def _resolve_python_exe(python_exe: str | None) -> str:
         if base_exe and Path(base_exe).exists():
             return base_exe
     return python_exe
+
+
+def _sysroot_arg_value(args: list[str]) -> str | None:
+    index = 0
+    while index < len(args):
+        part = args[index]
+        if part in {"--sysroot", "-isysroot"}:
+            if index + 1 < len(args):
+                return args[index + 1]
+            return ""
+        if part.startswith("--sysroot="):
+            return part.split("=", 1)[1]
+        index += 1
+    return None
+
+
+def _extension_source_text_by_path(source_paths: list[Path]) -> dict[Path, str]:
+    return {
+        source_path: source_path.read_text(encoding="utf-8", errors="replace")
+        for source_path in source_paths
+    }
+
+
+def _extension_source_required_c_api_symbols(
+    source_text_by_path: Mapping[Path, str],
+) -> tuple[str, ...]:
+    file_local_symbols_by_path: dict[Path, set[str]] = {}
+    project_defined_symbols: set[str] = set()
+    for source_path, source_text in source_text_by_path.items():
+        file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
+            source_text
+        )
+        project_defined_symbols.update(
+            _extract_project_defined_c_api_symbols(source_text)
+        )
+    required: set[str] = set()
+    for source_path, source_text in source_text_by_path.items():
+        required.update(
+            {
+                symbol
+                for symbol in _extract_c_api_tokens(source_text)
+                if is_c_api_external_requirement(symbol)
+            }
+            - file_local_symbols_by_path[source_path]
+            - project_defined_symbols
+        )
+    return tuple(sorted(required))
 
 
 def _shared_library_defines_symbol(path: Path, symbol: str) -> tuple[bool, str | None]:
@@ -1709,13 +1766,22 @@ def extension_build(
     normalized_target = requested_target.lower()
     runtime_target_triple: str | None = None
     manifest_target_triple = _host_target_triple()
+    wasm_static_link = False
     if normalized_target == "native":
         runtime_target_triple = None
-    elif normalized_target == "wasm" or normalized_target.startswith("wasm32"):
-        errors.append("Extension build only supports native target triples, not wasm")
+    elif normalized_target == "wasm":
+        wasm_static_link = True
+        runtime_target_triple = "wasm32-wasip1"
+        manifest_target_triple = runtime_target_triple
+    elif normalized_target.startswith("wasm32"):
+        if any(ch.isspace() for ch in requested_target):
+            errors.append("target must be 'native', 'wasm', or a Rust target triple")
+        wasm_static_link = True
+        runtime_target_triple = normalized_target
+        manifest_target_triple = normalized_target
     else:
         if any(ch.isspace() for ch in requested_target):
-            errors.append("target must be 'native' or a Rust target triple")
+            errors.append("target must be 'native', 'wasm', or a Rust target triple")
         runtime_target_triple = normalized_target
         manifest_target_triple = normalized_target
 
@@ -1782,6 +1848,34 @@ def extension_build(
             command="extension-build",
         )
 
+    try:
+        source_text_by_path = _extension_source_text_by_path(source_paths)
+        source_required_c_api_symbols = _extension_source_required_c_api_symbols(
+            source_text_by_path
+        )
+        inferred_callable_exports = _infer_module_attr_callable_export_payloads(
+            source_text_by_path.values(),
+            python_exports=python_exports,
+            explicit_callable_exports=callable_exports,
+            effects=effects,
+            deterministic=determinism_mode == "deterministic",
+        )
+        if inferred_callable_exports:
+            callable_exports = [
+                *callable_exports,
+                *[dict(export) for export in inferred_callable_exports],
+            ]
+            callable_exports = sorted(
+                callable_exports,
+                key=lambda export: (str(export.get("module")), str(export.get("name"))),
+            )
+    except OSError as exc:
+        return _fail(
+            f"Failed scanning extension C/API source surface: {exc}",
+            json_output,
+            command="extension-build",
+        )
+
     output_root = Path(out_dir).expanduser() if out_dir else Path("dist")
     if not output_root.is_absolute():
         output_root = (project_root / output_root).absolute()
@@ -1806,7 +1900,50 @@ def extension_build(
             json_output,
             command="extension-build",
         )
-    if runtime_target_triple:
+    if wasm_static_link:
+        wasm_cc = os.environ.get("MOLT_WASM_CC")
+        if wasm_cc:
+            cc_cmd = shlex.split(wasm_cc)
+        if not cc_cmd:
+            return _fail(
+                "Compiler command is empty. Set MOLT_WASM_CC, CC, or install clang.",
+                json_output,
+                command="extension-build",
+            )
+        target_arg = runtime_target_triple or "wasm32-wasip1"
+        has_target_arg = any(
+            part == "-target" or part.startswith("--target") for part in cc_cmd
+        )
+        if not has_target_arg:
+            tool_name = Path(cc_cmd[0]).name.lower()
+            if tool_name in {"zig", "zig.exe"}:
+                cc_cmd.extend(["-target", target_arg])
+            else:
+                cc_cmd.append(f"--target={target_arg}")
+        explicit_sysroot = _sysroot_arg_value([*cc_cmd, *compile_args])
+        if explicit_sysroot is None:
+            wasi_sysroot = resolve_wasi_sysroot()
+            if wasi_sysroot is None:
+                return _fail(
+                    "WASM extension build requires a WASI sysroot containing "
+                    "include/errno.h. Set MOLT_WASI_SYSROOT, WASI_SYSROOT, "
+                    "or WASI_SDK_PATH.",
+                    json_output,
+                    command="extension-build",
+                )
+            cc_cmd.append(f"--sysroot={wasi_sysroot}")
+        else:
+            wasi_sysroot = normalize_wasi_sysroot(explicit_sysroot)
+            if wasi_sysroot is None:
+                return _fail(
+                    "WASM extension build sysroot is invalid or incomplete: "
+                    f"{explicit_sysroot!r} does not contain include/errno.h.",
+                    json_output,
+                    command="extension-build",
+                )
+        if "-wasm-enable-sjlj" not in [*cc_cmd, *compile_args]:
+            cc_cmd.extend(["-mllvm", "-wasm-enable-sjlj"])
+    elif runtime_target_triple:
         cross_cc = os.environ.get("MOLT_CROSS_CC")
         target_arg = runtime_target_triple
         if cross_cc:
@@ -1849,13 +1986,19 @@ def extension_build(
     if deterministic or profile == "release":
         build_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
 
-    module_rel = Path(
-        *module_parts[:-1],
-        module_parts[-1] + _extension_binary_suffix(runtime_target_triple),
-    )
+    if wasm_static_link:
+        module_rel = Path(*module_parts[:-1], module_parts[-1] + ".molt.wasm")
+    else:
+        module_rel = Path(
+            *module_parts[:-1],
+            module_parts[-1] + _extension_binary_suffix(runtime_target_triple),
+        )
     init_symbol = f"PyInit_{module_parts[-1]}"
     compile_commands: list[list[str]] = []
     link_command: list[str] = []
+    wasi_sysroot_path = str(wasi_sysroot) if wasm_static_link else None
+    wasm_defined_symbols: list[str] = []
+    wasm_import_symbols: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="molt_ext_build_", dir=output_root) as td:
         build_tmp = Path(td)
@@ -1863,11 +2006,14 @@ def extension_build(
         for idx, source_path in enumerate(source_paths):
             object_path = build_tmp / f"{idx}_{source_path.stem}.o"
             cmd = [*cc_cmd, "-c", str(source_path), "-o", str(object_path)]
-            cmd.append("-DMOLT_EXTENSION_HOST_ABI=1")
+            if wasm_static_link:
+                cmd.append("-DMOLT_EXTENSION_WASM_STATIC_LINK=1")
+            else:
+                cmd.append("-DMOLT_EXTENSION_HOST_ABI=1")
             cmd.extend(["-I", str(include_root), "-I", str(project_root)])
             for include_path in include_paths:
                 cmd.extend(["-I", str(include_path)])
-            if os.name != "nt":
+            if os.name != "nt" and not wasm_static_link:
                 cmd.append("-fPIC")
             if deterministic:
                 prefix = str(project_root)
@@ -1895,32 +2041,72 @@ def extension_build(
 
         built_extension = build_tmp / module_rel
         built_extension.parent.mkdir(parents=True, exist_ok=True)
-        link_command = [*cc_cmd, "-shared"]
-        link_command.extend(str(path) for path in object_paths)
-        link_command.extend(["-o", str(built_extension)])
-        if sys.platform == "darwin" and runtime_target_triple is None:
-            link_command.extend(["-undefined", "dynamic_lookup"])
-        elif (runtime_target_triple and "linux" in runtime_target_triple) or (
-            runtime_target_triple is None and sys.platform.startswith("linux")
-        ):
-            link_command.append("-ldl")
-        link_command.extend(link_args)
-        link_result = _run_completed_command(
-            link_command,
-            cwd=project_root,
-            env=build_env,
-            capture_output=True,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-        if link_result.returncode != 0:
-            detail = link_result.stderr.strip() or link_result.stdout.strip()
-            if not detail:
-                detail = f"linker exited with code {link_result.returncode}"
-            return _fail(
-                f"Failed linking extension module: {detail}",
-                json_output,
-                command="extension-build",
+        if wasm_static_link:
+            if link_args:
+                warnings.append(
+                    "Ignoring extra_link_args for wasm relocatable object output; "
+                    "static-link custody is resolved by the final wasm linker."
+                )
+            if len(object_paths) == 1:
+                _atomic_copy_file(object_paths[0], built_extension)
+            else:
+                wasm_ld_cmd = shlex.split(os.environ.get("MOLT_WASM_LD", "wasm-ld"))
+                if not wasm_ld_cmd:
+                    return _fail(
+                        "Compiler command is empty. Set MOLT_WASM_LD or install wasm-ld.",
+                        json_output,
+                        command="extension-build",
+                    )
+                link_command = [
+                    *wasm_ld_cmd,
+                    "-r",
+                    *[str(path) for path in object_paths],
+                    "-o",
+                    str(built_extension),
+                ]
+                link_result = _run_completed_command(
+                    link_command,
+                    cwd=project_root,
+                    env=build_env,
+                    capture_output=True,
+                    memory_guard_prefix="MOLT_BUILD",
+                )
+                if link_result.returncode != 0:
+                    detail = link_result.stderr.strip() or link_result.stdout.strip()
+                    if not detail:
+                        detail = f"wasm linker exited with code {link_result.returncode}"
+                    return _fail(
+                        f"Failed linking wasm relocatable extension object: {detail}",
+                        json_output,
+                        command="extension-build",
+                    )
+        else:
+            link_command = [*cc_cmd, "-shared"]
+            link_command.extend(str(path) for path in object_paths)
+            link_command.extend(["-o", str(built_extension)])
+            if sys.platform == "darwin" and runtime_target_triple is None:
+                link_command.extend(["-undefined", "dynamic_lookup"])
+            elif (runtime_target_triple and "linux" in runtime_target_triple) or (
+                runtime_target_triple is None and sys.platform.startswith("linux")
+            ):
+                link_command.append("-ldl")
+            link_command.extend(link_args)
+            link_result = _run_completed_command(
+                link_command,
+                cwd=project_root,
+                env=build_env,
+                capture_output=True,
+                memory_guard_prefix="MOLT_BUILD",
             )
+            if link_result.returncode != 0:
+                detail = link_result.stderr.strip() or link_result.stdout.strip()
+                if not detail:
+                    detail = f"linker exited with code {link_result.returncode}"
+                return _fail(
+                    f"Failed linking extension module: {detail}",
+                    json_output,
+                    command="extension-build",
+                )
 
         if not built_extension.exists():
             return _fail(
@@ -1928,19 +2114,64 @@ def extension_build(
                 json_output,
                 command="extension-build",
             )
-        symbol_ok, symbol_error = _shared_library_defines_symbol(
-            built_extension,
-            init_symbol,
-        )
-        if not symbol_ok:
-            return _fail(
-                f"Linked extension is not importable: {symbol_error}",
-                json_output,
-                command="extension-build",
+        if wasm_static_link:
+            try:
+                wasm_defined_symbols = sorted(
+                    {
+                        export.name
+                        for export in read_wasm_function_exports(built_extension)
+                    }
+                )
+                wasm_import_symbols = sorted(
+                    {
+                        wasm_import.name
+                        for wasm_import in read_wasm_imports(built_extension)
+                    }
+                )
+            except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
+                return _fail(
+                    f"Built wasm extension artifact is not a readable wasm object: {exc}",
+                    json_output,
+                    command="extension-build",
+                )
+            direct_symbols = sorted(
+                {
+                    str(export.get("symbol"))
+                    for export in callable_exports
+                    if export.get("binding") == "direct_symbol"
+                    and isinstance(export.get("symbol"), str)
+                    and str(export.get("symbol")).strip()
+                }
             )
+            missing_direct_symbols = [
+                symbol for symbol in direct_symbols if symbol not in wasm_defined_symbols
+            ]
+            if missing_direct_symbols:
+                return _fail(
+                    "WASM extension direct_symbol callable export(s) missing from "
+                    f"function exports: {', '.join(missing_direct_symbols)}",
+                    json_output,
+                    command="extension-build",
+                )
+            _atomic_copy_file(built_extension, output_root / module_rel)
+        else:
+            symbol_ok, symbol_error = _shared_library_defines_symbol(
+                built_extension,
+                init_symbol,
+            )
+            if not symbol_ok:
+                return _fail(
+                    f"Linked extension is not importable: {symbol_error}",
+                    json_output,
+                    command="extension-build",
+                )
 
         extension_bytes = built_extension.read_bytes()
         extension_archive_path = module_rel.as_posix()
+        runtime_linkage = "static_link" if wasm_static_link else "host_resolved"
+        artifact_kind = (
+            "wasm_relocatable_object" if wasm_static_link else "shared_library"
+        )
         manifest_payload: dict[str, Any] = {
             "schema_version": 1,
             "name": str(project_name),
@@ -1954,7 +2185,8 @@ def extension_build(
             "platform_tag": platform_tag,
             "loader_kind": "libmolt_source",
             "init_symbol": init_symbol,
-            "runtime_linkage": "host_resolved",
+            "runtime_linkage": runtime_linkage,
+            "artifact_kind": artifact_kind,
             "capabilities": capabilities_list,
             "capability_profiles": capability_profiles,
             "deterministic": deterministic,
@@ -1965,13 +2197,36 @@ def extension_build(
             "build": {
                 "compiler": cc_cmd,
                 "compiler_target": runtime_target_triple or "native",
-                "runtime_linkage": "host_resolved",
+                "wasi_sysroot": wasi_sysroot_path,
+                "runtime_linkage": runtime_linkage,
+                "artifact_kind": artifact_kind,
                 "include_dirs": [str(include_root), str(project_root)]
                 + [str(path) for path in include_paths],
                 "extra_compile_args": compile_args,
                 "extra_link_args": link_args,
             },
         }
+        if wasm_static_link:
+            object_closure: dict[str, Any] = {
+                "defined_symbols": wasm_defined_symbols,
+                "undefined_symbols": wasm_import_symbols,
+            }
+            runtime_symbols = _wasm_static_link_runtime_symbols_for_imports(
+                wasm_import_symbols
+            )
+            if runtime_symbols:
+                object_closure["runtime_symbols"] = list(runtime_symbols)
+            required_c_api_symbols = sorted(
+                set(source_required_c_api_symbols)
+                | {
+                    symbol
+                    for symbol in wasm_import_symbols
+                    if is_c_api_symbol(symbol)
+                }
+            )
+            if required_c_api_symbols:
+                object_closure["required_c_api_symbols"] = required_c_api_symbols
+            manifest_payload["object_closure"] = object_closure
         if python_exports:
             manifest_payload["python_exports"] = python_exports
         if callable_exports:
@@ -2045,6 +2300,8 @@ def extension_build(
                 "target_triple": target_triple,
                 "build_target": runtime_target_triple or "native",
                 "platform_tag": platform_tag,
+                "runtime_linkage": runtime_linkage,
+                "artifact_kind": artifact_kind,
                 "deterministic": deterministic,
                 "determinism": determinism_mode,
                 "capabilities": capabilities_list,

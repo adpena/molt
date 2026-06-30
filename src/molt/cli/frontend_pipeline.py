@@ -355,6 +355,7 @@ def _prepare_frontend_lowering_config(
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None,
+    native_python_exports: Collection[str] | None = None,
     pgo_hot_function_names: set[str],
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
@@ -364,8 +365,23 @@ def _prepare_frontend_lowering_config(
     target_triple: str | None,
     frontend_parallel_details: dict[str, Any],
     frontend_phase_timeout: float | None,
+    source_recompiled_external_packages: Collection[str],
 ) -> tuple[_PreparedFrontendLoweringConfig | None, _CliFailure | None]:
     type_facts: TypeFacts | None = None
+    if (
+        type_facts_path is None
+        and type_hint_policy == "check"
+        and source_recompiled_external_packages
+    ):
+        type_hint_policy = "ignore"
+        warning = (
+            "source-recompiled external native packages use package/native "
+            "artifact custody instead of ty-derived type facts; continuing "
+            "with guarded hints."
+        )
+        warnings.append(warning)
+        if not json_output:
+            print(warning, file=sys.stderr)
     if type_facts_path is None and type_hint_policy in {"trust", "check"}:
         type_facts, ty_ok = _typecheck._collect_type_facts_for_build(
             list(module_graph.values()), type_hint_policy, source_path
@@ -414,6 +430,7 @@ def _prepare_frontend_lowering_config(
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
+        native_python_exports=native_python_exports,
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
@@ -868,6 +885,9 @@ def _prepare_frontend_stage_state(
             native_callable_exports=(
                 import_plan.native_artifact_plan.native_callable_exports_by_qualified_name()
             ),
+            native_python_exports=(
+                import_plan.native_artifact_plan.native_python_export_names()
+            ),
             pgo_hot_function_names=pgo_hot_function_names,
             generated_module_source_paths=dict(
                 import_plan.generated_module_source_paths
@@ -879,6 +899,9 @@ def _prepare_frontend_stage_state(
             target_triple=prepared_build_outputs.output_layout.target_triple,
             frontend_parallel_details=frontend_parallel_details,
             frontend_phase_timeout=frontend_phase_timeout,
+            source_recompiled_external_packages=(
+                import_admission_policy.native_artifact_source_packages
+            ),
         )
     )
     if prepared_frontend_lowering_config_error is not None:
@@ -1097,6 +1120,9 @@ def _prepare_frontend_pipeline(
         known_func_kinds=prepared_frontend_analysis.known_func_kinds,
         native_callable_exports=(
             import_plan.native_artifact_plan.native_callable_exports_by_qualified_name()
+        ),
+        native_python_exports=(
+            import_plan.native_artifact_plan.native_python_export_names()
         ),
         module_deps=prepared_frontend_analysis.module_deps,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,

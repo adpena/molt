@@ -19,6 +19,7 @@
 #ifndef MOLT_C_API_PYTHON_H
 #define MOLT_C_API_PYTHON_H
 
+#include <assert.h>
 #include <stdarg.h>
 #include <errno.h>
 #include <limits.h>
@@ -139,6 +140,9 @@ struct _molt_pyobject {
 };
 typedef struct _molt_pyobject PyObject;
 typedef PyObject PyTypeObject;
+typedef struct {
+    PyTypeObject ht_type;
+} PyHeapTypeObject;
 typedef int PyGILState_STATE;
 typedef uint32_t Py_UCS4;
 typedef struct {
@@ -518,17 +522,21 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define PY_MAJOR_VERSION 3
 #define PY_MINOR_VERSION 12
 #define PY_MICRO_VERSION 0
+#define Py_USING_UNICODE 1
 
 #define PyOS_snprintf snprintf
 
 #define PyGILState_LOCKED 0
 #define PyGILState_UNLOCKED 1
+#define NOWAIT_LOCK 0
+#define WAIT_LOCK 1
 
 #define Py_GIL_DISABLED 0
-#define Py_MOD_GIL_NOT_USED 1
-#define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED 0
-#define Py_MOD_MULTIPLE_INTERPRETERS_SUPPORTED 1
-#define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED 2
+#define Py_MOD_GIL_USED ((void *)0)
+#define Py_MOD_GIL_NOT_USED ((void *)1)
+#define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED ((void *)0)
+#define Py_MOD_MULTIPLE_INTERPRETERS_SUPPORTED ((void *)1)
+#define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED ((void *)2)
 #define Py_mod_exec 2
 #define Py_mod_multiple_interpreters 3
 #define Py_mod_gil 4

@@ -6617,12 +6617,40 @@ essential_exports = [
 [runtime_export_policy]
 host_exports = [
   "molt_alloc",
+  "molt_bool_from_i32",
+  "molt_buffer_acquire",
+  "molt_buffer_release",
+  "molt_builtin_class_lookup",
+  "molt_bytearray_as_ptr",
+  "molt_bytearray_from",
   "molt_bytes_as_ptr",
+  "molt_bytes_from",
   "molt_bytes_from_bytes",
+  "molt_c_api_version",
+  "molt_cfunction_create_bytes",
+  "molt_cfunction_create_keywords_bytes",
   "molt_dec_ref_obj",
+  "molt_dict_from_pairs",
+  "molt_dict_getitem_borrowed",
+  "molt_dict_items",
+  "molt_dict_keys",
+  "molt_dict_values",
+  "molt_err_clear",
+  "molt_err_fetch",
+  "molt_err_format",
+  "molt_err_matches",
+  "molt_err_peek",
+  "molt_err_pending",
+  "molt_err_restore",
+  "molt_err_set",
   "molt_exception_kind",
   "molt_exception_last",
   "molt_exception_message",
+  "molt_float_as_f64",
+  "molt_float_from_f64",
+  "molt_gil_acquire",
+  "molt_gil_is_held",
+  "molt_gil_release",
   "molt_gpu_barrier",
   "molt_gpu_block_dim",
   "molt_gpu_block_id",
@@ -6645,17 +6673,74 @@ host_exports = [
   "molt_gpu_tensor_from_buffer",
   "molt_gpu_tensor_from_parts",
   "molt_gpu_thread_id",
+  "molt_handle_decref",
+  "molt_handle_incref",
   "molt_handle_resolve",
   "molt_header_size",
+  "molt_init",
+  "molt_int_as_i64",
+  "molt_int_from_i64",
+  "molt_iter_next",
+  "molt_list_append",
+  "molt_list_from_array",
+  "molt_mapping_getitem",
+  "molt_mapping_keys",
+  "molt_mapping_length",
+  "molt_mapping_setitem",
+  "molt_module_add_cfunction_bytes",
+  "molt_module_add_cfunction_keywords_bytes",
+  "molt_module_add_int_constant",
+  "molt_module_add_object",
+  "molt_module_add_object_bytes",
+  "molt_module_add_string_constant",
+  "molt_module_add_type",
+  "molt_module_capi_get_def",
+  "molt_module_capi_get_state",
+  "molt_module_capi_register",
+  "molt_module_create",
+  "molt_module_get_dict",
+  "molt_module_get_object",
+  "molt_module_get_object_bytes",
+  "molt_module_import",
+  "molt_module_state_add",
+  "molt_module_state_find",
+  "molt_module_state_remove",
+  "molt_none",
+  "molt_number_add",
+  "molt_number_float",
+  "molt_number_floordiv",
+  "molt_number_long",
+  "molt_number_mul",
+  "molt_number_sub",
+  "molt_number_truediv",
+  "molt_object_call",
+  "molt_object_contains",
+  "molt_object_delattr",
+  "molt_object_equal",
+  "molt_object_getattr",
+  "molt_object_getattr_bytes",
+  "molt_object_hasattr",
+  "molt_object_not_equal",
   "molt_object_repr",
+  "molt_object_setattr",
+  "molt_object_setattr_bytes",
+  "molt_object_str",
+  "molt_object_truthy",
   "molt_profile_dump",
   "molt_runtime_shutdown",
   "molt_scratch_alloc",
   "molt_scratch_free",
+  "molt_sequence_getitem",
+  "molt_sequence_length",
+  "molt_sequence_setitem",
   "molt_set_wasm_table_base",
+  "molt_shutdown",
   "molt_string_as_ptr",
+  "molt_string_from",
   "molt_string_from_bytes",
   "molt_traceback_format_exc",
+  "molt_tuple_from_array",
+  "molt_type_ready",
   "molt_type_tag_of_bits",
 ]
 
@@ -6760,144 +6845,871 @@ exports = ["molt_tuple_getitem_borrowed"]
 
 [[link_allowed_import]]
 name = "args_sizes_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "args_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "environ_sizes_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "environ_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "random_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "clock_time_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "proc_exit"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "sched_yield"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_read"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_write"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_seek"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_tell"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_close"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_prestat_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_prestat_dir_name"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_open"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_rename"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_readlink"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_unlink_file"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_create_directory"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_remove_directory"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "path_filestat_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_filestat_get"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_filestat_set_size"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "fd_readdir"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "poll_oneoff"
+primitive_class = "wasi_link_import"
 
 [[link_allowed_import]]
 name = "__indirect_function_table"
+primitive_class = "wasm_toolchain_link_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect0"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect1"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect2"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect3"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect4"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect5"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect6"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect7"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect8"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect9"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect10"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect11"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect12"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_call_indirect13"
+primitive_class = "molt_indirect_call_import"
 
 [[link_allowed_import]]
 name = "molt_cbor_parse_scalar"
+primitive_class = "molt_runtime_host_import"
 
 [[link_allowed_import]]
 name = "molt_cbor_parse_scalar_obj"
+primitive_class = "molt_runtime_host_import"
 
 [[link_allowed_import]]
 name = "molt_deflate_raw"
+primitive_class = "molt_runtime_host_import"
 
 [[link_allowed_import]]
 name = "molt_inflate_raw"
+primitive_class = "molt_runtime_host_import"
 
 [[link_allowed_import]]
 name = "molt_msgpack_parse_scalar"
+primitive_class = "molt_runtime_host_import"
 
 [[link_allowed_import]]
 name = "molt_msgpack_parse_scalar_obj"
+primitive_class = "molt_runtime_host_import"
+
+# Extra unresolved imports accepted only inside source-recompiled external
+# package artifact custody. These do not widen the app/runtime wasm-ld
+# allow-undefined file.
+
+[[external_native_link_import]]
+name = "__memory_base"
+primitive_class = "wasm_toolchain_link_import"
+
+[[external_native_link_import]]
+name = "__stack_pointer"
+primitive_class = "wasm_toolchain_link_import"
+
+[[external_native_link_import]]
+name = "__table_base"
+primitive_class = "wasm_toolchain_link_import"
+
+[[external_native_link_import]]
+name = "__tls_base"
+primitive_class = "wasm_toolchain_link_import"
+
+[[external_native_link_import]]
+name = "__cpp_exception"
+primitive_class = "wasm_toolchain_link_import"
+
+[[external_native_link_import]]
+name = "__trunctfdf2"
+primitive_class = "wasm_compiler_rt_link_import"
+
+[[external_native_link_import]]
+name = "__assert_fail"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "__cxa_atexit"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "abort"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "acos"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "acosf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "acosh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "acoshf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "acoshl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "acosl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "aligned_alloc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "asin"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "asinf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "asinh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "asinhf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "asinhl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "asinl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atan"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atan2"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atan2f"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atan2l"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atanf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atanh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atanhf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atanhl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "atanl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cabs"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cabsf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cabsl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "calloc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "carg"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cargf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cargl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cbrt"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cbrtf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cbrtl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ccos"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ccosf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ccosh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ccoshf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ccoshl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ccosl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cexp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cexpf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cexpl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cos"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cosh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "coshf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "coshl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cpow"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cpowf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "cpowl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csin"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csinf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csinh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csinhf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csinhl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csinl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csqrt"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csqrtf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "csqrtl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ctan"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ctanf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ctanh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ctanhf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ctanhl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ctanl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "exp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "expm1"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "expm1f"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "expm1l"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fabs"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fclose"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fdopen"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "feraiseexcept"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fetestexcept"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fflush"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fgetc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "floor"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fprintf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fputc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fread"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "free"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "freelocale"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "frexp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "frexpf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "frexpl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fscanf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fseeko"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ftello"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "fwrite"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "getc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "getenv"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "hypot"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "hypotf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "hypotl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "isalpha"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ldexp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ldexpf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ldexpl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "localeconv"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "localtime_r"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log1p"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log1pf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "log1pl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "lseek"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "malloc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "memchr"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "memcmp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "memcpy"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "memmove"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "memset"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "modf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "modff"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "modfl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "newlocale"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "nextafter"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "nextafterf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "nextafterl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "pow"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "powf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "powl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "printf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "putchar"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "puts"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "qsort"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "realloc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "rint"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "rintf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "rintl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "sin"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "sinh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "sinhf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "sinhl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "snprintf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "sqrt"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "stdout"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strchr"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strcmp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strcpy"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strcspn"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strerror"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strlen"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strncat"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strncmp"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strncpy"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strpbrk"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strrchr"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strtol"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strtold_l"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strtoll"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "strtoull"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "tan"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "tanh"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "tanhf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "tanhl"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "time"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "tolower"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "ungetc"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "vfprintf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "vsnprintf"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "wcslen"
+primitive_class = "wasm_libc_link_import"
+
+[[external_native_link_import]]
+name = "wmemchr"
+primitive_class = "wasm_libc_link_import"
 
 # Host import classification for tools/wasm_strip_unused.py.
 

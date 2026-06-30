@@ -48,11 +48,19 @@ available-feature authority the build uses to select the staticlib) differs.
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Iterable, Mapping, Sequence
 
 from molt._intrinsic_symbols import INTRINSIC_SYMBOL_NAMES, intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+from molt.cli import function_references as _function_references
+
+_FUNCTION_REFERENCE_OP_KINDS = _function_references.FUNCTION_REFERENCE_OP_KINDS
+_POLL_COMPANION_OP_KINDS = _function_references.POLL_COMPANION_OP_KINDS
+_PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES = (
+    _function_references.PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
+)
+_PROTECTED_RUNTIME_ENTRYPOINTS = _function_references.PROTECTED_RUNTIME_ENTRYPOINTS
+reachable_function_names = _function_references.reachable_function_names
 
 _RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
     INTRINSIC_SYMBOL_NAMES.values()
@@ -71,59 +79,6 @@ _RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
 # undefined-symbol link error slip past the compile-time refusal. The agreement
 # is pinned by ``test_required_features_reachability.py`` against the Rust source.
 
-#: Op kinds whose ``s_value`` names a *function this op keeps reachable*. Verbatim
-#: from ``dead_functions.rs`` (the ``match op.kind`` arms that insert into the
-#: per-function reference set), including the ``alloc_task``/``generator_create``/
-#: ``coro_create`` companion-``_poll`` derivation handled in
-#: :func:`_function_references`.
-_FUNCTION_REFERENCE_OP_KINDS: frozenset[str] = frozenset(
-    {
-        "call",
-        "call_internal",
-        "func_new",
-        "func_new_closure",
-        "func_new_builtin",
-        "code_new",
-        "call_guarded",
-        "call_indirect",
-        "alloc_task",
-        "generator_create",
-        "coro_create",
-        "fn_ptr_code_set",
-        "asyncgen_locals_register",
-        "gen_locals_register",
-        "task_new",
-        "generator_send",
-        "spawn",
-        "call_func",
-        "call_method",
-        "import_from",
-        "import_name",
-        "class_def",
-        "decorator",
-        "super_call",
-        "yield_from",
-        "await",
-    }
-)
-
-#: Op kinds that derive a companion ``{base}_poll`` reference (see
-#: ``dead_functions.rs`` ``alloc_task``/``generator_create``/``coro_create`` arm).
-_POLL_COMPANION_OP_KINDS: frozenset[str] = frozenset(
-    {"alloc_task", "generator_create", "coro_create"}
-)
-
-#: Runtime entrypoints always retained as reachability roots, verbatim from
-#: ``runtime_roots.rs`` ``is_protected_runtime_entrypoint``. ``molt_main`` is also
-#: the program entry (the first BFS seed); the prefixes cover the isolate import
-#: dispatcher (``molt_isolate_import`` / ``molt_isolate_bootstrap``) which
-#: statically references every imported module's ``molt_init_*`` body, so a
-#: genuinely-loaded module's reachable intrinsics are never under-counted.
-_PROTECTED_RUNTIME_ENTRYPOINTS: frozenset[str] = frozenset(
-    {"molt_main", "molt_host_init", "_start"}
-)
-_PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES: tuple[str, ...] = ("molt_isolate_",)
-
 #: Op kinds whose ``s_value`` directly references a *runtime intrinsic symbol* and
 #: thus makes it a reached-intrinsic candidate. ``builtin_func`` is the direct
 #: link reference (``func_addr`` / ``Linkage::Import`` -> ``.refptr.molt_*``);
@@ -131,98 +86,6 @@ _PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES: tuple[str, ...] = ("molt_isolate_",)
 #: ``compute_intrinsic_manifest`` candidate shape). Both are validated against the
 #: feature-gate authority, so non-intrinsic strings/builtins contribute nothing.
 _INTRINSIC_SYMBOL_OP_KINDS: frozenset[str] = frozenset({"builtin_func", "const_str"})
-
-
-def _is_protected_runtime_entrypoint(name: str) -> bool:
-    return name in _PROTECTED_RUNTIME_ENTRYPOINTS or any(
-        name.startswith(prefix) for prefix in _PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
-    )
-
-
-def _function_references(
-    func: Mapping[str, object], defined: frozenset[str]
-) -> set[str]:
-    """Names of defined functions referenced by *func* (a reachability edge).
-
-    Mirror of the per-function reference construction in
-    ``dead_functions.rs``: only ``s_value``s that name a *defined* function are
-    edges, plus the derived ``{base}_poll`` companion for task/generator/coro
-    creation ops.
-    """
-    refs: set[str] = set()
-    ops = func.get("ops")
-    if not isinstance(ops, list):
-        return refs
-    for op in ops:
-        if not isinstance(op, Mapping):
-            continue
-        kind = op.get("kind")
-        if kind not in _FUNCTION_REFERENCE_OP_KINDS:
-            continue
-        name = op.get("s_value")
-        if not isinstance(name, str):
-            continue
-        if name in defined:
-            refs.add(name)
-        if kind in _POLL_COMPANION_OP_KINDS and not name.endswith("_poll"):
-            poll = f"{name}_poll"
-            if poll in defined:
-                refs.add(poll)
-    return refs
-
-
-def reachable_function_names(
-    functions: Sequence[Mapping[str, object]],
-    *,
-    extra_roots: Iterable[str] = (),
-) -> frozenset[str]:
-    """Set of function names reachable from the program entry + runtime roots.
-
-    Faithful Python re-computation of ``molt-tir`` ``eliminate_dead_functions``'s
-    BFS, used here BEFORE codegen so the requirement decision sees exactly the
-    functions that survive into the binary. ``functions`` is the merged backend
-    SimpleIR function list (the same list the backend dead-strips). ``extra_roots``
-    lets callers seed additional entrypoints when they are scanning a function
-    list that has not yet had the synthetic ``molt_main``/isolate entry appended
-    (the protected-prefix scan already covers ``molt_isolate_*``).
-    """
-    if not functions:
-        return frozenset()
-    by_name: dict[str, Mapping[str, object]] = {}
-    for func in functions:
-        name = func.get("name")
-        if isinstance(name, str):
-            by_name[name] = func
-    defined = frozenset(by_name)
-
-    reachable: set[str] = set()
-    queue: deque[str] = deque()
-
-    def seed(name: str) -> None:
-        if name in by_name and name not in reachable:
-            reachable.add(name)
-            queue.append(name)
-
-    # (1) The first function is the program/module entry (matches the Rust seed
-    # of ``ir.functions[0]``).
-    first_name = functions[0].get("name")
-    if isinstance(first_name, str):
-        seed(first_name)
-    # (2) Protected runtime entrypoints (molt_main / molt_host_init / _start /
-    # molt_isolate_*) and any caller-supplied roots.
-    for name in by_name:
-        if _is_protected_runtime_entrypoint(name):
-            seed(name)
-    for name in extra_roots:
-        seed(name)
-
-    while queue:
-        current = queue.popleft()
-        for target in _function_references(by_name[current], defined):
-            if target not in reachable:
-                reachable.add(target)
-                queue.append(target)
-    return frozenset(reachable)
 
 
 def reached_intrinsic_symbols_by_feature(

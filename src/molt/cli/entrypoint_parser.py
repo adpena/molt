@@ -229,12 +229,13 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--wasm-profile",
-        choices=["full", "pure"],
-        default="full",
+        choices=["auto", "full", "pure"],
+        default="auto",
         help=(
-            "WASM import profile: full (default) registers all host imports; "
-            "pure plans imports from observed IR and fails closed for process/IO/time "
-            "families in minimal pure-computation modules."
+            "WASM import profile: auto (default) plans imports from observed IR; "
+            "full registers all host imports; pure uses the same planner and "
+            "fails closed for process/IO/time families in minimal pure-computation "
+            "modules."
         ),
     )
     build_parser.add_argument(
@@ -447,7 +448,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_build_parser.add_argument(
         "--target",
-        help="Target triple for extension build (default: native host target).",
+        help=(
+            "Extension target: native, wasm/wasm32 for static-link wasm, "
+            "or a native target triple (default: native host target)."
+        ),
     )
     extension_build_parser.add_argument(
         "--capabilities",
