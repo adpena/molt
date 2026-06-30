@@ -134,7 +134,7 @@ jobs:
       - name: Compile hello.py to WASM
         timeout-minutes: 16
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout 240 -- \
             python3 tools/venv_exec.py python3 -m molt.cli build \
             examples/hello.py --build-profile dev --target wasm --output /tmp/test_hello.wasm
         env:
@@ -152,7 +152,9 @@ jobs:
 
       - name: Run hello.wasm with molt-wasm-host
         timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout 180 -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm
+        env:
+          MOLT_WASM_HOST_DEBUG: "1"
 
       # ── WASM target: comprehension_fail.py (list comprehension regression gate) ──
       - name: Compile comprehension_fail.py to WASM
