@@ -794,6 +794,14 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     if module_scope and alias.asname:
                         add(alias.asname)
 
+            def visit_If(self, node: ast.If) -> None:
+                static_branch = static_if_live_branch(node)
+                if static_branch is not None:
+                    for stmt in static_branch:
+                        self.visit(stmt)
+                    return None
+                self.generic_visit(node)
+
             def _visit_function_signature(
                 self, node: ast.FunctionDef | ast.AsyncFunctionDef
             ) -> None:
