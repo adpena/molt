@@ -193,6 +193,7 @@ def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
 def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
+    assert "runtime_feature" not in gen.MANIFEST.read_text(encoding="utf-8")
     imports = {entry["name"]: entry for entry in data["import"]}
 
     assert imports["importlib_import_transaction"]["type"] == 12
@@ -287,6 +288,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_thread_current_native_id"
     )
     assert imports["thread_current_native_id"]["callable_arity"] == 0
+    assert imports["stream_drop"].get("runtime_feature") is None
+    assert imports["asyncio_future_drop"]["runtime_feature"] == "stdlib_asyncio"
+    assert imports["pipe_transport_drop"]["runtime_feature"] == "stdlib_asyncio"
+    assert imports["email_message_drop"]["runtime_feature"] == "stdlib_email"
+    assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
     dual_use_reserved_imports = {"object_new_bound"}
     for reserved in data["reserved_runtime_callable"]:
         if reserved["import_name"] in dual_use_reserved_imports:
@@ -327,6 +333,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
+    assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
+    assert "VOID_CALLABLE_TARGETS" not in rendered_runtime_rs
+    assert "crate::intrinsics::resolve_symbol" not in rendered_runtime_rs
     void_runtime_names = {
         entry["runtime_name"]
         for entry in data["import"]
@@ -334,7 +343,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     }
     assert "molt_asyncio_future_drop" in void_runtime_names
     for runtime_name in sorted(void_runtime_names):
-        assert f'"{runtime_name}",' in rendered_runtime_rs
+        assert f"fn_addr!(crate::{runtime_name})" in rendered_runtime_rs
+    assert '#[cfg(feature = "stdlib_asyncio")]' in rendered_runtime_rs
+    assert '#[cfg(feature = "stdlib_email")]' in rendered_runtime_rs
+    assert '#[cfg(feature = "stdlib_xml")]' in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert (
