@@ -6,8 +6,7 @@
 //! dynamic behaviors fail closed with CPython-style error/null returns.
 
 use crate::abi_types::{
-    Py_buffer, Py_hash_t, Py_ssize_t, PyComplex_Type, PyModuleDef, PyObject, PyTypeObject,
-    PyVarObject,
+    Py_hash_t, Py_ssize_t, PyComplex_Type, PyModuleDef, PyObject, PyTypeObject, PyVarObject,
 };
 use std::ffi::{CStr, c_char, c_double, c_int, c_void};
 use std::ptr;
@@ -425,23 +424,6 @@ pub unsafe extern "C" fn PyMem_RawRealloc(ptr_: *mut c_void, size: usize) -> *mu
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_RawFree(ptr_: *mut c_void) {
     unsafe { libc::free(ptr_) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyMemoryView_Check(_op: *mut PyObject) -> c_int {
-    0
-}
-
-unsupported_null!(PyMemoryView_FromObject(_op: *mut PyObject));
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyMemoryView_GET_BASE(_op: *mut PyObject) -> *mut PyObject {
-    ptr::null_mut()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyMemoryView_GET_BUFFER(_op: *mut PyObject) -> *mut Py_buffer {
-    ptr::null_mut()
 }
 
 unsupported_null!(PyMethod_New(

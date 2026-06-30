@@ -18,7 +18,8 @@
 //! - `abstract_number`    — PyNumber_* arithmetic/bitwise/conversion
 //! - `abstract_sequence`  — PySequence_* length, getitem, contains, concat
 //! - `abstract_mapping`   — PyMapping_* length, keys, values, items
-//! - `buffer`             — PyObject_GetBuffer, PyBuffer_Release (stubs)
+//! - `buffer`             — PyObject_GetBuffer, PyBuffer_Release
+//! - `memory`             — PyMemoryView_* backed by the buffer authority
 //! - `capsule`            — PyCapsule_New, PyCapsule_GetPointer
 
 pub mod abstract_mapping;
@@ -28,6 +29,7 @@ pub mod buffer;
 pub mod capsule;
 pub mod errors;
 pub mod mapping;
+pub mod memory;
 pub mod modules;
 pub mod numbers;
 pub mod object;
