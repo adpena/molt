@@ -1,12 +1,12 @@
-// Many Py* functions are kept for tests but their #[no_mangle] export lives in
-// molt-lang-cpython-abi.  Suppress the dead-code warnings for those stubs.
+// Py* helpers remain Rust-callable here for runtime tests, but the C linker
+// symbols are owned by the molt-cpython-abi crate.
 #![allow(dead_code, non_snake_case, unused_imports)]
 
 #[cfg(not(target_arch = "wasm32"))]
 mod cpython_compat;
 mod molt_api;
 
-// Re-export all public C-API symbols so external references remain unchanged.
+// Re-export Rust-callable helpers inside the runtime crate.
 #[cfg(not(target_arch = "wasm32"))]
 pub use cpython_compat::*;
 pub use molt_api::*;
