@@ -103,7 +103,7 @@ def test_extract_wasm_table_base_ignores_runtime_prefix_when_app_segment_exists(
     assert _extract_table_base(wasm_path) == 4096
 
 
-def test_direct_runner_always_initializes_table_before_export_refs() -> None:
+def test_direct_runner_delegates_app_table_init_to_main_wrapper() -> None:
     runner = (ROOT / "wasm" / "run_wasm.js").read_text(encoding="utf-8")
 
     assert "hasExportedTableRefs(outputInstance)" not in runner
@@ -112,8 +112,12 @@ def test_direct_runner_always_initializes_table_before_export_refs() -> None:
         not in runner
     )
     assert "MOLT_WASM_SKIP_TABLE_INIT" not in runner
-    assert "molt_table_init();" in runner
-    assert "installTableRefs(outputInstance, table, 'output');" in runner
-    assert runner.index("molt_table_init();") < runner.index(
+    assert "[molt wasm] direct: call molt_table_init" not in runner
+    assert (
+        "App-owned slots are installed by the exported molt_main wrapper"
+        in runner
+    )
+    assert "if (installTableRefsEnabled) {" in runner
+    assert runner.index("if (installTableRefsEnabled) {") < runner.index(
         "installTableRefs(outputInstance, table, 'output');"
     )

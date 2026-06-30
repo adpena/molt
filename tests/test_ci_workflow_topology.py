@@ -598,6 +598,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in wasm_text
     assert 'MOLT_WASM_TEST_TIMEOUT_SEC: "600"' in wasm_text
+    assert 'MOLT_CARGO_TIMEOUT: "1200"' in wasm_text
     assert 'MOLT_WASM_TEST_KEEPALIVE_SEC: "20"' in wasm_text
     assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
     assert wasm_text.count('MOLT_BACKEND_DAEMON: "0"') == 5
@@ -611,7 +612,13 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "MOLT_BACKEND_DAEMON" not in parity_step
     assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in parity_step
     assert (
-        "cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend"
+        'python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \\\n'
+        "            cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend"
+        in wasm_text
+    )
+    assert (
+        'python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \\\n'
+        "            cargo build --profile dev-fast -p molt-wasm-host"
         in wasm_text
     )
     assert (
@@ -661,4 +668,10 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
             if line.strip().startswith("timeout-minutes:")
         )
         timeout_minutes = int(timeout_line.split(":", 1)[1].strip())
-        assert 1 <= timeout_minutes <= 20, block
+        step_name = block.splitlines()[0].removeprefix("      - name: ")
+        max_timeout = (
+            25
+            if step_name in {"Build Molt WASM backend", "Build Molt WASM host"}
+            else 20
+        )
+        assert 1 <= timeout_minutes <= max_timeout, block

@@ -1,10 +1,13 @@
 use super::callbacks::{
-    after_callback_name_from_token, filehandler_command_name, filehandler_event_name,
-    filehandler_poll_events, filehandler_revents_to_mask, lookup_after_command_for_token,
+    after_callback_name_from_token, filehandler_command_name, lookup_after_command_for_token,
     lookup_after_kind_for_token, next_after_token, register_after_command_token,
     remove_after_events_for_tokens, schedule_after_timer_token, sort_after_info_tokens,
     tokens_for_after_command, unregister_after_command_token,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::callbacks::filehandler_event_name;
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
+use super::callbacks::{filehandler_poll_events, filehandler_revents_to_mask};
 use super::commands::{tkwait_visibility_reached_in_app, tkwait_window_exists};
 use super::dialogs::{
     apply_default_extension, clamp_dialog_selection, commondialog_allowed_options,
@@ -25,11 +28,13 @@ use super::parsing::{
 };
 use super::state::{
     TK_FILE_EVENT_EXCEPTION, TK_FILE_EVENT_READABLE, TK_FILE_EVENT_WRITABLE, TkAppState, TkEvent,
-    TkExprLiteral, TkFileHandlerRegistration, TkGateState, TkOperation, TkRegistry,
-    TkTraceRegistration, TkTreeviewItem, TkTreeviewState, TkWidgetState, TkWmState,
+    TkExprLiteral, TkGateState, TkOperation, TkRegistry, TkTraceRegistration, TkTreeviewItem,
+    TkTreeviewState, TkWidgetState, TkWmState,
     format_permission_error_message, format_tk_unavailable_message,
     has_platform_preflight_blockers, wm_state_for_path, wm_state_for_path_mut,
 };
+#[cfg(all(unix, not(target_arch = "wasm32"), not(feature = "native-tcl")))]
+use super::state::TkFileHandlerRegistration;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::tcl::tcl_find_executable_arg;
 use super::trace_commands::{

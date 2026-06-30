@@ -29,8 +29,8 @@ def _load_gen_wasm_abi():
     return module
 
 
-def _raw_manifest(gen) -> dict:
-    return tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+def _raw_manifest() -> dict:
+    return tomllib.loads(manifest.MANIFEST.read_text(encoding="utf-8"))
 
 
 def _rendered_rs(gen, data) -> str:
@@ -70,7 +70,7 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     data = gen.load_manifest()
     static_types = data["static_type"]
 
-    assert len(static_types) == 51
+    assert len(static_types) == 52
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
     assert static_types[31] == {"params": ["i64", "i64"], "results": ["i64", "i64"]}
@@ -83,9 +83,9 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "STATIC_FUNC_TYPES" in rendered_rs
-    assert "STATIC_TYPE_COUNT: u32 = 51" in rendered_rs
+    assert "STATIC_TYPE_COUNT: u32 = 52" in rendered_rs
     assert "WASM_STATIC_TYPES" in rendered_py
-    assert "WASM_STATIC_TYPE_COUNT: int = 51" in rendered_py
+    assert "WASM_STATIC_TYPE_COUNT: int = 52" in rendered_py
 
     wasm_abi = (ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs").read_text(
         encoding="utf-8"
@@ -372,7 +372,7 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
     manifest.validate_loaded_manifest(copy.deepcopy(loaded))
     loaded_imports = {entry["name"]: entry for entry in loaded["import"]}
 
-    raw = _raw_manifest(gen)
+    raw = _raw_manifest()
     for entry in raw["import"]:
         if entry["name"] == "hash_builtin":
             entry["runtime_feature"] = loaded_imports["hash_builtin"]["runtime_feature"]
@@ -467,7 +467,7 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
         "molt_json_parse_scalar_obj"
     )
 
-    broken = tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+    broken = _raw_manifest()
     broken["non_runtime_callable_intrinsic"] = []
     with pytest.raises(
         manifest.WasmAbiManifestError,

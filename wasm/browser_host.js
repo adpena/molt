@@ -4055,9 +4055,6 @@ export const loadMoltWasm = async (options = {}) => {
     }
     const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
     ensureTableCapacityForExportedRefs(instance, linkedTable);
-    if (typeof instance.exports.molt_table_init === 'function') {
-      instance.exports.molt_table_init();
-    }
     const memoryExport =
       instance.exports.molt_memory || instance.exports.memory || env.memory || null;
     state.runtimeInstance = instance;
@@ -4183,23 +4180,19 @@ export const loadMoltWasm = async (options = {}) => {
   installTableRefs(runtimeInstance, table);
   state.runtimeInstance = runtimeInstance;
   ensureTableCapacityForExportedRefs(outputInstance, table);
-  if (typeof outputModule.instance.exports.molt_table_init === 'function') {
-    outputModule.instance.exports.molt_table_init();
-  }
-  installTableRefs(outputInstance, table);
-    return {
-      instance: outputModule.instance,
-      memory,
-      table,
-      linked: false,
-      __debugState: state,
-      invokeExport: makeExportInvoker(outputModule.instance),
-      run: () => {
-        ensureSplitRunBootstrap(outputModule.instance);
-        if (typeof outputModule.instance.exports.molt_main !== 'function') {
-          throw new Error('molt_main export missing');
-        }
-        outputModule.instance.exports.molt_main();
+  return {
+    instance: outputModule.instance,
+    memory,
+    table,
+    linked: false,
+    __debugState: state,
+    invokeExport: makeExportInvoker(outputModule.instance),
+    run: () => {
+      ensureSplitRunBootstrap(outputModule.instance);
+      if (typeof outputModule.instance.exports.molt_main !== 'function') {
+        throw new Error('molt_main export missing');
+      }
+      outputModule.instance.exports.molt_main();
       state.stdio?.flushAll();
       const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
       if (pendingException) {

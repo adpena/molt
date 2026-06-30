@@ -3065,7 +3065,7 @@ mod tests {
             c.emin <= adjusted(&d),
             "1e-100 must be normal at default Emin"
         );
-        assert!(!(adjusted(&d) < c.emin), "1e-100 must NOT be subnormal");
+        assert!(adjusted(&d) >= c.emin, "1e-100 must NOT be subnormal");
     }
 
     #[test]
@@ -3074,7 +3074,7 @@ mod tests {
         let c = ctx(28, -50, 999_999, 0, MPD_ROUND_HALF_EVEN);
         let d = fin(false, "1", -100);
         assert!(adjusted(&d) < c.emin);
-        assert!(!(c.emin <= adjusted(&d)));
+        assert!(c.emin > adjusted(&d));
     }
 
     #[test]

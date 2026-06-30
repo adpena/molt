@@ -32,6 +32,8 @@ impl WasmBackend {
         self.funcs.function(type_idx);
         if reloc_enabled && func_ir.name == "molt_main" {
             self.molt_main_index = Some(func_index);
+        } else if reloc_enabled && func_ir.name == "molt_host_init" {
+            self.molt_host_init_index = Some(func_index);
         } else {
             self.exports
                 .export(&func_ir.name, ExportKind::Func, self.func_count);

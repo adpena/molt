@@ -349,12 +349,7 @@ export default {
             state.memory = instance.exports.memory || null;
             state.table = instance.exports.__indirect_function_table || null;
 
-            // Initialize function table if the module exports the helper
-            if (typeof instance.exports.molt_table_init === 'function') {
-                instance.exports.molt_table_init();
-            }
-
-            // Run entry point
+            // Run entry point; Molt's exported molt_main wrapper owns table init.
             if (typeof instance.exports.molt_main === 'function') {
                 instance.exports.molt_main();
             } else if (typeof instance.exports._start === 'function') {
