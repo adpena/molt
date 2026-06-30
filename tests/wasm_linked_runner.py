@@ -7,17 +7,12 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 from tools import harness_memory_guard
 
 _MIN_NODE_MAJOR = 18
-_NODE_CHILD_RLIMIT_ENV_KEYS = (
-    "MOLT_WASM_TEST_CHILD_RLIMIT_GB",
-    "MOLT_WASM_TEST_MAX_CHILD_RLIMIT_GB",
-    "MOLT_CHILD_RLIMIT_GB",
-    "MOLT_MAX_CHILD_RLIMIT_GB",
-)
 _NODE_BIN_CACHE: str | None = None
 
 
@@ -109,7 +104,7 @@ def _run_wasm_test_process(
     text: bool = True,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    result = harness_memory_guard.guarded_completed_process(
+    raw_result = harness_memory_guard.guarded_completed_process(
         list(args),
         prefix="MOLT_WASM_TEST",
         cwd=cwd,
@@ -117,6 +112,12 @@ def _run_wasm_test_process(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
+    )
+    result = subprocess.CompletedProcess[str](
+        list(args),
+        raw_result.returncode,
+        stdout=cast(str, raw_result.stdout),
+        stderr=cast(str, raw_result.stderr),
     )
     if (
         timeout is not None
@@ -165,21 +166,6 @@ def _node_major_for_binary(path: str) -> int | None:
     return _parse_node_major(res.stdout)
 
 
-def _install_node_wasm_child_rlimit_policy(
-    env: dict[str, str],
-    env_overrides: Mapping[str, str] | None,
-) -> None:
-    if env_overrides and any(
-        key in env_overrides for key in _NODE_CHILD_RLIMIT_ENV_KEYS
-    ):
-        return
-    # V8 reserves large virtual address ranges while instantiating linked WASM.
-    # RSS/tree/global guard polling remains authoritative for real memory
-    # pressure; a direct RLIMIT_AS clamp can make Node SIGSEGV before any RSS
-    # evidence exists, especially on hosted Linux runners.
-    env["MOLT_WASM_TEST_CHILD_RLIMIT_GB"] = "0"
-
-
 def _select_node_binary() -> str | None:
     global _NODE_BIN_CACHE
     if _NODE_BIN_CACHE is not None:
@@ -220,6 +206,43 @@ def _select_node_binary() -> str | None:
     return best_path
 
 
+def _molt_wasm_host_exe_name() -> str:
+    return "molt-wasm-host.exe" if os.name == "nt" else "molt-wasm-host"
+
+
+def _molt_wasm_host_candidate_dirs(root: Path) -> list[Path]:
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for env_name in ("MOLT_WASM_TEST_CARGO_TARGET_DIR", "CARGO_TARGET_DIR"):
+        configured = os.environ.get(env_name, "").strip()
+        if not configured:
+            continue
+        path = Path(configured).expanduser()
+        key = os.path.normcase(os.fspath(path.resolve(strict=False)))
+        if key not in seen:
+            seen.add(key)
+            dirs.append(path)
+    repo_target = root / "target"
+    key = os.path.normcase(os.fspath(repo_target.resolve(strict=False)))
+    if key not in seen:
+        dirs.append(repo_target)
+    return dirs
+
+
+def _resolve_molt_wasm_host_binary(root: Path) -> str | None:
+    requested = os.environ.get("MOLT_WASM_HOST_BIN", "").strip()
+    if requested:
+        path = Path(requested).expanduser()
+        return os.fspath(path) if path.exists() else None
+
+    exe_name = _molt_wasm_host_exe_name()
+    for target_dir in _molt_wasm_host_candidate_dirs(root):
+        candidate = target_dir / "dev-fast" / exe_name
+        if candidate.exists():
+            return os.fspath(candidate)
+    return None
+
+
 def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Path:
     override = os.environ.get("MOLT_WASM_TEST_CARGO_TARGET_DIR", "").strip()
     if override:
@@ -238,16 +261,22 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Pat
     return target
 
 
-def require_wasm_toolchain() -> None:
-    node_bin = _select_node_binary()
-    if node_bin is None:
-        pytest.skip(
-            "Node >= 18 is required for wasm parity test (or set MOLT_NODE_BIN)."
-        )
+def require_wasm_build_toolchain() -> None:
     if shutil.which("cargo") is None:
         pytest.skip("cargo is required for wasm parity test")
     if shutil.which("wasm-ld") is None:
         pytest.skip("wasm-ld is required for linked wasm parity test")
+
+
+def require_wasm_toolchain() -> None:
+    root = Path(__file__).resolve().parents[1]
+    host_bin = _resolve_molt_wasm_host_binary(root)
+    if host_bin is None:
+        pytest.skip(
+            "prebuilt molt-wasm-host dev-fast binary is required for linked wasm "
+            "parity test (set MOLT_WASM_HOST_BIN or CARGO_TARGET_DIR)."
+        )
+    require_wasm_build_toolchain()
 
 
 def build_wasm_linked(
@@ -327,6 +356,12 @@ def build_wasm_linked(
 def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
+    host_bin = _resolve_molt_wasm_host_binary(root)
+    if host_bin is None:
+        raise AssertionError(
+            "prebuilt molt-wasm-host dev-fast binary is required for linked wasm "
+            "execution (set MOLT_WASM_HOST_BIN or CARGO_TARGET_DIR)."
+        )
     env = os.environ.copy()
     for key in (
         "MOLT_WASM_DIRECT_LINK",
@@ -336,27 +371,13 @@ def run_wasm_linked(
         "MOLT_RUNTIME_WASM",
     ):
         env.pop(key, None)
-    env.setdefault("NODE_NO_WARNINGS", "1")
     if env_overrides:
         env.update(env_overrides)
-    _install_node_wasm_child_rlimit_policy(env, env_overrides)
-    node_bin = _select_node_binary()
-    if node_bin is None:
-        raise AssertionError("Node >= 18 is required for wasm execution.")
-    runner = root / "wasm" / "run_wasm.js"
-    node_args = [
-        node_bin,
-        "--no-warnings",
-        "--no-wasm-tier-up",
-        "--no-wasm-dynamic-tiering",
-        "--wasm-num-compilation-tasks=1",
-        str(runner),
-        str(wasm_path),
-    ]
+    host_args = [host_bin, str(wasm_path)]
     run_timeout = _read_timeout_seconds("MOLT_WASM_TEST_RUN_TIMEOUT_SEC", 120.0)
     try:
         return _run_wasm_test_process(
-            node_args,
+            host_args,
             cwd=root,
             env=env,
             timeout=run_timeout,

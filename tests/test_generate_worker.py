@@ -356,13 +356,13 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert 'if (typeof tableFn === "function") {' in content
     assert (
-        "const signature = callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
+        "const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || callIndirectObjectSignature(indirectName) || null;"
         in content
     )
     assert "return callWithSignature(tableFn, signature, args);" in content
     assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
     assert (
-        "return callWithSignature(rtDirectFn, callIndirectObjectSignature(indirectName) || runtimeTableRefSignatures[directName], args);"
+        "return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || callIndirectObjectSignature(indirectName), args);"
         in content
     )
     assert content.index(

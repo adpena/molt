@@ -1298,7 +1298,7 @@ export default {
         const tableFn = sharedTable.get(dispatchIdx);
         if (typeof tableFn === "function") {
           try {
-            const signature = callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+            const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || callIndirectObjectSignature(indirectName) || null;
             return callWithSignature(tableFn, signature, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
@@ -1309,7 +1309,7 @@ export default {
         const rtDirectFn = rtInstance?.exports?.[directName];
         if (typeof rtDirectFn === "function") {
           try {
-            return callWithSignature(rtDirectFn, callIndirectObjectSignature(indirectName) || runtimeTableRefSignatures[directName], args);
+            return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || callIndirectObjectSignature(indirectName), args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
