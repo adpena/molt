@@ -17,6 +17,7 @@ rounding. A larger drift means the WASM op diverges from scipy and must be inves
 
 from __future__ import annotations
 
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -33,6 +34,19 @@ ATOL = {
 }
 
 
+def _missing_input(path: str, role: str) -> int | None:
+    if Path(path).is_file():
+        return None
+    print(f"  FAIL {role}: missing {path}")
+    if path == "reference_outputs.npz":
+        print("  regenerate the reference from this directory:")
+        print("    python make_fixture.py")
+        print("    python field_solve.py lstar_sample.npz")
+    elif role == "candidate":
+        print("  pass the Molt-produced field_solve output as candidate_outputs.npz")
+    return 2
+
+
 def _rowsort(a: np.ndarray) -> np.ndarray:
     if a.size == 0:
         return a
@@ -42,6 +56,9 @@ def _rowsort(a: np.ndarray) -> np.ndarray:
 def main() -> int:
     cand_path = sys.argv[1] if len(sys.argv) > 1 else "candidate_outputs.npz"
     ref_path = sys.argv[2] if len(sys.argv) > 2 else "reference_outputs.npz"
+    missing = _missing_input(cand_path, "candidate") or _missing_input(ref_path, "reference")
+    if missing is not None:
+        return missing
     cand, ref = np.load(cand_path), np.load(ref_path)
 
     ok = True

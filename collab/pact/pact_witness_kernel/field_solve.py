@@ -15,7 +15,7 @@ numpy ops exercised:          argmax, sort, gradient, percentile, argsort, where
                               clip, stack, linalg.eigh, unravel_index-free indexing
 
 Deterministic: no RNG, no time, no I/O. Same input -> same output, bit-for-bit on a given
-numpy/scipy build. The committed reference_outputs.npz is the parity oracle.
+numpy/scipy build. The generated reference_outputs.npz is the parity oracle.
 
 Contract:
     field_solve(lstar: np.ndarray[H, W] uint8, n_classes: int = 5) -> dict[str, np.ndarray]

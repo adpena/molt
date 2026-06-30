@@ -44,8 +44,8 @@ Kernel A's input live. With B, the browser re-solves from the **raw checkpoint**
 ## What we'll ship you to test against (next window, once the build constraint clears)
 
 A tiny `pact_witness_kernel/` with: `field_solve.py` (Kernel A, numpy/scipy only, no torch),
-a sample `phi_sample.npz` (one real `(5,384,512)` φ from the converged witness), and
-`reference_outputs.npz` (the numpy field dict) so you have an exact parity oracle. We held off this
+deterministic fixture/reference generators, and `check_parity.py` so you have an exact parity
+oracle without tracked binary outputs. We held off this
 window only because the pact machine is still sharing one GPU with a live score-run (same
 "scale measured + safeguarded" constraint as report 001) — the moment a prebuilt `molt-embed` sample
 lands we wire it into the showcase the same hour.

@@ -27,7 +27,8 @@ Three phases (we want to walk all three with you):
 Both backends are in scope, and the two kernels map onto them differently — please leverage
 whichever fits each op:
 - **WASM-CPU** = the **correctness baseline + determinism authority.** It must match
-  `reference_outputs.npz` under the gates below. This is what `check_parity.py` validates first.
+  regenerated `reference_outputs.npz` under the gates below. This is what `check_parity.py`
+  validates first.
 - **WebGPU / WGSL** = the **speed path** for the embarrassingly-parallel pieces:
   - *Kernel B forward* is **per-coordinate independent** — `sin/cos` curvelet features + the
     FiLM-MLP are one WGSL workgroup-per-pixel matmul/trig kernel. Ideal GPU fit; ~P=H·W lanes.
@@ -53,15 +54,15 @@ the references; `verify_against_tac.py` proves fidelity; `check_parity.py` is th
 `levelset_argmax(params, cfg, coords, pair_idx, H, W) -> lstar (H,W) uint8`.
 Pipeline: `coords (P,2)` → `curvelet_feats` (`[sin,cos]` of `2π·coords@B`, B = deterministic
 curvelet bank) → FiLM-modulated MLP (4 hidden, HOSC `tanh(β·sin)` activation) → linear 5-class
-SDF head → `argmax`. Fixture: `witness_weights_sample.npz` (synthetic seeded weights, real
-shapes). Reference: `witness_forward_reference.npz`.
+SDF head → `argmax`. Fixture: generated `witness_weights_sample.npz` (synthetic seeded weights,
+real shapes). Reference: generated `witness_forward_reference.npz`.
 ops: `matmul, sin, cos, tanh, exp, maximum, argmax, reshape, stack`.
 
 **Kernel A — `field_solve.py` : the Morse-Smale field-solve (the interactive payload).**
 `field_solve(lstar (H,W) uint8) -> dict` (11 arrays): per-class signed-distance φ (EDT) → argmax
 / margin / triple-junction gap → boundary → Morse-Smale critical points (maxima/minima/saddles) →
-separatrix eigvectors → curvature → distance field. Fixture: `lstar_sample.npz`. Reference:
-`reference_outputs.npz`.
+separatrix eigvectors → curvature → distance field. Fixture: generated `lstar_sample.npz`.
+Reference: generated `reference_outputs.npz`.
 ops: `distance_transform_edt, gaussian_filter, maximum_filter, minimum_filter, label` +
 `argmax, sort, gradient, percentile, lexsort, where, clip, stack, linalg.eigh`.
 
@@ -112,7 +113,8 @@ to ~fp32 rounding; a larger drift means the op diverged — please surface it, d
 - Repos: `pact`/`tac` (the witness + viz) and `comma_lab` (research-state custody). **Kernel B** is
   proven `==` its tac source via `verify_against_tac.py` (ALL-MATCH). **Kernel A** is a faithful
   extract of the viz field-fns with two intentional determinism canonicalizations (tie-robust
-  keep-cut + eigvec sign) → it is NOT bit-identical to the viz; its authority is `reference_outputs.npz`.
+  keep-cut + eigvec sign) → it is NOT bit-identical to the viz; its authority is the generated
+  `reference_outputs.npz` checked by `check_parity.py`.
 - comma10k class order (for the viz palette): 0=Road 1=Lane 2=Undrivable 3=Movable 4=MyCar.
 
 ## The two asks that unblock the rest
@@ -123,9 +125,10 @@ to ~fp32 rounding; a larger drift means the op diverged — please surface it, d
    the scipy.ndimage stress-test + the interactive payload); then Kernel B. PASS
    on `check_parity.py` is the milestone.
 
-Provenance: generated under numpy 1.26.4 / scipy 1.17.1. `lstar_sample.npz` is a deterministic
-*synthetic* road-scene partition (sufficient for numerical parity); a real witness-φ bundle
-follows once our GPU-run constraint clears — it changes input values, not the kernels or gates.
+Provenance: generated under numpy 1.26.4 / scipy 1.17.1. The `.npz` files are local generated
+artifacts, not tracked source. `lstar_sample.npz` is a deterministic *synthetic* road-scene
+partition (sufficient for numerical parity); a real witness-φ bundle follows once our GPU-run
+constraint clears — it changes input values, not the kernels or gates.
 
 **Optimize for whatever is most performant — and bring the magic.** WASM-CPU, WebGPU/WGSL, SIMD,
 any hybrid, and any inventive trick you can dream up — the single invariant is that ONE path
