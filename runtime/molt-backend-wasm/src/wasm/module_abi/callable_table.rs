@@ -11,6 +11,7 @@ mod layout;
 mod runtime_callables;
 mod trampoline_emit;
 
+use crate::SimpleIR;
 use crate::TrampolineSpec;
 use crate::passes::ReturnAliasSummary;
 use crate::wasm::WasmBackend;
@@ -70,6 +71,146 @@ impl WasmCallableTablePlan {
     fn runtime_initializes_slot(&self, slot: usize) -> bool {
         slot >= self.split_runtime_owned_slot_start || slot < self.split_runtime_shared_abi_slot_end
     }
+
+    pub(super) fn validate_ir_call_target_closure(&self, ir: &SimpleIR) {
+        if let Some(issue) = self.ir_call_target_closure_issue(ir) {
+            panic!("{issue}");
+        }
+    }
+
+    fn ir_call_target_closure_issue(&self, ir: &SimpleIR) -> Option<String> {
+        let mut issues: Vec<String> = Vec::new();
+        for func_ir in &ir.functions {
+            for (op_idx, op) in func_ir.ops.iter().enumerate() {
+                let kind = op.kind.as_str();
+                let requires = match kind {
+                    "call" | "call_internal" => TargetRequirement::FunctionIndex,
+                    "call_guarded" => TargetRequirement::FunctionAndTable,
+                    "call_async" | "alloc_task" => TargetRequirement::PollTable,
+                    "func_new" | "func_new_closure" => TargetRequirement::FunctionObject,
+                    _ => continue,
+                };
+                let Some(target) = op.s_value.as_deref() else {
+                    issues.push(format!(
+                        "{} op {} {} has no target symbol",
+                        func_ir.name, op_idx, kind
+                    ));
+                    continue;
+                };
+                self.collect_target_issues(
+                    &mut issues,
+                    func_ir.name.as_str(),
+                    op_idx,
+                    kind,
+                    target,
+                    requires,
+                );
+            }
+        }
+        if issues.is_empty() {
+            return None;
+        }
+        let limit = 12usize;
+        let preview = issues
+            .iter()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let suffix = if issues.len() > limit {
+            format!("; ... (+{} more)", issues.len() - limit)
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "wasm callable table target validation failed: {preview}{suffix}"
+        ))
+    }
+
+    fn collect_target_issues(
+        &self,
+        issues: &mut Vec<String>,
+        owner: &str,
+        op_idx: usize,
+        kind: &str,
+        target: &str,
+        requires: TargetRequirement,
+    ) {
+        match requires {
+            TargetRequirement::FunctionIndex => {
+                self.require_function_index(issues, owner, op_idx, kind, target);
+            }
+            TargetRequirement::FunctionAndTable => {
+                self.require_function_index(issues, owner, op_idx, kind, target);
+                self.require_table_slot(issues, owner, op_idx, kind, target);
+            }
+            TargetRequirement::PollTable => {
+                if !target.ends_with("_poll") {
+                    issues.push(format!(
+                        "{owner} op {op_idx} {kind} targets {target}, expected *_poll"
+                    ));
+                }
+                self.require_table_slot(issues, owner, op_idx, kind, target);
+            }
+            TargetRequirement::FunctionObject => {
+                self.require_table_slot(issues, owner, op_idx, kind, target);
+                self.require_trampoline_slot(issues, owner, op_idx, kind, target);
+            }
+        }
+    }
+
+    fn require_function_index(
+        &self,
+        issues: &mut Vec<String>,
+        owner: &str,
+        op_idx: usize,
+        kind: &str,
+        target: &str,
+    ) {
+        if !self.func_to_index.contains_key(target) {
+            issues.push(format!(
+                "{owner} op {op_idx} {kind} function target not indexed: {target}"
+            ));
+        }
+    }
+
+    fn require_table_slot(
+        &self,
+        issues: &mut Vec<String>,
+        owner: &str,
+        op_idx: usize,
+        kind: &str,
+        target: &str,
+    ) {
+        if !self.func_to_table_idx.contains_key(target) {
+            issues.push(format!(
+                "{owner} op {op_idx} {kind} table target not indexed: {target}"
+            ));
+        }
+    }
+
+    fn require_trampoline_slot(
+        &self,
+        issues: &mut Vec<String>,
+        owner: &str,
+        op_idx: usize,
+        kind: &str,
+        target: &str,
+    ) {
+        if !self.func_to_trampoline_idx.contains_key(target) {
+            issues.push(format!(
+                "{owner} op {op_idx} {kind} trampoline target not indexed: {target}"
+            ));
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TargetRequirement {
+    FunctionIndex,
+    FunctionAndTable,
+    PollTable,
+    FunctionObject,
 }
 
 impl WasmBackend {
@@ -225,5 +366,83 @@ impl WasmBackend {
             func.instruction(&Instruction::Drop);
         }
         emit_call(func, reloc_enabled, table_init_index);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FunctionIR, OpIR, SimpleIR};
+
+    fn plan(
+        func_to_table_idx: BTreeMap<String, u32>,
+        func_to_index: BTreeMap<String, u32>,
+        func_to_trampoline_idx: BTreeMap<String, u32>,
+    ) -> WasmCallableTablePlan {
+        WasmCallableTablePlan {
+            table_base: 0,
+            table_indices: Vec::new(),
+            split_runtime_owned_slot_start: 0,
+            split_runtime_shared_abi_slot_end: 0,
+            func_to_table_idx,
+            func_to_index,
+            func_to_trampoline_idx,
+            closure_functions: BTreeSet::new(),
+            trampoline_entries: Vec::new(),
+        }
+    }
+
+    fn ir_with_op(kind: &str, target: &str) -> SimpleIR {
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: Vec::new(),
+                ops: vec![OpIR {
+                    kind: kind.to_string(),
+                    s_value: Some(target.to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        }
+    }
+
+    #[test]
+    fn callable_table_validation_rejects_missing_direct_call_target() {
+        let issue = plan(BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+            .ir_call_target_closure_issue(&ir_with_op("call", "sys___init_metadata"))
+            .expect("missing direct call target should fail closed");
+
+        assert!(issue.contains("wasm callable table target validation failed"));
+        assert!(issue.contains("molt_main op 0 call function target not indexed"));
+        assert!(issue.contains("sys___init_metadata"));
+    }
+
+    #[test]
+    fn callable_table_validation_rejects_function_object_without_trampoline() {
+        let issue = plan(
+            BTreeMap::from([("callee".to_string(), 7)]),
+            BTreeMap::from([("callee".to_string(), 42)]),
+            BTreeMap::new(),
+        )
+        .ir_call_target_closure_issue(&ir_with_op("func_new", "callee"))
+        .expect("function objects require trampoline table custody");
+
+        assert!(issue.contains("func_new trampoline target not indexed: callee"));
+    }
+
+    #[test]
+    fn callable_table_validation_accepts_complete_guarded_call_target() {
+        let issue = plan(
+            BTreeMap::from([("callee".to_string(), 7)]),
+            BTreeMap::from([("callee".to_string(), 42)]),
+            BTreeMap::new(),
+        )
+        .ir_call_target_closure_issue(&ir_with_op("call_guarded", "callee"));
+
+        assert!(issue.is_none());
     }
 }

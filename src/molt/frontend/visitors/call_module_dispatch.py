@@ -10,8 +10,10 @@ from typing import (
 )
 
 from molt.native_callable_abi import (
+    NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
     native_callable_abi_choices,
     native_callable_fixed_arity,
+    native_callable_uses_callargs,
     normalize_native_callable_abi,
 )
 from molt.frontend._types import (
@@ -118,6 +120,35 @@ class CallModuleDispatchMixin(_MixinBase):
             return spec
         return None
 
+    def _is_native_python_export(
+        self,
+        target_module: str,
+        attr_name: str,
+    ) -> bool:
+        return f"{target_module}.{attr_name}" in self.native_python_exports
+
+    def _raise_native_python_export_missing_callable_metadata(
+        self,
+        target_module: str,
+        attr_name: str,
+        node: ast.Call,
+    ) -> None:
+        qualified_name = f"{target_module}.{attr_name}"
+        raise self.compat.unsupported(
+            node,
+            f"native Python export '{qualified_name}' has no callable ABI metadata",
+            impact="high",
+            alternative=(
+                "declare callable_exports metadata with binding and abi in the "
+                "native artifact manifest"
+            ),
+            detail=(
+                "python_exports grants import visibility only; native package "
+                "calls must route through callable_exports instead of CALL_BIND "
+                "or synthesized module__function symbols"
+            ),
+        )
+
     def _try_emit_native_callable_export_call(
         self,
         target_module: str,
@@ -144,16 +175,16 @@ class CallModuleDispatchMixin(_MixinBase):
                     f"known ABI tokens: {native_callable_abi_choices()}"
                 ),
             )
-        if binding == "module_attr":
+        if binding == "module_attr" and normalized_abi == NATIVE_CALLABLE_ABI_FORWARD_F32_V1:
             raise self.compat.unsupported(
                 node,
-                f"native callable export '{qualified_name}' uses module_attr binding",
+                f"native callable export '{qualified_name}' uses module_attr memory ABI",
                 impact="high",
-                alternative="publish a direct_symbol callable export backed by a staged native artifact",
+                alternative="use direct_symbol for memory-buffer native callables or an object-call ABI for module attributes",
                 detail=(
-                    "module_attr callable exports are import visibility metadata; "
-                    "Molt cannot invent an executable ABI call without a target "
-                    "native symbol or loader custody"
+                    "module_attr dispatch calls a loaded module attribute through "
+                    "Molt value handles; pointer/byte-buffer ABIs require an "
+                    "addressable direct native symbol"
                 ),
             )
         if binding == "direct_symbol" and not isinstance(symbol, str):
@@ -164,6 +195,32 @@ class CallModuleDispatchMixin(_MixinBase):
                 alternative="declare symbol for direct_symbol native exports",
                 detail="direct native symbols cannot be invented as Python call targets",
             )
+        metadata: dict[str, Any] = {
+            "native_callable_export": qualified_name,
+            "native_callable_binding": binding,
+            "native_callable_abi": normalized_abi,
+        }
+        if isinstance(symbol, str):
+            metadata["native_callable_symbol"] = symbol
+
+        module_attr_func: MoltValue | None = None
+        if binding == "module_attr":
+            module_attr_func = self._emit_module_attr_get_on(target_module, attr_name)
+
+        if native_callable_uses_callargs(normalized_abi):
+            callargs = self._emit_call_args_builder(node)
+            res = MoltValue(self.next_var(), type_hint="Any")
+            op_args = [callargs] if module_attr_func is None else [module_attr_func, callargs]
+            self.emit(
+                MoltOp(
+                    kind="INVOKE_FFI",
+                    args=op_args,
+                    result=res,
+                    metadata=metadata,
+                )
+            )
+            return res
+
         if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
             raise self.compat.unsupported(
                 node,
@@ -186,14 +243,9 @@ class CallModuleDispatchMixin(_MixinBase):
             )
 
         args = self._emit_call_args(node.args)
+        if module_attr_func is not None:
+            args = [module_attr_func, *args]
         res = MoltValue(self.next_var(), type_hint="Any")
-        metadata: dict[str, Any] = {
-            "native_callable_export": qualified_name,
-            "native_callable_binding": binding,
-            "native_callable_abi": normalized_abi,
-        }
-        if isinstance(symbol, str):
-            metadata["native_callable_symbol"] = symbol
         self.emit(
             MoltOp(
                 kind="INVOKE_FFI",
@@ -425,6 +477,12 @@ class CallModuleDispatchMixin(_MixinBase):
         )
         if native_callable_export_call is not None:
             return native_callable_export_call
+        if self._is_native_python_export(target_module, original_attr):
+            self._raise_native_python_export_missing_callable_metadata(
+                target_module,
+                original_attr,
+                node,
+            )
         target_kind = self._lookup_func_kind(target_module, original_attr)
         known_direct_target = self._lookup_func_defaults(target_module, original_attr)
         has_known_direct_target = known_direct_target is not None

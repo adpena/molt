@@ -40,6 +40,7 @@ from molt.cli.module_cache import (
     _load_cached_module_lowering_result,
     _module_lowering_context_digest_for_module,
     _module_lowering_execution_view,
+    _module_lowering_local_reference_issue,
     _module_worker_payload,
     _read_persisted_module_lowering,
     _write_persisted_module_lowering,
@@ -164,6 +165,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     native_callable_exports = cast(
         dict[str, dict[str, Any]], payload.get("native_callable_exports", {})
     )
+    native_python_exports = set(
+        cast(list[str], payload.get("native_python_exports", []))
+    )
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
@@ -216,6 +220,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         known_func_defaults=known_func_defaults,
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
+        native_python_exports=native_python_exports,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -233,6 +238,23 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": False,
             "error": str(exc),
+            "timings": {
+                "visit_s": visit_s,
+                "lower_s": lower_s,
+                "total_s": time.perf_counter() - module_frontend_start,
+            },
+            "worker": {
+                "pid": worker_pid,
+                "started_ns": worker_started_ns,
+                "finished_ns": worker_finished_ns,
+            },
+        }
+    issue = _module_lowering_local_reference_issue(module_name, ir["functions"])
+    if issue is not None:
+        worker_finished_ns = time.time_ns()
+        return {
+            "ok": False,
+            "error": f"Invalid lowered module {module_name}: {issue}",
             "timings": {
                 "visit_s": visit_s,
                 "lower_s": lower_s,
@@ -331,6 +353,7 @@ def _module_frontend_generator(
         known_func_defaults=scoped_inputs.known_func_defaults,
         known_func_kinds=scoped_inputs.known_func_kinds,
         native_callable_exports=scoped_inputs.native_callable_exports,
+        native_python_exports=set(scoped_inputs.native_python_exports_set),
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, optimization_profile),
@@ -392,6 +415,7 @@ def _lower_module_serial_with_context(
         known_func_defaults=lowering_context.known_func_defaults,
         known_func_kinds=lowering_context.known_func_kinds,
         native_callable_exports=lowering_context.native_callable_exports,
+        native_python_exports=lowering_context.native_python_exports,
         pgo_hot_function_names=lowering_context.pgo_hot_function_names,
         type_facts=lowering_context.type_facts,
         known_classes_snapshot=lowering_context.known_classes,
@@ -432,6 +456,7 @@ def _lower_module_serial_with_context(
             known_func_defaults=lowering_context.known_func_defaults,
             known_func_kinds=lowering_context.known_func_kinds,
             native_callable_exports=lowering_context.native_callable_exports,
+            native_python_exports=lowering_context.native_python_exports,
             module_deps=lowering_context.module_deps,
             module_is_namespace=module_is_namespace,
             module_chunking=lowering_context.module_chunking,
@@ -544,6 +569,9 @@ def _lower_module_serial_with_context(
         lower_s=lower_s,
         total_s=total_s,
     )
+    issue = _module_lowering_local_reference_issue(module_name, payload["functions"])
+    if issue is not None:
+        raise _ModuleLowerError(f"Invalid lowered module {module_name}: {issue}")
     if lowering_context.project_root is not None and context_digest is not None:
         with contextlib.suppress(OSError):
             _write_persisted_module_lowering(
@@ -619,11 +647,12 @@ def _prepare_frontend_parallel_batch(
     type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
-    direct_call_modules: Collection[str],
+    direct_call_modules: Collection[str] | None = None,
     stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
-    native_callable_exports: Mapping[str, Mapping[str, Any]],
+    native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
+    native_python_exports: Collection[str] = (),
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -675,6 +704,7 @@ def _prepare_frontend_parallel_batch(
             known_func_defaults=known_func_defaults,
             known_func_kinds=known_func_kinds,
             native_callable_exports=native_callable_exports,
+            native_python_exports=native_python_exports,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             known_classes_snapshot=known_classes_snapshot,
@@ -712,6 +742,7 @@ def _prepare_frontend_parallel_batch(
                 known_func_defaults=known_func_defaults,
                 known_func_kinds=known_func_kinds,
                 native_callable_exports=native_callable_exports,
+                native_python_exports=native_python_exports,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
@@ -753,6 +784,7 @@ def _prepare_frontend_parallel_batch(
                 known_func_defaults=known_func_defaults,
                 known_func_kinds=known_func_kinds,
                 native_callable_exports=native_callable_exports,
+                native_python_exports=native_python_exports,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
@@ -800,6 +832,7 @@ def _prepare_frontend_parallel_batch(
                     known_func_defaults=known_func_defaults,
                     known_func_kinds=known_func_kinds,
                     native_callable_exports=native_callable_exports,
+                    native_python_exports=native_python_exports,
                     module_deps=module_deps,
                     module_chunking=module_chunking,
                     module_chunk_max_ops=module_chunk_max_ops,

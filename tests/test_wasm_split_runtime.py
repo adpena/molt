@@ -27,6 +27,7 @@ import pytest
 import urllib.error
 import urllib.request
 from molt._wasm_abi_generated import (
+    WASM_POLL_TABLE_IMPORTS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
@@ -571,6 +572,17 @@ def _reserved_runtime_callable_indices() -> list[int]:
     return [entry[0] for entry in WASM_RESERVED_RUNTIME_CALLABLES]
 
 
+def _first_live_wasm_table_slot() -> int:
+    return min(
+        [
+            slot
+            for slot, _name in WASM_POLL_TABLE_IMPORTS
+            if isinstance(slot, int) and slot > 0
+        ]
+        + [WASM_RESERVED_RUNTIME_CALLABLE_BASE]
+    )
+
+
 def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
     export_names = _collect_export_names(path)
     ref_indices = wasm_artifact.wasm_table_ref_indices_from_names(export_names)
@@ -585,7 +597,7 @@ def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
     for ref_index in ref_indices:
         expected = {ref_index + offset for offset in range(shared_abi_prefix_len)}
         if expected.issubset(ref_set):
-            return ref_index
+            return ref_index - _first_live_wasm_table_slot()
 
     return None
 

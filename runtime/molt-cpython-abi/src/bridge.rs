@@ -673,7 +673,7 @@ pub extern "C" fn molt_bridge_hash(obj: *mut PyObject) -> isize {
     }
     if mo.is_none() {
         // CPython 3.12: hash(None) == 0xFCA86420
-        return 0x0FCA86420_isize;
+        return 0xFCA8_6420_u32 as isize;
     }
     if mo.is_ptr() {
         // Heap objects: use the address portion of the NaN-boxed bits.

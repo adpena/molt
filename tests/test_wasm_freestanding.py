@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from molt.cli import entrypoint_parser
 from molt.wasm_artifact import (
     parse_wasm_exports,
     parse_wasm_imports,
@@ -709,27 +710,19 @@ def test_precompile_produces_cwasm(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# --wasm-profile pure
+# --wasm-profile auto/pure
 # ---------------------------------------------------------------------------
 
 
-def test_wasm_profile_pure_accepted():
-    """--wasm-profile pure should be accepted by the CLI."""
-    result = _run_wasm_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt",
-            "build",
-            "--help",
-        ],
-        cwd=PROJECT_ROOT,
-        env=os.environ,
-        timeout=30,
-    )
-    assert result.returncode == 0
-    assert "--profile" in result.stdout
-    assert "cloudflare" in result.stdout
+def test_wasm_profile_auto_and_pure_accepted():
+    """--wasm-profile should expose the default auto planner and pure mode."""
+    parser = entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(["build", "--target", "wasm", str(FIXTURE)])
+    assert args.wasm_profile == "auto"
+    wasm_profile_action = next(
+        action for action in parser._actions if getattr(action, "dest", None) == "command"
+    ).choices["build"]._option_string_actions["--wasm-profile"]
+    assert tuple(wasm_profile_action.choices) == ("auto", "full", "pure")
 
 
 def test_profile_cloudflare_accepted():

@@ -56,6 +56,8 @@ CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA
 
 WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
 
+WASM_EXTERNAL_NATIVE_LINK_IMPORTS = tuple(_WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORTS)
+
 WASM_TABLE_REF_EXPORT_PREFIX = _WASM_ABI.WASM_TABLE_REF_EXPORT_PREFIX
 
 
@@ -924,21 +926,8 @@ def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
             if kind == 0:  # function
                 _, offset = _read_varuint(payload, offset)
                 func_imports += 1
-            elif kind == 1:  # table
-                offset += 1  # reftype
-                flags = payload[offset]
-                offset += 1
-                _, offset = _read_varuint(payload, offset)
-                if flags & 1:
-                    _, offset = _read_varuint(payload, offset)
-            elif kind == 2:  # memory
-                flags = payload[offset]
-                offset += 1
-                _, offset = _read_varuint(payload, offset)
-                if flags & 1:
-                    _, offset = _read_varuint(payload, offset)
-            elif kind == 3:  # global
-                offset += 2
+            else:
+                offset = _parse_import_desc(payload, offset, kind)
         return func_imports
     return 0
 

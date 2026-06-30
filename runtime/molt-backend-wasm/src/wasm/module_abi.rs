@@ -92,6 +92,7 @@ impl WasmBackend {
             reloc_enabled,
             sentinel_func_idx,
         );
+        callable_table.validate_ir_call_target_closure(&ir);
 
         let import_ids = self.import_ids.clone();
         let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);

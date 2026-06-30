@@ -20,13 +20,21 @@ The Python export should accept `bytes` plus explicit shape/length metadata,
 then return `bytes`. JavaScript decodes those bytes into the requested
 typed-array view.
 
-For package-native browser callables, `molt.forward_f32_v1` is a typed WASM ABI,
-not a boxed object ABI. The app module imports the native symbol as
-`(input_ptr: i32, byte_len: i64, output_ptr: i32) -> i32`. The backend uses the
-runtime byte/scratch authority (`bytes_as_ptr`, `scratch_alloc`,
-`bytes_from_bytes`, `scratch_free`) to bridge a bytes-backed Molt value to the
-native pointer/length call and then wraps the output buffer once.
-`browser_embed.js` satisfies that same import from plain JS by passing
+For package-native browser callables, the manifest carries the executable ABI
+token for each remaining `molt_native.<symbol>` import. `molt.object_call_v1`
+is the positional boxed Molt-value ABI: the app imports a direct symbol as
+`(i64...) -> i64`, `browser_embed.js` validates every argument/result as a Molt
+value handle, and native implementations receive the same object handles the
+WASM backend emits for `invoke_ffi`. `molt.object_callargs_v1` is the call
+protocol ABI for keyword, star-arg, and C-extension style calls: the frontend
+builds the canonical CallArgs object and the app imports the direct symbol as
+`(callargs_bits: i64) -> i64`. `molt.forward_f32_v1` is a separate typed WASM
+ABI for unary Float32Array kernels, not a boxed object ABI. It imports the
+native symbol as `(input_ptr: i32, byte_len: i64, output_ptr: i32) -> i32`; the
+backend uses the runtime byte/scratch authority (`bytes_as_ptr`,
+`scratch_alloc`, `bytes_from_bytes`, `scratch_free`) to bridge a bytes-backed
+Molt value to the native pointer/length call and then wraps the output buffer
+once. `browser_embed.js` satisfies that typed import from plain JS by passing
 `Float32Array` input/output views over WASM memory.
 
 ## Minimal Kernel
@@ -143,13 +151,29 @@ boundary. Kernel A/Kernel B package semantics remain out of scope until they are
 compiled through upstream source plus ABI/C-API/object closure and lowered onto
 typed storage, SIMD, native codegen, or WebGPU/GPU kernels.
 
-Current Pact recovery evidence reinforces that boundary: plain WASM compile of
-`field_solve.py` fails at `scipy.ndimage.distance_transform_edt`; NumPy/SciPy
-source roots without package admission fail closed; package admission timed out
-after 300s; and a graph-only probe found 186 modules, zero staged native
-artifacts, and broad NumPy plus `scipy`/`scipy.ndimage` initializer closure.
-That blocker belongs to package-native object/symbol/storage closure, not to
-the browser typed-array embed API.
+Current Pact recovery evidence reinforces that boundary. The old first failure,
+`scipy.ndimage.distance_transform_edt` becoming an unsupported fake Python
+direct call, is retired for sidecar-declared `direct_symbol` native callable
+exports: the witness `scipy.ndimage` operation closure now lowers to executable
+`invoke_ffi` ABI metadata, including keyword filters through
+`molt.object_callargs_v1`. NumPy/SciPy source roots without package admission
+still fail closed. Package admission against the local Python 3.14
+site-packages root now fails closed before graph expansion because the
+installed NumPy/SciPy roots contain native markers but no wasm32 `static_link`
+`libmolt_source` artifact manifests with package symbol custody; an earlier
+package-admission probe timed out after 300s; and a graph-only probe found 186
+modules, zero staged native artifacts, and broad NumPy plus
+`scipy`/`scipy.ndimage` initializer closure. The remaining blocker belongs to
+package-native object/symbol/storage, ndarray/buffer, and C/API primitive
+closure, not to the browser typed-array embed API.
+
+The producer-side custody path for those missing static-link artifacts now
+exists: `molt extension build --target wasm` emits a wasm32 `.molt.wasm`
+artifact with `runtime_linkage = "static_link"`,
+`artifact_kind = "wasm_relocatable_object"`, binary-verified `direct_symbol`
+callable exports, and `object_closure` symbol custody. The Pact blocker is that
+the admitted NumPy/SciPy roots have not yet published reachable artifacts in
+that shape.
 
 ## Proof
 
@@ -165,8 +189,9 @@ Molt split-runtime export as `bytes`, the export returns `bytes`, and
 `browser_embed.js` decodes the result back into `Float32Array`.
 
 Native callable exports use the same browser delivery path. A WASM app may
-temporarily import a sidecar-declared `direct_symbol` through the
-`molt.forward_f32_v1` ABI as `molt_native.<symbol>`. Linked WASM packaging stages
+import a sidecar-declared `direct_symbol` through `molt.object_call_v1`,
+`molt.object_callargs_v1`, or `molt.forward_f32_v1` as `molt_native.<symbol>`.
+Linked WASM packaging stages
 the reachable external `wasm_relocatable_object`/`static_archive` bytes into
 `external_static_packages/<plan-digest>/`, passes those staged objects or
 archives into `wasm-ld`, and fingerprints the staged artifact, sidecar manifest,
@@ -177,17 +202,24 @@ for remaining `app.wasm` `molt_native` imports that the browser host must
 satisfy. Packaging filters the table to actual imports and fails closed when an
 imported symbol is absent from the staged native artifact plan. `browser_embed.js`
 requires packaged `molt_native` imports to be present in that manifest table and
-rejects signature/token drift, then satisfies them from `nativeCallables` through
-the typed `(input_ptr, byte_len, output_ptr) -> status` ABI. The JS implementation
-receives `Float32Array` input and output views over WASM linear memory and
-either fills the output view or returns a same-length `Float32Array` for the
-adapter to copy. There is no duplicate boxed `forward_f32_v1` lane. Full
-NumPy/SciPy ndarray storage, dtype, stride, and multi-buffer custody remain
+rejects signature/token drift. For `molt.object_call_v1`, JS implementations
+receive Molt i64 value handles and must return a Molt i64 value handle. For
+`molt.object_callargs_v1`, JS implementations receive exactly one CallArgs i64
+handle and must return a Molt i64 value handle. For `molt.forward_f32_v1`, JS
+implementations receive `Float32Array` input and output views over WASM linear
+memory and either fill the output view or return a same-length `Float32Array`
+for the adapter to copy. There is no duplicate boxed `forward_f32_v1` lane.
+Full NumPy/SciPy ndarray storage, dtype, stride, and multi-buffer custody remain
 separate work.
 
 Additional narrow proofs:
 
 - `tests/test_wasm_browser_embed.py::test_browser_embed_forward_f32_native_callable_import_adapter`
+- `tests/test_wasm_browser_embed.py::test_browser_embed_object_call_native_callable_import_adapter`
+- `tests/test_wasm_browser_embed.py::test_browser_embed_object_call_native_callable_result_must_be_handle`
+- `tests/test_wasm_browser_embed.py::test_browser_embed_object_callargs_native_callable_import_adapter`
+- `cargo test -p molt-backend-wasm --features wasm-backend native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol --lib`
+- `cargo test -p molt-backend-wasm --features wasm-backend native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symbol --lib`
 - `cargo test -p molt-backend-wasm --features wasm-backend native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol --lib`
 
 Recovery note, 2026-06-29: the native callable ABI and plain JS adapter proofs

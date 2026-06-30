@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 = "molt.object_call_v1"
+NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1 = "molt.object_callargs_v1"
 NATIVE_CALLABLE_ABI_FORWARD_F32_V1 = "molt.forward_f32_v1"
 
 NATIVE_CALLABLE_ABIS: tuple[str, ...] = (
     NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+    NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
 )
 KNOWN_NATIVE_CALLABLE_ABIS: frozenset[str] = frozenset(NATIVE_CALLABLE_ABIS)
@@ -19,6 +21,10 @@ _NATIVE_CALLABLE_BROWSER_SIGNATURES: dict[str, dict[str, object]] = {
         "params": ["molt.value..."],
         "result": "molt.value",
     },
+    NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1: {
+        "params": ["molt.callargs"],
+        "result": "molt.value",
+    },
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1: {
         "params": ["bytes.float32"],
         "result": "bytes.float32",
@@ -27,6 +33,7 @@ _NATIVE_CALLABLE_BROWSER_SIGNATURES: dict[str, dict[str, object]] = {
 
 _NATIVE_CALLABLE_FIXED_ARITY: dict[str, int | None] = {
     NATIVE_CALLABLE_ABI_OBJECT_CALL_V1: None,
+    NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1: 1,
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1: 1,
 }
 
@@ -54,3 +61,7 @@ def native_callable_browser_signature(abi: str) -> dict[str, object]:
 
 def native_callable_fixed_arity(abi: str) -> int | None:
     return _NATIVE_CALLABLE_FIXED_ARITY[abi]
+
+
+def native_callable_uses_callargs(abi: str) -> bool:
+    return abi == NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1

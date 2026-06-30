@@ -24,7 +24,6 @@ from wasm_abi_gen.manifest import (
 )
 from wasm_abi_gen.paths import (
     LEGACY_OUT_RS,
-    MANIFEST,
     OUT_ALLOWED_IMPORTS,
     OUT_PY,
     OUT_RS_DIR,
@@ -1876,6 +1875,28 @@ def render_py(data: dict) -> str:
     for entry in data.get("link_allowed_import", []):
         lines.append(f'    "{entry["name"]}",\n')
     lines.append(")\n\n")
+    lines.append("WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {\n")
+    for entry in data.get("link_allowed_import", []):
+        lines.append(
+            f'    "{entry["name"]}": "{entry["primitive_class"]}",\n'
+        )
+    lines.append("}\n\n")
+    lines.append("WASM_EXTERNAL_NATIVE_LINK_IMPORTS: tuple[str, ...] = (\n")
+    external_native_link_imports = {
+        entry["name"]: entry["primitive_class"]
+        for entry in data.get("link_allowed_import", [])
+    }
+    for entry in data.get("external_native_link_import", []):
+        external_native_link_imports[entry["name"]] = entry["primitive_class"]
+    for name in external_native_link_imports:
+        lines.append(f'    "{name}",\n')
+    lines.append(")\n\n")
+    lines.append(
+        "WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {\n"
+    )
+    for name, primitive_class in external_native_link_imports.items():
+        lines.append(f'    "{name}": "{primitive_class}",\n')
+    lines.append("}\n\n")
     lines.append(
         "WASM_STRIP_IMPORT_RULES: tuple[tuple[str, str, str, str], ...] = (\n"
     )

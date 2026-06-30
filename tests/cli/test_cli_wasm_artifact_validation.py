@@ -16,6 +16,7 @@ from tests.cli.process_guard import run_cli_test_process
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
+WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 
 
 def _valid_wasm_bytes(label: bytes = b"") -> bytes:
@@ -1022,7 +1023,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
         RUNTIME_BUILD.shutil, "which", lambda name: "wasm-ld", raising=True
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_wasm_wasi_libc_archive", lambda: libc, raising=True
+        WASM_TOOLCHAIN, "wasm_wasi_libc_archive", lambda: libc, raising=True
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -1200,7 +1201,10 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
 
     monkeypatch.setattr(RUNTIME_BUILD.shutil, "which", lambda name: "/usr/bin/wasm-ld")
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_wasm_wasi_libc_archive", lambda: libc_archive, raising=True
+        WASM_TOOLCHAIN,
+        "wasm_wasi_libc_archive",
+        lambda: libc_archive,
+        raising=True,
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_run_completed_command", fake_run, raising=True)
     monkeypatch.setattr(

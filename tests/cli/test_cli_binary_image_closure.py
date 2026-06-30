@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
+from molt.cli.models import (
+    _ExternalPackageNativeArtifact,
+    _ExternalPackageNativeArtifactPlan,
+)
 from molt.cli.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 
@@ -436,6 +441,97 @@ def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
     assert payload["module_schedule"]["dependency_edge_count"] >= 1
     assert payload["lowering"]["target_python"] == _DEFAULT_TARGET_PYTHON_VERSION.tag
     assert payload["lowering"]["compile_equals_known"] is False
+
+
+def test_frontend_binary_image_analysis_labels_external_native_known_modules(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "app.py"
+    entry.write_text("VALUE = 1\n")
+    import_plan = _materialize_plan(tmp_path, entry, "app")
+    analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
+    native_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="scipy",
+                module="scipy.ndimage._nd_image",
+                package_dir=tmp_path / "scipy",
+                path=tmp_path / "scipy" / "ndimage" / "_nd_image.molt.wasm",
+                manifest_path=tmp_path
+                / "scipy"
+                / "ndimage"
+                / "_nd_image.molt.wasm.extension_manifest.json",
+                extension_sha256="0" * 64,
+                manifest_sha256="1" * 64,
+                capabilities=(),
+                abi_tag="molt-wasm-cpython-abi-v1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32-wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                python_exports=("scipy.ndimage.distance_transform_edt",),
+            ),
+        )
+    )
+    external_known_modules = native_plan.native_module_names()
+    known_modules = frozenset(import_plan.known_modules | external_known_modules)
+    external_plan = replace(
+        import_plan.with_compile_modules({"app"}),
+        known_modules=known_modules,
+        known_modules_sorted=tuple(sorted(known_modules)),
+        native_artifact_plan=native_plan,
+    )
+
+    payload = cli_binary_image_analysis._frontend_binary_image_analysis_payload(
+        import_plan=external_plan,
+        frontend_analysis=analysis,
+        frontend_module_costs={"app": 1.0},
+        known_classes={},
+        enable_phi=True,
+        module_chunking=False,
+        module_chunk_max_ops=100,
+        type_facts_present=False,
+        compile_module_order=["app"],
+        compile_module_layers=[["app"]],
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert payload["source_identity"]["module_count"] == len(known_modules)
+    scipy_identity = next(
+        module
+        for module in payload["source_identity"]["modules"]
+        if module["module"] == "scipy"
+    )
+    assert scipy_identity["logical_path"] == "<external-native:scipy>"
+    assert {"known", "native_artifact", "source_graph_absent"}.issubset(
+        scipy_identity["roles"]
+    )
+    assert scipy_identity["site_count"] == 0
+    changed_native_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            replace(
+                native_plan.artifacts[0],
+                extension_sha256="2" * 64,
+            ),
+        )
+    )
+    changed_payload = cli_binary_image_analysis._frontend_binary_image_analysis_payload(
+        import_plan=replace(external_plan, native_artifact_plan=changed_native_plan),
+        frontend_analysis=analysis,
+        frontend_module_costs={"app": 1.0},
+        known_classes={},
+        enable_phi=True,
+        module_chunking=False,
+        module_chunk_max_ops=100,
+        type_facts_present=False,
+        compile_module_order=["app"],
+        compile_module_layers=[["app"]],
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert (
+        changed_payload["source_identity"]["semantic_identity_digest"]
+        != payload["source_identity"]["semantic_identity_digest"]
+    )
 
 
 def test_backend_ir_and_artifact_analysis_attach_to_same_contract(

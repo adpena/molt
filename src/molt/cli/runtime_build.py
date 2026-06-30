@@ -66,6 +66,7 @@ from molt.cli.runtime_wasm_validation import (
     _runtime_wasm_missing_exports,
     _write_runtime_wasm_integrity_sidecar,
 )
+from molt.cli import wasm_toolchain
 from molt.cli.models import _RuntimeArtifactState
 from molt.wasm_artifact import inspect_wasm_binary as _inspect_wasm_binary
 
@@ -500,40 +501,6 @@ def _ensure_runtime_lib(
     return True
 
 
-@functools.lru_cache(maxsize=8)
-def _rust_target_libdir(target_triple: str) -> Path | None:
-    rustc = shutil.which("rustc")
-    if rustc is None:
-        return None
-    try:
-        result = _run_completed_command(
-            [rustc, "--print", "target-libdir", "--target", target_triple],
-            capture_output=True,
-            timeout=30,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    path_text = result.stdout.strip()
-    if not path_text:
-        return None
-    return Path(path_text)
-
-
-def _wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
-    target_libdir = _rust_target_libdir(target_triple)
-    if target_libdir is None:
-        return None
-    libc_archive = target_libdir / "self-contained" / "libc.a"
-    if not libc_archive.exists():
-        return None
-    return libc_archive
-
-
 @functools.lru_cache(maxsize=32)
 def _resolve_wasm_cargo_profile_cached(
     cargo_profile: str,
@@ -628,6 +595,35 @@ def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
 
 
+def _wasm_cpython_abi_staticlib_path(target_root: Path, profile_dir: str) -> Path:
+    return target_root / "wasm32-wasip1" / profile_dir / "libmolt_cpython_abi.a"
+
+
+def _wasm_cpython_abi_staticlib_candidates(
+    target_root: Path,
+    profile_dir: str,
+) -> list[Path]:
+    primary = _wasm_cpython_abi_staticlib_path(target_root, profile_dir)
+    candidates: list[Path] = []
+    if primary.exists():
+        candidates.append(primary)
+    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
+    deps_primary = deps_dir / "libmolt_cpython_abi.a"
+    if deps_primary.exists():
+        candidates.append(deps_primary)
+    deps_candidates: list[tuple[int, str, Path]] = []
+    for path in deps_dir.glob("libmolt_cpython_abi-*.a"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        deps_candidates.append((stat.st_mtime_ns, path.name, path))
+    candidates.extend(
+        path for _mtime_ns, _name, path in sorted(deps_candidates, reverse=True)
+    )
+    return candidates
+
+
 def _resolve_built_runtime_staticlib_artifact(
     target_root: Path, profile_dir: str
 ) -> Path:
@@ -661,6 +657,183 @@ def _wasm_runtime_staticlib_candidates(
 
 def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "deps"
+
+
+def _ensure_wasm_cpython_abi_staticlib(
+    *,
+    project_root: Path,
+    json_output: bool,
+    cargo_profile: str,
+    cargo_timeout: float | None,
+) -> Path | None:
+    root = project_root or _compiler_root()
+    cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
+    profile_dir = _cargo_profile_dir(cargo_profile)
+    target_root = _cargo_target_root(root)
+    staticlib_path = _wasm_cpython_abi_staticlib_path(target_root, profile_dir)
+    target_label = "wasm32-wasip1.cpython-abi"
+    fingerprint_path = _runtime_fingerprint_path(
+        root,
+        staticlib_path,
+        cargo_profile,
+        target_label,
+    )
+    base_rustflags = os.environ.get("RUSTFLAGS", "").strip()
+    rustflags = _wasm_runtime_codegen_rustflags(
+        base_rustflags,
+        simd_enabled=True,
+        freestanding=False,
+    )
+    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+    fingerprint = _runtime_fingerprint(
+        root,
+        cargo_profile=cargo_profile,
+        target_triple="wasm32-wasip1",
+        rustflags=rustflags,
+        runtime_features=("molt-cpython-abi-static-link",),
+        stored_fingerprint=stored_fingerprint,
+    )
+    candidates = _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir)
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+    if fingerprint is None:
+        if not json_output:
+            print("Failed to compute CPython ABI wasm fingerprint.", file=sys.stderr)
+        return None
+
+    lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.cpython-abi"
+    build_state_root = _build_state_root(root)
+    with _build_lock(root, lock_name):
+        current = _current_runtime_target_artifact(
+            _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir),
+            build_state_root=build_state_root,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
+            fingerprint=fingerprint,
+        )
+        if current is not None:
+            return current[0]
+        if _runtime_artifact_fingerprint_matches(
+            staticlib_path,
+            fingerprint,
+            fingerprint_path,
+            require_artifact_digest=True,
+        ):
+            return staticlib_path
+
+        if not json_output:
+            print("Building wasm CPython ABI link provider...", file=sys.stderr)
+        env = _cargo_build_env()
+        env["CARGO_TARGET_DIR"] = str(target_root)
+        if rustflags:
+            env["RUSTFLAGS"] = rustflags
+        _configure_wasm_cc_env(env)
+        if not env.get("WASI_SYSROOT"):
+            wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot()
+            if wasi_sysroot is not None:
+                env["WASI_SYSROOT"] = str(wasi_sysroot)
+        if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
+            _maybe_enable_sccache(env)
+        else:
+            env.pop("RUSTC_WRAPPER", None)
+        cmd = [
+            "cargo",
+            "rustc",
+            "--package",
+            "molt-lang-cpython-abi",
+            "--profile",
+            cargo_profile,
+            "--target",
+            "wasm32-wasip1",
+            "--lib",
+            "--",
+            "--crate-type=staticlib",
+        ]
+        cargo_cmd = _cargo_cmd_with_json_artifact_messages(cmd)
+        with _build_slot() as _slot:
+            build_raw = _run_subprocess_captured_to_tempfiles(
+                cargo_cmd,
+                cwd=root,
+                env=env,
+                timeout=cargo_timeout,
+                progress_label=None if json_output else "CPython ABI wasm build",
+            )
+        build = subprocess.CompletedProcess(
+            build_raw.args,
+            build_raw.returncode,
+            build_raw.stdout.decode("utf-8", errors="replace"),
+            build_raw.stderr.decode("utf-8", errors="replace"),
+        )
+        wrapper = env.get("RUSTC_WRAPPER", "")
+        if build.returncode != 0 and wrapper and Path(wrapper).name == "sccache":
+            retry_env = env.copy()
+            retry_env.pop("RUSTC_WRAPPER", None)
+            if not json_output:
+                print(
+                    "CPython ABI wasm build: sccache wrapper failure detected; "
+                    "retrying without sccache.",
+                    file=sys.stderr,
+                )
+            with _build_slot() as _slot:
+                build_raw = _run_subprocess_captured_to_tempfiles(
+                    cargo_cmd,
+                    cwd=root,
+                    env=retry_env,
+                    timeout=cargo_timeout,
+                    progress_label=None if json_output else "CPython ABI wasm build",
+                )
+            build = subprocess.CompletedProcess(
+                build_raw.args,
+                build_raw.returncode,
+                build_raw.stdout.decode("utf-8", errors="replace"),
+                build_raw.stderr.decode("utf-8", errors="replace"),
+            )
+        if build.returncode != 0:
+            if not json_output:
+                detail = (build.stderr or build.stdout or "").strip()
+                msg = "CPython ABI wasm build failed"
+                if detail:
+                    msg = f"{msg}: {detail}"
+                print(msg, file=sys.stderr)
+            return None
+        candidates = _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir)
+        if not candidates:
+            if not json_output:
+                print(
+                    "CPython ABI wasm build succeeded but staticlib artifact is missing.",
+                    file=sys.stderr,
+                )
+            return None
+        provider = candidates[0]
+        try:
+            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(
+                fingerprint_path,
+                fingerprint,
+                artifact=provider,
+            )
+            provider_fingerprint_path = _runtime_target_fingerprint_path(
+                build_state_root,
+                provider,
+                cargo_profile=cargo_profile,
+                target_label=target_label,
+            )
+            provider_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_runtime_fingerprint(
+                provider_fingerprint_path,
+                fingerprint,
+                artifact=provider,
+            )
+        except OSError:
+            if not json_output:
+                print(
+                    "Failed to publish CPython ABI wasm staticlib metadata.",
+                    file=sys.stderr,
+                )
+            return None
+        return provider
 
 
 def _resolve_built_runtime_wasm_artifact(target_root: Path, profile_dir: str) -> Path:
@@ -991,7 +1164,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
                 file=sys.stderr,
             )
         return False
-    libc_archive = _wasm_wasi_libc_archive()
+    libc_archive = wasm_toolchain.wasm_wasi_libc_archive()
     if libc_archive is None:
         if not json_output:
             print(

@@ -76,7 +76,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--deterministic / --no-deterministic` | Require deterministic inputs (lockfiles). |
 | `--build-profile {dev,release}` | Build profile for backend/runtime. |
 | `--stdlib-profile {full,micro}` | Runtime stdlib profile (`micro` for smallest binary). |
-| `--wasm-profile {full,pure}` | WASM import profile. |
+| `--wasm-profile {auto,full,pure}` | WASM import profile (`auto` plans imports from observed IR). |
 | `--cache / --no-cache` | Enable/disable build cache. |
 | `--cache-dir DIR` | Override build cache directory. |
 | `--trusted / --no-trusted` | Disable capability checks. |
@@ -418,9 +418,15 @@ Build and audit C extensions compiled against `libmolt`.
 
 ```bash
 molt extension build                     # Build a C extension
+molt extension build --target wasm       # Build a wasm32 static-link artifact
 molt extension audit                     # Audit extension ABI compatibility
 molt extension scan                      # Scan for C API usage
 ```
+
+`molt extension build --target wasm` emits a `.molt.wasm` static-link artifact
+plus `extension_manifest.json` with `runtime_linkage = "static_link"`,
+`artifact_kind = "wasm_relocatable_object"`, and object-closure symbol custody
+for package admission and final WASM linking.
 
 #### `molt verify`
 

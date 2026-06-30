@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 import contextlib
 from contextlib import contextmanager
 import errno
@@ -15,7 +14,6 @@ import sys
 from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import uuid
 
-from molt.frontend import SimpleTIRGenerator
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.atomic_io import _atomic_link_or_copy_file, _atomic_write_json
 from molt.cli.build_locks import (
@@ -28,9 +26,18 @@ from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.file_hashing import _sha256_file
+from molt.cli import function_references as _function_references
 from molt.cli.models import _ModuleGraphMetadata
 from molt.cli.runtime_wasm_validation import _is_reusable_wasm_artifact
 
+
+_DEAD_FUNCTION_ELIM_REFERENCE_KINDS = _function_references.FUNCTION_REFERENCE_OP_KINDS
+_emitted_name_matches_module_symbol = (
+    _function_references.emitted_name_matches_module_symbol
+)
+_is_protected_runtime_entrypoint = _function_references.is_protected_runtime_entrypoint
+_module_symbol_name = _function_references.module_symbol_name
+reachable_function_names = _function_references.reachable_function_names
 
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 
@@ -1089,18 +1096,6 @@ def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
     return target == "native"
 
 
-def _module_symbol_name(module_name: str) -> str:
-    init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-    assert init_symbol.startswith("molt_init_")
-    return init_symbol[len("molt_init_") :]
-
-
-def _emitted_name_matches_module_symbol(name: str, module_symbol: str) -> bool:
-    if name.startswith("molt_init_"):
-        return name[len("molt_init_") :] == module_symbol
-    return name.startswith(f"{module_symbol}__")
-
-
 def _stdlib_module_symbols(
     module_graph_metadata: _ModuleGraphMetadata,
 ) -> frozenset[str]:
@@ -1160,44 +1155,6 @@ def _is_stdlib_owned_symbol(
     )
 
 
-_DEAD_FUNCTION_ELIM_REFERENCE_KINDS = frozenset(
-    {
-        "call",
-        "call_internal",
-        "func_new",
-        "func_new_closure",
-        "func_new_builtin",
-        "code_new",
-        "call_guarded",
-        "call_indirect",
-        "alloc_task",
-        "generator_create",
-        "coro_create",
-        "fn_ptr_code_set",
-        "asyncgen_locals_register",
-        "gen_locals_register",
-        "task_new",
-        "generator_send",
-        "spawn",
-        "call_func",
-        "call_method",
-        "import_from",
-        "import_name",
-        "class_def",
-        "decorator",
-        "super_call",
-        "yield_from",
-        "await",
-    }
-)
-
-
-def _is_protected_runtime_entrypoint(name: str) -> bool:
-    return name in {"molt_main", "molt_host_init", "_start"} or name.startswith(
-        "molt_isolate_"
-    )
-
-
 def _reachable_function_names_for_stdlib_cache(
     ir: Mapping[str, Any],
     *,
@@ -1207,45 +1164,12 @@ def _reachable_function_names_for_stdlib_cache(
     if not isinstance(functions, list) or not functions:
         return set()
 
-    defined: set[str] = set()
-    references: dict[str, set[str]] = {}
-
-    for func in functions:
-        if not isinstance(func, Mapping):
-            continue
-        name = func.get("name")
-        if isinstance(name, str) and name:
-            defined.add(name)
-
-    for func in functions:
-        if not isinstance(func, Mapping):
-            continue
-        name = func.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        refs: set[str] = set()
-        ops = func.get("ops")
-        if isinstance(ops, list):
-            for op in ops:
-                if not isinstance(op, Mapping):
-                    continue
-                kind = op.get("kind")
-                if not isinstance(kind, str):
-                    continue
-                target = op.get("s_value")
-                if kind in _DEAD_FUNCTION_ELIM_REFERENCE_KINDS and isinstance(
-                    target, str
-                ):
-                    if target in defined:
-                        refs.add(target)
-                    if kind in {
-                        "generator_create",
-                        "coro_create",
-                    } and not target.endswith("_poll"):
-                        poll_name = f"{target}_poll"
-                        if poll_name in defined:
-                            refs.add(poll_name)
-        references[name] = refs
+    function_maps = [func for func in functions if isinstance(func, Mapping)]
+    defined: set[str] = {
+        name
+        for func in function_maps
+        if isinstance((name := func.get("name")), str) and name
+    }
 
     roots: list[str] = []
     first_function = functions[0]
@@ -1266,22 +1190,7 @@ def _reachable_function_names_for_stdlib_cache(
         )
         if init_name in defined
     )
-
-    reachable: set[str] = set()
-    queue: deque[str] = deque()
-    for root in roots:
-        if root not in reachable:
-            reachable.add(root)
-            queue.append(root)
-
-    while queue:
-        current = queue.popleft()
-        for target in references.get(current, ()):
-            if target not in reachable:
-                reachable.add(target)
-                queue.append(target)
-
-    return reachable
+    return set(reachable_function_names(function_maps, extra_roots=roots))
 
 
 def _shared_stdlib_cache_payload_ir(

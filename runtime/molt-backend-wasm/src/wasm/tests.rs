@@ -162,6 +162,122 @@ fn native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol()
 }
 
 #[test]
+fn native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symbol() {
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_native_callable_ir("molt.object_callargs_v1"));
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("native callable callargs dispatch must emit valid WASM");
+
+    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
+    let import_modules = wasm_function_import_modules(&wasm);
+    assert_eq!(
+        import_modules.get(native_symbol).map(String::as_str),
+        Some("molt_native"),
+        "callargs native callable symbols must not be imported through the Molt runtime namespace"
+    );
+
+    let import_type_indices = wasm_function_import_type_indices(&wasm);
+    assert_eq!(
+        import_type_indices.get(native_symbol).copied(),
+        Some(2),
+        "object-callargs native callable ABI must use boxed (i64) -> i64 type index"
+    );
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let native_import_index = *import_indices
+        .get(native_symbol)
+        .unwrap_or_else(|| panic!("{native_symbol} import missing; imports={import_indices:?}"));
+    let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(
+        call_indices.contains(&native_import_index),
+        "native callable callargs invoke_ffi must become a direct WASM call to {native_symbol}; calls={call_indices:?}"
+    );
+    if let Some(invoke_ffi_ic_index) = import_indices.get("invoke_ffi_ic") {
+        assert!(
+            !call_indices.contains(invoke_ffi_ic_index),
+            "native callable callargs invoke_ffi must not fall back to invoke_ffi_ic; calls={call_indices:?}"
+        );
+    }
+}
+
+#[test]
+fn native_callable_module_attr_object_call_uses_runtime_ffi_without_native_import() {
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_module_attr_native_callable_ir(
+        "molt.object_call_v1",
+        vec!["func", "arg"],
+    ));
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("native callable module_attr dispatch must emit valid WASM");
+
+    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
+    let import_modules = wasm_function_import_modules(&wasm);
+    assert!(
+        !import_modules.contains_key(native_symbol),
+        "module_attr native callable dispatch must not invent a direct native import"
+    );
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let invoke_ffi_ic_index = *import_indices
+        .get("invoke_ffi_ic")
+        .unwrap_or_else(|| panic!("invoke_ffi_ic import missing; imports={import_indices:?}"));
+    let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(
+        call_indices.contains(&invoke_ffi_ic_index),
+        "module_attr invoke_ffi must dispatch through runtime FFI; calls={call_indices:?}"
+    );
+}
+
+#[test]
+fn native_callable_module_attr_object_callargs_uses_runtime_ffi_without_native_import() {
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_module_attr_native_callable_ir(
+        "molt.object_callargs_v1",
+        vec!["func", "callargs"],
+    ));
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("native callable module_attr callargs dispatch must emit valid WASM");
+
+    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
+    let import_modules = wasm_function_import_modules(&wasm);
+    assert!(
+        !import_modules.contains_key(native_symbol),
+        "module_attr callargs dispatch must not invent a direct native import"
+    );
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let invoke_ffi_ic_index = *import_indices
+        .get("invoke_ffi_ic")
+        .unwrap_or_else(|| panic!("invoke_ffi_ic import missing; imports={import_indices:?}"));
+    let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(
+        call_indices.contains(&invoke_ffi_ic_index),
+        "module_attr callargs invoke_ffi must dispatch through runtime FFI; calls={call_indices:?}"
+    );
+}
+
+#[test]
 fn native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol() {
     let wasm = WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
@@ -319,6 +435,25 @@ fn wasm_native_callable_ir_with_args(abi: &str, args: Vec<&str>) -> SimpleIR {
     native_call.native_callable_binding = Some("direct_symbol".to_string());
     native_call.native_callable_symbol =
         Some("molt_nativepkg_ndimage_distance_transform_edt".to_string());
+    native_call.native_callable_abi = Some(abi.to_string());
+    let mut ret = wasm_test_op("ret", None, vec!["out"]);
+    ret.var = Some("out".to_string());
+    SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            args,
+            None,
+            vec![native_call, ret],
+        )],
+        profile: None,
+    }
+}
+
+fn wasm_module_attr_native_callable_ir(abi: &str, args: Vec<&str>) -> SimpleIR {
+    let mut native_call = wasm_test_op("invoke_ffi", Some("out"), args.clone());
+    native_call.native_callable_export =
+        Some("nativepkg.ndimage.distance_transform_edt".to_string());
+    native_call.native_callable_binding = Some("module_attr".to_string());
     native_call.native_callable_abi = Some(abi.to_string());
     let mut ret = wasm_test_op("ret", None, vec!["out"]);
     ret.var = Some("out".to_string());

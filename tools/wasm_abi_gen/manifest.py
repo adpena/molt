@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import re
-import sys
 from pathlib import Path
 
 try:
@@ -31,6 +30,15 @@ STRIP_IMPORT_CATEGORIES = {
     "time",
     "indirect_call",
     "table",
+}
+LINK_IMPORT_PRIMITIVE_CLASSES = {
+    "molt_cpython_abi_link_import",
+    "molt_indirect_call_import",
+    "molt_runtime_host_import",
+    "wasi_link_import",
+    "wasm_compiler_rt_link_import",
+    "wasm_libc_link_import",
+    "wasm_toolchain_link_import",
 }
 CONST_POLICY_INLINE_SEEDS = {
     "none",
@@ -1460,6 +1468,16 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"runtime_export_policy host export {name!r} must start with 'molt_'"
             )
+    rust_exports = _rust_export_signatures()
+    missing_host_exports = sorted(
+        name for name in host_exports if name not in rust_exports
+    )
+    if missing_host_exports:
+        raise WasmAbiManifestError(
+            "runtime_export_policy host exports are not defined by shipped "
+            "Rust extern \"C\" symbols: "
+            + ", ".join(missing_host_exports)
+        )
 
     gpu_intrinsic_manifest_names = data.get("gpu_intrinsic_manifest_name", [])
     if not isinstance(gpu_intrinsic_manifest_names, list) or not gpu_intrinsic_manifest_names:
@@ -1552,6 +1570,20 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"link_allowed_import entry {idx} has invalid name"
             )
+        primitive_class = entry.get("primitive_class")
+        if primitive_class not in LINK_IMPORT_PRIMITIVE_CLASSES:
+            raise WasmAbiManifestError(
+                f"link_allowed_import {name!r} has invalid primitive_class "
+                f"{primitive_class!r}"
+            )
+        if (
+            _parse_call_indirect_import_arity(name) is not None
+            and primitive_class != "molt_indirect_call_import"
+        ):
+            raise WasmAbiManifestError(
+                f"link_allowed_import {name!r} must use "
+                "primitive_class='molt_indirect_call_import'"
+            )
         if name in seen_link_allowed:
             raise WasmAbiManifestError(f"duplicate linker allowlist import {name!r}")
         seen_link_allowed.add(name)
@@ -1567,6 +1599,34 @@ def validate_loaded_manifest(data: dict) -> dict:
             "call_indirect import arities must be contiguous from 0: "
             f"{call_indirect_arities!r}"
         )
+
+    external_native_link_imports = data.get("external_native_link_import", [])
+    if not isinstance(external_native_link_imports, list):
+        raise WasmAbiManifestError(
+            "external_native_link_import must be a list of tables"
+        )
+    seen_external_native_link_imports = set(seen_link_allowed)
+    for idx, entry in enumerate(external_native_link_imports):
+        if not isinstance(entry, dict):
+            raise WasmAbiManifestError(
+                f"external_native_link_import entry {idx} must be a table"
+            )
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            raise WasmAbiManifestError(
+                f"external_native_link_import entry {idx} has invalid name"
+            )
+        primitive_class = entry.get("primitive_class")
+        if primitive_class not in LINK_IMPORT_PRIMITIVE_CLASSES:
+            raise WasmAbiManifestError(
+                f"external_native_link_import {name!r} has invalid "
+                f"primitive_class {primitive_class!r}"
+            )
+        if name in seen_external_native_link_imports:
+            raise WasmAbiManifestError(
+                f"duplicate external native link import {name!r}"
+            )
+        seen_external_native_link_imports.add(name)
 
     def validate_strip_rule(
         section: str, idx: int, entry: object, *, prefix_rule: bool

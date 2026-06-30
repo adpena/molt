@@ -28,6 +28,9 @@ from molt.cli.models import (
     _StagedExternalPackageNativeArtifact,
 )
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
+from molt.cli.runtime_build import (
+    _ensure_wasm_cpython_abi_staticlib,
+)
 from molt.cli.runtime_fingerprints import (
     _artifact_needs_rebuild,
     _read_runtime_fingerprint,
@@ -44,6 +47,7 @@ from molt.cli.wasm import (
     _runtime_import_signatures_from_manifest,
     _split_runtime_browser_abi_from_manifest,
 )
+from molt.cli import wasm_toolchain
 from molt.native_callable_abi import native_callable_browser_signature
 from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
@@ -245,6 +249,10 @@ def _browser_native_callable_manifest(
     }
 
 
+def _wasm_linkable_static_artifact_path(path: Path) -> bool:
+    return path.suffix in {".a", ".o"} or path.name.endswith(".molt.wasm")
+
+
 def _wasm_static_link_native_artifact_inputs(
     artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
 ) -> tuple[Path, ...]:
@@ -260,7 +268,38 @@ def _wasm_static_link_native_artifact_inputs(
                 f"{artifact.runtime_linkage}/{artifact.artifact_kind}"
             )
         out.append(artifact.staged_path)
+        out.extend(
+            path
+            for path in artifact.staged_support_paths
+            if _wasm_linkable_static_artifact_path(path)
+        )
     return tuple(out)
+
+
+def _staged_artifacts_need_cpython_abi_link(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> bool:
+    return any(
+        symbol.status == "cpython_abi_link"
+        for artifact in artifacts
+        for symbol in artifact.c_api_symbols
+    ) or any(
+        symbol.status == "external_link"
+        and symbol.primitive_class == "molt_cpython_abi_link_import"
+        for artifact in artifacts
+        for symbol in artifact.abi_symbols
+    )
+
+
+def _staged_artifacts_need_wasm_libc_link(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> bool:
+    return any(
+        symbol.status == "external_link"
+        and symbol.primitive_class == "wasm_libc_link_import"
+        for artifact in artifacts
+        for symbol in artifact.abi_symbols
+    )
 
 
 def _external_native_artifact_fingerprint_inputs(
@@ -356,6 +395,49 @@ def _prepare_non_native_build_result(
                             staged_external_native_artifacts
                         )
                     )
+                    needs_cpython_abi_link = _staged_artifacts_need_cpython_abi_link(
+                        staged_external_native_artifacts
+                    )
+                    needs_wasm_libc_link = _staged_artifacts_need_wasm_libc_link(
+                        staged_external_native_artifacts
+                    )
+                    if needs_cpython_abi_link:
+                        cpython_abi_provider = _ensure_wasm_cpython_abi_staticlib(
+                            project_root=molt_root,
+                            json_output=json_output,
+                            cargo_profile=runtime_cargo_profile,
+                            cargo_timeout=None,
+                        )
+                        if cpython_abi_provider is None:
+                            raise ValueError(
+                                "cpython_abi_link symbols require a wasm32 "
+                                "molt-cpython-abi staticlib provider"
+                            )
+                        wasm_static_link_native_inputs = (
+                            *wasm_static_link_native_inputs,
+                            cpython_abi_provider,
+                        )
+                        external_native_fingerprint_inputs = (
+                            *external_native_fingerprint_inputs,
+                            cpython_abi_provider,
+                        )
+                        needs_wasm_libc_link = True
+                    if needs_wasm_libc_link:
+                        libc_provider = wasm_toolchain.wasm_wasi_libc_archive()
+                        if libc_provider is None:
+                            raise ValueError(
+                                "wasm_libc_link_import symbols require Rust "
+                                "wasm32-wasip1 self-contained libc.a"
+                            )
+                        libc_provider = libc_provider.resolve(strict=False)
+                        wasm_static_link_native_inputs = (
+                            *wasm_static_link_native_inputs,
+                            libc_provider,
+                        )
+                        external_native_fingerprint_inputs = (
+                            *external_native_fingerprint_inputs,
+                            libc_provider,
+                        )
                 except (OSError, ValueError) as exc:
                     return None, _fail(
                         f"Failed to stage external native artifacts for WASM link: {exc}",

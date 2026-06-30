@@ -18,12 +18,27 @@ python check_parity.py candidate_outputs.npz
 The live recovery evidence says the current tree cannot honestly produce that
 candidate yet:
 
-- Plain WASM compile of `pact_witness_kernel/field_solve.py` fails at
-  `scipy.ndimage.distance_transform_edt`; it is not a supported/linkable direct
-  call.
+- The first native-callable lowering gap is retired: manifest-declared
+  direct-symbol exports for the `scipy.ndimage` witness operation closure now
+  lower to executable `invoke_ffi` ABI metadata without granting
+  `known_modules` fake Python direct-call authority.
+- The remaining blocker is package-native execution custody: the live Pact
+  build still needs reachable NumPy/SciPy native artifacts, ndarray/storage and
+  buffer primitives, and C/API symbol closure before the emitted WASM can link
+  and execute those upstream extension symbols.
 - Adding NumPy/SciPy source roots without package admission correctly fails
   closed.
-- Adding package admission timed out after 300s in the live WASM build path.
+- Adding package admission against the local Python 3.14 site-packages root now
+  fails closed before graph expansion because the installed NumPy/SciPy roots
+  contain native markers but do not publish wasm32 `static_link`
+  `libmolt_source` artifact manifests with package symbol custody.
+- Molt now has the producer-side command contract for that missing artifact
+  shape: `molt extension build --target wasm` emits a wasm32 static-link
+  `.molt.wasm` artifact and `extension_manifest.json` with direct-symbol and
+  object-closure custody. The installed NumPy/SciPy roots still need reachable
+  source-recompiled artifacts in that shape.
+- An earlier package-admission probe timed out after 300s in the live WASM build
+  path.
 - A graph-only probe took 100.4s before backend work, found 186 modules, zero
   staged native artifacts, and pulled broad NumPy plus `scipy` and
   `scipy.ndimage` package initializer closure.

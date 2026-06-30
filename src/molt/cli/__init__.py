@@ -865,7 +865,7 @@ def build(
     portable: bool = False,
     wasm_opt_level: str = "Oz",
     precompile: bool = False,
-    wasm_profile: str = "full",
+    wasm_profile: str = "auto",
     snapshot: bool = False,
     stdlib_profile: str | None = None,
     tree_shake: bool = True,
@@ -917,9 +917,8 @@ def build(
     # --split-runtime: signal to the non-native build result handler.
     if split_runtime:
         env_updates["MOLT_SPLIT_RUNTIME"] = "1"
-    # --wasm-profile: pass the effective profile to the backend explicitly.
-    # The backend defaults to WasmProfile::Auto when the env var is absent,
-    # so omitting the "full" case silently changes semantics.
+    # --wasm-profile: pass the effective profile to the backend explicitly so
+    # CLI, config, and deploy defaults share one import-planning authority.
     if target in {"wasm", "wasm-freestanding"} and wasm_profile:
         env_updates["MOLT_WASM_PROFILE"] = wasm_profile
     # --stdlib-profile: propagate the resolved profile to module-graph

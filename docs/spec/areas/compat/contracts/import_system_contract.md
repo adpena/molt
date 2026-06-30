@@ -148,6 +148,11 @@ Modules may be:
   can resolve, but they must not leak fake Python direct-call symbols unless
   they are also present in `direct_call_modules`. Native executable entrypoints
   are governed by validated `callable_exports`, not by `known_modules`.
+  `from package import child` records `child` as a module binding only when
+  `package.child` is itself an exact admitted module; calls such as
+  `child.native_export(...)` may then route through validated
+  `callable_exports`, while ordinary from-imported attributes remain attribute
+  bindings and cannot mint direct-call symbols.
   Dead-module elimination may narrow `compile_modules`, but it must not mutate
   the known closure, direct-call authority, runtime import dispatch roots, or
   wrapper-cache dependency graph. Wrapper build manifests and diagnostics must

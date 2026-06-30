@@ -8,13 +8,54 @@ C_API_TOKEN = (
 )
 C_API_TOKEN_RE = re.compile(rf"\b(?P<symbol>{C_API_TOKEN})\b")
 
+_C_API_DECLARATION_ONLY_SYMBOLS = frozenset(
+    {
+        "PyMODINIT_FUNC",
+        "Python",
+        "PyObject",
+        "PyVarObject",
+        "PyTypeObject",
+        "PyHeapTypeObject",
+        "PyModuleDef",
+        "PyModuleDef_Base",
+        "PyMethodDef",
+        "PyGetSetDef",
+        "PyMemberDef",
+        "PyBufferProcs",
+        "PyNumberMethods",
+        "PySequenceMethods",
+        "PyMappingMethods",
+        "PyAsyncMethods",
+        "PyType_Slot",
+        "PyType_Spec",
+        "PyThreadState",
+        "PyInterpreterState",
+        "PyGILState_STATE",
+        "Py_buffer",
+        "Py_ssize_t",
+        "Py_hash_t",
+        "Py_UCS1",
+        "Py_UCS2",
+        "Py_UCS4",
+        "Py_UNICODE",
+    }
+)
 
-def is_c_api_symbol(symbol: str) -> bool:
-    return C_API_TOKEN_RE.fullmatch(symbol) is not None
+
+_C_API_PRIMITIVE_EXACT: dict[str, str] = {
+    "Py_INCREF": "refcount",
+    "Py_DECREF": "refcount",
+    "Py_XINCREF": "refcount",
+    "Py_XDECREF": "refcount",
+    "Py_NewRef": "refcount",
+    "Py_XNewRef": "refcount",
+    "PyObject_GetBuffer": "buffer_protocol",
+    "PyBuffer_Release": "buffer_protocol",
+}
 
 
-def c_api_primitive_class(symbol: str) -> str:
-    if symbol.startswith(
+_C_API_PRIMITIVE_PREFIXES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
         (
             "PyArray_",
             "PyArray",
@@ -24,25 +65,35 @@ def c_api_primitive_class(symbol: str) -> str:
             "Npy",
             "npy",
             "NPY_",
-        )
-    ):
-        return "numpy_c_api"
-    if symbol.startswith("PyCapsule"):
-        return "capsules"
-    if symbol.startswith(("PyModule", "PyState", "PyThreadState", "PyGILState")):
-        return "module_state"
-    if symbol.startswith(("PyErr", "PyExc")):
-        return "exceptions"
-    if symbol in {"Py_INCREF", "Py_DECREF", "Py_XINCREF", "Py_XDECREF"}:
-        return "refcount"
-    if symbol.startswith(("PyType", "PyObject", "Py_NewRef", "Py_XNewRef")):
-        return "object_type_lifecycle"
-    if symbol.startswith(("PyBuffer", "PyMemoryView")) or symbol in {
-        "PyObject_GetBuffer",
-        "PyBuffer_Release",
-    }:
-        return "buffer_protocol"
-    if symbol.startswith(
+        ),
+        "numpy_c_api",
+    ),
+    (("_Pyx_",), "cython_runtime_helper"),
+    (("PyCapsule",), "capsules"),
+    (("PyErr", "PyExc"), "exceptions"),
+    (
+        ("PyMem", "PyObject_Malloc", "PyObject_Free", "PyObject_Realloc"),
+        "memory_allocator",
+    ),
+    (("PyBuffer", "PyMemoryView"), "buffer_protocol"),
+    (("PyImport",), "import_system"),
+    (("PyModule", "PyState", "PyThreadState"), "module_state"),
+    (("PyGILState", "PyThread"), "gil_threading"),
+    (("PyUnicode", "Py_UCS"), "unicode_text"),
+    (("PyBytes", "PyByteArray"), "bytes_bytearray"),
+    (
+        (
+            "PyCallable",
+            "PyCFunction",
+            "PyObject_Call",
+            "PyObject_Vectorcall",
+            "PyVectorcall",
+            "PyFunction",
+        ),
+        "call_protocol",
+    ),
+    (("PyDescr", "PyGetSet", "PyMember", "PyMethod"), "descriptor_protocol"),
+    (
         (
             "PyIter",
             "PyMapping",
@@ -51,11 +102,49 @@ def c_api_primitive_class(symbol: str) -> str:
             "PyList",
             "PyTuple",
             "PySet",
-        )
-    ):
-        return "iterator_mapping_helpers"
-    if symbol.startswith(
-        ("PyLong", "PyFloat", "PyNumber", "PyBool", "PyComplex", "PyOS_string_to_double")
-    ):
-        return "numeric_scalars"
+            "PySlice",
+        ),
+        "iterator_mapping_helpers",
+    ),
+    (
+        (
+            "PyLong",
+            "PyFloat",
+            "PyNumber",
+            "PyBool",
+            "PyComplex",
+            "PyOS_string_to_double",
+        ),
+        "numeric_scalars",
+    ),
+    (("PyCode", "PyFrame", "PyTraceBack", "PyEval"), "code_frame_eval"),
+    (("PyType", "PyObject", "_PyType", "_PyObject"), "object_type_lifecycle"),
+)
+
+
+def is_c_api_symbol(symbol: str) -> bool:
+    return C_API_TOKEN_RE.fullmatch(symbol) is not None
+
+
+def is_c_api_external_requirement(symbol: str) -> bool:
+    """Return whether a source token names an external C/API obligation.
+
+    The broad scanner intentionally recognizes header and typedef spellings so
+    the scan surface can classify them. Static-link object custody is stricter:
+    declaration-only names must not become provider/link requirements.
+    """
+    return (
+        is_c_api_symbol(symbol)
+        and symbol not in _C_API_DECLARATION_ONLY_SYMBOLS
+        and not symbol.endswith("_H")
+    )
+
+
+def c_api_primitive_class(symbol: str) -> str:
+    exact = _C_API_PRIMITIVE_EXACT.get(symbol)
+    if exact is not None:
+        return exact
+    for prefixes, primitive_class in _C_API_PRIMITIVE_PREFIXES:
+        if symbol.startswith(prefixes):
+            return primitive_class
     return "python_c_api"

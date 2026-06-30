@@ -4,7 +4,7 @@
 build-admission sidecar custody and deterministic build-artifact publication
 for admitted external packages, runtime load-time metadata enforcement + CI
 native/cross-host matrix lanes landed, including verify-policy and
-wasm-rejection contract checks)
+wasm static-link artifact contract checks)
 **Owner:** tooling + runtime
 **Goal:** Define the build, packaging, and validation pipeline for C-extensions
 recompiled against `libmolt`.
@@ -29,7 +29,8 @@ Flags (implemented):
 - `--project <path>` (default: cwd)
 - `--out-dir <path>` (default: `dist/`)
 - `--molt-abi <ver>` (default: `[tool.molt.extension].molt_c_api_version` or `MOLT_C_API_VERSION`)
-- `--target <native|triple>` (`wasm` rejected for native shared-library builds)
+- `--target <native|wasm|wasm32-*|triple>` (`wasm` emits a wasm32 static-link
+  `.molt.wasm` artifact instead of a host shared library)
 - `--capabilities <file|list|profiles>` (override extension capability metadata)
 - `--deterministic/--no-deterministic`
 - `--json` / `--verbose`
@@ -37,6 +38,10 @@ Flags (implemented):
 Outputs:
 - `.whl` tagged with `py3-molt_abi<major>-<platform_tag>`.
 - `extension_manifest.json` sidecar (ABI/capability metadata + checksums).
+- For `--target wasm`/`wasm32-*`, a standalone `.molt.wasm` static-link
+  artifact whose sidecar declares `runtime_linkage = "static_link"`,
+  `artifact_kind = "wasm_relocatable_object"`, and `object_closure` symbol
+  custody.
 
 ### 2.2 `molt extension audit`
 Purpose: verify that an extension declares capabilities and matches the expected ABI.
@@ -82,9 +87,12 @@ Optional:
 ## 5. Build Flow
 1. Resolve `libmolt` headers and link flags.
 2. Compile C/C++ sources with pinned flags for reproducibility.
-3. Link against `libmolt`.
-4. Run symbol audit and ABI tag validation.
-5. Emit wheel + `extension_manifest.json`.
+3. For native targets, link a host shared library against `libmolt`.
+4. For wasm targets, emit a wasm32 static-link `.molt.wasm` object, read its
+   function exports/imports, and reject missing declared `direct_symbol`
+   callable exports.
+5. Run symbol audit and ABI tag validation.
+6. Emit wheel + standalone artifact + `extension_manifest.json`.
 
 ---
 
@@ -115,15 +123,17 @@ Optional:
   `binding` (`module_attr` or `direct_symbol`), `abi`, optional `effects`,
   optional `deterministic`, and a required native `symbol` for `direct_symbol`.
   The `abi` token must be one of the canonical native callable ABI contracts:
-  `molt.object_call_v1` for boxed object-call dispatch or
+  `molt.object_call_v1` for positional boxed object-call dispatch,
+  `molt.object_callargs_v1` for the canonical CallArgs-builder handle used by
+  keyword, star-arg, and C-extension call-protocol dispatch, or
   `molt.forward_f32_v1` for the unary bytes-backed Float32Array/browser lane.
   The validated callable export map is the native ABI dispatch authority; import
   visibility through `known_modules` cannot create Python `module__function`
   symbols for native packages. WASM lowers reachable `direct_symbol`
-  `molt.object_call_v1` exports into deterministic `molt_native` imports and
-  direct call edges; `molt.forward_f32_v1` uses the same import namespace with
-  one Float32Array payload and a boxed bytes result so browser hosts and linked
-  wasm objects can share one callable-export contract. The corresponding
+  object-call exports into deterministic `molt_native` imports and direct call
+  edges; `molt.forward_f32_v1` uses the same import namespace with one
+  Float32Array payload and a boxed bytes result so browser hosts and linked wasm
+  objects can share one callable-export contract. The corresponding
   `invoke_ffi` IR stores callable identity only in native callable metadata; its
   `args` vector is the ABI payload, never a synthesized Python callee/module
   attribute. `module_attr` callable
@@ -132,8 +142,9 @@ Optional:
   fabricated Python function symbol. Split-runtime browser packages project only
   remaining `app.wasm` `molt_native` imports into `manifest.json` at
   `abi.browser_embed.native_callables.symbols` with the canonical ABI signature
-  (`molt.value... -> molt.value` for object-call and `bytes.float32 ->
-  bytes.float32` for `forward_f32`). Source-recompiled static-link artifacts
+  (`molt.value... -> molt.value` for positional object-call,
+  `molt.callargs -> molt.value` for callargs object-call, and
+  `bytes.float32 -> bytes.float32` for `forward_f32`). Source-recompiled static-link artifacts
   passed to `wasm-ld` are link custody, not browser host-callable imports; once
   their symbols are resolved into `app.wasm`, the browser manifest table is
   empty for those symbols. The browser embed rejects packaged `molt_native`
@@ -158,9 +169,15 @@ Optional:
   exactly match the artifact's function imports: binary imports missing from the
   sidecar and stale sidecar names missing from the binary both fail admission.
   Each accepted C/API symbol is bucketed by reusable primitive class such as
-  object/type lifecycle, module state, capsules, exceptions, refcount, buffer
-  protocol, iterator/mapping helpers, numeric scalars, or NumPy C-API. General
-  ndarray storage and multi-buffer tensor ABI custody are separate contracts.
+  object/type lifecycle, module state, capsules, exceptions, refcount, memory
+  allocation, buffer protocol, import system, call protocol, descriptors,
+  unicode/text, bytes/bytearray, GIL/threading, code/frame/eval,
+  iterator/mapping helpers, numeric scalars, Cython runtime helpers, or NumPy
+  C-API. General ndarray storage and multi-buffer tensor ABI custody are
+  separate contracts. `molt extension scan --json` emits the same
+  `symbol_primitive_class`, `symbols_by_primitive_class`, and
+  `primitive_class_counts` board used by sidecar admission so preflight scans
+  and build-time custody cannot disagree about the missing primitive surface.
   Reachable native-artifact tree shaking is provider-closed: filtering to the
   user's graph, explicit imports, and runtime dispatch roots must retain every
   artifact that provides a capsule required by a reachable artifact.
@@ -202,7 +219,8 @@ Optional:
   `molt verify --extension-metadata`, and `molt publish --dry-run`
   for extension wheels (`linux native`, `linux cross-musl`, `macos native`).
 - CI also asserts the wasm build contract (`molt extension build --target wasm*`
-  must fail with an explicit unsupported-target diagnostic).
+  emits a wasm32 `static_link` `wasm_relocatable_object` artifact and sidecar
+  object-closure board).
 
 ---
 
