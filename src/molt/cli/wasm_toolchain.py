@@ -8,24 +8,34 @@ from pathlib import Path
 from molt.cli.command_runtime import _run_completed_command
 
 
-_WASI_ERRNO_RELATIVE_PATHS = (
-    Path("include") / "errno.h",
-    Path("include") / "wasm32-wasip1" / "errno.h",
-    Path("include") / "wasm32-wasi" / "errno.h",
-)
+_WASI_TARGET_INCLUDE_DIRS = ("wasm32-wasip1", "wasm32-wasi")
+
+
+def _normalize_target_include_path(candidate: Path) -> Path | None:
+    if candidate.name not in _WASI_TARGET_INCLUDE_DIRS:
+        return None
+    if candidate.parent.name != "include":
+        return None
+    if not (candidate / "errno.h").exists():
+        return None
+    return candidate.parent.parent.resolve(strict=False)
 
 
 def normalize_wasi_sysroot(path: str | Path | None) -> Path | None:
     if path is None:
         return None
     candidate = Path(path).expanduser()
+    target_include_root = _normalize_target_include_path(candidate)
+    if target_include_root is not None:
+        return target_include_root
     roots = [candidate]
     if candidate.name == "include":
         roots.append(candidate.parent)
-    if candidate.parent.name == "include" and candidate.name.startswith("wasm32-"):
-        roots.append(candidate.parent.parent)
     for root in roots:
-        if any((root / relative).exists() for relative in _WASI_ERRNO_RELATIVE_PATHS):
+        for target in _WASI_TARGET_INCLUDE_DIRS:
+            if (root / "include" / target / "errno.h").exists():
+                return root.resolve(strict=False)
+        if (root / "include" / "errno.h").exists():
             return root.resolve(strict=False)
     return None
 
@@ -46,6 +56,7 @@ def _resolve_wasi_sysroot_cached(
     molt_wasi_sysroot: str | None,
     wasi_sysroot: str | None,
     wasi_sdk_path: str | None,
+    wasi_sdk_prefix: str | None,
     molt_target_root: str | None,
 ) -> Path | None:
     candidates: list[Path] = []
@@ -53,6 +64,7 @@ def _resolve_wasi_sysroot_cached(
         if raw:
             candidates.append(Path(raw).expanduser())
     candidates.extend(_wasi_sdk_sysroot_candidates(wasi_sdk_path))
+    candidates.extend(_wasi_sdk_sysroot_candidates(wasi_sdk_prefix))
     if molt_target_root:
         target_root = Path(molt_target_root).expanduser()
         target_toolchains = target_root / "toolchains"
@@ -106,6 +118,7 @@ def resolve_wasi_sysroot() -> Path | None:
         os.environ.get("MOLT_WASI_SYSROOT"),
         os.environ.get("WASI_SYSROOT"),
         os.environ.get("WASI_SDK_PATH"),
+        os.environ.get("WASI_SDK_PREFIX"),
         os.environ.get("MOLT_TARGET_ROOT"),
     )
 

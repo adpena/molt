@@ -325,8 +325,11 @@ fn build_libmpdec(
                  wasm32-wasip1 runtime C shims can compile."
             );
         };
-        build.flag(format!("--sysroot={}", sysroot.display()));
-        let lib_path = sysroot.join("lib").join("wasm32-wasip1");
+        build.flag(sysroot.sysroot_flag());
+        if let Some(include_dir) = sysroot.include_dir() {
+            build.include(include_dir);
+        }
+        let lib_path = sysroot.lib_dir("wasm32-wasip1");
         println!("cargo:rustc-link-search=native={}", lib_path.display());
         println!("cargo:rustc-link-lib=wasi-emulated-signal");
     }
