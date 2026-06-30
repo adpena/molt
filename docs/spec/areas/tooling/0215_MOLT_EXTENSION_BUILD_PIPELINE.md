@@ -53,6 +53,13 @@ Flags (implemented):
 - `--require-capabilities`
 - `--require-abi <ver>`
 - `--require-checksum`
+- `--require-loader-kind <token>`
+- `--require-runtime-linkage <token>`
+- `--require-artifact-kind <token>`
+- `--require-artifact-file`
+- `--require-object-closure`
+- `--require-python-export <dotted-name>` (repeatable)
+- `--require-callable-export <dotted-name>` (repeatable)
 - `--json` / `--verbose`
 
 ---
@@ -91,6 +98,15 @@ Optional:
 4. For wasm targets, emit a wasm32 static-link `.molt.wasm` object, read its
    function exports/imports, and reject missing declared `direct_symbol`
    callable exports.
+   Source-recompiled roots such as NumPy/SciPy must publish `python_exports` or
+   `callable_exports`; package-root imports such as `numpy` require a
+   `python_exports = ["numpy"]` owner rather than child artifact ancestry.
+   Source-plan WASM builds resolve one compiler authority before compiling:
+   `MOLT_WASM_CC`, then `MOLT_CROSS_CC`, then `zig cc`, then
+   `clang + WASI_SYSROOT/WASI_SDK_PATH`. The selected compiler must compile a
+   tiny WASI probe including `<errno.h>` before any upstream package objects are
+   built, so missing sysroot/toolchain custody fails in seconds instead of
+   after a broad NumPy/SciPy compile.
 5. Run symbol audit and ABI tag validation.
 6. Emit wheel + standalone artifact + `extension_manifest.json`.
 
@@ -116,8 +132,9 @@ Optional:
   package graph edges. Reachable package/subpackage artifacts
   (`.so`/`.pyd`/`.molt.wasm`/`.o`/`.a`) must have nearby
   `extension_manifest.json` metadata with matching module, extension path,
-  checksum, ABI, target, platform, capabilities, optional `python_exports`
-  entries that map package-level imports to the owning native artifact, and
+  checksum, ABI, target, platform, capabilities, `python_exports`
+  entries that map source-recompiled package-level imports to the owning native
+  artifact, and
   optional `callable_exports` entries that name direct native call bindings
   before backend dispatch. Each callable export declares `module`, `name`,
   `binding` (`module_attr` or `direct_symbol`), `abi`, optional `effects`,
@@ -136,10 +153,12 @@ Optional:
   objects can share one callable-export contract. The corresponding
   `invoke_ffi` IR stores callable identity only in native callable metadata; its
   `args` vector is the ABI payload, never a synthesized Python callee/module
-  attribute. `module_attr` callable
-  exports are descriptive import metadata until a target owns native loader
-  custody; calls to them fail closed instead of falling back to `CALL_BIND` or a
-  fabricated Python function symbol. Split-runtime browser packages project only
+  attribute. `module_attr` callable exports with object-call ABIs are executable
+  runtime FFI dispatch: lowering loads the real module attribute handle and the
+  WASM backend calls the runtime `invoke_ffi` IC with canonical CallArgs or
+  positional payloads, while `module_attr` + memory-buffer ABIs still fail
+  closed because pointer/byte-buffer calls require an addressable
+  `direct_symbol`. Split-runtime browser packages project only
   remaining `app.wasm` `molt_native` imports into `manifest.json` at
   `abi.browser_embed.native_callables.symbols` with the canonical ABI signature
   (`molt.value... -> molt.value` for positional object-call,
@@ -178,6 +197,16 @@ Optional:
   `symbol_primitive_class`, `symbols_by_primitive_class`, and
   `primitive_class_counts` board used by sidecar admission so preflight scans
   and build-time custody cannot disagree about the missing primitive surface.
+  Package-generated token-paste helpers are a separate custody fact, not a
+  Molt runtime ABI claim: source-plan builds publish
+  `build.source_c_api_scan.project_generated_c_api_prefixes`,
+  `build.source_c_api_scan.project_generated_c_api_symbols`, and per-object
+  `object_closure.objects[].project_generated_c_api_symbols`; public
+  `molt extension scan --json` reports matching `project_generated_*` fields.
+  Exact broad API-family prefixes such as `PyArray_` and `PyDataType_` are not
+  accepted as generated-helper custody, and generated-prefix filtering only
+  applies to symbols that would otherwise be missing. Runtime-backed and
+  source-compile-only C/API facts remain visible requirements.
   Reachable native-artifact tree shaking is provider-closed: filtering to the
   user's graph, explicit imports, and runtime dispatch roots must retain every
   artifact that provides a capsule required by a reachable artifact.
@@ -205,14 +234,26 @@ Optional:
 - `molt build` rejects source-recompiled external package admission with no
   native/static artifact candidates before module graph discovery, rejects
   WASM native-source packages without staged wasm static-link artifacts, rejects
+  WASM source-recompiled packages whose static-link artifacts do not publish
+  `python_exports` or `callable_exports`, rejects
   reachable external package extensions with missing or mismatched sidecar
   metadata before backend dispatch, uses sidecar `python_exports` to bind
   package-level imports to native artifacts, threads sidecar
   `callable_exports` into scoped lowering/cache facts and `invoke_ffi` native
   callable metadata, routes supported direct-symbol object-call exports into
-  backend native import tables, fails closed when backend ABI dispatch for that
-  metadata is absent, and publishes validated native artifacts plus sidecars and runtime
-  shims into deterministic build artifacts for native runtime import custody.
+  backend native import tables, routes supported module-attribute object-call
+  exports through runtime FFI dispatch without inventing native imports, fails
+  closed when backend ABI dispatch for that metadata is absent, and publishes
+  validated native artifacts plus sidecars and runtime shims into deterministic
+  build artifacts for native runtime import custody.
+- `molt extension audit` can require manifest public-export custody with
+  `--require-python-export` and `--require-callable-export`, so stale
+  source-recompiled artifacts fail before graph discovery with the exact
+  publisher flag needed to republish the sidecar. It can also require
+  `libmolt_source`/`static_link`/`wasm_relocatable_object`, standalone artifact
+  presence, extension SHA-256 match, and object-closure metadata, so agents can
+  prove the native bytes and sidecar the WASM linker will consume before
+  entering expensive package graph or backend work.
 - `molt verify` enforces capability allowlists for extension loads.
 - CI runs an extension publish dry-run matrix (native + cross-target) covering
   `molt extension build`, `molt extension audit --require-abi`,

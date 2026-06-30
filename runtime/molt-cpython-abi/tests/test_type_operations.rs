@@ -63,17 +63,22 @@ fn test_generic_alloc_returns_object_with_refcount_one() {
     assert!(!obj.is_null());
     assert_eq!(unsafe { (*obj).ob_refcnt }, 1);
     assert_eq!(unsafe { (*obj).ob_type }, &mut tp as *mut _);
-    // Free the allocation
-    unsafe {
-        std::alloc::dealloc(
-            obj as *mut u8,
-            std::alloc::Layout::from_size_align(
-                std::mem::size_of::<PyObject>(),
-                std::mem::align_of::<PyObject>(),
-            )
-            .unwrap(),
-        );
-    }
+    unsafe { molt_cpython_abi::api::memory::PyMem_Free(obj.cast()) };
+}
+
+#[test]
+fn test_generic_alloc_initializes_var_object_size() {
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_basicsize = std::mem::size_of::<PyVarObject>() as Py_ssize_t;
+    tp.tp_itemsize = std::mem::size_of::<*mut PyObject>() as Py_ssize_t;
+    let obj = unsafe { molt_cpython_abi::api::typeobj::PyType_GenericAlloc(&mut tp, 3) };
+    assert!(!obj.is_null());
+    let var = obj.cast::<PyVarObject>();
+    assert_eq!(unsafe { (*var).ob_base.ob_refcnt }, 1);
+    assert_eq!(unsafe { (*var).ob_base.ob_type }, &mut tp as *mut _);
+    assert_eq!(unsafe { (*var).ob_size }, 3);
+    unsafe { molt_cpython_abi::api::memory::PyMem_Free(obj.cast()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -102,16 +107,7 @@ fn test_generic_new_returns_valid_object() {
     };
     assert!(!obj.is_null());
     assert_eq!(unsafe { (*obj).ob_refcnt }, 1);
-    unsafe {
-        std::alloc::dealloc(
-            obj as *mut u8,
-            std::alloc::Layout::from_size_align(
-                std::mem::size_of::<PyObject>(),
-                std::mem::align_of::<PyObject>(),
-            )
-            .unwrap(),
-        );
-    }
+    unsafe { molt_cpython_abi::api::memory::PyMem_Free(obj.cast()) };
 }
 
 // ---------------------------------------------------------------------------

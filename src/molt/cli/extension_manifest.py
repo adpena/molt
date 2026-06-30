@@ -549,6 +549,7 @@ def _validate_extension_manifest(
     required_abi: str | None,
     require_checksum: bool = False,
     warn_missing_checksum: bool = False,
+    allow_missing_wheel: bool = False,
 ) -> ExtensionManifestValidation:
     errors: list[str] = []
     warnings: list[str] = []
@@ -681,7 +682,7 @@ def _validate_extension_manifest(
             candidate = (manifest_dir / candidate).absolute()
         if candidate.exists():
             resolved_wheel = candidate
-        else:
+        elif not allow_missing_wheel:
             warnings.append(f"Wheel path referenced by manifest not found: {candidate}")
 
     wheel_tags: tuple[str, str, str] | None = None
@@ -745,7 +746,7 @@ def _validate_extension_manifest(
             errors.append(
                 "wheel artifact required for checksum verification is missing"
             )
-        else:
+        elif not allow_missing_wheel:
             warnings.append(
                 "Wheel artifact not found; wheel tag and checksum checks skipped."
             )

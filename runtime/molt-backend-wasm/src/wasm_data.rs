@@ -9,7 +9,7 @@ pub(crate) struct DataSegmentInfo {
 
 #[derive(Clone, Copy)]
 pub(crate) struct DataRelocSite {
-    pub(crate) func_index: u32,
+    pub(crate) defined_func_index: u32,
     pub(crate) offset_in_func: u32,
     pub(crate) segment_index: u32,
 }
@@ -131,11 +131,11 @@ impl WasmDataSegments {
     pub(crate) fn emit_ptr(
         &mut self,
         reloc_enabled: bool,
-        func_index: u32,
+        defined_func_index: u32,
         func: &mut Function,
         data: DataSegmentRef,
     ) {
-        self.record_reloc(func_index, func.byte_len() as u32 + 1, data);
+        self.record_reloc(defined_func_index, func.byte_len() as u32 + 1, data);
         emit_i32_const(func, reloc_enabled, data.offset as i32);
         func.instruction(&Instruction::I64ExtendI32U);
     }
@@ -144,17 +144,17 @@ impl WasmDataSegments {
     pub(crate) fn emit_ptr_i32(
         &mut self,
         reloc_enabled: bool,
-        func_index: u32,
+        defined_func_index: u32,
         func: &mut Function,
         data: DataSegmentRef,
     ) {
-        self.record_reloc(func_index, func.byte_len() as u32 + 1, data);
+        self.record_reloc(defined_func_index, func.byte_len() as u32 + 1, data);
         emit_i32_const(func, reloc_enabled, data.offset as i32);
     }
 
-    fn record_reloc(&mut self, func_index: u32, offset_in_func: u32, data: DataSegmentRef) {
+    fn record_reloc(&mut self, defined_func_index: u32, offset_in_func: u32, data: DataSegmentRef) {
         self.relocs.push(DataRelocSite {
-            func_index,
+            defined_func_index,
             offset_in_func,
             segment_index: data.index,
         });

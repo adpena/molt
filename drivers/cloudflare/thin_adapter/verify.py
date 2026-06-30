@@ -74,6 +74,7 @@ def validate_bundle_contract(
         assets_root / "molt_runtime.wasm",
         assets_root / "browser.js",
         assets_root / "browser_host.js",
+        assets_root / "loader_bridge.js",
         assets_root / "molt_vfs_browser.js",
         assets_root / "config.json",
         manifest_asset,

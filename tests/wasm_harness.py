@@ -14905,6 +14905,13 @@ const parseWasmImports = (buffer) => {
         } else if (kind === 3) {
           offset += 2;
           globalImportCount += 1;
+        } else if (kind === 4) {
+          if (offset >= bytes.length) {
+            throw new Error('Unexpected EOF in tag import');
+          }
+          [, offset] = readVarUint(bytes, offset);
+          const [, next] = readVarUint(bytes, offset);
+          offset = next;
         } else {
           throw new Error(`Unknown import kind ${kind}`);
         }

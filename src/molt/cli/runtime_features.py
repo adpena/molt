@@ -147,7 +147,7 @@ def _expand_cargo_feature(feature: str) -> frozenset[str]:
     """Transitively expand a Cargo feature to the set of FEATURE NAMES reached.
 
     Skips ``dep:crate`` optional-dependency activations and ``crate/feat`` /
-    ``crate?/feat`` cross-crate feature activations — those select dependency
+    ``crate?/feat`` cross-crate feature activations -- those select dependency
     crates / crate-internal features, not features of ``molt-runtime`` itself,
     so they are not part of the profile's molt-runtime feature set.  The seed
     feature itself is excluded from the result (it is the aggregator tier name,
@@ -231,96 +231,13 @@ def _runtime_builtin_features_for_profile(
     target_triple: str | None,
 ) -> list[str]:
     effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
-    if target_triple is not None and target_triple.startswith("wasm32"):
-        # Phase 0b: the WASM archive is built from a coarser, separate feature
-        # plan (``_wasm_runtime_feature_plan`` only ever links ``stdlib_micro``
-        # or ``_WASM_RUNTIME_FULL_FEATURES``), and the WASM-micro availability
-        # surface here is deliberately the full domain set minus the stable
-        # WASM exclusions — NOT the narrow Cargo ``stdlib_micro`` expansion.
-        # Deriving the WASM surface from the Cargo ladder would NARROW it (e.g.
-        # drop ``stdlib_crypto`` from WASM-micro) and wrongly refuse working
-        # WASM builds, so the WASM path stays as-is until the reachability
-        # redesign (Phase 1+) gives selection a per-target ceiling. Native is
-        # where the §1.3 drift bites and is fixed below.
-        all_features = (
-            list(_ALL_BUILTIN_FEATURES)
-            + list(_WASM_DOMAIN_AVAILABILITY_FEATURES)
-            + list(_MICRO_BASE_RUNTIME_FEATURES)
-        )
-        if effective_profile != "micro":
-            return list(_WASM_RUNTIME_FULL_FEATURES)
-        return [
-            feature
-            for feature in all_features
-            if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
-        ]
-    # Native: the stdlib-ladder features come straight from the Cargo feature
-    # chain (the single source of truth), unioned with the orthogonal builtin
-    # tree-shaking features (always linkable regardless of stdlib tier).  Order
-    # is deterministic so fingerprints/diagnostics are stable.
-    ladder = profile_link_features(effective_profile, target_triple=None)
+    ladder = profile_link_features(
+        effective_profile,
+        target_triple=target_triple,
+    )
     return list(_ALL_BUILTIN_FEATURES) + sorted(
         ladder.difference(_ALL_BUILTIN_FEATURES)
     )
-
-
-# Phase 0b: the WASM profile-availability surface (consumed ONLY by the wasm32
-# branch of ``_runtime_builtin_features_for_profile``).  Historically the
-# WASM-micro gate exposed the full domain set minus the stable WASM exclusions,
-# so a wasm build importing e.g. ``hashlib``/``decimal`` is NOT refused on
-# WASM-micro (unlike native micro).  This list preserves that exact surface
-# verbatim while the native ladder migrates to the Cargo chain; reconciling the
-# WASM availability/selection model with the Cargo ladder is deferred to the
-# reachability redesign (Phase 1+), which gives selection a per-target ceiling.
-# Do NOT derive this from the Cargo ladder — that would narrow the WASM surface
-# and wrongly refuse working WASM builds.
-_WASM_DOMAIN_AVAILABILITY_FEATURES: tuple[str, ...] = (
-    "stdlib_tk",
-    "stdlib_net",
-    "stdlib_asyncio",
-    "stdlib_email",
-    "stdlib_decimal",
-    "stdlib_logging",
-    "stdlib_logging_ext",
-    "stdlib_concurrent",
-    "stdlib_dbm",
-    "stdlib_importlib_extra",
-    "stdlib_csv",
-    "stdlib_signal",
-    "stdlib_select",
-    "stdlib_text",
-    "stdlib_zoneinfo",
-    "stdlib_crypto",
-    "stdlib_compression",
-    "stdlib_math",
-    "stdlib_serialization",
-    "stdlib_serial",
-    "stdlib_archive",
-    "stdlib_ast",
-    "stdlib_unicode_names",
-    "stdlib_stringprep",
-    "stdlib_fs_extra",
-    "sqlite",
-    "molt_gpu_primitives",
-)
-
-
-_WASM_RUNTIME_FULL_FEATURES: tuple[str, ...] = (
-    "stdlib_crypto",
-    "stdlib_compression",
-    "stdlib_serialization",
-    "stdlib_archive",
-    "stdlib_asyncio",
-    "stdlib_collections",
-    "stdlib_fs_extra",
-    "stdlib_logging",
-    "stdlib_logging_ext",
-    "builtin_set",
-    "builtin_complex",
-    "builtin_memoryview",
-    "builtin_contextvars",
-    "builtin_fcntl",
-)
 
 
 def _wasm_runtime_feature_plan(
@@ -331,32 +248,22 @@ def _wasm_runtime_feature_plan(
     resolved_modules: set[str] | frozenset[str] | None,
 ) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
     effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
+    profile_features = sorted(builtin_features)
     if effective_profile == "micro":
-        cargo_features = tuple(
-            _dedupe_preserve_order(
-                list(runtime_features) + sorted(builtin_features) + ["stdlib_micro"]
-            )
-        )
-    else:
-        full_feature_order = list(_WASM_RUNTIME_FULL_FEATURES)
-        builtin_feature_set = frozenset(builtin_features)
-        cargo_features = tuple(
-            _dedupe_preserve_order(
-                list(runtime_features)
-                + [
-                    feature
-                    for feature in full_feature_order
-                    if feature in builtin_feature_set
-                ]
-                + (
-                    ["molt_gpu_primitives"]
-                    if _resolved_modules_require_gpu_primitives(
-                        frozenset(resolved_modules or ())
-                    )
-                    else []
+        profile_features.append("stdlib_micro")
+    cargo_features = tuple(
+        _dedupe_preserve_order(
+            list(runtime_features)
+            + profile_features
+            + (
+                ["molt_gpu_primitives"]
+                if _resolved_modules_require_gpu_primitives(
+                    frozenset(resolved_modules or ())
                 )
+                else []
             )
         )
+    )
     fingerprint_features = tuple(
         _dedupe_preserve_order(list(cargo_features) + ["no-default-features"])
     )

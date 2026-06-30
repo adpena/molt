@@ -12,14 +12,16 @@
 //! - `mapping`            — PyDict_*
 //! - `strings`            — PyUnicode_*, PyBytes_*
 //! - `modules`            — PyModule_*, PyModuleDef_Init
+//! - `imports`            — PyImport_*
+//! - `memory`             — PyMem_*, PyObject_GC_Del, PyMemoryView_*
 //! - `errors`             — PyErr_*, PyArg_ParseTuple, PyArg_ParseTupleAndKeywords
+//! - `sys`                — PySys_* runtime object registry
 //! - `typeobj`            — PyType_Ready, PyType_GenericAlloc, PyType_IsSubtype
 //! - `object`             — PyObject_* generic protocol (attr, item, call, truthiness)
 //! - `abstract_number`    — PyNumber_* arithmetic/bitwise/conversion
 //! - `abstract_sequence`  — PySequence_* length, getitem, contains, concat
 //! - `abstract_mapping`   — PyMapping_* length, keys, values, items
 //! - `buffer`             — PyObject_GetBuffer, PyBuffer_Release
-//! - `memory`             — PyMemoryView_* backed by the buffer authority
 //! - `capsule`            — PyCapsule_New, PyCapsule_GetPointer
 
 pub mod abstract_mapping;
@@ -27,7 +29,11 @@ pub mod abstract_number;
 pub mod abstract_sequence;
 pub mod buffer;
 pub mod capsule;
+pub mod contextvars;
+pub mod datetime;
 pub mod errors;
+pub mod eval;
+pub mod imports;
 pub mod mapping;
 pub mod memory;
 pub mod modules;
@@ -35,6 +41,8 @@ pub mod numbers;
 pub mod object;
 pub mod refcount;
 pub mod sequences;
-pub mod source_closure;
+pub mod slice;
 pub mod strings;
+pub mod sys;
 pub mod typeobj;
+pub mod weakref;

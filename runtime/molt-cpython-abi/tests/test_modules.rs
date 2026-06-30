@@ -49,6 +49,22 @@ unsafe extern "C" fn fake_int_from_u64(_value: u64) -> u64 {
 unsafe extern "C" fn fake_int_as_i64(_bits: u64) -> i64 {
     -1
 }
+unsafe extern "C" fn fake_int_as_i64_checked(_bits: u64, out: *mut i64) -> std::os::raw::c_int {
+    if !out.is_null() {
+        unsafe {
+            *out = -1;
+        }
+    }
+    0
+}
+unsafe extern "C" fn fake_int_as_u64_checked(_bits: u64, out: *mut u64) -> std::os::raw::c_int {
+    if !out.is_null() {
+        unsafe {
+            *out = 0;
+        }
+    }
+    0
+}
 unsafe extern "C" fn fake_alloc_list() -> u64 {
     next_fake_handle()
 }
@@ -74,6 +90,9 @@ unsafe extern "C" fn fake_alloc_dict() -> u64 {
 }
 unsafe extern "C" fn fake_dict_set(_d: u64, _k: u64, _v: u64) {}
 unsafe extern "C" fn fake_dict_get(_d: u64, _k: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
     0
 }
 unsafe extern "C" fn fake_dict_len(_bits: u64) -> usize {
@@ -129,6 +148,22 @@ unsafe extern "C" fn fake_buffer_release(view: *mut MoltBufferView) -> std::os::
     }
     0
 }
+unsafe extern "C" fn fake_object_get_attr(_obj: u64, _name: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_object_set_attr(
+    _obj: u64,
+    _name: u64,
+    _value: u64,
+) -> std::os::raw::c_int {
+    0
+}
+unsafe extern "C" fn fake_object_format(_obj: u64, _spec: u64) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_sys_get_object_borrowed(_data: *const u8, _len: usize) -> u64 {
+    0
+}
 unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
     MoltTypeTag::Other as u8
 }
@@ -160,6 +195,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     int_from_i64: fake_int_from_i64,
     int_from_u64: fake_int_from_u64,
     int_as_i64: fake_int_as_i64,
+    int_as_i64_checked: fake_int_as_i64_checked,
+    int_as_u64_checked: fake_int_as_u64_checked,
     alloc_list: fake_alloc_list,
     list_append: fake_list_append,
     list_len: fake_list_len,
@@ -171,11 +208,16 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_dict: fake_alloc_dict,
     dict_set: fake_dict_set,
     dict_get: fake_dict_get,
+    dict_del: fake_dict_del,
     dict_len: fake_dict_len,
     str_data: fake_str_data,
     bytes_data: fake_bytes_data,
     buffer_acquire: fake_buffer_acquire,
     buffer_release: fake_buffer_release,
+    object_get_attr: fake_object_get_attr,
+    object_set_attr: fake_object_set_attr,
+    object_format: fake_object_format,
+    sys_get_object_borrowed: fake_sys_get_object_borrowed,
     classify_heap: fake_classify_heap,
     inc_ref: fake_inc_ref,
     dec_ref: fake_dec_ref,

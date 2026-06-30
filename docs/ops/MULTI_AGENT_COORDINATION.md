@@ -120,6 +120,12 @@ uv run --python 3.12 python tools/agent_coordination.py proof-plan
   stalled or crash-adjacent during Windows proof work; it records first-output
   gaps, stream-idle spans, byte/chunk counts, elapsed time, and return code,
   but not child stdout/stderr text or Codex state.
+- `codex-crash --crash-text "<dialog text>"` classifies a Codex crash dialog
+  and writes a bounded recovery capsule under `logs/agents/codex_crash/`. It
+  treats `3221225786` as Windows `STATUS_CONTROL_C_EXIT`, recognizes
+  response-stream retry pressure, plugin `interface.defaultPrompt` warnings,
+  and rollout-state repair symptoms, counts plugin manifest pressure, and
+  records next actions without storing raw crash text or mutating Codex state.
 - `tools/new-agent-task.sh <task>` is the POSIX short wrapper for
   `tools/agent_coordination.py init <task>`. The init command writes
   `logs/agents/<task>/env.sh` and `env.ps1` from the same DX facts; the

@@ -9,8 +9,10 @@ from molt.cli.deps import _load_toml
 from molt.cli.extension_manifest import _coerce_str_list
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
+from molt.cli.extension_scan_surface import _extract_project_generated_c_api_prefixes
 from molt.cli.extension_scan_surface import _extract_project_defined_c_api_symbols
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
+from molt.cli.extension_scan_surface import _matches_project_generated_c_api_prefix
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -197,6 +199,7 @@ def extension_scan(
     symbol_status_by_file: dict[str, dict[str, str]] = {}
     required_symbols: set[str] = set()
     project_defined_symbols: set[str] = set()
+    project_generated_c_api_prefixes: set[str] = set()
     source_text_by_path: dict[Path, str] = {}
     file_local_symbols_by_path: dict[Path, set[str]] = {}
     for source_path in source_paths:
@@ -210,14 +213,23 @@ def extension_scan(
             )
         source_text_by_path[source_path] = source_text
         project_defined_symbols.update(_extract_project_defined_c_api_symbols(source_text))
+        project_generated_c_api_prefixes.update(
+            _extract_project_generated_c_api_prefixes(source_text)
+        )
         file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
             source_text
         )
+    generated_prefixes = frozenset(project_generated_c_api_prefixes)
 
     def symbol_status(symbol: str) -> str:
         surface_status = scan_surface.status_for(symbol)
         if surface_status == "missing" and symbol in project_defined_symbols:
             return "project_defined"
+        if surface_status == "missing" and _matches_project_generated_c_api_prefix(
+            symbol,
+            generated_prefixes,
+        ):
+            return "project_generated"
         return surface_status
 
     for source_path, source_text in source_text_by_path.items():
@@ -267,10 +279,16 @@ def extension_scan(
         for symbol in required_sorted
         if symbol_status(symbol) == "project_defined"
     )
+    project_generated_used_sorted = sorted(
+        symbol
+        for symbol in required_sorted
+        if symbol_status(symbol) == "project_generated"
+    )
     supported_used_sorted = sorted(
         runtime_backed_used_sorted
         + source_compile_only_used_sorted
         + project_defined_used_sorted
+        + project_generated_used_sorted
     )
     symbol_status_map = {symbol: symbol_status(symbol) for symbol in required_sorted}
     symbol_primitive_class = {
@@ -325,12 +343,15 @@ def extension_scan(
                     source_compile_only_used_sorted
                 ),
                 "project_defined_symbol_count": len(project_defined_used_sorted),
+                "project_generated_symbol_count": len(project_generated_used_sorted),
                 "exclude_dirs": sorted(excluded_dir_names),
                 "required_symbols": required_sorted,
                 "supported_symbols": supported_used_sorted,
                 "runtime_backed_symbols": runtime_backed_used_sorted,
                 "source_compile_only_symbols": source_compile_only_used_sorted,
                 "project_defined_symbols": project_defined_used_sorted,
+                "project_generated_symbols": project_generated_used_sorted,
+                "project_generated_c_api_prefixes": sorted(generated_prefixes),
                 "fail_fast_symbols": fail_fast_sorted,
                 "missing_symbols": missing_sorted,
                 "symbol_status": symbol_status_map,
@@ -359,6 +380,10 @@ def extension_scan(
             f"{len(source_compile_only_used_sorted)}"
         )
         print(f"Project-defined C/API symbols used: {len(project_defined_used_sorted)}")
+        print(
+            "Project-generated C/API symbols used: "
+            f"{len(project_generated_used_sorted)}"
+        )
         print(f"Fail-fast C/API symbols: {len(fail_fast_sorted)}")
         print(f"Missing C/API symbols: {len(missing_sorted)}")
         if primitive_class_counts:

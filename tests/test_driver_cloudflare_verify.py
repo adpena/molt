@@ -99,6 +99,7 @@ def test_thin_adapter_validate_bundle_contract_accepts_materialized_layout(
         "molt_runtime.wasm",
         "browser.js",
         "browser_host.js",
+        "loader_bridge.js",
         "molt_vfs_browser.js",
         "config.json",
     ]:
@@ -159,6 +160,7 @@ def test_thin_adapter_validate_bundle_contract_rejects_missing_manifest_route(
         "molt_runtime.wasm",
         "browser.js",
         "browser_host.js",
+        "loader_bridge.js",
         "molt_vfs_browser.js",
         "config.json",
         "driver-manifest.base.json",

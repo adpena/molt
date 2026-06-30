@@ -1,105 +1,32 @@
 use std::env;
 use std::path::PathBuf;
 
-fn wasi_sysroot_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    for key in ["MOLT_WASI_SYSROOT", "WASI_SYSROOT"] {
+#[path = "../build_support/unicode_tables.rs"]
+mod unicode_tables;
+
+fn resolve_build_python() -> String {
+    println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
+    println!("cargo:rerun-if-env-changed=PYTHON");
+    for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {
         if let Ok(value) = env::var(key) {
-            candidates.push(PathBuf::from(value));
-        }
-    }
-    if let Ok(value) = env::var("WASI_SDK_PATH") {
-        let sdk_root = PathBuf::from(value);
-        candidates.push(sdk_root.clone());
-        candidates.push(sdk_root.join("share").join("wasi-sysroot"));
-        candidates.push(sdk_root.join("wasi-sysroot"));
-    }
-    if let Ok(value) = env::var("MOLT_TARGET_ROOT") {
-        let target_root = PathBuf::from(value);
-        candidates.push(target_root.join("toolchains").join("wasi-sysroot"));
-        candidates.push(
-            target_root
-                .join("toolchains")
-                .join("wasi-sdk")
-                .join("share")
-                .join("wasi-sysroot"),
-        );
-        candidates.push(target_root.join("wasi-sysroot"));
-        if let Ok(entries) = std::fs::read_dir(target_root.join("toolchains")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("wasi-sysroot-"))
-                {
-                    candidates.push(path);
-                }
+            let value = value.trim();
+            if !value.is_empty() {
+                return value.to_string();
             }
         }
     }
-    candidates.extend(
-        [
-            "/opt/homebrew/opt/wasi-libc/share/wasi-sysroot",
-            "/usr/local/opt/wasi-libc/share/wasi-sysroot",
-            "/opt/wasi-sdk/share/wasi-sysroot",
-            "/opt/wasi-sdk/wasi-sysroot",
-            "/usr/share/wasi-sysroot",
-            "/usr/local/share/wasi-sysroot",
-        ]
-        .into_iter()
-        .map(PathBuf::from),
-    );
-    candidates
-}
-
-fn normalize_wasi_sysroot(path: PathBuf) -> Option<PathBuf> {
-    let roots = [
-        path.clone(),
-        path.parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.clone()),
-    ];
-    for root in roots {
-        if root.join("include").join("errno.h").exists()
-            || root
-                .join("include")
-                .join("wasm32-wasip1")
-                .join("errno.h")
-                .exists()
-            || root
-                .join("include")
-                .join("wasm32-wasi")
-                .join("errno.h")
-                .exists()
-        {
-            return Some(root);
-        }
+    if cfg!(windows) {
+        "python".to_string()
+    } else {
+        "python3".to_string()
     }
-    None
-}
-
-fn resolve_wasi_sysroot() -> Option<PathBuf> {
-    for key in [
-        "MOLT_WASI_SYSROOT",
-        "WASI_SYSROOT",
-        "WASI_SDK_PATH",
-        "MOLT_TARGET_ROOT",
-    ] {
-        println!("cargo:rerun-if-env-changed={key}");
-    }
-    for candidate in wasi_sysroot_candidates() {
-        if let Some(root) = normalize_wasi_sysroot(candidate) {
-            return Some(root);
-        }
-    }
-    None
 }
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let shim = manifest.join("shims/pyarg_variadic.c");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &resolve_build_python());
 
     // Compile the C variadic shim into a static library.
     let mut build = cc::Build::new();
@@ -116,16 +43,6 @@ fn main() {
     if target_os != "macos" {
         build.flag_if_supported("-fno-semantic-interposition");
     }
-    if env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default() == "wasm32" {
-        let sysroot = resolve_wasi_sysroot().unwrap_or_else(|| {
-            panic!(
-                "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
-                 WASI_SDK_PATH, or MOLT_TARGET_ROOT so wasm32-wasip1 CPython ABI \
-                 provider shims can compile."
-            )
-        });
-        build.flag(format!("--sysroot={}", sysroot.display()));
-    }
 
     build.compile("molt_pyarg_shims");
 
@@ -136,6 +53,7 @@ fn main() {
     // macOS: -force_load <path> includes every object file in the archive.
     // Linux: --whole-archive / --no-whole-archive does the same.
     let lib_path = out_dir.join("libmolt_pyarg_shims.a");
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     match target_os.as_str() {
         "macos" => {
             println!(
@@ -148,7 +66,26 @@ fn main() {
             for sym in &[
                 "_PyArg_ParseTuple",
                 "_PyArg_ParseTupleAndKeywords",
+                "_PyArg_VaParseTupleAndKeywords",
                 "_PyArg_UnpackTuple",
+                "_PyTuple_Pack",
+                "_PyObject_CallFunction",
+                "_PyObject_CallFunctionObjArgs",
+                "_PyObject_CallMethodObjArgs",
+                "_PyObject_CallMethod",
+                "_Py_BuildValue",
+                "__Py_BuildValue_SizeT",
+                "_Py_VaBuildValue",
+                "_PyUnicode_FromFormat",
+                "_PyUnicode_FromFormatV",
+                "_PyOS_snprintf",
+                "_PyOS_vsnprintf",
+                "_PyOS_string_to_double",
+                "_PyOS_strtol",
+                "_PyOS_strtoul",
+                "_PyErr_WarnFormat",
+                "_PyErr_Format",
+                "_PyErr_FormatV",
             ] {
                 println!("cargo:rustc-cdylib-link-arg=-Wl,-exported_symbol,{sym}");
             }
@@ -158,9 +95,17 @@ fn main() {
             println!("cargo:rustc-cdylib-link-arg={}", lib_path.display());
             println!("cargo:rustc-cdylib-link-arg=-Wl,--no-whole-archive");
         }
+        "windows" if target_env == "msvc" => {
+            println!(
+                "cargo:rustc-cdylib-link-arg=/WHOLEARCHIVE:{}",
+                lib_path.display()
+            );
+        }
         _ => {}
     }
 
     println!("cargo:rerun-if-changed={}", shim.display());
+    println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
+    println!("cargo:rerun-if-changed=src/api/strings.rs");
     println!("cargo:rerun-if-changed=build.rs");
 }

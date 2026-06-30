@@ -794,6 +794,7 @@ def _run_browser(
         for src_name in (
             "browser_host.js",
             "browser_gpu_worker.js",
+            "loader_bridge.js",
             "molt_vfs_browser.js",
         ):
             src = WASM_DIR / src_name

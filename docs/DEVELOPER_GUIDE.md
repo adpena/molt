@@ -76,7 +76,11 @@ complete structural primitive that deletes or unifies a real authority.
 Before risky commands in this mode, leave a death capsule: command, cwd, guard
 pid, expected child pid when known, status, timestamp, and evidence path. Use
 `tmp/memory_guard/active/`, `tmp/memory_guard/incidents/`, pytest outer-guard
-summaries, and `logs/agents/codex_stall/*.json` before relying on chat history.
+summaries, `logs/agents/codex_stall/*.json`, and
+`logs/agents/codex_crash/*.json` before relying on chat history. For Codex
+Desktop crash dialogs, run
+`uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`
+to classify known Windows control-plane signatures without editing Codex state.
 Manual killing of a Molt-owned child/helper must be recorded as child failure or
 interruption; cleanup must not expand to Codex, Claude, app-server, renderer,
 node-repl, ancestors, or unrelated host control-plane processes.

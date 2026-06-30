@@ -32,6 +32,10 @@ from molt.harness_conformance import (  # noqa: E402
     ensure_molt_conformance_dirs,
 )
 from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
+from molt.cli.runtime_features import (  # noqa: E402
+    _runtime_builtin_features_for_profile,
+    _runtime_cargo_features,
+)
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
@@ -81,20 +85,6 @@ _LAST_BUILD_FAILURE_DETAIL: str | None = None
 _NODE_BIN_CACHE: str | None = None
 _MIN_NODE_MAJOR = 18
 _RUNTIME_SOURCE_MTIME: float | None = None
-_WASM_RUNTIME_FULL_FEATURES: tuple[str, ...] = (
-    "stdlib_crypto",
-    "stdlib_compression",
-    "stdlib_serialization",
-    "stdlib_archive",
-    "stdlib_fs_extra",
-    "stdlib_logging",
-    "stdlib_logging_ext",
-    "builtin_set",
-    "builtin_complex",
-    "builtin_memoryview",
-    "builtin_contextvars",
-    "builtin_fcntl",
-)
 
 
 @dataclass(frozen=True)
@@ -531,13 +521,19 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
 
 def _runtime_wasm_feature_args() -> list[str]:
     profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro").strip() or "micro"
-    base_features = ["molt_gpu_primitives"]
-    if profile == "micro":
-        features = _dedupe_preserve_order(base_features + ["stdlib_micro"])
-    elif profile == "full":
-        features = _dedupe_preserve_order(
-            base_features + list(_WASM_RUNTIME_FULL_FEATURES)
+    base_features = list(_runtime_cargo_features("wasm32-wasip1"))
+    profile_features = sorted(
+        _runtime_builtin_features_for_profile(
+            profile,
+            target_triple="wasm32-wasip1",
         )
+    )
+    if profile == "micro":
+        features = _dedupe_preserve_order(
+            base_features + profile_features + ["stdlib_micro"]
+        )
+    elif profile == "full":
+        features = _dedupe_preserve_order(base_features + profile_features)
     else:
         raise RuntimeError("MOLT_STDLIB_PROFILE must be 'micro' or 'full'")
     return ["--no-default-features", "--features", ",".join(features)]

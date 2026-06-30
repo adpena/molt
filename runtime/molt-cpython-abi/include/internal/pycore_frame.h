@@ -1,0 +1,6 @@
+#ifndef MOLT_CPYTHON_ABI_INTERNAL_PYCORE_FRAME_H
+#define MOLT_CPYTHON_ABI_INTERNAL_PYCORE_FRAME_H
+
+#include "../Python.h"
+
+#endif

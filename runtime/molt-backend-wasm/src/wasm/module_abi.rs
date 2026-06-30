@@ -49,6 +49,7 @@ impl WasmBackend {
             imports: native_callable_imports,
             next_type_idx,
         } = self.emit_native_callable_import_surface(&ir, next_type_idx_after_runtime);
+        self.func_import_count = self.func_count;
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,

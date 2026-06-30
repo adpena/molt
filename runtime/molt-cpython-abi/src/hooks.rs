@@ -70,6 +70,10 @@ pub struct RuntimeHooks {
     pub int_from_u64: unsafe extern "C" fn(value: u64) -> u64,
     /// Convert an int-compatible object to i64. Returns -1 on failure.
     pub int_as_i64: unsafe extern "C" fn(bits: u64) -> i64,
+    /// Checked int-compatible object conversion to i64. Returns 0 on success, -1 on failure.
+    pub int_as_i64_checked: unsafe extern "C" fn(bits: u64, out: *mut i64) -> std::os::raw::c_int,
+    /// Checked int-compatible object conversion to u64. Returns 0 on success, -1 on failure.
+    pub int_as_u64_checked: unsafe extern "C" fn(bits: u64, out: *mut u64) -> std::os::raw::c_int,
     /// Allocate an empty list. Returns handle bits.
     pub alloc_list: unsafe extern "C" fn() -> u64,
     /// Append `item_bits` to the list at `list_bits`.
@@ -92,6 +96,8 @@ pub struct RuntimeHooks {
     pub dict_set: unsafe extern "C" fn(dict_bits: u64, key_bits: u64, val_bits: u64),
     /// Lookup `key_bits` in the dict. Returns 0 if not found.
     pub dict_get: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> u64,
+    /// Delete `key_bits` from the dict. Returns 0 on success, -1 on failure.
+    pub dict_del: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> std::os::raw::c_int,
     /// Return the number of entries in a dict.
     pub dict_len: unsafe extern "C" fn(bits: u64) -> usize,
     // ── Data access ───────────────────────────────────────────────────────────
@@ -106,6 +112,14 @@ pub struct RuntimeHooks {
         unsafe extern "C" fn(bits: u64, out_view: *mut MoltBufferView) -> std::os::raw::c_int,
     /// Release a typed strided buffer export previously acquired from the runtime.
     pub buffer_release: unsafe extern "C" fn(view: *mut MoltBufferView) -> std::os::raw::c_int,
+    /// Return obj.name using the runtime object model. Returns 0 when absent or unavailable.
+    pub object_get_attr: unsafe extern "C" fn(obj_bits: u64, name_bits: u64) -> u64,
+    /// Set obj.name using the runtime object model. Returns 0 on success, -1 on failure.
+    pub object_set_attr:
+        unsafe extern "C" fn(obj_bits: u64, name_bits: u64, value_bits: u64) -> std::os::raw::c_int,
+    /// Return format(obj, spec) using the runtime object model. Returns 0 on error.
+    pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> u64,
+    pub sys_get_object_borrowed: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
     // ── Type classification ───────────────────────────────────────────────────
     /// Classify a heap-pointer handle into a `MoltTypeTag` discriminant (u8).
     /// Used by `classify_handle` to fill in the SIMD type-tag table for heap types.
@@ -210,6 +224,12 @@ unsafe extern "C" fn stub_int_from_u64(_value: u64) -> u64 {
 unsafe extern "C" fn stub_int_as_i64(_bits: u64) -> i64 {
     -1
 }
+unsafe extern "C" fn stub_int_as_i64_checked(_bits: u64, _out: *mut i64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_int_as_u64_checked(_bits: u64, _out: *mut u64) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn stub_alloc_list() -> u64 {
     0
 }
@@ -236,6 +256,9 @@ unsafe extern "C" fn stub_alloc_dict() -> u64 {
 unsafe extern "C" fn stub_dict_set(_d: u64, _k: u64, _v: u64) {}
 unsafe extern "C" fn stub_dict_get(_d: u64, _k: u64) -> u64 {
     0
+}
+unsafe extern "C" fn stub_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
+    -1
 }
 unsafe extern "C" fn stub_dict_len(_bits: u64) -> usize {
     0
@@ -275,6 +298,22 @@ unsafe extern "C" fn stub_buffer_release(view: *mut MoltBufferView) -> std::os::
     }
     0
 }
+unsafe extern "C" fn stub_object_get_attr(_obj: u64, _name: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_object_set_attr(
+    _obj: u64,
+    _name: u64,
+    _value: u64,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_object_format(_obj: u64, _spec: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_sys_get_object_borrowed(_data: *const u8, _len: usize) -> u64 {
+    0
+}
 unsafe extern "C" fn stub_classify_heap(_bits: u64) -> u8 {
     crate::abi_types::MoltTypeTag::Other as u8
 }
@@ -307,6 +346,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     int_from_i64: stub_int_from_i64,
     int_from_u64: stub_int_from_u64,
     int_as_i64: stub_int_as_i64,
+    int_as_i64_checked: stub_int_as_i64_checked,
+    int_as_u64_checked: stub_int_as_u64_checked,
     alloc_list: stub_alloc_list,
     list_append: stub_list_append,
     list_len: stub_list_len,
@@ -318,11 +359,16 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_dict: stub_alloc_dict,
     dict_set: stub_dict_set,
     dict_get: stub_dict_get,
+    dict_del: stub_dict_del,
     dict_len: stub_dict_len,
     str_data: stub_str_data,
     bytes_data: stub_bytes_data,
     buffer_acquire: stub_buffer_acquire,
     buffer_release: stub_buffer_release,
+    object_get_attr: stub_object_get_attr,
+    object_set_attr: stub_object_set_attr,
+    object_format: stub_object_format,
+    sys_get_object_borrowed: stub_sys_get_object_borrowed,
     classify_heap: stub_classify_heap,
     inc_ref: stub_inc_ref,
     dec_ref: stub_dec_ref,

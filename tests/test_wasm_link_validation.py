@@ -504,7 +504,105 @@ def _build_runtime_import_strip_module() -> bytes:
     return wasm_link._build_sections(sections)
 
 
-def _build_runtime_import_module(import_names: list[str]) -> bytes:
+def _build_runtime_import_module(
+    import_names: list[str], *, memory_min: int | None = None
+) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(
+        write_varuint(len(import_names) + (1 if memory_min is not None else 0))
+    )
+    for name in import_names:
+        import_payload.extend(wasm_link._write_string("molt_runtime"))
+        import_payload.extend(wasm_link._write_string(name))
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(0))
+    if memory_min is not None:
+        import_payload.extend(wasm_link._write_string("env"))
+        import_payload.extend(wasm_link._write_string("memory"))
+        import_payload.append(0x02)
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(memory_min))
+    sections.append((2, bytes(import_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
+def _build_runtime_import_data_module(
+    import_names: list[str], *, memory_min: int, data_offset: int
+) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(len(import_names) + 1))
+    for name in import_names:
+        import_payload.extend(wasm_link._write_string("molt_runtime"))
+        import_payload.extend(wasm_link._write_string(name))
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(0))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("memory"))
+    import_payload.append(0x02)
+    import_payload.append(0x00)
+    import_payload.extend(write_varuint(memory_min))
+    sections.append((2, bytes(import_payload)))
+
+    data_payload = bytearray()
+    data_payload.extend(write_varuint(1))
+    data_payload.extend(write_varuint(0))
+    data_payload.append(0x41)
+    data_payload.extend(write_varuint(data_offset))
+    data_payload.append(0x0B)
+    data_payload.extend(write_varuint(1))
+    data_payload.extend(b"x")
+    sections.append((11, bytes(data_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
+def _build_defined_memory_module(min_pages: int) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    memory_payload = bytearray()
+    memory_payload.extend(write_varuint(1))
+    memory_payload.append(0x00)
+    memory_payload.extend(write_varuint(min_pages))
+    return wasm_link._build_sections([(5, bytes(memory_payload))])
+
+
+def _defined_memory_min(wasm_bytes: bytes) -> int | None:
+    for section_id, payload in wasm_link._parse_sections(wasm_bytes):
+        if section_id != 5:
+            continue
+        offset = 0
+        count, offset = wasm_link._read_varuint(payload, offset)
+        if count == 0:
+            return None
+        _flags, offset = wasm_link._read_varuint(payload, offset)
+        minimum, _offset = wasm_link._read_varuint(payload, offset)
+        return minimum
+    return None
+
+
+def _build_env_function_import_module(import_names: list[str]) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
 
@@ -519,7 +617,7 @@ def _build_runtime_import_module(import_names: list[str]) -> bytes:
     import_payload = bytearray()
     import_payload.extend(write_varuint(len(import_names)))
     for name in import_names:
-        import_payload.extend(wasm_link._write_string("molt_runtime"))
+        import_payload.extend(wasm_link._write_string("env"))
         import_payload.extend(wasm_link._write_string(name))
         import_payload.append(0x00)
         import_payload.extend(write_varuint(0))
@@ -789,6 +887,29 @@ def test_tree_shake_runtime_preserves_required_function_exports() -> None:
     assert "molt_exception_pending" in exports
 
 
+def test_build_runtime_stub_publishes_exported_functions_as_link_symbols() -> None:
+    module = _build_exported_runtime_module_many(["molt_err_pending", "molt_none"])
+
+    stub = wasm_link._build_runtime_stub(module)
+
+    symbols = {
+        name: (flags, index)
+        for flags, index, name, _ in wasm_link._collect_linking_function_symbols(stub)
+    }
+    assert symbols["molt_err_pending"] == (
+        wasm_link.FLAG_BINDING_GLOBAL
+        | wasm_link.FLAG_EXPLICIT_NAME
+        | wasm_link.FLAG_EXPORTED,
+        0,
+    )
+    assert symbols["molt_none"] == (
+        wasm_link.FLAG_BINDING_GLOBAL
+        | wasm_link.FLAG_EXPLICIT_NAME
+        | wasm_link.FLAG_EXPORTED,
+        1,
+    )
+
+
 def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() -> None:
     module = _build_exported_runtime_module_many(
         [
@@ -825,6 +946,23 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
     assert "molt_traceback_format_exc" in exports
     assert "molt_type_tag_of_bits" in exports
     assert "molt_dec_ref_obj" in exports
+
+
+def test_validate_split_runtime_outputs_requires_shared_app_memory(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    app = tmp_path / "app.wasm"
+    runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
+
+    app.write_bytes(_build_runtime_import_module(["molt_err_pending"], memory_min=1))
+    assert wasm_link._validate_split_runtime_outputs(app, runtime)
+
+    app.write_bytes(_build_defined_memory_module(1))
+    assert not wasm_link._validate_split_runtime_outputs(app, runtime)
+    captured = capsys.readouterr()
+    assert "Split-runtime app must import env.memory" in captured.err
 
 
 def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> None:
@@ -1036,6 +1174,68 @@ def test_run_wasm_ld_links_staged_native_objects(
     assert wasm_ld_inputs[output_index + 2] == str(native_object)
 
 
+def test_run_wasm_ld_links_rewritten_native_runtime_imports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_bytes = _build_minimal_module(b"")
+    runtime_bytes = _build_exported_runtime_module("molt_add")
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    native_object = tmp_path / "external_static_packages" / "ndimage_edt.molt.wasm"
+    wasm_ld_inputs: list[str] = []
+    rewritten_native_imports: list[list[tuple[str, str]]] = []
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    native_object.parent.mkdir()
+    native_object.write_bytes(_build_env_function_import_module(["molt_add", "malloc"]))
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            wasm_ld_inputs.extend(cmd)
+            for part in cmd:
+                path = Path(part)
+                if path.name.startswith("native_runtime_imports_"):
+                    rewritten_native_imports.append(
+                        _function_import_pairs(path.read_bytes())
+                    )
+        _write_wasm_ld_output(cmd, output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+    monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        native_objects=(native_object,),
+    )
+
+    assert rc == 0
+    assert str(native_object) not in wasm_ld_inputs
+    assert rewritten_native_imports == [
+        [
+            ("molt_runtime", "molt_add"),
+            ("env", "malloc"),
+        ]
+    ]
+
+
 def test_run_wasm_ld_rejects_missing_native_object(
     tmp_path: Path,
     monkeypatch,
@@ -1075,16 +1275,17 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     monkeypatch,
 ) -> None:
     runtime_bytes = _module_with_linking_symbols([])
-    output_bytes = _module_with_linking_symbols([])
+    app_data_offset = 2 * 65536
+    output_bytes = _build_runtime_import_data_module(
+        [], memory_min=37, data_offset=app_data_offset
+    )
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
     link_calls: list[list[str]] = []
-    app_link_bytes = _module_with_flattenable_rec_group_type()
-    flattened_app_link_bytes = wasm_link._flatten_rec_groups(app_link_bytes)
-    assert flattened_app_link_bytes is not None
+    app_link_bytes = _build_runtime_import_module([], memory_min=2)
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
@@ -1145,9 +1346,136 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     assert str(native_object) in monolithic_cmd
     assert str(native_object) in split_app_cmd
     assert str(runtime) not in split_app_cmd
+    assert "--stack-first" in monolithic_cmd
+    assert "--import-memory" in split_app_cmd
+    assert "--no-stack-first" in split_app_cmd
+    assert "--stack-first" not in split_app_cmd
+    assert f"--global-base={app_data_offset}" in split_app_cmd
     assert any("molt_runtime_stub" in part for part in monolithic_cmd)
     assert not any("molt_runtime_stub" in part for part in split_app_cmd)
-    assert (split_dir / "app.wasm").read_bytes() == flattened_app_link_bytes
+    app_wasm = (split_dir / "app.wasm").read_bytes()
+    assert wasm_link._memory_import_min(app_wasm) == 37
+    assert _defined_memory_min(app_wasm) is None
+
+
+def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_bytes = _build_exported_runtime_module_many(["molt_err_pending"])
+    output_bytes = _build_runtime_import_module(["molt_err_pending"])
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    split_dir = tmp_path / "split"
+    native_object = tmp_path / "external_static_packages" / "ndimage_edt.molt.wasm"
+    link_calls: list[list[str]] = []
+    stub_app_imports: list[list[tuple[str, str]]] = []
+    deployed_native_imports: list[list[tuple[str, str]]] = []
+    allowlists: list[set[str]] = []
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    native_object.parent.mkdir()
+    native_object.write_bytes(
+        _build_env_function_import_module(
+            ["molt_err_pending", "malloc", "__trunctfdf2"]
+        )
+    )
+    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
+    compiler_rt_provider.parent.mkdir()
+    compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            link_calls.append(list(cmd))
+            for part in cmd:
+                path = Path(part)
+                if path.name == "output_stub_link_imports.wasm":
+                    stub_app_imports.append(_function_import_pairs(path.read_bytes()))
+                if path.name.startswith("native_runtime_imports_"):
+                    deployed_native_imports.append(
+                        _function_import_pairs(path.read_bytes())
+                    )
+                if part.startswith("--allow-undefined-file="):
+                    allowlists.append(_parse_allowlist(Path(part.split("=", 1)[1])))
+        _write_wasm_ld_output(cmd, output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
+    monkeypatch.setattr(
+        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
+    )
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
+    )
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+    monkeypatch.setattr(
+        wasm_link.wasm_toolchain,
+        "wasm_compiler_builtins_archive",
+        lambda: compiler_rt_provider,
+        raising=True,
+    )
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=split_dir,
+        native_objects=(native_object,),
+    )
+
+    assert rc == 0
+    assert len(link_calls) == 2
+    monolithic_cmd, split_app_cmd = link_calls
+    assert str(native_object) in monolithic_cmd
+    assert str(compiler_rt_provider) in monolithic_cmd
+    assert str(native_object) not in split_app_cmd
+    assert str(compiler_rt_provider) in split_app_cmd
+    assert "--import-memory" not in monolithic_cmd
+    assert "--import-memory" in split_app_cmd
+    assert "--stack-first" in monolithic_cmd
+    assert "--no-stack-first" in split_app_cmd
+    assert "--stack-first" not in split_app_cmd
+    assert "--global-base=67108864" in split_app_cmd
+    assert any(
+        Path(part).name == "output_stub_link_imports.wasm" for part in monolithic_cmd
+    )
+    assert not any(
+        Path(part).name.startswith("native_runtime_imports_") for part in monolithic_cmd
+    )
+    assert any(
+        Path(part).name.startswith("native_runtime_imports_") for part in split_app_cmd
+    )
+    assert stub_app_imports == [[("env", "molt_err_pending")]]
+    assert deployed_native_imports == [
+        [
+            ("molt_runtime", "molt_err_pending"),
+            ("env", "malloc"),
+            ("env", "__trunctfdf2"),
+        ]
+    ]
+    assert "molt_err_pending" not in allowlists[0]
+    assert "molt_err_pending" in allowlists[1]
+    assert "malloc" in allowlists[1]
+    assert "__trunctfdf2" not in allowlists[0]
+    assert "__trunctfdf2" not in allowlists[1]
 
 
 def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() -> None:
@@ -1301,6 +1629,55 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
         ]
     finally:
         temp_dir.cleanup()
+
+
+def test_rewrite_native_runtime_imports_canonicalizes_env_molt_abi_only(
+    tmp_path: Path,
+) -> None:
+    native = tmp_path / "ndimage.molt.wasm"
+    native.write_bytes(_build_env_function_import_module(["molt_add", "malloc"]))
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            {"molt_add"},
+            temp_dir,
+        )
+
+        assert force_exports == []
+        assert len(rewritten_paths) == 1
+        assert rewritten_paths[0] != native
+        assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
+            ("molt_runtime", "molt_add"),
+            ("env", "malloc"),
+        ]
+        assert _function_import_pairs(native.read_bytes()) == [
+            ("env", "molt_add"),
+            ("env", "malloc"),
+        ]
+
+
+def test_rewrite_native_runtime_imports_forces_generated_runtime_exports(
+    tmp_path: Path,
+) -> None:
+    native = tmp_path / "ndimage.molt.wasm"
+    native.write_bytes(_build_env_function_import_module(["add"]))
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            set(),
+            temp_dir,
+        )
+
+        assert force_exports == ["molt_add"]
+        assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
+            ("molt_runtime", "molt_add"),
+        ]
 
 
 def test_split_runtime_validation_uses_generated_runtime_export_names(
@@ -1850,6 +2227,20 @@ def test_split_app_reference_function_exports_preserves_public_and_isolate_expor
     assert "molt_isolate_bootstrap" in keep
     assert "molt_main" in keep
     assert "molt_set_wasm_table_base" in keep
+
+
+def test_restore_public_output_exports_renames_native_split_alias_exports() -> None:
+    alias_name = f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}molt_isolate_import"
+    module = _build_exported_runtime_module(alias_name)
+
+    restored = wasm_link._restore_public_output_exports(
+        module,
+        {"molt_isolate_import": alias_name},
+    )
+
+    exports = wasm_link._collect_function_exports(restored)
+    assert exports["molt_isolate_import"] == 0
+    assert alias_name not in exports
 
 
 def test_entry_module_prefix_from_main_init_prefers_main_module() -> None:
@@ -3227,4 +3618,45 @@ def test_native_object_link_allowlist_includes_generated_external_imports(tmp_pa
         assert "fd_write" in symbols
         assert "__cpp_exception" in symbols
         assert "malloc" in symbols
+        assert "__trunctfdf2" not in symbols
         assert "__cpp_exception" not in _parse_allowlist(base)
+
+
+def test_resolve_native_link_inputs_adds_compiler_rt_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = tmp_path / "native.molt.wasm"
+    provider = tmp_path / "rustlib" / "wasm32-wasip1" / "libcompiler_builtins-x.rlib"
+    native.write_bytes(_build_env_function_import_module(["__trunctfdf2", "malloc"]))
+    provider.parent.mkdir(parents=True)
+    provider.write_bytes(b"!<arch>\ncompiler-rt")
+
+    monkeypatch.setattr(
+        wasm_link.wasm_toolchain,
+        "wasm_compiler_builtins_archive",
+        lambda: provider,
+        raising=True,
+    )
+
+    inputs = wasm_link._resolve_native_link_inputs((native,))
+
+    assert inputs == (native, provider)
+
+
+def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = tmp_path / "native.molt.wasm"
+    native.write_bytes(_build_env_function_import_module(["__trunctfdf2"]))
+
+    monkeypatch.setattr(
+        wasm_link.wasm_toolchain,
+        "wasm_compiler_builtins_archive",
+        lambda: None,
+        raising=True,
+    )
+
+    with pytest.raises(ValueError, match="wasm_compiler_rt_link_import"):
+        wasm_link._resolve_native_link_inputs((native,))

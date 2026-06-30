@@ -80,6 +80,13 @@ fn test_list_get_item_negative_index_returns_null() {
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
 
+#[test]
+fn test_list_get_item_ref_null_returns_null() {
+    init();
+    let result = unsafe { molt_cpython_abi::api::sequences::PyList_GetItemRef(ptr::null_mut(), 0) };
+    assert!(result.is_null());
+}
+
 // ---------------------------------------------------------------------------
 // PyList_SetItem — null safety
 // ---------------------------------------------------------------------------
@@ -276,4 +283,39 @@ fn test_tuple_check_on_int_returns_zero() {
     let result = unsafe { molt_cpython_abi::api::sequences::PyTuple_Check(py) };
     assert_eq!(result, 0);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+}
+
+#[test]
+fn test_sequence_fast_items_returns_raw_tuple_storage() {
+    init();
+    let tuple = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(2) };
+    let first = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
+    let second = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(11) };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(tuple, 0, first) },
+        0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(tuple, 1, second) },
+        0
+    );
+
+    let fast =
+        unsafe { molt_cpython_abi::api::abstract_sequence::PySequence_Fast(tuple, ptr::null()) };
+    assert_eq!(fast, tuple);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::abstract_sequence::PySequence_Fast_GET_SIZE(fast) },
+        2
+    );
+    let items = unsafe { molt_cpython_abi::api::abstract_sequence::PySequence_Fast_ITEMS(fast) };
+    assert!(!items.is_null());
+    assert_eq!(unsafe { *items }, first);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::abstract_sequence::PySequence_Fast_GET_ITEM(fast, 1) },
+        second
+    );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(fast);
+        molt_cpython_abi::api::refcount::Py_DECREF(tuple);
+    }
 }

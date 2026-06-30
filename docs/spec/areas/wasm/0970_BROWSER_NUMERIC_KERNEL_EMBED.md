@@ -56,8 +56,9 @@ Build the browser artifacts:
 molt build kernel.py --target wasm --profile browser --wasm-profile pure --split-runtime --out-dir dist
 ```
 
-Serve `dist/app.wasm`, `dist/molt_runtime.wasm`, `dist/manifest.json`, and
-`dist/browser_embed.js` from the same origin, then call the export:
+Serve `dist/app.wasm`, `dist/molt_runtime.wasm`, `dist/manifest.json`,
+`dist/browser_embed.js`, and `dist/loader_bridge.js` from the same origin, then
+call the export:
 
 ```js
 import { loadMoltBrowserKernel } from "./browser_embed.js";
@@ -117,8 +118,8 @@ integrity metadata. Until that release lane exists, the honest path is:
 
 1. Build once on a machine allowed to run the Rust/WASM toolchain.
 2. Publish `output.wasm` and `molt_runtime.wasm` together.
-3. Keep `browser_host.js` and `browser_gpu_worker.js` version-matched with the
-   runtime.
+3. Keep `loader_bridge.js`, `browser_host.js`, and `browser_gpu_worker.js`
+   version-matched with the runtime.
 
 `--split-runtime` remains the cache-friendly deployment mode for larger apps:
 
@@ -127,8 +128,9 @@ molt build kernel.py --target wasm --profile browser --split-runtime --out-dir d
 ```
 
 That mode emits `app.wasm`, `molt_runtime.wasm`, `worker.js`,
-`browser_embed.js`, and `manifest.json`. The runtime module is designed to stay
-CDN-cacheable across apps when its export surface is unchanged.
+`browser_embed.js`, `loader_bridge.js`, and `manifest.json`. The runtime module
+is designed to stay CDN-cacheable across apps when its export surface is
+unchanged.
 
 ## Package Compatibility Boundary
 

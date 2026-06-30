@@ -14251,13 +14251,23 @@ def wasm_runtime_import_name(name: str) -> str | None:
     import_name = wasm_import_name(name)
     if import_name is not None:
         return import_name
-    return WASM_RUNTIME_IMPORT_BY_EXPORT.get(name)
+    import_name = WASM_RUNTIME_IMPORT_BY_EXPORT.get(name)
+    if import_name is not None:
+        return import_name
+    if name in WASM_RUNTIME_HOST_EXPORTS:
+        return name
+    return None
 
 def wasm_runtime_export_name(name: str) -> str | None:
     import_name = wasm_runtime_import_name(name)
     if import_name is None:
         return None
-    return WASM_RUNTIME_EXPORT_BY_IMPORT[import_name]
+    export_name = WASM_RUNTIME_EXPORT_BY_IMPORT.get(import_name)
+    if export_name is not None:
+        return export_name
+    if import_name in WASM_RUNTIME_HOST_EXPORTS:
+        return import_name
+    return None
 
 def wasm_import_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     import_name = wasm_import_name(name)

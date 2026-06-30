@@ -73,7 +73,9 @@ def _resolve_wasi_sysroot_cached(
         local_app_data = os.environ.get("LOCALAPPDATA")
         for root in (program_files, local_app_data):
             if root:
-                candidates.extend(_wasi_sdk_sysroot_candidates(str(Path(root) / "wasi-sdk")))
+                candidates.extend(
+                    _wasi_sdk_sysroot_candidates(str(Path(root) / "wasi-sdk"))
+                )
     else:
         candidates.extend(
             [
@@ -138,3 +140,16 @@ def wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
     if not libc_archive.exists():
         return None
     return libc_archive
+
+
+def wasm_compiler_builtins_archive(target_triple: str = "wasm32-wasip1") -> Path | None:
+    target_libdir = rust_target_libdir(target_triple)
+    if target_libdir is None:
+        return None
+    candidates = sorted(target_libdir.glob("libcompiler_builtins-*.rlib"))
+    if candidates:
+        return candidates[0]
+    unversioned = target_libdir / "libcompiler_builtins.rlib"
+    if unversioned.exists():
+        return unversioned
+    return None

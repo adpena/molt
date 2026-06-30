@@ -12,6 +12,10 @@ process host.
 ## Answer on `main` (2026-06-29)
 - `wasm/browser_embed.js` is the single browser embed authority for the
   `typedArray -> typedArray` single-function path.
+- `wasm/loader_bridge.js` is the shared loader bridge authority for WASM
+  import/tag parsing, `molt_isolate_import` i64 normalization, reserved runtime
+  callable dispatch, and runtime byte/object memory bridging across
+  `browser_embed.js`, `browser_host.js`, and `run_wasm.js`.
 - Package-native `molt.forward_f32_v1` imports now lower as a typed WASM
   callable, `(input_ptr: i32, byte_len: i64, output_ptr: i32) -> i32`, and the
   browser adapter satisfies that import with `Float32Array` views over WASM
@@ -28,7 +32,9 @@ process host.
   calls it from Node without `wasm/browser_host.js`.
 - No checked-in `examples/browser_embed_forward/artifacts/` package or copied
   embed loader remains. Prebuilt binary distribution is a release/artifact
-  publishing problem, not a second in-repo embed lane.
+  publishing problem, not a second in-repo embed lane. Generated split-runtime
+  output ships `browser_embed.js` beside `loader_bridge.js`; both are versioned
+  support assets for the same loader contract.
 
 ## Recovery evidence (2026-06-29)
 - The browser proof exposed a real WASM ABI manifest gap first:

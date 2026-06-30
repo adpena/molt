@@ -238,6 +238,7 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert (bundle_root / "assets" / "molt_runtime.wasm").exists()
     assert (bundle_root / "assets" / "browser.js").exists()
     assert (bundle_root / "assets" / "browser_host.js").exists()
+    assert (bundle_root / "assets" / "loader_bridge.js").exists()
     assert (bundle_root / "assets" / "molt_vfs_browser.js").exists()
     assert (bundle_root / "assets" / "config.json").exists()
     assert (bundle_root / "assets" / "tokenizer.json").exists()
