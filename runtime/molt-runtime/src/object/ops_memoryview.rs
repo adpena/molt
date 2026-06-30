@@ -24,38 +24,10 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_MEMORYVIEW {
-                let owner_bits = memoryview_owner_bits(ptr);
-                let offset = memoryview_offset(ptr);
-                let len = memoryview_len(ptr);
-                let itemsize = memoryview_itemsize(ptr);
-                let stride = memoryview_stride(ptr);
-                let readonly = memoryview_readonly(ptr);
-                let format_bits = memoryview_format_bits(ptr);
-                let shape = memoryview_shape(ptr).unwrap_or(&[]).to_vec();
-                let strides = memoryview_strides(ptr).unwrap_or(&[]).to_vec();
-                let out_ptr = if shape.len() > 1 || memoryview_ndim(ptr) == 0 {
-                    alloc_memoryview_shaped(
-                        _py,
-                        owner_bits,
-                        offset,
-                        itemsize,
-                        readonly,
-                        format_bits,
-                        shape,
-                        strides,
-                    )
-                } else {
-                    alloc_memoryview(
-                        _py,
-                        owner_bits,
-                        offset,
-                        len,
-                        itemsize,
-                        stride,
-                        readonly,
-                        format_bits,
-                    )
+                let Some(storage) = TypedStridedStorage::from_object_bits(bits) else {
+                    return MoltObject::none().bits();
                 };
+                let out_ptr = alloc_memoryview_from_storage(_py, storage);
                 if out_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
@@ -69,7 +41,20 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
                 let format_bits = MoltObject::from_ptr(format_ptr).bits();
-                let out_ptr = alloc_memoryview(_py, bits, 0, len, 1, 1, readonly, format_bits);
+                let storage = TypedStridedStorage::one_dim(
+                    bytes_data(ptr) as *mut u8,
+                    readonly,
+                    len,
+                    1,
+                    1,
+                    0,
+                    bits,
+                    format_bits,
+                );
+                let out_ptr = match storage {
+                    Some(storage) => alloc_memoryview_from_storage(_py, storage),
+                    None => std::ptr::null_mut(),
+                };
                 dec_ref_bits(_py, format_bits);
                 if out_ptr.is_null() {
                     return MoltObject::none().bits();
@@ -585,37 +570,10 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
                 return raise_exception::<_>(_py, "TypeError", "toreadonly expects a memoryview");
             }
-            let owner_bits = memoryview_owner_bits(ptr);
-            let offset = memoryview_offset(ptr);
-            let len = memoryview_len(ptr);
-            let itemsize = memoryview_itemsize(ptr);
-            let stride = memoryview_stride(ptr);
-            let format_bits = memoryview_format_bits(ptr);
-            let shape = memoryview_shape(ptr).unwrap_or(&[]).to_vec();
-            let strides = memoryview_strides(ptr).unwrap_or(&[]).to_vec();
-            let out_ptr = if shape.len() > 1 || memoryview_ndim(ptr) == 0 {
-                alloc_memoryview_shaped(
-                    _py,
-                    owner_bits,
-                    offset,
-                    itemsize,
-                    true,
-                    format_bits,
-                    shape,
-                    strides,
-                )
-            } else {
-                alloc_memoryview(
-                    _py,
-                    owner_bits,
-                    offset,
-                    len,
-                    itemsize,
-                    stride,
-                    true,
-                    format_bits,
-                )
+            let Some(storage) = TypedStridedStorage::from_object_bits(bits) else {
+                return MoltObject::none().bits();
             };
+            let out_ptr = alloc_memoryview_from_storage(_py, storage.with_readonly(true));
             if out_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -623,9 +581,6 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
         }
     })
 }
-
-pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
-pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -663,38 +618,32 @@ impl Default for BufferExport {
     }
 }
 
-fn buffer_export_write_format(out: &mut BufferExport, format: &[u8]) {
-    out.format = [0; MOLT_BUFFER_FORMAT_CAP];
-    let count = format.len().min(MOLT_BUFFER_FORMAT_CAP.saturating_sub(1));
-    out.format[..count].copy_from_slice(&format[..count]);
-}
-
-unsafe fn buffer_export_write_format_bits(out: &mut BufferExport, format_bits: u64) -> bool {
-    let obj = obj_from_bits(format_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return false;
-    };
-    if unsafe { object_type_id(ptr) } != TYPE_ID_STRING {
-        return false;
+impl BufferExport {
+    fn from_typed_storage(storage: &TypedStridedStorage) -> Option<Self> {
+        if storage.shape.len() != storage.strides.len()
+            || storage.shape.len() > MOLT_BUFFER_MAX_NDIM
+        {
+            return None;
+        }
+        let mut out = Self {
+            ptr: storage.data,
+            len: u64::try_from(storage.len).ok()?,
+            readonly: if storage.readonly { 1 } else { 0 },
+            ndim: storage.shape.len() as u32,
+            itemsize: u64::try_from(storage.itemsize).ok()?,
+            offset: storage.offset,
+            base: storage.base_bits,
+            format: storage.format,
+            ..Self::default()
+        };
+        for (slot, value) in out.shape.iter_mut().zip(storage.shape.iter().copied()) {
+            *slot = value;
+        }
+        for (slot, value) in out.strides.iter_mut().zip(storage.strides.iter().copied()) {
+            *slot = value;
+        }
+        Some(out)
     }
-    let len = unsafe { string_len(ptr) };
-    let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), len) };
-    buffer_export_write_format(out, bytes);
-    true
-}
-
-fn buffer_export_write_shape(out: &mut BufferExport, shape: &[isize], strides: &[isize]) -> bool {
-    if shape.len() != strides.len() || shape.len() > MOLT_BUFFER_MAX_NDIM {
-        return false;
-    }
-    out.ndim = shape.len() as u32;
-    for (slot, value) in out.shape.iter_mut().zip(shape.iter().copied()) {
-        *slot = value;
-    }
-    for (slot, value) in out.strides.iter_mut().zip(strides.iter().copied()) {
-        *slot = value;
-    }
-    true
 }
 
 /// # Safety
@@ -706,81 +655,14 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferE
             if out_ptr.is_null() {
                 return 1;
             }
-            let obj = obj_from_bits(obj_bits);
-            let ptr = match obj.as_ptr() {
-                Some(ptr) => ptr,
-                None => return 1,
+            let Some(storage) = TypedStridedStorage::from_object_bits(obj_bits) else {
+                return 1;
             };
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let data_ptr = bytes_data(ptr) as *mut u8;
-                let len = bytes_len(ptr) as u64;
-                let readonly = if type_id == TYPE_ID_BYTES { 1 } else { 0 };
-                let mut export = BufferExport {
-                    ptr: data_ptr,
-                    len,
-                    readonly,
-                    ndim: 1,
-                    itemsize: 1,
-                    base: obj_bits,
-                    ..BufferExport::default()
-                };
-                export.shape[0] = len as isize;
-                export.strides[0] = 1;
-                *out_ptr = export;
-                return 0;
-            }
-            if type_id == TYPE_ID_MEMORYVIEW {
-                let owner_bits = memoryview_owner_bits(ptr);
-                let owner = obj_from_bits(owner_bits);
-                let owner_ptr = match owner.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => return 1,
-                };
-                let base = match bytes_like_slice_raw(owner_ptr) {
-                    Some(slice) => slice,
-                    None => return 1,
-                };
-                let offset = memoryview_offset(ptr);
-                if offset < 0 {
-                    return 1;
-                }
-                let offset = offset as usize;
-                if offset > base.len() {
-                    return 1;
-                }
-                let data_ptr = base.as_ptr().add(offset) as *mut u8;
-                let len = memoryview_nbytes(ptr) as u64;
-                let readonly = if memoryview_readonly(ptr) { 1 } else { 0 };
-                let itemsize = memoryview_itemsize(ptr) as u64;
-                let shape = match memoryview_shape(ptr) {
-                    Some(shape) => shape,
-                    None => return 1,
-                };
-                let strides = match memoryview_strides(ptr) {
-                    Some(strides) => strides,
-                    None => return 1,
-                };
-                let mut export = BufferExport {
-                    ptr: data_ptr,
-                    len,
-                    readonly,
-                    ndim: memoryview_ndim(ptr) as u32,
-                    itemsize,
-                    offset: memoryview_offset(ptr),
-                    base: owner_bits,
-                    ..BufferExport::default()
-                };
-                if !buffer_export_write_shape(&mut export, shape, strides) {
-                    return 1;
-                }
-                if !buffer_export_write_format_bits(&mut export, memoryview_format_bits(ptr)) {
-                    return 1;
-                }
-                *out_ptr = export;
-                return 0;
-            }
-            1
+            let Some(export) = BufferExport::from_typed_storage(&storage) else {
+                return 1;
+            };
+            *out_ptr = export;
+            0
         })
     }
 }
