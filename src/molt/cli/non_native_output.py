@@ -12,7 +12,7 @@ import sys
 import tarfile
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Collection
+from typing import Any, Callable, Collection, TypedDict
 
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli.atomic_io import (
@@ -72,6 +72,17 @@ _BUNDLE_EXCLUDED_NATIVE_SUFFIXES = {
 }
 
 
+class _ExternalStaticBundleFile(TypedDict):
+    path: str
+    size: int
+
+
+class _ExternalStaticBundleManifest(TypedDict):
+    files: list[_ExternalStaticBundleFile]
+    roots: list[str]
+    total_bytes: int
+
+
 def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
     if not path.is_file() or path.is_symlink():
         return None
@@ -89,7 +100,7 @@ def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
 def _write_external_static_packages_bundle(
     runtime_roots: Collection[Path],
     output: Path,
-) -> dict[str, object] | None:
+) -> _ExternalStaticBundleManifest | None:
     roots = tuple(
         dict.fromkeys(
             root.resolve(strict=False)
@@ -100,7 +111,7 @@ def _write_external_static_packages_bundle(
     if not roots:
         return None
 
-    files: list[dict[str, object]] = []
+    files: list[_ExternalStaticBundleFile] = []
     seen: set[str] = set()
     tmp_output = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -131,10 +142,10 @@ def _write_external_static_packages_bundle(
             if not files:
                 return None
 
-            manifest = {
+            manifest: _ExternalStaticBundleManifest = {
                 "files": files,
                 "roots": [str(root) for root in roots],
-                "total_bytes": sum(int(file["size"]) for file in files),
+                "total_bytes": sum(file["size"] for file in files),
             }
             manifest_bytes = json.dumps(
                 manifest,
@@ -939,7 +950,7 @@ def _prepare_non_native_build_result(
                 )
             browser_embed_abi = _split_runtime_browser_abi_from_manifest()
             browser_embed_abi["native_callables"] = native_callables_manifest
-            bundle_manifest: dict[str, object] | None = None
+            bundle_manifest: _ExternalStaticBundleManifest | None = None
             bundle_tar = split_dir / "bundle.tar"
             with contextlib.suppress(FileNotFoundError):
                 bundle_tar.unlink()
@@ -959,7 +970,17 @@ def _prepare_non_native_build_result(
                         command="build",
                     )
 
-            manifest_data = {
+            assets: dict[str, dict[str, object]] = {
+                "browser_embed": {
+                    "path": "browser_embed.js",
+                    "size": browser_embed_size,
+                },
+                "loader_bridge": {
+                    "path": "loader_bridge.js",
+                    "size": loader_bridge_size,
+                },
+            }
+            manifest_data: dict[str, Any] = {
                 "version": 2,
                 "mode": "split-runtime",
                 "tree_shaken": True,
@@ -990,23 +1011,14 @@ def _prepare_non_native_build_result(
                         "size": app_size,
                     },
                 },
-                "assets": {
-                    "browser_embed": {
-                        "path": "browser_embed.js",
-                        "size": browser_embed_size,
-                    },
-                    "loader_bridge": {
-                        "path": "loader_bridge.js",
-                        "size": loader_bridge_size,
-                    },
-                },
+                "assets": assets,
                 "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
             }
             if bundle_manifest is not None:
                 bundle_size = bundle_tar.stat().st_size
-                manifest_data["assets"]["bundle"] = {
+                assets["bundle"] = {
                     "path": "bundle.tar",
                     "size": bundle_size,
                     "file_count": len(bundle_manifest["files"]),

@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, Mapping, Sequence, cast
 from molt.cli import commands as _commands
 from molt.cli import debug_helpers as _debug_helpers
 from molt.cli import factgraph as _factgraph
+from molt.cli import runtime_build as _runtime_build
 from molt.cli import typecheck as _typecheck
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
@@ -58,6 +59,24 @@ def _dispatch_entrypoint_command(
             json_output=args.json,
             verbose=args.verbose,
             build_fn=build_fn,
+        )
+
+    if args.command == "internal-runtime-wasm-build":
+        project_root = (
+            Path(args.project).resolve()
+            if getattr(args, "project", None)
+            else config_root
+        )
+        return _runtime_build._prebuild_runtime_wasm(
+            project_root=project_root,
+            kind=args.kind,
+            json_output=args.json,
+            build_profile=args.build_profile,
+            cargo_timeout=args.cargo_timeout,
+            simd_enabled=not args.no_simd,
+            freestanding=args.freestanding,
+            stdlib_profile=args.stdlib_profile,
+            verbose=args.verbose,
         )
 
     if args.command == "debug":

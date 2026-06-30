@@ -1,8 +1,7 @@
-//! CPython-compatible `Py*` C API stubs.
+//! CPython-compatible `Py*` C API runtime helpers.
 //!
-//! These functions mirror the CPython stable ABI signatures so that C
-//! extensions compiled against CPython headers can link against libmolt
-//! without source changes.
+//! These functions remain Rust-callable test helpers. The exported C symbol
+//! authority lives in `molt-cpython-abi`.
 
 use super::*;
 
@@ -66,7 +65,6 @@ pub extern "C" fn PyIter_Next(iter: u64) -> u64 {
 }
 
 /// `PyIter_Check(obj)` — return 1 if `obj` is an iterator, 0 otherwise.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyIter_Check(obj: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if unsafe { is_iterator_bits(_py, obj) } {
@@ -151,7 +149,6 @@ pub extern "C" fn PyBool_Check(obj: u64) -> i32 {
 }
 
 /// `PyNone_Check(obj)` — return 1 if obj is None, 0 otherwise.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyNone_Check(obj: u64) -> i32 {
     if obj_from_bits(obj).is_none() { 1 } else { 0 }
 }
@@ -412,7 +409,6 @@ pub extern "C" fn PyDict_Size(dict: u64) -> isize {
 }
 
 /// `PyDict_Contains(dict, key)` — return 1 if key is in dict, 0 if not, -1 on error.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(dict).as_ptr() else {
@@ -1040,7 +1036,6 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(v: *const u8, len: isize) -> 
 /// `PyBytes_AsString(o)` — return a pointer to the internal buffer of a bytes object.
 /// Returns NULL on error (e.g. not a bytes object). The pointer is borrowed and valid
 /// as long as the bytes object is alive.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyBytes_AsString(o: u64) -> *const u8 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(o).as_ptr() else {
@@ -1143,7 +1138,6 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
 
 /// `PyMem_Malloc(size)` — allocate `size` bytes of memory.
 /// Returns a pointer to the allocated memory, or NULL on failure.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut u8 {
     if size == 0 {
         // CPython returns a non-NULL pointer for size 0; allocate 1 byte.
@@ -1154,14 +1148,12 @@ pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut u8 {
 
 /// `PyMem_Realloc(ptr, size)` — resize a previously allocated block.
 /// Returns a pointer to the reallocated memory, or NULL on failure.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     let actual_size = if size == 0 { 1 } else { size };
     unsafe { libc::realloc(ptr as *mut libc::c_void, actual_size) as *mut u8 }
 }
 
 /// `PyMem_Free(ptr)` — free memory allocated by `PyMem_Malloc` or `PyMem_Realloc`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Free(ptr: *mut u8) {
     if !ptr.is_null() {
         unsafe {
@@ -1172,21 +1164,18 @@ pub unsafe extern "C" fn PyMem_Free(ptr: *mut u8) {
 
 /// `PyObject_Malloc(size)` — allocate memory for an object.
 /// Currently an alias for `PyMem_Malloc`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Malloc(size: usize) -> *mut u8 {
     unsafe { PyMem_Malloc(size) }
 }
 
 /// `PyObject_Realloc(ptr, size)` — reallocate memory for an object.
 /// Currently an alias for `PyMem_Realloc`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     unsafe { PyMem_Realloc(ptr, size) }
 }
 
 /// `PyObject_Free(ptr)` — free memory allocated by `PyObject_Malloc`.
 /// Currently an alias for `PyMem_Free`.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Free(ptr: *mut u8) {
     unsafe { PyMem_Free(ptr) }
 }
@@ -1261,7 +1250,6 @@ pub extern "C" fn PyObject_Not(obj: u64) -> i32 {
 }
 
 /// `PyObject_Type(obj)` — return the type of obj. Caller owns the reference.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_Type(obj: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = molt_type_of(obj);
@@ -1383,7 +1371,6 @@ pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char
 }
 
 /// `PyObject_DelAttr(obj, name)` — delete obj.name. Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = molt_object_delattr(obj, name);
@@ -1398,7 +1385,6 @@ pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
 }
 
 /// `PyObject_DelAttrString(obj, name)` — delete attribute by C string name.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyObject_DelAttrString(obj: u64, name: *const std::ffi::c_char) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if name.is_null() {
@@ -1560,7 +1546,6 @@ pub extern "C" fn PySet_New(iterable: u64) -> u64 {
 }
 
 /// `PyFrozenSet_New(iterable)` — create a new frozenset.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyFrozenSet_New(iterable: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // molt_frozenset_new expects raw capacity u64, NOT NaN-boxed
@@ -1647,7 +1632,6 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
 }
 
 /// `PySet_Pop(set)` — remove and return an arbitrary element, or 0 on error.
-#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Pop(set: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = molt_set_pop(set);
@@ -1662,7 +1646,6 @@ pub extern "C" fn PySet_Pop(set: u64) -> u64 {
 }
 
 /// `PySet_Clear(set)` — remove all elements. Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
 pub extern "C" fn PySet_Clear(set: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = molt_set_clear(set);
@@ -1808,7 +1791,6 @@ pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) 
 }
 
 /// `PyDict_DelItem(dict, key)` — delete dict[key]. Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         // Use molt_dict_pop with no default — raises KeyError if missing
@@ -1858,13 +1840,11 @@ pub extern "C" fn PyDict_Values(dict: u64) -> u64 {
 }
 
 /// `PyDict_Items(dict)` — return a list of all (key, value) pairs in the dict.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Items(dict: u64) -> u64 {
     PyMapping_Items(dict)
 }
 
 /// `PyDict_Update(a, b)` — merge b into a. Returns 0 on success, -1 on error.
-#[unsafe(no_mangle)]
 pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let res = molt_dict_update(a, b);
@@ -2032,7 +2012,7 @@ pub extern "C" fn PyErr_NoMemory() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `Py_IncRef(obj)` — increment the reference count.
-/// NOTE: canonical `#[no_mangle]` is in `molt-lang-cpython-abi`.
+/// NOTE: the canonical C export is in `molt-cpython-abi`.
 pub extern "C" fn Py_IncRef(obj: u64) {
     if obj == 0 {
         return;
@@ -2045,7 +2025,7 @@ pub extern "C" fn Py_IncRef(obj: u64) {
 }
 
 /// `Py_DecRef(obj)` — decrement the reference count.
-/// NOTE: canonical `#[no_mangle]` is in `molt-lang-cpython-abi`.
+/// NOTE: the canonical C export is in `molt-cpython-abi`.
 pub extern "C" fn Py_DecRef(obj: u64) {
     if obj == 0 {
         return;
@@ -2113,7 +2093,6 @@ pub extern "C" fn PyBool_FromLong(v: i64) -> u64 {
 }
 
 /// `Py_BuildNone()` — return None handle (borrowed).
-#[unsafe(no_mangle)]
 pub extern "C" fn Py_BuildNone() -> u64 {
     none_bits()
 }
