@@ -137,6 +137,18 @@ console.log(JSON.stringify(imports));
     ]
 
 
+def test_browser_host_runtime_import_bridge_requires_manifest_abi() -> None:
+    root = Path(__file__).resolve().parents[1]
+    browser_host = (root / "wasm" / "browser_host.js").read_text(encoding="utf-8")
+
+    assert "if (!manifestNames.has(entry.name))" in browser_host
+    assert "if (!signature || !Array.isArray(signature.params))" in browser_host
+    assert "if (!resultKind)" in browser_host
+    assert "fn = resolveFallback(entry.name);" in browser_host
+    assert "const hasFallback" not in browser_host
+    assert "if (!hasManifestImport && !hasFallback)" not in browser_host
+
+
 class _StaticDirHandler(BaseHTTPRequestHandler):
     root: Path
 
@@ -632,6 +644,25 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     ]
     assert "fast_list_append" in browser_abi["runtime_import_fallbacks"]
     runtime_imports = manifest["abi"]["runtime_imports"]
+    import molt.wasm_artifact as wasm_artifact
+
+    app_runtime_import_names = wasm_artifact._collect_wasm_module_import_names(
+        out_dir / "app.wasm",
+        "molt_runtime",
+    )
+    assert runtime_imports["module"] == "molt_runtime"
+    assert runtime_imports["names"] == sorted(app_runtime_import_names)
+    runtime_import_name_set = set(runtime_imports["names"])
+    assert runtime_import_name_set
+    assert set(runtime_imports["signatures"]) == runtime_import_name_set
+    assert set(runtime_imports["result_kinds"]) == runtime_import_name_set
+    assert set(runtime_imports["runtime_export_signatures"]).issubset(
+        runtime_import_name_set
+    )
+    for name, signature in runtime_imports["signatures"].items():
+        assert isinstance(signature["params"], list), name
+        assert isinstance(signature["result"], str), name
+        assert runtime_imports["result_kinds"][name]
     assert "molt_exception_init" not in runtime_imports["signatures"]
     assert "molt_exception_init" not in runtime_imports["runtime_export_signatures"]
 
