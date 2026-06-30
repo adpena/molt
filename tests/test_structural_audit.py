@@ -280,7 +280,21 @@ def test_rust_stub_surface_probe_counts_live_stubs_not_tests(tmp_path: Path):
     runtime = tmp_path / "runtime" / "molt-runtime" / "src"
     runtime.mkdir(parents=True)
     (runtime / "memoryview.rs").write_text(
-        'fn gap() { raise_exception(_py, "NotImplementedError", "missing"); }\n',
+        "fn gap() {\n"
+        "    raise_exception::<u64>(\n"
+        "        _py,\n"
+        '        "NotImplementedError",\n'
+        '        "missing",\n'
+        "    );\n"
+        "}\n"
+        "fn fallback_probe() {\n"
+        '    if clear_pending_if_kind(_py, &["NotImplementedError"]) {\n'
+        "        return;\n"
+        "    }\n"
+        "}\n"
+        "fn exception_hierarchy(name: &str) -> bool {\n"
+        '    matches!(name, "NotImplementedError")\n'
+        "}\n",
         encoding="utf-8",
     )
 
@@ -290,7 +304,7 @@ def test_rust_stub_surface_probe_counts_live_stubs_not_tests(tmp_path: Path):
     assert metrics["rust_stub_surfaces_total"] == 3
     assert {finding.location for finding in findings} == {
         "runtime/molt-backend-rust/src/rust/op_emitter.rs:1",
-        "runtime/molt-runtime/src/memoryview.rs:1",
+        "runtime/molt-runtime/src/memoryview.rs:4",
     }
 
 
