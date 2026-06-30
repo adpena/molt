@@ -185,7 +185,7 @@ def test_no_budget_means_cold_budget_cannot_fire() -> None:
 
 
 def test_fail_stale_overrides_everything() -> None:
-    # A green-looking cell on a non-authoritative tree is FAIL_STALE.
+    # A green-looking cell on a non-authoritative board is FAIL_STALE.
     c = _cell(
         warm_molt_s=0.10,
         warm_cpython_s=0.20,
@@ -194,6 +194,7 @@ def test_fail_stale_overrides_everything() -> None:
     )
     c.finalize(budget_ms=100.0, authoritative=False)
     assert c.verdict == ps.VERDICT_FAIL_STALE
+    assert c.note == ps.NON_AUTHORITATIVE_NOTE
     assert ps.verdict_fails_gate(c.verdict) is True
 
 
@@ -1075,6 +1076,48 @@ def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
 
 
 # --- Quiescence gather (synthetic; monkeypatched probes) --------------------
+
+
+def test_loadavg_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "getloadavg", lambda: (3.25, 2.0, 1.0), raising=False)
+    monkeypatch.setattr(
+        ps,
+        "_metadata_probe",
+        lambda *args, **kwargs: pytest.fail("sysctl fallback should not run"),
+    )
+    assert ps._loadavg_1m() == 3.25
+
+
+def test_loadavg_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
+    monkeypatch.delattr(ps.os, "getloadavg", raising=False)
+
+    def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
+        assert cmd == ["sysctl", "-n", "vm.loadavg"]
+        return SimpleNamespace(stdout="{ 4.50 4.00 3.00 }")
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+    assert ps._loadavg_1m() == 4.5
+
+
+def test_ncpu_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "cpu_count", lambda: 6)
+    monkeypatch.setattr(
+        ps,
+        "_metadata_probe",
+        lambda *args, **kwargs: pytest.fail("sysctl fallback should not run"),
+    )
+    assert ps._ncpu() == 6
+
+
+def test_ncpu_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "cpu_count", lambda: None)
+
+    def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
+        assert cmd == ["sysctl", "-n", "hw.ncpu"]
+        return SimpleNamespace(stdout="12")
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+    assert ps._ncpu() == 12
 
 
 def test_gather_quiescence_quiet_when_idle(monkeypatch) -> None:
