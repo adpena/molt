@@ -1296,10 +1296,19 @@ export default {
           }
         }
         const tableFn = sharedTable.get(dispatchIdx);
+        const directSignature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+        if (typeof tableFn === "function" && directSignature) {
+          try {
+            return callWithSignature(tableFn, directSignature, args);
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            const fnName = tableFn.name || "<anon>";
+            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
+          }
+        }
         if (typeof tableFn === "function") {
           try {
-            const signature = callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
-            return callWithSignature(tableFn, signature, args);
+            return callWithSignature(tableFn, callIndirectObjectSignature(indirectName), args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
@@ -1307,9 +1316,10 @@ export default {
           }
         }
         const rtDirectFn = rtInstance?.exports?.[directName];
-        if (typeof rtDirectFn === "function") {
+        const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;
+        if (typeof rtDirectFn === "function" && runtimeDirectSignature) {
           try {
-            return callWithSignature(rtDirectFn, callIndirectObjectSignature(indirectName) || runtimeTableRefSignatures[directName], args);
+            return callWithSignature(rtDirectFn, runtimeDirectSignature, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);

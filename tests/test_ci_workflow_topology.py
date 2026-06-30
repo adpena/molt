@@ -669,9 +669,14 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
         )
         timeout_minutes = int(timeout_line.split(":", 1)[1].strip())
         step_name = block.splitlines()[0].removeprefix("      - name: ")
+        wasm_build_steps = {
+            "Build Molt WASM backend",
+            "Build Molt WASM host",
+            "Prebuild shared Molt WASM runtime",
+        }
         max_timeout = (
             25
-            if step_name in {"Build Molt WASM backend", "Build Molt WASM host"}
+            if step_name in wasm_build_steps
             else 20
         )
         assert 1 <= timeout_minutes <= max_timeout, block

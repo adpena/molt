@@ -414,6 +414,57 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    runtime_wasm_parser = subparsers.add_parser(
+        "internal-runtime-wasm-build",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--project",
+        help="Project root for runtime artifact and fingerprint resolution.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--kind",
+        choices=["shared", "reloc", "both"],
+        default="shared",
+        help="Runtime WASM artifact kind to prebuild.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--build-profile",
+        choices=_BUILD_PROFILE_CHOICES,
+        default="release",
+        help="Runtime build profile selector.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--stdlib-profile",
+        choices=list(STDLIB_PROFILE_CHOICES),
+        default=None,
+        help="Runtime stdlib profile.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--cargo-timeout",
+        type=float,
+        default=None,
+        help="Runtime cargo timeout in seconds.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--freestanding",
+        action="store_true",
+        default=False,
+        help="Prebuild the freestanding WASM runtime variant.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--no-simd",
+        action="store_true",
+        default=False,
+        help="Disable WASM SIMD codegen flags for the runtime prebuild.",
+    )
+    runtime_wasm_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    runtime_wasm_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
     _factgraph.add_factgraph_parser(
         subparsers,
         formatter_class=_BuildHelpFormatter,
