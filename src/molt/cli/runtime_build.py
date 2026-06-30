@@ -674,6 +674,14 @@ def _configure_wasm_cc_env(env: dict[str, str]) -> None:
             return
 
 
+def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
+    if env.get("WASI_SYSROOT") or env.get("MOLT_WASI_SYSROOT"):
+        return
+    wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot()
+    if wasi_sysroot is not None:
+        env["WASI_SYSROOT"] = str(wasi_sysroot)
+
+
 def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
 
@@ -817,10 +825,7 @@ def _ensure_wasm_cpython_abi_staticlib(
         if rustflags:
             env["RUSTFLAGS"] = rustflags
         _configure_wasm_cc_env(env)
-        if not env.get("WASI_SYSROOT"):
-            wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot()
-            if wasi_sysroot is not None:
-                env["WASI_SYSROOT"] = str(wasi_sysroot)
+        _configure_wasi_sysroot_env(env)
         if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
             _maybe_enable_sccache(env)
         else:
@@ -1618,6 +1623,7 @@ def _ensure_runtime_wasm(
             env["RUSTFLAGS"] = cargo_rustflags
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
+        _configure_wasi_sysroot_env(env)
         # Deterministic proof builds default Cargo incremental off at the env
         # boundary; an explicit operator-provided CARGO_INCREMENTAL remains
         # authoritative for local incremental-debug sessions.
