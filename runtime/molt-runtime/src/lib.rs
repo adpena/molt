@@ -621,7 +621,8 @@ pub(crate) use crate::object::layout::{
     zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
-    bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
+    MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, TypedStridedStorage, bytes_like_slice,
+    bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
     memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
     memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar, memoryview_shape_product,
     memoryview_write_scalar,
