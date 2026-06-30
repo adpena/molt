@@ -277,9 +277,12 @@ impl ObjectBridge {
     }
 
     /// Called by `Py_DECREF` when ref count reaches zero — release bridge entry.
-    pub fn release_pyobj(&mut self, ptr: *mut PyObject) {
+    pub fn release_pyobj(&mut self, ptr: *mut PyObject) -> bool {
         if let Some(bits) = self.from_py.remove(&(ptr as usize)) {
             self.to_py.remove(&bits);
+            true
+        } else {
+            false
         }
     }
 

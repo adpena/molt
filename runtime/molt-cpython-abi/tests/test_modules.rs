@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // `molt_cpython_abi_register_hooks`.
 
 static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
+static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 
 fn next_fake_handle() -> u64 {
@@ -118,6 +119,7 @@ unsafe extern "C" fn fake_buffer_acquire(
     0
 }
 unsafe extern "C" fn fake_buffer_release(view: *mut MoltBufferView) -> std::os::raw::c_int {
+    FAKE_BUFFER_RELEASES.fetch_add(1, Ordering::Relaxed);
     if !view.is_null() {
         unsafe {
             *view = MoltBufferView::default();
@@ -225,6 +227,47 @@ fn test_getbuffer_uses_runtime_typed_descriptor() {
         assert!(view.internal.is_null());
         molt_cpython_abi::api::refcount::Py_DECREF(obj);
     }
+}
+
+#[test]
+fn test_memoryview_uses_runtime_buffer_lifetime() {
+    init();
+    FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
+    let obj = unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .handle_to_pyobj(next_fake_handle())
+    };
+    let rc_before = unsafe { (*obj).ob_refcnt };
+    let memoryview = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(obj) };
+    assert!(!memoryview.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::memory::PyMemoryView_Check(memoryview) },
+        1
+    );
+    assert_eq!(unsafe { (*obj).ob_refcnt }, rc_before + 1);
+
+    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(memoryview) };
+    assert!(!view.is_null());
+    unsafe {
+        assert_eq!((*view).len, 4);
+        assert_eq!((*view).itemsize, 1);
+        assert_eq!((*view).readonly, 0);
+        assert_eq!((*view).ndim, 2);
+        assert_eq!(*(*view).shape.add(0), 2);
+        assert_eq!(*(*view).shape.add(1), 2);
+        assert_eq!(*(*view).strides.add(0), 2);
+        assert_eq!(*(*view).strides.add(1), 1);
+    }
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BASE(memoryview) },
+        obj
+    );
+
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(memoryview) };
+    assert_eq!(FAKE_BUFFER_RELEASES.load(Ordering::Relaxed), 1);
+    assert_eq!(unsafe { (*obj).ob_refcnt }, rc_before);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(obj) };
 }
 
 // ---------------------------------------------------------------------------
