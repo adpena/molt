@@ -1651,17 +1651,15 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
   };
   for (const entry of outputImports.funcImports) {
     if (entry.module !== 'molt_runtime') continue;
-    const hasManifestImport = manifestNames.has(entry.name);
-    const hasFallback = Object.hasOwn(runtimeImportFallbacks, entry.name);
-    if (!hasManifestImport && !hasFallback) {
+    if (!manifestNames.has(entry.name)) {
       throw new Error(`app runtime import ${entry.name} missing from manifest`);
     }
     const signature = signatures[entry.name] || null;
-    if (hasManifestImport && (!signature || !Array.isArray(signature.params))) {
+    if (!signature || !Array.isArray(signature.params)) {
       throw new Error(`app runtime import ${entry.name} missing manifest signature`);
     }
     const resultKind = resultKinds[entry.name] || null;
-    if (hasManifestImport && !resultKind) {
+    if (!resultKind) {
       throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
     }
     const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
@@ -4199,6 +4197,9 @@ export const loadMoltWasm = async (options = {}) => {
     }
     const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
     ensureTableCapacityForExportedRefs(instance, linkedTable);
+    if (typeof instance.exports.molt_table_init === 'function') {
+      instance.exports.molt_table_init();
+    }
     const memoryExport =
       instance.exports.molt_memory || instance.exports.memory || env.memory || null;
     state.runtimeInstance = instance;
