@@ -125,6 +125,8 @@ const {
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature,
   installWasmTagImports,
+  normalizeImportResult,
+  normalizeValueForKind,
   parseWasmImports,
   remapLegacyRuntimeSharedTableIndex,
   reservedRuntimeCallableForTableIndex,
@@ -1506,7 +1508,7 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
     molt_db_query_host: stubI32,
     molt_db_exec_host: stubI32,
     molt_db_host_poll: stubZero,
-    molt_getpid_host: stubZeroI64,
+    molt_getpid_host: () => 1n,
     molt_time_timezone_host: () => BigInt(tzProfileForYear(new Date().getFullYear()).stdOffsetSeconds),
     molt_time_local_offset_host: (secsRaw) => {
       const secs = typeof secsRaw === 'bigint' ? Number(secsRaw) : Number(secsRaw);
@@ -1600,51 +1602,82 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
 
 const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
   const imports = {};
+  const runtimeImportAbi = options.runtimeImportAbi || {};
+  const manifestNames = new Set(runtimeImportAbi.names || []);
+  const signatures = runtimeImportAbi.signatures || {};
+  const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};
+  const resultKinds = runtimeImportAbi.result_kinds || {};
+  const runtimeImportFallbacks = options.runtimeImportFallbacks || {};
   const runtimeExport = (name) => {
     const fn = runtimeInstance.exports[name];
     return typeof fn === 'function' ? fn : null;
   };
-  const makeCallBindFallback = (arity) => {
-    const callBindIc = runtimeExport('molt_call_bind_ic');
-    const callargsNew = runtimeExport('molt_callargs_new');
-    const callargsPushPos = runtimeExport('molt_callargs_push_pos');
+  const makeCallBindFallback = (entryName, fallback) => {
+    if (!Number.isInteger(fallback.call_arity)) {
+      throw new Error(`manifest fallback for ${entryName} missing call_arity`);
+    }
+    const exports = Array.isArray(fallback.exports) ? fallback.exports : [];
+    const [callBindName, callargsNewName, callargsPushPosName] = exports;
+    const callBindIc = runtimeExport(callBindName);
+    const callargsNew = runtimeExport(callargsNewName);
+    const callargsPushPos = runtimeExport(callargsPushPosName);
     if (!callBindIc || !callargsNew || !callargsPushPos) {
-      return null;
+      throw new Error(`runtime missing fallback exports for ${entryName}`);
     }
     return (methodBits, ...argBits) => {
-      const builderBits = callargsNew(boxInt(arity), boxInt(0));
+      const builderBits = callargsNew(boxInt(fallback.call_arity), boxInt(0));
       for (const argBitsValue of argBits) {
         callargsPushPos(builderBits, argBitsValue);
       }
       return callBindIc(boxInt(0), methodBits, builderBits);
     };
   };
+  const resolveFallback = (entryName) => {
+    const fallback = runtimeImportFallbacks[entryName] || null;
+    if (!fallback) {
+      return null;
+    }
+    if (fallback.strategy === 'call_bind_ic') {
+      return makeCallBindFallback(entryName, fallback);
+    }
+    if (fallback.strategy === 'direct_export') {
+      const exports = Array.isArray(fallback.exports) ? fallback.exports : [];
+      if (exports.length !== 1) {
+        throw new Error(`manifest fallback for ${entryName} must name one export`);
+      }
+      return runtimeExport(exports[0]);
+    }
+    throw new Error(`unsupported manifest fallback strategy for ${entryName}: ${fallback.strategy}`);
+  };
   for (const entry of outputImports.funcImports) {
     if (entry.module !== 'molt_runtime') continue;
+    const hasManifestImport = manifestNames.has(entry.name);
+    const hasFallback = Object.hasOwn(runtimeImportFallbacks, entry.name);
+    if (!hasManifestImport && !hasFallback) {
+      throw new Error(`app runtime import ${entry.name} missing from manifest`);
+    }
+    const signature = signatures[entry.name] || null;
+    if (hasManifestImport && (!signature || !Array.isArray(signature.params))) {
+      throw new Error(`app runtime import ${entry.name} missing manifest signature`);
+    }
+    const resultKind = resultKinds[entry.name] || null;
+    if (hasManifestImport && !resultKind) {
+      throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
+    }
     const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
     imports[entry.name] = (...args) => {
       let fn = runtimeExport(exportName);
+      let callSignature = runtimeExportSignatures[entry.name] || signature;
       if (!fn) {
-        const dictSet = runtimeExport('molt_dict_set');
-        const dictGetitemBorrowed = runtimeExport('molt_dict_getitem_borrowed');
-        const tupleGetitemBorrowed = runtimeExport('molt_tuple_getitem_borrowed');
-        if (entry.name === 'fast_list_append') {
-          fn = makeCallBindFallback(1);
-        } else if (entry.name === 'fast_str_join') {
-          fn = makeCallBindFallback(1);
-        } else if (entry.name === 'fast_dict_get') {
-          fn = makeCallBindFallback(2);
-        } else if (entry.name === 'dict_setitem') {
-          fn = dictSet;
-        } else if (entry.name === 'dict_getitem') {
-          fn = dictGetitemBorrowed;
-        } else if (entry.name === 'tuple_getitem') {
-          fn = tupleGetitemBorrowed;
-        }
+        fn = resolveFallback(entry.name);
+        callSignature = signature;
       }
       if (typeof fn !== 'function') {
         throw new Error(`molt_runtime missing export ${exportName}`);
       }
+      const callArgs = callSignature && Array.isArray(callSignature.params)
+        ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
+        : args;
       const runtimeMemory =
         typeof options.runtimeMemoryProvider === 'function'
           ? options.runtimeMemoryProvider()
@@ -1652,33 +1685,35 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
       const appMemory =
         typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
       if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
-        return callRuntimeByteSpanOutImport({
+        const bridgedResult = callRuntimeByteSpanOutImport({
           runtime: runtimeInstance,
           runtimeMemory,
           appMemory,
           fn,
-          args,
+          args: callArgs,
           name: entry.name,
           readBytesFromMemory,
           allocRuntimeTempBytes,
           freeRuntimeTempBytes,
           writeU64ToMemory,
         });
+        return normalizeImportResult(bridgedResult, resultKind);
       }
       if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
-        return callRuntimeObjectArrayArgImport({
+        const bridgedResult = callRuntimeObjectArrayArgImport({
           runtime: runtimeInstance,
           runtimeMemory,
           appMemory,
           fn,
-          args,
+          args: callArgs,
           name: entry.name,
           readBytesFromMemory,
           allocRuntimeTempBytes,
           freeRuntimeTempBytes,
         });
+        return normalizeImportResult(bridgedResult, resultKind);
       }
-      return fn(...args);
+      return normalizeImportResult(fn(...callArgs), resultKind);
     };
   }
   return imports;
@@ -3878,6 +3913,16 @@ const tryFetch = async (url) => {
   }
 };
 
+const tryFetchJson = async (url) => {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    return null;
+  }
+};
+
 const resolveDefaultWasmUrl = (moduleUrl = import.meta.url) =>
   new URL('../dist/output.wasm', moduleUrl).href;
 
@@ -3899,6 +3944,31 @@ const resolveSiblingLinkedUrl = (wasmUrl, moduleUrl = import.meta.url) => {
   } catch {
     return null;
   }
+};
+
+const resolveSiblingManifestUrl = (wasmUrl, moduleUrl = import.meta.url) => {
+  if (!wasmUrl) return null;
+  try {
+    return new URL('manifest.json', new URL(wasmUrl, moduleUrl)).href;
+  } catch {
+    return null;
+  }
+};
+
+const loadSplitRuntimeManifest = async (options, wasmUrl) => {
+  if (options.manifest) {
+    return options.manifest;
+  }
+  const manifestUrl =
+    options.manifestUrl || resolveSiblingManifestUrl(wasmUrl, import.meta.url);
+  if (!manifestUrl) {
+    throw new Error('split-runtime browser host requires a manifest URL');
+  }
+  const manifest = await tryFetchJson(manifestUrl);
+  if (!manifest) {
+    throw new Error(`split-runtime browser host failed to load manifest at ${manifestUrl}`);
+  }
+  return manifest;
 };
 
 export const resolveMoltWasmUrls = (options = {}, moduleUrl = import.meta.url) => {
@@ -4154,6 +4224,15 @@ export const loadMoltWasm = async (options = {}) => {
     };
   }
 
+  const splitManifest = await loadSplitRuntimeManifest(options, wasmUrl);
+  const runtimeImportAbi = options.runtimeImportAbi || splitManifest?.abi?.runtime_imports || null;
+  if (!runtimeImportAbi || !Array.isArray(runtimeImportAbi.names)) {
+    throw new Error('split-runtime manifest missing abi.runtime_imports.names');
+  }
+  const runtimeImportFallbacks =
+    splitManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
+  const appTableRefSignatures = splitManifest?.abi?.table_refs?.app || {};
+  const runtimeTableRefSignatures = splitManifest?.abi?.table_refs?.runtime || {};
   const wasmBytes = await tryFetch(wasmUrl);
   if (!wasmBytes) {
     throw new Error(`Failed to load wasm at ${wasmUrl}`);
@@ -4210,6 +4289,9 @@ export const loadMoltWasm = async (options = {}) => {
           throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
         }
       }
+      const directName = `__molt_table_ref_${dispatchIdx}`;
+      const directSignature =
+        appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
       const fn = table ? table.get(dispatchIdx) : null;
       if (traceCallIndirect) {
         console.error(
@@ -4219,7 +4301,19 @@ export const loadMoltWasm = async (options = {}) => {
       if (typeof fn !== 'function') {
         throw new Error(`${name} missing table entry at ${dispatchIdx}`);
       }
-      return callWithWasmSignature(fn, callIndirectObjectSignature(name), args.slice(1));
+      const appIndirectFn = outputInstance?.exports?.[name];
+      if (!directSignature && typeof appIndirectFn === 'function') {
+        return callWithWasmSignature(
+          appIndirectFn,
+          callIndirectObjectSignature(name, { includeIndex: true }),
+          args,
+        );
+      }
+      return callWithWasmSignature(
+        fn,
+        directSignature || callIndirectObjectSignature(name),
+        args.slice(1),
+      );
     };
   }
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
@@ -4243,6 +4337,8 @@ export const loadMoltWasm = async (options = {}) => {
         },
       ),
     }, {
+      runtimeImportAbi,
+      runtimeImportFallbacks,
       runtimeMemoryProvider: () => state.memory,
       appMemoryProvider: () => appState.memory,
     }),
