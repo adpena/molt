@@ -5686,10 +5686,11 @@ const runDirectLink = async () => {
         }
       }
       if (typeof appDirectFn === 'function') {
+        const appDirectSignature = directName && outputExportSignatures[directName];
         try {
           return callWithWasmSignature(
             appDirectFn,
-            callIndirectObjectSignature(name) || outputExportSignatures[directName],
+            appDirectSignature || callIndirectObjectSignature(name),
             args.slice(1),
           );
         } catch (err) {
@@ -5710,23 +5711,26 @@ const runDirectLink = async () => {
         );
       }
       const fn = table ? table.get(dispatchIdx) : null;
+      const directSignature =
+        (directName && outputExportSignatures[directName]) ||
+        (directName && runtimeExportSignatures[directName]) ||
+        null;
+      if (typeof fn === 'function' && directSignature) {
+        return callWithWasmSignature(fn, directSignature, args.slice(1));
+      }
       if (typeof fn === 'function') {
-        const signature =
-          callIndirectObjectSignature(name) ||
-          (directName && outputExportSignatures[directName]) ||
-          (directName && runtimeExportSignatures[directName]) ||
-          null;
-        return callWithWasmSignature(fn, signature, args.slice(1));
+        return callWithWasmSignature(fn, callIndirectObjectSignature(name), args.slice(1));
       }
       const runtimeDirectFn =
         directName && runtimeInstance && runtimeInstance.exports
           ? runtimeInstance.exports[directName]
           : null;
       if (typeof runtimeDirectFn === 'function') {
+        const runtimeDirectSignature = directName && runtimeExportSignatures[directName];
         try {
           return callWithWasmSignature(
             runtimeDirectFn,
-            callIndirectObjectSignature(name) || runtimeExportSignatures[directName],
+            runtimeDirectSignature || callIndirectObjectSignature(name),
             args.slice(1),
           );
         } catch (err) {
