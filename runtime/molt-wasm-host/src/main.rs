@@ -541,10 +541,11 @@ fn call_zero_arg_export(
 }
 
 fn call_app_startup_entries(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
-    // App-owned lazy-import entrypoints need the same bootstrap phase in the
-    // Rust host as in the JS runners. The exported molt_main wrapper owns
-    // runtime/table init; this call owns only the app bootstrap surface.
-    call_zero_arg_export(store, instance, "molt_isolate_bootstrap")?;
+    // Normal execution has exactly one startup authority: the exported
+    // molt_main wrapper. It owns runtime init, manifest install, table init, and
+    // app entry execution. Host-export setup is routed through molt_host_init
+    // in the JS/browser hosts; pre-calling raw isolate bootstrap here creates a
+    // second initialization lane before the wrapper has run.
     call_zero_arg_export(store, instance, "molt_main")
 }
 
@@ -679,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn app_startup_calls_isolate_bootstrap_before_main() {
+    fn app_startup_calls_only_molt_main_wrapper() {
         let engine = Engine::default();
         let mut store = Store::new(&engine, test_host_state());
         let mut linker = Linker::new(&engine);
@@ -718,7 +719,7 @@ mod tests {
 
         call_app_startup_entries(&mut store, &instance).unwrap();
 
-        assert_eq!(&*order.lock().unwrap(), &["bootstrap", "main"]);
+        assert_eq!(&*order.lock().unwrap(), &["main"]);
     }
 }
 
