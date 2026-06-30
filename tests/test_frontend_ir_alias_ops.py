@@ -213,6 +213,26 @@ def _lowered_ops(source: str, **kwargs: object) -> list[dict]:
     return [op for fn in ir["functions"] for op in fn["ops"]]
 
 
+def test_dead_static_module_branch_names_do_not_enter_code_metadata() -> None:
+    ops = _raw_ops(
+        "from __future__ import annotations\n"
+        "if False:\n"
+        "    from typing import Callable\n"
+        "    molt_msgpack_parse_scalar_obj: Callable[[object], object]\n"
+        "print('live')\n",
+        module_name="dead_module_metadata_probe",
+    )
+    const_strings = {
+        op.args[0]
+        for op in ops
+        if op.kind == "CONST_STR" and op.args and isinstance(op.args[0], str)
+    }
+
+    assert "live" in const_strings
+    assert "molt_msgpack_parse_scalar_obj" not in const_strings
+    assert "Callable" not in const_strings
+
+
 def test_raw_guard_tag_emitted_for_type_hints() -> None:
     kinds = _raw_kinds(
         "x: int = 1\n", type_hint_policy="check", fallback_policy="bridge"
