@@ -7,6 +7,8 @@ use cc::Build;
 
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
+#[path = "../build_support/wasi_sysroot.rs"]
+mod wasi_sysroot;
 
 fn resolve_build_python() -> String {
     println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
@@ -143,9 +145,8 @@ for name, val in sorted(set(names)):
 
     unicode_tables::emit_runtime_unicode_tables(&out_dir, &build_python);
     println!("cargo:rerun-if-env-changed=PYTHONPATH");
-    println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
-    println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
+    println!("cargo:rerun-if-changed=../build_support/wasi_sysroot.rs");
     println!("cargo:rerun-if-changed=src/object/ops.rs");
     println!("cargo:rerun-if-changed=build.rs");
 }
@@ -317,31 +318,11 @@ fn build_libmpdec(
     }
     if target_arch == "wasm32" {
         build.define("_WASI_EMULATED_SIGNAL", "1");
-        let mut wasi_sysroot = env::var("WASI_SYSROOT")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var("WASI_SDK_PATH")
-                    .ok()
-                    .map(|sdk_root| PathBuf::from(sdk_root).join("share").join("wasi-sysroot"))
-            });
-        if wasi_sysroot.is_none() {
-            let candidates = [
-                "/opt/homebrew/opt/wasi-libc/share/wasi-sysroot",
-                "/usr/local/opt/wasi-libc/share/wasi-sysroot",
-            ];
-            for candidate in candidates {
-                let path = PathBuf::from(candidate);
-                if path.exists() {
-                    wasi_sysroot = Some(path);
-                    break;
-                }
-            }
-        }
-        let Some(sysroot) = wasi_sysroot else {
+        let Some(sysroot) = wasi_sysroot::resolve_wasi_sysroot() else {
             panic!(
-                "WASI sysroot not found: set WASI_SYSROOT or WASI_SDK_PATH, \
-                 or install wasi-libc (Homebrew) so wasm32-wasip1 builds can compile."
+                "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
+                 WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT so \
+                 wasm32-wasip1 runtime C shims can compile."
             );
         };
         build.flag(format!("--sysroot={}", sysroot.display()));
