@@ -3459,6 +3459,17 @@ const buildWasiStub = (state, logFn, options = {}) => {
       return WASI_ERRNO_INVAL;
     }
   };
+  const writeBytesToFileEntry = (entry, bytes) => {
+    const start = entry.pos;
+    const end = start + bytes.byteLength;
+    if (end > entry.buffer.byteLength) {
+      const expanded = new Uint8Array(end);
+      expanded.set(entry.buffer);
+      entry.buffer = expanded;
+    }
+    entry.buffer.set(bytes, start);
+    entry.pos = end;
+  };
   const writeFdstat = (statPtr, filetype) => {
     const memory = state.memory;
     if (!memory) return WASI_ERRNO_NOSYS;
@@ -3515,10 +3526,31 @@ const buildWasiStub = (state, logFn, options = {}) => {
       const memory = state.memory;
       if (!memory) return WASI_ERRNO_NOSYS;
       const view = new DataView(memory.buffer);
+      const fdNum = toNumber(fd);
       const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
       const count = typeof iovsLen === 'bigint' ? Number(iovsLen) : Number(iovsLen >>> 0);
-      let text = '';
       let written = 0;
+      if (fdNum !== 1 && fdNum !== 2) {
+        const entry = state.wasiFiles.get(fdNum);
+        if (!entry || entry.kind !== 'file' || !entry.writable) {
+          return WASI_ERRNO_BADF;
+        }
+        for (let index = 0; index < count; index += 1) {
+          const ptr = view.getUint32(basePtr + index * 8, true);
+          const len = view.getUint32(basePtr + index * 8 + 4, true);
+          if (len <= 0) {
+            continue;
+          }
+          const bytes = new Uint8Array(memory.buffer, ptr, len);
+          writeBytesToFileEntry(entry, bytes);
+          written += len;
+        }
+        if (outWrittenPtr) {
+          view.setUint32(Number(outWrittenPtr), written >>> 0, true);
+        }
+        return 0;
+      }
+      let text = '';
       for (let index = 0; index < count; index += 1) {
         const ptr = view.getUint32(basePtr + index * 8, true);
         const len = view.getUint32(basePtr + index * 8 + 4, true);

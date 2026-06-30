@@ -534,6 +534,17 @@ export default {
         return WASI_ERRNO_INVAL;
       }
     };
+    const writeBytesToFileEntry = (entry, bytes) => {
+      const start = entry.pos;
+      const end = start + bytes.byteLength;
+      if (end > entry.buffer.byteLength) {
+        const expanded = new Uint8Array(end);
+        expanded.set(entry.buffer);
+        entry.buffer = expanded;
+      }
+      entry.buffer.set(bytes, start);
+      entry.pos = end;
+    };
     const writeFdstat = (statPtr, filetype) => {
       if (!wasmMemory) return WASI_ERRNO_NOSYS;
       const view = new DataView(wasmMemory.buffer);
@@ -547,21 +558,37 @@ export default {
 
     const wasi = {
       fd_write(fd, iovs, iovsLen, nwritten) {
-        if ((fd === 1 || fd === 2) && wasmMemory) {
-          const view = new DataView(wasmMemory.buffer);
-          let totalWritten = 0;
+        if (!wasmMemory) return WASI_ERRNO_NOSYS;
+        const fdNum = toNumber(fd);
+        const view = new DataView(wasmMemory.buffer);
+        let totalWritten = 0;
+        if (fdNum !== 1 && fdNum !== 2) {
+          const entry = wasiFiles.get(fdNum);
+          if (!entry || entry.kind !== "file" || !entry.writable) {
+            return WASI_ERRNO_BADF;
+          }
           for (let i = 0; i < iovsLen; i++) {
             const ptr = view.getUint32(iovs + i * 8, true);
             const len = view.getUint32(iovs + i * 8 + 4, true);
+            if (len === 0) continue;
             const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
-            const decoder = (fd === 1) ? stdoutDecoder : stderrDecoder;
-            const text = decoder.decode(bytes, { stream: true });
-            if (fd === 1) stdoutChunks.push(text);
-            else stderrChunks.push(text);
+            writeBytesToFileEntry(entry, bytes);
             totalWritten += len;
           }
           view.setUint32(nwritten, totalWritten, true);
+          return 0;
         }
+        for (let i = 0; i < iovsLen; i++) {
+          const ptr = view.getUint32(iovs + i * 8, true);
+          const len = view.getUint32(iovs + i * 8 + 4, true);
+          const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
+          const decoder = (fdNum === 1) ? stdoutDecoder : stderrDecoder;
+          const text = decoder.decode(bytes, { stream: true });
+          if (fdNum === 1) stdoutChunks.push(text);
+          else stderrChunks.push(text);
+          totalWritten += len;
+        }
+        view.setUint32(nwritten, totalWritten, true);
         return 0;
       },
       fd_read(fd, iovsPtr, iovsLen, outReadPtr) {
