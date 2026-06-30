@@ -122,9 +122,12 @@ impl NativeCallableRequest {
                     "native callable export `{export_name}` declares unknown ABI `{abi}`; known ABIs: {NATIVE_CALLABLE_ABI_CHOICES}"
                 )
             });
-            if parsed == NativeCallableAbi::ForwardF32V1 {
+            if parsed == NativeCallableAbi::ForwardF32V1
+                || parsed == NativeCallableAbi::PyinitModuleV1
+            {
                 panic!(
-                    "native callable export `{export_name}` uses module_attr with forward_f32 memory ABI"
+                    "native callable export `{export_name}` uses module_attr with direct-symbol-only ABI `{}`",
+                    parsed.token()
                 );
             }
             return None;
@@ -278,6 +281,7 @@ fn native_callable_type_idx(
         }
         NativeCallableAbi::ObjectCallargsV1 => static_native_callable_type_idx(abi),
         NativeCallableAbi::ForwardF32V1 => static_native_callable_type_idx(abi),
+        NativeCallableAbi::PyinitModuleV1 => static_native_callable_type_idx(abi),
     }
 }
 

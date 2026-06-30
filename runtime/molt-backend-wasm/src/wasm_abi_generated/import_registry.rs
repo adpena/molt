@@ -9035,6 +9035,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::CpythonAbiPrepareStaticExtension,
+        name: "cpython_abi_prepare_static_extension",
+        type_idx: 0,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::CpythonAbiPyinitModuleToBits,
+        name: "cpython_abi_pyinit_module_to_bits",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::GcCollect,
         name: "gc_collect",
         type_idx: 2,
@@ -18636,6 +18646,18 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_copyreg_remove_extension" => Some(WasmRuntimeImport::CopyregRemoveExtension),
         "copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
         "molt_copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
+        "cpython_abi_prepare_static_extension" => {
+            Some(WasmRuntimeImport::CpythonAbiPrepareStaticExtension)
+        }
+        "molt_cpython_abi_prepare_static_extension" => {
+            Some(WasmRuntimeImport::CpythonAbiPrepareStaticExtension)
+        }
+        "cpython_abi_pyinit_module_to_bits" => {
+            Some(WasmRuntimeImport::CpythonAbiPyinitModuleToBits)
+        }
+        "molt_cpython_abi_pyinit_module_to_bits" => {
+            Some(WasmRuntimeImport::CpythonAbiPyinitModuleToBits)
+        }
         "gc_collect" => Some(WasmRuntimeImport::GcCollect),
         "molt_gc_collect" => Some(WasmRuntimeImport::GcCollect),
         "gc_enable" => Some(WasmRuntimeImport::GcEnable),
