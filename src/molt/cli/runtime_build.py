@@ -583,6 +583,76 @@ def _ensure_runtime_wasm_artifact(
     return True
 
 
+def _prebuild_runtime_wasm(
+    *,
+    project_root: Path,
+    kind: Literal["shared", "reloc", "both"],
+    json_output: bool,
+    cargo_profile: str,
+    cargo_timeout: float | None,
+    simd_enabled: bool = True,
+    freestanding: bool = False,
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    verbose: bool = False,
+) -> int:
+    runtime_state = _initialize_runtime_artifact_state(
+        is_rust_transpile=False,
+        is_wasm=True,
+        emit_mode="wasm",
+        molt_root=project_root,
+        runtime_cargo_profile=cargo_profile,
+        target_triple=None,
+        stdlib_profile=stdlib_profile,
+    )
+    artifacts: dict[str, str] = {}
+    plans: list[tuple[str, bool, Path | None]] = []
+    if kind in {"shared", "both"}:
+        plans.append(("shared", False, runtime_state.runtime_wasm))
+    if kind in {"reloc", "both"}:
+        plans.append(("reloc", True, runtime_state.runtime_reloc_wasm))
+    for label, reloc, runtime_path in plans:
+        if runtime_path is None:
+            if not json_output:
+                print(
+                    f"Runtime wasm {label} artifact path is unavailable.",
+                    file=sys.stderr,
+                )
+            return 1
+        if verbose and not json_output:
+            print(
+                f"Prebuilding runtime wasm {label} artifact: {runtime_path}",
+                file=sys.stderr,
+            )
+        if not _ensure_runtime_wasm_artifact(
+            runtime_state,
+            reloc=reloc,
+            json_output=json_output,
+            cargo_profile=cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=project_root,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=None,
+            required_exports=None,
+        ):
+            if not json_output:
+                print(f"Runtime wasm {label} prebuild failed.", file=sys.stderr)
+            return 1
+        artifacts[label] = os.fspath(runtime_path)
+    if json_output:
+        print(
+            json.dumps(
+                {"status": "ok", "artifacts": artifacts},
+                sort_keys=True,
+            )
+        )
+    elif verbose:
+        for label, path in artifacts.items():
+            print(f"Runtime wasm {label}: {path}", file=sys.stderr)
+    return 0
+
+
 def _configure_wasm_cc_env(env: dict[str, str]) -> None:
     if env.get("CC_wasm32-wasip1") or env.get("CC_wasm32_wasip1"):
         return
