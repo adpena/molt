@@ -84,7 +84,9 @@ def _resolve_wasi_sysroot_cached(
                 Path("/opt/wasi-sdk/share/wasi-sysroot"),
                 Path("/opt/wasi-sdk/wasi-sysroot"),
                 Path("/usr/share/wasi-sysroot"),
+                Path("/usr/include/wasm32-wasi"),
                 Path("/usr/local/share/wasi-sysroot"),
+                Path("/usr/local/include/wasm32-wasi"),
             ]
         )
     seen: set[Path] = set()

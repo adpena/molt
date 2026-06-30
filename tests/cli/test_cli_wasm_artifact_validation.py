@@ -1334,6 +1334,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     )
     assert captured_envs[-1]["CARGO_INCREMENTAL"] == "0"
     assert captured_envs[-1]["WASI_SYSROOT"] == str(wasi_sysroot)
+    assert captured_envs[-1]["MOLT_WASI_SYSROOT"] == str(wasi_sysroot)
 
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     assert RUNTIME_BUILD._ensure_runtime_wasm(
@@ -1346,6 +1347,111 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     )
     assert captured_envs[-1]["CARGO_INCREMENTAL"] == "1"
     assert captured_envs[-1]["WASI_SYSROOT"] == str(wasi_sysroot)
+    assert captured_envs[-1]["MOLT_WASI_SYSROOT"] == str(wasi_sysroot)
+
+
+def test_runtime_wasm_json_build_failure_emits_cargo_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "diagnostic"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del root, env, cargo_timeout, profile_dir, target_root_override, json_output
+        del artifact_kind
+        return (
+            subprocess.CompletedProcess(
+                cmd,
+                101,
+                "",
+                "error: wasi sysroot authority did not reach runtime build",
+            ),
+            tmp_path / "missing.wasm",
+        )
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
+
+    assert not RUNTIME_BUILD._ensure_runtime_wasm(
+        tmp_path / "wasm" / "molt_runtime.wasm",
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+    )
+    captured = capsys.readouterr()
+    assert "Runtime wasm build failed" in captured.err
+    assert "wasi sysroot authority" in captured.err
+
+
+def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    shared = repo_root / "runtime" / "build_support" / "wasi_sysroot.rs"
+    runtime_build = repo_root / "runtime" / "molt-runtime" / "build.rs"
+    abi_build = repo_root / "runtime" / "molt-cpython-abi" / "build.rs"
+
+    shared_text = shared.read_text(encoding="utf-8")
+    runtime_text = runtime_build.read_text(encoding="utf-8")
+    abi_text = abi_build.read_text(encoding="utf-8")
+
+    assert "MOLT_WASI_SYSROOT" in shared_text
+    assert "WASI_SDK_PREFIX" in shared_text
+    assert "MOLT_TARGET_ROOT" in shared_text
+    assert "/usr/share/wasi-sysroot" in shared_text
+    assert "/usr/include/wasm32-wasi" in shared_text
+    assert "wasm32-wasi" in shared_text
+    assert "/usr/include/wasm32-wasi" in (
+        repo_root / "src" / "molt" / "cli" / "wasm_toolchain.py"
+    ).read_text(encoding="utf-8")
+    assert "mod wasi_sysroot" in runtime_text
+    assert "mod wasi_sysroot" in abi_text
+    assert "fn resolve_wasi_sysroot" not in runtime_text
+    assert "fn resolve_wasi_sysroot" not in abi_text
+    assert "wasi-libc/share/wasi-sysroot" not in runtime_text
+    assert "wasi-libc/share/wasi-sysroot" not in abi_text
 
 
 def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
