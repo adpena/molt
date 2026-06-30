@@ -112,6 +112,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y lld
           fi
+          sudo apt-get update
+          sudo apt-get install -y wasi-libc
           mold --version
           wasm-ld --version
 
