@@ -1177,6 +1177,7 @@ def _render_rs_numeric_runtime_selector(data: dict) -> str:
 
 def _render_rs_runtime_surface(data: dict) -> str:
     lines: list[str] = [_header("//")]
+    lines.append("use wasm_encoder::ValType;\n\n")
     lines.extend(
         [
             "#[allow(dead_code)]\n",
@@ -1185,6 +1186,30 @@ def _render_rs_runtime_surface(data: dict) -> str:
     )
     for name in data["runtime_export_policy"]["host_exports"]:
         lines.append(f'    "{name}",\n')
+    lines.append("];\n\n")
+    lines.extend(
+        [
+            "#[allow(dead_code)]\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct RuntimeHostExportSignature {\n",
+            "    pub(crate) name: &'static str,\n",
+            "    pub(crate) params: &'static [ValType],\n",
+            "    pub(crate) results: &'static [ValType],\n",
+            "}\n\n",
+            "#[allow(dead_code)]\n",
+            "pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] = &[\n",
+        ]
+    )
+    for entry in data["runtime_host_export_signature"]:
+        lines.extend(
+            [
+                "    RuntimeHostExportSignature {\n",
+                f'        name: "{entry["name"]}",\n',
+                f"        params: {_rust_val_slice(entry['params'])},\n",
+                f"        results: {_rust_val_slice(entry['results'])},\n",
+                "    },\n",
+            ]
+        )
     lines.append("];\n\n")
     lines.extend(
         [
@@ -1724,11 +1749,24 @@ def render_py(data: dict) -> str:
             f'{_py_tuple(signature["results"])}),\n'
         )
     lines.append(")\n\n")
+    lines.append(
+        "WASM_RUNTIME_HOST_EXPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (\n"
+    )
+    for entry in data["runtime_host_export_signature"]:
+        lines.append(
+            f'    ("{entry["name"]}", {_py_tuple(entry["params"])}, '
+            f'{_py_tuple(entry["results"])}),\n'
+        )
+    lines.append(")\n\n")
     lines.extend(
         [
             "WASM_IMPORT_SIGNATURE_BY_NAME: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {\n",
             "    name: (params, results)\n",
             "    for name, params, results in WASM_IMPORT_SIGNATURES\n",
+            "}\n\n",
+            "WASM_RUNTIME_HOST_EXPORT_SIGNATURE_BY_NAME: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {\n",
+            "    name: (params, results)\n",
+            "    for name, params, results in WASM_RUNTIME_HOST_EXPORT_SIGNATURES\n",
             "}\n\n",
             "WASM_IMPORT_NAME_BY_LOOKUP: dict[str, str] = {\n",
             "    **{name: name for name, _params, _results in WASM_IMPORT_SIGNATURES},\n",
@@ -1786,9 +1824,9 @@ def render_py(data: dict) -> str:
             "    return None\n\n",
             "def wasm_import_signature(name: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:\n",
             "    import_name = wasm_import_name(name)\n",
-            "    if import_name is None:\n",
-            "        return None\n",
-            "    return WASM_IMPORT_SIGNATURE_BY_NAME.get(import_name)\n\n",
+            "    if import_name is not None:\n",
+            "        return WASM_IMPORT_SIGNATURE_BY_NAME.get(import_name)\n",
+            "    return WASM_RUNTIME_HOST_EXPORT_SIGNATURE_BY_NAME.get(name)\n\n",
             "def wasm_import_result_kind(name: str) -> str | None:\n",
             "    signature = wasm_import_signature(name)\n",
             "    if signature is None:\n",
