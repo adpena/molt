@@ -25,7 +25,7 @@ now emits one **verdict** per cell:
 | `FAIL_ENGINE` | `warm_speedup = cpython_warm/molt_warm ≤ 1.00` | **execution-engine red — RELEASE BLOCKER.** Needs an IR FACT. |
 | `FAIL_COLD_BUDGET` | `startup_tax_ms > budget_ms` | startup regression. Routes to the cold-start/runtime/artifact lane. |
 | `WARN_COLD_FLOOR` | `cold_speedup ≤ 1.00` BUT `warm_speedup > 1.00` and the loss is the fixed startup tax (within budget) | **not a hard red.** Warns; fails the gate only with `--strict-cold`. |
-| `FAIL_STALE` | board tree ≠ fresh origin/main (non-authoritative) | overrides all. Fails the gate unless `--allow-nonauthoritative`. |
+| `FAIL_STALE` | board provenance is non-authoritative: origin mismatch, dirty tree, modified tool, or required quiescence failed | overrides all. Fails the gate unless `--allow-nonauthoritative`. |
 | `UNSTABLE` | CV above threshold | untrustworthy in either direction — gated. |
 | `BUILD_FAILED` / `RUN_ERROR` | molt build failed / CPython ran but molt did not | gated. |
 | `RUN_BLOCKED` / `CPY_INCOMPATIBLE` | wasm build/link-only / no CPython floor | not gated. |
@@ -129,10 +129,11 @@ against, under the top-level `provenance` block:
 ```
 
 `authoritative` is **false** whenever the local HEAD diverges from origin/main,
-OR the tree is dirty, OR the scoreboard tool itself is modified-vs-HEAD. A
-non-authoritative board PRINTS *"WARNING: local tree diverges from origin;
-benchmark is non-authoritative unless explicitly requested"* and stamps every
-cell `FAIL_STALE`. `backend_binary_identity` reuses `cli.py._backend_binary_identity`
+OR the tree is dirty, OR the scoreboard tool itself is modified-vs-HEAD, OR
+`--require-quiescent` cannot certify the machine as quiet. A non-authoritative
+board PRINTS *"WARNING: scoreboard provenance is non-authoritative; benchmark is
+exploratory unless explicitly requested"* and stamps every cell `FAIL_STALE`.
+`backend_binary_identity` reuses `cli.py._backend_binary_identity`
 (`path|mtime_ns|size`) — the same signal the stdlib/TIR caches salt with — so a
 reader can detect the stale-cache confound class directly.
 
@@ -226,7 +227,7 @@ do not optimize from this red list"* naming WHICH check failed:
 | check | signal | threshold / rule |
 |-------|--------|------------------|
 | active build processes | `pgrep -fl 'cargo\|rustc\|molt-backend\|molt build'` | **any** match (other than this tool's own tree) ⇒ not quiet. **Claude/Codex host-control processes are excluded by name** — never counted, never killed (project policy). |
-| 1-min load average | `sysctl -n vm.loadavg` vs `sysctl -n hw.ncpu` | `load > ncpu × 0.5` ⇒ not quiet (18-core host ⇒ load > 9.0). Permissive enough that a quiet desktop still measures; an active build always trips this AND the process check. |
+| 1-min load average | Python `os.getloadavg()` + `os.cpu_count()` (macOS `sysctl` fallback) | `load > ncpu × 0.5` ⇒ not quiet (18-core host ⇒ load > 9.0). Permissive enough that a quiet desktop still measures; an active build always trips this AND the process check. |
 | runnable-thread storm | runnable thread count | `> max(2, ncpu × 0.5)` ⇒ contended (catches a build storm before the 1-min EWMA does). |
 | thermal / frequency throttle | `pmset -g therm` (best-effort) | throttle active ⇒ not quiet. Skipped if the probe is unavailable (never invents a result). |
 | probe failure | `pgrep` unavailable | **fail-closed**: if we cannot probe, we cannot certify quiet ⇒ not quiet. |

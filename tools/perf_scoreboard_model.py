@@ -57,8 +57,16 @@ PERFSCORE_SESSION_ID = "perfscore"
 
 DIMENSIONAL_WIN_MIN_FRACTION = 0.05
 
+NON_AUTHORITATIVE_NOTE = (
+    "non-authoritative board (origin/main mismatch, dirty tree, "
+    "tool-modified, or quiescence authority failed)"
+)
+
 _VERDICT_DERIVED_NOTES = frozenset(
     {
+        NON_AUTHORITATIVE_NOTE,
+        # Legacy notes may exist in stored boards; keep rebuild/merge summary
+        # able to clear and rederive them.
         "non-authoritative tree (local != origin/main or dirty)",
     }
 )
@@ -534,20 +542,21 @@ class Cell:
 
         ``budget_ms`` is the cold-start tax budget for this (backend, profile)
         cell (None = no budget recorded yet; FAIL_COLD_BUDGET cannot fire).
-        ``authoritative`` False stamps every cell FAIL_STALE (the tree is not
-        origin/main) — overriding all other verdicts per council ruling A.
+        ``authoritative`` False stamps every cell FAIL_STALE (the board cannot
+        be the canonical origin/main performance contract) — overriding all
+        other verdicts per council ruling A.
 
         Sets ``verdict`` (the VERDICT_* vocabulary), the single gate authority
         consumed by summaries, rebuilds, merges, and CI.
         """
         self.cold_budget_ms = budget_ms
 
-        # FAIL_STALE overrides everything: a non-authoritative tree's numbers
+        # FAIL_STALE overrides everything: a non-authoritative board's numbers
         # are not the origin/main contract, full stop.
         if not authoritative:
             self.verdict = VERDICT_FAIL_STALE
             if self.note is None:
-                self.note = "non-authoritative tree (local != origin/main or dirty)"
+                self.note = NON_AUTHORITATIVE_NOTE
             return
 
         if self.run_blocked:

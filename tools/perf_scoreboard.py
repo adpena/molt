@@ -71,6 +71,7 @@ from perf_scoreboard_model import (
     DIMENSIONAL_WIN_MIN_FRACTION as DIMENSIONAL_WIN_MIN_FRACTION,
     NATIVE_CRANELIFT as NATIVE_CRANELIFT,
     NATIVE_LLVM as NATIVE_LLVM,
+    NON_AUTHORITATIVE_NOTE as NON_AUTHORITATIVE_NOTE,
     PERFSCORE_SESSION_ID as PERFSCORE_SESSION_ID,
     PROFILE_BUILD_FLAG as PROFILE_BUILD_FLAG,
     REPO_ROOT as REPO_ROOT,
@@ -387,7 +388,19 @@ def _list_build_processes() -> list[dict]:
 
 
 def _loadavg_1m() -> float | None:
-    """1-minute load average via ``sysctl -n vm.loadavg`` (macOS)."""
+    """1-minute load average from the host OS.
+
+    Prefer Python's portable Unix binding (Linux/macOS runners), then fall back
+    to the macOS ``sysctl`` spelling. Windows legitimately returns ``None``:
+    without a load-average authority, ``--require-quiescent`` fails closed.
+    """
+    getloadavg = getattr(os, "getloadavg", None)
+    if getloadavg is not None:
+        try:
+            values = getloadavg()
+            return float(values[0]) if values else None
+        except (AttributeError, OSError, TypeError, ValueError, IndexError):
+            pass
     res = _metadata_probe(["sysctl", "-n", "vm.loadavg"])
     if res is None:
         return None
@@ -400,6 +413,9 @@ def _loadavg_1m() -> float | None:
 
 
 def _ncpu() -> int | None:
+    count = os.cpu_count()
+    if isinstance(count, int) and count > 0:
+        return count
     res = _metadata_probe(["sysctl", "-n", "hw.ncpu"])
     if res is None:
         return None
@@ -941,11 +957,12 @@ class CodonRunner:
 # Provenance — the anti-stale-lore enforcement (council ruling A + B)
 # ---------------------------------------------------------------------------
 #
-# Every emitted board carries the exact tree + tool + artifact identity it was
-# measured against. If the local HEAD diverges from origin/main the board is
+# Every emitted board carries the exact tree + tool + machine + artifact
+# identity it was measured against. If that provenance is not canonical (tree
+# drift, dirty tree, modified tool, or required quiescence failure), the board is
 # stamped non-authoritative and the gate refuses (FAIL_STALE) unless the caller
 # explicitly opts into local debugging with --allow-nonauthoritative. This is
-# the mechanical kill for the "rediscovered a stale-tree failure" class.
+# the mechanical kill for stale or contaminated performance evidence.
 
 
 def _git_rev() -> str:
@@ -1275,7 +1292,7 @@ def build_scoreboard_doc(
             "FAIL_ENGINE": "warm_speedup <= 1.00 — execution-engine red, RELEASE BLOCKER",
             "FAIL_COLD_BUDGET": "startup_tax_ms > budget_ms — startup regression",
             "WARN_COLD_FLOOR": "cold <= 1.00 but warm > 1.00 & tax within budget — not a hard red",
-            "FAIL_STALE": "non-authoritative tree — overrides all (gate fails unless --allow-nonauthoritative)",
+            "FAIL_STALE": "non-authoritative board — overrides all (gate fails unless --allow-nonauthoritative)",
             "UNSTABLE": "CV above threshold — untrustworthy in either direction",
             "BUILD_FAILED": "molt build failed",
             "RUN_ERROR": "CPython ran but molt did not",
@@ -1756,7 +1773,8 @@ def main(argv: list[str]) -> int:
         "--allow-nonauthoritative",
         action="store_true",
         help=(
-            "permit a non-authoritative tree (local != origin/main, or dirty) to "
+            "permit a non-authoritative board (origin/main mismatch, dirty tree, "
+            "modified tool, or quiescence failure) to "
             "run + not auto-fail the gate via FAIL_STALE — for LOCAL DEBUGGING. "
             "The board is still stamped authoritative=false."
         ),
@@ -1922,8 +1940,8 @@ def main(argv: list[str]) -> int:
     effective_authoritative = authoritative or ns.allow_nonauthoritative
     if not authoritative:
         print(
-            "[scoreboard] *** WARNING: local tree diverges from origin; benchmark "
-            "is non-authoritative unless explicitly requested ***",
+            "[scoreboard] *** WARNING: scoreboard provenance is non-authoritative; "
+            "benchmark is exploratory unless explicitly requested ***",
             file=sys.stderr,
         )
         print(
