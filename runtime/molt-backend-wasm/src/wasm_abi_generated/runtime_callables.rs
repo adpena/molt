@@ -8495,6 +8495,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_cpython_abi_prepare_static_extension",
+        import: WasmRuntimeImport::CpythonAbiPrepareStaticExtension,
+        arity: 0,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_cpython_abi_pyinit_module_to_bits",
+        import: WasmRuntimeImport::CpythonAbiPyinitModuleToBits,
+        arity: 1,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_gc_collect",
         import: WasmRuntimeImport::GcCollect,
         arity: 1,
@@ -17378,6 +17390,12 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_copyreg_add_extension" => Some(WasmRuntimeImport::CopyregAddExtension),
         "molt_copyreg_remove_extension" => Some(WasmRuntimeImport::CopyregRemoveExtension),
         "molt_copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
+        "molt_cpython_abi_prepare_static_extension" => {
+            Some(WasmRuntimeImport::CpythonAbiPrepareStaticExtension)
+        }
+        "molt_cpython_abi_pyinit_module_to_bits" => {
+            Some(WasmRuntimeImport::CpythonAbiPyinitModuleToBits)
+        }
         "molt_gc_collect" => Some(WasmRuntimeImport::GcCollect),
         "molt_gc_enable" => Some(WasmRuntimeImport::GcEnable),
         "molt_gc_disable" => Some(WasmRuntimeImport::GcDisable),
@@ -20048,6 +20066,8 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_copyreg_add_extension" => Some(3),
         "molt_copyreg_remove_extension" => Some(3),
         "molt_copyreg_clear_extension_cache" => Some(0),
+        "molt_cpython_abi_prepare_static_extension" => Some(0),
+        "molt_cpython_abi_pyinit_module_to_bits" => Some(1),
         "molt_gc_collect" => Some(1),
         "molt_gc_enable" => Some(0),
         "molt_gc_disable" => Some(0),

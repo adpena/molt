@@ -193,6 +193,7 @@ def _run_build_pipeline(
                 target_python=prepared_build_config.target_python,
                 stdlib_profile=stdlib_profile,
                 target=target,
+                native_artifact_plan=native_artifact_plan,
             )
         )
         if prepared_backend_ir_error is not None:

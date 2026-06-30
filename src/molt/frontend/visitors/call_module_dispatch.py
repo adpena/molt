@@ -11,6 +11,7 @@ from typing import (
 
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
+    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_abi_choices,
     native_callable_fixed_arity,
     native_callable_uses_callargs,
@@ -175,15 +176,18 @@ class CallModuleDispatchMixin(_MixinBase):
                     f"known ABI tokens: {native_callable_abi_choices()}"
                 ),
             )
-        if binding == "module_attr" and normalized_abi == NATIVE_CALLABLE_ABI_FORWARD_F32_V1:
+        if binding == "module_attr" and normalized_abi in {
+            NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
+            NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+        }:
             raise self.compat.unsupported(
                 node,
-                f"native callable export '{qualified_name}' uses module_attr memory ABI",
+                f"native callable export '{qualified_name}' uses module_attr direct-symbol ABI",
                 impact="high",
-                alternative="use direct_symbol for memory-buffer native callables or an object-call ABI for module attributes",
+                alternative="use direct_symbol for memory-buffer or extension-init native callables, or an object-call ABI for module attributes",
                 detail=(
                     "module_attr dispatch calls a loaded module attribute through "
-                    "Molt value handles; pointer/byte-buffer ABIs require an "
+                    "Molt value handles; pointer, byte-buffer, and PyInit ABIs require an "
                     "addressable direct native symbol"
                 ),
             )

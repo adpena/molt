@@ -595,6 +595,48 @@ fn cext_callable_registry() -> &'static Mutex<Vec<CExtCallable>> {
     REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cpython_abi_prepare_static_extension() -> u64 {
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    register_cpython_hooks();
+    MoltObject::from_bool(true).bits()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u64 {
+    with_gil(|_py| {
+        if result_pyobj == 0 {
+            return crate::raise_exception::<u64>(
+                &_py,
+                "ImportError",
+                "static extension PyInit returned NULL",
+            );
+        }
+        let module_bits = unsafe {
+            molt_cpython_abi::bridge::read_bridge_header_bits(
+                result_pyobj as *mut molt_cpython_abi::abi_types::PyObject,
+            )
+        };
+        let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() else {
+            return crate::raise_exception::<u64>(
+                &_py,
+                "ImportError",
+                "static extension PyInit returned an invalid module handle",
+            );
+        };
+        unsafe {
+            if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                return crate::raise_exception::<u64>(
+                    &_py,
+                    "ImportError",
+                    "static extension PyInit returned a non-module object",
+                );
+            }
+        }
+        module_bits
+    })
+}
+
 /// Trampoline invoked by Molt's call dispatch for every registered C
 /// extension function.  Signature matches Molt's
 /// `extern "C" fn(closure_bits, args_ptr, args_len) -> i64`.

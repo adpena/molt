@@ -7,11 +7,13 @@ from typing import Any, TypedDict
 NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 = "molt.object_call_v1"
 NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1 = "molt.object_callargs_v1"
 NATIVE_CALLABLE_ABI_FORWARD_F32_V1 = "molt.forward_f32_v1"
+NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1 = "molt.pyinit_module_v1"
 
 NATIVE_CALLABLE_ABIS: tuple[str, ...] = (
     NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
     NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
+    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
 )
 KNOWN_NATIVE_CALLABLE_ABIS: frozenset[str] = frozenset(NATIVE_CALLABLE_ABIS)
 NATIVE_CALLABLE_ABI_CHOICES = ", ".join(NATIVE_CALLABLE_ABIS)
@@ -36,12 +38,17 @@ _NATIVE_CALLABLE_BROWSER_SIGNATURES: dict[
         "params": ["bytes.float32"],
         "result": "bytes.float32",
     },
+    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1: {
+        "params": [],
+        "result": "molt.pyobject_ptr",
+    },
 }
 
 _NATIVE_CALLABLE_FIXED_ARITY: dict[str, int | None] = {
     NATIVE_CALLABLE_ABI_OBJECT_CALL_V1: None,
     NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1: 1,
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1: 1,
+    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1: 0,
 }
 
 

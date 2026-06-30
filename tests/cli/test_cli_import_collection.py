@@ -1657,6 +1657,183 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
     assert cli.SimpleTIRGenerator.module_init_symbol("json") not in call_targets
 
 
+def test_backend_ir_isolate_import_initializes_static_native_artifacts(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import nativepkg.ndimage\n", encoding="utf-8")
+    module_graph = {"demo": entry_path}
+    module_order = ["demo"]
+    integration_state = cli._FrontendIntegrationState(
+        functions=[
+            {
+                "name": cli.SimpleTIRGenerator.module_init_symbol("demo"),
+                "params": [],
+                "ops": [{"kind": "ret_void"}],
+            }
+        ],
+        known_classes={},
+    )
+    diagnostics_state = cli._MidendDiagnosticsState(
+        policy_outcomes_by_function={},
+        pass_stats_by_function={},
+    )
+    package_dir = tmp_path / "site" / "nativepkg"
+    artifact_path = package_dir / "ndimage" / "_nd_image.molt.wasm"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"\0asm\x01\0\0\0native")
+    manifest_path = artifact_path.with_name(
+        "_nd_image.molt.wasm.extension_manifest.json"
+    )
+    manifest_path.write_text("{}", encoding="utf-8")
+    native_artifact_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.ndimage._nd_image",
+                package_dir=package_dir,
+                path=artifact_path,
+                manifest_path=manifest_path,
+                extension_sha256=hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+                manifest_sha256=hashlib.sha256(
+                    manifest_path.read_bytes()
+                ).hexdigest(),
+                capabilities=(),
+                abi_tag="molt_abi1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                init_symbol="PyInit__nd_image",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                support_file_sha256=(
+                    ("nativepkg/__init__.py", "a" * 64),
+                    ("nativepkg/ndimage/__init__.py", "b" * 64),
+                ),
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="gaussian_filter",
+                        binding="module_attr",
+                        abi="molt.object_callargs_v1",
+                        deterministic=True,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    prepared, error = BACKEND_IR._prepare_backend_ir(
+        entry_module="demo",
+        module_graph=module_graph,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules=set(module_graph) | native_artifact_plan.native_module_names(),
+        known_classes={},
+        stdlib_allowlist=set(module_graph),
+        known_func_defaults={},
+        known_func_kinds={},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        frontend_phase_timeout=None,
+        integration_state=integration_state,
+        diagnostics_state=diagnostics_state,
+        record_frontend_timing=lambda **_: None,
+        fail=cli._fail,
+        json_output=True,
+        module_order=module_order,
+        runtime_import_dispatch_roots={"nativepkg.ndimage"},
+        generated_module_source_paths={},
+        spawn_enabled=False,
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+        emit_ir_path=None,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target="wasm",
+        native_artifact_plan=native_artifact_plan,
+    )
+
+    assert error is None
+    assert prepared is not None
+    functions = {func["name"]: func["ops"] for func in prepared.ir["functions"]}
+    root_init = cli.SimpleTIRGenerator.module_init_symbol("nativepkg")
+    public_init = cli.SimpleTIRGenerator.module_init_symbol("nativepkg.ndimage")
+    extension_init = cli.SimpleTIRGenerator.module_init_symbol(
+        "nativepkg.ndimage._nd_image"
+    )
+    assert root_init in functions
+    assert public_init in functions
+    assert extension_init in functions
+
+    import_ops = functions["molt_isolate_import"]
+    import_const_names = [
+        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
+    ]
+    import_call_targets = [
+        op.get("s_value") for op in import_ops if op.get("kind") == "call"
+    ]
+    assert "nativepkg" in import_const_names
+    assert "nativepkg.ndimage" in import_const_names
+    assert "nativepkg.ndimage._nd_image" not in import_const_names
+    assert public_init in import_call_targets
+
+    extension_ops = functions[extension_init]
+    invoke_ops = [op for op in extension_ops if op.get("kind") == "invoke_ffi"]
+    assert invoke_ops == [
+        {
+            "kind": "invoke_ffi",
+            "args": [],
+            "out": "v2",
+            "native_callable_export": (
+                "__molt_static_pyinit__.nativepkg.ndimage._nd_image"
+            ),
+            "native_callable_binding": "direct_symbol",
+            "native_callable_abi": "molt.pyinit_module_v1",
+            "native_callable_symbol": "PyInit__nd_image",
+        }
+    ]
+    extension_call_targets = [
+        op.get("s_value") for op in extension_ops if op.get("kind") == "call"
+    ]
+    assert "molt_cpython_abi_prepare_static_extension" in extension_call_targets
+    assert "molt_cpython_abi_pyinit_module_to_bits" in extension_call_targets
+
+    public_ops = functions[public_init]
+    public_call_targets = [
+        op.get("s_value") for op in public_ops if op.get("kind") == "call"
+    ]
+    public_const_names = [
+        op.get("s_value") for op in public_ops if op.get("kind") == "const_str"
+    ]
+    assert extension_init in public_call_targets
+    assert "nativepkg.ndimage._nd_image" in public_const_names
+    assert "gaussian_filter" in public_const_names
+    gaussian_attr_vars = {
+        op.get("out")
+        for op in public_ops
+        if op.get("kind") == "const_str" and op.get("s_value") == "gaussian_filter"
+    }
+    exported_value_vars = {
+        op.get("out")
+        for op in public_ops
+        if op.get("kind") == "module_get_attr"
+        and len(op.get("args", [])) == 2
+        and op["args"][1] in gaussian_attr_vars
+    }
+    assert exported_value_vars
+    assert any(
+        op.get("kind") == "module_set_attr"
+        and len(op.get("args", [])) == 3
+        and op["args"][1] in gaussian_attr_vars
+        and op["args"][2] in exported_value_vars
+        for op in public_ops
+    )
+
+
 def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
     module_order = ["importlib", "importlib.machinery", "json", "demo"]
     module_layers = [["importlib", "importlib.machinery", "json"], ["demo"]]
@@ -2743,6 +2920,13 @@ def test_external_native_artifact_plan_selects_python_exported_imports(
     assert plan.native_python_export_names() == frozenset(
         {"nativepkg.ndimage.distance_transform_edt"}
     )
+    assert plan.native_module_names() == frozenset(
+        {
+            "nativepkg",
+            "nativepkg.ndimage",
+            "nativepkg.ndimage._nd_image",
+        }
+    )
 
 
 def test_external_native_artifact_plan_selects_callable_exported_imports(
@@ -2850,6 +3034,17 @@ def test_external_native_artifact_plan_selects_module_attr_callable_exports(
             "deterministic": True,
         }
     }
+    specs = plan.native_module_init_specs()
+    assert [(spec.module, spec.init_symbol) for spec in specs] == [
+        ("nativepkg", ""),
+        ("nativepkg.ndimage", ""),
+        ("nativepkg.ndimage._nd_image", "PyInit__nd_image"),
+    ]
+    ndimage_spec = next(spec for spec in specs if spec.module == "nativepkg.ndimage")
+    assert [
+        (publish.extension_module, publish.attr)
+        for publish in ndimage_spec.module_attr_exports
+    ] == [("nativepkg.ndimage._nd_image", "gaussian_filter")]
 
 
 def test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol(
@@ -3736,7 +3931,8 @@ def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
     assert plan is None
     assert any(
         "callable_exports[0].abi must be one of: "
-        "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1" in error
+        "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1, "
+        "molt.pyinit_module_v1" in error
         for error in errors
     )
 

@@ -779,20 +779,65 @@ class _ExternalNativeCallableExport:
 
 
 @dataclass(frozen=True)
+class _ExternalNativeModuleAttrPublishSpec:
+    extension_module: str
+    attr: str
+
+
+@dataclass(frozen=True)
+class _ExternalNativeModuleInitSpec:
+    module: str
+    init_symbol: str = ""
+    module_attr_exports: tuple[_ExternalNativeModuleAttrPublishSpec, ...] = ()
+
+    @property
+    def is_extension(self) -> bool:
+        return bool(self.init_symbol)
+
+
+@dataclass(frozen=True)
 class _ExternalPackageNativeArtifactPlan:
     artifacts: tuple[_ExternalPackageNativeArtifact, ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
         return {"artifacts": [artifact.digest_payload() for artifact in self.artifacts]}
 
+    @staticmethod
+    def _module_prefixes(name: str) -> set[str]:
+        parts = name.split(".")
+        return {".".join(parts[:idx]) for idx in range(1, len(parts) + 1)}
+
+    @staticmethod
+    def _support_init_module_names(
+        artifact: _ExternalPackageNativeArtifact,
+    ) -> set[str]:
+        names: set[str] = set()
+        for rel_path, _digest in artifact.support_file_sha256:
+            parts = rel_path.replace("\\", "/").split("/")
+            if not parts or parts[-1] != "__init__.py":
+                continue
+            module_parts = parts[:-1]
+            if module_parts:
+                names.add(".".join(module_parts))
+        return names
+
     def native_module_names(self) -> frozenset[str]:
         names: set[str] = set()
         for artifact in self.artifacts:
-            names.add(artifact.module)
-            exported_names = (
-                *artifact.python_exports,
-                *(export.qualified_name for export in artifact.callable_exports),
-            )
+            names.update(self._module_prefixes(artifact.package))
+            names.update(self._module_prefixes(artifact.module))
+            support_init_modules = self._support_init_module_names(artifact)
+            names.update(support_init_modules)
+            for exported_name in artifact.python_exports:
+                parts = exported_name.split(".")
+                names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
+                if (
+                    exported_name == artifact.package
+                    or exported_name == artifact.module
+                    or exported_name in support_init_modules
+                ):
+                    names.add(exported_name)
+            exported_names = (export.qualified_name for export in artifact.callable_exports)
             for exported_name in exported_names:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
@@ -818,6 +863,53 @@ class _ExternalPackageNativeArtifactPlan:
             for export in artifact.callable_exports:
                 exports[export.qualified_name] = export.digest_payload()
         return {name: exports[name] for name in sorted(exports)}
+
+    def native_module_init_specs(self) -> tuple[_ExternalNativeModuleInitSpec, ...]:
+        specs: dict[str, _ExternalNativeModuleInitSpec] = {}
+        module_attr_exports: dict[
+            str, set[_ExternalNativeModuleAttrPublishSpec]
+        ] = {}
+        for artifact in self.artifacts:
+            names = set(self._module_prefixes(artifact.package))
+            names.update(self._module_prefixes(artifact.module))
+            names.update(self._support_init_module_names(artifact))
+            for exported_name in artifact.python_exports:
+                parts = exported_name.split(".")
+                names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
+                if exported_name in {artifact.package, artifact.module}:
+                    names.add(exported_name)
+            for export in artifact.callable_exports:
+                parts = export.qualified_name.split(".")
+                names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
+                if export.binding == "module_attr" and export.module != artifact.module:
+                    names.add(export.module)
+                    module_attr_exports.setdefault(export.module, set()).add(
+                        _ExternalNativeModuleAttrPublishSpec(
+                            extension_module=artifact.module,
+                            attr=export.name,
+                        )
+                    )
+            for name in names:
+                if name == artifact.module and artifact.init_symbol:
+                    specs[name] = _ExternalNativeModuleInitSpec(
+                        module=name,
+                        init_symbol=artifact.init_symbol,
+                    )
+                elif name not in specs:
+                    specs[name] = _ExternalNativeModuleInitSpec(module=name)
+        for module, exports in module_attr_exports.items():
+            existing = specs.get(module, _ExternalNativeModuleInitSpec(module=module))
+            specs[module] = _ExternalNativeModuleInitSpec(
+                module=existing.module,
+                init_symbol=existing.init_symbol,
+                module_attr_exports=tuple(
+                    sorted(exports, key=lambda item: (item.extension_module, item.attr))
+                ),
+            )
+        return tuple(
+            specs[name]
+            for name in sorted(specs, key=lambda value: (value.count("."), value))
+        )
 
     @staticmethod
     def _name_reaches_provider(requested_name: str, provider_name: str) -> bool:

@@ -7331,6 +7331,18 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_cpython_abi_prepare_static_extension",
+        symbol: "molt_cpython_abi_prepare_static_extension",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
+        name: "molt_cpython_abi_pyinit_module_to_bits",
+        symbol: "molt_cpython_abi_pyinit_module_to_bits",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_exception_active",
         symbol: "molt_exception_active",
         arity: 0,

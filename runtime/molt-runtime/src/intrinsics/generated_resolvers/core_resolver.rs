@@ -325,6 +325,18 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_module_cache_set",
             crate::molt_module_cache_set as *const (),
         )),
+        "molt_cpython_abi_prepare_static_extension" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_cpython_abi_prepare_static_extension",
+                crate::molt_cpython_abi_prepare_static_extension as *const (),
+            ))
+        }
+        "molt_cpython_abi_pyinit_module_to_bits" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_cpython_abi_pyinit_module_to_bits",
+                crate::molt_cpython_abi_pyinit_module_to_bits as *const (),
+            ))
+        }
         "molt_exception_active" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_exception_active",
             crate::molt_exception_active as *const (),
