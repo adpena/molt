@@ -1450,6 +1450,62 @@ fn buffer_acquire_exports_shaped_memoryview_descriptor() {
 }
 
 #[test]
+fn memoryview_clone_and_c_export_share_typed_strided_descriptor() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"abcdefghijkl");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let format_ptr = alloc_string(_py, b"B");
+        assert!(!format_ptr.is_null());
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+            _py,
+            owner_bits,
+            0,
+            1,
+            false,
+            format_bits,
+            vec![3, 4],
+            vec![4, 1],
+        );
+        assert!(!view_ptr.is_null());
+        let view_bits = MoltObject::from_ptr(view_ptr).bits();
+        let clone_bits = crate::molt_memoryview_new(view_bits);
+        assert!(!obj_from_bits(clone_bits).is_none());
+        let mut view = MoltBufferView {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        let rc = unsafe { molt_buffer_acquire(clone_bits, &mut view as *mut MoltBufferView) };
+        assert_eq!(rc, 0);
+        assert_eq!(view.len, 12);
+        assert_eq!(view.ndim, 2);
+        assert_eq!(view.itemsize, 1);
+        assert_eq!(view.owner, clone_bits);
+        assert_eq!(view.base, owner_bits);
+        assert_eq!(&view.shape[..2], &[3, 4]);
+        assert_eq!(&view.strides[..2], &[4, 1]);
+        assert_eq!(view.format[0], b'B');
+        let rc_release = unsafe { molt_buffer_release(&mut view as *mut MoltBufferView) };
+        assert_eq!(rc_release, 0);
+        dec_ref_bits(_py, clone_bits);
+        dec_ref_bits(_py, view_bits);
+        dec_ref_bits(_py, owner_bits);
+        dec_ref_bits(_py, format_bits);
+    });
+}
+
+#[test]
 fn err_pending_peek_restore_roundtrip() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {

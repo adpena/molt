@@ -1,16 +1,187 @@
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use crate::bytearray_vec;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
-    TYPE_ID_MEMORYVIEW, alloc_bytes, bigint_bits, bytes_data, bytes_len, index_bigint_from_obj,
-    is_truthy, memoryview_itemsize, memoryview_len, memoryview_offset, memoryview_owner_bits,
-    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_type_id,
+    TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bigint_bits, bytes_data, bytes_len,
+    index_bigint_from_obj, is_truthy, memoryview_format_bits, memoryview_itemsize, memoryview_len,
+    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_shape,
+    memoryview_stride, memoryview_strides, obj_from_bits, object_type_id, string_bytes, string_len,
     string_obj_to_owned, to_f64,
 };
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-use crate::{bytearray_vec, memoryview_readonly};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+
+pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
+pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
+
+fn default_buffer_format() -> [u8; MOLT_BUFFER_FORMAT_CAP] {
+    let mut format = [0; MOLT_BUFFER_FORMAT_CAP];
+    format[0] = b'B';
+    format
+}
+
+fn buffer_format_from_bytes(format: &[u8]) -> [u8; MOLT_BUFFER_FORMAT_CAP] {
+    let mut out = [0; MOLT_BUFFER_FORMAT_CAP];
+    let count = format.len().min(MOLT_BUFFER_FORMAT_CAP.saturating_sub(1));
+    out[..count].copy_from_slice(&format[..count]);
+    out
+}
+
+pub(crate) unsafe fn memoryview_format_export_bytes(
+    format_bits: u64,
+) -> Option<[u8; MOLT_BUFFER_FORMAT_CAP]> {
+    unsafe {
+        let obj = obj_from_bits(format_bits);
+        let ptr = obj.as_ptr()?;
+        if object_type_id(ptr) != TYPE_ID_STRING {
+            return None;
+        }
+        let len = string_len(ptr);
+        let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+        Some(buffer_format_from_bytes(bytes))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TypedStridedStorage {
+    pub(crate) data: *mut u8,
+    pub(crate) len: usize,
+    pub(crate) readonly: bool,
+    pub(crate) itemsize: usize,
+    pub(crate) offset: isize,
+    pub(crate) base_bits: u64,
+    pub(crate) format_bits: u64,
+    pub(crate) format: [u8; MOLT_BUFFER_FORMAT_CAP],
+    pub(crate) shape: Vec<isize>,
+    pub(crate) strides: Vec<isize>,
+}
+
+impl TypedStridedStorage {
+    pub(crate) fn new(
+        data: *mut u8,
+        readonly: bool,
+        itemsize: usize,
+        offset: isize,
+        base_bits: u64,
+        format_bits: u64,
+        shape: Vec<isize>,
+        strides: Vec<isize>,
+    ) -> Option<Self> {
+        if itemsize == 0 || shape.len() != strides.len() || shape.len() > MOLT_BUFFER_MAX_NDIM {
+            return None;
+        }
+        let len = memoryview_nbytes_big(shape.as_slice(), itemsize)?;
+        if len < 0 || len > usize::MAX as i128 {
+            return None;
+        }
+        let format = if format_bits == 0 {
+            default_buffer_format()
+        } else {
+            unsafe { memoryview_format_export_bytes(format_bits)? }
+        };
+        Some(Self {
+            data,
+            len: len as usize,
+            readonly,
+            itemsize,
+            offset,
+            base_bits,
+            format_bits,
+            format,
+            shape,
+            strides,
+        })
+    }
+
+    pub(crate) fn one_dim(
+        data: *mut u8,
+        readonly: bool,
+        len: usize,
+        itemsize: usize,
+        stride: isize,
+        offset: isize,
+        base_bits: u64,
+        format_bits: u64,
+    ) -> Option<Self> {
+        Self::new(
+            data,
+            readonly,
+            itemsize,
+            offset,
+            base_bits,
+            format_bits,
+            vec![len as isize],
+            vec![stride],
+        )
+    }
+
+    pub(crate) fn memoryview_len_field(&self) -> usize {
+        self.shape.first().copied().unwrap_or(0).max(0) as usize
+    }
+
+    pub(crate) fn memoryview_stride_field(&self) -> isize {
+        self.strides.first().copied().unwrap_or(0)
+    }
+
+    pub(crate) fn with_readonly(mut self, readonly: bool) -> Self {
+        self.readonly = readonly;
+        self
+    }
+
+    pub(crate) unsafe fn from_object_bits(obj_bits: u64) -> Option<Self> {
+        unsafe {
+            let obj = obj_from_bits(obj_bits);
+            let ptr = obj.as_ptr()?;
+            match object_type_id(ptr) {
+                TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => Self::from_bytes_like_ptr(obj_bits, ptr),
+                TYPE_ID_MEMORYVIEW => Self::from_memoryview_ptr(ptr),
+                _ => None,
+            }
+        }
+    }
+
+    unsafe fn from_bytes_like_ptr(obj_bits: u64, ptr: *mut u8) -> Option<Self> {
+        unsafe {
+            let type_id = object_type_id(ptr);
+            let data = bytes_data(ptr) as *mut u8;
+            let len = bytes_len(ptr);
+            let readonly = type_id == TYPE_ID_BYTES;
+            Self::one_dim(data, readonly, len, 1, 1, 0, obj_bits, 0)
+        }
+    }
+
+    unsafe fn from_memoryview_ptr(ptr: *mut u8) -> Option<Self> {
+        unsafe {
+            let base_bits = memoryview_owner_bits(ptr);
+            let base = obj_from_bits(base_bits);
+            let base_ptr = base.as_ptr()?;
+            let base_slice = bytes_like_slice_raw(base_ptr)?;
+            let offset = memoryview_offset(ptr);
+            if offset < 0 {
+                return None;
+            }
+            let offset_usize = offset as usize;
+            if offset_usize > base_slice.len() {
+                return None;
+            }
+            let data = base_slice.as_ptr().add(offset_usize) as *mut u8;
+            let shape = memoryview_shape(ptr)?.to_vec();
+            let strides = memoryview_strides(ptr)?.to_vec();
+            Self::new(
+                data,
+                memoryview_readonly(ptr),
+                memoryview_itemsize(ptr),
+                offset,
+                base_bits,
+                memoryview_format_bits(ptr),
+                shape,
+                strides,
+            )
+        }
+    }
+}
 
 pub(crate) fn memoryview_format_from_str(format: &str) -> Option<MemoryViewFormat> {
     let code = if format.len() == 1 {
