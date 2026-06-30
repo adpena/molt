@@ -1,7 +1,7 @@
 use molt_tir::tir::lir::LirFunction;
 
 use crate::wasm_abi::{
-    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, poll_table_imports,
+    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
 };
 
 pub use crate::wasm::body::{WasmBodyTestView, WasmLirFallbackReason};
@@ -21,8 +21,9 @@ pub fn reserved_runtime_callable_import_names() -> Vec<&'static str> {
 
 #[must_use]
 pub fn reserved_runtime_callable_table_ref_exports(table_base: u32) -> Vec<String> {
-    let poll_table_prefix = poll_table_imports()
-        .filter_map(|spec| spec.poll_table_slot)
+    let poll_table_prefix = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot)
         .max()
         .unwrap_or(0)
         + 1;

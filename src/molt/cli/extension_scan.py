@@ -14,7 +14,11 @@ from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
-from molt.cli.project_roots import _find_molt_root, _find_project_root, _require_molt_root
+from molt.cli.project_roots import (
+    _find_molt_root,
+    _find_project_root,
+    _require_molt_root,
+)
 
 
 _EXTENSION_SCAN_SOURCE_SUFFIXES = {
@@ -228,16 +232,12 @@ def extension_scan(
         required_by_file[str(source_path)] = file_required
         required_symbols.update(file_required)
         file_missing = sorted(
-            symbol
-            for symbol in file_required
-            if symbol_status(symbol) == "missing"
+            symbol for symbol in file_required if symbol_status(symbol) == "missing"
         )
         if file_missing:
             missing_by_file[str(source_path)] = file_missing
         file_fail_fast = sorted(
-            symbol
-            for symbol in file_required
-            if symbol_status(symbol) == "fail_fast"
+            symbol for symbol in file_required if symbol_status(symbol) == "fail_fast"
         )
         if file_fail_fast:
             fail_fast_by_file[str(source_path)] = file_fail_fast
@@ -247,14 +247,10 @@ def extension_scan(
 
     required_sorted = sorted(required_symbols)
     missing_sorted = sorted(
-        symbol
-        for symbol in required_sorted
-        if symbol_status(symbol) == "missing"
+        symbol for symbol in required_sorted if symbol_status(symbol) == "missing"
     )
     fail_fast_sorted = sorted(
-        symbol
-        for symbol in required_sorted
-        if symbol_status(symbol) == "fail_fast"
+        symbol for symbol in required_sorted if symbol_status(symbol) == "fail_fast"
     )
     runtime_backed_used_sorted = sorted(
         symbol
@@ -267,7 +263,9 @@ def extension_scan(
         if symbol_status(symbol) == "source_compile_only"
     )
     project_defined_used_sorted = sorted(
-        symbol for symbol in required_sorted if symbol_status(symbol) == "project_defined"
+        symbol
+        for symbol in required_sorted
+        if symbol_status(symbol) == "project_defined"
     )
     supported_used_sorted = sorted(
         runtime_backed_used_sorted

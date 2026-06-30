@@ -1271,6 +1271,28 @@ def _blank_lines(lines: list[str], blank_line_numbers: set[int]) -> str:
     )
 
 
+_RUST_NOTIMPLEMENTED_STUB_CONTEXT_RE = re.compile(
+    r"\b(?:raise_exception|set_exception|raise_py_exception)\b"
+)
+
+
+def _rust_line_raises_notimplemented(lines: list[str], index: int) -> bool:
+    """Return true when a NotImplementedError token is part of a live raise.
+
+    Rust code also names ``NotImplementedError`` in exception hierarchy tables
+    and in fallback catch lists. Those are compatibility facts, not executable
+    implementation gaps. Count the token only when it is adjacent to a runtime
+    exception-emission primitive.
+    """
+    line = lines[index]
+    if "NotImplementedError" not in line:
+        return False
+    start = max(0, index - 5)
+    end = min(len(lines), index + 3)
+    window = "\n".join(lines[start:end])
+    return _RUST_NOTIMPLEMENTED_STUB_CONTEXT_RE.search(window) is not None
+
+
 def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
     hits: list[ImplementationGapHit] = []
     lines = text.splitlines()
@@ -1291,7 +1313,7 @@ def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
             continue
         if "MOLT_STUB" in line:
             hits.append(ImplementationGapHit(line=line_no, marker="MOLT_STUB"))
-        if "NotImplementedError" in line:
+        if _rust_line_raises_notimplemented(lines, line_no - 1):
             hits.append(
                 ImplementationGapHit(line=line_no, marker="NotImplementedError")
             )

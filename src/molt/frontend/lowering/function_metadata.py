@@ -452,7 +452,9 @@ class FunctionMetadataMixin(_MixinBase):
     def _normalize_func_kind(kind: object) -> FunctionKind | None:
         return normalize_function_kind(kind)
 
-    def _lookup_func_kind(self, module_name: str | None, func_id: str) -> str | None:
+    def _lookup_func_kind(
+        self, module_name: str | None, func_id: str
+    ) -> FunctionKind | None:
         if module_name is None:
             module_name = self.module_name
         normalized = self._normalize_allowlist_module(module_name)

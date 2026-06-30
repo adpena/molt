@@ -49,6 +49,10 @@ def _resolve_default_dflash_runtime(
         raise LookupError(dflash_backend_requirement_message(dflash_adapter))
     if not has_dflash_backend(backend):
         return None
+    if dflash_target_model_id is None or dflash_tokenizer_id is None:
+        if dflash_adapter is not None:
+            raise LookupError(_dflash_missing_message(dflash_adapter))
+        return None
     context = DFlashSelectionContext(
         model=model,
         backend=backend,

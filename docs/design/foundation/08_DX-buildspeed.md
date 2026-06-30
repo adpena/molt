@@ -387,7 +387,10 @@ Phase 1 (LTO change) is the only phase with a realistic runtime perf risk — th
 - The 3-daemon-max enforcement is a session-level policy (cli.py:24972 region), not a build-system policy. It is unaffected by all phases.
 - The `sccache` shared directory approach (Phase 1) requires that all agent worktrees resolve to the same project root. The existing `_session_target_dir` uses `project_root / "target" / "sessions" / sid` for the build artifact dir. The shared sccache dir uses `project_root / ".sccache"` — a parallel sibling. Agents write compiled rlibs to their isolated `target/sessions/<sid>/` but the sccache dir functions as a shared rlib cache. This is safe because sccache caches by content hash (compiler version + source hash + flags), not by path.
 - The `CARGO_INCREMENTAL` setting: currently unset (defaults to 1 for dev profiles, 0 for release profiles). For `release-fast` with thin LTO, `CARGO_INCREMENTAL=0` is the correct choice (incremental compilation is incompatible with LTO — cargo already disables it automatically when lto != "off"). No change needed.
-- The macOS fast-linker: `ld64.lld` is available via `llvm@21` which is already a dependency (MEMORY.md: "LLVM 21.1.8 keg-only at `/opt/homebrew/opt/llvm@21`"). The fast-linker config for macOS should use `/opt/homebrew/opt/llvm@21/bin/ld64.lld` when present.
+- The macOS fast-linker should not infer LLVM backend ownership from a hardcoded
+  Homebrew keg. Resolve the LLVM backend pin through `molt.llvm_toolchain`, and
+  prefer the standalone Homebrew `lld` path when a measured fast-linker config is
+  justified.
 
 ### Rollback
 
@@ -415,7 +418,7 @@ Each phase is a complete structural piece that can land independently and leave 
 - [ ] Modify `_maybe_enable_sccache` in `/Users/adpena/Projects/molt/src/molt/cli.py` (line 9361): add `SCCACHE_DIR` injection pointing to `project_root / ".sccache"` when sccache is found.
 - [ ] Add `SCCACHE_CACHE_SIZE = "20G"` to the sccache env dict.
 - [ ] Add `.sccache/` to `/Users/adpena/Projects/molt/.gitignore`.
-- [ ] Create `/Users/adpena/Projects/molt/.cargo/config-fast-link-macos.toml` with `[target.aarch64-apple-darwin]` using the lld from `/opt/homebrew/opt/llvm@21/bin/ld64.lld`.
+- [ ] Create `/Users/adpena/Projects/molt/.cargo/config-fast-link-macos.toml` with `[target.aarch64-apple-darwin]` using a measured `ld64.lld` path, not a hardcoded LLVM backend keg.
 - [ ] Document in `.cargo/config.toml` comment block that `config-fast-link-macos.toml` is the macOS fast-linker opt-in.
 - [ ] Add `MOLT_VERIFY_ANALYSIS` and `MOLT_TIR_DUMP` to `DAEMON_REQUEST_ENV_KEYS` in `main.rs` (currently `MOLT_VERIFY_ANALYSIS` is missing from the list at line 42).
 - [ ] Test: two-agent sccache hit rate measurement (BX-3).

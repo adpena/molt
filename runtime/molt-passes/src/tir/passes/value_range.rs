@@ -472,14 +472,14 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // narrowed (the mandatory bigint soundness gate). After narrowing, re-run the
     // forward sweep so values DERIVED from the now-narrowed phi (`s << 1`) are
     // ranged too — the producer that actually feeds the raw-i64 seed.
-    if narrow_loop_header_phis(func, &loop_bodies, &mut result) {
+    if narrow_loop_header_phis(func, loop_bodies, &mut result) {
         propagate_op_ranges(func, &mut result);
     }
 
     // ---- edge-sensitive guard narrowing -------------------------------------
     // For a header `CondBranch(cond -> then=body, else=exit)` where
     // `cond = Lt(i, n)` / `Le(i, n)`, the body sees `i < n` / `i <= n`.
-    narrow_from_header_guards(func, &loop_bodies, &mut result);
+    narrow_from_header_guards(func, loop_bodies, &mut result);
 
     // Producer-evidence instrument (`MOLT_VRANGE_REPORT=1`): per-function dump of
     // the proven loop-header IV recurrence + every global integer range, to the
@@ -487,7 +487,7 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // — used to verify the IV-range seed and transfer-function precision fire on
     // real code (a `fits_inline_int47=false` here explains a refused SROA there).
     if std::env::var("MOLT_VRANGE_REPORT").as_deref() == Ok("1") {
-        emit_vrange_report(func, scev, &loop_bodies, &result);
+        emit_vrange_report(func, scev, loop_bodies, &result);
     }
 
     result

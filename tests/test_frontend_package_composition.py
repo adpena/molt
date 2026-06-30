@@ -522,6 +522,13 @@ def _protocol_attrs() -> set[str]:
     return attrs
 
 
+def _protocol_attr_annotations() -> dict[str, str]:
+    annotations: dict[str, str] = {}
+    for klass in reversed(_GeneratorProtocol.__mro__):
+        annotations.update(getattr(klass, "__annotations__", {}))
+    return annotations
+
+
 def _assembled_class_methods() -> set[str]:
     """Public methods contributed by SimpleTIRGenerator, its mixins, and the
     NodeVisitor dispatcher methods used by those mixins."""
@@ -670,6 +677,17 @@ def test_protocol_covers_full_class_attr_surface() -> None:
     assert not missing, (
         "Protocol drift: attributes on SimpleTIRGenerator missing from "
         f"_GeneratorProtocol (re-run tools/gen_protocol.py): {sorted(missing)}"
+    )
+
+
+def test_protocol_preserves_function_kind_state_authority() -> None:
+    """Function-kind state is live semantic data, not a string cache."""
+    annotations = _protocol_attr_annotations()
+
+    assert annotations["module_declared_funcs"] == "dict[str, FunctionKind]"
+    assert (
+        inspect.signature(SimpleTIRGenerator._lookup_func_kind).return_annotation
+        == "FunctionKind | None"
     )
 
 

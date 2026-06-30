@@ -49,7 +49,7 @@
 2. **"`release-fast` fat LTO has no perf justification" — CONTRADICTED by in-tree comments.** Cargo.toml:296-305 documents that `release-fast` deliberately uses `codegen-units=256` to parallelize the 342K-LoC molt-runtime hub's MIR→LLVM codegen across 18 cores (cgu=1 serialized it into a ~72s one-line rebuild). Whether thin LTO beats fat LTO here is an EMPIRICAL question this arc must measure, not assume.
 3. **Phase 2 architecture assumption is WRONG.** The blueprint assumes `function_compiler.rs` is "8 opcode-family handlers dispatched by an `emit_op()` match" that can be moved as "pure code motion." REALITY: it is ONE 34,200-line method `compile_func_inner` with one giant inline `match op.kind.as_str()` whose arms share thousands of lines of mutable local state (builders, variable maps, tracked-name vecs, alias roots, scalarized-tuple side tables, arena ptrs). Splitting the FILE without splitting the FUNCTION yields ~0 incremental-build benefit, because **a function is the atomic unit of rustc codegen — `codegen-units` partitions at function boundaries, so a 34K-line function is ONE codegen unit regardless of how many files or modules surround it.**
 4. **sccache is NOT installed** on this host (`which sccache` → not found). The wiring (`_maybe_enable_sccache`, retry-on-wrapper-failure) already exists in cli.py and silently no-ops when sccache is absent. Phase 1b's "shared sccache dir" requires installing sccache first.
-5. **`ld64.lld` location differs.** Blueprint says `/opt/homebrew/opt/llvm@21/bin/ld64.lld`; actual is `/opt/homebrew/bin/ld64.lld` (Homebrew `lld` formula). The llvm@21 keg does NOT ship `ld64.lld`.
+5. **`ld64.lld` location differs.** Blueprint tied the linker to a specific LLVM backend keg; actual measured hosts used `/opt/homebrew/bin/ld64.lld` (Homebrew `lld` formula). The linker path is separate from the manifest-derived LLVM backend pin.
 
 ## §4. THE answer to "why didn't the lib.rs split (34e3bddbf) speed builds up?"
 
@@ -221,8 +221,8 @@ regression is structurally impossible. Confirmed empirically below (molt remains
   ~85 % hit on a 2nd worktree's first build). The daemon-bin LTO itself is never an sccache hit.
   Recommend adding `.sccache/` to `.gitignore` if adopted. (Left undone deliberately: making an
   unmeasurable env change with no installed tool to validate against would be a workaround.)
-- **macOS fast linker**: `/opt/homebrew/bin/ld64.lld` exists (Homebrew `lld`; NOT at the blueprint's
-  `llvm@21` path). But on an LTO-bound build the link is a small fraction of wall time (the LTO
+- **macOS fast linker**: `/opt/homebrew/bin/ld64.lld` exists (Homebrew `lld`; not owned by the
+  LLVM backend keg). But on an LTO-bound build the link is a small fraction of wall time (the LTO
   optimize dominates), and the system `ld` (Apple ld-1267, recent) is already fast. A linker swap is
   a marginal lever vs the ~41 % thin-LTO win and is not adopted; the existing `.cargo/config-fast-link.toml`
   opt-in pattern documents how to add one locally if a future measurement justifies it.

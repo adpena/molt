@@ -766,6 +766,8 @@ pub(super) fn define_socket_host(
             } else {
                 Vec::new()
             };
+            #[cfg(unix)]
+            let mut ancillary = ancillary;
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
                 Err(errno) => return -errno,

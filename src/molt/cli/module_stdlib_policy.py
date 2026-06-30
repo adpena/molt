@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
@@ -271,7 +272,7 @@ def _looks_like_stdlib_module_name(module_name: str) -> bool:
 
 
 def _build_stdlib_like_module_flags(
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
 ) -> dict[str, bool]:
     return {
         module_name: (

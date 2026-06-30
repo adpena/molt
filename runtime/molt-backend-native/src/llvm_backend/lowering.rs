@@ -13,7 +13,7 @@ use inkwell::basic_block::BasicBlock;
 #[cfg(feature = "llvm")]
 use inkwell::types::BasicType;
 #[cfg(feature = "llvm")]
-use inkwell::values::{BasicValueEnum, FunctionValue, PhiValue};
+use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 
@@ -341,13 +341,15 @@ fn unbox_dynbox_to_param_ty_with_builder<'ctx>(
 // AllowReassoc | NoNaNs | NoInfs | NoSignedZeros | AllowReciprocal
 //             | AllowContract | ApproxFunc  (= "fast" in IR text)
 #[cfg(feature = "llvm")]
-const LLVM_FAST_MATH_ALL: u32 = (1 << 0)  // AllowReassoc
-    | (1 << 1)  // NoNaNs
-    | (1 << 2)  // NoInfs
-    | (1 << 3)  // NoSignedZeros
-    | (1 << 4)  // AllowReciprocal
-    | (1 << 5)  // AllowContract
-    | (1 << 6); // ApproxFunc
+fn llvm_fast_math_all() -> FastMathFlags {
+    FastMathFlags::AllowReassoc
+        | FastMathFlags::NoNaNs
+        | FastMathFlags::NoInfs
+        | FastMathFlags::NoSignedZeros
+        | FastMathFlags::AllowReciprocal
+        | FastMathFlags::AllowContract
+        | FastMathFlags::ApproxFunc
+}
 
 /// Return `true` when `op.attrs[key]` is `AttrValue::Bool(true)`.
 #[cfg(feature = "llvm")]
