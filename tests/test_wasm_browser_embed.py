@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -11,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from molt._wasm_abi_generated import WASM_RESERVED_RUNTIME_CALLABLES
-from molt.dx import development_artifact_env
+from molt.dx import development_artifact_env, session_artifact_component
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 
@@ -29,6 +30,21 @@ def _browser_wasm_build_env(root: Path) -> dict[str, str]:
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     return env
+
+
+def _browser_embed_forward_package_dir(root: Path, env: dict[str, str]) -> Path:
+    ext_root = Path(env.get("MOLT_EXT_ROOT") or root).expanduser()
+    repo_key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:12]
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "local")
+    lane = session_artifact_component(worker or "local")
+    return (
+        ext_root
+        / "tmp"
+        / "test-wasm-browser-embed"
+        / repo_key
+        / lane
+        / "browser_embed_forward"
+    )
 
 
 def test_browser_host_import_parser_handles_tag_imports_before_memory(
@@ -558,8 +574,9 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     root = Path(__file__).resolve().parents[1]
     src = root / "examples" / "browser_embed_forward" / "forward.py"
     assert src.exists()
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
+    build_env = _browser_wasm_build_env(root)
+    package_dir = _browser_embed_forward_package_dir(root, build_env)
+    package_dir.mkdir(parents=True, exist_ok=True)
 
     build = _run_wasm_test_process(
         [
@@ -580,15 +597,17 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
             "ignore",
             "--split-runtime",
             "--out-dir",
-            str(out_dir),
+            str(package_dir),
         ],
         cwd=root,
-        env=_browser_wasm_build_env(root),
+        env=build_env,
         capture_output=True,
         text=True,
         timeout=1800,
     )
     assert build.returncode == 0, build.stderr
+    out_dir = tmp_path / "out"
+    shutil.copytree(package_dir, out_dir)
     assert (out_dir / "app.wasm").exists()
     assert (out_dir / "molt_runtime.wasm").exists()
     assert (out_dir / "manifest.json").exists()

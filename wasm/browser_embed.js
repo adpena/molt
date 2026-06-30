@@ -1013,15 +1013,12 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
         throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
       }
     }
+    const directSignature =
+      appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
     const tableFn = state.table ? state.table.get(dispatchIdx) : null;
-    if (typeof tableFn === 'function') {
-      const signature =
-        callIndirectObjectSignature(name) ||
-        appTableRefSignatures[directName] ||
-        runtimeTableRefSignatures[directName] ||
-        null;
+    if (typeof tableFn === 'function' && directSignature) {
       try {
-        return callWithSignature(tableFn, signature, args);
+        return callWithSignature(tableFn, directSignature, args);
       } catch (err) {
         const detail = err && typeof err.message === 'string' ? err.message : String(err);
         const fnName = tableFn.name || '<anon>';
@@ -1032,13 +1029,10 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
       }
     }
     const rtDirectFn = state.runtimeInstance?.exports?.[directName];
-    if (typeof rtDirectFn === 'function') {
+    const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;
+    if (typeof rtDirectFn === 'function' && runtimeDirectSignature) {
       try {
-        return callWithSignature(
-          rtDirectFn,
-          callIndirectObjectSignature(name) || runtimeTableRefSignatures[directName],
-          args,
-        );
+        return callWithSignature(rtDirectFn, runtimeDirectSignature, args);
       } catch (err) {
         const detail = err && typeof err.message === 'string' ? err.message : String(err);
         throw new Error(
@@ -1063,6 +1057,18 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
         );
       }
     }
+    if (typeof tableFn === 'function') {
+      try {
+        return callWithSignature(tableFn, callIndirectObjectSignature(name), args);
+      } catch (err) {
+        const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        const fnName = tableFn.name || '<anon>';
+        throw new Error(
+          `${name} shared-table entry failed at idx=${dispatchIdx}: ${detail}; ` +
+            `fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`,
+        );
+      }
+    }
     throw new Error(`${name} missing table entry at ${dispatchIdx}`);
   };
   const env = {
@@ -1071,7 +1077,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
     molt_db_query_host: stubI32,
     molt_db_exec_host: stubI32,
     molt_db_host_poll: stubZero,
-    molt_getpid_host: stubZeroI64,
+    molt_getpid_host: () => 1n,
     molt_os_close_host: stubI32,
     molt_socket_new_host: stubI64,
     molt_socket_close_host: stubI32,
