@@ -22,6 +22,7 @@ from typing import (
     Any,
     Callable,
     Literal,
+    Mapping,
     Protocol,
     Sequence,
     TYPE_CHECKING,
@@ -130,8 +131,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_spec_override_set: Any
     module_stmt_offsets: list[int]
     mutated_classes: set[str]
-    native_callable_exports: Any
-    native_python_exports: Any
+    native_callable_exports: dict[str, dict[str, Any]]
+    native_python_exports: set[str]
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parse_codec: Any
@@ -181,7 +182,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
-        native_callable_exports: dict[str, dict[str, Any]] | None = None,
+        native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
