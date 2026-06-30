@@ -1427,6 +1427,25 @@ def test_runtime_wasm_json_build_failure_emits_cargo_detail(
     assert "wasi sysroot authority" in captured.err
 
 
+def test_wasi_sysroot_python_resolver_accepts_distro_target_include_layout(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "usr"
+    host_include = root / "include"
+    target_include = host_include / "wasm32-wasi"
+    target_lib = root / "lib" / "wasm32-wasi"
+    host_include.mkdir(parents=True)
+    target_include.mkdir(parents=True)
+    target_lib.mkdir(parents=True)
+    (host_include / "errno.h").write_text("#define HOST_ERRNO 1\n", encoding="utf-8")
+    (target_include / "errno.h").write_text("#define WASI_ERRNO 1\n", encoding="utf-8")
+
+    assert WASM_TOOLCHAIN.normalize_wasi_sysroot(root) == root.resolve(strict=False)
+    assert WASM_TOOLCHAIN.normalize_wasi_sysroot(target_include) == root.resolve(
+        strict=False
+    )
+
+
 def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     shared = repo_root / "runtime" / "build_support" / "wasi_sysroot.rs"
@@ -1443,11 +1462,23 @@ def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
     assert "/usr/share/wasi-sysroot" in shared_text
     assert "/usr/include/wasm32-wasi" in shared_text
     assert "wasm32-wasi" in shared_text
-    assert "/usr/include/wasm32-wasi" in (
+    assert "include_dir: Some" in shared_text
+    assert "pub fn sysroot_flag(&self) -> String" in shared_text
+    assert 'sysroot.lib_dir("wasm32-wasip1")' in runtime_text
+    assert shared_text.index("target_include_layout(&root") < shared_text.index(
+        'root.join("include").join("errno.h")'
+    )
+    python_wasm_toolchain = (
         repo_root / "src" / "molt" / "cli" / "wasm_toolchain.py"
     ).read_text(encoding="utf-8")
+    assert "/usr/include/wasm32-wasi" in python_wasm_toolchain
+    assert "WASI_SDK_PREFIX" in python_wasm_toolchain
     assert "mod wasi_sysroot" in runtime_text
     assert "mod wasi_sysroot" in abi_text
+    assert "build.flag(sysroot.sysroot_flag())" in runtime_text
+    assert "build.flag(sysroot.sysroot_flag())" in abi_text
+    assert "build.include(include_dir)" in runtime_text
+    assert "build.include(include_dir)" in abi_text
     assert "fn resolve_wasi_sysroot" not in runtime_text
     assert "fn resolve_wasi_sysroot" not in abi_text
     assert "wasi-libc/share/wasi-sysroot" not in runtime_text

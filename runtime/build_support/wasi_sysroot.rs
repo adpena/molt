@@ -1,5 +1,30 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const WASI_TARGET_INCLUDE_DIRS: &[&str] = &["wasm32-wasip1", "wasm32-wasi"];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WasiSysroot {
+    root: PathBuf,
+    include_dir: Option<PathBuf>,
+    lib_dir: Option<PathBuf>,
+}
+
+impl WasiSysroot {
+    pub fn include_dir(&self) -> Option<&Path> {
+        self.include_dir.as_deref()
+    }
+
+    pub fn lib_dir(&self, preferred_target: &str) -> PathBuf {
+        self.lib_dir
+            .clone()
+            .unwrap_or_else(|| self.root.join("lib").join(preferred_target))
+    }
+
+    pub fn sysroot_flag(&self) -> String {
+        format!("--sysroot={}", self.root.display())
+    }
+}
 
 fn wasi_sdk_sysroot_candidates(raw: &str) -> Vec<PathBuf> {
     let sdk_root = PathBuf::from(raw);
@@ -10,41 +35,70 @@ fn wasi_sdk_sysroot_candidates(raw: &str) -> Vec<PathBuf> {
     ]
 }
 
-fn normalize_wasi_sysroot(path: PathBuf) -> Option<PathBuf> {
+fn target_include_layout(root: &Path, target: &str) -> Option<WasiSysroot> {
+    let include_dir = root.join("include").join(target);
+    if !include_dir.join("errno.h").exists() {
+        return None;
+    }
+    let lib_dir = root.join("lib").join(target);
+    Some(WasiSysroot {
+        root: root.to_path_buf(),
+        include_dir: Some(include_dir),
+        lib_dir: lib_dir.exists().then_some(lib_dir),
+    })
+}
+
+fn normalize_target_include_path(path: &Path) -> Option<WasiSysroot> {
+    let target = path.file_name().and_then(|name| name.to_str())?;
+    if !WASI_TARGET_INCLUDE_DIRS.contains(&target) {
+        return None;
+    }
+    if path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        != Some("include")
+    {
+        return None;
+    }
+    if !path.join("errno.h").exists() {
+        return None;
+    }
+    let root = path.parent().and_then(|parent| parent.parent())?;
+    let lib_dir = root.join("lib").join(target);
+    Some(WasiSysroot {
+        root: root.to_path_buf(),
+        include_dir: Some(path.to_path_buf()),
+        lib_dir: lib_dir.exists().then_some(lib_dir),
+    })
+}
+
+fn normalize_wasi_sysroot(path: PathBuf) -> Option<WasiSysroot> {
+    if let Some(layout) = normalize_target_include_path(&path) {
+        return Some(layout);
+    }
     let mut roots = vec![path.clone()];
     if path.file_name().and_then(|name| name.to_str()) == Some("include") {
         if let Some(parent) = path.parent() {
             roots.push(parent.to_path_buf());
         }
     }
-    if path
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        == Some("include")
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("wasm32-"))
-    {
-        if let Some(parent) = path.parent().and_then(|parent| parent.parent()) {
-            roots.push(parent.to_path_buf());
-        }
-    }
     for root in roots {
-        if root.join("include").join("errno.h").exists()
-            || root
-                .join("include")
-                .join("wasm32-wasip1")
-                .join("errno.h")
-                .exists()
-            || root
-                .join("include")
-                .join("wasm32-wasi")
-                .join("errno.h")
-                .exists()
-        {
-            return Some(root);
+        for target in WASI_TARGET_INCLUDE_DIRS {
+            if let Some(layout) = target_include_layout(&root, target) {
+                return Some(layout);
+            }
+        }
+        if root.join("include").join("errno.h").exists() {
+            let lib_dir = WASI_TARGET_INCLUDE_DIRS
+                .iter()
+                .map(|target| root.join("lib").join(target))
+                .find(|candidate| candidate.exists());
+            return Some(WasiSysroot {
+                root,
+                include_dir: None,
+                lib_dir,
+            });
         }
     }
     None
@@ -117,7 +171,7 @@ fn wasi_sysroot_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-pub fn resolve_wasi_sysroot() -> Option<PathBuf> {
+pub fn resolve_wasi_sysroot() -> Option<WasiSysroot> {
     for key in [
         "MOLT_WASI_SYSROOT",
         "WASI_SYSROOT",
