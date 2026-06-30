@@ -71,7 +71,7 @@ def _dispatch_entrypoint_command(
             project_root=project_root,
             kind=args.kind,
             json_output=args.json,
-            cargo_profile=args.build_profile,
+            build_profile=args.build_profile,
             cargo_timeout=args.cargo_timeout,
             simd_enabled=not args.no_simd,
             freestanding=args.freestanding,

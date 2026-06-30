@@ -432,7 +432,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--build-profile",
         choices=_BUILD_PROFILE_CHOICES,
         default="release",
-        help="Runtime cargo profile selector.",
+        help="Runtime build profile selector.",
     )
     runtime_wasm_parser.add_argument(
         "--stdlib-profile",
