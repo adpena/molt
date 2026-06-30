@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt.frontend import SimpleTIRGenerator
+from molt.native_callable_abi import NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1
 from molt.type_facts import TypeFacts
 
 from molt.cli.atomic_io import _atomic_write_json
@@ -19,6 +20,9 @@ from molt.cli.models import (
     ParseCodec,
     TypeHintPolicy,
     _FrontendIntegrationState,
+    _ExternalNativeModuleInitSpec,
+    _ExternalPackageNativeArtifactPlan,
+    _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _MidendDiagnosticsState,
     _PreparedBackendIR,
 )
@@ -493,6 +497,7 @@ def _build_isolate_import_ops(
 def _isolate_import_module_order(
     module_order: Sequence[str],
     runtime_import_dispatch_roots: Collection[str],
+    native_module_order: Sequence[str] = (),
 ) -> list[str]:
     if not runtime_import_dispatch_roots:
         return []
@@ -500,7 +505,292 @@ def _isolate_import_module_order(
     for module_name in runtime_import_dispatch_roots:
         parts = module_name.split(".")
         import_roots.update(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
-    return [module_name for module_name in module_order if module_name in import_roots]
+    ordered = [module_name for module_name in module_order if module_name in import_roots]
+    seen = set(ordered)
+    ordered.extend(
+        module_name
+        for module_name in native_module_order
+        if module_name in import_roots and module_name not in seen
+    )
+    return ordered
+
+
+_STATIC_NATIVE_PREPARE_SYMBOL = "molt_cpython_abi_prepare_static_extension"
+_STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL = "molt_cpython_abi_pyinit_module_to_bits"
+_STATIC_NATIVE_PYINIT_EXPORT_PREFIX = "__molt_static_pyinit__."
+
+
+def _parent_module_parts(module_name: str) -> tuple[str, str] | None:
+    if "." not in module_name:
+        return None
+    parent_name, attr_name = module_name.rsplit(".", 1)
+    if not parent_name or not attr_name:
+        return None
+    return parent_name, attr_name
+
+
+def _append_static_native_module_metadata_ops(
+    ops: list[dict[str, Any]],
+    *,
+    module_var: str,
+    module_name: str,
+    is_extension: bool,
+    next_var: int,
+) -> int:
+    package_name = module_name
+    if is_extension and "." in module_name:
+        package_name = module_name.rsplit(".", 1)[0]
+    package_attr_var = f"v{next_var}"
+    next_var += 1
+    package_name_var = f"v{next_var}"
+    next_var += 1
+    package_set_var = f"v{next_var}"
+    next_var += 1
+    ops.extend(
+        [
+            {"kind": "const_str", "s_value": "__package__", "out": package_attr_var},
+            {"kind": "const_str", "s_value": package_name, "out": package_name_var},
+            {
+                "kind": "module_set_attr",
+                "args": [module_var, package_attr_var, package_name_var],
+                "out": package_set_var,
+            },
+        ]
+    )
+    return next_var
+
+
+def _append_static_native_parent_binding_ops(
+    ops: list[dict[str, Any]],
+    *,
+    module_var: str,
+    module_name: str,
+    next_var: int,
+) -> int:
+    parent_parts = _parent_module_parts(module_name)
+    if parent_parts is None:
+        return next_var
+    parent_name, attr_name = parent_parts
+    parent_name_var = f"v{next_var}"
+    next_var += 1
+    parent_var = f"v{next_var}"
+    next_var += 1
+    none_var = f"v{next_var}"
+    next_var += 1
+    parent_missing_var = f"v{next_var}"
+    next_var += 1
+    attr_name_var = f"v{next_var}"
+    next_var += 1
+    parent_set_var = f"v{next_var}"
+    next_var += 1
+    ops.extend(
+        [
+            {"kind": "const_str", "s_value": parent_name, "out": parent_name_var},
+            {"kind": "module_cache_get", "args": [parent_name_var], "out": parent_var},
+            {"kind": "const_none", "out": none_var},
+            {"kind": "is", "args": [parent_var, none_var], "out": parent_missing_var},
+            {"kind": "if", "args": [parent_missing_var]},
+            {"kind": "else"},
+            {"kind": "const_str", "s_value": attr_name, "out": attr_name_var},
+            {
+                "kind": "module_set_attr",
+                "args": [parent_var, attr_name_var, module_var],
+                "out": parent_set_var,
+            },
+            {"kind": "end_if"},
+        ]
+    )
+    return next_var
+
+
+def _append_static_native_module_attr_export_ops(
+    ops: list[dict[str, Any]],
+    *,
+    module_var: str,
+    spec: _ExternalNativeModuleInitSpec,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+) -> int:
+    exports_by_extension: dict[str, list[str]] = {}
+    for export in spec.module_attr_exports:
+        exports_by_extension.setdefault(export.extension_module, []).append(export.attr)
+    for extension_module in sorted(exports_by_extension):
+        extension_init = SimpleTIRGenerator.module_init_symbol(extension_module)
+        extension_init_var = f"v{next_var}"
+        next_var += 1
+        ops.extend(
+            [
+                {
+                    "kind": "call",
+                    "s_value": extension_init,
+                    "args": [],
+                    "out": extension_init_var,
+                    "value": register_global_code_id(extension_init),
+                },
+                {"kind": "check_exception", "value": 1},
+            ]
+        )
+        extension_name_var = f"v{next_var}"
+        next_var += 1
+        extension_module_var = f"v{next_var}"
+        next_var += 1
+        ops.extend(
+            [
+                {
+                    "kind": "const_str",
+                    "s_value": extension_module,
+                    "out": extension_name_var,
+                },
+                {
+                    "kind": "module_cache_get",
+                    "args": [extension_name_var],
+                    "out": extension_module_var,
+                },
+            ]
+        )
+        for attr in sorted(set(exports_by_extension[extension_module])):
+            attr_name_var = f"v{next_var}"
+            next_var += 1
+            attr_value_var = f"v{next_var}"
+            next_var += 1
+            attr_set_var = f"v{next_var}"
+            next_var += 1
+            ops.extend(
+                [
+                    {"kind": "const_str", "s_value": attr, "out": attr_name_var},
+                    {
+                        "kind": "module_get_attr",
+                        "args": [extension_module_var, attr_name_var],
+                        "out": attr_value_var,
+                    },
+                    {"kind": "check_exception", "value": 1},
+                    {
+                        "kind": "module_set_attr",
+                        "args": [module_var, attr_name_var, attr_value_var],
+                        "out": attr_set_var,
+                    },
+                ]
+            )
+    return next_var
+
+
+def _build_static_native_module_init_ops(
+    spec: _ExternalNativeModuleInitSpec,
+    *,
+    register_global_code_id: Callable[[str], int],
+) -> list[dict[str, Any]]:
+    next_var = 0
+    module_name_var = f"v{next_var}"
+    next_var += 1
+    ops: list[dict[str, Any]] = [
+        {"kind": "const_str", "s_value": spec.module, "out": module_name_var},
+    ]
+    module_var: str
+    if spec.is_extension:
+        prepare_var = f"v{next_var}"
+        next_var += 1
+        pyobj_var = f"v{next_var}"
+        next_var += 1
+        module_var = f"v{next_var}"
+        next_var += 1
+        ops.extend(
+            [
+                {
+                    "kind": "call",
+                    "s_value": _STATIC_NATIVE_PREPARE_SYMBOL,
+                    "args": [],
+                    "out": prepare_var,
+                    "value": register_global_code_id(_STATIC_NATIVE_PREPARE_SYMBOL),
+                },
+                {
+                    "kind": "invoke_ffi",
+                    "args": [],
+                    "out": pyobj_var,
+                    "native_callable_export": (
+                        f"{_STATIC_NATIVE_PYINIT_EXPORT_PREFIX}{spec.module}"
+                    ),
+                    "native_callable_binding": "direct_symbol",
+                    "native_callable_abi": NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+                    "native_callable_symbol": spec.init_symbol,
+                },
+                {
+                    "kind": "call",
+                    "s_value": _STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL,
+                    "args": [pyobj_var],
+                    "out": module_var,
+                    "value": register_global_code_id(
+                        _STATIC_NATIVE_PYINIT_TO_BITS_SYMBOL
+                    ),
+                },
+                {"kind": "check_exception", "value": 1},
+            ]
+        )
+    else:
+        module_var = f"v{next_var}"
+        next_var += 1
+        ops.append({"kind": "module_new", "args": [module_name_var], "out": module_var})
+    cache_set_var = f"v{next_var}"
+    next_var += 1
+    ops.append(
+        {
+            "kind": "module_cache_set",
+            "args": [module_name_var, module_var],
+            "out": cache_set_var,
+        }
+    )
+    next_var = _append_static_native_module_metadata_ops(
+        ops,
+        module_var=module_var,
+        module_name=spec.module,
+        is_extension=spec.is_extension,
+        next_var=next_var,
+    )
+    next_var = _append_static_native_parent_binding_ops(
+        ops,
+        module_var=module_var,
+        module_name=spec.module,
+        next_var=next_var,
+    )
+    next_var = _append_static_native_module_attr_export_ops(
+        ops,
+        module_var=module_var,
+        spec=spec,
+        register_global_code_id=register_global_code_id,
+        next_var=next_var,
+    )
+    ops.append({"kind": "ret_void"})
+    if spec.is_extension or spec.module_attr_exports:
+        ops.extend(({"kind": "label", "value": 1}, {"kind": "ret_void"}))
+    return ops
+
+
+def _append_static_native_module_init_functions(
+    functions: list[dict[str, Any]],
+    *,
+    specs: Sequence[_ExternalNativeModuleInitSpec],
+    register_global_code_id: Callable[[str], int],
+) -> None:
+    existing = {
+        func.get("name")
+        for func in functions
+        if isinstance(func, Mapping) and isinstance(func.get("name"), str)
+    }
+    for spec in specs:
+        init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
+        if init_symbol in existing:
+            continue
+        register_global_code_id(init_symbol)
+        functions.append(
+            {
+                "name": init_symbol,
+                "params": [],
+                "ops": _build_static_native_module_init_ops(
+                    spec,
+                    register_global_code_id=register_global_code_id,
+                ),
+            }
+        )
+        existing.add(init_symbol)
 
 
 def _finalize_backend_ir(
@@ -779,6 +1069,9 @@ def _prepare_backend_ir(
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     target: str = "native",
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
+        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+    ),
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
     entry_path: Path | None = None
     if entry_module != "__main__":
@@ -821,6 +1114,29 @@ def _prepare_backend_ir(
 
     def register_global_code_id(symbol: str) -> int:
         return _register_global_code_id_with_state(integration_state, symbol)
+
+    missing_static_init_symbols = sorted(
+        artifact.module
+        for artifact in native_artifact_plan.artifacts
+        if artifact.runtime_linkage == "static_link" and not artifact.init_symbol
+    )
+    if missing_static_init_symbols:
+        preview = ", ".join(missing_static_init_symbols[:8])
+        suffix = "" if len(missing_static_init_symbols) <= 8 else ", ..."
+        return None, fail(
+            "static native artifacts require executable init_symbol custody: "
+            f"{preview}{suffix}",
+            json_output,
+            command="build",
+        )
+
+    native_module_init_specs = native_artifact_plan.native_module_init_specs()
+    _append_static_native_module_init_functions(
+        functions,
+        specs=native_module_init_specs,
+        register_global_code_id=register_global_code_id,
+    )
+    native_module_order = [spec.module for spec in native_module_init_specs]
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
@@ -932,7 +1248,7 @@ def _prepare_backend_ir(
     import_ops = _build_isolate_import_ops(
         code_slot_count=len(global_code_ids),
         module_order=_isolate_import_module_order(
-            module_order, runtime_import_dispatch_roots
+            module_order, runtime_import_dispatch_roots, native_module_order
         ),
         register_global_code_id=register_global_code_id,
     )

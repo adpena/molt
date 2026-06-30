@@ -144,8 +144,10 @@ mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
 pub mod audit;
-#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
 pub mod cpython_abi_hooks;
+pub use cpython_abi_hooks::{
+    molt_cpython_abi_prepare_static_extension, molt_cpython_abi_pyinit_module_to_bits,
+};
 mod diagnostics;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]

@@ -1809,6 +1809,8 @@ pub(crate) enum WasmRuntimeImport {
     CopyregAddExtension,
     CopyregRemoveExtension,
     CopyregClearExtensionCache,
+    CpythonAbiPrepareStaticExtension,
+    CpythonAbiPyinitModuleToBits,
     GcCollect,
     GcEnable,
     GcDisable,

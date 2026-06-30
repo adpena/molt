@@ -1220,6 +1220,8 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_copyreg_remove_extension": "molt_copyreg_remove_extension",
     "molt_copyreg_clear_extension_cache": "molt_copyreg_clear_extension_cache",
     "molt_module_cache_set": "molt_module_cache_set",
+    "molt_cpython_abi_prepare_static_extension": "molt_cpython_abi_prepare_static_extension",
+    "molt_cpython_abi_pyinit_module_to_bits": "molt_cpython_abi_pyinit_module_to_bits",
     "molt_exception_active": "molt_exception_active",
     "molt_exception_last": "molt_exception_last",
     "molt_exception_pending": "molt_exception_pending",
