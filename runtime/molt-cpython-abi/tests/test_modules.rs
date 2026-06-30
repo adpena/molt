@@ -7,6 +7,7 @@
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{MoltBufferView, RuntimeHooks};
 use std::ptr;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ─── Test hook implementations ───────────────────────────────────────────────
@@ -23,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
 static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
+static FAKE_BUFFER_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 
 fn next_fake_handle() -> u64 {
@@ -194,6 +196,7 @@ fn init() {
 
 #[test]
 fn test_getbuffer_uses_runtime_typed_descriptor() {
+    let _guard = FAKE_BUFFER_LOCK.lock().unwrap();
     init();
     let obj = unsafe {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -231,6 +234,7 @@ fn test_getbuffer_uses_runtime_typed_descriptor() {
 
 #[test]
 fn test_memoryview_uses_runtime_buffer_lifetime() {
+    let _guard = FAKE_BUFFER_LOCK.lock().unwrap();
     init();
     FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
     let obj = unsafe {
