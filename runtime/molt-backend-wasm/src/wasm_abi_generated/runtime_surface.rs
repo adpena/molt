@@ -3,6 +3,8 @@
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // DO NOT EDIT BY HAND.
 
+use wasm_encoder::ValType;
+
 #[allow(dead_code)]
 pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_alloc",
@@ -131,6 +133,763 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_tuple_from_array",
     "molt_type_ready",
     "molt_type_tag_of_bits",
+];
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeHostExportSignature {
+    pub(crate) name: &'static str,
+    pub(crate) params: &'static [ValType],
+    pub(crate) results: &'static [ValType],
+}
+
+#[allow(dead_code)]
+pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] = &[
+    RuntimeHostExportSignature {
+        name: "molt_alloc",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_bool_from_i32",
+        params: &[ValType::I32],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_buffer_acquire",
+        params: &[ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_buffer_release",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_builtin_class_lookup",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_bytearray_as_ptr",
+        params: &[ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_bytearray_from",
+        params: &[ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_bytes_as_ptr",
+        params: &[ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_bytes_from",
+        params: &[ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_bytes_from_bytes",
+        params: &[ValType::I32, ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_c_api_version",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_cfunction_create_bytes",
+        params: &[
+            ValType::I64,
+            ValType::I32,
+            ValType::I64,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_cfunction_create_keywords_bytes",
+        params: &[
+            ValType::I64,
+            ValType::I32,
+            ValType::I64,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_dec_ref_obj",
+        params: &[ValType::I64],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_dict_from_pairs",
+        params: &[ValType::I32, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_dict_getitem_borrowed",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_dict_items",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_dict_keys",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_dict_values",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_clear",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_fetch",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_format",
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_matches",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_peek",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_pending",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_restore",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_err_set",
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_exception_kind",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_exception_last",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_exception_message",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_float_as_f64",
+        params: &[ValType::I64],
+        results: &[ValType::F64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_float_from_f64",
+        params: &[ValType::F64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gil_acquire",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gil_is_held",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gil_release",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_barrier",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_block_dim",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_block_id",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_broadcast_binary_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_grid_dim",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_linear_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_linear_split_last_dim_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_matmul_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_permute_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_repeat_axis_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_rms_norm_last_axis_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_rope_apply_contiguous",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_softmax_last_axis_contiguous",
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_squared_relu_gate_interleaved_contiguous",
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_tensor__tensor_concat_first_dim",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_tensor__tensor_scatter_rows",
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_tensor__tensor_take_rows",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_tensor__zeros",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_tensor_from_buffer",
+        params: &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_tensor_from_parts",
+        params: &[
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_gpu_thread_id",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_handle_decref",
+        params: &[ValType::I64],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_handle_incref",
+        params: &[ValType::I64],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_handle_resolve",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_header_size",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_init",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_int_as_i64",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_int_from_i64",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_iter_next",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_list_append",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_list_from_array",
+        params: &[ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_mapping_getitem",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_mapping_keys",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_mapping_length",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_mapping_setitem",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_cfunction_bytes",
+        params: &[
+            ValType::I64,
+            ValType::I32,
+            ValType::I64,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I64,
+        ],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_cfunction_keywords_bytes",
+        params: &[
+            ValType::I64,
+            ValType::I32,
+            ValType::I64,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I64,
+        ],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_int_constant",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_object",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_object_bytes",
+        params: &[ValType::I64, ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_string_constant",
+        params: &[ValType::I64, ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_type",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_capi_get_def",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_capi_get_state",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_capi_register",
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_create",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_get_dict",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_get_object",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_get_object_bytes",
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_import",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_state_add",
+        params: &[ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_state_find",
+        params: &[ValType::I32],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_state_remove",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_none",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_add",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_float",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_floordiv",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_long",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_mul",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_sub",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_number_truediv",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_call",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_contains",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_delattr",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_equal",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_getattr",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_getattr_bytes",
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_hasattr",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_not_equal",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_repr",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_setattr",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_setattr_bytes",
+        params: &[ValType::I64, ValType::I32, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_str",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_object_truthy",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_profile_dump",
+        params: &[],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_runtime_shutdown",
+        params: &[],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_scratch_alloc",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_scratch_free",
+        params: &[ValType::I64, ValType::I64],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_sequence_getitem",
+        params: &[ValType::I64, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_sequence_length",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_sequence_setitem",
+        params: &[ValType::I64, ValType::I64, ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_set_wasm_table_base",
+        params: &[ValType::I64],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_shutdown",
+        params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_string_as_ptr",
+        params: &[ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_string_from",
+        params: &[ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_string_from_bytes",
+        params: &[ValType::I32, ValType::I64, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_traceback_format_exc",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_tuple_from_array",
+        params: &[ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_type_ready",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_type_tag_of_bits",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
 ];
 
 pub(crate) const GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[

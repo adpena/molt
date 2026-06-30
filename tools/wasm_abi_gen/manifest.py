@@ -298,14 +298,83 @@ def _rust_type_aliases() -> dict[str, str]:
     return aliases
 
 
+def _split_rust_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    angle_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+    for idx, ch in enumerate(text):
+        if ch == "<":
+            angle_depth += 1
+        elif ch == ">" and not (idx > 0 and text[idx - 1] == "-"):
+            angle_depth = max(0, angle_depth - 1)
+        elif ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif ch == "[":
+            bracket_depth += 1
+        elif ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif (
+            ch == ","
+            and angle_depth == 0
+            and paren_depth == 0
+            and bracket_depth == 0
+        ):
+            parts.append(text[start:idx].strip())
+            start = idx + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _rust_fn_cfg_allows_wasm(text: str, fn_start: int) -> bool:
+    prefix_lines = text[:fn_start].splitlines()
+    for raw_line in reversed(prefix_lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not line.startswith("#["):
+            break
+        if 'cfg(not(target_arch = "wasm32"))' in line:
+            return False
+    return True
+
+
 def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
     typ = typ.strip().removeprefix("mut ").strip()
     seen: set[str] = set()
     while typ in aliases and typ not in seen:
         seen.add(typ)
         typ = aliases[typ].strip()
+    typ = typ.strip().removeprefix("std::os::raw::")
+    if (
+        typ.startswith("*const ")
+        or typ.startswith("*mut ")
+        or 'extern "C" fn' in typ
+        or 'unsafe extern "C" fn' in typ
+    ):
+        return "i32"
     if typ in {"u64", "i64"}:
         return "i64"
+    if typ in {
+        "u8",
+        "i8",
+        "u16",
+        "i16",
+        "u32",
+        "i32",
+        "usize",
+        "isize",
+        "c_int",
+        "c_uint",
+        "c_long",
+        "c_ulong",
+    }:
+        return "i32"
+    if typ in {"f32", "f64"}:
+        return typ
     if typ in {"()", ""}:
         return "void"
     return typ
@@ -324,10 +393,12 @@ def _rust_export_signatures() -> dict[str, set[tuple[tuple[str, ...], str]]]:
         if text is None:
             continue
         for match in fn_re.finditer(text):
+            if not _rust_fn_cfg_allows_wasm(text, match.start()):
+                continue
             params_text = match.group(2).strip()
             params: list[str] = []
             if params_text:
-                for raw_param in params_text.split(","):
+                for raw_param in _split_rust_top_level_commas(params_text):
                     param = raw_param.strip()
                     if not param:
                         continue
@@ -343,6 +414,53 @@ def _rust_export_signatures() -> dict[str, set[tuple[tuple[str, ...], str]]]:
             result = _normalize_rust_wasm_scalar(match.group(3) or "void", aliases)
             exports.setdefault(match.group(1), set()).add((tuple(params), result))
     return exports
+
+
+def _runtime_host_export_signatures(
+    host_exports: list[str],
+    rust_exports: dict[str, set[tuple[tuple[str, ...], str]]],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    ambiguous: list[str] = []
+    unsupported: list[str] = []
+    for name in host_exports:
+        signatures = rust_exports.get(name, set())
+        if len(signatures) != 1:
+            rendered = ", ".join(
+                f"({', '.join(params)}) -> {result}"
+                for params, result in sorted(signatures)
+            )
+            ambiguous.append(f"{name}: {rendered or '<missing>'}")
+            continue
+        params, result = next(iter(signatures))
+        invalid = [
+            value
+            for value in (*params, result)
+            if value != "void" and value not in WASM_VAL_TYPES
+        ]
+        if invalid:
+            unsupported.append(
+                f"{name}: ({', '.join(params)}) -> {result} uses {sorted(set(invalid))}"
+            )
+            continue
+        rows.append(
+            {
+                "name": name,
+                "params": list(params),
+                "results": [] if result == "void" else [result],
+            }
+        )
+    if ambiguous:
+        raise WasmAbiManifestError(
+            "runtime host exports have ambiguous wasm ABI signatures: "
+            + "; ".join(ambiguous)
+        )
+    if unsupported:
+        raise WasmAbiManifestError(
+            "runtime host exports use unsupported wasm ABI types: "
+            + "; ".join(unsupported)
+        )
+    return rows
 
 
 def _rust_intrinsic_callable_result(
@@ -1573,6 +1691,10 @@ def validate_loaded_manifest(
             "Rust extern \"C\" symbols: "
             + ", ".join(missing_host_exports)
         )
+    data["runtime_host_export_signature"] = _runtime_host_export_signatures(
+        host_exports,
+        rust_exports,
+    )
 
     gpu_intrinsic_manifest_names = data.get("gpu_intrinsic_manifest_name", [])
     if (

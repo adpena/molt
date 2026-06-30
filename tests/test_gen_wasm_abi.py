@@ -100,6 +100,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     manifest_names = {entry["name"] for entry in data["import"]}
     imports_by_name = {entry["name"]: entry for entry in data["import"]}
     host_exports = set(data["runtime_export_policy"]["host_exports"])
+    host_export_signatures = {
+        entry["name"]: entry for entry in data["runtime_host_export_signature"]
+    }
     gpu_manifest_names = {
         entry["name"] for entry in data["gpu_intrinsic_manifest_name"]
     }
@@ -126,6 +129,21 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "molt_set_wasm_table_base",
         "molt_gpu_matmul_contiguous",
     } <= host_exports
+    assert host_export_signatures["molt_bool_from_i32"] == {
+        "name": "molt_bool_from_i32",
+        "params": ["i32"],
+        "results": ["i64"],
+    }
+    assert host_export_signatures["molt_buffer_acquire"] == {
+        "name": "molt_buffer_acquire",
+        "params": ["i64", "i32"],
+        "results": ["i32"],
+    }
+    assert host_export_signatures["molt_handle_resolve"] == {
+        "name": "molt_handle_resolve",
+        "params": ["i64"],
+        "results": ["i32"],
+    }
     assert (
         {
             "molt_gpu_matmul_contiguous",
@@ -155,6 +173,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
     assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
+    assert "WASM_RUNTIME_HOST_EXPORT_SIGNATURES" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_SPECS" in rendered_py
     assert "WASM_RUNTIME_IMPORT_EXPORT_NAMES" in rendered_py
@@ -169,6 +188,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
     assert "runtime_export_name" in rendered_rs
     assert "RUNTIME_HOST_EXPORTS" in rendered_rs
+    assert "RUNTIME_HOST_EXPORT_SIGNATURES" in rendered_rs
     assert ".find(|export| *export == name)" in rendered_rs
     assert 'Self::Alloc => "molt_alloc"' in rendered_rs
     assert 'Self::RuntimeInit => "molt_runtime_init"' in rendered_rs
@@ -185,7 +205,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     exec(rendered_py, rendered_namespace)
     assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
-    assert rendered_namespace["wasm_import_signature"]("molt_none") is None
+    assert rendered_namespace["wasm_import_signature"]("molt_none") == ((), ("i64",))
+    assert rendered_namespace["wasm_import_signature"]("molt_bool_from_i32") == (
+        ("i32",),
+        ("i64",),
+    )
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
