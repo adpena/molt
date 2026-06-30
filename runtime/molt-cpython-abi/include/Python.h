@@ -162,6 +162,29 @@ typedef struct {
     objobjargproc mp_ass_subscript;
 } PyMappingMethods;
 
+#define PyBUF_SIMPLE         0x0000
+#define PyBUF_WRITABLE       0x0001
+#define PyBUF_FORMAT         0x0004
+#define PyBUF_ND             0x0008
+#define PyBUF_STRIDES        (0x0010 | PyBUF_ND)
+#define PyBUF_C_CONTIGUOUS   0x0020
+#define PyBUF_F_CONTIGUOUS   0x0040
+#define PyBUF_ANY_CONTIGUOUS 0x0080
+
+typedef struct bufferinfo {
+    void       *buf;
+    PyObject   *obj;
+    Py_ssize_t  len;
+    Py_ssize_t  itemsize;
+    int         readonly;
+    int         ndim;
+    char       *format;
+    Py_ssize_t *shape;
+    Py_ssize_t *strides;
+    Py_ssize_t *suboffsets;
+    void       *internal;
+} Py_buffer;
+
 typedef struct {
     int (*bf_getbuffer)   (PyObject *, void *view, int flags);
     void (*bf_releasebuffer)(PyObject *, void *view);
@@ -363,6 +386,18 @@ extern int          PyObject_IsInstance (PyObject *inst, PyObject *cls);
 extern int          PyCallable_Check    (PyObject *op);
 extern PyObject    *PyObject_RichCompare(PyObject *v, PyObject *w, int op);
 extern int          PyObject_RichCompareBool(PyObject *v, PyObject *w, int op);
+
+/* Buffer and memoryview */
+extern int        PyObject_CheckBuffer(PyObject *obj);
+extern int        PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags);
+extern void       PyBuffer_Release(Py_buffer *view);
+extern int        PyBuffer_IsContiguous(const Py_buffer *view, char order);
+extern int        PyBuffer_FillInfo(Py_buffer *view, PyObject *obj, void *buf,
+                                    Py_ssize_t len, int readonly, int flags);
+extern int        PyMemoryView_Check(PyObject *op);
+extern PyObject  *PyMemoryView_FromObject(PyObject *op);
+extern PyObject  *PyMemoryView_GET_BASE(PyObject *op);
+extern Py_buffer *PyMemoryView_GET_BUFFER(PyObject *op);
 
 /* Integer */
 extern PyObject *PyLong_FromLong         (long v);

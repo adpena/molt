@@ -321,6 +321,8 @@ pub unsafe fn init_static_types() {
         set_name!(PyGetSetDescr_Type, b"getset_descriptor\0");
         set_name!(PyMethodDescr_Type, b"method_descriptor\0");
         set_name!(PyMemoryView_Type, b"memoryview\0");
+        PyMemoryView_Type.tp_basicsize = std::mem::size_of::<PyMemoryViewObject>() as Py_ssize_t;
+        PyMemoryView_Type.tp_dealloc = Some(crate::api::memory::molt_memoryview_dealloc);
         set_name!(PyDateTime_DateTimeType, b"datetime.datetime\0");
         set_name!(PyDateTime_DateType, b"datetime.date\0");
         set_name!(PyDateTime_DeltaType, b"datetime.timedelta\0");
@@ -423,6 +425,15 @@ pub struct Py_buffer {
     pub suboffsets: *mut Py_ssize_t,
     pub internal: *mut std::ffi::c_void,
 }
+
+#[repr(C)]
+pub struct PyMemoryViewObject {
+    pub ob_base: PyObject,
+    pub view: Py_buffer,
+}
+
+unsafe impl Send for PyMemoryViewObject {}
+unsafe impl Sync for PyMemoryViewObject {}
 
 /// NoneType type object (for type(None) checks).
 #[allow(non_upper_case_globals)]

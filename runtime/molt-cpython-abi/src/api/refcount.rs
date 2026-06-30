@@ -48,7 +48,15 @@ pub unsafe extern "C" fn Py_DECREF(op: *mut PyObject) {
         let new_rc = rc.wrapping_sub(1);
         (*op).ob_refcnt = new_rc;
         if new_rc == 0 {
-            crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(op);
+            if crate::bridge::GLOBAL_BRIDGE.lock().release_pyobj(op) {
+                return;
+            }
+            let tp = (*op).ob_type;
+            if !tp.is_null()
+                && let Some(dealloc) = (*tp).tp_dealloc
+            {
+                dealloc(op);
+            }
         }
     }
 }

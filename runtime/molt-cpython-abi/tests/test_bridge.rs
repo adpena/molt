@@ -139,7 +139,7 @@ fn test_release_pyobj_removes_mapping() {
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
     assert!(GLOBAL_BRIDGE.lock().pyobj_to_handle(py).is_some());
 
-    GLOBAL_BRIDGE.lock().release_pyobj(py);
+    assert!(GLOBAL_BRIDGE.lock().release_pyobj(py));
     assert!(GLOBAL_BRIDGE.lock().pyobj_to_handle(py).is_none());
 }
 
