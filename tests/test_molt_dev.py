@@ -1349,6 +1349,16 @@ def test_difftest_refuses_missing_program(drv):
     assert "not found" in str(exc.value)
 
 
+def test_difftest_streams_match_normalizes_windows_pipe_crlf(drv, monkeypatch):
+    monkeypatch.setattr(drv.os, "name", "nt")
+    assert drv._difftest_streams_match(b"ok\r\n", b"ok\n")
+
+
+def test_difftest_streams_match_stays_byte_strict_on_posix(drv, monkeypatch):
+    monkeypatch.setattr(drv.os, "name", "posix")
+    assert not drv._difftest_streams_match(b"ok\r\n", b"ok\n")
+
+
 def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monkeypatch):
     """A relative --out-dir is part of the rooted toolchain, not a process-cwd
     accident.
@@ -1377,11 +1387,12 @@ def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monke
     monkeypatch.setattr(drv, "_run_driver_command", lambda *a, **kw: Probe())
 
     captured: list[list[str]] = []
+    oracle_stdout = b"ok\r\n" if drv.os.name == "nt" else b"ok\n"
 
     def fake_capture(cmd, *, env, cwd, timeout):
         captured.append(list(cmd))
         if len(cmd) >= 2 and cmd[1] == str(program):
-            return 0, b"ok\r\n", b""
+            return 0, oracle_stdout, b""
         if cmd[1:3] == ["-m", "molt"]:
             output = Path(cmd[cmd.index("--output") + 1])
             assert output.is_absolute()

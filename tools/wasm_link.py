@@ -91,14 +91,13 @@ from wasm_link_edit import (  # noqa: E402
     _collect_output_wrapper_specs as _collect_output_wrapper_specs,
     _collect_preserved_output_export_names as _collect_preserved_output_export_names,
     _dominant_output_module_prefix as _dominant_output_module_prefix,
+    _drop_linked_app_active_table_elements as _drop_linked_app_active_table_elements,
     _ensure_function_exports_by_symbol_names as _ensure_function_exports_by_symbol_names,
     _entry_module_prefix_from_main_init as _entry_module_prefix_from_main_init,
     _highest_exported_table_ref_index as _highest_exported_table_ref_index,
     _inject_output_export_aliases as _inject_output_export_aliases,
     _is_public_output_export_name as _is_public_output_export_name,
-    _linked_runtime_active_table_end as _linked_runtime_active_table_end,
     _memory_import_min as _memory_import_min,
-    _neutralize_linked_table_init as _neutralize_linked_table_init,
     _rename_export_names as _rename_export_names,
     _required_linked_table_min as _required_linked_table_min,
     _restore_output_export_aliases as _restore_output_export_aliases,
@@ -1462,16 +1461,6 @@ def _run_wasm_ld(
             work_linked.write_bytes(updated)
             linked_bytes = updated
 
-        if not split_runtime:
-            try:
-                updated = _neutralize_linked_table_init(linked_bytes)
-            except ValueError as exc:
-                print(f"Failed to neutralize linked table init: {exc}", file=sys.stderr)
-                return 1
-            if updated is not None:
-                work_linked.write_bytes(updated)
-                linked_bytes = updated
-
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
         # Pass the original user module as reference_data so the type-index
@@ -1497,6 +1486,19 @@ def _run_wasm_ld(
                 file=sys.stderr,
             )
             work_linked.write_bytes(linked_bytes)
+
+        if not split_runtime:
+            try:
+                updated = _drop_linked_app_active_table_elements(linked_bytes)
+            except ValueError as exc:
+                print(
+                    f"Failed to drop linked app table elements: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            if updated is not None:
+                work_linked.write_bytes(updated)
+                linked_bytes = updated
 
         if optimize:
             if _run_wasm_opt_via_optimize(
@@ -1535,18 +1537,10 @@ def _run_wasm_ld(
             else append_table_refs_raw.strip().lower()
             not in {"0", "false", "no", "off"}
         )
-        if append_table_refs:
+        if append_table_refs and split_runtime:
             try:
-                allowed_table_indices = None
-                if not split_runtime:
-                    allowed_table_indices = {
-                        ref_index
-                        for name in _collect_function_exports(output.read_bytes())
-                        if (ref_index := parse_table_ref_export_name(name)) is not None
-                    }
                 updated = _append_table_ref_elements(
                     linked_bytes,
-                    allowed_table_indices=allowed_table_indices,
                 )
             except ValueError as exc:
                 print(f"Failed to append table ref elements: {exc}", file=sys.stderr)

@@ -4,7 +4,7 @@
 //! Verifies that Auto strips unused imports, Pure omits IO/ASYNC/TIME,
 //! and Full includes everything.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
@@ -51,6 +51,30 @@ fn empty_main_ir() -> SimpleIR {
             source_file: None,
             is_extern: false,
         }],
+        profile: None,
+    }
+}
+
+fn host_init_and_main_ir() -> SimpleIR {
+    SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_host_init".to_string(),
+                params: vec![],
+                ops: vec![op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ],
         profile: None,
     }
 }
@@ -233,6 +257,36 @@ fn function_export_names(wasm: &[u8]) -> BTreeSet<String> {
     names
 }
 
+fn function_import_count(wasm: &[u8]) -> u32 {
+    let mut count = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ImportSection(section) = payload.expect("valid payload") {
+            for import in section.into_imports() {
+                let import = import.expect("valid import");
+                if matches!(import.ty, TypeRef::Func(_)) {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+fn function_export_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
+    let mut exports = BTreeMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ExportSection(section) = payload.expect("valid payload") {
+            for export in section.into_iter() {
+                let export = export.expect("valid export");
+                if export.kind == ExternalKind::Func {
+                    exports.insert(export.name.to_string(), export.index);
+                }
+            }
+        }
+    }
+    exports
+}
+
 fn custom_section_names(wasm: &[u8]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -332,6 +386,29 @@ fn auto_reloc_exports_table_init_refs_and_elem_relocs() {
     assert!(
         custom_sections.contains("reloc.ELEM"),
         "relocatable wasm must carry element relocations; custom_sections={custom_sections:?}"
+    );
+}
+
+#[test]
+fn auto_reloc_exports_wrapped_host_init_not_raw_ir_body() {
+    let wasm = compile_with_options(
+        host_init_and_main_ir(),
+        WasmCompileOptions {
+            wasm_profile: WasmProfile::Auto,
+            reloc_enabled: true,
+            ..WasmCompileOptions::default()
+        },
+    );
+    let import_count = function_import_count(&wasm);
+    let exports = function_export_indices(&wasm);
+    let host_init_index = exports
+        .get("molt_host_init")
+        .copied()
+        .expect("relocatable wasm must export wrapped molt_host_init");
+    assert!(
+        host_init_index > import_count + 1,
+        "molt_host_init export must be a backend wrapper, not raw IR function; \
+         import_count={import_count}, exports={exports:?}"
     );
 }
 

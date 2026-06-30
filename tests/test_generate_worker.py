@@ -237,7 +237,7 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
     assert "output_linked.wasm" not in content
 
 
-def test_generate_split_worker_installs_exported_table_refs() -> None:
+def test_generate_split_worker_delegates_app_table_init_to_main_wrapper() -> None:
     from molt.cli import _generate_split_worker_js
 
     app_ref = _table_ref_export_name(7)
@@ -260,7 +260,11 @@ def test_generate_split_worker_installs_exported_table_refs() -> None:
     )
     assert "installTableRefs(rtInstance, sharedTable);" in content
     assert "ensureTableCapacityForExportedRefs(appInstance, sharedTable);" in content
-    assert "installTableRefs(appInstance, sharedTable);" in content
+    assert "installTableRefs(appInstance, sharedTable);" not in content
+    assert (
+        "App-owned table slots are initialized by the exported molt_main wrapper."
+        in content
+    )
     assert "? [`MOLT_WASM_TABLE_BASE=${32}`]" in content
     assert (
         f"const TABLE_REF_EXPORT_PREFIX = {json.dumps(WASM_TABLE_REF_EXPORT_PREFIX)};"
@@ -317,7 +321,7 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "hasExportedTableRefs(appInstance)" not in content
     assert (
         "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
-        in content
+        not in content
     )
 
 

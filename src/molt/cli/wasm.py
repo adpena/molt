@@ -1231,8 +1231,7 @@ export default {
 
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
-      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
-      installTableRefs(appInstance, sharedTable);
+      // App-owned table slots are initialized by the exported molt_main wrapper.
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
     } catch (err) {

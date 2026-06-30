@@ -5636,26 +5636,19 @@ const runDirectLink = async () => {
   traceTableRange(table, 'after-output-instantiate');
   traceI32At('after-output-instantiate', table);
 
-  const { molt_main, molt_memory, molt_table, molt_table_init } =
-    outputInstance.exports;
+  const { molt_main, molt_memory, molt_table } = outputInstance.exports;
   ensureTableCapacityForExportedRefs(outputInstance, table, 'output');
   if (typeof runtimeInst.exports._initialize === 'function') {
     runtimeInst.exports._initialize();
   }
-  if (typeof molt_table_init === 'function') {
-    if (traceRun) {
-      console.error('[molt wasm] direct: call molt_table_init');
-    }
-    molt_table_init();
-    if (traceRun) {
-      console.error('[molt wasm] direct: molt_table_init returned');
-    }
+  // App-owned slots are installed by the exported molt_main wrapper, matching
+  // the linked runner path. Opt-in table-ref installation is debug-only.
+  if (installTableRefsEnabled) {
+    installTableRefs(outputInstance, table, 'output');
   }
-  traceTableSlot(table, 'after-output-table-init');
-  traceTableRange(table, 'after-output-table-init');
-  traceI32At('after-output-table-init', table);
-  installTableRefs(outputInstance, table, 'output');
-  traceI32At('after-output-install-refs', table);
+  traceTableSlot(table, 'before-output-main');
+  traceTableRange(table, 'before-output-main');
+  traceI32At('before-output-main', table);
   if (!molt_memory || !molt_table) {
     throw new Error(`${wasmPath} missing molt_memory or molt_table export`);
   }
