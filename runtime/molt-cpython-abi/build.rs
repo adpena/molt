@@ -53,7 +53,10 @@ fn main() {
                  wasm32-wasip1 CPython ABI provider shims can compile."
             )
         });
-        build.flag(format!("--sysroot={}", sysroot.display()));
+        build.flag(sysroot.sysroot_flag());
+        if let Some(include_dir) = sysroot.include_dir() {
+            build.include(include_dir);
+        }
     }
 
     build.compile("molt_pyarg_shims");
