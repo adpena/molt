@@ -193,7 +193,7 @@ def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
 def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
-    assert "runtime_feature" not in gen.MANIFEST.read_text(encoding="utf-8")
+    assert "runtime_feature" not in manifest.MANIFEST.read_text(encoding="utf-8")
     imports = {entry["name"]: entry for entry in data["import"]}
 
     assert imports["importlib_import_transaction"]["type"] == 12
