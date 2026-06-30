@@ -23,6 +23,7 @@ from molt.frontend._types import (
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
+    from molt.frontend import SimpleTIRGenerator
 
 if TYPE_CHECKING:
     _MixinBase = _GeneratorProtocol
@@ -271,7 +272,7 @@ class MidendPolicyMixin(_MixinBase):
     ) -> _TrackedOpsList:
         if count_function:
             self._module_pressure_function_count += 1
-        tracked = _TrackedOpsList(self, initial)
+        tracked = _TrackedOpsList(cast("SimpleTIRGenerator", self), initial)
         self._module_pressure_total_ops += len(tracked)
         return tracked
 

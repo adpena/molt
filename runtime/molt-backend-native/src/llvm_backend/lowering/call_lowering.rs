@@ -254,7 +254,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .ptr_type(inkwell::AddressSpace::default());
         let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             vec![i64_ty.into(), i64_ty.into(), ptr_ty.into(), i64_ty.into()];
-        param_types.extend((0..extra.len()).map(|_| i64_ty.into()));
+        param_types.extend(
+            (0..extra.len())
+                .map(|_| -> inkwell::types::BasicMetadataTypeEnum<'ctx> { i64_ty.into() }),
+        );
         let fn_ty = i64_ty.fn_type(&param_types, false);
         let call_fn =
             declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
@@ -322,7 +325,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ptr_ty.into(),
             i64_ty.into(),
         ];
-        param_types.extend((0..extra.len()).map(|_| i64_ty.into()));
+        param_types.extend(
+            (0..extra.len())
+                .map(|_| -> inkwell::types::BasicMetadataTypeEnum<'ctx> { i64_ty.into() }),
+        );
         let fn_ty = i64_ty.fn_type(&param_types, false);
         let call_fn =
             declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)

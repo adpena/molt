@@ -13,8 +13,8 @@
 #[cfg(kani)]
 mod object_proofs {
     use molt_codegen_abi::{
-        HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL, HEADER_FLAG_SKIP_CLASS_DECREF,
-        HEADER_SIZE_BYTES, TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
+        HEADER_ALLOC_ALIGN_BYTES, HEADER_FLAG_HAS_PTRS, HEADER_FLAG_IMMORTAL,
+        HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_SIZE_BYTES, TYPE_ID_FUNCTION, TYPE_ID_OBJECT,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -238,11 +238,15 @@ mod object_proofs {
         );
     }
 
-    /// MoltHeader alignment is 8 (the max alignment of any field).
+    /// MoltHeader layout preserves the shared 8-byte object allocation contract.
     #[kani::proof]
     #[kani::unwind(1)]
-    fn header_alignment_is_8() {
-        assert_eq!(std::mem::align_of::<MoltHeader>(), 8);
+    fn header_layout_preserves_alloc_alignment() {
+        assert!(std::mem::align_of::<MoltHeader>() <= HEADER_ALLOC_ALIGN_BYTES);
+        assert_eq!(
+            std::mem::size_of::<MoltHeader>() % HEADER_ALLOC_ALIGN_BYTES,
+            0
+        );
     }
 
     /// The type_id field sits at offset 0 in MoltHeader.
@@ -461,14 +465,14 @@ mod object_proofs {
     fn alloc_obj_ptr_is_8_aligned() {
         let raw_addr: u64 = kani::any();
         let header_size = std::mem::size_of::<MoltHeader>() as u64;
-        // Model: the allocator returns an 8-aligned address.
-        kani::assume(raw_addr % 8 == 0);
+        // Model: the allocator returns an object-allocation-aligned address.
+        kani::assume(raw_addr % HEADER_ALLOC_ALIGN_BYTES as u64 == 0);
         // Model: a valid allocation address has enough space for its header.
         kani::assume(raw_addr <= u64::MAX - header_size);
-        assert_eq!(header_size % 8, 0);
+        assert_eq!(header_size % HEADER_ALLOC_ALIGN_BYTES as u64, 0);
         let obj_addr = raw_addr + header_size;
-        // Therefore the obj pointer is also 8-aligned.
-        assert_eq!(obj_addr % 8, 0);
+        // Therefore the obj pointer preserves the shared object allocation alignment.
+        assert_eq!(obj_addr % HEADER_ALLOC_ALIGN_BYTES as u64, 0);
     }
 
     /// Total allocation size must be at least HEADER_SIZE for any valid object.

@@ -2910,7 +2910,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 result_arity = "one"
-operand_independent_result_type = "dynbox"
+operand_independent_result_type = "i64"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

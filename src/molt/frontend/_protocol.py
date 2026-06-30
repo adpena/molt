@@ -21,7 +21,9 @@ import ast
 from typing import (
     Any,
     Callable,
+    Collection,
     Literal,
+    Mapping,
     Protocol,
     Sequence,
     TYPE_CHECKING,
@@ -67,7 +69,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
-    known_classes: Any
+    known_classes: dict[str, ClassInfo]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
@@ -107,7 +109,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_chunking: Any
     module_const_dicts: dict[str, dict[str, Any]]
     module_declared_classes: set[str]
-    module_declared_funcs: dict[str, str]
+    module_declared_funcs: dict[str, FunctionKind]
     module_defined_funcs: set[str]
     module_frame_code_id: int | None
     module_frame_emitted: Any
@@ -130,8 +132,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_spec_override_set: Any
     module_stmt_offsets: list[int]
     mutated_classes: set[str]
-    native_callable_exports: Any
-    native_python_exports: Any
+    native_callable_exports: dict[str, dict[str, Any]]
+    native_python_exports: set[str]
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parse_codec: Any
@@ -181,8 +183,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
-        native_callable_exports: dict[str, dict[str, Any]] | None = None,
-        native_python_exports: set[str] | None = None,
+        native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
+        native_python_exports: Collection[str] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -1709,7 +1711,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _lookup_func_kind(
         self, module_name: str | None, func_id: str
-    ) -> str | None: ...
+    ) -> FunctionKind | None: ...
 
     def _loop_guard_assumption(
         self, obj_name: str, expected_class: str

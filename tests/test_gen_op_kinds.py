@@ -1383,7 +1383,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "NotIn": "bool",
         "Not": "bool",
         "Bool": "bool",
-        "OrdAt": "dynbox",
+        "OrdAt": "i64",
         "BuildList": "list_dynbox",
         "BuildDict": "dict_dynbox_dynbox",
         "BuildSet": "set_dynbox",

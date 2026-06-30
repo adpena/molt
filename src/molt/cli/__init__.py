@@ -918,7 +918,9 @@ def build(
     if split_runtime:
         env_updates["MOLT_SPLIT_RUNTIME"] = "1"
     # --wasm-profile: pass the effective profile to the backend explicitly so
-    # CLI, config, and deploy defaults share one import-planning authority.
+    # CLI, config, deploy defaults, and direct library calls share one
+    # import-planning authority without widening ordinary wasm builds to the
+    # full manifest surface.
     if target in {"wasm", "wasm-freestanding"} and wasm_profile:
         env_updates["MOLT_WASM_PROFILE"] = wasm_profile
     # --stdlib-profile: propagate the resolved profile to module-graph
@@ -931,27 +933,29 @@ def build(
             return _fail(
                 "Use a file path or --module, not both.", json_output, command="build"
             )
-        prepared_build_inputs, prepared_build_inputs_error = _build_inputs._prepare_build_inputs(
-            file_path=file_path,
-            module=module,
-            diagnostics=diagnostics,
-            diagnostics_file=diagnostics_file,
-            diagnostics_verbosity=diagnostics_verbosity,
-            json_output=json_output,
-            target=target,
-            deterministic=deterministic,
-            deterministic_warn=deterministic_warn,
-            sysroot=sysroot,
-            profile=profile,
-            pgo_profile=pgo_profile,
-            runtime_feedback=runtime_feedback,
-            capabilities=capabilities,
-            capability_manifest=capability_manifest,
-            require_signed_manifest=require_signed_manifest,
-            respect_pythonpath=respect_pythonpath,
-            lib_paths=lib_paths or [],
-            python_version=python_version,
-            build_config=build_config,
+        prepared_build_inputs, prepared_build_inputs_error = (
+            _build_inputs._prepare_build_inputs(
+                file_path=file_path,
+                module=module,
+                diagnostics=diagnostics,
+                diagnostics_file=diagnostics_file,
+                diagnostics_verbosity=diagnostics_verbosity,
+                json_output=json_output,
+                target=target,
+                deterministic=deterministic,
+                deterministic_warn=deterministic_warn,
+                sysroot=sysroot,
+                profile=profile,
+                pgo_profile=pgo_profile,
+                runtime_feedback=runtime_feedback,
+                capabilities=capabilities,
+                capability_manifest=capability_manifest,
+                require_signed_manifest=require_signed_manifest,
+                respect_pythonpath=respect_pythonpath,
+                lib_paths=lib_paths or [],
+                python_version=python_version,
+                build_config=build_config,
+            )
         )
         if prepared_build_inputs_error is not None:
             return prepared_build_inputs_error

@@ -17215,6 +17215,27 @@ def test_build_cli_defaults_to_micro_stdlib_profile(
     assert seen_profiles == ["micro"]
 
 
+def test_build_cli_defaults_to_auto_wasm_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    seen_profiles: list[str | None] = []
+
+    def fake_build(*args: object, **kwargs: object) -> int:
+        del args
+        seen_profiles.append(cast(str | None, kwargs.get("wasm_profile")))
+        return 0
+
+    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(sys, "argv", ["molt", "build", "--target", "wasm", str(entry)])
+
+    assert cli.main() == 0
+    assert seen_profiles == ["auto"]
+
+
 def test_build_cli_keeps_deploy_stdlib_profile_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

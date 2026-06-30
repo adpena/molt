@@ -90,6 +90,7 @@ _TYPING_NAMES = {
     "Any",
     "Callable",
     "ClassVar",
+    "Collection",
     "Final",
     "Iterable",
     "Iterator",
@@ -362,6 +363,69 @@ def _surface_store_attrs(surface_classes: list[type]) -> set[str]:
     return attrs
 
 
+def _direct_self_store_attr_annotations(func: object) -> dict[str, str]:
+    """Return explicit ``self.x: T`` annotations from one root method body."""
+    src = _function_def_source(func)
+    if src is None:
+        return {}
+    try:
+        module = ast.parse(src)
+    except SyntaxError:
+        return {}
+    method = next(
+        (
+            n
+            for n in module.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ),
+        None,
+    )
+    if method is None or not method.args.args or method.args.args[0].arg != "self":
+        return {}
+
+    annotations: dict[str, str] = {}
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is method:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is method:
+                self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            target = node.target
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+            ):
+                annotations.setdefault(target.attr, ast.unparse(node.annotation))
+            self.generic_visit(node)
+
+    Visitor().visit(method)
+    return annotations
+
+
+def _self_store_annotation_table(surface_classes: list[type]) -> dict[str, str]:
+    """Current source annotations on ``self.x`` stores, most-derived wins."""
+    table: dict[str, str] = {}
+    for klass in surface_classes:
+        for value in vars(klass).values():
+            for name, annotation in _direct_self_store_attr_annotations(
+                _unwrap(value)
+            ).items():
+                table.setdefault(name, annotation)
+    return table
+
+
 def _class_annotation_table(surface_classes: list[type]) -> dict[str, str]:
     """The class-level ``__annotations__`` across the surface (name -> type str).
 
@@ -427,13 +491,19 @@ def _collect_attrs(
     names -= builtins
 
     class_table = _class_annotation_table(surface_classes)
+    self_store_table = _self_store_annotation_table(surface_classes)
     curated = _harvest_curated_attr_types([OUT_ATTRS, OUT_PROTOCOL])
 
     out: list[tuple[str, str]] = []
     for name in sorted(names):
-        # Class-level source annotation is the strongest signal (it is real,
-        # current source); fall back to the curated table, then to ``Any``.
-        annotation = class_table.get(name) or curated.get(name) or "Any"
+        # Source annotations are the strongest signal (they are real, current
+        # source); fall back to the curated table, then to ``Any``.
+        annotation = (
+            class_table.get(name)
+            or self_store_table.get(name)
+            or curated.get(name)
+            or "Any"
+        )
         out.append((name, annotation))
     return out
 

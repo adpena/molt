@@ -41,9 +41,8 @@ from molt.cli.runtime_fingerprints import (
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.cli.setup_readiness import (
     _llvm_backend_unavailable_message,
-    _llvm_sys_prefix_env_var,
-    _required_llvm_backend_major,
 )
+from molt.llvm_toolchain import LlvmToolchainConfigError, required_llvm_backend_pin
 
 
 def _backend_fingerprint_path(
@@ -351,13 +350,14 @@ def _ensure_backend_binary(
         # prefix env var points at the matching Homebrew install so
         # inkwell/llvm-sys can link without extra shell setup.
         if "llvm" in backend_features:
-            llvm_major = _required_llvm_backend_major(project_root)
-            if llvm_major is not None:
-                llvm_prefix_env = _llvm_sys_prefix_env_var(llvm_major)
-                if llvm_prefix_env not in build_env:
-                    llvm_prefix = f"/opt/homebrew/opt/llvm@{llvm_major}"
-                    if os.path.isdir(llvm_prefix):
-                        build_env[llvm_prefix_env] = llvm_prefix
+            try:
+                llvm_pin = required_llvm_backend_pin(project_root)
+            except LlvmToolchainConfigError:
+                llvm_pin = None
+            if llvm_pin is not None and llvm_pin.env_var not in build_env:
+                llvm_prefix = f"/opt/homebrew/opt/llvm@{llvm_pin.major}"
+                if os.path.isdir(llvm_prefix):
+                    build_env[llvm_pin.env_var] = llvm_prefix
         _maybe_enable_sccache(build_env)
         _maybe_enable_native_cpu(build_env)
         try:

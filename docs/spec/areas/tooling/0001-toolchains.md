@@ -4,7 +4,8 @@
 - CMake + Ninja
 - LLVM/Clang (for LLVM backend experiments)
 - A complete LLVM distribution with `llvm-config` matching the Rust
-  `inkwell` feature pinned in `runtime/molt-backend/Cargo.toml`.
+  `inkwell` feature pinned through `molt.llvm_toolchain` from
+  `runtime/molt-backend-native/Cargo.toml`.
 - Rust (for runtime components + WASM + package implementations)
 - Python 3.12+ for tooling and tests (Molt targets 3.12+ semantics only; do not support <=3.11).
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`

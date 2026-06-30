@@ -2278,7 +2278,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::CallMethodIc => None,
         OpCode::CallSuperMethodIc => None,
         OpCode::CallBuiltin => None,
-        OpCode::OrdAt => Some(OperandIndependentResultType::DynBox),
+        OpCode::OrdAt => Some(OperandIndependentResultType::I64),
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
         OpCode::TypeGuard => None,

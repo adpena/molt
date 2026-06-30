@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from molt.compiler_analysis.schema import (
     ALLOCATION_OWNERSHIP_CARRIER,
@@ -74,7 +74,9 @@ def summarize_compiler_binary_image_analysis(
     for stage in BINARY_IMAGE_ANALYSIS_STAGES:
         payload = raw.get(stage)
         if payload is None:
-            errors.append(f"build_diagnostics.binary_image_analysis.{stage} is required")
+            errors.append(
+                f"build_diagnostics.binary_image_analysis.{stage} is required"
+            )
             continue
         if not isinstance(payload, Mapping):
             errors.append(
@@ -595,7 +597,10 @@ def _required_list_of_mappings(
         if not isinstance(item, Mapping):
             errors.append(f"{path}.{field}[{index}] must be an object")
             continue
-        result.append(item)
+        if not all(isinstance(key, str) for key in item):
+            errors.append(f"{path}.{field}[{index}] keys must be strings")
+            continue
+        result.append(cast(Mapping[str, Any], item))
     return result
 
 

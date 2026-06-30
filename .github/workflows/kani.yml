@@ -29,4 +29,4 @@ jobs:
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-obj-model -- cargo kani --tests
       - name: Run runtime proofs
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-runtime -- cargo kani --tests
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-runtime -- cargo kani --tests --no-default-features

@@ -62,6 +62,7 @@ _STANDARD_SECTION_ORDER = {
     11: 12,  # data
 }
 
+
 def _append_table_ref_elements(
     data: bytes,
     *,
@@ -146,6 +147,7 @@ def _append_table_ref_elements(
         return None
     return _build_sections(new_sections)
 
+
 def _linked_runtime_active_table_end(data: bytes) -> int:
     """Return the exclusive end of the runtime-owned active table prefix."""
     for section_id, payload in _parse_sections(data):
@@ -176,6 +178,7 @@ def _linked_runtime_active_table_end(data: bytes) -> int:
                 continue
             return 0
     return 0
+
 
 def _add_symtab_alias(
     data: bytes,
@@ -222,6 +225,7 @@ def _add_symtab_alias(
     if not modified:
         return None
     return _build_sections(sections)
+
 
 def _inject_output_export_aliases(
     output: Path, temp_dir: tempfile.TemporaryDirectory
@@ -351,6 +355,7 @@ def _inject_output_export_aliases(
     alias_path.write_bytes(updated)
     return alias_path
 
+
 def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]]:
     export_indices = _collect_function_exports(data)
     sections = _parse_sections(data)
@@ -393,11 +398,13 @@ def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]
         )
     return wrapper_specs
 
+
 def _collect_preserved_output_export_names(data: bytes) -> list[str]:
     return [
         name
         for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(data)
     ]
+
 
 def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
     export_indices = _collect_function_exports(data)
@@ -424,34 +431,6 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
             mapping[public_name] = preferred
     return mapping
 
-def _inject_output_runtime_entrypoint_aliases(
-    output: Path, temp_dir: tempfile.TemporaryDirectory
-) -> Path:
-    data = output.read_bytes()
-    export_indices = _collect_function_exports(data)
-    symbol_map = _collect_output_export_symbol_map(data)
-    updated = data
-    modified = False
-    for public_name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
-        target_symbol = symbol_map.get(public_name)
-        func_index = export_indices.get(public_name)
-        if target_symbol is None or func_index is None or target_symbol == public_name:
-            continue
-        next_data = _add_symtab_alias(
-            updated,
-            public_name,
-            func_index,
-            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_NO_STRIP,
-            preserve_export=False,
-        )
-        if next_data is not None:
-            updated = next_data
-            modified = True
-    if not modified:
-        return output
-    alias_path = Path(temp_dir.name) / "output_runtime_aliases.wasm"
-    alias_path.write_bytes(updated)
-    return alias_path
 
 def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | None:
     if not rename_map:
@@ -493,6 +472,7 @@ def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | Non
     if not modified:
         return None
     return _build_sections(new_sections)
+
 
 def _ensure_function_exports_by_symbol_names(
     data: bytes, public_to_symbol: dict[str, str]
@@ -577,6 +557,7 @@ def _ensure_function_exports_by_symbol_names(
         return None
     return _build_sections(new_sections)
 
+
 def _dominant_output_module_prefix(export_indices: dict[str, int]) -> str | None:
     counts: Counter[str] = Counter()
     for name in export_indices:
@@ -592,6 +573,7 @@ def _dominant_output_module_prefix(export_indices: dict[str, int]) -> str | None
     if not counts:
         return None
     return counts.most_common(1)[0][0]
+
 
 def _entry_module_prefix_from_main_init(
     data: bytes, export_indices: dict[str, int]
@@ -630,6 +612,7 @@ def _entry_module_prefix_from_main_init(
                     return prefix
     return None
 
+
 def _is_public_output_export_name(name: str, primary_prefix: str | None) -> bool:
     if primary_prefix is not None:
         marker = f"{primary_prefix}__"
@@ -649,6 +632,7 @@ def _is_public_output_export_name(name: str, primary_prefix: str | None) -> bool
     if "___" in remainder:
         return False
     return True
+
 
 def _restore_output_export_aliases(data: bytes) -> bytes | None:
     sections = _parse_sections(data)
@@ -689,6 +673,7 @@ def _restore_output_export_aliases(data: bytes) -> bytes | None:
         return None
     return _build_sections(new_sections)
 
+
 def _table_import_min(data: bytes) -> int | None:
     for module, name, kind, desc in _collect_imports(data):
         if kind != 1 or module != "env" or name != "__indirect_function_table":
@@ -698,6 +683,7 @@ def _table_import_min(data: bytes) -> int | None:
         _, minimum, _, _ = _read_limits(desc, 1)
         return minimum
     return None
+
 
 def _memory_import_min(data: bytes) -> int | None:
     for module, name, kind, desc in _collect_imports(data):
@@ -709,6 +695,7 @@ def _memory_import_min(data: bytes) -> int | None:
         return minimum
     return None
 
+
 def _highest_exported_table_ref_index(data: bytes) -> int | None:
     refs = [
         ref_index
@@ -718,6 +705,7 @@ def _highest_exported_table_ref_index(data: bytes) -> int | None:
     if not refs:
         return None
     return max(refs)
+
 
 def _required_linked_table_min(data: bytes, fallback_min: int | None) -> int | None:
     required = fallback_min
@@ -729,6 +717,7 @@ def _required_linked_table_min(data: bytes, fallback_min: int | None) -> int | N
     if current_min is not None:
         required = current_min if required is None else max(required, current_min)
     return required
+
 
 def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
     sections = _parse_sections(data)
@@ -772,6 +761,7 @@ def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
     if not changed:
         return None
     return _build_sections(new_sections)
+
 
 def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
     sections = _parse_sections(data)
@@ -828,6 +818,7 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
     if not changed:
         return None
     return _build_sections(new_sections)
+
 
 def _neutralize_linked_table_init(data: bytes) -> bytes | None:
     """Replace linked-output ``molt_table_init`` with a no-op body.
@@ -886,6 +877,7 @@ def _neutralize_linked_table_init(data: bytes) -> bytes | None:
     if not changed:
         return None
     return _build_sections(new_sections)
+
 
 def _rewrite_output_imports(
     output: Path, runtime_exports: set[str]
@@ -968,6 +960,7 @@ def _rewrite_output_imports(
     wasm_path = Path(temp_dir.name) / "output_rewrite.wasm"
     wasm_path.write_bytes(_build_sections(new_sections))
     return wasm_path, temp_dir, force_exports
+
 
 def _build_runtime_stub(runtime_data: bytes) -> bytes:
     """Generate a minimal WASM module that exports the same function signatures
@@ -1116,6 +1109,7 @@ def _build_runtime_stub(runtime_data: bytes) -> bytes:
 
     return _build_sections(stub_sections)
 
+
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
     sections = _parse_sections(data)
     indexed_sections = list(enumerate(sections))
@@ -1130,6 +1124,7 @@ def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
         return None
     return _build_sections([section for _index, section in canonical])
 
+
 def _split_app_reference_function_exports(reference_data: bytes | None) -> set[str]:
     """Return the split-app function exports that must remain host-visible."""
     if reference_data is None:
@@ -1142,6 +1137,7 @@ def _split_app_reference_function_exports(reference_data: bytes | None) -> set[s
     }
     keep.update(_collect_preserved_output_export_names(reference_data))
     return {name for name in _collect_function_exports(reference_data) if name in keep}
+
 
 def _strip_internal_exports(
     data: bytes,

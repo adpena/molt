@@ -25,7 +25,6 @@ pub(super) enum FixedRuntimeParamAbi {
 pub(super) enum FixedRuntimeReturnAbi {
     I64,
     I32,
-    Void,
 }
 
 #[cfg(feature = "llvm")]
@@ -493,7 +492,6 @@ pub(super) fn fixed_runtime_function_type<'ctx>(
             match return_abi {
                 FixedRuntimeReturnAbi::I64 => i64_ty.fn_type(&param_types, false),
                 FixedRuntimeReturnAbi::I32 => i32_ty.fn_type(&param_types, false),
-                FixedRuntimeReturnAbi::Void => ctx.void_type().fn_type(&param_types, false),
             }
         }
     }

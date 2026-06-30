@@ -97,6 +97,42 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 4
 
 
+def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+
+    assert "PYTHONPATH=src python3 -m molt.llvm_toolchain" in ci_text
+    assert "steps.llvmver.outputs.env_var" in ci_text
+    assert "grep -oE" not in ci_text
+    assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text
+
+
+def test_pr_trust_labeler_is_advisory_not_authoritative() -> None:
+    labeler_text = _read(".github/workflows/pr_trust_labeler.yml")
+    gate_text = _read(".github/workflows/pr_trust_gate.yml")
+
+    assert "Trust gate remains authoritative" in labeler_text
+    assert "error?.status === 403" in labeler_text
+    assert "core.warning" in labeler_text
+    assert "github.rest.issues.addLabels" in labeler_text
+    assert "core.setFailed" not in labeler_text
+    assert "core.setFailed" in gate_text
+
+
+def test_kani_runtime_proofs_do_not_compile_full_stdlib_closure() -> None:
+    kani_text = _read(".github/workflows/kani.yml")
+    runtime_blocks = [
+        block
+        for block in _named_step_blocks(kani_text)
+        if "- name: Run runtime proofs" in block
+    ]
+
+    assert len(runtime_blocks) == 1
+    runtime_block = runtime_blocks[0]
+    assert "cargo kani --tests --no-default-features" in runtime_block
+    assert "--all-features" not in runtime_block
+    assert "stdlib_full" not in runtime_block
+
+
 def test_github_workflows_opt_into_node24_action_runtime() -> None:
     for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
         text = workflow.read_text(encoding="utf-8")

@@ -481,7 +481,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_float_add(lhs.into_float_value(), rhs.into_float_value(), "fadd")
                     .unwrap();
                 if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
                 }
                 (v.into(), TirType::F64)
             }
@@ -492,7 +492,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_float_sub(lhs.into_float_value(), rhs.into_float_value(), "fsub")
                     .unwrap();
                 if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
                 }
                 (v.into(), TirType::F64)
             }
@@ -503,7 +503,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_float_mul(lhs.into_float_value(), rhs.into_float_value(), "fmul")
                     .unwrap();
                 if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
                 }
                 (v.into(), TirType::F64)
             }
@@ -514,7 +514,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_float_div(lhs.into_float_value(), rhs.into_float_value(), "fdiv")
                     .unwrap();
                 if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
                 }
                 (v.into(), TirType::F64)
             }
@@ -525,7 +525,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_float_rem(lhs.into_float_value(), rhs.into_float_value(), "fmod")
                     .unwrap();
                 if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
+                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
                 }
                 (v.into(), TirType::F64)
             }

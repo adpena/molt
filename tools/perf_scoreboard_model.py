@@ -39,6 +39,14 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 SRC_ROOT = REPO_ROOT / "src"
 
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.llvm_toolchain import (  # noqa: E402
+    LlvmToolchainConfigError,
+    required_llvm_backend_pin,
+)
+
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 
 SCOREBOARD_DIR = REPO_ROOT / "bench" / "scoreboard"
@@ -55,6 +63,7 @@ _VERDICT_DERIVED_NOTES = frozenset(
     }
 )
 
+
 class ScoreboardSchemaError(RuntimeError):
     """Raised when a CPython scoreboard document violates schema authority."""
 
@@ -63,6 +72,7 @@ class ScoreboardSchemaError(RuntimeError):
         self.problems = problems
         detail = "; ".join(problems)
         super().__init__(f"{context}: {detail}")
+
 
 def _load_cold_start_budgets() -> dict:
     """Load the per (backend, profile) cold-start tax budgets in milliseconds.
@@ -79,12 +89,14 @@ def _load_cold_start_budgets() -> dict:
     except (OSError, json.JSONDecodeError):
         return {"budgets": {}}
 
+
 def _budget_ms_for(budgets: dict, backend: str, profile: str) -> float | None:
     entry = budgets.get("budgets", {}).get(f"{backend}/{profile}")
     if not isinstance(entry, dict):
         return None
     val = entry.get("budget_ms")
     return float(val) if isinstance(val, (int, float)) else None
+
 
 DEFAULT_RUN_RSS_MB = 4096
 
@@ -97,6 +109,7 @@ DEFAULT_SAMPLES = 5
 DEFAULT_WARMUP = 2
 
 RUN_BLOCKED_BACKENDS = {"wasm"}
+
 
 @dataclass(frozen=True)
 class BackendSpec:
@@ -111,6 +124,7 @@ class BackendSpec:
     backend: str  # codegen backend ("native", "llvm", "wasm")
     molt_backend: str | None  # MOLT_BACKEND env value, or None to leave unset
     build_target: str  # molt CLI --target
+
 
 NATIVE_CRANELIFT = BackendSpec("native", "native", None, "native")
 
@@ -130,20 +144,32 @@ PROFILE_BUILD_FLAG = {
     "dev-fast": "dev",
 }
 
-def _llvm_sys_prefix() -> str | None:
-    """Resolve the LLVM_SYS prefix the inkwell backend build needs.
 
-    The brew default is llvm@22 which is the WRONG version for this tree
-    (llvm-sys 211 expects LLVM 21). Prefer an already-exported value, else
-    fall back to the canonical llvm@21 cellar path.
-    """
-    explicit = os.environ.get("LLVM_SYS_211_PREFIX", "").strip()
+def _llvm_backend_pin():
+    try:
+        return required_llvm_backend_pin(REPO_ROOT)
+    except LlvmToolchainConfigError:
+        return None
+
+
+def _llvm_sys_prefix_env_var() -> str | None:
+    pin = _llvm_backend_pin()
+    return None if pin is None else pin.env_var
+
+
+def _llvm_sys_prefix() -> str | None:
+    """Resolve the LLVM_SYS prefix the manifest-pinned LLVM backend needs."""
+    pin = _llvm_backend_pin()
+    if pin is None:
+        return None
+    explicit = os.environ.get(pin.env_var, "").strip()
     if explicit:
         return explicit
-    candidate = Path("/opt/homebrew/opt/llvm@21")
+    candidate = Path(f"/opt/homebrew/opt/llvm@{pin.major}")
     if candidate.exists():
         return str(candidate)
     return None
+
 
 @dataclass
 class RunOutcome:
@@ -156,12 +182,14 @@ class RunOutcome:
     stdout_tail: str | None = None
     stderr_tail: str | None = None
 
+
 def _tail_text(text: str | None, *, max_chars: int = 4096) -> str | None:
     if not text:
         return None
     if len(text) <= max_chars:
         return text
     return text[-max_chars:]
+
 
 def _safe_run_json(
     cmd: list[str],
@@ -244,6 +272,7 @@ def _safe_run_json(
         stderr_tail=_tail_text(proc.stderr),
     )
 
+
 def _parse_safe_run_line(stderr_text: str) -> dict | None:
     for line in reversed(stderr_text.splitlines()):
         line = line.strip()
@@ -253,6 +282,7 @@ def _parse_safe_run_line(stderr_text: str) -> dict | None:
             except json.JSONDecodeError:
                 continue
     return None
+
 
 @dataclass
 class PhaseStats:
@@ -291,6 +321,7 @@ class PhaseStats:
             stable=stable,
             n=len(samples),
         )
+
 
 def _robust_cell_stable(molt: PhaseStats, cpy: PhaseStats) -> bool:
     """Is the cell's warm verdict trustworthy despite CPython-side outliers?
@@ -332,6 +363,7 @@ def _robust_cell_stable(molt: PhaseStats, cpy: PhaseStats) -> bool:
     both_lose = lo <= RED_THRESHOLD and hi <= RED_THRESHOLD
     return both_win or both_lose
 
+
 def _warm_speedup_ci(
     speedups: list[float],
 ) -> tuple[float | None, float | None, float | None, float | None]:
@@ -372,6 +404,7 @@ def _warm_speedup_ci(
     half = tcrit * sem
     return round(median, 4), round(var, 6), round(mean - half, 4), round(mean + half, 4)
 
+
 def _repeat_stability(ci_lo: float | None, ci_hi: float | None) -> str:
     """Classify the repeat CI vs the 1.00 floor.
 
@@ -386,6 +419,7 @@ def _repeat_stability(ci_lo: float | None, ci_hi: float | None) -> str:
     if ci_lo > RED_THRESHOLD:
         return "STABLE_ABOVE"
     return "STRADDLES"
+
 
 @dataclass
 class Cell:
@@ -595,6 +629,7 @@ class Cell:
         # 4. GREEN — warm fast, cold fast, within budget.
         self.verdict = VERDICT_GREEN
 
+
 @dataclass(frozen=True)
 class CpythonOracle:
     """Host-native CPython interpreter chosen for the perf floor."""
@@ -624,10 +659,12 @@ class CpythonOracle:
             "pointer_bits": self.pointer_bits,
         }
 
+
 def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator is None or denominator <= 0:
         return None
     return round(numerator / denominator, 4)
+
 
 def classify_cell(
     cell: "Cell",
@@ -774,6 +811,7 @@ def classify_cell(
         "warm at the 1.00 floor and no material dimensional improvement vs baseline",
     )
 
+
 def _dimensional_improvement(cell: "Cell", baseline_cell: dict | None) -> str | None:
     """Detect a material non-warm improvement vs a baseline cell (DIMENSIONAL_WIN).
 
@@ -815,6 +853,7 @@ def _dimensional_improvement(cell: "Cell", baseline_cell: dict | None) -> str | 
         return None
     return "warm gate flat, but DIMENSIONAL win: " + "; ".join(wins)
 
+
 def _apply_perf_attribution(cell: Cell) -> None:
     attribution = perf_causality.derive_cell_attribution(
         {"benchmark": cell.benchmark, "cycle_profile": cell.cycle_profile}
@@ -825,6 +864,7 @@ def _apply_perf_attribution(cell: Cell) -> None:
     cell.reference_class = attribution.reference_class
     cell.codon_semantics = attribution.codon_semantics
     cell.attribution_confidence = attribution.attribution_confidence
+
 
 def _suspect_startup_component(benchmark: str) -> str:
     """Cold-start tax components are program-INDEPENDENT for the fixed floor.
@@ -838,6 +878,7 @@ def _suspect_startup_component(benchmark: str) -> str:
     if any(n in name for n in ("json", "csv", "import", "etl", "channel", "async")):
         return "module-init + binary page-in (program imports extra stdlib surface)"
     return "fixed startup floor: binary page-in + molt-runtime-init + dyld"
+
 
 def _cell_from_dict(d: dict) -> Cell:
     """Rehydrate a Cell from a stored per-cell dict (for --rebuild-summary).

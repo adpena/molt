@@ -29,8 +29,18 @@ def _load_gen_wasm_abi():
     return module
 
 
+def _raw_manifest(gen) -> dict:
+    return tomllib.loads(gen.MANIFEST.read_text(encoding="utf-8"))
+
+
 def _rendered_rs(gen, data) -> str:
     return "".join(gen.render_rs_modules(data).values())
+
+
+def _exec_rendered_py(rendered_py: str) -> dict[str, object]:
+    namespace: dict[str, object] = {}
+    exec(rendered_py, namespace)
+    return namespace
 
 
 def test_wasm_abi_generated_files_are_in_sync() -> None:
@@ -45,9 +55,9 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
         encoding="utf-8"
     ) == gen.render_runtime_callables_rs(data)
     assert gen.OUT_PY.read_text(encoding="utf-8") == gen.render_py(data)
-    assert gen.OUT_TABLE_LAYOUT_INC.read_text(encoding="utf-8") == gen.render_table_layout_inc(
-        data
-    )
+    assert gen.OUT_TABLE_LAYOUT_INC.read_text(
+        encoding="utf-8"
+    ) == gen.render_table_layout_inc(data)
     for removed_path in gen.REMOVED_GENERATED_FILES:
         assert not removed_path.exists()
     assert gen.OUT_ALLOWED_IMPORTS.read_text(
@@ -77,9 +87,9 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     assert "WASM_STATIC_TYPES" in rendered_py
     assert "WASM_STATIC_TYPE_COUNT: int = 51" in rendered_py
 
-    wasm_abi = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs"
-    ).read_text(encoding="utf-8")
+    wasm_abi = (ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs").read_text(
+        encoding="utf-8"
+    )
     assert "static_func_type(" not in wasm_abi
     assert "const STATIC_FUNC_TYPES" not in wasm_abi
 
@@ -90,8 +100,12 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     manifest_names = {entry["name"] for entry in data["import"]}
     imports_by_name = {entry["name"]: entry for entry in data["import"]}
     host_exports = set(data["runtime_export_policy"]["host_exports"])
-    gpu_manifest_names = {entry["name"] for entry in data["gpu_intrinsic_manifest_name"]}
-    fallback_specs = {entry["import"]: entry for entry in data["runtime_import_fallback"]}
+    gpu_manifest_names = {
+        entry["name"] for entry in data["gpu_intrinsic_manifest_name"]
+    }
+    fallback_specs = {
+        entry["import"]: entry for entry in data["runtime_import_fallback"]
+    }
 
     runtime_exports_path = ROOT / "src/molt/_wasm_runtime_exports.py"
     text = runtime_exports_path.read_text(encoding="utf-8")
@@ -103,17 +117,23 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert {"alloc", "runtime_init", "socket_connect", "task_new"} <= manifest_names
     assert imports_by_name["runtime_init"]["runtime_name"] == "molt_runtime_init"
     assert "callable_arity" not in imports_by_name["runtime_init"]
-    assert imports_by_name["runtime_shutdown"]["runtime_name"] == "molt_runtime_shutdown"
+    assert (
+        imports_by_name["runtime_shutdown"]["runtime_name"] == "molt_runtime_shutdown"
+    )
     assert "callable_arity" not in imports_by_name["runtime_shutdown"]
     assert {
         "molt_runtime_shutdown",
         "molt_set_wasm_table_base",
         "molt_gpu_matmul_contiguous",
     } <= host_exports
-    assert {
-        "molt_gpu_matmul_contiguous",
-        "molt_gpu_tensor__zeros",
-    } <= gpu_manifest_names <= host_exports
+    assert (
+        {
+            "molt_gpu_matmul_contiguous",
+            "molt_gpu_tensor__zeros",
+        }
+        <= gpu_manifest_names
+        <= host_exports
+    )
     assert fallback_specs["fast_dict_get"] == {
         "import": "fast_dict_get",
         "strategy": "call_bind_ic",
@@ -281,7 +301,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
     rendered_py = gen.render_py(data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
-    assert "use super::imports::WasmRuntimeImport;" in rendered_rs
+    assert "use super::import_tokens::WasmRuntimeImport;" in rendered_rs
     assert "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
     assert '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)' in rendered_rs
@@ -317,14 +337,16 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         assert f'"{runtime_name}",' in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
-    assert '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
+    assert (
+        '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
+    )
     assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
     assert '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
     assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
 
-    wasm_abi = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs"
-    ).read_text(encoding="utf-8")
+    wasm_abi = (ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs").read_text(
+        encoding="utf-8"
+    )
     assert "wasm_runtime_callables.inc" not in wasm_abi
     assert "macro_rules! entry_list" not in wasm_abi
     assert "runtime_callable_import_name" not in wasm_abi
@@ -344,13 +366,36 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_returns_void(fn_ptr)" in call_function
 
 
+def test_runtime_features_are_derived_not_manifest_owned() -> None:
+    gen = _load_gen_wasm_abi()
+    loaded = gen.load_manifest()
+    manifest.validate_loaded_manifest(copy.deepcopy(loaded))
+    loaded_imports = {entry["name"]: entry for entry in loaded["import"]}
+
+    raw = _raw_manifest(gen)
+    for entry in raw["import"]:
+        if entry["name"] == "hash_builtin":
+            entry["runtime_feature"] = loaded_imports["hash_builtin"]["runtime_feature"]
+            break
+    else:  # pragma: no cover - fixture corruption
+        raise AssertionError("hash_builtin import missing")
+
+    with pytest.raises(
+        manifest.WasmAbiManifestError,
+        match="runtime_feature is generated from intrinsics/categories.toml",
+    ):
+        manifest.validate_loaded_manifest(raw, reject_manual_runtime_features=True)
+
+
 def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
     broken["import"].append({"name": "type_call", "type": 2})
-    with pytest.raises(manifest.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicated in \\[\\[import\\]\\]"
+    ):
         manifest.validate_loaded_manifest(broken)
 
     broken = copy.deepcopy(data)
@@ -410,9 +455,7 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
     data = gen.load_manifest()
     imports = {entry["name"]: entry for entry in data["import"]}
     runtime_callables = {
-        entry["runtime_name"]
-        for entry in data["import"]
-        if "runtime_name" in entry
+        entry["runtime_name"] for entry in data["import"] if "runtime_name" in entry
     }
 
     assert "molt_json_parse_scalar" in data["non_runtime_callable_intrinsic"]
@@ -441,7 +484,9 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
     # sentinels for explicit manifest-owned callables and the old broad
     # synthesis class.
     imports = {
-        entry["runtime_name"]: entry for entry in data["import"] if "runtime_name" in entry
+        entry["runtime_name"]: entry
+        for entry in data["import"]
+        if "runtime_name" in entry
     }
     assert imports["molt_importlib_import_transaction"]["callable_arity"] == 5
     assert imports["molt_load_intrinsic_runtime"]["callable_arity"] == 2
@@ -511,7 +556,9 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
 
     broken = copy.deepcopy(data)
     broken["lir_runtime_call"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="references unknown import"
+    ):
         manifest.validate_loaded_manifest(broken)
     broken_count = copy.deepcopy(data)
     broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
@@ -586,17 +633,23 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     broken_duplicate["container_runtime_selector"].append(
         copy.deepcopy(broken_duplicate["container_runtime_selector"][0])
     )
-    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate container_runtime_selector"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicate container_runtime_selector"
+    ):
         manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["container_runtime_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="references unknown import"
+    ):
         manifest.validate_loaded_manifest(broken_import)
 
     broken_lir = copy.deepcopy(data)
     broken_lir["container_runtime_selector"][0]["lir_variant"] = "DictGetitem"
-    with pytest.raises(manifest.WasmAbiManifestError, match="does not match lir_variant"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="does not match lir_variant"
+    ):
         manifest.validate_loaded_manifest(broken_lir)
 
 
@@ -626,10 +679,7 @@ def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
     assert "mod object_new_bound_selector;" in rendered_mod_rs
     assert "WasmObjectNewBoundPayload" in rendered_mod_rs
     assert "WASM_OBJECT_NEW_BOUND_SELECTORS" in rendered_py
-    assert (
-        '("sized", "object_new_bound_sized", "ObjectNewBoundSized")'
-        in rendered_py
-    )
+    assert '("sized", "object_new_bound_sized", "ObjectNewBoundSized")' in rendered_py
 
     broken_missing = copy.deepcopy(data)
     broken_missing["object_new_bound_selector"] = broken_missing[
@@ -649,12 +699,16 @@ def test_wasm_abi_manifest_owns_object_new_bound_selector() -> None:
 
     broken_import = copy.deepcopy(data)
     broken_import["object_new_bound_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="references unknown import"
+    ):
         manifest.validate_loaded_manifest(broken_import)
 
     broken_lir = copy.deepcopy(data)
     broken_lir["object_new_bound_selector"][0]["lir_variant"] = "ObjectNewBoundSized"
-    with pytest.raises(manifest.WasmAbiManifestError, match="does not match lir_variant"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="does not match lir_variant"
+    ):
         manifest.validate_loaded_manifest(broken_lir)
 
 
@@ -703,12 +757,16 @@ def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
     broken_duplicate["method_ic_selector"].append(
         copy.deepcopy(broken_duplicate["method_ic_selector"][0])
     )
-    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate method_ic_selector"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicate method_ic_selector"
+    ):
         manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["method_ic_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="references unknown import"
+    ):
         manifest.validate_loaded_manifest(broken_import)
 
     broken_count = copy.deepcopy(data)
@@ -759,9 +817,12 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     assert "WasmNumericOpLoopKind::VectorReduction" in rendered_selector_rs
     assert "import: WasmRuntimeImport::InplaceAdd" in rendered_selector_rs
     assert "LirRuntimeCall::InplaceAdd" in rendered_selector_rs
-    assert "deps: &[WasmRuntimeImport::InplaceAdd, WasmRuntimeImport::StrConcat]" in rendered_selector_rs
+    assert (
+        "deps: &[WasmRuntimeImport::InplaceAdd, WasmRuntimeImport::StrConcat]"
+        in rendered_selector_rs
+    )
     assert '"shl" => Some(WasmNumericRuntimeSelection' in rendered_selector_rs
-    assert 'call: LirRuntimeCall::PowMod' in rendered_lir_rs
+    assert "call: LirRuntimeCall::PowMod" in rendered_lir_rs
     assert "mod numeric_runtime_selector;" in rendered_mod_rs
     assert "WasmNumericOpLoopKind" in rendered_mod_rs
     assert "WASM_NUMERIC_RUNTIME_SELECTORS" in rendered_py
@@ -771,17 +832,23 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
     broken_duplicate["numeric_runtime_selector"].append(
         copy.deepcopy(broken_duplicate["numeric_runtime_selector"][0])
     )
-    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate numeric_runtime_selector"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicate numeric_runtime_selector"
+    ):
         manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_import = copy.deepcopy(data)
     broken_import["numeric_runtime_selector"][0]["import_name"] = "not_a_real_import"
-    with pytest.raises(manifest.WasmAbiManifestError, match="references unknown import"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="references unknown import"
+    ):
         manifest.validate_loaded_manifest(broken_import)
 
     broken_lir = copy.deepcopy(data)
     broken_lir["numeric_runtime_selector"][0]["lir_variant"] = "Sub"
-    with pytest.raises(manifest.WasmAbiManifestError, match="does not match lir_variant"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="does not match lir_variant"
+    ):
         manifest.validate_loaded_manifest(broken_lir)
 
     broken_deps = copy.deepcopy(data)
@@ -791,7 +858,9 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
 
     broken_count = copy.deepcopy(data)
     broken_count["numeric_runtime_selector"][0]["lir_operand_count"] = -1
-    with pytest.raises(manifest.WasmAbiManifestError, match="invalid lir_operand_count"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="invalid lir_operand_count"
+    ):
         manifest.validate_loaded_manifest(broken_count)
 
 
@@ -814,7 +883,10 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     assert "WASM_IMPORT_SIGNATURES" in rendered_py
     assert "WASM_IMPORT_SIGNATURE_BY_NAME" in rendered_py
     assert "WASM_IMPORT_NAME_BY_LOOKUP" in rendered_py
-    assert '"molt_socket_drop": "socket_drop",' in rendered_py
+    rendered_ns = _exec_rendered_py(rendered_py)
+    assert rendered_ns["wasm_import_name"]("molt_socket_drop") == "socket_drop"
+    assert rendered_ns["wasm_runtime_import_name"]("molt_socket_drop") == "socket_drop"
+    assert rendered_ns["wasm_import_result_kind"]("molt_socket_drop") == "nil"
     assert "def wasm_import_name" in rendered_py
     assert "def wasm_import_signature" in rendered_py
     assert "def wasm_import_result_kind" in rendered_py
@@ -822,10 +894,9 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
     assert "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME" in rendered_py
     assert "WASM_RESERVED_RUNTIME_CALLABLE_IMPORTS" not in rendered_py
     assert "WASM_RUNTIME_CALLABLE_LOOKUP_ROWS" not in rendered_py
-    assert (
-        '"molt_importlib_import_transaction", '
-        '"importlib_import_transaction", 5'
-    ) in rendered_py
+    assert rendered_ns["wasm_runtime_callable_spec"](
+        "molt_importlib_import_transaction"
+    ) == ("importlib_import_transaction", 5, "i64")
 
 
 def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
@@ -853,8 +924,7 @@ def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
     assert op_loop_calls["gpu_thread_id"]["required_imports"] == ["gpu_thread_id"]
     assert op_loop_calls["gpu_barrier"]["required_imports"] == ["gpu_barrier"]
     assert not (
-        ROOT
-        / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
+        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/runtime_import_demand.rs"
     ).exists()
 
 
@@ -882,9 +952,9 @@ def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
     rendered_py = gen.render_py(data)
     assert "WasmBulkMemoryInstruction" in rendered_bulk_rs
     assert "WasmBulkMemoryOpSpec" in rendered_bulk_rs
-    assert '\"memory_copy\" => Some(WasmBulkMemoryOpSpec' in rendered_bulk_rs
+    assert '"memory_copy" => Some(WasmBulkMemoryOpSpec' in rendered_bulk_rs
     assert "WasmBulkMemoryInstruction::Copy" in rendered_bulk_rs
-    assert '\"memory_fill\" => Some(WasmBulkMemoryOpSpec' in rendered_bulk_rs
+    assert '"memory_fill" => Some(WasmBulkMemoryOpSpec' in rendered_bulk_rs
     assert "WasmBulkMemoryInstruction::Fill" in rendered_bulk_rs
     assert "mod bulk_memory_ops;" in rendered_mod_rs
     assert "wasm_bulk_memory_op" in rendered_mod_rs
@@ -894,15 +964,17 @@ def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
         ROOT
         / "runtime/molt-backend-wasm/src/wasm/op_loop/runtime_service_ops/linear_memory_ops.rs"
     ).read_text(encoding="utf-8")
-    assert '\"memory_copy\" =>' not in local_emitter
-    assert '\"memory_fill\" =>' not in local_emitter
+    assert '"memory_copy" =>' not in local_emitter
+    assert '"memory_fill" =>' not in local_emitter
     assert "wasm_bulk_memory_op(op.kind.as_str())" in local_emitter
 
     broken_duplicate = copy.deepcopy(data)
     broken_duplicate["wasm_bulk_memory_op"].append(
         copy.deepcopy(broken_duplicate["wasm_bulk_memory_op"][0])
     )
-    with pytest.raises(manifest.WasmAbiManifestError, match="duplicate wasm_bulk_memory_op"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicate wasm_bulk_memory_op"
+    ):
         manifest.validate_loaded_manifest(broken_duplicate)
 
     broken_instruction = copy.deepcopy(data)
@@ -961,7 +1033,9 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert "WASM_CONST_OP_POLICIES" in rendered_py
 
 
-def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matchers() -> None:
+def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matchers() -> (
+    None
+):
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
 
@@ -1037,7 +1111,10 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     callable_layout = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs"
     ).read_text(encoding="utf-8")
-    assert "poll_table.seed_function_table_slots(&mut func_to_table_idx)" in callable_layout
+    assert (
+        "poll_table.seed_function_table_slots(&mut func_to_table_idx)"
+        in callable_layout
+    )
     assert "for spec in RESERVED_RUNTIME_CALLABLE_SPECS" in callable_layout
     assert "table_index: table_base + table_slot" in callable_layout
 
@@ -1102,8 +1179,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
         manifest.validate_loaded_manifest(broken)
 
     strip_rules = {
-        (entry["module"], entry["name"]): entry
-        for entry in data["strip_import_rule"]
+        (entry["module"], entry["name"]): entry for entry in data["strip_import_rule"]
     }
     assert strip_rules[("wasi_snapshot_preview1", "fd_write")]["category"] == (
         "io_stdout"
@@ -1115,9 +1191,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
         (entry["module"], entry["prefix"]): entry
         for entry in data["strip_import_prefix_rule"]
     }
-    assert prefix_rules[("env", "molt_call_indirect")]["category"] == (
-        "indirect_call"
-    )
+    assert prefix_rules[("env", "molt_call_indirect")]["category"] == ("indirect_call")
 
     rendered_py = gen.render_py(data)
     rendered_rs = _rendered_rs(gen, data)

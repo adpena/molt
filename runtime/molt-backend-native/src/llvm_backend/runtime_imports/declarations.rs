@@ -3,8 +3,6 @@ use super::attributes::add_nounwind;
 #[cfg(feature = "llvm")]
 use super::fixed;
 #[cfg(feature = "llvm")]
-use crate::runtime_import_abi::{RuntimeImportSignature, RuntimeReturnAbi};
-#[cfg(feature = "llvm")]
 use inkwell::context::Context;
 #[cfg(feature = "llvm")]
 use inkwell::module::Module;
@@ -12,19 +10,6 @@ use inkwell::module::Module;
 use inkwell::types::FunctionType;
 #[cfg(feature = "llvm")]
 use inkwell::values::FunctionValue;
-
-#[cfg(feature = "llvm")]
-pub(super) fn runtime_function_type<'ctx>(
-    ctx: &'ctx Context,
-    signature: RuntimeImportSignature,
-) -> FunctionType<'ctx> {
-    let i64_ty = ctx.i64_type();
-    let params = vec![i64_ty.into(); signature.param_count];
-    match signature.return_abi {
-        RuntimeReturnAbi::I64 => i64_ty.fn_type(&params, false),
-        RuntimeReturnAbi::Void => ctx.void_type().fn_type(&params, false),
-    }
-}
 
 /// Declare a runtime symbol that is not in the fixed import table yet.
 ///

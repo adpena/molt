@@ -196,8 +196,11 @@ class TypeAnnotationMixin(_MixinBase):
             for key in keys:
                 elem_map.pop(key, None)
             return
+        hint = elem_hint
+        if hint is None:
+            return
         for key in keys:
-            elem_map[key] = elem_hint
+            elem_map[key] = hint
 
     def _bytearray_len_hint_for(
         self, name: str | None, value: MoltValue | None

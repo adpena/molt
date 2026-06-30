@@ -52,8 +52,6 @@ else:
     Any = object()
 
 
-
-
 def _runtime_intrinsics_active() -> bool:
     runtime_active = getattr(_molt_intrinsics, "runtime_active", None)
     if callable(runtime_active):
@@ -122,6 +120,7 @@ _OP_SUB = 1
 _OP_MUL = 2
 _OP_DIV = 3
 
+
 def _binary_result_dtype_and_format(lhs: "Tensor", rhs) -> tuple[type, str]:
     if isinstance(rhs, Tensor):
         return _where_result_dtype_and_format(lhs, rhs)
@@ -134,8 +133,6 @@ def _binary_result_dtype_and_format(lhs: "Tensor", rhs) -> tuple[type, str]:
             return _float, _preferred_float_format(lhs)
         return lhs._dtype, lhs._buf.format_char
     raise TypeError(f"Unsupported binary operand type: {type(rhs)!r}")
-
-
 
 
 def _tensor_from_parts(
@@ -993,8 +990,6 @@ def tensor_scatter_rows(
     return _tensor_from_buffer(out_buf, base._shape, base._dtype)
 
 
-
-
 class Tensor:
     """N-dimensional array backed by a GPU buffer.
 
@@ -1850,7 +1845,10 @@ class Tensor:
             for size, out_buf in outputs:
                 span = size * itemsize
                 dst_base = row * span
-                out_buf._data[dst_base : dst_base + span] = src[
+                out_data = out_buf._data
+                if not isinstance(out_data, bytearray):
+                    raise TypeError("split output buffer must be mutable")
+                out_data[dst_base : dst_base + span] = src[
                     row_base + offset : row_base + offset + span
                 ]
                 offset += span

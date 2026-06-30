@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from molt.compiler_analysis.hashing import stable_payload_hash
 from molt.compiler_analysis.schema import (
@@ -12,6 +12,14 @@ from molt.compiler_analysis.schema import (
     TIR_BOUNDARY_CARRIER,
 )
 from molt.frontend.lowering import op_kinds_generated as op_kind_facts
+
+
+def _string_key_mapping(value: object) -> Mapping[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    if not all(isinstance(key, str) for key in value):
+        return None
+    return cast(Mapping[str, Any], value)
 
 
 def backend_ir_op_source_site(
@@ -157,12 +165,13 @@ def _backend_ir_source_site_payload(
         if not isinstance(ops, list):
             continue
         for op_index, op in enumerate(ops):
-            if not isinstance(op, Mapping):
+            op_mapping = _string_key_mapping(op)
+            if op_mapping is None:
                 continue
-            site, source = backend_ir_op_source_site(op)
+            site, source = backend_ir_op_source_site(op_mapping)
             if site is None:
                 continue
-            kind = op.get("kind")
+            kind = op_mapping.get("kind")
             if not isinstance(kind, str):
                 kind = "<unknown>"
             attributed_functions.add(name)
@@ -170,7 +179,9 @@ def _backend_ir_source_site_payload(
                 line_marker_fallback_count += 1
             else:
                 explicit_source_line_count += 1
-            line = int(site["line"])
+            line = site["line"]
+            if line is None:
+                continue
             line_counts[(source_file, line)] += 1
             site_records.append(
                 {
@@ -227,20 +238,24 @@ def _backend_ir_allocation_ownership_payload(
         if not isinstance(ops, list):
             continue
         for op_index, op in enumerate(ops):
-            if not isinstance(op, Mapping):
+            op_mapping = _string_key_mapping(op)
+            if op_mapping is None:
                 continue
-            categories = backend_ir_allocation_categories(op)
+            categories = backend_ir_allocation_categories(op_mapping)
             if not categories:
                 continue
-            kind = backend_ir_canonical_kind(op)
-            site, _source = backend_ir_op_source_site(op)
+            kind = backend_ir_canonical_kind(op_mapping)
+            site, _source = backend_ir_op_source_site(op_mapping)
             for category in categories:
                 category_counts[category] += 1
                 kind_counts[f"{category}:{kind}"] += 1
                 if site is None:
                     unattributed_event_count += 1
                     continue
-                line = int(site["line"])
+                line = site["line"]
+                if line is None:
+                    unattributed_event_count += 1
+                    continue
                 line_counts[(source_file, line, category)] += 1
                 event_records.append(
                     {
