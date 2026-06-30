@@ -387,10 +387,11 @@ retained — additive, never changes a normal build or any speedup number.
   `host.cpython_oracle`.
 - `MOLT_SESSION_ID=perfscore` + `CARGO_TARGET_DIR=target/sessions/perfscore`
   isolate the build cache (the constitution's concurrent-dev contract).
-- The LLVM lane forces `MOLT_BACKEND=llvm` and `LLVM_SYS_211_PREFIX`
-  (`/opt/homebrew/opt/llvm@21` — the brew default `llvm@22` is the WRONG version
-  for llvm-sys 211). Its first build recompiles the backend with the `llvm`
-  feature (~5 min).
+- The LLVM lane forces `MOLT_BACKEND=llvm` and resolves the required
+  `LLVM_SYS_<ver>_PREFIX` from the same `molt.llvm_toolchain` authority used by
+  CI and setup diagnostics. For the current `llvm22-1` inkwell pin, that is
+  `LLVM_SYS_221_PREFIX` and the Homebrew fallback is `/opt/homebrew/opt/llvm@22`.
+  Its first build recompiles the backend with the `llvm` feature (~5 min).
 
 ### Exit code (the gate)
 

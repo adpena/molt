@@ -1318,7 +1318,7 @@ fn range_loop_floordiv_const_is_raw_i64_safe_from_value_range() {
         .find(|(_, b)| {
             b.ops
                 .iter()
-                .any(|o| o.opcode == TirOpCode::Add && o.attrs.get("no_signed_wrap").is_some())
+                .any(|o| o.opcode == TirOpCode::Add && o.attrs.contains_key("no_signed_wrap"))
         })
         .map(|(id, _)| id)
         .expect("loop body with the nsw IV update");

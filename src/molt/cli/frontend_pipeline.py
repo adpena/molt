@@ -1162,8 +1162,12 @@ def _prepare_frontend_pipeline(
         frontend_parallel_config=(
             prepared_frontend_lowering_config.frontend_parallel_config
         ),
-        frontend_parallel_layers=compile_module_layers,
-        frontend_parallel_worker_timings=frontend_parallel_worker_timings,
+        frontend_parallel_layers=(
+            prepared_frontend_lowering_config.frontend_parallel_layers
+        ),
+        frontend_parallel_worker_timings=(
+            prepared_frontend_lowering_config.frontend_parallel_worker_timings
+        ),
         frontend_parallel_details=prepared_build_preamble.frontend_parallel_details,
         frontend_layer_execution_context=frontend_layer_execution_context,
         frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,

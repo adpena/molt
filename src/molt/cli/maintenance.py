@@ -4,8 +4,9 @@ import contextlib
 import importlib.util
 import json
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from molt.cli.config_resolution import (
     _resolve_build_config,
@@ -118,7 +119,7 @@ def clean(
 
 def show_config(
     config_root: Path,
-    config: dict[str, Any],
+    config: Mapping[str, Any],
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -179,9 +180,7 @@ def show_config(
     for key, value in data["paths"].items():
         print(f"- {key}: {value}")
     print("Resolved:")
-    print(
-        f"- stdlib_profile: {stdlib_profile_value} (source: {stdlib_profile_source})"
-    )
+    print(f"- stdlib_profile: {stdlib_profile_value} (source: {stdlib_profile_source})")
     if build_cfg:
         print("Build defaults:")
         for key in sorted(build_cfg):

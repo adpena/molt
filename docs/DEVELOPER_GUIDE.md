@@ -145,7 +145,7 @@ molt update --check
 - `tools/bootstrap_llvm.py` is the source-build escape hatch for platforms whose
   LLVM packages omit `llvm-config`. It builds into `target/toolchains/`, verifies
   `bin/llvm-config`, and prints the exact `LLVM_SYS_<ver>_PREFIX` assignment.
-- `molt doctor` reports missing tools and version-pinned backend prerequisites such as the LLVM lane required by `runtime/molt-backend/Cargo.toml`.
+- `molt doctor` reports missing tools and version-pinned backend prerequisites such as the LLVM lane resolved by `molt.llvm_toolchain`.
 - `molt validate --check --suite smoke` prints the canonical local validation
   matrix without executing it.
 - `molt update --check` prints the exact commands Molt will run, without mutating the checkout or the machine.

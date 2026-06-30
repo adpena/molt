@@ -138,7 +138,9 @@ def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
     assert reads == [runtime, runtime]
 
 
-def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(tmp_path: Path) -> None:
+def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
+    tmp_path: Path,
+) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
     sidecar = runtime.with_name(f"{runtime.name}.sha256")
@@ -1561,6 +1563,102 @@ def test_inject_output_export_aliases_adds_runtime_entrypoint_symbols(
         temp_dir.cleanup()
 
 
+def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("molt_isolate_import"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(4))
+    code_payload.append(0x00)
+    code_payload.append(0x20)
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [
+            (
+                wasm_link.SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL,
+                            index=0,
+                            name="func0",
+                        )
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    runtime.write_bytes(
+        _build_exported_runtime_module_many(["molt_main", "molt_isolate_import"])
+    )
+    output.write_bytes(wasm_link._build_sections(sections))
+
+    captured_cmds: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        captured_cmds.append(list(cmd))
+        if cmd and cmd[0] == "wasm-ld":
+            _write_wasm_ld_output(cmd, Path(cmd[-2]).read_bytes())
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(
+        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
+    )
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
+    monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
+
+    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+
+    assert rc == 0
+    cmd = next(cmd for cmd in captured_cmds if cmd and cmd[0] == "wasm-ld")
+    assert not any("output_runtime_aliases.wasm" in part for part in cmd)
+    assert "molt_isolate_import" in wasm_link._collect_function_exports(
+        linked.read_bytes()
+    )
+
+
 def test_inject_output_export_aliases_skips_void_user_exports(
     tmp_path: Path,
 ) -> None:
@@ -2217,7 +2315,7 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
                     flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
                     index=4,
                     name="_ZN4molt19molt_call_indirect9917hfeedfaceE",
-                )
+                ),
             ]
         )
     )
@@ -2238,7 +2336,7 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
                     | wasm_link.FLAG_EXPORTED,
                     index=42,
                     name="molt_call_indirect99",
-                )
+                ),
             ]
         )
     )

@@ -95,7 +95,6 @@ from wasm_link_edit import (  # noqa: E402
     _entry_module_prefix_from_main_init as _entry_module_prefix_from_main_init,
     _highest_exported_table_ref_index as _highest_exported_table_ref_index,
     _inject_output_export_aliases as _inject_output_export_aliases,
-    _inject_output_runtime_entrypoint_aliases as _inject_output_runtime_entrypoint_aliases,
     _is_public_output_export_name as _is_public_output_export_name,
     _linked_runtime_active_table_end as _linked_runtime_active_table_end,
     _memory_import_min as _memory_import_min,
@@ -335,9 +334,7 @@ def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
             continue
         mangled_match = CALL_INDIRECT_MANGLED_RE.search(name)
         if mangled_match:
-            import_name = call_indirect_import_name_for_arity(
-                mangled_match.group(1)
-            )
+            import_name = call_indirect_import_name_for_arity(mangled_match.group(1))
             if import_name is not None:
                 names[import_name] = name
     if not names and not wasm_tools:
@@ -1238,7 +1235,6 @@ def _run_wasm_ld(
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
-    rewritten_path = _inject_output_runtime_entrypoint_aliases(rewritten_path, temp_dir)
     if allowlist_override is not None:
         allowlist = allowlist_override
     else:
@@ -1755,7 +1751,10 @@ def _run_wasm_ld(
                     export_name = wasm_runtime_export_name(name)
                     if name in canonical_required_exports:
                         continue
-                    if export_name is not None and export_name in canonical_required_exports:
+                    if (
+                        export_name is not None
+                        and export_name in canonical_required_exports
+                    ):
                         continue
                     if name in _ESSENTIAL_EXPORTS:
                         continue

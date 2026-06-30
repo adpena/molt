@@ -83,14 +83,15 @@ outputs = [
   "runtime/molt-backend-wasm/src/wasm_abi_generated/const_policy.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/container_runtime_selector.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/import_metadata.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_generated/import_queries.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_generated/import_specs.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/import_registry.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/import_tokens.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/lir_runtime_calls.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/method_ic_selector.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/mod.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/object_new_bound_selector.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/pure_profile.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_generated/reserved_runtime_callables.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_callable_queries.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_callables.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/static_types.rs",
   "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
@@ -109,6 +110,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_intrinsics.py"
 outputs = [
+  "src/molt/_intrinsic_symbols.py",
   "src/molt/_intrinsics.pyi",
   "src/molt/_runtime_feature_gates.py",
   "runtime/molt-runtime/src/intrinsics/generated.rs",

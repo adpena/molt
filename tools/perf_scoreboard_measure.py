@@ -13,12 +13,12 @@ _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-import bench
-import bench_suites
-import harness_memory_guard
-from molt.dx import cargo_target_dir_for_artifact_root
-from perf_schema import RED_THRESHOLD
-from perf_scoreboard_model import (
+import bench  # noqa: E402
+import bench_suites  # noqa: E402
+import harness_memory_guard  # noqa: E402
+from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
+from perf_schema import RED_THRESHOLD  # noqa: E402
+from perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
     PROFILE_BUILD_FLAG,
     REPO_ROOT,
@@ -27,6 +27,7 @@ from perf_scoreboard_model import (
     Cell,
     PhaseStats,
     _llvm_sys_prefix,
+    _llvm_sys_prefix_env_var,
     _repeat_stability,
     _robust_cell_stable,
     _safe_ratio,
@@ -53,16 +54,19 @@ def _perfscore_build_env(spec: BackendSpec) -> dict[str, str]:
         base.pop("MOLT_BACKEND", None)
     if spec.backend == "llvm":
         prefix = _llvm_sys_prefix()
-        if prefix:
-            base["LLVM_SYS_211_PREFIX"] = prefix
+        prefix_env_var = _llvm_sys_prefix_env_var()
+        if prefix and prefix_env_var:
+            base[prefix_env_var] = prefix
     env = bench._canonical_bench_env(base)
     return env
+
 
 def _cpython_run_env() -> dict[str, str]:
     """Env for the CPython baseline — src on PYTHONPATH, deterministic hashing."""
     env = bench._base_python_env()
     env["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
     return env
+
 
 def measure_cell(
     *,
@@ -357,6 +361,7 @@ def measure_cell(
     _write_log(log_path, log_lines)
     return cell
 
+
 def _build_wasm_only(
     script_path: Path,
     build_env: dict[str, str],
@@ -434,6 +439,7 @@ def _build_wasm_only(
 
     return bench.MoltBinary(out_path, _TmpHolder(), build_s, size_kb)
 
+
 def _release_binary(binary: bench.MoltBinary) -> None:
     holder = getattr(binary, "temp_dir", None)
     if holder is not None:
@@ -442,13 +448,16 @@ def _release_binary(binary: bench.MoltBinary) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+
 def _max_opt(a: float | None, b: float | None) -> float | None:
     vals = [v for v in (a, b) if v is not None]
     return max(vals) if vals else None
 
+
 def _write_log(path: Path, lines: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 def _measure_interpreter_warm(
     interp_bin: str,
@@ -488,6 +497,7 @@ def _measure_interpreter_warm(
     ]
     stats = PhaseStats.from_runs(runs)
     return stats.median_s if stats.n > 0 else None
+
 
 def _measure_codon_warm(
     codon_bin_path: str,

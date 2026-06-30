@@ -223,7 +223,10 @@ def _manifest_callable_exports(
                 f"extension_manifest.json {label}.name must be a Python identifier"
             )
             continue
-        if binding not in {"module_attr", "direct_symbol"}:
+        if not isinstance(binding, str) or binding not in {
+            "module_attr",
+            "direct_symbol",
+        }:
             errors.append(
                 f"extension_manifest.json {label}.binding must be "
                 "'module_attr' or 'direct_symbol'"
@@ -259,8 +262,16 @@ def _manifest_callable_exports(
             )
             continue
 
-        if not isinstance(effects_raw, list) or not all(
-            isinstance(effect, str) and effect.strip() for effect in effects_raw
+        normalized_effects: list[str] = []
+        if isinstance(effects_raw, list):
+            normalized_effects = [
+                effect.strip()
+                for effect in effects_raw
+                if isinstance(effect, str) and effect.strip()
+            ]
+        if (
+            not isinstance(effects_raw, list)
+            or len(normalized_effects) != len(effects_raw)
         ):
             errors.append(
                 f"extension_manifest.json {label}.effects must be a list of "
@@ -279,7 +290,7 @@ def _manifest_callable_exports(
             binding=binding,
             symbol=normalized_symbol,
             abi=normalized_abi,
-            effects=tuple(sorted({effect.strip() for effect in effects_raw})),
+            effects=tuple(sorted(set(normalized_effects))),
             deterministic=deterministic,
         )
         if export.qualified_name in seen:

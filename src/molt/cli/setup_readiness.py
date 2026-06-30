@@ -19,33 +19,33 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import _find_molt_root, _require_molt_root
 from molt.cli.runtime_paths import _runtime_lib_path
+from molt.llvm_toolchain import (
+    LlvmBackendPin,
+    LlvmToolchainConfigError,
+    default_llvm_release,
+    llvm_sys_prefix_env_var,
+    required_llvm_backend_pin,
+)
+
+
+def _required_llvm_backend_pin(root: Path) -> LlvmBackendPin | None:
+    try:
+        return required_llvm_backend_pin(root)
+    except LlvmToolchainConfigError:
+        return None
 
 
 def _required_llvm_backend_major(root: Path) -> int | None:
-    manifest = root / "runtime" / "molt-backend" / "Cargo.toml"
-    try:
-        text = manifest.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    match = re.search(
-        r'inkwell\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"llvm(\d+)-\d+"', text, re.DOTALL
-    )
-    if match is None:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
+    pin = _required_llvm_backend_pin(root)
+    return None if pin is None else pin.major
 
 
 def _llvm_sys_prefix_env_var(major: int) -> str:
-    return f"LLVM_SYS_{major * 10 + 1}_PREFIX"
+    return llvm_sys_prefix_env_var(major)
 
 
 def _default_llvm_release_for_major(major: int) -> str:
-    if major == 22:
-        return "22.1.8"
-    return f"{major}.1.0"
+    return default_llvm_release(major)
 
 
 def _llvm_config_names(major: int) -> list[str]:
@@ -66,11 +66,12 @@ def _llvm_config_names(major: int) -> list[str]:
 
 
 def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
-    major = _required_llvm_backend_major(root)
-    if major is None:
+    pin = _required_llvm_backend_pin(root)
+    if pin is None:
         return None, None
+    major = pin.major
     candidates = _llvm_config_names(major)
-    prefix_env = os.environ.get(_llvm_sys_prefix_env_var(major), "").strip()
+    prefix_env = os.environ.get(pin.env_var, "").strip()
     if prefix_env:
         prefix = Path(prefix_env).expanduser()
         candidates = [
@@ -141,23 +142,39 @@ def _clang_llvm_version_detail(major: int) -> str | None:
 
 
 def _llvm_backend_unavailable_message(root: Path) -> str | None:
+    pin = _required_llvm_backend_pin(root)
+    if pin is None:
+        return None
     major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
     if major is None or llvm_toolchain is not None:
         return None
-    env_var = _llvm_sys_prefix_env_var(major)
-    advice = "\n".join(f"  - {item}" for item in _llvm_backend_advice(major))
+    env_var = pin.env_var
+    advice = "\n".join(f"  - {item}" for item in _llvm_backend_advice_for_pin(pin))
     detail = _clang_llvm_version_detail(major) or "No matching llvm-config was found."
     return (
-        f"LLVM backend requires LLVM {major}.1 with llvm-config. "
+        f"LLVM backend requires LLVM {pin.major}.{pin.minor} with llvm-config. "
         f"{detail}\n"
         f"Set {env_var} to a complete LLVM prefix or put matching llvm-config on PATH.\n"
         f"Recommended actions:\n{advice}"
     )
 
 
-def _llvm_backend_advice(major: int) -> list[str]:
+def _llvm_backend_advice_for_pin(pin: LlvmBackendPin) -> list[str]:
+    return _llvm_backend_advice(
+        pin.major,
+        env_var=pin.env_var,
+        release=pin.default_release,
+    )
+
+
+def _llvm_backend_advice(
+    major: int,
+    *,
+    env_var: str | None = None,
+    release: str | None = None,
+) -> list[str]:
     system = platform.system()
-    env_var = _llvm_sys_prefix_env_var(major)
+    env_var = env_var or _llvm_sys_prefix_env_var(major)
     if system == "Darwin":
         return [
             f"brew install llvm@{major} lld@{major}",
@@ -165,7 +182,7 @@ def _llvm_backend_advice(major: int) -> list[str]:
             f"export {env_var}=/opt/homebrew/opt/llvm@{major}",
         ]
     if system == "Windows":
-        release = _default_llvm_release_for_major(major)
+        release = release or _default_llvm_release_for_major(major)
         return [
             (
                 f"python tools/bootstrap_llvm.py --version {release} "
@@ -523,8 +540,9 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             advice=_windows_msvc_env_advice() if not msvc_build_env_ok else None,
         )
 
+    llvm_pin = _required_llvm_backend_pin(root)
     llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
-    if llvm_major is None:
+    if llvm_pin is None or llvm_major is None:
         record(
             "llvm-backend-toolchain",
             True,
@@ -542,7 +560,11 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             llvm_toolchain is not None,
             llvm_detail,
             level="warning",
-            advice=_llvm_backend_advice(llvm_major) if llvm_toolchain is None else None,
+            advice=(
+                _llvm_backend_advice_for_pin(llvm_pin)
+                if llvm_toolchain is None
+                else None
+            ),
         )
 
     wasm_ld_path = shutil.which("wasm-ld")

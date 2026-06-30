@@ -73,6 +73,23 @@ jobs:
             );
             const hasTarget = currentLabels.includes(targetLabel);
             const hasRemove = currentLabels.includes(removeLabel);
+            const syncLabel = async (action, label, mutate) => {
+              try {
+                await mutate();
+              } catch (error) {
+                if (error?.status === 403) {
+                  core.warning(
+                    `Unable to ${action} advisory trust label "${label}": ${error.message}. ` +
+                      "Trust gate remains authoritative."
+                  );
+                  return;
+                }
+                if (action === "remove" && error?.status === 404) {
+                  return;
+                }
+                throw error;
+              }
+            };
 
             core.info(
               JSON.stringify(
@@ -93,25 +110,23 @@ jobs:
             );
 
             if (!hasTarget) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                labels: [targetLabel],
-              });
+              await syncLabel("add", targetLabel, () =>
+                github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  labels: [targetLabel],
+                })
+              );
             }
 
             if (hasRemove) {
-              try {
-                await github.rest.issues.removeLabel({
+              await syncLabel("remove", removeLabel, () =>
+                github.rest.issues.removeLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
                   name: removeLabel,
-                });
-              } catch (error) {
-                if (error?.status !== 404) {
-                  throw error;
-                }
-              }
+                })
+              );
             }

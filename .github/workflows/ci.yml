@@ -320,14 +320,12 @@ jobs:
       # The LLVM backend is gated behind the `llvm` cargo feature and links
       # against inkwell/llvm-sys, which require the matching LLVM toolchain.
       # The required major version is derived from the inkwell feature pin in
-      # runtime/molt-backend/Cargo.toml (e.g. `llvm21-1` -> LLVM 21).
+      # the Cargo feature graph (e.g. `llvm22-1` -> LLVM 22).
       - name: Resolve required LLVM major version
         id: llvmver
         run: |
-          MAJOR=$(grep -oE 'features\s*=\s*\[[^]]*"llvm([0-9]+)-[0-9]+"' \
-            runtime/molt-backend/Cargo.toml | grep -oE 'llvm[0-9]+' | grep -oE '[0-9]+' | head -1)
+          MAJOR=$(PYTHONPATH=src python3 -m molt.llvm_toolchain --github-output "$GITHUB_OUTPUT")
           if [ -z "$MAJOR" ]; then echo "::error::could not resolve LLVM major"; exit 1; fi
-          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
           echo "Required LLVM major: $MAJOR"
 
       - name: Install LLVM toolchain
@@ -338,8 +336,8 @@ jobs:
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh "$MAJOR"
           sudo apt-get install -y "llvm-$MAJOR-dev" "libpolly-$MAJOR-dev" lld
-          # llvm-sys discovers the install via LLVM_SYS_<major>1_PREFIX.
-          echo "LLVM_SYS_${MAJOR}1_PREFIX=$(llvm-config-$MAJOR --prefix)" >> "$GITHUB_ENV"
+          # llvm-sys discovers the install via the exact manifest-derived env var.
+          echo "${{ steps.llvmver.outputs.env_var }}=$(llvm-config-$MAJOR --prefix)" >> "$GITHUB_ENV"
           "llvm-config-$MAJOR" --version
 
       # Deterministic regression gate for the integer-overflow miscompile.

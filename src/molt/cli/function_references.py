@@ -81,6 +81,8 @@ def function_references(
         if not isinstance(op, Mapping):
             continue
         kind = op.get("kind")
+        if not isinstance(kind, str):
+            continue
         if kind not in FUNCTION_REFERENCE_OP_KINDS:
             continue
         name = op.get("s_value")
@@ -157,6 +159,8 @@ def missing_local_function_references(
             if not isinstance(op, Mapping):
                 continue
             kind = op.get("kind")
+            if not isinstance(kind, str):
+                continue
             if kind not in FUNCTION_REFERENCE_OP_KINDS:
                 continue
             target = op.get("s_value")

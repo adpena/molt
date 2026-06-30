@@ -48,7 +48,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
             closure_size,
-            kind_bits as i64,
+            kind_bits,
             payload_base,
             &op.operands,
             "task_new",

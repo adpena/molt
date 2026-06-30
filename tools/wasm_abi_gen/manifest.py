@@ -11,7 +11,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
-from wasm_abi_gen.paths import INTRINSICS_MANIFEST, MANIFEST, RUNTIME_ROOT
+from wasm_abi_gen.paths import (
+    INTRINSIC_CATEGORIES,
+    INTRINSICS_MANIFEST,
+    MANIFEST,
+    RUNTIME_ROOT,
+)
 
 WASM_VAL_TYPES = {
     "i32": "I32",
@@ -177,7 +182,9 @@ def _static_type_index_by_signature(
     }
 
 
-def _runtime_callable_signature(arity: int, result: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _runtime_callable_signature(
+    arity: int, result: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     params = ("i64",) * arity
     results = () if result == "void" else ("i64",)
     return params, results
@@ -191,6 +198,73 @@ def _format_runtime_callable_signature(
 
 def _intrinsic_manifest_names() -> set[str]:
     return {name for name, _, _ in _intrinsic_signature_rows()}
+
+
+def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
+    raw = INTRINSIC_CATEGORIES.read_bytes()
+    data = tomllib.loads(raw.decode())
+    gates: list[tuple[str, str]] = []
+    for _mod_name, mod_data in data.get("stdlib", {}).items():
+        feature = mod_data.get("feature")
+        if not isinstance(feature, str) or not feature:
+            continue
+        raw_prefixes = mod_data.get("feature_prefixes", mod_data.get("prefixes", []))
+        if not isinstance(raw_prefixes, list):
+            raise WasmAbiManifestError(
+                "intrinsic categories feature_prefixes/prefixes must be lists"
+            )
+        for prefix in raw_prefixes:
+            if not isinstance(prefix, str) or not prefix:
+                raise WasmAbiManifestError(
+                    "intrinsic categories feature prefixes must be non-empty strings"
+                )
+            gates.append((f"molt_{prefix}", feature))
+    return gates
+
+
+def _runtime_feature_gate_for_symbol(
+    symbol: str,
+    gates: list[tuple[str, str]],
+) -> str | None:
+    best: tuple[int, str] | None = None
+    for prefix, feature in gates:
+        if symbol.startswith(prefix):
+            prefix_len = len(prefix)
+            if best is None or prefix_len > best[0]:
+                best = (prefix_len, feature)
+    return best[1] if best is not None else None
+
+
+def _annotate_runtime_callable_features(
+    imports: list[dict],
+    *,
+    reject_existing: bool = False,
+) -> None:
+    gates = _load_runtime_feature_gates_from_categories()
+    for idx, entry in enumerate(imports):
+        runtime_name = entry.get("runtime_name")
+        if not isinstance(runtime_name, str):
+            if entry.get("runtime_feature") is not None:
+                raise WasmAbiManifestError(
+                    f"import entry {idx} has runtime_feature without runtime_name"
+                )
+            continue
+        feature = _runtime_feature_gate_for_symbol(runtime_name, gates)
+        existing = entry.get("runtime_feature")
+        if existing is not None:
+            if reject_existing:
+                raise WasmAbiManifestError(
+                    "runtime_feature is generated from intrinsics/categories.toml; "
+                    f"remove manual runtime_feature from import entry {idx}"
+                )
+            if existing != feature:
+                raise WasmAbiManifestError(
+                    f"import entry {idx} has stale runtime_feature {existing!r}; "
+                    f"expected {feature!r} from intrinsics/categories.toml"
+                )
+            continue
+        if feature is not None:
+            entry["runtime_feature"] = feature
 
 
 def _runtime_rust_files() -> list[Path]:
@@ -314,7 +388,10 @@ def _intrinsic_runtime_callable_imports(
         import_name = runtime_name.removeprefix("molt_")
         if runtime_name in non_runtime_callable_intrinsics:
             existing_entry = explicit_imports_by_name.get(import_name)
-            if existing_entry is not None and existing_entry.get("runtime_name") is not None:
+            if (
+                existing_entry is not None
+                and existing_entry.get("runtime_name") is not None
+            ):
                 raise WasmAbiManifestError(
                     f"intrinsic {runtime_name!r} is listed as "
                     "non-runtime-callable but its explicit import has "
@@ -443,7 +520,9 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
     return reserved_callables
 
 
-def _non_reserved_import_name_references(data: dict, reserved_import_names: set[str]) -> set[str]:
+def _non_reserved_import_name_references(
+    data: dict, reserved_import_names: set[str]
+) -> set[str]:
     refs: set[str] = set()
 
     def visit(value: object) -> None:
@@ -581,7 +660,9 @@ def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None
         )
 
 
-def _validate_op_loop_runtime_arg(section: str, idx: int, arg_idx: int, arg: object) -> str:
+def _validate_op_loop_runtime_arg(
+    section: str, idx: int, arg_idx: int, arg: object
+) -> str:
     if not isinstance(arg, str) or not arg:
         raise WasmAbiManifestError(
             f"{section} entry {idx} arg {arg_idx} must be a non-empty string"
@@ -612,12 +693,16 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
         raise WasmAbiManifestError("op_loop_runtime_call must be a list of tables")
     for idx, entry in enumerate(explicit):
         if not isinstance(entry, dict):
-            raise WasmAbiManifestError(f"op_loop_runtime_call entry {idx} must be a table")
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call entry {idx} must be a table"
+            )
         expanded.append(dict(entry))
 
     groups = data.get("op_loop_runtime_call_group", [])
     if not isinstance(groups, list):
-        raise WasmAbiManifestError("op_loop_runtime_call_group must be a list of tables")
+        raise WasmAbiManifestError(
+            "op_loop_runtime_call_group must be a list of tables"
+        )
     for idx, entry in enumerate(groups):
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(
@@ -637,7 +722,9 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
                 f"op_loop_runtime_call_group entry {idx} has invalid sink {sink!r}"
             )
         import_name = entry.get("import_name")
-        if import_name is not None and (not isinstance(import_name, str) or not import_name):
+        if import_name is not None and (
+            not isinstance(import_name, str) or not import_name
+        ):
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call_group entry {idx} has invalid import_name"
             )
@@ -739,8 +826,7 @@ def _validate_numeric_runtime_selectors(
             not isinstance(lir_operand_count, int) or lir_operand_count < 0
         ):
             raise WasmAbiManifestError(
-                f"numeric_runtime_selector {kind!r} has invalid "
-                "lir_operand_count"
+                f"numeric_runtime_selector {kind!r} has invalid lir_operand_count"
             )
     return selectors
 
@@ -774,9 +860,7 @@ def _validate_string_list(section: str, field: str, value: object) -> list[str]:
                 f"{section}.{field} entry {idx} must be a non-empty string"
             )
         if item in seen:
-            raise WasmAbiManifestError(
-                f"{section}.{field} repeats string {item!r}"
-            )
+            raise WasmAbiManifestError(f"{section}.{field} repeats string {item!r}")
         seen.add(item)
         items.append(item)
     return items
@@ -803,7 +887,11 @@ def _validate_rust_variant(section: str, idx: int, value: object) -> str:
     return value
 
 
-def validate_loaded_manifest(data: dict) -> dict:
+def validate_loaded_manifest(
+    data: dict,
+    *,
+    reject_manual_runtime_features: bool = False,
+) -> dict:
     table_layout = data.get("table_layout")
     if not isinstance(table_layout, dict):
         raise WasmAbiManifestError("manifest must define [table_layout]")
@@ -843,9 +931,7 @@ def validate_loaded_manifest(data: dict) -> dict:
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
     reserved_callables = _validate_reserved_runtime_callables(data)
-    reserved_import_names = {
-        entry["import_name"] for entry in reserved_callables
-    }
+    reserved_import_names = {entry["import_name"] for entry in reserved_callables}
     non_reserved_import_refs = _non_reserved_import_name_references(
         data, reserved_import_names
     )
@@ -868,6 +954,10 @@ def validate_loaded_manifest(data: dict) -> dict:
             imports,
             non_runtime_callable_intrinsics,
         )
+    )
+    _annotate_runtime_callable_features(
+        imports,
+        reject_existing=reject_manual_runtime_features,
     )
     _validate_reserved_runtime_callable_import_absence(
         static_types,
@@ -902,7 +992,9 @@ def validate_loaded_manifest(data: dict) -> dict:
             if not isinstance(runtime_name, str) or not runtime_name:
                 raise WasmAbiManifestError(f"import {name!r} has invalid runtime_name")
             if runtime_name in seen_runtime_names:
-                raise WasmAbiManifestError(f"duplicate runtime import alias {runtime_name!r}")
+                raise WasmAbiManifestError(
+                    f"duplicate runtime import alias {runtime_name!r}"
+                )
             seen_runtime_names.add(runtime_name)
         if callable_arity is not None:
             if runtime_name is None:
@@ -910,7 +1002,9 @@ def validate_loaded_manifest(data: dict) -> dict:
                     f"import {name!r} cannot set callable_arity without runtime_name"
                 )
             if not isinstance(callable_arity, int) or callable_arity < 0:
-                raise WasmAbiManifestError(f"import {name!r} has invalid callable_arity")
+                raise WasmAbiManifestError(
+                    f"import {name!r} has invalid callable_arity"
+                )
             if callable_result not in {"i64", "void"}:
                 raise WasmAbiManifestError(
                     f"import {name!r} has invalid callable_result {callable_result!r}"
@@ -941,8 +1035,7 @@ def validate_loaded_manifest(data: dict) -> dict:
         if seen_poll_slots != expected_poll_slots:
             missing = sorted(expected_poll_slots - seen_poll_slots)
             raise WasmAbiManifestError(
-                "poll_table_slot values must be contiguous from 1; "
-                f"missing {missing}"
+                f"poll_table_slot values must be contiguous from 1; missing {missing}"
             )
     _validate_intrinsic_runtime_callable_export_abi(imports)
 
@@ -958,7 +1051,9 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(f"lir_runtime_call entry {idx} must be a table")
         variant = _validate_rust_variant("lir_runtime_call", idx, entry.get("variant"))
         if variant in seen_lir_variants:
-            raise WasmAbiManifestError(f"duplicate LIR runtime-call variant {variant!r}")
+            raise WasmAbiManifestError(
+                f"duplicate LIR runtime-call variant {variant!r}"
+            )
         seen_lir_variants.add(variant)
         import_name = entry.get("import_name")
         if not isinstance(import_name, str) or not import_name:
@@ -991,8 +1086,7 @@ def validate_loaded_manifest(data: dict) -> dict:
             or preserved_copy_operand_count < 0
         ):
             raise WasmAbiManifestError(
-                f"lir_runtime_call {variant!r} has invalid "
-                "preserved_copy_operand_count"
+                f"lir_runtime_call {variant!r} has invalid preserved_copy_operand_count"
             )
         if import_name in seen_lir_preserved_copy_imports:
             raise WasmAbiManifestError(
@@ -1010,9 +1104,7 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"op_loop_runtime_call entry {idx} has invalid kind"
             )
         if kind in seen_op_loop_runtime_kinds:
-            raise WasmAbiManifestError(
-                f"duplicate op_loop_runtime_call kind {kind!r}"
-            )
+            raise WasmAbiManifestError(f"duplicate op_loop_runtime_call kind {kind!r}")
         seen_op_loop_runtime_kinds.add(kind)
         import_name = entry.get("import_name")
         if not isinstance(import_name, str) or not import_name:
@@ -1113,8 +1205,7 @@ def validate_loaded_manifest(data: dict) -> dict:
         instruction = entry.get("instruction")
         if instruction not in WASM_BULK_MEMORY_INSTRUCTIONS:
             raise WasmAbiManifestError(
-                f"wasm_bulk_memory_op {kind!r} has invalid instruction "
-                f"{instruction!r}"
+                f"wasm_bulk_memory_op {kind!r} has invalid instruction {instruction!r}"
             )
         arg_count = entry.get("arg_count")
         if not isinstance(arg_count, int) or arg_count != 3:
@@ -1176,9 +1267,7 @@ def validate_loaded_manifest(data: dict) -> dict:
 
     object_new_bound_selectors = data.get("object_new_bound_selector", [])
     if not isinstance(object_new_bound_selectors, list):
-        raise WasmAbiManifestError(
-            "object_new_bound_selector must be a list of tables"
-        )
+        raise WasmAbiManifestError("object_new_bound_selector must be a list of tables")
     expected_object_new_bound_payloads = set(OBJECT_NEW_BOUND_SELECTOR_PAYLOADS)
     seen_object_new_bound_payloads: set[str] = set()
     for idx, entry in enumerate(object_new_bound_selectors):
@@ -1222,8 +1311,12 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"{lir_import_by_variant[lir_variant]!r}"
             )
     if seen_object_new_bound_payloads != expected_object_new_bound_payloads:
-        missing = sorted(expected_object_new_bound_payloads - seen_object_new_bound_payloads)
-        extra = sorted(seen_object_new_bound_payloads - expected_object_new_bound_payloads)
+        missing = sorted(
+            expected_object_new_bound_payloads - seen_object_new_bound_payloads
+        )
+        extra = sorted(
+            seen_object_new_bound_payloads - expected_object_new_bound_payloads
+        )
         raise WasmAbiManifestError(
             "object_new_bound_selector must declare exactly payloads "
             f"{sorted(expected_object_new_bound_payloads)}; missing={missing}, "
@@ -1261,9 +1354,7 @@ def validate_loaded_manifest(data: dict) -> dict:
             )
         selector_key = (family, extra_arg_count)
         if selector_key in seen_method_ic_selectors:
-            raise WasmAbiManifestError(
-                f"duplicate method_ic_selector {selector_key!r}"
-            )
+            raise WasmAbiManifestError(f"duplicate method_ic_selector {selector_key!r}")
         seen_method_ic_selectors.add(selector_key)
         import_name = entry.get("import_name")
         if not isinstance(import_name, str) or not import_name:
@@ -1326,9 +1417,7 @@ def validate_loaded_manifest(data: dict) -> dict:
             )
         lir_fast = entry.get("lir_fast")
         if not isinstance(lir_fast, str) or not lir_fast:
-            raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} must define lir_fast"
-            )
+            raise WasmAbiManifestError(f"const_op_policy {kind!r} must define lir_fast")
         if lir_fast not in CONST_POLICY_LIR_FAST:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid lir_fast {lir_fast!r}"
@@ -1349,7 +1438,9 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} parse_scalar_literal must be a bool"
             )
-        dispatch_seed = entry.get("dispatch_runtime_seed", materializer_import is not None)
+        dispatch_seed = entry.get(
+            "dispatch_runtime_seed", materializer_import is not None
+        )
         if not isinstance(dispatch_seed, bool):
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} dispatch_runtime_seed must be a bool"
@@ -1402,7 +1493,9 @@ def validate_loaded_manifest(data: dict) -> dict:
             raise WasmAbiManifestError(f"pure_skip_prefix entry {idx} must be a table")
         prefix = entry.get("prefix")
         if not isinstance(prefix, str) or not prefix:
-            raise WasmAbiManifestError(f"pure_skip_prefix entry {idx} has invalid prefix")
+            raise WasmAbiManifestError(
+                f"pure_skip_prefix entry {idx} has invalid prefix"
+            )
         if prefix in seen_prefixes:
             raise WasmAbiManifestError(f"duplicate Pure-profile skip prefix {prefix!r}")
         seen_prefixes.add(prefix)
@@ -1450,7 +1543,9 @@ def validate_loaded_manifest(data: dict) -> dict:
             "output_export_policy runtime aliases must not duplicate essential "
             f"exports: {sorted(alias_overlap)}"
         )
-    if any(prefix.startswith(alias_prefix) for prefix in internal_output_export_prefixes):
+    if any(
+        prefix.startswith(alias_prefix) for prefix in internal_output_export_prefixes
+    ):
         raise WasmAbiManifestError(
             "output_export_policy internal prefixes must not overlap the alias prefix"
         )
@@ -1480,7 +1575,10 @@ def validate_loaded_manifest(data: dict) -> dict:
         )
 
     gpu_intrinsic_manifest_names = data.get("gpu_intrinsic_manifest_name", [])
-    if not isinstance(gpu_intrinsic_manifest_names, list) or not gpu_intrinsic_manifest_names:
+    if (
+        not isinstance(gpu_intrinsic_manifest_names, list)
+        or not gpu_intrinsic_manifest_names
+    ):
         raise WasmAbiManifestError(
             "manifest must define gpu_intrinsic_manifest_name entries"
         )
@@ -1564,7 +1662,9 @@ def validate_loaded_manifest(data: dict) -> dict:
     seen_link_allowed: set[str] = set()
     for idx, entry in enumerate(link_allowed):
         if not isinstance(entry, dict):
-            raise WasmAbiManifestError(f"link_allowed_import entry {idx} must be a table")
+            raise WasmAbiManifestError(
+                f"link_allowed_import entry {idx} must be a table"
+            )
         name = entry.get("name")
         if not isinstance(name, str) or not name:
             raise WasmAbiManifestError(
@@ -1590,10 +1690,10 @@ def validate_loaded_manifest(data: dict) -> dict:
     call_indirect_imports = _call_indirect_imports(data)
     call_indirect_arities = [arity for arity, _name in call_indirect_imports]
     if not call_indirect_arities:
-        raise WasmAbiManifestError("link_allowed_import must define call_indirect imports")
-    expected_call_indirect_arities = list(
-        range(call_indirect_arities[-1] + 1)
-    )
+        raise WasmAbiManifestError(
+            "link_allowed_import must define call_indirect imports"
+        )
+    expected_call_indirect_arities = list(range(call_indirect_arities[-1] + 1))
     if call_indirect_arities != expected_call_indirect_arities:
         raise WasmAbiManifestError(
             "call_indirect import arities must be contiguous from 0: "
@@ -1647,9 +1747,7 @@ def validate_loaded_manifest(data: dict) -> dict:
                 f"{section} entry {idx} has invalid category {category!r}"
             )
         if not isinstance(description, str) or not description:
-            raise WasmAbiManifestError(
-                f"{section} entry {idx} has invalid description"
-            )
+            raise WasmAbiManifestError(f"{section} entry {idx} has invalid description")
 
     strip_rules = data.get("strip_import_rule", [])
     if not isinstance(strip_rules, list):
@@ -1664,14 +1762,10 @@ def validate_loaded_manifest(data: dict) -> dict:
 
     strip_prefix_rules = data.get("strip_import_prefix_rule", [])
     if not isinstance(strip_prefix_rules, list):
-        raise WasmAbiManifestError(
-            "strip_import_prefix_rule must be a list of tables"
-        )
+        raise WasmAbiManifestError("strip_import_prefix_rule must be a list of tables")
     seen_strip_prefix_rules: set[tuple[str, str]] = set()
     for idx, entry in enumerate(strip_prefix_rules):
-        validate_strip_rule(
-            "strip_import_prefix_rule", idx, entry, prefix_rule=True
-        )
+        validate_strip_rule("strip_import_prefix_rule", idx, entry, prefix_rule=True)
         key = (entry["module"], entry["prefix"])
         if key in seen_strip_prefix_rules:
             raise WasmAbiManifestError(f"duplicate strip import prefix rule {key!r}")
@@ -1680,4 +1774,7 @@ def validate_loaded_manifest(data: dict) -> dict:
 
 
 def load_manifest(path: Path = MANIFEST) -> dict:
-    return validate_loaded_manifest(tomllib.loads(path.read_text(encoding="utf-8")))
+    return validate_loaded_manifest(
+        tomllib.loads(path.read_text(encoding="utf-8")),
+        reject_manual_runtime_features=True,
+    )

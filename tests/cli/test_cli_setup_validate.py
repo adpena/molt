@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from molt.cli import commands as cli_commands
+from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -1179,8 +1180,14 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
     monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
         SETUP_READINESS,
-        "_required_llvm_backend_major",
-        lambda _root: 22,
+        "_required_llvm_backend_pin",
+        lambda _root: LlvmBackendPin(
+            major=22,
+            minor=1,
+            inkwell_feature="llvm22-1",
+            inkwell_manifest="runtime/molt-backend-native/Cargo.toml",
+            llvm_sys_version="221.0.1",
+        ),
         raising=True,
     )
     present = {
@@ -1282,8 +1289,14 @@ def test_llvm_detection_rejects_mismatched_config_major(
 ) -> None:
     monkeypatch.setattr(
         SETUP_READINESS,
-        "_required_llvm_backend_major",
-        lambda _root: 22,
+        "_required_llvm_backend_pin",
+        lambda _root: LlvmBackendPin(
+            major=22,
+            minor=1,
+            inkwell_feature="llvm22-1",
+            inkwell_manifest="runtime/molt-backend-native/Cargo.toml",
+            llvm_sys_version="221.0.1",
+        ),
         raising=True,
     )
     monkeypatch.setattr(

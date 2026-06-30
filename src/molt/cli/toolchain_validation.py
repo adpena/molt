@@ -25,9 +25,8 @@ from molt.cli.project_roots import _find_molt_root, _require_molt_root
 
 from molt.cli.setup_readiness import (
     _canonical_env_defaults,
-    _default_llvm_release_for_major,
     _detect_llvm_backend_toolchain,
-    _llvm_sys_prefix_env_var,
+    _required_llvm_backend_pin,
 )
 
 _VALIDATE_PROOF_BYPASS_ENV = frozenset(
@@ -103,12 +102,22 @@ def _planned_update_steps(
                 )
             llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
             if llvm_major is not None and llvm_toolchain is None:
-                release = _default_llvm_release_for_major(llvm_major)
+                llvm_pin = _required_llvm_backend_pin(root)
+                release = (
+                    llvm_pin.default_release
+                    if llvm_pin is not None
+                    else f"{llvm_major}.1.0"
+                )
+                env_var = (
+                    llvm_pin.env_var
+                    if llvm_pin is not None
+                    else f"LLVM_SYS_{llvm_major * 10 + 1}_PREFIX"
+                )
                 warnings.append(
                     "LLVM backend toolchain is missing; run "
                     f"python tools/bootstrap_llvm.py --version {release} "
                     f"--prefix target/toolchains/llvm-{release} and set "
-                    f"{_llvm_sys_prefix_env_var(llvm_major)} to that prefix"
+                    f"{env_var} to that prefix"
                 )
         else:
             warnings.append(

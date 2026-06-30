@@ -105,12 +105,13 @@ class EmissionCoreMixin(_MixinBase):
         # is generated from runtime/molt-ir/src/tir/op_kinds.toml (the
         # [[frontend_raising_kind]] table cross-checked against the [[opcode]]
         # may_throw oracle) - see the module-level import.
+        expr_col = getattr(self, "_expr_col", None)
         if (
             op.col_offset is None
             and op.kind in RAISING_KIND_NAMES
-            and getattr(self, "_expr_col", None) is not None
+            and expr_col is not None
         ):
-            op.col_offset, op.end_col_offset = self._expr_col
+            op.col_offset, op.end_col_offset = expr_col
         if (
             op.kind == "CONST"
             and op.result

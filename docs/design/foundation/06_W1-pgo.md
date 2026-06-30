@@ -598,7 +598,7 @@ This is the only phase that must ship as one atomic change. It includes:
 **Step 3:** Add a unit test that compiles a function with known branch counts, dumps the LLVM IR, and asserts `!prof` metadata is present.
 **Step 4:** Wire the LlvmBackend construction (in `native_backend/simple_backend.rs` LLVM path and in `llvm_backend/mod.rs`) to pass `ir.profile` branch counts as the `pgo_branch_weights` for each function.
 
-**Acceptance gate for W1-c:** LLVM IR dump shows `!prof` metadata on conditional branches when a profile with branch_counts is provided. No miscompile (byte-identical CPython differential on all LLVM tests). LLVM build must succeed with `LLVM_SYS_211_PREFIX` set (pre-existing env requirement).
+**Acceptance gate for W1-c:** LLVM IR dump shows `!prof` metadata on conditional branches when a profile with branch_counts is provided. No miscompile (byte-identical CPython differential on all LLVM tests). LLVM build must succeed with the `LLVM_SYS_<ver>_PREFIX` resolved from `molt.llvm_toolchain`.
 
 ---
 

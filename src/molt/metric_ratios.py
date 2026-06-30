@@ -89,7 +89,8 @@ def signed_ratio_value(
     direction: RatioDirection,
 ) -> float | None:
     """Scalar projection of :func:`signed_ratio`."""
-    return signed_ratio(numerator, denominator, direction=direction)["value"]  # type: ignore[return-value]
+    value = signed_ratio(numerator, denominator, direction=direction)["value"]
+    return value if isinstance(value, (int, float)) else None
 
 
 def relative_time_delta(
