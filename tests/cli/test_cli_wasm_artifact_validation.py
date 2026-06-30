@@ -1243,6 +1243,15 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     target_root = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    wasi_sysroot = tmp_path / "wasi-sysroot"
+    monkeypatch.delenv("WASI_SYSROOT", raising=False)
+    monkeypatch.delenv("MOLT_WASI_SYSROOT", raising=False)
+    monkeypatch.setattr(
+        WASM_TOOLCHAIN,
+        "resolve_wasi_sysroot",
+        lambda: wasi_sysroot,
+        raising=True,
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
@@ -1324,6 +1333,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         project_root=project_root,
     )
     assert captured_envs[-1]["CARGO_INCREMENTAL"] == "0"
+    assert captured_envs[-1]["WASI_SYSROOT"] == str(wasi_sysroot)
 
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     assert RUNTIME_BUILD._ensure_runtime_wasm(
@@ -1335,6 +1345,7 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
         project_root=project_root,
     )
     assert captured_envs[-1]["CARGO_INCREMENTAL"] == "1"
+    assert captured_envs[-1]["WASI_SYSROOT"] == str(wasi_sysroot)
 
 
 def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
