@@ -440,6 +440,13 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Output directory for wheel + extension_manifest.json (default: dist/).",
     )
     extension_build_parser.add_argument(
+        "--module",
+        help=(
+            "Dotted extension module override. Required with --source-plan when "
+            "[tool.molt.extension].module is not present."
+        ),
+    )
+    extension_build_parser.add_argument(
         "--molt-abi",
         help=(
             "Molt C-API ABI version override "
@@ -447,10 +454,42 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         ),
     )
     extension_build_parser.add_argument(
-        "--target",
+        "--abi-tier",
+        choices=["source-compat", "cpython-abi"],
         help=(
-            "Extension target: native, wasm/wasm32 for static-link wasm, "
-            "or a native target triple (default: native host target)."
+            "Extension ABI tier: source-compat uses include/molt/Python.h; "
+            "cpython-abi uses runtime/molt-cpython-abi/include/Python.h."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--target",
+        help="Target triple for extension build (default: native host target).",
+    )
+    extension_build_parser.add_argument(
+        "--source-plan",
+        help=(
+            "Upstream extension target plan. Meson intro-targets.json is "
+            "supported for target/source membership; compile_commands.json "
+            "owns per-source arguments."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--source-plan-target",
+        help="Target id/name inside --source-plan (default: extension module leaf).",
+    )
+    extension_build_parser.add_argument(
+        "--source-plan-source-root",
+        help="Source root for resolving relative source-plan paths (default: project).",
+    )
+    extension_build_parser.add_argument(
+        "--source-plan-build-root",
+        help="Build root for resolving generated source-plan paths.",
+    )
+    extension_build_parser.add_argument(
+        "--source-plan-compile-commands",
+        help=(
+            "compile_commands.json path for actual per-source compile arguments "
+            "(default: <source-plan-build-root>/compile_commands.json)."
         ),
     )
     extension_build_parser.add_argument(
@@ -458,6 +497,30 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help=(
             "Capabilities allowlist/profiles override "
             "(default: tool.molt.extension.capabilities)."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--provided-capsules",
+        action="append",
+        help=(
+            "Capsule provider declared by this extension; repeat for multiple "
+            "capsules (default: tool.molt.extension.provided_capsules)."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--python-export",
+        action="append",
+        help=(
+            "Dotted Python import/export name owned by this native artifact; "
+            "repeat for package roots and module attributes."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--callable-export-json",
+        action="append",
+        help=(
+            "JSON object describing one native callable export "
+            "(module/name/binding/abi/symbol/effects/deterministic)."
         ),
     )
     extension_build_parser.add_argument(
@@ -470,6 +533,38 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     extension_build_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    extension_metadata_parser = extension_subparsers.add_parser(
+        "metadata",
+        help=(
+            "Materialize Molt target metadata for upstream source-extension "
+            "package builds."
+        ),
+    )
+    extension_metadata_parser.add_argument(
+        "--target",
+        default="wasm",
+        help="Target triple for package build metadata (default: wasm32-wasip1).",
+    )
+    extension_metadata_parser.add_argument(
+        "--out-dir",
+        required=True,
+        help="Output directory for python3.pc, meson.cross, and metadata sidecar.",
+    )
+    extension_metadata_parser.add_argument(
+        "--abi-tier",
+        choices=["source-compat", "cpython-abi"],
+        help=(
+            "Python C-API header tier for generated package metadata "
+            "(default: source-compat)."
+        ),
+    )
+    extension_metadata_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    extension_metadata_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
@@ -497,9 +592,94 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Require wheel and extension checksums in the manifest.",
     )
     extension_audit_parser.add_argument(
+        "--require-loader-kind",
+        help="Require an exact loader_kind manifest token.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-runtime-linkage",
+        help="Require an exact runtime_linkage manifest token.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-artifact-kind",
+        help="Require an exact artifact_kind manifest token.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-artifact-file",
+        action="store_true",
+        help="Fail when the manifest extension artifact path is missing or absent.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-object-closure",
+        action="store_true",
+        help="Fail when the manifest lacks reachable object-closure metadata.",
+    )
+    extension_audit_parser.add_argument(
+        "--require-python-export",
+        action="append",
+        default=[],
+        help=(
+            "Require a manifest python_exports entry for a package/import owner; "
+            "repeat for multiple required exports."
+        ),
+    )
+    extension_audit_parser.add_argument(
+        "--require-callable-export",
+        action="append",
+        default=[],
+        help=(
+            "Require a manifest callable_exports entry by dotted name; repeat "
+            "for multiple required native callables."
+        ),
+    )
+    extension_audit_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     extension_audit_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    extension_seal_parser = extension_subparsers.add_parser(
+        "seal",
+        help=(
+            "Seal public export custody onto an existing validated static-link "
+            "extension artifact."
+        ),
+    )
+    extension_seal_parser.add_argument(
+        "--path",
+        required=True,
+        help=(
+            "Path to an extension_manifest.json or directory containing one. "
+            "The manifest must already point at a valid static-link artifact."
+        ),
+    )
+    extension_seal_parser.add_argument(
+        "--out-dir",
+        required=True,
+        help="Output root for the sealed artifact, sidecars, and package init chain.",
+    )
+    extension_seal_parser.add_argument(
+        "--python-export",
+        action="append",
+        default=[],
+        help=(
+            "Dotted Python import/export name to publish in the sealed sidecar; "
+            "repeat for package roots and module attributes."
+        ),
+    )
+    extension_seal_parser.add_argument(
+        "--callable-export-json",
+        action="append",
+        default=[],
+        help=(
+            "JSON object describing one native callable export to publish in "
+            "the sealed sidecar."
+        ),
+    )
+    extension_seal_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    extension_seal_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 

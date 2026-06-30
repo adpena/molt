@@ -1,11 +1,49 @@
 import json
+import re
 
-from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
+from molt._wasm_abi_generated import (
+    WASM_RESERVED_RUNTIME_CALLABLES,
+    WASM_TABLE_REF_EXPORT_PREFIX,
+)
 from molt.wasm_artifact import wasm_table_ref_export_name
 
 
 def _table_ref_export_name(index: int) -> str:
     return wasm_table_ref_export_name(index)
+
+
+def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
+    return [
+        {
+            "index": index,
+            "runtime_export": runtime_name,
+            "import_name": import_name,
+            "arity": arity,
+        }
+        for index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+    ]
+
+
+def _reserved_runtime_callable_js_entries(content: str) -> list[dict[str, object]]:
+    match = re.search(
+        r"const reservedRuntimeCallables = \[(?P<body>.*?)\];",
+        content,
+        re.DOTALL,
+    )
+    assert match is not None
+    entries = []
+    for item in re.finditer(
+        r"\{\s*index:\s*(?P<index>\d+),\s*runtimeExport:\s*'(?P<runtime>[^']+)',\s*arity:\s*(?P<arity>\d+)\s*\}",
+        match.group("body"),
+    ):
+        entries.append(
+            {
+                "index": int(item.group("index")),
+                "runtime_export": item.group("runtime"),
+                "arity": int(item.group("arity")),
+            }
+        )
+    return entries
 
 
 def test_generate_worker_produces_valid_js(tmp_path):
@@ -276,6 +314,7 @@ def test_generate_split_worker_delegates_app_table_init_to_main_wrapper() -> Non
 
 def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _split_runtime_browser_abi_from_manifest
 
     app_ref = _table_ref_export_name(7)
     runtime_ref = _table_ref_export_name(3)
@@ -292,26 +331,43 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     )
 
     assert 'const callIndirectImportNames = ["molt_call_indirect0"' in content
+    assert "const reservedRuntimeCallables = [" in content
+    assert (
+        '"runtime_export":"molt_object_init_subclass"'
+        in content.replace(" ", "")
+    )
     assert "for (const indirectName of callIndirectImportNames) {" in content
     assert "hostEnv[indirectName] = (fnIndex, ...args) => {" in content
     assert "const idx = Number(fnIndex);" in content
     assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
     assert "const directName = tableRefExportName(dispatchIdx);" in content
+    assert "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);" in content
+    assert (
+        "return callReservedRuntimeCallable("
+        in content
+    )
     assert f"/^{WASM_TABLE_REF_EXPORT_PREFIX}" not in content
+    assert "const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {" in content
     assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
-    assert "return indirectFn(fnIndex, ...args);" in content
+    assert (
+        "callIndirectObjectSignature(indirectName, { includeIndex: true })"
+        in content
+    )
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert 'if (typeof tableFn === "function") {' in content
     assert (
-        "const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
+        "const signature = callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
         in content
     )
     assert "return callWithSignature(tableFn, signature, args);" in content
     assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
     assert (
-        "return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);"
+        "return callWithSignature(rtDirectFn, callIndirectObjectSignature(indirectName) || runtimeTableRefSignatures[directName], args);"
         in content
     )
+    assert content.index(
+        "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);"
+    ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
     assert content.index(
         "const indirectFn = appInstance?.exports?.[indirectName];"
     ) < content.index("const tableFn = sharedTable.get(dispatchIdx);")
@@ -323,6 +379,23 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
         not in content
     )
+    browser_abi = _split_runtime_browser_abi_from_manifest()
+    assert browser_abi["reserved_runtime_callables"] == (
+        _reserved_runtime_callable_manifest_entries()
+    )
+
+
+def test_static_browser_runners_reserved_runtime_callable_tables_track_generated_abi() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    expected = [
+        {"index": index, "runtime_export": runtime_name, "arity": arity}
+        for index, runtime_name, _import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+    ]
+    for rel in ("wasm/run_wasm.js", "wasm/browser_host.js"):
+        content = (root / rel).read_text(encoding="utf-8")
+        assert _reserved_runtime_callable_js_entries(content) == expected
 
 
 def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> (
@@ -415,17 +488,28 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    surfaces = {
-        "wasm/browser_embed.js": "normalizeI64BridgeValue",
-        "wasm/browser_host.js": "normalizeIsolateImportI64",
-        "wasm/run_wasm.js": "runtimeImportToBigInt",
+    bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
+    assert "const callIsolateImportExport = (fn, args) => {" in bridge
+    assert "normalizeI64BridgeValue(fn(handle), 'molt_isolate_import result')" in bridge
+    shared_loader_surfaces = {
+        "wasm/browser_embed.js": "globalThis.MoltWasmLoaderBridge",
+        "wasm/browser_host.js": "globalThis.MoltWasmLoaderBridge",
+        "wasm/run_wasm.js": "require('./loader_bridge.js')",
+    }
+    generated_surfaces = {
         "src/molt/cli/wasm.py": "normalizeI64BridgeValue",
     }
     forbidden = (
         ".exports.molt_isolate_import(...args)",
         ".exports.molt_isolate_import(...callArgs)",
     )
-    for rel, helper in surfaces.items():
+    for rel, loader_authority in shared_loader_surfaces.items():
+        content = (root / rel).read_text(encoding="utf-8")
+        assert loader_authority in content
+        assert "callIsolateImportExport" in content
+        for needle in forbidden:
+            assert needle not in content
+    for rel, helper in generated_surfaces.items():
         content = (root / rel).read_text(encoding="utf-8")
         assert "const callIsolateImportExport = (fn, args) => {" in content
         assert helper in content
@@ -442,27 +526,14 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
 
 
 def test_effective_split_worker_table_base_uses_backend_authority() -> None:
-    from molt._wasm_abi_generated import (
-        WASM_POLL_TABLE_IMPORTS,
-        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    )
     from molt.cli import _effective_split_worker_table_base
-
-    first_live_slot = min(
-        [
-            slot
-            for slot, _name in WASM_POLL_TABLE_IMPORTS
-            if isinstance(slot, int) and slot > 0
-        ]
-        + [WASM_RESERVED_RUNTIME_CALLABLE_BASE]
-    )
 
     assert (
         _effective_split_worker_table_base(
             wasm_table_base=4096,
             runtime_table_min=315,
             app_table_ref_signatures={
-                _table_ref_export_name(4096 + first_live_slot): {
+                _table_ref_export_name(4096): {
                     "params": ["i64"],
                     "result": "i64",
                 },

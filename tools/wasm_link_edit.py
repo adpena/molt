@@ -13,6 +13,8 @@ from wasm_link_format import (
     FLAG_NO_STRIP,
     SYMBOL_KIND_FUNCTION,
     SYMTAB_SUBSECTION_ID,
+    WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
+    _EMPTY_FUNC_BODY,
     _ESSENTIAL_EXPORTS,
     _INTERNAL_OUTPUT_EXPORT_PREFIXES,
     _OUTPUT_EXPORT_ALIAS_PREFIX,
@@ -881,6 +883,140 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
     return _build_sections(new_sections)
 
 
+def _runtime_import_rewrite_target(
+    name: str, runtime_exports: set[str]
+) -> tuple[str | None, bool]:
+    if name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS:
+        return None, False
+    export_name = wasm_runtime_export_name(name)
+    if export_name is None:
+        return None, False
+    if export_name != name and export_name in runtime_exports:
+        return export_name, False
+    if name not in runtime_exports:
+        return export_name, True
+    return export_name, False
+
+
+def _rewrite_runtime_imports_in_module(
+    data: bytes,
+    *,
+    source_module: str,
+    target_module: str,
+    runtime_exports: set[str],
+) -> tuple[bytes | None, list[str]]:
+    sections = _parse_sections(data)
+    force_exports: list[str] = []
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 2:
+            new_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        rebuilt = bytearray()
+        rebuilt.extend(_write_varuint(count))
+        for _ in range(count):
+            module, offset = _read_string(payload, offset)
+            name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                raise ValueError("Unexpected EOF while reading import kind")
+            kind = payload[offset]
+            offset += 1
+            desc_start = offset
+            offset = _parse_import_desc(payload, offset, kind)
+            desc = payload[desc_start:offset]
+
+            new_module = module
+            new_name = name
+            if module == source_module and kind == 0:
+                target_name, force_export = _runtime_import_rewrite_target(
+                    name, runtime_exports
+                )
+                if target_name is not None:
+                    new_module = target_module
+                    new_name = target_name
+                    if new_module != module or new_name != name:
+                        changed = True
+                    if force_export:
+                        force_exports.append(target_name)
+
+            rebuilt.extend(_write_string(new_module))
+            rebuilt.extend(_write_string(new_name))
+            rebuilt.append(kind)
+            rebuilt.extend(desc)
+        new_sections.append((section_id, bytes(rebuilt)))
+
+    if not changed:
+        return None, force_exports
+    return _build_sections(new_sections), force_exports
+
+
+def _rewrite_native_runtime_imports(
+    native_objects: tuple[Path, ...],
+    runtime_exports: set[str],
+    temp_dir: tempfile.TemporaryDirectory,
+) -> tuple[tuple[Path, ...], list[str]]:
+    """Rewrite native-object Molt ABI imports from ``env`` to ``molt_runtime``.
+
+    Source-recompiled extension objects are produced by standard C/C++/Rust
+    WASM toolchains, so unresolved function symbols initially appear as
+    ``env::<symbol>`` imports. Molt runtime ABI symbols must share the
+    split-runtime namespace used by compiler-emitted app imports; toolchain,
+    libc, and other generated external-native imports remain under ``env``.
+    """
+    rewritten_paths: list[Path] = []
+    force_exports: list[str] = []
+    for index, native_object in enumerate(native_objects):
+        data = native_object.read_bytes()
+        try:
+            rewritten, native_force_exports = _rewrite_runtime_imports_in_module(
+                data,
+                source_module="env",
+                target_module="molt_runtime",
+                runtime_exports=runtime_exports,
+            )
+        except ValueError:
+            rewritten_paths.append(native_object)
+            continue
+        force_exports.extend(native_force_exports)
+        if rewritten is None:
+            rewritten_paths.append(native_object)
+            continue
+        staged = Path(temp_dir.name) / f"native_runtime_imports_{index}.wasm"
+        staged.write_bytes(rewritten)
+        rewritten_paths.append(staged)
+    return tuple(rewritten_paths), force_exports
+
+
+def _rewrite_runtime_import_module_namespace(
+    module_path: Path,
+    *,
+    source_module: str,
+    target_module: str,
+    runtime_exports: set[str],
+    temp_dir: tempfile.TemporaryDirectory,
+    filename: str,
+) -> tuple[Path, list[str]] | None:
+    data = module_path.read_bytes()
+    try:
+        rewritten, force_exports = _rewrite_runtime_imports_in_module(
+            data,
+            source_module=source_module,
+            target_module=target_module,
+            runtime_exports=runtime_exports,
+        )
+    except ValueError as exc:
+        print(f"Failed to parse wasm imports: {exc}", file=sys.stderr)
+        return None
+    if rewritten is None:
+        return module_path, force_exports
+    staged = Path(temp_dir.name) / filename
+    staged.write_bytes(rewritten)
+    return staged, force_exports
+
+
 def _rewrite_output_imports(
     output: Path, runtime_exports: set[str]
 ) -> tuple[Path, tempfile.TemporaryDirectory, list[str]] | None:
@@ -1098,7 +1234,8 @@ def _build_runtime_stub(runtime_data: bytes) -> bytes:
     for _ in range(num_stub_funcs):
         code_payload.extend(stub_body)
 
-    # Linking custom section: version=2, no subsections.
+    # Linking custom section: version=2; append a symbol table below so
+    # native extension objects can resolve Molt ABI imports against the stub.
     linking_payload = _build_custom_section("linking", b"\x02")
 
     stub_sections: list[tuple[int, bytes]] = [
@@ -1109,7 +1246,19 @@ def _build_runtime_stub(runtime_data: bytes) -> bytes:
         (0, linking_payload),  # custom "linking" section
     ]
 
-    return _build_sections(stub_sections)
+    stub_data = _build_sections(stub_sections)
+    symbol_data = _append_linking_function_symbols(
+        stub_data,
+        [
+            (
+                name,
+                index,
+                FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED,
+            )
+            for index, name in enumerate(stub_export_names)
+        ],
+    )
+    return symbol_data if symbol_data is not None else stub_data
 
 
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:

@@ -10,6 +10,8 @@ from pathlib import Path
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import commands as cli_commands
+from molt.cli import entrypoint_parser as cli_entrypoint_parser
+from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 import pytest
 
@@ -17,6 +19,28 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _install_extension_object_symbol_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    default_init_symbol: str,
+    by_stem: dict[str, tuple[set[str], set[str]]] | None = None,
+) -> None:
+    symbol_facts = by_stem or {}
+
+    def fake_object_symbols(path: Path) -> tuple[set[str], set[str]] | None:
+        stem = path.stem.split("_", 1)[1] if "_" in path.stem else path.stem
+        if stem in symbol_facts:
+            defined, undefined = symbol_facts[stem]
+            return set(defined), set(undefined)
+        return {default_init_symbol}, {"PyModule_Create", "molt_c_api_version"}
+
+    monkeypatch.setattr(
+        cli_commands._source_extensions,
+        "_native_object_global_symbol_sets",
+        fake_object_symbols,
+    )
 
 
 def _write_fake_wasi_sysroot(root: Path) -> Path:
@@ -107,6 +131,148 @@ def _write_extension_project(
             ]
         )
     )
+
+
+def _write_meson_source_plan_project(project_root: Path) -> Path:
+    src_dir = project_root / "pkg"
+    include_dir = src_dir / "include"
+    generated_dir = project_root / "build" / "generated"
+    meson_info_dir = project_root / "build" / "meson-info"
+    include_dir.mkdir(parents=True, exist_ok=True)
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    meson_info_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (include_dir / "demoext.h").write_text(
+        "#define NPY_HEADER_ONLY_MACRO 17\n"
+        "#define NPY_GENERATED_DECL(name) int npy_generated_ ## name(void)\n"
+        "int helper_generated(void);\n"
+    )
+    (src_dir / "demoext.c").write_text(
+        "#include <Python.h>\n"
+        '#include "demoext.h"\n'
+        "static PyModuleDef demoext_module = {\n"
+        "    PyModuleDef_HEAD_INIT,\n"
+        '    "demoext",\n'
+        "    NULL,\n"
+        "    -1,\n"
+        "    NULL,\n"
+        "};\n"
+        "PyMODINIT_FUNC PyInit_demoext(void) {\n"
+        "    (void)NPY_HEADER_ONLY_MACRO;\n"
+        "#ifdef NPY_DISABLED_alias\n"
+        "    (void)NPY_DISABLED_Alias;\n"
+        "#else\n"
+        "    (void)PyLong_FromLong(1);\n"
+        "#endif\n"
+        "#ifdef DEMO_COMPILE_DB\n"
+        "    (void)PyTuple_New(0);\n"
+        "#else\n"
+        "    (void)PyCode_NewWithPosOnlyArgs;\n"
+        "#endif\n"
+        "#if (0 && 0) && \\\n"
+        "    defined(NPY_DISABLED_SVE)\n"
+        "    (void)NPY_DISABLED_SVE;\n"
+        "#endif\n"
+        "    (void)npy_generated_int8;\n"
+        "    (void)helper_generated();\n"
+        "    return PyModule_Create(&demoext_module);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (generated_dir / "helper_generated.c").write_text(
+        "#include <Python.h>\n"
+        "int helper_generated(void) { return (int)PyLong_AsLong(PyLong_FromLong(7)); }\n",
+        encoding="utf-8",
+    )
+    (generated_dir / "generated_only.h").write_text("#define GENERATED_ONLY 1\n")
+    intro_targets = [
+        {
+            "id": "pkg.demoext",
+            "name": "demoext",
+            "type": "shared module",
+            "filename": str(project_root / "build" / "pkg" / "demoext.so"),
+            "target_sources": [
+                {
+                    "language": "c",
+                    "machine": "host",
+                    "parameters": ["-I", "pkg/include", "-DINTRO_ONLY=1"],
+                    "sources": ["pkg/demoext.c"],
+                    "generated_sources": [],
+                },
+                {
+                    "language": "c",
+                    "machine": "host",
+                    "parameters": ["-Igenerated", "-DINTRO_GENERATED_ONLY=1"],
+                    "sources": [],
+                    "generated_sources": [
+                        "generated/helper_generated.c",
+                        "generated/generated_only.h",
+                    ],
+                },
+            ],
+            "linker_parameters": ["-Wl,--as-needed"],
+        }
+    ]
+    intro_path = meson_info_dir / "intro-targets.json"
+    intro_path.write_text(json.dumps(intro_targets, indent=2) + "\n")
+    compile_commands = [
+        {
+            "directory": str(project_root),
+            "file": "pkg/demoext.c",
+            "arguments": [
+                "cc",
+                "-I",
+                "pkg/include",
+                "-DDEMO_COMPILE_DB=1",
+                "-c",
+                "pkg/demoext.c",
+                "-o",
+                "build/demoext.c.o",
+            ],
+        },
+        {
+            "directory": str(project_root / "build"),
+            "file": "generated/helper_generated.c",
+            "arguments": [
+                "cc",
+                "-Igenerated",
+                "-DHELPER_COMPILE_DB=1",
+                "-c",
+                "generated/helper_generated.c",
+                "-o",
+                "generated/helper_generated.c.o",
+            ],
+        },
+    ]
+    (project_root / "build" / "compile_commands.json").write_text(
+        json.dumps(compile_commands, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "demo-meson-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "pkg.demoext"',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                'python_exports = ["pkg.demoext"]',
+                "",
+                "[tool.molt.extension.source_plan]",
+                'kind = "meson-intro-targets"',
+                'path = "build/meson-info/intro-targets.json"',
+                'target = "pkg.demoext"',
+                'source_root = "."',
+                'build_root = "build"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return intro_path
 
 
 def _write_extension_scan_project(project_root: Path) -> None:
@@ -560,6 +726,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
                 "#include <Python.h>",
                 "#define PyLocalMacro(value) (value)",
                 "typedef struct PyLocalStruct { int value; } PyLocalStruct;",
+                "enum { NPY_LOCAL_ENUM = 3 };",
+                "static const int NPY_LOCAL_STATIC_CONST = 5;",
                 "",
             ]
         )
@@ -598,6 +766,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
                 "    (void)PyLocalTemp;",
                 "    (void)local;",
                 "    (void)PyLocalMacro(value);",
+                "    (void)NPY_LOCAL_ENUM;",
+                "    (void)NPY_LOCAL_STATIC_CONST;",
                 "    (void)PyTentative_Global;",
                 "    (void)PyPlainSplit_FromThing(value);",
                 "    (void)value;  # PyTrailingCommentOnly should not be scanned",
@@ -630,6 +800,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
         "PyLocal_FromThing",
         "PyTentative_Global",
         "PyPlainSplit_FromThing",
+        "NPY_LOCAL_ENUM",
+        "NPY_LOCAL_STATIC_CONST",
     ]:
         assert symbol in data["project_defined_symbols"]
         assert data["symbol_status"][symbol] == "project_defined"
@@ -692,8 +864,8 @@ def test_extension_scan_macro_bodies_do_not_define_called_apis(
     (src / "macro.h").write_text(
         "\n".join(
             [
-                "#define PyLocalMacro(value) \\",
-                "    (PyMacroMissingAPI((value)))",
+                "#define PyLocalMacro(npy_type) \\",
+                "    (PyMacroMissingAPI((npy_type)))",
                 "",
             ]
         )
@@ -723,6 +895,48 @@ def test_extension_scan_macro_bodies_do_not_define_called_apis(
     data = payload["data"]
     assert data["symbol_status"]["PyLocalMacro"] == "project_defined"
     assert data["symbol_status"]["PyMacroMissingAPI"] == "missing"
+    assert "npy_type" not in data["required_symbols"]
+
+
+def test_extension_scan_classifies_project_generated_c_api_symbols(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_generated_api"
+    src = project_root / "src"
+    src.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-gen'\n")
+    (src / "generated.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#define NPY_GENERATED_DECL(name) int npy_generated_ ## name(void)",
+                "#define NPYV_TOO_BROAD(SFX) npyv_ ## SFX",
+                "PyObject *use(PyObject *value) {",
+                "    (void)npy_generated_int8;",
+                "    (void)npyv_u8;",
+                "    return value;",
+                "}",
+                "",
+            ]
+        )
+    )
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        fail_on_missing=False,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    assert data["symbol_status"]["npy_generated_int8"] == "project_generated"
+    assert data["project_generated_c_api_prefixes"] == ["npy_generated_"]
+    assert data["project_generated_symbols"] == ["npy_generated_int8"]
+    assert data["symbol_status"]["npyv_u8"] == "missing"
+    assert "npyv_u8" in data["missing_symbols"]
 
 
 def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
@@ -767,11 +981,12 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
     assert "numpy_c_api" in data["symbols_by_primitive_class"]
 
 
-def test_cpython_abi_variadic_shim_does_not_export_header_inline_stubs() -> None:
+def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
 
-    forbidden_runtime_stubs = {
+    required_variadic_exports = {
         "Py_BuildValue",
+        "PyErr_Format",
         "PyErr_FormatV",
         "PyErr_WarnFormat",
         "PyUnicode_FromFormat",
@@ -779,8 +994,8 @@ def test_cpython_abi_variadic_shim_does_not_export_header_inline_stubs() -> None
         "PyObject_CallFunctionObjArgs",
         "PyObject_CallMethod",
     }
-    for symbol in forbidden_runtime_stubs:
-        assert f"{symbol}(" not in shim
+    for symbol in required_variadic_exports:
+        assert f"{symbol}(" in shim
     assert "PyOS_snprintf(" in shim
     assert "vsnprintf(str, size, format, ap)" in shim
 
@@ -1089,6 +1304,358 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
     assert manifest["artifact_kind"] == "shared_library"
 
 
+def test_extension_build_consumes_meson_source_plan_object_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "meson_extproj"
+    project_root.mkdir()
+    intro_path = _write_meson_source_plan_project(project_root)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": ({"PyInit_demoext"}, {"PyModule_Create", "helper_generated"}),
+            "helper_generated": (
+                {"helper_generated"},
+                {"PyLong_AsLong", "PyLong_FromLong"},
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    compile_cmd = next(
+        cmd for cmd in commands if "-c" in cmd and any("demoext.c" in part for part in cmd)
+    )
+    include_dirs = [
+        Path(compile_cmd[idx + 1]).resolve()
+        for idx, token in enumerate(compile_cmd[:-1])
+        if token == "-I"
+    ]
+    assert include_dirs.index((ROOT / "include" / "molt").resolve()) < include_dirs.index(
+        project_root.resolve()
+    )
+    assert include_dirs.index(project_root.resolve()) < include_dirs.index(
+        (project_root / "pkg" / "include").resolve()
+    )
+    assert include_dirs.index((project_root / "pkg" / "include").resolve()) < include_dirs.index(
+        (ROOT / "include").resolve()
+    )
+    link_cmd = next(cmd for cmd in commands if "-shared" in cmd)
+    assert any("0_demoext.o" in part for part in link_cmd)
+    assert any("1_helper_generated.o" in part for part in link_cmd)
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["source_plan"]["kind"] == "meson-intro-targets"
+    assert manifest["source_plan"]["plan"] == str(intro_path.resolve())
+    assert manifest["source_plan"]["compile_commands"] == str(
+        (project_root / "build" / "compile_commands.json").resolve()
+    )
+    assert manifest["source_plan"]["digest"]
+    assert manifest["build"]["source_plan_digest"] == manifest["source_plan"]["digest"]
+    assert manifest["build"]["object_count"] == 2
+    assert manifest["build"]["linked_object_count"] == 2
+    assert manifest["build"]["source_c_api_scan"][
+        "project_generated_c_api_prefixes"
+    ] == ["npy_generated_"]
+    assert manifest["build"]["source_c_api_scan"][
+        "project_generated_c_api_symbols"
+    ] == ["npy_generated_int8"]
+    assert manifest["object_closure"]["root_symbol"] == "PyInit_demoext"
+    assert manifest["object_closure"]["init_symbol_owner"] == "0_demoext.o"
+    assert manifest["object_closure"]["closure_sha256"]
+    assert manifest["object_closure"]["required_capsules"] == []
+    assert manifest["object_closure"]["project_generated_c_api_prefixes"] == [
+        "npy_generated_"
+    ]
+    assert manifest["provided_capsules"] == []
+    required_c_api_symbols = {
+        symbol
+        for obj in manifest["object_closure"]["objects"]
+        for symbol in obj["required_c_api_symbols"]
+    }
+    project_generated_c_api_symbols = {
+        symbol
+        for obj in manifest["object_closure"]["objects"]
+        for symbol in obj["project_generated_c_api_symbols"]
+    }
+    assert "npy_generated_int8" in project_generated_c_api_symbols
+    assert "npy_generated_int8" not in required_c_api_symbols
+    assert "NPY_HEADER_ONLY_MACRO" not in required_c_api_symbols
+    assert "NPY_DISABLED_Alias" not in required_c_api_symbols
+    assert "NPY_DISABLED_SVE" not in required_c_api_symbols
+    assert "PyCode_NewWithPosOnlyArgs" not in required_c_api_symbols
+    assert "PyTuple_New" in required_c_api_symbols
+    assert (out_dir / "pkg" / "__init__.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    artifact_path = out_dir / manifest["extension"]
+    artifact_manifest = json.loads(
+        artifact_path.with_name(
+            artifact_path.name + ".extension_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert artifact_manifest["source_plan"]["digest"] == manifest["source_plan"][
+        "digest"
+    ]
+    assert artifact_manifest["python_exports"] == ["pkg.demoext"]
+
+
+def test_extension_build_rejects_parallel_sources_with_source_plan(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    project_root = tmp_path / "meson_extproj"
+    project_root.mkdir()
+    _write_meson_source_plan_project(project_root)
+    pyproject = project_root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8").replace(
+            'molt_c_api_version = "1"',
+            'molt_c_api_version = "1"\nsources = ["pkg/demoext.c"]',
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(project_root / "dist"),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 2
+    assert "source_plan plus compile_commands.json is the source/arg authority" in (
+        capsys.readouterr().err
+    )
+
+
+def test_extension_metadata_parser_surface() -> None:
+    parser = cli_entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(
+        [
+            "extension",
+            "metadata",
+            "--target",
+            "wasm32-wasip1",
+            "--out-dir",
+            "dist/meta",
+            "--abi-tier",
+            "cpython-abi",
+            "--json",
+        ]
+    )
+    assert args.command == "extension"
+    assert args.extension_command == "metadata"
+    assert args.target == "wasm32-wasip1"
+    assert args.out_dir == "dist/meta"
+    assert args.abi_tier == "cpython-abi"
+    assert args.json is True
+
+
+def test_extension_build_export_custody_parser_surface() -> None:
+    parser = cli_entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(
+        [
+            "extension",
+            "build",
+            "--module",
+            "numpy._core._multiarray_umath",
+            "--source-plan",
+            "build/meson-info/intro-targets.json",
+            "--python-export",
+            "numpy",
+            "--provided-capsules",
+            "numpy._core._multiarray_umath._ARRAY_API",
+            "--callable-export-json",
+            '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}',
+        ]
+    )
+    assert args.command == "extension"
+    assert args.extension_command == "build"
+    assert args.module == "numpy._core._multiarray_umath"
+    assert args.source_plan == "build/meson-info/intro-targets.json"
+    assert args.python_export == ["numpy"]
+    assert args.provided_capsules == ["numpy._core._multiarray_umath._ARRAY_API"]
+    assert args.callable_export_json == [
+        '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}'
+    ]
+
+
+def test_extension_seal_parser_surface() -> None:
+    parser = cli_entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(
+        [
+            "extension",
+            "seal",
+            "--path",
+            "dist/extension_manifest.json",
+            "--out-dir",
+            "dist/sealed",
+            "--python-export",
+            "numpy",
+            "--callable-export-json",
+            '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}',
+            "--json",
+        ]
+    )
+    assert args.command == "extension"
+    assert args.extension_command == "seal"
+    assert args.path == "dist/extension_manifest.json"
+    assert args.out_dir == "dist/sealed"
+    assert args.python_export == ["numpy"]
+    assert args.callable_export_json == [
+        '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}'
+    ]
+    assert args.json is True
+
+
+def test_extension_metadata_materializes_meson_cross_and_python_pc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        cli_source_extension_toolchain,
+        "_resolve_source_extension_wasm_toolchain",
+        lambda: cli_source_extension_toolchain._SourceExtensionWasmToolchain(
+            ok=True,
+            compiler_kind="zig",
+            compiler_cmd=("zig", "cc"),
+            wasm_ld="/usr/bin/wasm-ld",
+            wasi_sysroot=None,
+            detail="wasm-ld=/usr/bin/wasm-ld; zig=/usr/bin/zig",
+        ),
+    )
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.shutil,
+        "which",
+        lambda tool: "/usr/bin/pkg-config" if tool == "pkg-config" else None,
+    )
+
+    out_dir = tmp_path / "metadata"
+    rc = cli_commands.extension_metadata(
+        target="wasm",
+        out_dir=str(out_dir),
+        abi_tier="cpython-abi",
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["target_triple"] == "wasm32-wasip1"
+    assert payload["data"]["abi"]["tier"] == "cpython-abi"
+    assert payload["data"]["paths"]["python_pc"] == str(
+        out_dir / "pkgconfig" / "python3.pc"
+    )
+    assert (out_dir / "pkgconfig" / "python3.pc").read_text(encoding="utf-8")
+    assert "wasm32" in (out_dir / "meson.cross").read_text(encoding="utf-8")
+    assert (out_dir / "source-extension-target-metadata.json").is_file()
+
+
+def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_WASM_CC", "clang")
+    monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.shutil,
+        "which",
+        lambda tool: {
+            "clang": "/tools/clang",
+            "wasm-ld": "/tools/wasm-ld",
+        }.get(tool),
+    )
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            "",
+            "fatal error: 'errno.h' file not found\n",
+        )
+
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.subprocess,
+        "run",
+        fake_run,
+    )
+
+    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+
+    assert toolchain.ok is False
+    assert toolchain.compiler_kind == "molt_wasm_cc"
+    assert "MOLT_WASM_CC cannot compile the WASI source-extension probe" in (
+        toolchain.detail
+    )
+    assert "errno.h" in toolchain.detail
+    assert "WASI_SYSROOT" in toolchain.detail
+
+
+def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_commands: list[list[str]] = []
+    monkeypatch.setenv("MOLT_WASM_CC", "clang-wasm")
+    monkeypatch.setenv("MOLT_CROSS_CC", "wrong-cross")
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.shutil,
+        "which",
+        lambda tool: {
+            "clang-wasm": "/tools/clang-wasm",
+            "wrong-cross": "/tools/wrong-cross",
+            "wasm-ld": "/tools/wasm-ld",
+        }.get(tool),
+    )
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.subprocess,
+        "run",
+        fake_run,
+    )
+
+    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+
+    assert toolchain.ok is True
+    assert toolchain.compiler_kind == "molt_wasm_cc"
+    assert toolchain.compiler_cmd == ("/tools/clang-wasm",)
+    assert "MOLT_WASM_CC=/tools/clang-wasm" in toolchain.detail
+    assert "wrong-cross" not in toolchain.detail
+    assert seen_commands
+    assert seen_commands[0][:3] == ["/tools/clang-wasm", "-target", "wasm32-wasip1"]
+
+
 def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     tmp_path: Path,
     monkeypatch,
@@ -1204,6 +1771,112 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     assert embedded["runtime_linkage"] == "static_link"
     assert embedded["artifact_kind"] == "wasm_relocatable_object"
     assert embedded["object_closure"] == manifest["object_closure"]
+
+
+def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "numpy_extproj"
+    project_root.mkdir()
+    _write_extension_project(project_root)
+    pyproject = project_root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace(
+            'module = "demoext"',
+            'module = "numpy._core._multiarray_umath"',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_wasi_sysroot",
+        lambda: wasi_sysroot,
+        raising=True,
+    )
+
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(project_root / "dist"),
+        target="wasm",
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 2
+    stderr = capsys.readouterr().err
+    assert "WASM source-recompiled extension builds for 'numpy'" in stderr
+    assert "tool.molt.extension.python_exports" in stderr
+    assert "tool.molt.extension.callable_exports" in stderr
+    assert "not package directory ancestry" in stderr
+
+
+def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_export(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "numpy_extproj"
+    project_root.mkdir()
+    _write_extension_project(project_root)
+    pyproject = project_root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace(
+            'module = "demoext"',
+            'module = "numpy._core._multiarray_umath"',
+        ),
+        encoding="utf-8",
+    )
+    init_symbol = "PyInit__multiarray_umath"
+    wasm_bytes = _wasm_exporting_i64_unary_symbol(init_symbol)
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(wasm_bytes)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_wasi_sysroot",
+        lambda: wasi_sysroot,
+        raising=True,
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        target="wasm",
+        deterministic=False,
+        python_export=["numpy"],
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["module"] == "numpy._core._multiarray_umath"
+    assert manifest["python_exports"] == ["numpy"]
+    assert manifest["runtime_linkage"] == "static_link"
+    assert (out_dir / "numpy" / "_core" / "_multiarray_umath.molt.wasm").exists()
+    artifact_manifest = json.loads(
+        (
+            out_dir
+            / "numpy"
+            / "_core"
+            / "_multiarray_umath.molt.wasm.extension_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert artifact_manifest["python_exports"] == ["numpy"]
 
 
 def test_extension_build_wasm_target_rejects_missing_direct_symbol(
@@ -1474,6 +2147,329 @@ def test_extension_audit_requires_checksums_when_requested(tmp_path: Path) -> No
         verbose=False,
     )
     assert rc == 1
+
+
+def test_extension_audit_requires_manifest_python_export(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir = tmp_path / "dist"
+    out_dir.mkdir()
+    manifest = {
+        "schema_version": 1,
+        "name": "numpy-probe",
+        "version": "0.1.0",
+        "module": "numpy._core._multiarray_umath",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["ffi.unsafe"],
+        "extension": "_multiarray_umath.molt.wasm",
+    }
+    (out_dir / "extension_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc = cli.extension_audit(
+        path=str(out_dir),
+        require_python_export=["numpy"],
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "Missing required python export 'numpy'" in out
+    assert "molt extension build --python-export numpy" in out
+
+
+def test_extension_audit_reports_required_callable_exports_json(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir = tmp_path / "dist"
+    out_dir.mkdir()
+    manifest = {
+        "schema_version": 1,
+        "name": "scipy-ndimage-probe",
+        "version": "0.1.0",
+        "module": "scipy.ndimage._nd_image",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["ffi.unsafe"],
+        "extension": "_nd_image.molt.wasm",
+        "python_exports": ["scipy.ndimage.distance_transform_edt"],
+        "callable_exports": [
+            {
+                "module": "scipy.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "module_attr",
+                "abi": "molt.object_call_v1",
+                "deterministic": True,
+            }
+        ],
+    }
+    (out_dir / "extension_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc = cli.extension_audit(
+        path=str(out_dir),
+        require_python_export=["scipy.ndimage.distance_transform_edt"],
+        require_callable_export=["scipy.ndimage.distance_transform_edt"],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["data"]["python_exports"] == [
+        "scipy.ndimage.distance_transform_edt"
+    ]
+    assert payload["data"]["callable_exports"] == [
+        "scipy.ndimage.distance_transform_edt"
+    ]
+    assert payload["data"]["missing_python_exports"] == []
+    assert payload["data"]["missing_callable_exports"] == []
+
+
+def test_extension_seal_publishes_package_root_export_for_existing_static_artifact(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    package_dir = source_root / "numpy"
+    artifact_dir = package_dir / "_core"
+    artifact_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__multiarray_umath")
+    artifact_path = artifact_dir / "_multiarray_umath.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "name": "numpy-probe",
+        "version": "0.1.0",
+        "module": "numpy._core._multiarray_umath",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__multiarray_umath",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "numpy/_core/_multiarray_umath.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__multiarray_umath",
+            "init_symbol_owner": "0_multiarray.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "object": "0_multiarray.o",
+                    "source_sha256": extension_sha256,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__multiarray_umath"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sealed_root = tmp_path / "sealed"
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(sealed_root),
+        python_export=["numpy"],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["python_exports"] == ["numpy"]
+    sealed_manifest = json.loads(
+        (
+            sealed_root
+            / "numpy"
+            / "_core"
+            / "_multiarray_umath.molt.wasm.extension_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert sealed_manifest["extension"] == "_multiarray_umath.molt.wasm"
+    assert sealed_manifest["python_exports"] == ["numpy"]
+    assert (sealed_root / "numpy" / "__init__.py").exists()
+    assert (sealed_root / "numpy" / "_core" / "__init__.py").exists()
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(sealed_root,),
+        admitted_packages={"numpy"},
+        required_modules={"numpy"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert plan.native_python_export_names() == frozenset({"numpy"})
+
+
+def test_extension_audit_requires_static_link_artifact_custody(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir = tmp_path / "dist"
+    artifact_dir = out_dir / "nativepkg"
+    artifact_dir.mkdir(parents=True)
+    artifact_bytes = b"\0asm-static-link-probe"
+    artifact_path = artifact_dir / "_native.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest = {
+        "schema_version": 1,
+        "name": "nativepkg-probe",
+        "version": "0.1.0",
+        "module": "nativepkg._native",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["ffi.unsafe"],
+        "init_symbol": "PyInit__native",
+        "extension": "nativepkg/_native.molt.wasm",
+        "extension_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__native",
+            "init_symbol_owner": "0_native.o",
+            "closure_sha256": "a" * 64,
+            "project_generated_c_api_prefixes": ["npy_generated_"],
+            "objects": [
+                {
+                    "path": "0_native.o",
+                    "defined_symbols": ["PyInit__native"],
+                    "undefined_symbols": ["molt_add"],
+                    "required_c_api_symbols": ["PyLong_FromLong"],
+                    "required_capsules": [
+                        "numpy.core._multiarray_umath._ARRAY_API",
+                    ],
+                    "project_generated_c_api_symbols": ["npy_generated_int8"],
+                }
+            ],
+            "runtime_symbols": ["molt_add"],
+            "undefined_symbols": ["molt_add"],
+        },
+    }
+    (out_dir / "extension_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc = cli.extension_audit(
+        path=str(out_dir),
+        require_loader_kind="libmolt_source",
+        require_runtime_linkage="static_link",
+        require_artifact_kind="wasm_relocatable_object",
+        require_artifact_file=True,
+        require_object_closure=True,
+        require_checksum=True,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["data"]["extension_file_status"] == "ok"
+    assert payload["data"]["object_closure"]["present"] is True
+    assert payload["data"]["object_closure"]["has_closure_sha256"] is True
+    assert payload["data"]["object_closure"]["object_count"] == 1
+    assert payload["data"]["object_closure"]["runtime_symbol_count"] == 1
+    assert payload["data"]["object_closure"]["defined_symbol_count"] == 1
+    assert payload["data"]["object_closure"]["undefined_symbol_count"] == 1
+    assert payload["data"]["object_closure"]["required_c_api_symbol_count"] == 1
+    assert payload["data"]["object_closure"]["required_capsule_count"] == 1
+    assert (
+        payload["data"]["object_closure"]["project_generated_c_api_symbol_count"] == 1
+    )
+    assert (
+        payload["data"]["object_closure"]["project_generated_c_api_prefix_count"] == 1
+    )
+
+
+def test_extension_audit_rejects_static_link_artifact_hash_mismatch(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    out_dir = tmp_path / "dist"
+    out_dir.mkdir()
+    artifact_path = out_dir / "_native.molt.wasm"
+    artifact_path.write_bytes(b"actual-wasm-bytes")
+    manifest = {
+        "schema_version": 1,
+        "name": "nativepkg-probe",
+        "version": "0.1.0",
+        "module": "nativepkg._native",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["ffi.unsafe"],
+        "init_symbol": "PyInit__native",
+        "extension": "_native.molt.wasm",
+        "extension_sha256": hashlib.sha256(b"different-bytes").hexdigest(),
+        "object_closure": {
+            "runtime_symbols": ["molt_add"],
+            "undefined_symbols": ["molt_add"],
+        },
+    }
+    (out_dir / "extension_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    rc = cli.extension_audit(
+        path=str(out_dir),
+        require_loader_kind="libmolt_source",
+        require_runtime_linkage="static_link",
+        require_artifact_kind="wasm_relocatable_object",
+        require_artifact_file=True,
+        require_object_closure=True,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 1
+    assert "extension_sha256 does not match extension artifact" in capsys.readouterr().out
 
 
 def test_verify_extension_manifest_requires_checksums(tmp_path: Path) -> None:
@@ -1781,6 +2777,61 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_numpy_header_arrayobject_cpython_abi_tier_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for NumPy CPython ABI header smoke test")
+    source = tmp_path / "numpy_h_arrayobject_cpython_abi_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "",
+                "static int numpy_cpython_abi_smoke(PyObject *obj) {",
+                "    PyArrayObject *arr = (PyArrayObject *)obj;",
+                "    PyArray_Descr *descr = PyArray_DescrFromScalar(obj);",
+                "    PyObject *from_any = PyArray_FromAny(",
+                "        obj, PyArray_DescrFromType(NPY_DOUBLE), 1, 2,",
+                "        NPY_ARRAY_C_CONTIGUOUS, NULL);",
+                "    int ok = PyArray_Check(arr) + PyArray_DescrCheck(descr);",
+                "    if (from_any != NULL) {",
+                "        Py_DECREF(from_any);",
+                "    }",
+                "    if (descr != NULL) {",
+                "        PyMem_Free(descr);",
+                "    }",
+                "    return ok + (int)PyArray_SIZE(arr);",
+                "}",
+                "",
+                "int main(void) {",
+                "    (void)numpy_cpython_abi_smoke;",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = run_cli_test_process(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'runtime' / 'molt-cpython-abi' / 'include'}",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_datetime_header_smoke(tmp_path: Path) -> None:
     clang = shutil.which("clang")
     if clang is None:
@@ -1811,6 +2862,56 @@ def test_datetime_header_smoke(tmp_path: Path) -> None:
             "-Wall",
             "-Wextra",
             "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_datetime_header_cpython_abi_tier_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for datetime.h CPython ABI smoke test")
+    source = tmp_path / "datetime_h_cpython_abi_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <datetime.h>",
+                "",
+                "int main(void) {",
+                "    PyObject *date;",
+                "    PyObject *datetime;",
+                "    PyObject *delta;",
+                "    PyDateTime_IMPORT;",
+                "    date = PyDate_FromDate(2026, 6, 30);",
+                "    datetime = PyDateTimeAPI->DateTime_FromDateAndTime(",
+                "        2026, 6, 30, 9, 45, 0, 0,",
+                "        PyDateTime_TimeZone_UTC, PyDateTimeAPI->DateTimeType);",
+                "    delta = PyDelta_FromDSU(1, 2, 3);",
+                "    (void)PyDateTime_Check(datetime);",
+                "    (void)PyDate_Check(date);",
+                "    (void)PyDelta_Check(delta);",
+                "    return 0;",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = run_cli_test_process(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'runtime' / 'molt-cpython-abi' / 'include'}",
             f"-I{ROOT / 'include'}",
             "-fsyntax-only",
             str(source),

@@ -1,6 +1,6 @@
 //! Sequence API — PyList_*, PyTuple_*.
 
-use crate::abi_types::{Py_ssize_t, PyObject};
+use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject, PyVarObject};
 #[allow(unused_imports)]
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::GLOBAL_BRIDGE;
@@ -64,6 +64,16 @@ pub unsafe extern "C" fn PyList_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *m
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
     unsafe { PyList_GET_ITEM(op, i) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_GetItemRef(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
+    let item = unsafe { PyList_GetItem(op, i) };
+    if item.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { crate::api::refcount::Py_INCREF(item) };
+    item
 }
 
 #[unsafe(no_mangle)]
@@ -136,22 +146,66 @@ pub unsafe extern "C" fn PyList_Check(op: *mut PyObject) -> c_int {
 
 // ─── PyTuple ──────────────────────────────────────────────────────────────
 
+unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTupleObject> {
+    if op.is_null() {
+        return None;
+    }
+    let ob_type = unsafe { (*op).ob_type };
+    if std::ptr::eq(ob_type, &raw mut crate::abi_types::PyTuple_Type)
+        && GLOBAL_BRIDGE.lock().pyobj_to_handle(op).is_none()
+    {
+        Some(op.cast::<PyTupleObject>())
+    } else {
+        None
+    }
+}
+
+pub unsafe extern "C" fn molt_tuple_dealloc(op: *mut PyObject) {
+    let Some(tuple) = (unsafe { tuple_layout_object(op) }) else {
+        return;
+    };
+    let len = unsafe { (*tuple).ob_base.ob_size };
+    let item_ptr = unsafe { (*tuple).ob_item };
+    if !item_ptr.is_null() && len > 0 {
+        let items = unsafe { std::slice::from_raw_parts_mut(item_ptr, len as usize) };
+        for item in items.iter_mut() {
+            unsafe { crate::api::refcount::Py_XDECREF(*item) };
+        }
+        let slice = std::ptr::slice_from_raw_parts_mut(item_ptr, len as usize);
+        unsafe { drop(Box::from_raw(slice)) };
+    }
+    unsafe { drop(Box::from_raw(tuple)) };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_New(size: Py_ssize_t) -> *mut PyObject {
     let n = if size < 0 { 0 } else { size as usize };
-    let h = hooks_or_stubs();
-    let bits = unsafe { (h.alloc_tuple)(n) };
-    if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
-    }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    let items = vec![ptr::null_mut(); n].into_boxed_slice();
+    let item_ptr = Box::leak(items).as_mut_ptr();
+    let tuple = Box::new(PyTupleObject {
+        ob_base: PyVarObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut crate::abi_types::PyTuple_Type,
+            },
+            ob_size: n as Py_ssize_t,
+        },
+        ob_item: item_ptr,
+    });
+    Box::into_raw(tuple).cast::<PyObject>()
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *mut PyObject {
     if op.is_null() || i < 0 {
         return ptr::null_mut();
+    }
+    if let Some(tuple) = unsafe { tuple_layout_object(op) } {
+        let len = unsafe { (*tuple).ob_base.ob_size };
+        if i >= len || unsafe { (*tuple).ob_item.is_null() } {
+            return ptr::null_mut();
+        }
+        return unsafe { *(*tuple).ob_item.add(i as usize) };
     }
     let bridge = GLOBAL_BRIDGE.lock();
     let bits = match bridge.pyobj_to_handle(op) {
@@ -177,6 +231,9 @@ pub unsafe extern "C" fn PyTuple_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
     if op.is_null() {
         return 0;
     }
+    if let Some(tuple) = unsafe { tuple_layout_object(op) } {
+        return unsafe { (*tuple).ob_base.ob_size };
+    }
     let bridge = GLOBAL_BRIDGE.lock();
     let bits = match bridge.pyobj_to_handle(op) {
         Some(b) => b,
@@ -193,6 +250,40 @@ pub unsafe extern "C" fn PyTuple_Size(op: *mut PyObject) -> Py_ssize_t {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyTuple_GetSlice(
+    op: *mut PyObject,
+    start: Py_ssize_t,
+    end: Py_ssize_t,
+) -> *mut PyObject {
+    if op.is_null() {
+        return ptr::null_mut();
+    }
+    let len = unsafe { PyTuple_GET_SIZE(op) };
+    let lo = start.clamp(0, len);
+    let hi = end.clamp(lo, len);
+    let out = unsafe { PyTuple_New(hi - lo) };
+    if out.is_null() {
+        return ptr::null_mut();
+    }
+    for index in lo..hi {
+        let item = unsafe { PyTuple_GET_ITEM(op, index) };
+        if item.is_null() {
+            unsafe { crate::api::refcount::Py_DECREF(out) };
+            return ptr::null_mut();
+        }
+        unsafe { crate::api::refcount::Py_INCREF(item) };
+        if unsafe { PyTuple_SetItem(out, index - lo, item) } != 0 {
+            unsafe {
+                crate::api::refcount::Py_DECREF(item);
+                crate::api::refcount::Py_DECREF(out);
+            }
+            return ptr::null_mut();
+        }
+    }
+    out
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_SetItem(
     op: *mut PyObject,
     i: Py_ssize_t,
@@ -200,6 +291,19 @@ pub unsafe extern "C" fn PyTuple_SetItem(
 ) -> c_int {
     if op.is_null() || i < 0 || v.is_null() {
         return -1;
+    }
+    if let Some(tuple) = unsafe { tuple_layout_object(op) } {
+        let len = unsafe { (*tuple).ob_base.ob_size };
+        if i >= len || unsafe { (*tuple).ob_item.is_null() } {
+            return -1;
+        }
+        let slot = unsafe { (*tuple).ob_item.add(i as usize) };
+        unsafe {
+            let old = *slot;
+            *slot = v;
+            crate::api::refcount::Py_XDECREF(old);
+        }
+        return 0;
     }
     let bridge = GLOBAL_BRIDGE.lock();
     let tuple_bits = match bridge.pyobj_to_handle(op) {
@@ -225,8 +329,8 @@ pub unsafe extern "C" fn PyTuple_Check(op: *mut PyObject) -> c_int {
     (std::ptr::eq(ob_type, &raw const crate::abi_types::PyTuple_Type)) as c_int
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyTuple_Pack(n: Py_ssize_t /* ... */) -> *mut PyObject {
+#[allow(dead_code)]
+unsafe fn py_tuple_pack_placeholder_removed_from_abi(n: Py_ssize_t, /* ... */) -> *mut PyObject {
     // Variadic — without va_list we can only create an empty tuple.
     // Real variadic support is in the C shim.
     unsafe { PyTuple_New(n) }

@@ -657,6 +657,7 @@ from molt.cli.extension_manifest import (
 )
 from molt.cli.extension_audit import extension_audit
 from molt.cli.extension_scan import extension_scan
+from molt.cli.extension_seal import extension_seal
 from molt.cli.models import (
     BuildProfile,
     EmitMode,

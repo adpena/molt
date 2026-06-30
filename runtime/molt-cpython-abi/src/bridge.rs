@@ -649,6 +649,17 @@ pub extern "C" fn molt_bridge_is_true(obj: *mut PyObject) -> std::os::raw::c_int
 ///
 /// Inline values hash directly from their bit representation.
 /// Heap objects use the bit pattern as a pointer-based hash (identity hash).
+const PY_NONE_HASH_BITS: u64 = 0x0FCA_86420;
+
+#[inline]
+fn py_hash_from_unsigned_bits(bits: u64) -> isize {
+    if std::mem::size_of::<isize>() >= 8 {
+        bits as isize
+    } else {
+        bits as u32 as i32 as isize
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_hash(obj: *mut PyObject) -> isize {
     if obj.is_null() {
@@ -669,21 +680,20 @@ pub extern "C" fn molt_bridge_hash(obj: *mut PyObject) -> isize {
             // Integer-valued float: hash matches the int hash.
             return f as i64 as isize;
         }
-        return bits as isize;
+        return py_hash_from_unsigned_bits(bits);
     }
     if mo.is_bool() {
         return mo.as_bool().unwrap_or(false) as isize;
     }
     if mo.is_none() {
-        // CPython 3.12: hash(None) == 0xFCA86420
-        return 0xFCA8_6420_u32 as isize;
+        return py_hash_from_unsigned_bits(PY_NONE_HASH_BITS);
     }
     if mo.is_ptr() {
         // Heap objects: use the address portion of the NaN-boxed bits.
         // This gives a stable identity hash for the object's lifetime.
-        return (bits & 0x0000_FFFF_FFFF_FFFF) as isize;
+        return py_hash_from_unsigned_bits(bits & 0x0000_FFFF_FFFF_FFFF);
     }
-    bits as isize
+    py_hash_from_unsigned_bits(bits)
 }
 
 /// `PyObject_Length(obj)` — return length of a container via NaN-boxed bits.

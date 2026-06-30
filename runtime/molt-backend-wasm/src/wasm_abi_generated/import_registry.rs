@@ -4,6 +4,7 @@
 // DO NOT EDIT BY HAND.
 
 use super::import_tokens::WasmRuntimeImport;
+use super::runtime_surface::RUNTIME_HOST_EXPORTS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeImportSpec {
@@ -21131,5 +21132,11 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
 
 #[inline]
 pub(crate) fn wasm_runtime_export_name(name: &str) -> Option<&'static str> {
-    wasm_runtime_import(name).map(WasmRuntimeImport::runtime_export_name)
+    if let Some(import) = wasm_runtime_import(name) {
+        return Some(import.runtime_export_name());
+    }
+    RUNTIME_HOST_EXPORTS
+        .iter()
+        .copied()
+        .find(|export| *export == name)
 }

@@ -19,6 +19,7 @@ from molt._wasm_abi_generated import (
 )
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
 from molt.cli.c_api_symbols import c_api_primitive_class
+from molt.cli.c_api_symbols import is_c_api_external_requirement
 from molt.cli.c_api_symbols import is_c_api_symbol
 from molt.cli.extension_manifest import (
     _manifest_callable_exports,
@@ -292,6 +293,16 @@ def _external_native_artifact_module_required(
     return False
 
 
+def _external_native_provider_reaches_required(
+    *,
+    provider_name: str,
+    required_name: str,
+) -> bool:
+    return required_name == provider_name or required_name.startswith(
+        provider_name + "."
+    )
+
+
 def _extension_path_matches_manifest(
     *,
     path: Path,
@@ -490,12 +501,20 @@ def _manifest_object_closure_required_c_api_symbols(
     object_closure = manifest.get("object_closure")
     if not isinstance(object_closure, Mapping):
         return ()
-    required = set(_manifest_str_tuple(object_closure, "required_c_api_symbols"))
+    required = {
+        symbol
+        for symbol in _manifest_str_tuple(object_closure, "required_c_api_symbols")
+        if is_c_api_external_requirement(symbol)
+    }
     objects = object_closure.get("objects")
     if isinstance(objects, list):
         for item in objects:
             if isinstance(item, Mapping):
-                required.update(_manifest_str_tuple(item, "required_c_api_symbols"))
+                required.update(
+                    symbol
+                    for symbol in _manifest_str_tuple(item, "required_c_api_symbols")
+                    if is_c_api_external_requirement(symbol)
+                )
     return tuple(sorted(required))
 
 
@@ -1291,6 +1310,20 @@ def _resolve_external_package_native_artifact_plan(
         return None, errors
     required = frozenset(required_modules) if required_modules is not None else None
     provider_candidates: list[tuple[str, Path, Path, str]] = []
+    required_package_roots = (
+        {
+            package
+            for package in admitted_packages
+            if required is not None
+            and _source_recompiled_external_package_root(package) is not None
+            and package in required
+        }
+        if required is not None
+        else set()
+    )
+    package_root_providers: dict[str, set[str]] = {
+        package: set() for package in required_package_roots
+    }
     for package in sorted(admitted_packages):
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
@@ -1315,6 +1348,13 @@ def _resolve_external_package_native_artifact_plan(
                     package_dir=package_dir,
                     artifact_path=artifact_path,
                 )
+                provider_names = (
+                    module_name,
+                    *python_exports,
+                    *callable_exports,
+                )
+                if package in package_root_providers:
+                    package_root_providers[package].update(provider_names)
                 if (
                     required is not None
                     and not _external_native_artifact_module_required(
@@ -1334,6 +1374,24 @@ def _resolve_external_package_native_artifact_plan(
                 errors.extend(artifact_errors)
                 if artifact is not None:
                     artifacts.append(artifact)
+    for package, providers in sorted(package_root_providers.items()):
+        if any(
+            _external_native_provider_reaches_required(
+                provider_name=provider,
+                required_name=package,
+            )
+            for provider in providers
+        ):
+            continue
+        provider_summary = ", ".join(sorted(providers)) or "<none>"
+        errors.append(
+            f"{package}: required source-recompiled package import {package!r} "
+            "has no manifest-symbol owner in admitted native artifacts. Child "
+            "artifact modules are not package-root import custody; publish "
+            f"{package!r} in python_exports before graph/backend admission. "
+            "Candidate providers: "
+            f"{provider_summary}"
+        )
     if errors:
         return None, errors
     closed_artifacts, capsule_errors = _close_external_native_capsule_provider_artifacts(
@@ -1422,6 +1480,101 @@ def _external_package_has_wasm_static_link_artifact(package_dir: Path) -> bool:
     return False
 
 
+def _wasm_static_link_artifact_export_names(
+    *,
+    package: str,
+    package_dir: Path,
+    artifact_path: Path,
+) -> tuple[str, ...]:
+    manifest_path = _find_external_extension_manifest(
+        artifact_path=artifact_path,
+        package_dir=package_dir,
+    )
+    if manifest_path is None:
+        return ()
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    if not isinstance(manifest, Mapping):
+        return ()
+    if not _manifest_is_wasm_static_link_artifact(manifest):
+        return ()
+    errors: list[str] = []
+    python_exports = _manifest_dotted_name_tuple(
+        manifest,
+        "python_exports",
+        package=package,
+        errors=errors,
+    )
+    callable_exports = _manifest_callable_exports(
+        manifest,
+        package=package,
+        errors=errors,
+    )
+    return (
+        *python_exports,
+        *(export.qualified_name for export in callable_exports),
+    )
+
+
+def _wasm_external_package_export_custody_errors(
+    *,
+    external_module_roots: Sequence[Path],
+    admitted_packages: Collection[str],
+) -> list[str]:
+    errors: list[str] = []
+    for package in sorted(admitted_packages):
+        native_root = _source_recompiled_external_package_root(package)
+        if native_root is None:
+            continue
+        package_dirs: list[Path] = []
+        static_artifacts: list[Path] = []
+        exported_names: set[str] = set()
+        for root in external_module_roots:
+            package_dir = _external_package_dir(root.resolve(), package)
+            if package_dir is None:
+                continue
+            package_dirs.append(package_dir)
+            for artifact_path in _iter_external_package_native_artifacts(package_dir):
+                manifest_path = _find_external_extension_manifest(
+                    artifact_path=artifact_path,
+                    package_dir=package_dir,
+                )
+                if manifest_path is None:
+                    continue
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(manifest, Mapping):
+                    continue
+                if not _manifest_is_wasm_static_link_artifact(manifest):
+                    continue
+                static_artifacts.append(artifact_path.resolve())
+                exported_names.update(
+                    _wasm_static_link_artifact_export_names(
+                        package=package,
+                        package_dir=package_dir,
+                        artifact_path=artifact_path,
+                    )
+                )
+        if not static_artifacts or exported_names:
+            continue
+        roots = ", ".join(str(path) for path in package_dirs)
+        artifacts = ", ".join(str(path) for path in sorted(static_artifacts))
+        errors.append(
+            f"{package}: admitted WASM source-recompiled package root "
+            f"{native_root!r} has static_link libmolt_source artifacts but no "
+            "manifest-declared python_exports or callable_exports. Import "
+            f"visibility for {package!r} must not select native artifacts by "
+            "directory ancestry; publish package-symbol export custody in "
+            "extension_manifest.json so reachable object closure can stay "
+            f"tree-shaken. Artifacts: {artifacts}. Roots: {roots}"
+        )
+    return errors
+
+
 def _wasm_external_package_native_source_errors(
     *,
     external_module_roots: Sequence[Path],
@@ -1489,6 +1642,19 @@ def _resolve_import_admission_policy(
                 "External static package native-artifact custody errors: "
                 + _external_native_artifact_error_summary(
                     wasm_native_source_errors
+                ),
+                json_output,
+                command="build",
+            )
+        wasm_export_custody_errors = _wasm_external_package_export_custody_errors(
+            external_module_roots=external_module_roots,
+            admitted_packages=packages,
+        )
+        if wasm_export_custody_errors:
+            return None, _fail(
+                "External static package native-artifact custody errors: "
+                + _external_native_artifact_error_summary(
+                    wasm_export_custody_errors
                 ),
                 json_output,
                 command="build",

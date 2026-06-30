@@ -3,7 +3,7 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{PyExc_TypeError, PyExc_ValueError};
+use molt_cpython_abi::abi_types::{PyExc_TypeError, PyExc_ValueError, PyExc_Warning};
 use std::ptr;
 
 fn init() {
@@ -21,6 +21,13 @@ fn test_no_exception_initially() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
     assert!(occurred.is_null());
+}
+
+#[test]
+fn test_warning_exception_singleton_is_exported() {
+    init();
+    let warning = &raw mut PyExc_Warning;
+    assert!(!warning.is_null());
 }
 
 #[test]
@@ -159,6 +166,23 @@ fn test_format_sets_exception_returns_null() {
     let exc = &raw mut PyExc_TypeError;
     let result = unsafe { molt_cpython_abi::api::errors::PyErr_Format(exc, c"bad type".as_ptr()) };
     assert!(result.is_null(), "PyErr_Format should return NULL");
+
+    let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
+    assert!(!occurred.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_set_from_errno_sets_exception_returns_null() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+
+    let result = unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetFromErrno(
+            &raw mut molt_cpython_abi::abi_types::PyExc_OSError,
+        )
+    };
+    assert!(result.is_null(), "PyErr_SetFromErrno should return NULL");
 
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
     assert!(!occurred.is_null());

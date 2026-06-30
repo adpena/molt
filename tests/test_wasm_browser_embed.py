@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import threading
@@ -9,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from molt._wasm_abi_generated import WASM_RESERVED_RUNTIME_CALLABLES
 from molt.dx import development_artifact_env
 from tests.wasm_linked_runner import _run_wasm_test_process
+from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 
 
 def _browser_wasm_build_env(root: Path) -> dict[str, str]:
@@ -26,6 +29,96 @@ def _browser_wasm_build_env(root: Path) -> dict[str, str]:
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     return env
+
+
+def test_browser_host_import_parser_handles_tag_imports_before_memory(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed parser test")
+
+    root = Path(__file__).resolve().parents[1]
+    wasm_path = tmp_path / "tag_import_before_memory.wasm"
+    wasm_path.write_bytes(build_wasm_tag_import_before_memory())
+    browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+    script = tmp_path / "parse_browser_host_imports.mjs"
+    script.write_text(
+        f"""
+import {{ parseWasmImports }} from {browser_host_uri!r};
+import fs from 'node:fs';
+
+const imports = parseWasmImports(fs.readFileSync(process.argv[2]));
+console.log(JSON.stringify(imports));
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script), str(wasm_path)],
+        cwd=root,
+        env=os.environ,
+        timeout=30,
+    )
+    assert run.returncode == 0, run.stderr
+
+    parsed = json.loads(run.stdout)
+    assert parsed["memory"] == {"min": 1, "max": None}
+    assert parsed["funcImports"] == []
+    assert parsed["tagImports"] == [
+        {
+            "module": "env",
+            "name": "molt_exception",
+            "attribute": 0,
+            "typeIndex": 0,
+            "parameters": [],
+            "results": [],
+        }
+    ]
+
+
+def test_browser_embed_import_parser_handles_tag_imports_before_memory(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed parser test")
+
+    root = Path(__file__).resolve().parents[1]
+    wasm_path = tmp_path / "tag_import_before_memory.wasm"
+    wasm_path.write_bytes(build_wasm_tag_import_before_memory())
+    browser_embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "parse_browser_embed_imports.mjs"
+    script.write_text(
+        f"""
+import {{ parseMoltWasmImports }} from {browser_embed_uri!r};
+import fs from 'node:fs';
+
+const imports = parseMoltWasmImports(fs.readFileSync(process.argv[2]));
+console.log(JSON.stringify(imports));
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script), str(wasm_path)],
+        cwd=root,
+        env=os.environ,
+        timeout=30,
+    )
+    assert run.returncode == 0, run.stderr
+
+    parsed = json.loads(run.stdout)
+    assert parsed["memory"] == {"min": 1, "max": None}
+    assert parsed["funcImports"] == []
+    assert parsed["tagImports"] == [
+        {
+            "module": "env",
+            "name": "molt_exception",
+            "attribute": 0,
+            "typeIndex": 0,
+            "parameters": [],
+            "results": [],
+        }
+    ]
 
 
 class _StaticDirHandler(BaseHTTPRequestHandler):
@@ -500,13 +593,24 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert (out_dir / "molt_runtime.wasm").exists()
     assert (out_dir / "manifest.json").exists()
     assert (out_dir / "browser_embed.js").exists()
+    assert (out_dir / "loader_bridge.js").exists()
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["assets"]["browser_embed"]["path"] == "browser_embed.js"
+    assert manifest["assets"]["loader_bridge"]["path"] == "loader_bridge.js"
     browser_abi = manifest["abi"]["browser_embed"]
     assert browser_abi["call_indirect_imports"] == [
         f"molt_call_indirect{arity}" for arity in range(14)
     ]
     assert browser_abi["table_layout"]["legacy_table_base"] == 256
+    assert browser_abi["reserved_runtime_callables"] == [
+        {
+            "index": index,
+            "runtime_export": runtime_name,
+            "import_name": import_name,
+            "arity": arity,
+        }
+        for index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+    ]
     assert "fast_list_append" in browser_abi["runtime_import_fallbacks"]
     runtime_imports = manifest["abi"]["runtime_imports"]
     assert "molt_exception_init" not in runtime_imports["signatures"]

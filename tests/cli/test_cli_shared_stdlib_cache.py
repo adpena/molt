@@ -12,7 +12,6 @@ import pytest
 import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
-from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import build_inputs as cli_build_inputs
 from tests.cli.process_guard import run_cli_test_process
 
@@ -1400,6 +1399,26 @@ def test_native_object_symbol_sets_use_nm_candidate_ladder(
     defined, undefined = symbols
     assert "__future_____Feature___init__" in defined
     assert "molt_runtime_symbol" in undefined
+
+
+def test_native_object_symbol_sets_accept_empty_objects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    obj = tmp_path / "target_gated_empty.o"
+    obj.write_bytes(b"wasm")
+
+    def fake_run_completed_command(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(cmd, 1, "", f"{obj}: no symbols\n")
+
+    monkeypatch.setattr(BACKEND_CACHE, "_nm_candidate_binaries", lambda: ["llvm-nm"])
+    monkeypatch.setattr(
+        BACKEND_CACHE, "_run_completed_command", fake_run_completed_command
+    )
+
+    assert cli._native_object_global_symbol_sets(obj) == (set(), set())
 
 
 def test_native_symbol_normalization_is_platform_explicit(

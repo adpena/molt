@@ -58,6 +58,10 @@ WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORTS = tuple(_WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORTS)
 
+WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
+    _WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+)
+
 WASM_TABLE_REF_EXPORT_PREFIX = _WASM_ABI.WASM_TABLE_REF_EXPORT_PREFIX
 
 
@@ -123,8 +127,10 @@ _ESSENTIAL_EXPORTS = _WASM_ABI.WASM_ESSENTIAL_EXPORTS
 
 _TRAP_STUB_BODY = bytes([0x00, 0x00, 0x0B])
 
+
 def _is_wasm_binary(data: bytes) -> bool:
     return len(data) >= 8 and data[:4] == WASM_MAGIC and data[4:8] == WASM_VERSION
+
 
 def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
     result = 0
@@ -142,6 +148,7 @@ def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
         shift += 7
     return result, offset
 
+
 def _write_varuint(value: int) -> bytes:
     parts: list[int] = []
     while True:
@@ -154,6 +161,7 @@ def _write_varuint(value: int) -> bytes:
             break
     return bytes(parts)
 
+
 def _read_string(data: bytes, offset: int) -> tuple[str, int]:
     length, offset = _read_varuint(data, offset)
     end = offset + length
@@ -161,9 +169,11 @@ def _read_string(data: bytes, offset: int) -> tuple[str, int]:
         raise ValueError("Unexpected EOF while reading string")
     return data[offset:end].decode("utf-8"), end
 
+
 def _write_string(value: str) -> bytes:
     raw = value.encode("utf-8")
     return _write_varuint(len(raw)) + raw
+
 
 def _parse_sections(data: bytes) -> list[tuple[int, bytes]]:
     if len(data) < 8 or data[:4] != WASM_MAGIC or data[4:8] != WASM_VERSION:
@@ -181,6 +191,7 @@ def _parse_sections(data: bytes) -> list[tuple[int, bytes]]:
         offset = end
     return sections
 
+
 def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
     output = bytearray()
     output.extend(WASM_MAGIC)
@@ -190,6 +201,7 @@ def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
         output.extend(_write_varuint(len(payload)))
         output.extend(payload)
     return bytes(output)
+
 
 def _flatten_rec_groups(data: bytes) -> bytes | None:
     """Rewrite the type section so a recursive type group (`0x4E`) of plain
@@ -311,6 +323,7 @@ def _flatten_rec_groups(data: bytes) -> bytes | None:
     new_sections[type_section_index] = (1, bytes(new_payload))
     return _build_sections(new_sections)
 
+
 def _parse_custom_section(payload: bytes) -> tuple[str, bytes]:
     name_len, offset = _read_varuint(payload, 0)
     end = offset + name_len
@@ -319,8 +332,10 @@ def _parse_custom_section(payload: bytes) -> tuple[str, bytes]:
     name = payload[offset:end].decode("utf-8")
     return name, payload[end:]
 
+
 def _build_custom_section(name: str, payload: bytes) -> bytes:
     return _write_string(name) + payload
+
 
 def _parse_linking_payload(payload: bytes) -> tuple[int, list[tuple[int, bytes]]]:
     version, offset = _read_varuint(payload, 0)
@@ -336,6 +351,7 @@ def _parse_linking_payload(payload: bytes) -> tuple[int, list[tuple[int, bytes]]
         offset = end
     return version, subsections
 
+
 def _build_linking_payload(version: int, subsections: list[tuple[int, bytes]]) -> bytes:
     output = bytearray()
     output.extend(_write_varuint(version))
@@ -344,6 +360,7 @@ def _build_linking_payload(version: int, subsections: list[tuple[int, bytes]]) -
         output.extend(_write_varuint(len(payload)))
         output.extend(payload)
     return bytes(output)
+
 
 def _parse_symbol_flags(flags_text: str) -> int:
     flags_text = flags_text.strip()
@@ -360,6 +377,7 @@ def _parse_symbol_flags(flags_text: str) -> int:
         flags |= bit
     return flags
 
+
 def _parse_indexed_symbol(
     payload: bytes, offset: int, flags: int
 ) -> tuple[int, str, int]:
@@ -369,6 +387,7 @@ def _parse_indexed_symbol(
         name, offset = _read_string(payload, offset)
     return index, name, offset
 
+
 def _skip_data_symbol(payload: bytes, offset: int, flags: int) -> int:
     _, offset = _read_string(payload, offset)
     if not (flags & FLAG_UNDEFINED):
@@ -376,6 +395,7 @@ def _skip_data_symbol(payload: bytes, offset: int, flags: int) -> int:
         _, offset = _read_varuint(payload, offset)
         _, offset = _read_varuint(payload, offset)
     return offset
+
 
 def _collect_linking_function_symbols(data: bytes) -> list[tuple[int, int, str, str]]:
     symbols: list[tuple[int, int, str, str]] = []
@@ -415,6 +435,7 @@ def _collect_linking_function_symbols(data: bytes) -> list[tuple[int, int, str, 
             return symbols
     return symbols
 
+
 def _encode_function_symbol_entry(*, flags: int, index: int, name: str) -> bytes:
     entry = bytearray()
     entry.append(SYMBOL_KIND_FUNCTION)
@@ -423,6 +444,7 @@ def _encode_function_symbol_entry(*, flags: int, index: int, name: str) -> bytes
     if (flags & FLAG_UNDEFINED) == 0 or (flags & FLAG_EXPLICIT_NAME):
         entry.extend(_write_string(name))
     return bytes(entry)
+
 
 def _append_linking_function_symbols(
     data: bytes, entries: list[tuple[str, int, int]]
@@ -504,6 +526,7 @@ def _append_linking_function_symbols(
         return None
     return _build_sections(new_sections)
 
+
 def _collect_func_names(data: bytes) -> dict[int, str]:
     names: dict[int, str] = {}
     for section_id, payload in _parse_sections(data):
@@ -555,6 +578,7 @@ def _collect_func_names(data: bytes) -> dict[int, str]:
         break
     return names
 
+
 def _collect_function_exports(data: bytes) -> dict[str, int]:
     exports: dict[str, int] = {}
     for section_id, payload in _parse_sections(data):
@@ -574,6 +598,7 @@ def _collect_function_exports(data: bytes) -> dict[str, int]:
         break
     return exports
 
+
 def _read_varsint(data: bytes, offset: int) -> tuple[int, int]:
     """Read a signed LEB128 integer."""
     result = 0
@@ -590,6 +615,7 @@ def _read_varsint(data: bytes, offset: int) -> tuple[int, int]:
                 result -= 1 << shift
             break
     return result, offset
+
 
 def _skip_init_expr(data: bytes, offset: int) -> int:
     while offset < len(data):
@@ -616,6 +642,7 @@ def _skip_init_expr(data: bytes, offset: int) -> int:
             continue
         raise ValueError(f"Unsupported init expr opcode 0x{opcode:02x}")
     raise ValueError("Unexpected EOF while reading init expr")
+
 
 def _collect_element_declared_funcs(data: bytes) -> set[int]:
     """Collect all function indices declared in element segments."""
@@ -667,6 +694,7 @@ def _collect_element_declared_funcs(data: bytes) -> set[int]:
                         offset += 1  # skip 0x0B end
         break
     return declared
+
 
 def _scan_code_ref_funcs(data: bytes) -> set[int]:
     """Scan all code bodies for ref.func (0xD2) instructions.
@@ -849,6 +877,7 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
         break
     return ref_funcs
 
+
 def _declare_ref_func_elements(data: bytes) -> bytes | None:
     """Add a declarative element segment for functions referenced by ref.func
     but not yet declared in any element segment.
@@ -908,6 +937,7 @@ def _declare_ref_func_elements(data: bytes) -> bytes | None:
         return None
     return _build_sections(new_sections)
 
+
 def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
     """Return the number of function imports in the import section."""
     for sid, payload in sections:
@@ -931,6 +961,7 @@ def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
         return func_imports
     return 0
 
+
 def _get_total_func_count(data: bytes) -> int:
     """Return the total number of functions (imports + defined) in the module."""
     sections = _parse_sections(data)
@@ -942,6 +973,7 @@ def _get_total_func_count(data: bytes) -> int:
             defined_count, _ = _read_varuint(payload, offset)
             break
     return import_count + defined_count
+
 
 def _repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
     """Detect and repair function index references that exceed the valid range.
@@ -1158,6 +1190,7 @@ def _repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
     )
     return _build_sections(new_sections)
 
+
 def _safe_repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
     """Best-effort function-reference repair that never masks validation.
 
@@ -1171,12 +1204,14 @@ def _safe_repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
     except (IndexError, ValueError):
         return None
 
+
 def _parse_limits(data: bytes, offset: int) -> int:
     flags, offset = _read_varuint(data, offset)
     _, offset = _read_varuint(data, offset)
     if flags & 0x01:
         _, offset = _read_varuint(data, offset)
     return offset
+
 
 def _read_limits(data: bytes, offset: int) -> tuple[int, int, int | None, int]:
     flags, offset = _read_varuint(data, offset)
@@ -1185,6 +1220,7 @@ def _read_limits(data: bytes, offset: int) -> tuple[int, int, int | None, int]:
     if flags & 0x01:
         maximum, offset = _read_varuint(data, offset)
     return flags, minimum, maximum, offset
+
 
 def _write_limits(flags: int, minimum: int, maximum: int | None) -> bytes:
     output = bytearray()
@@ -1195,6 +1231,7 @@ def _write_limits(flags: int, minimum: int, maximum: int | None) -> bytes:
             maximum = minimum
         output.extend(_write_varuint(maximum))
     return bytes(output)
+
 
 def _parse_import_desc(data: bytes, offset: int, kind: int) -> int:
     if kind == 0:
@@ -1219,6 +1256,7 @@ def _parse_import_desc(data: bytes, offset: int, kind: int) -> int:
         return offset
     raise ValueError(f"Unknown import kind: {kind}")
 
+
 def _collect_exports(data: bytes) -> set[str]:
     exports: set[str] = set()
     for section_id, payload in _parse_sections(data):
@@ -1234,6 +1272,7 @@ def _collect_exports(data: bytes) -> set[str]:
             _, offset = _read_varuint(payload, offset)
             exports.add(name)
     return exports
+
 
 def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
     for section_id, payload in _parse_sections(data):
@@ -1255,6 +1294,7 @@ def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
         return imports
     return []
 
+
 def _has_table(data: bytes) -> bool:
     for module, name, kind, _ in _collect_imports(data):
         if kind == 1 and name == "__indirect_function_table":
@@ -1263,6 +1303,7 @@ def _has_table(data: bytes) -> bool:
         if section_id == 4:
             return True
     return False
+
 
 def _validate_linked_table_import_contract(
     imports: list[tuple[str, str, int, bytes]],
@@ -1291,6 +1332,7 @@ def _validate_linked_table_import_contract(
     if not desc:
         return False, "Linked wasm table import is missing its limits descriptor."
     return True, None
+
 
 def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes | None:
     if not _has_table(data):
@@ -1341,6 +1383,7 @@ def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes 
         return None
     return _build_sections(new_sections)
 
+
 def _find_func_import_index(
     data: bytes, module_name: str, import_name: str
 ) -> int | None:
@@ -1353,6 +1396,7 @@ def _find_func_import_index(
         func_index += 1
     return None
 
+
 def _collect_custom_names(data: bytes) -> list[str]:
     names: list[str] = []
     for section_id, payload in _parse_sections(data):
@@ -1364,6 +1408,7 @@ def _collect_custom_names(data: bytes) -> list[str]:
             continue
         names.append(name)
     return names
+
 
 def _validate_elements(data: bytes) -> tuple[bool, str | None]:
     for section_id, payload in _parse_sections(data):
@@ -1402,6 +1447,7 @@ def _validate_elements(data: bytes) -> tuple[bool, str | None]:
                     offset = _skip_init_expr(payload, offset)
         break
     return True, None
+
 
 def _collect_module_imports(wasm_data: bytes, module_name: str) -> set[str]:
     """Parse a WASM module and return the set of import names from *module_name*.
@@ -1448,6 +1494,7 @@ def _collect_module_imports(wasm_data: bytes, module_name: str) -> set[str]:
             if mod == module_name:
                 result.add(name)
     return result
+
 
 def _build_call_graph(code_payload: bytes, import_count: int) -> dict[int, set[int]]:
     """Build a call graph by decoding WASM instructions in the code section.
@@ -1643,6 +1690,7 @@ def _build_call_graph(code_payload: bytes, import_count: int) -> dict[int, set[i
 
     return graph
 
+
 def _parse_type_section(
     sections: list[tuple[int, bytes]],
 ) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
@@ -1664,6 +1712,7 @@ def _parse_type_section(
                 types.append((params, results))
             return types
     return []
+
 
 def _parse_func_type_indices(
     sections: list[tuple[int, bytes]],

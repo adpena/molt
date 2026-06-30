@@ -1,11 +1,13 @@
-# STATUS - Pact dogfooding of Molt (2026-06-29)
+# STATUS - Pact dogfooding of Molt (2026-06-30)
 
 Positive signal first: the browser call shape is no longer the core unknown.
 `wasm/browser_embed.js` owns the narrow split-runtime embed path, and
 `examples/browser_embed_forward/` now contains a source-level numeric
 `forward(Float32Array) -> Float32Array` example plus a plain JS runner that
 consumes a generated build directory. The full `wasm/browser_host.js` process
-host remains separate.
+host remains separate, while `wasm/loader_bridge.js` now owns the shared WASM
+import/tag parser, isolate-import i64 bridge, and reserved runtime-call bridge
+used by the browser and Node loaders.
 
 No checked-in `examples/browser_embed_forward/artifacts/` bundle remains. A
 committed prebuilt runtime/app package would be a second artifact lane and would
@@ -20,8 +22,8 @@ The live evidence says the current tree cannot yet produce
 - The old first failure, `scipy.ndimage.distance_transform_edt` becoming an
   unsupported fake Python direct call, is retired for manifest-declared native
   callable exports. `known_modules` remains import visibility only, while
-  direct-symbol callable exports now lower the `scipy.ndimage` witness closure
-  to executable `invoke_ffi` ABI metadata.
+  direct-symbol and object-call `module_attr` callable exports now lower the
+  `scipy.ndimage` witness closure to executable `invoke_ffi` ABI metadata.
 - The current remaining blocker is downstream of that lowering: the live Pact
   build still lacks admitted reachable NumPy/SciPy native artifacts,
   ndarray/storage/dtype/buffer truth, and the C/API primitive closure needed to
@@ -33,11 +35,39 @@ The live evidence says the current tree cannot yet produce
   source/artifact markers but do not publish wasm32 `static_link`
   `libmolt_source` artifact manifests with package symbol custody. Source roots
   alone are not linkable WASM evidence.
+- Adding the local staged NumPy `_multiarray_umath.molt.wasm` artifact root now
+  also fails closed before graph expansion because the artifact manifest has no
+  `python_exports` or `callable_exports`. Import visibility for `numpy` is not
+  allowed to select child native artifacts by directory ancestry; reachable
+  object closure must be manifest-symbol driven so binaries stay small and
+  tree-shaken. A required package-root import such as `numpy` must be covered
+  by matching `python_exports`, not merely by a child artifact module such as
+  `numpy._core._multiarray_umath`.
+- The current fast pre-build audit confirms the same frontier without entering
+  graph discovery: the stale staged NumPy artifact fails
+  `molt extension audit --require-python-export numpy` even though its
+  standalone `.molt.wasm` bytes, `static_link` loader metadata, SHA-256, and
+  object-closure sidecar custody are present. The friend-tree SciPy
+  `_nd_image.molt.wasm` sidecar passes required
+  `scipy.ndimage.distance_transform_edt` python+callable export custody plus
+  standalone artifact/hash/object-closure custody.
 - An earlier package-admission probe timed out after 300s in the live WASM build
   path.
 - A graph-only probe took 100.4s before backend work, found 186 modules, zero
   staged native artifacts, and pulled broad NumPy plus `scipy` and
   `scipy.ndimage` package initializer closure.
+- The latest NumPy `_multiarray_umath` source-plan C/API graph probe is now
+  green before backend work: 109 reachable compile units, 44 narrow
+  package-generated token-paste prefixes, 17 generated helper symbols, zero
+  missing C/API symbols, and zero fail-fast C/API symbols. This retires the
+  previous scanner noise around `npy_to_*`, `npyv_*`, local static
+  `PyArray_*`, and `PyUFunc_handlefperr` symbols; it does not yet prove
+  compile/link/import/runtime execution.
+- The latest source-extension build probe reaches toolchain custody before any
+  NumPy object compilation. This host has LLVM `clang` and `wasm-ld`, but no
+  configured WASI sysroot and no `zig`; `MOLT_WASM_CC=clang` now fails fast on
+  the source-extension compiler probe for `<errno.h>` instead of launching a
+  many-file package build.
 
 That means the next real structural unit is upstream package-native closure:
 NumPy/SciPy source admission, native artifact staging, C/API symbol closure,
@@ -75,6 +105,15 @@ would be the wrong architecture.
 
 Green in this recovery:
 
+- `uv run ruff check src\molt\cli\extension_scan_surface.py src\molt\cli\extension_scan.py src\molt\cli\source_extensions.py src\molt\cli\commands.py tests\cli\test_cli_extension_commands.py`
+- `uv run pytest tests\cli\test_cli_extension_commands.py -q -k "source_plan_object_closure or generated_c_api_symbols or macro_bodies"`
+- Graph-only NumPy `_multiarray_umath` source-plan C/API probe against
+  `tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_meson_wasm_build_generated_metadata`:
+  109 compile units, 17 package-generated helper symbols, `missing_count 0`,
+  `fail_fast_count 0`.
+- `uv run ruff check src\molt\cli\source_extension_toolchain.py tests\cli\test_cli_extension_commands.py`
+- `uv run pytest tests\cli\test_cli_extension_commands.py -q -k "source_extension_toolchain or source_plan_object_closure or generated_c_api_symbols"`
+- `MOLT_WASM_CC=clang uv run python -m molt extension build --project <numpy_off_the_shelf> --module numpy._core._multiarray_umath --target wasm --abi-tier cpython-abi --source-plan <intro-targets.json> --source-plan-target _multiarray_umath --source-plan-source-root <numpy_off_the_shelf> --source-plan-build-root <meson_wasm_build> --source-plan-compile-commands <compile_commands.json> --capabilities fs.read --python-export numpy --provided-capsules numpy.core._multiarray_umath._ARRAY_API --provided-capsules numpy.core._multiarray_umath._UFUNC_API --no-deterministic --json` fails fast before object compilation because `clang` cannot compile the WASI probe including `<errno.h>` without `WASI_SYSROOT`, `WASI_SDK_PATH`, or `zig`.
 - `uv run ruff check src/molt/native_callable_abi.py src/molt/frontend/visitors/call_module_dispatch.py src/molt/frontend/visitors/statement_scope.py tests/cli/test_cli_import_collection.py tests/test_wasm_browser_embed.py`
 - `uv run pytest tests/cli/test_cli_import_collection.py::test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi -q`
 - `uv run pytest tests/cli/test_cli_import_collection.py::test_external_native_artifact_plan_rejects_unknown_callable_export_abi tests/cli/test_cli_import_collection.py::test_frontend_native_callable_callargs_export_lowers_keyword_child_module_attr tests/cli/test_cli_import_collection.py::test_browser_native_callable_manifest_is_import_driven tests/test_wasm_browser_embed.py::test_browser_embed_object_callargs_native_callable_import_adapter -q`
@@ -93,10 +132,37 @@ Green in this recovery:
 - `uv run pytest tests\test_wasm_browser_embed.py::test_browser_embed_forward_f32_native_callable_import_adapter -q`
 - `cargo check -p molt-backend-wasm --features wasm-backend`
 - `cargo test -p molt-backend-wasm --features wasm-backend native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol --lib`
+- `uv run ruff check src\molt\cli\extension_audit.py src\molt\cli\entrypoint_parser.py src\molt\cli\entrypoint_dispatch.py tests\cli\test_cli_extension_commands.py tests\test_frontend_ir_alias_ops.py tools\agent_coordination.py tests\test_agent_coordination.py`
+- `uv run pytest tests\test_agent_coordination.py -q`
+- `uv run pytest tests\test_frontend_ir_alias_ops.py -q -k "native_callable"`
+- `uv run pytest tests\cli\test_cli_extension_commands.py -q -k "extension_audit_requires_manifest_python_export or extension_audit_reports_required_callable_exports_json or extension_audit_requires_checksums_when_requested"`
+- `uv run pytest tests\cli\test_cli_extension_commands.py -q -k "extension_audit_requires_static_link_artifact_custody or extension_audit_rejects_static_link_artifact_hash_mismatch"`
+- `uv run pytest tests\cli\test_cli_import_collection.py -q -k "native_callable_module_attr or native_callable_callargs_export or native_callable_manifest_is_import_driven or external_native_artifact_plan_selects_module_attr"`
+- `uv run python -m molt extension audit --path tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi --require-python-export numpy --json` fails fast with `missing_python_exports=["numpy"]` and the rebuild hint `molt extension build --python-export numpy`.
+- `uv run python -m molt extension audit --path tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi --require-loader-kind libmolt_source --require-runtime-linkage static_link --require-artifact-kind wasm_relocatable_object --require-artifact-file --require-object-closure --require-checksum --json` passes standalone static-link artifact/hash/object-closure custody for the staged NumPy bytes, but still does not grant `numpy` import ownership.
+- `uv run python -m molt extension audit --path bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\_nd_image.molt.wasm.extension_manifest.json --require-loader-kind libmolt_source --require-runtime-linkage static_link --require-artifact-kind wasm_relocatable_object --require-artifact-file --require-object-closure --require-checksum --require-python-export scipy.ndimage.distance_transform_edt --require-callable-export scipy.ndimage.distance_transform_edt --json` passes export custody and static-link artifact/hash/object-closure custody for the witness EDT callable.
+  The audited NumPy sidecar reports 130 closure objects, 583 runtime symbols,
+  438 undefined symbols, and 56 defined symbols. The audited SciPy `_nd_image`
+  sidecar reports 41 runtime symbols and 58 undefined symbols, but no closure
+  digest/object list yet.
 
 Unknown in this recovery:
 
 - `uv run pytest tests\test_wasm_browser_embed.py::test_browser_embed_forward_roundtrips_float32_typed_arrays -q`
+
+The latest export-custody proof:
+
+- `MOLT_MODULE_ROOTS=tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi;bench\friends\repos\numpy_off_the_shelf;bench\friends\repos\scipy_off_the_shelf`
+  with `MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"` fails in
+  `molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm
+  --profile browser --wasm-profile auto --split-runtime` before graph
+  expansion: the staged NumPy static-link artifact is present, but its manifest
+  publishes no `python_exports` or `callable_exports`, so it cannot own the
+  `numpy` import or any callable symbol. A focused resolver regression also
+  rejects the subtler wrong sidecar where the artifact exports only
+  `numpy._core._multiarray_umath` while the required import root is `numpy`.
+
+Older unknown:
 
 The browser proof entered a long WASM compile, showed live `cargo/rustc`
 progress in read-only process snapshots, then the tool session disappeared
@@ -112,7 +178,8 @@ as `sort`, `argmax`, `percentile`, `where`, `lexsort`, `gradient`, `clip`,
 `stack`, and `linalg.eigh`. The full rip is the package-native
 object/symbol/storage closure needed to make those calls real in WASM without
 host-CPython fallback and without Molt-owned NumPy/SciPy Python semantics. The
-next executable primitive is reachable upstream extension custody: stage only
-the native objects/symbols reachable from that operation closure, scan their
-C/API gaps, bucket the gaps into shared primitives, and link/fail closed before
-the browser parity lane runs.
+next executable primitive is reachable upstream extension custody: make the
+NumPy/SciPy artifact publisher emit precise `python_exports` and
+`callable_exports`, stage only the native objects/symbols reachable from that
+operation closure, scan their C/API gaps, bucket the gaps into shared
+primitives, and link/fail closed before the browser parity lane runs.

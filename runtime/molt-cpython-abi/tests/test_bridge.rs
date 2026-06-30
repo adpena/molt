@@ -106,6 +106,19 @@ fn test_pyobj_to_handle_null_returns_none() {
     assert_eq!(handle, None);
 }
 
+#[test]
+fn test_none_hash_uses_pointer_width_py_hash() {
+    init();
+    let none = molt_cpython_abi::bridge::bits_to_pyobject(MoltObject::none().bits());
+    let hash = molt_cpython_abi::bridge::molt_bridge_hash(none);
+    let expected = if std::mem::size_of::<isize>() >= 8 {
+        0x0FCA_86420_u64 as isize
+    } else {
+        0x0FCA_86420_u32 as i32 as isize
+    };
+    assert_eq!(hash, expected);
+}
+
 // ---------------------------------------------------------------------------
 // handle_to_pyobj: caching (second call should incref, not allocate)
 // ---------------------------------------------------------------------------

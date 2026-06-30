@@ -35,7 +35,10 @@ candidate yet:
 - Molt now has the producer-side command contract for that missing artifact
   shape: `molt extension build --target wasm` emits a wasm32 static-link
   `.molt.wasm` artifact and `extension_manifest.json` with direct-symbol and
-  object-closure custody. The installed NumPy/SciPy roots still need reachable
+  object-closure custody. Source-recompiled NumPy/SciPy artifacts must also
+  publish `python_exports`/`callable_exports`; package-root imports such as
+  `numpy` need matching `python_exports` ownership rather than child artifact
+  ancestry. The installed NumPy/SciPy roots still need reachable
   source-recompiled artifacts in that shape.
 - An earlier package-admission probe timed out after 300s in the live WASM build
   path.

@@ -3,11 +3,12 @@
 //! These implement the abstract sequence operations that work on lists,
 //! tuples, and other sequence-like objects.
 
-use crate::abi_types::{Py_ssize_t, PyObject};
+use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
-use std::os::raw::c_int;
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 /// Helper: resolve a PyObject to its Molt bits.
@@ -26,6 +27,69 @@ fn classify(bits: u64) -> u8 {
     }
     let h = hooks_or_stubs();
     unsafe { (h.classify_heap)(bits) }
+}
+
+unsafe fn is_abi_tuple_object(o: *mut PyObject) -> bool {
+    !o.is_null()
+        && unsafe { crate::api::sequences::PyTuple_Check(o) } != 0
+        && resolve_bits(o).is_none()
+}
+
+unsafe fn materialize_bridge_sequence_as_tuple(o: *mut PyObject) -> *mut PyObject {
+    let bits = match resolve_bits(o) {
+        Some(b) => b,
+        None => return ptr::null_mut(),
+    };
+    let h = hooks_or_stubs();
+    let tag = classify(bits);
+    let len = match tag {
+        t if t == crate::abi_types::MoltTypeTag::List as u8 => unsafe { (h.list_len)(bits) },
+        t if t == crate::abi_types::MoltTypeTag::Tuple as u8 => unsafe { (h.tuple_len)(bits) },
+        _ => return ptr::null_mut(),
+    };
+    let tuple = unsafe { crate::api::sequences::PyTuple_New(len as Py_ssize_t) };
+    if tuple.is_null() {
+        return ptr::null_mut();
+    }
+    for index in 0..len {
+        let item_bits = match tag {
+            t if t == crate::abi_types::MoltTypeTag::List as u8 => unsafe {
+                (h.list_item)(bits, index)
+            },
+            t if t == crate::abi_types::MoltTypeTag::Tuple as u8 => unsafe {
+                (h.tuple_item)(bits, index)
+            },
+            _ => 0,
+        };
+        if item_bits == 0 {
+            unsafe { crate::api::refcount::Py_DECREF(tuple) };
+            return ptr::null_mut();
+        }
+        let item = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(item_bits) };
+        if item.is_null()
+            || unsafe { crate::api::sequences::PyTuple_SetItem(tuple, index as Py_ssize_t, item) }
+                != 0
+        {
+            unsafe {
+                crate::api::refcount::Py_XDECREF(item);
+                crate::api::refcount::Py_DECREF(tuple);
+            }
+            return ptr::null_mut();
+        }
+    }
+    tuple
+}
+
+unsafe fn set_sequence_fast_type_error(message: *const c_char) {
+    let msg = if message.is_null() {
+        c"object is not a sequence".as_ptr()
+    } else {
+        // Validate that the caller supplied a C string before handing it to
+        // the shared error state.
+        let _ = unsafe { CStr::from_ptr(message) };
+        message
+    };
+    unsafe { crate::api::errors::PyErr_SetString(&raw mut crate::abi_types::PyExc_TypeError, msg) };
 }
 
 #[unsafe(no_mangle)]
@@ -509,24 +573,22 @@ pub unsafe extern "C" fn PySequence_Fast(
     if o.is_null() {
         return ptr::null_mut();
     }
-    // If already a list or tuple, return it (new ref).
-    let bits = match resolve_bits(o) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let tag = classify(bits);
-    if tag == crate::abi_types::MoltTypeTag::List as u8
-        || tag == crate::abi_types::MoltTypeTag::Tuple as u8
-    {
+    if unsafe { is_abi_tuple_object(o) } {
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
     }
-    // Otherwise, materialize as a list.
-    unsafe { PySequence_List(o) }
+    let tuple = unsafe { materialize_bridge_sequence_as_tuple(o) };
+    if tuple.is_null() {
+        unsafe { set_sequence_fast_type_error(_msg) };
+    }
+    tuple
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySequence_Fast_GET_SIZE(o: *mut PyObject) -> Py_ssize_t {
+    if unsafe { crate::api::sequences::PyTuple_Check(o) } != 0 {
+        return unsafe { crate::api::sequences::PyTuple_Size(o) };
+    }
     unsafe { PySequence_Size(o) }
 }
 
@@ -535,7 +597,19 @@ pub unsafe extern "C" fn PySequence_Fast_GET_ITEM(
     o: *mut PyObject,
     i: Py_ssize_t,
 ) -> *mut PyObject {
+    if unsafe { crate::api::sequences::PyTuple_Check(o) } != 0 {
+        return unsafe { crate::api::sequences::PyTuple_GetItem(o, i) };
+    }
     unsafe { PySequence_GetItem(o, i) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PySequence_Fast_ITEMS(o: *mut PyObject) -> *mut *mut PyObject {
+    if !unsafe { is_abi_tuple_object(o) } {
+        return ptr::null_mut();
+    }
+    let tuple = o.cast::<PyTupleObject>();
+    unsafe { (*tuple).ob_item }
 }
 
 // ─── PySequence_InPlaceConcat / InPlaceRepeat ────────────────────────────

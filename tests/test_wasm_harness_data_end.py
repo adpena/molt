@@ -6,6 +6,7 @@ import pytest
 
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_harness import BASE_PREAMBLE, IMPORT_HELPERS
+from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -139,6 +140,34 @@ def test_wasm_harness_data_end_handles_const_offset(tmp_path: Path) -> None:
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "dataEnd=132"
+
+
+def test_wasm_harness_import_parser_handles_tag_imports_before_memory(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for wasm harness test")
+
+    wasm_path = tmp_path / "tag_import_before_memory.wasm"
+    wasm_path.write_bytes(build_wasm_tag_import_before_memory())
+
+    runner = tmp_path / "parse_wasm_tag_imports.js"
+    runner.write_text(
+        BASE_PREAMBLE
+        + "\n"
+        + IMPORT_HELPERS
+        + "\n"
+        + "console.log(JSON.stringify(wasmImports));\n"
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(runner), str(wasm_path)],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert run.returncode == 0, run.stderr
+    assert '"memory":{"min":1,"max":null}' in run.stdout.strip()
 
 
 def test_wasm_harness_exposes_class_merge_layout_import() -> None:

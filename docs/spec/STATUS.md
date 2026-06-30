@@ -1347,9 +1347,12 @@ the implementation. For forward-looking priorities, use
   now refuses source-recompiled NumPy/SciPy package admission with no
   package-local native/static artifact candidates, keeps native-backed package
   initializers from seeding broad source closure, uses sidecar
-  `python_exports` to bind package-level imports to their owning native
-  artifacts, rejects WASM native-source package admission before graph
-  expansion when no wasm32 static-link artifacts are staged, validates and
+  `python_exports` and `callable_exports` to bind package-level imports and
+  callable symbols to their owning native artifacts, rejects WASM native-source
+  package admission before graph expansion when no wasm32 static-link artifacts
+  are staged, rejects WASM source-recompiled static-link artifacts that publish
+  no export custody or that fail to cover a required package-root import
+  instead of selecting them by directory ancestry, validates and
   fingerprints reachable package-local native artifact sidecars for explicitly
   admitted external packages, and native builds publish those validated
   artifacts plus sidecars and runtime shim candidates under a

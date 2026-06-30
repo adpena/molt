@@ -9,6 +9,7 @@ import json
 import os
 import platform
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -25,6 +26,7 @@ from molt.dx import DX_ENV_KEYS, RunContext, render_env  # noqa: E402
 
 LOG_ROOT = Path("logs/agents")
 CODEX_STALL_ROOT = LOG_ROOT / "codex_stall"
+CODEX_CRASH_ROOT = LOG_ROOT / "codex_crash"
 CANONICAL_ARTIFACT_ROOTS = (
     Path("logs"),
     Path("tmp"),
@@ -32,6 +34,8 @@ CANONICAL_ARTIFACT_ROOTS = (
     Path("target"),
 )
 SCHEMA_VERSION = 1
+CODEX_WINDOWS_CONTROL_C_EXIT = 3221225786
+CODEX_DEFAULT_PROMPT_LIMIT = 3
 ACTIVE_STATUSES = frozenset({"running", "paused", "blocked"})
 BROAD_ROLE = "broad-sweep coordinator"
 VALID_ROLES = (
@@ -836,6 +840,359 @@ def default_codex_stall_report_path(repo_root: Path) -> Path:
     return repo_root / CODEX_STALL_ROOT / f"stall_{artifact_stamp()}_{os.getpid()}.json"
 
 
+def default_codex_crash_report_path(repo_root: Path) -> Path:
+    return repo_root / CODEX_CRASH_ROOT / f"crash_{artifact_stamp()}_{os.getpid()}.json"
+
+
+def _default_codex_home() -> Path:
+    raw = os.environ.get("CODEX_HOME")
+    if raw:
+        return Path(raw)
+    return Path.home() / ".codex"
+
+
+def _default_codex_runtime_cache_root() -> Path:
+    if os.name == "nt":
+        return Path.home() / ".cache" / "codex-runtimes"
+    return Path.home() / ".cache" / "codex-runtimes"
+
+
+def _extract_json_object_after_marker(text: str, marker: str) -> dict[str, Any] | None:
+    marker_index = text.find(marker)
+    if marker_index < 0:
+        return None
+    start = text.find("{", marker_index + len(marker))
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = in_string
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    parsed = json.loads(text[start : index + 1])
+                except json.JSONDecodeError:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def parse_codex_crash_text(text: str) -> dict[str, Any]:
+    code_match = re.search(r"\(code=(-?\d+),\s*signal=([^)]+)\)", text)
+    code: int | None = None
+    signal: str | None = None
+    if code_match:
+        code = int(code_match.group(1))
+        signal = code_match.group(2).strip()
+
+    most_recent_error = _extract_json_object_after_marker(text, "Most recent error:")
+    fields = most_recent_error.get("fields", {}) if most_recent_error else {}
+    if not isinstance(fields, dict):
+        fields = {}
+
+    warning_paths = sorted(
+        dict.fromkeys(
+            match.group(1)
+            for match in re.finditer(r'"path"\s*:\s*"([^"]+)"', text)
+        )
+    )
+    return {
+        "crash_text_sha256": hashlib.sha256(
+            text.encode("utf-8", errors="surrogateescape")
+        ).hexdigest(),
+        "crash_text_bytes": len(text.encode("utf-8", errors="surrogateescape")),
+        "code": code,
+        "signal": signal,
+        "most_recent_error": {
+            "parsed": most_recent_error is not None,
+            "timestamp": most_recent_error.get("timestamp") if most_recent_error else None,
+            "level": most_recent_error.get("level") if most_recent_error else None,
+            "target": most_recent_error.get("target") if most_recent_error else None,
+            "message": fields.get("message"),
+            "path": fields.get("path"),
+        },
+        "warning_paths": warning_paths,
+    }
+
+
+def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
+    classifications: list[dict[str, str]] = []
+    code = parsed.get("code")
+    most_recent = parsed.get("most_recent_error") or {}
+    target = str(most_recent.get("target") or "")
+    message = str(most_recent.get("message") or "")
+
+    if code == CODEX_WINDOWS_CONTROL_C_EXIT:
+        classifications.append(
+            {
+                "id": "windows_status_control_c_exit",
+                "severity": "control_plane_interruption",
+                "summary": (
+                    "Windows crash code 3221225786 is 0xC000013A "
+                    "STATUS_CONTROL_C_EXIT; treat the dialog as an interrupted "
+                    "or torn-down control-plane process until correlated with "
+                    "logs and live commands."
+                ),
+            }
+        )
+    if target == "codex_core::responses_retry" or "stream disconnected" in message:
+        classifications.append(
+            {
+                "id": "responses_retry_stream_disconnected",
+                "severity": "crash_adjacent_retry_pressure",
+                "summary": (
+                    "The most recent warning is a response-stream retry; reduce "
+                    "orchestration/proof fanout and preserve evidence instead "
+                    "of retrying tool discovery or long commands in a storm."
+                ),
+            }
+        )
+    if "interface.defaultPrompt" in message or "maximum of 3 prompts" in message:
+        classifications.append(
+            {
+                "id": "plugin_default_prompt_manifest_warning",
+                "severity": "plugin_manifest_pressure",
+                "summary": (
+                    "A plugin manifest defaultPrompt warning is crash-adjacent "
+                    "control-plane evidence, not authority to hand-edit cached "
+                    "plugin manifests during active Molt work."
+                ),
+            }
+        )
+    if "state db discrepancy" in message or "read_repair_rollout_path" in message:
+        classifications.append(
+            {
+                "id": "rollout_state_repair_symptom",
+                "severity": "resume_state_pressure",
+                "summary": (
+                    "State DB repair text near a crash is a resume symptom; "
+                    "verify repo state and active commands before touching "
+                    "Codex SQLite or rollout files."
+                ),
+            }
+        )
+    if not classifications:
+        classifications.append(
+            {
+                "id": "unclassified_codex_control_plane_crash",
+                "severity": "unknown",
+                "summary": (
+                    "No known crash-adjacent warning class matched; preserve "
+                    "the capsule and correlate with Codex logs, active command "
+                    "sessions, and repo state."
+                ),
+            }
+        )
+    return classifications
+
+
+def _plugin_manifest_roots(
+    *, codex_home: Path, runtime_cache_root: Path
+) -> tuple[Path, ...]:
+    return (
+        codex_home / "plugins",
+        runtime_cache_root,
+    )
+
+
+def _plugin_manifest_summary(
+    *,
+    roots: Sequence[Path],
+    max_manifests: int,
+) -> dict[str, Any]:
+    scanned = 0
+    unreadable = 0
+    default_prompt_violations: list[dict[str, Any]] = []
+    roots_payload: list[str] = []
+
+    for root in roots:
+        resolved_root = root.expanduser()
+        roots_payload.append(str(resolved_root))
+        if not resolved_root.exists():
+            continue
+        try:
+            iterator = resolved_root.rglob("plugin.json")
+            for manifest in iterator:
+                if scanned >= max_manifests:
+                    break
+                scanned += 1
+                try:
+                    payload = json.loads(
+                        manifest.read_text(encoding="utf-8", errors="replace")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    unreadable += 1
+                    continue
+                interface = payload.get("interface")
+                if not isinstance(interface, dict):
+                    continue
+                prompts = interface.get("defaultPrompt")
+                if not isinstance(prompts, list):
+                    continue
+                if len(prompts) <= CODEX_DEFAULT_PROMPT_LIMIT:
+                    continue
+                default_prompt_violations.append(
+                    {
+                        "path": str(manifest),
+                        "prompt_count": len(prompts),
+                        "limit": CODEX_DEFAULT_PROMPT_LIMIT,
+                    }
+                )
+        except OSError:
+            unreadable += 1
+        if scanned >= max_manifests:
+            break
+
+    return {
+        "roots": roots_payload,
+        "manifest_count_scanned": scanned,
+        "scan_truncated": scanned >= max_manifests,
+        "unreadable_manifest_count": unreadable,
+        "default_prompt_limit": CODEX_DEFAULT_PROMPT_LIMIT,
+        "default_prompt_violation_count": len(default_prompt_violations),
+        "default_prompt_violations": default_prompt_violations,
+    }
+
+
+def codex_crash_next_actions(classifications: Sequence[dict[str, str]]) -> list[str]:
+    action_ids = {item["id"] for item in classifications}
+    actions = [
+        "Run git status --short --branch and inspect any active command/session evidence before assuming repo state changed.",
+        "Keep one active structural arc and one bounded proof lane until the control plane is stable.",
+        "Do not delete or hand-edit Codex state databases, plugin caches, cached plugin manifests, or rollout summaries as a first response.",
+    ]
+    if "responses_retry_stream_disconnected" in action_ids:
+        actions.append(
+            "Reduce optional MCP/plugin/tool-discovery load and avoid retry storms; continue from local terminal evidence where possible."
+        )
+    if "plugin_default_prompt_manifest_warning" in action_ids:
+        actions.append(
+            "If defaultPrompt violations persist after active work is quiescent, disable or update optional plugins through normal operator-controlled config rather than editing cache files."
+        )
+    if "rollout_state_repair_symptom" in action_ids:
+        actions.append(
+            "Copy bounded nearby Codex logs into logs/ or tmp/ if state-repair evidence is needed; do not mutate SQLite state in-place."
+        )
+    return actions
+
+
+def codex_crash_payload(
+    *,
+    repo_root: Path,
+    crash_text: str,
+    report_path: Path,
+    codex_home: Path,
+    runtime_cache_root: Path,
+    max_plugin_manifests: int,
+    record_crash_text: bool,
+) -> dict[str, Any]:
+    parsed = parse_codex_crash_text(crash_text)
+    classifications = classify_codex_crash(parsed)
+    payload: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "codex_crash_diagnostic",
+        "status": "completed",
+        "created_at_utc": utc_now(),
+        "repo_root": str(repo_root),
+        "report_path": repo_relative(report_path, repo_root),
+        "privacy": {
+            "records_raw_crash_text": record_crash_text,
+            "records_codex_state": False,
+            "records_plugin_manifest_text": False,
+            "recorded_fields": [
+                "crash_text_hash",
+                "parsed_error_fields",
+                "classification",
+                "plugin_manifest_counts",
+                "next_actions",
+            ],
+        },
+        "environment": environment_snapshot(repo_root),
+        "parsed": parsed,
+        "classification": classifications,
+        "plugin_manifests": _plugin_manifest_summary(
+            roots=_plugin_manifest_roots(
+                codex_home=codex_home,
+                runtime_cache_root=runtime_cache_root,
+            ),
+            max_manifests=max_plugin_manifests,
+        ),
+        "next_actions": codex_crash_next_actions(classifications),
+    }
+    if record_crash_text:
+        payload["raw_crash_text"] = crash_text
+    return payload
+
+
+def run_codex_crash_diagnostic(args: argparse.Namespace) -> int:
+    repo_root = args.repo_root.resolve()
+    if args.crash_text:
+        crash_text = "\n".join(args.crash_text)
+    elif args.from_file is not None:
+        try:
+            crash_text = args.from_file.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print(f"agent_coordination: cannot read crash text: {exc}", file=sys.stderr)
+            return 2
+    else:
+        crash_text = sys.stdin.read()
+    if not crash_text.strip():
+        print("agent_coordination: codex-crash requires crash text", file=sys.stderr)
+        return 2
+    if args.max_plugin_manifests < 0:
+        print("agent_coordination: --max-plugin-manifests must be >= 0", file=sys.stderr)
+        return 2
+
+    try:
+        report_path = resolve_canonical_artifact_path(
+            repo_root,
+            args.out or default_codex_crash_report_path(repo_root),
+        )
+    except ValueError as exc:
+        print(f"agent_coordination: {exc}", file=sys.stderr)
+        return 2
+
+    payload = codex_crash_payload(
+        repo_root=repo_root,
+        crash_text=crash_text,
+        report_path=report_path,
+        codex_home=args.codex_home,
+        runtime_cache_root=args.runtime_cache_root,
+        max_plugin_manifests=args.max_plugin_manifests,
+        record_crash_text=args.record_crash_text,
+    )
+    write_json(report_path, payload)
+    primary = payload["classification"][0]
+    print(
+        "codex-crash: {kind}; report={path}; raw_text_recorded={raw}".format(
+            kind=primary["id"],
+            path=repo_relative(report_path, repo_root),
+            raw=payload["privacy"]["records_raw_crash_text"],
+        ),
+        file=sys.stderr,
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def command_descriptor(
     command: Sequence[str], *, record_command: bool
 ) -> dict[str, Any]:
@@ -1367,6 +1724,56 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     stall.add_argument("--memory-guard-max-total-rss-gb", type=float)
     stall.add_argument("--memory-guard-child-rlimit-gb", type=float)
     stall.add_argument("child_command", nargs=argparse.REMAINDER)
+
+    crash = sub.add_parser(
+        "codex-crash",
+        help=(
+            "classify a Codex crash dialog and write a privacy-bounded recovery "
+            "capsule under canonical artifact roots"
+        ),
+    )
+    crash.add_argument(
+        "--out",
+        type=Path,
+        help=(
+            "JSON report path; must stay under logs/, tmp/, bench/results/, or "
+            "target/ (default: logs/agents/codex_crash/crash_<timestamp>.json)"
+        ),
+    )
+    crash.add_argument(
+        "--crash-text",
+        action="append",
+        help="crash dialog text; may be repeated, otherwise stdin is read",
+    )
+    crash.add_argument(
+        "--from-file",
+        type=Path,
+        help="read crash dialog text from a file instead of stdin",
+    )
+    crash.add_argument(
+        "--codex-home",
+        type=Path,
+        default=_default_codex_home(),
+        help="Codex home used for bounded plugin-manifest counting",
+    )
+    crash.add_argument(
+        "--runtime-cache-root",
+        type=Path,
+        default=_default_codex_runtime_cache_root(),
+        help="Codex runtime cache root used for bounded plugin-manifest counting",
+    )
+    crash.add_argument(
+        "--max-plugin-manifests",
+        type=int,
+        default=2000,
+        help="maximum plugin.json files inspected for manifest pressure (default: 2000)",
+    )
+    crash.add_argument(
+        "--record-crash-text",
+        action="store_true",
+        help="include raw crash text in the report; default records only parsed fields and a hash",
+    )
+    crash.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -1392,6 +1799,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "codex-stall":
         return run_codex_stall_diagnostic(args)
+
+    if args.command == "codex-crash":
+        return run_codex_crash_diagnostic(args)
 
     if args.command == "proof-plan":
         payload = proof_plan_payload(args)

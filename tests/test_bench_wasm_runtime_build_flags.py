@@ -12,7 +12,7 @@ def _fake_runtime_build(cmd: list[str], env: dict[str, str]) -> None:
     target_root = Path(env["CARGO_TARGET_DIR"])
     src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
     src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+    src.write_bytes(b"\x00asm\x01\x00\x00\x00")
 
 
 def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(

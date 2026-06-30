@@ -3,10 +3,13 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+import io
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection
@@ -55,6 +58,105 @@ from molt.wasm_artifact import (
     _wasm_import_minima,
     wasm_table_ref_export_signatures,
 )
+
+
+_BUNDLE_EXCLUDED_NATIVE_SUFFIXES = {
+    ".a",
+    ".dll",
+    ".dylib",
+    ".o",
+    ".pyd",
+    ".rlib",
+    ".so",
+    ".wasm",
+}
+
+
+def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    rel = path.relative_to(root)
+    parts = rel.parts
+    if "__pycache__" in parts or any(part in {"", ".", ".."} for part in parts):
+        return None
+    if path.suffix in _BUNDLE_EXCLUDED_NATIVE_SUFFIXES:
+        return None
+    if path.name.endswith((".pyc", ".pyo")):
+        return None
+    return rel.as_posix()
+
+
+def _write_external_static_packages_bundle(
+    runtime_roots: Collection[Path],
+    output: Path,
+) -> dict[str, object] | None:
+    roots = tuple(
+        dict.fromkeys(
+            root.resolve(strict=False)
+            for root in runtime_roots
+            if root.exists() and root.is_dir()
+        )
+    )
+    if not roots:
+        return None
+
+    files: list[dict[str, object]] = []
+    seen: set[str] = set()
+    tmp_output = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tarfile.open(tmp_output, "w") as tar:
+            for root in sorted(roots, key=lambda path: str(path)):
+                for path in sorted(root.rglob("*")):
+                    arcname = _external_static_bundle_arcname(root, path)
+                    if arcname is None:
+                        continue
+                    if arcname in seen:
+                        raise ValueError(
+                            "external static package bundle path collision: "
+                            f"{arcname}"
+                        )
+                    seen.add(arcname)
+                    payload = path.read_bytes()
+                    info = tarfile.TarInfo(arcname)
+                    info.size = len(payload)
+                    info.mtime = 0
+                    info.mode = 0o644
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = ""
+                    info.gname = ""
+                    tar.addfile(info, io.BytesIO(payload))
+                    files.append({"path": arcname, "size": len(payload)})
+
+            if not files:
+                return None
+
+            manifest = {
+                "files": files,
+                "roots": [str(root) for root in roots],
+                "total_bytes": sum(int(file["size"]) for file in files),
+            }
+            manifest_bytes = json.dumps(
+                manifest,
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8")
+            manifest_info = tarfile.TarInfo("__manifest__.json")
+            manifest_info.size = len(manifest_bytes)
+            manifest_info.mtime = 0
+            manifest_info.mode = 0o644
+            manifest_info.uid = 0
+            manifest_info.gid = 0
+            manifest_info.uname = ""
+            manifest_info.gname = ""
+            tar.addfile(manifest_info, io.BytesIO(manifest_bytes))
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp_output, output)
+        return manifest
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_output.unlink()
 
 
 def _runtime_export_signatures_for_imports(
@@ -229,7 +331,7 @@ def _browser_native_callable_manifest(
             if not isinstance(existing_exports, list):
                 raise ValueError(
                     f"native symbol {export.symbol!r} manifest exports were corrupted"
-            )
+                )
             existing_exports.append(export_payload)
     missing_required = sorted(required - symbols.keys())
     if missing_required:
@@ -297,6 +399,17 @@ def _staged_artifacts_need_wasm_libc_link(
     return any(
         symbol.status == "external_link"
         and symbol.primitive_class == "wasm_libc_link_import"
+        for artifact in artifacts
+        for symbol in artifact.abi_symbols
+    )
+
+
+def _staged_artifacts_need_wasm_compiler_rt_link(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> bool:
+    return any(
+        symbol.status == "external_link"
+        and symbol.primitive_class == "wasm_compiler_rt_link_import"
         for artifact in artifacts
         for symbol in artifact.abi_symbols
     )
@@ -401,6 +514,11 @@ def _prepare_non_native_build_result(
                     needs_wasm_libc_link = _staged_artifacts_need_wasm_libc_link(
                         staged_external_native_artifacts
                     )
+                    needs_wasm_compiler_rt_link = (
+                        _staged_artifacts_need_wasm_compiler_rt_link(
+                            staged_external_native_artifacts
+                        )
+                    )
                     if needs_cpython_abi_link:
                         cpython_abi_provider = _ensure_wasm_cpython_abi_staticlib(
                             project_root=molt_root,
@@ -437,6 +555,26 @@ def _prepare_non_native_build_result(
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
                             libc_provider,
+                        )
+                    if needs_wasm_compiler_rt_link:
+                        compiler_rt_provider = (
+                            wasm_toolchain.wasm_compiler_builtins_archive()
+                        )
+                        if compiler_rt_provider is None:
+                            raise ValueError(
+                                "wasm_compiler_rt_link_import symbols require Rust "
+                                "wasm32-wasip1 libcompiler_builtins provider"
+                            )
+                        compiler_rt_provider = compiler_rt_provider.resolve(
+                            strict=False
+                        )
+                        wasm_static_link_native_inputs = (
+                            *wasm_static_link_native_inputs,
+                            compiler_rt_provider,
+                        )
+                        external_native_fingerprint_inputs = (
+                            *external_native_fingerprint_inputs,
+                            compiler_rt_provider,
                         )
                 except (OSError, ValueError) as exc:
                     return None, _fail(
@@ -726,11 +864,13 @@ def _prepare_non_native_build_result(
             rt_wasm = split_dir / "molt_runtime.wasm"
             manifest = split_dir / "manifest.json"
             browser_embed_src = molt_root / "wasm" / "browser_embed.js"
+            loader_bridge_src = molt_root / "wasm" / "loader_bridge.js"
             try:
                 browser_embed_size = browser_embed_src.stat().st_size
+                loader_bridge_size = loader_bridge_src.stat().st_size
             except OSError as exc:
                 return None, _fail(
-                    f"Missing split-runtime browser embed support: {exc}",
+                    f"Missing split-runtime browser embed loader support: {exc}",
                     json_output,
                     command="build",
                 )
@@ -799,6 +939,25 @@ def _prepare_non_native_build_result(
                 )
             browser_embed_abi = _split_runtime_browser_abi_from_manifest()
             browser_embed_abi["native_callables"] = native_callables_manifest
+            bundle_manifest: dict[str, object] | None = None
+            bundle_tar = split_dir / "bundle.tar"
+            with contextlib.suppress(FileNotFoundError):
+                bundle_tar.unlink()
+            if staged_external_native_artifacts:
+                try:
+                    bundle_manifest = _write_external_static_packages_bundle(
+                        tuple(
+                            artifact.runtime_root
+                            for artifact in staged_external_native_artifacts
+                        ),
+                        bundle_tar,
+                    )
+                except (OSError, ValueError) as exc:
+                    return None, _fail(
+                        f"Failed to stage split-runtime external package bundle: {exc}",
+                        json_output,
+                        command="build",
+                    )
 
             manifest_data = {
                 "version": 2,
@@ -836,11 +995,24 @@ def _prepare_non_native_build_result(
                         "path": "browser_embed.js",
                         "size": browser_embed_size,
                     },
+                    "loader_bridge": {
+                        "path": "loader_bridge.js",
+                        "size": loader_bridge_size,
+                    },
                 },
                 "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
             }
+            if bundle_manifest is not None:
+                bundle_size = bundle_tar.stat().st_size
+                manifest_data["assets"]["bundle"] = {
+                    "path": "bundle.tar",
+                    "size": bundle_size,
+                    "file_count": len(bundle_manifest["files"]),
+                    "source_total_bytes": bundle_manifest["total_bytes"],
+                }
+                manifest_data["total_size"] = app_size + rt_size + bundle_size
             _atomic_write_json(manifest, manifest_data, indent=2)
 
             # Generate split-runtime Cloudflare Workers shim with full
@@ -877,6 +1049,15 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
+            loader_bridge_dst = split_dir / "loader_bridge.js"
+            try:
+                _atomic_copy_file(loader_bridge_src, loader_bridge_dst)
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime browser embed loader support: {exc}",
+                    json_output,
+                    command="build",
+                )
 
             # Generate wrangler.jsonc for Cloudflare Workers deployment.
             # JSONC is the modern Wrangler config shape and matches the
@@ -899,6 +1080,8 @@ def _prepare_non_native_build_result(
                     "wrangler_config": str(wrangler_jsonc),
                 }
             )
+            if bundle_manifest is not None:
+                artifacts["bundle_tar"] = str(bundle_tar)
 
             # Cloudflare Workers isolate memory limit: 128MB.
             # Warn if the combined WASM size exceeds a safe threshold.

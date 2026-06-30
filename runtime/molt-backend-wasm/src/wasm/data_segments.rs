@@ -27,8 +27,11 @@ impl WasmBackend {
         func: &mut Function,
         data: DataSegmentRef,
     ) {
+        let defined_func_index = func_index.checked_sub(self.func_import_count).expect(
+            "data pointer relocation can only be recorded for defined WASM function bodies",
+        );
         self.data_segments
-            .emit_ptr(reloc_enabled, func_index, func, data);
+            .emit_ptr(reloc_enabled, defined_func_index, func, data);
     }
 
     /// Like [`emit_data_ptr`] but pushes an **i32** value (no i64 extension).
@@ -41,7 +44,10 @@ impl WasmBackend {
         func: &mut Function,
         data: DataSegmentRef,
     ) {
+        let defined_func_index = func_index.checked_sub(self.func_import_count).expect(
+            "data pointer relocation can only be recorded for defined WASM function bodies",
+        );
         self.data_segments
-            .emit_ptr_i32(reloc_enabled, func_index, func, data);
+            .emit_ptr_i32(reloc_enabled, defined_func_index, func, data);
     }
 }

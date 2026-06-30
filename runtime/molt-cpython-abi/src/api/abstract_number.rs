@@ -6,6 +6,7 @@
 use crate::abi_types::{Py_ssize_t, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
+use std::os::raw::c_int;
 use std::ptr;
 
 /// Helper: resolve a PyObject to its Molt bits.
@@ -535,6 +536,15 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
         );
     }
     ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyIndex_Check(o: *mut PyObject) -> c_int {
+    let Some(bits) = resolve_bits(o) else {
+        return 0;
+    };
+    let obj = MoltObject::from_bits(bits);
+    (obj.is_int() || obj.is_bool()) as c_int
 }
 
 #[unsafe(no_mangle)]

@@ -2529,6 +2529,7 @@ dependencies = [
  "molt-lang-obj-model",
  "once_cell",
  "parking_lot",
+ "unicode-properties",
 ]
 
 [[package]]

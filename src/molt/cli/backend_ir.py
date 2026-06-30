@@ -730,10 +730,8 @@ def _reachability_feature_refusal(
     target_triple = "wasm32-wasip1" if is_wasm else None
     # The ceiling is the SAME per-target available-feature authority the build
     # uses to select the staticlib (``_runtime_builtin_features_for_profile``):
-    # native reads the Cargo ladder (Phase 0), WASM keeps its deliberately broader
-    # availability surface. Using this (not the raw Cargo-only
-    # ``profile_link_features``) keeps the reachability ceiling aligned with the
-    # features the linked archive actually provides on each target.
+    # the Cargo ladder plus explicit target exclusions. Using this keeps the
+    # reachability ceiling aligned with the features the linked archive provides.
     profile_features = frozenset(
         _runtime_features._runtime_builtin_features_for_profile(
             stdlib_profile or DEFAULT_STDLIB_PROFILE,

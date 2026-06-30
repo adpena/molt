@@ -403,7 +403,7 @@ def test_native_callable_fixed_arity_rejects_bad_payload_count_before_invoke_ffi
         )
 
 
-def test_native_callable_module_attr_export_fails_before_invoke_ffi() -> None:
+def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"nativepkg", "nativepkg.ndimage"},
         direct_call_modules={"__main__"},
@@ -412,16 +412,33 @@ def test_native_callable_module_attr_export_fails_before_invoke_ffi() -> None:
                 "module": "nativepkg.ndimage",
                 "name": "distance_transform_edt",
                 "binding": "module_attr",
-                "abi": "molt.forward_f32_v1",
+                "abi": "molt.object_call_v1",
             }
         },
         fallback_policy="bridge",
     )
 
-    with pytest.raises(CompatibilityError, match="module_attr binding"):
-        gen.visit(
-            ast.parse(
-                "import nativepkg.ndimage as ndi\n"
-                "value = ndi.distance_transform_edt(data)\n"
-            )
+    gen.visit(
+        ast.parse(
+            "import nativepkg.ndimage as ndi\n"
+            "value = ndi.distance_transform_edt(data)\n"
         )
+    )
+    ir = gen.to_json()
+    invoke_ops = [
+        op
+        for fn in ir["functions"]
+        for op in fn["ops"]
+        if op["kind"] == "invoke_ffi"
+    ]
+
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert len(invoke_op["args"]) == 2
+    assert invoke_op["native_callable_export"] == (
+        "nativepkg.ndimage.distance_transform_edt"
+    )
+    assert invoke_op["native_callable_binding"] == "module_attr"
+    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
+    assert "native_callable_symbol" not in invoke_op
+    assert invoke_op["source_line"] == 2

@@ -1,7 +1,7 @@
 """Loud compile-time refusal for feature-gated stdlib modules (task #70).
 
 A domain-feature-gated stdlib module on a profile that excludes its feature must
-produce a LOUD, actionable compile-time refusal — never a raw undefined-symbol
+produce a LOUD, actionable compile-time refusal -- never a raw undefined-symbol
 linker error. These guards pin that doctrine against the REAL stdlib modules and
 the REAL profile feature surface, so the refusal can never silently regress into
 a link-time failure.
@@ -202,7 +202,7 @@ def test_ungated_ssl_abi_is_never_refused() -> None:
 def test_importlib_extra_is_resolver_only_not_link_affecting() -> None:
     # importlib.machinery requires molt_importlib_resources_* intrinsics whose
     # resolver arm is gated by stdlib_importlib_extra, but their
-    # #[unsafe(no_mangle)] definitions are compiled unconditionally — the
+    # #[unsafe(no_mangle)] definitions are compiled unconditionally -- the
     # symbols are ALWAYS in the archive. The resolver-arm gate is therefore NOT
     # a link gate, so importlib.machinery must build on micro.
     assert "stdlib_importlib_extra" not in LINK_AFFECTING_FEATURES
@@ -390,7 +390,7 @@ def test_modules_outside_stdlib_root_are_ignored() -> None:
 
 def test_wasm_micro_uses_wasm_feature_surface_and_refuses_ast() -> None:
     # The wasm micro surface excludes stdlib_ast (it is in the wasm-excluded
-    # set), so `import ast` on a wasm micro build is also refused — and the
+    # set), so `import ast` on a wasm micro build is also refused -- and the
     # refusal computes the SAME feature surface the wasm staticlib links.
     rc, message = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "micro", "wasm")
     assert rc is not None and rc != 0
@@ -428,20 +428,21 @@ def test_wasm_full_excludes_sqlite_and_refuses_sqlite3() -> None:
     assert "_sqlite3" in message
 
 
-def test_wasm_micro_includes_crypto_so_hashlib_is_allowed() -> None:
-    # Unlike native micro, the wasm micro surface KEEPS stdlib_crypto (only
-    # tk/net/ast/unicode_names are wasm-excluded), so hashlib must NOT be
-    # refused on wasm — proving the refusal tracks the per-target feature set
-    # rather than a single hardcoded exclusion list.
+def test_wasm_micro_excludes_crypto_so_hashlib_is_refused() -> None:
+    # Browser/edge WASM micro must stay small: crypto stays behind full.
     wasm_micro = frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
             "micro", target_triple="wasm32-wasip1"
         )
     )
-    assert "stdlib_crypto" in wasm_micro
+    assert "stdlib_crypto" not in wasm_micro
+    assert "stdlib_compression" not in wasm_micro
+    assert "stdlib_archive" not in wasm_micro
     rc, message = _run_pass([("hashlib", STDLIB_ROOT / "hashlib.py")], "micro", "wasm")
-    assert rc is None
-    assert message is None
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "stdlib_crypto" in message
+    assert "hashlib" in message
 
 
 # --- Phase 0: profile feature sets read the Cargo ladder, not a Python mirror -
@@ -451,8 +452,8 @@ def test_wasm_micro_includes_crypto_so_hashlib_is_allowed() -> None:
 # ``[features]`` chain (micro -> stdlib_micro ... full -> stdlib_full), replacing
 # the hand-maintained ``_ALL_DOMAIN_FEATURES`` flat list that DRIFTED from the
 # Cargo chain.  The old mirror omitted ``stdlib_regex``/``stdlib_itertools``/
-# ``stdlib_path``/``stdlib_difflib``/``stdlib_xml``/``stdlib_ipaddress`` — all of
-# which ``stdlib_full`` transitively links — so the Python "full" model could not
+# ``stdlib_path``/``stdlib_difflib``/``stdlib_xml``/``stdlib_ipaddress`` -- all of
+# which ``stdlib_full`` transitively links -- so the Python "full" model could not
 # even name the features its own archive builds.  These guards turn that
 # "Python model drifts from Cargo ladder" class into a CI failure.
 
@@ -553,7 +554,7 @@ def test_full_features_superset_includes_previously_drifted_features() -> None:
 
 
 def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
-    # No-regression (migration-safety invariant §6: Phase 0 only WIDENS what full
+    # No-regression (migration-safety invariant section 6: Phase 0 only WIDENS what full
     # accepts; it never narrows micro and never drops a feature full already had).
     # micro/native is byte-identical to the documented pre-migration set, and
     # full/native is a strict SUPERSET of the documented pre-migration full set.
@@ -605,10 +606,9 @@ def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
     assert old_full <= _full_features()
 
 
-def test_wasm_feature_surface_unchanged_after_cargo_migration() -> None:
-    # Phase 0b: the WASM availability surface is preserved verbatim (the native
-    # ladder migrated to Cargo, the WASM path did not, to avoid narrowing the
-    # WASM-micro surface and wrongly refusing working WASM builds).
+def test_wasm_feature_surface_matches_cargo_ladder_after_migration() -> None:
+    # WASM uses the same Cargo-derived profile ladder as native, with explicit
+    # target exclusions applied before the runtime feature plan is built.
     def wasm(profile: str) -> frozenset[str]:
         return frozenset(
             RUNTIME_FEATURES._runtime_builtin_features_for_profile(
@@ -616,37 +616,22 @@ def test_wasm_feature_surface_unchanged_after_cargo_migration() -> None:
             )
         )
 
-    builtin = {
-        "builtin_set",
-        "builtin_memoryview",
-        "builtin_complex",
-        "builtin_contextvars",
-        "builtin_fcntl",
-    }
-    micro_base = {
-        "stdlib_asyncio",
-        "stdlib_collections",
-        "stdlib_fs_extra",
-        "stdlib_logging",
-        "stdlib_logging_ext",
-    }
-    wasm_excluded = {
-        "stdlib_tk",
-        "stdlib_net",
-        "stdlib_ast",
-        "stdlib_unicode_names",
-        "sqlite",
-    }
-    old_domain = set(RUNTIME_FEATURES._WASM_DOMAIN_AVAILABILITY_FEATURES)
-    expected_wasm_micro = (builtin | old_domain | micro_base) - wasm_excluded
-    assert wasm("micro") == expected_wasm_micro
-    assert wasm("full") == set(RUNTIME_FEATURES._WASM_RUNTIME_FULL_FEATURES)
+    builtin = set(RUNTIME_FEATURES._ALL_BUILTIN_FEATURES)
+    micro_base = set(RUNTIME_FEATURES._MICRO_BASE_RUNTIME_FEATURES)
+    assert wasm("micro") == builtin | micro_base
+    assert "stdlib_crypto" not in wasm("micro")
+    assert "stdlib_compression" not in wasm("micro")
+    assert "stdlib_archive" not in wasm("micro")
+    assert wasm("full") == builtin | RUNTIME_FEATURES.profile_link_features(
+        "full",
+        target_triple="wasm32-wasip1",
+    )
 
 
 def test_full_build_refusing_genuinely_gated_module_names_truthful_feature() -> None:
     # The truthful-message property the drift used to break: `ast` (genuinely
     # link-affecting via stdlib_ast) is refused on micro and the remedy it points
-    # to — full — now genuinely provides stdlib_ast (the Cargo-derived full set
+    # to -- full -- now genuinely provides stdlib_ast (the Cargo-derived full set
     # contains it), so the "rebuild with --stdlib-profile full" message is no
     # longer a lie.
     assert "stdlib_ast" in _full_features()

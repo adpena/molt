@@ -714,6 +714,14 @@ working in this repo:
   child stdout/stderr text or Codex state. The wrapper launches through
   `tools/memory_guard.py` by default; use `--no-memory-guard` only for a
   non-proof probe or an already guarded direct child.
+- When Codex Desktop shows a crash dialog, classify it through the same
+  agent-first authority instead of editing app state from the repo lane:
+  `uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`.
+  It writes `logs/agents/codex_crash/*.json`, stores a hash plus parsed
+  code/signal/warning fields, recognizes `3221225786`
+  (`STATUS_CONTROL_C_EXIT`), response-stream retry pressure, plugin
+  `interface.defaultPrompt` warnings, and rollout-state repair symptoms, and
+  records next actions without storing raw crash text or mutating Codex state.
 - Keep tool output bounded. Avoid broad noisy scans such as repo-wide TODO/HACK
   searches without tight globs, and set conservative output budgets for any
   command that can print thousands of lines. If a command is noisy, redirect it
@@ -793,10 +801,11 @@ working in this repo:
   `built_tools.load_discoverable_tools` as crash-adjacent on Windows, even when
   the log level says WARN. For `interface.defaultPrompt` violations such as
   `maximum of 3 prompts is supported`, preserve the exact plugin path and
-  manifest warning as evidence, stop adding proof-lane load, and reduce
-  optional plugin registrations only through normal operator-controlled config
-  after active Molt work is quiescent. Do not hand-edit cached plugin manifests,
-  plugin caches, or Codex state as a first response.
+  manifest warning through `tools/agent_coordination.py codex-crash`, stop
+  adding proof-lane load, and reduce optional plugin registrations only through
+  normal operator-controlled config after active Molt work is quiescent. Do not
+  hand-edit cached plugin manifests, plugin caches, or Codex state as a first
+  response.
 - Keep Codex worktree and local-environment state boring and explicit.
   Worktrees inherit checked-in files by default, so ignored toolchains, caches,
   credentials, or setup files must come from checked-in setup scripts or an
