@@ -9,6 +9,7 @@ import molt.wasm_artifact as _wasm_artifact
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_LEGACY_TABLE_BASE,
+    WASM_POLL_TABLE_IMPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
@@ -93,6 +94,17 @@ def _export_wasm_table_refs(path: Path) -> None:
     _atomic_write_bytes(path, _wasm_artifact._build_wasm_sections(rebuilt_sections))
 
 
+def _wasm_table_first_live_slot() -> int:
+    slots = [
+        slot
+        for slot, _name in WASM_POLL_TABLE_IMPORTS
+        if isinstance(slot, int) and slot > 0
+    ]
+    if WASM_RESERVED_RUNTIME_CALLABLE_BASE > 0:
+        slots.append(WASM_RESERVED_RUNTIME_CALLABLE_BASE)
+    return min(slots, default=0)
+
+
 def _effective_split_worker_table_base(
     *,
     wasm_table_base: int | None,
@@ -102,13 +114,20 @@ def _effective_split_worker_table_base(
     _ = runtime_table_min
     if wasm_table_base is None:
         return None
-    inferred = _wasm_artifact.infer_wasm_table_base_from_table_ref_exports(
+    first_exported_slot = _wasm_artifact.infer_wasm_table_base_from_table_ref_exports(
         app_table_ref_signatures,
     )
+    if first_exported_slot is not None:
+        first_live_slot = _wasm_table_first_live_slot()
+        inferred = first_exported_slot - first_live_slot
+    else:
+        inferred = None
     if inferred is not None and inferred != wasm_table_base:
         raise ValueError(
             "backend wasm_table_base "
-            f"{wasm_table_base} disagrees with table-ref export base {inferred}"
+            f"{wasm_table_base} disagrees with table-ref export base {inferred} "
+            f"(first exported slot {first_exported_slot}, "
+            f"first live slot {first_live_slot})"
         )
     return wasm_table_base
 

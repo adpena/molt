@@ -316,6 +316,71 @@ pub(super) fn emit_dynamic_call_op(
         }
         "invoke_ffi" => {
             if let Some(export_name) = op.native_callable_export.as_deref() {
+                if op.native_callable_binding.as_deref() == Some("module_attr") {
+                    let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
+                    let abi_contract = crate::native_callable_abi::parse_native_callable_abi(abi)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "native callable module_attr export `{export_name}` declares unknown ABI `{abi}`"
+                            )
+                        });
+                    if abi_contract == NativeCallableAbi::ForwardF32V1 {
+                        panic!(
+                            "native callable module_attr export `{export_name}` cannot use forward_f32 memory ABI"
+                        );
+                    }
+                    let args_names = op.args.as_ref().unwrap();
+                    let live_object_locals = collect_live_object_locals_for_call(
+                        locals,
+                        last_use_local,
+                        rel_idx,
+                        op.out.as_ref(),
+                    );
+                    retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+                    let func_bits = locals[&args_names[0]];
+                    let out = locals[op.out.as_ref().unwrap()];
+                    let callargs_local = if abi_contract == NativeCallableAbi::ObjectCallargsV1 {
+                        if args_names.len() != 2 {
+                            panic!(
+                                "native callable module_attr export `{export_name}` object_callargs ABI expects function handle plus one callargs payload"
+                            );
+                        }
+                        locals[&args_names[1]]
+                    } else {
+                        let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+                        build_positional_callargs(
+                            func,
+                            import_ids,
+                            reloc_enabled,
+                            locals,
+                            callargs_tmp,
+                            &args_names[1..],
+                        );
+                        callargs_tmp
+                    };
+                    emit_call_site_id(
+                        func,
+                        func_ir.name.as_str(),
+                        op_idx,
+                        "module_attr_native_callable",
+                    );
+                    func.instruction(&Instruction::LocalGet(func_bits));
+                    func.instruction(&Instruction::LocalGet(callargs_local));
+                    func.instruction(&Instruction::I64Const(box_bool(1)));
+                    emit_call(
+                        func,
+                        reloc_enabled,
+                        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::InvokeFfiIc],
+                    );
+                    func.instruction(&Instruction::LocalSet(out));
+                    release_live_object_locals(
+                        func,
+                        import_ids,
+                        reloc_enabled,
+                        &live_object_locals,
+                    );
+                    return CallOpEmission::Handled;
+                }
                 let native_import = call_ctx.native_callable_imports.required(export_name);
                 native_import.assert_matches_op(op);
                 let args_names = op.args.as_ref().unwrap();

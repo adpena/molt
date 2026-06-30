@@ -131,6 +131,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_stmt_offsets: list[int]
     mutated_classes: set[str]
     native_callable_exports: Any
+    native_python_exports: Any
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parse_codec: Any
@@ -181,6 +182,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
+        native_python_exports: set[str] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -1639,6 +1641,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @staticmethod
     def _is_modulespec_ctor(node: ast.AST) -> bool: ...
 
+    def _is_native_python_export(self, target_module: str, attr_name: str) -> bool: ...
+
     def _is_pure_op_for_global_cse(self, op_kind: str) -> bool: ...
 
     def _is_read_key_invalidated_by_alias_classes(
@@ -1990,6 +1994,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _qualname_for_def(self, name: str) -> str: ...
 
     def _qualname_prefix(self) -> str: ...
+
+    def _raise_native_python_export_missing_callable_metadata(
+        self, target_module: str, attr_name: str, node: ast.Call
+    ) -> None: ...
 
     def _raise_syntax_error(self, msg: str, node: ast.AST) -> None: ...
 

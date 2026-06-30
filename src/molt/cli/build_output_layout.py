@@ -26,14 +26,14 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
     },
     "browser": {
         "wasm_opt_level": "Oz",
-        "wasm_profile": "full",
+        "wasm_profile": "auto",
         "precompile": False,
         "tmp_quota_mb": 64,
         "stdlib_profile": "micro",
     },
     "wasi": {
         "wasm_opt_level": "O3",
-        "wasm_profile": "full",
+        "wasm_profile": "auto",
         "precompile": False,
         "tmp_quota_mb": 256,
         "stdlib_profile": "full",

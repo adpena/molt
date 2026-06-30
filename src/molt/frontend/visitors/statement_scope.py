@@ -489,6 +489,11 @@ class StatementScopeVisitorMixin(_MixinBase):
             attr_name = alias.name
             bind_name = alias.asname or attr_name
             attr_val = self._emit_module_import_from_value(module_val, attr_name)
+            imported_child_module = f"{module_name}.{attr_name}"
+            imported_child_is_module = (
+                imported_child_module in self.known_modules
+                or imported_child_module in self.stdlib_allowlist
+            )
             if module_name == "asyncio" and attr_name in {"run", "sleep"}:
                 module_prefix = f"{self._sanitize_module_name(module_name)}__"
                 attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
@@ -511,17 +516,33 @@ class StatementScopeVisitorMixin(_MixinBase):
                 or bind_name not in self.imported_names
             )
             if _mod_resolvable:
-                self.imported_names[bind_name] = module_name
-                # Track the original attr name so cross-module call targets
-                # resolve to the canonical function name, not the alias.
-                # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
-                self.imported_attr_names[bind_name] = attr_name
-                if self.current_func_name != "molt_main":
-                    self.local_imported_names.add(bind_name)
-                if self.current_func_name == "molt_main":
-                    self.global_imported_names[bind_name] = module_name
-                    self.global_imported_attr_names[bind_name] = attr_name
-                    self.module_intrinsic_globals.pop(bind_name, None)
+                if imported_child_is_module:
+                    self.imported_modules[bind_name] = imported_child_module
+                    self.imported_names.pop(bind_name, None)
+                    self.imported_attr_names.pop(bind_name, None)
+                    self.local_imported_names.discard(bind_name)
+                    if self.current_func_name != "molt_main":
+                        self.local_imported_modules.add(bind_name)
+                    if self.current_func_name == "molt_main":
+                        self.global_imported_modules[bind_name] = imported_child_module
+                        self.global_imported_names.pop(bind_name, None)
+                        self.global_imported_attr_names.pop(bind_name, None)
+                        self.module_intrinsic_globals.pop(bind_name, None)
+                else:
+                    self.imported_names[bind_name] = module_name
+                    # Track the original attr name so cross-module call targets
+                    # resolve to the canonical function name, not the alias.
+                    # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
+                    self.imported_attr_names[bind_name] = attr_name
+                    self.imported_modules.pop(bind_name, None)
+                    self.local_imported_modules.discard(bind_name)
+                    if self.current_func_name != "molt_main":
+                        self.local_imported_names.add(bind_name)
+                    if self.current_func_name == "molt_main":
+                        self.global_imported_names[bind_name] = module_name
+                        self.global_imported_attr_names[bind_name] = attr_name
+                        self.global_imported_modules.pop(bind_name, None)
+                        self.module_intrinsic_globals.pop(bind_name, None)
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.module_global_mutations.add(bind_name)

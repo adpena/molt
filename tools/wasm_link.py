@@ -33,6 +33,7 @@ from wasm_link_format import (  # noqa: E402
     SYMBOL_DUMP_RE as SYMBOL_DUMP_RE,
     SYMBOL_KIND_FUNCTION as SYMBOL_KIND_FUNCTION,
     SYMTAB_SUBSECTION_ID as SYMTAB_SUBSECTION_ID,
+    WASM_EXTERNAL_NATIVE_LINK_IMPORTS as WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
     WASM_MAGIC as WASM_MAGIC,
     WASM_VERSION as WASM_VERSION,
     _ESSENTIAL_EXPORTS as _ESSENTIAL_EXPORTS,
@@ -482,6 +483,47 @@ def _canonical_split_runtime_required_exports(runtime_data: bytes) -> set[str]:
         and name not in {"molt_exception_pending"}
         and not is_table_ref_export_name(name)
     }
+
+
+def _read_link_allowlist_symbols(path: Path) -> list[str]:
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def _compose_wasm_ld_allowlist(
+    *,
+    base_allowlist: Path,
+    native_objects: Sequence[Path],
+    temp_dir: tempfile.TemporaryDirectory,
+) -> Path:
+    """Return the wasm-ld allowlist for this link transaction.
+
+    The checked-in allowlist is the runtime/user-program import contract.  Native
+    package objects need the generated external-native toolchain/libc/C++ import
+    surface too; keep that authority generated and transaction-local so the base
+    runtime allowlist does not grow a second copy of package closure policy.
+    """
+    if not native_objects:
+        return base_allowlist
+    symbols = sorted(
+        {*_read_link_allowlist_symbols(base_allowlist), *WASM_EXTERNAL_NATIVE_LINK_IMPORTS}
+    )
+    composed = Path(temp_dir.name) / "wasm_allowed_imports.external_native.txt"
+    composed.write_text(
+        "\n".join(
+            [
+                "# @generated transaction-local by tools/wasm_link.py",
+                "# runtime allowlist + generated external native link imports",
+                *symbols,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return composed
 
 
 def _tree_shake_runtime(
@@ -1204,6 +1246,11 @@ def _run_wasm_ld(
     if not allowlist.exists():
         print(f"Allowlist not found: {allowlist}", file=sys.stderr)
         return 1
+    allowlist = _compose_wasm_ld_allowlist(
+        base_allowlist=allowlist,
+        native_objects=native_objects,
+        temp_dir=temp_dir,
+    )
     staged_outputs: list[Path] = []
     work_linked = artifact_publish.staged_output_path(linked)
     staged_outputs.append(work_linked)

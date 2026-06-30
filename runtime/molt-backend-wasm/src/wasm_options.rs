@@ -24,7 +24,7 @@ pub struct WasmCompileOptions {
     /// `MOLT_WASM_NATIVE_EH=0` to disable explicitly.
     pub native_eh_enabled: bool,
     /// WASM profile for compile-time import planning.
-    /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
+    /// Gated by `MOLT_WASM_PROFILE` environment variable ("auto", "full", or "pure").
     pub wasm_profile: WasmProfile,
 }
 
@@ -59,6 +59,7 @@ impl Default for WasmCompileOptions {
             .and_then(|value| value.parse::<u32>().ok()),
             native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
+                Ok("auto") => WasmProfile::Auto,
                 Ok("pure") => WasmProfile::Pure,
                 Ok("full") => WasmProfile::Full,
                 _ => WasmProfile::Auto,

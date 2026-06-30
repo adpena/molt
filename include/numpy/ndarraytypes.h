@@ -1,6 +1,7 @@
 #ifndef MOLT_NUMPY_NDARRAYTYPES_H
 #define MOLT_NUMPY_NDARRAYTYPES_H
 
+#include <limits.h>
 #include <Python.h>
 
 #ifdef __cplusplus
@@ -69,6 +70,16 @@ typedef struct PyArray_ArrayDescr {
     PyArray_Descr *base;
     PyObject *shape;
 } PyArray_ArrayDescr;
+
+#ifndef NPY_LIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define NPY_LIKELY(x) __builtin_expect(!!(x), 1)
+#define NPY_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define NPY_LIKELY(x) (x)
+#define NPY_UNLIKELY(x) (x)
+#endif
+#endif
 
 typedef struct PyArray_DatetimeMetaData {
     int base;
@@ -296,32 +307,38 @@ typedef PyObject PyScalarObject;
 #define NPY_API_VERSION 0x00000012
 #define NPY_FEATURE_VERSION 0x00000012
 
-#define NPY_BOOL 0
-#define NPY_BYTE 1
-#define NPY_UBYTE 2
-#define NPY_SHORT 3
-#define NPY_USHORT 4
-#define NPY_INT 5
-#define NPY_UINT 6
-#define NPY_LONG 7
-#define NPY_ULONG 8
-#define NPY_LONGLONG 9
-#define NPY_ULONGLONG 10
-#define NPY_FLOAT 11
-#define NPY_DOUBLE 12
-#define NPY_LONGDOUBLE 13
-#define NPY_CFLOAT 14
-#define NPY_CDOUBLE 15
-#define NPY_CLONGDOUBLE 16
-#define NPY_OBJECT 17
-#define NPY_STRING 18
-#define NPY_UNICODE 19
-#define NPY_VOID 20
-#define NPY_DATETIME 21
-#define NPY_TIMEDELTA 22
-#define NPY_HALF 23
-#define NPY_NTYPES_LEGACY 24
-#define NPY_NTYPES_ABI_COMPATIBLE 21
+enum NPY_TYPES {
+    NPY_BOOL = 0,
+    NPY_BYTE = 1,
+    NPY_UBYTE = 2,
+    NPY_SHORT = 3,
+    NPY_USHORT = 4,
+    NPY_INT = 5,
+    NPY_UINT = 6,
+    NPY_LONG = 7,
+    NPY_ULONG = 8,
+    NPY_LONGLONG = 9,
+    NPY_ULONGLONG = 10,
+    NPY_FLOAT = 11,
+    NPY_DOUBLE = 12,
+    NPY_LONGDOUBLE = 13,
+    NPY_CFLOAT = 14,
+    NPY_CDOUBLE = 15,
+    NPY_CLONGDOUBLE = 16,
+    NPY_OBJECT = 17,
+    NPY_STRING = 18,
+    NPY_UNICODE = 19,
+    NPY_VOID = 20,
+    NPY_DATETIME = 21,
+    NPY_TIMEDELTA = 22,
+    NPY_HALF = 23,
+    NPY_CHAR = 24,
+    NPY_NTYPES_LEGACY = 24,
+    NPY_NOTYPE = 25,
+    NPY_USERDEF = 256,
+    NPY_NTYPES_ABI_COMPATIBLE = 21,
+    NPY_VSTRING = 2056,
+};
 
 #define NPY_INT8 NPY_BYTE
 #define NPY_UINT8 NPY_UBYTE
@@ -343,6 +360,47 @@ typedef PyObject PyScalarObject;
 #else
 #define NPY_INTP NPY_INT
 #define NPY_UINTP NPY_UINT
+#endif
+
+#define NPY_MAX_INT8 127
+#define NPY_MIN_INT8 -128
+#define NPY_MAX_UINT8 255
+#define NPY_MAX_INT16 32767
+#define NPY_MIN_INT16 -32768
+#define NPY_MAX_UINT16 65535
+#define NPY_MAX_INT32 2147483647
+#define NPY_MIN_INT32 (-NPY_MAX_INT32 - 1)
+#define NPY_MAX_UINT32 4294967295U
+#define NPY_MAX_INT64 9223372036854775807LL
+#define NPY_MIN_INT64 (-NPY_MAX_INT64 - 1LL)
+#define NPY_MAX_UINT64 18446744073709551615ULL
+#define NPY_MAX_BYTE SCHAR_MAX
+#define NPY_MIN_BYTE SCHAR_MIN
+#define NPY_MAX_UBYTE UCHAR_MAX
+#define NPY_MAX_SHORT SHRT_MAX
+#define NPY_MIN_SHORT SHRT_MIN
+#define NPY_MAX_USHORT USHRT_MAX
+#define NPY_MAX_INT INT_MAX
+#define NPY_MIN_INT INT_MIN
+#define NPY_MAX_UINT UINT_MAX
+#define NPY_MAX_LONG LONG_MAX
+#define NPY_MIN_LONG LONG_MIN
+#define NPY_MAX_ULONG ULONG_MAX
+#define NPY_MAX_LONGLONG NPY_MAX_INT64
+#define NPY_MIN_LONGLONG NPY_MIN_INT64
+#define NPY_MAX_ULONGLONG NPY_MAX_UINT64
+#define NPY_MIN_DATETIME NPY_MIN_INT64
+#define NPY_MAX_DATETIME NPY_MAX_INT64
+#define NPY_MIN_TIMEDELTA NPY_MIN_INT64
+#define NPY_MAX_TIMEDELTA NPY_MAX_INT64
+#if INTPTR_MAX == INT64_MAX
+#define NPY_MAX_INTP NPY_MAX_LONGLONG
+#define NPY_MIN_INTP NPY_MIN_LONGLONG
+#define NPY_MAX_UINTP NPY_MAX_ULONGLONG
+#else
+#define NPY_MAX_INTP NPY_MAX_INT
+#define NPY_MIN_INTP NPY_MIN_INT
+#define NPY_MAX_UINTP NPY_MAX_UINT
 #endif
 
 #define NPY_NEIGHBORHOOD_ITER_ZERO_PADDING 0
@@ -416,6 +474,53 @@ typedef enum {
 #define NPY_CONSTANT_NAN 7
 #endif
 
+#ifndef NPY_ALLOW_THREADS
+#define NPY_ALLOW_THREADS 1
+#endif
+
+#define NPY_BEGIN_THREADS_DEF PyThreadState *_save = NULL;
+#if NPY_ALLOW_THREADS
+#define NPY_BEGIN_ALLOW_THREADS Py_BEGIN_ALLOW_THREADS
+#define NPY_END_ALLOW_THREADS Py_END_ALLOW_THREADS
+#define NPY_BEGIN_THREADS \
+    do {                  \
+        _save = PyEval_SaveThread(); \
+    } while (0)
+#define NPY_END_THREADS                       \
+    do {                                      \
+        if (_save != NULL) {                  \
+            PyEval_RestoreThread(_save);      \
+            _save = NULL;                     \
+        }                                     \
+    } while (0)
+#define NPY_BEGIN_THREADS_THRESHOLDED(loop_size) \
+    do {                                         \
+        if ((loop_size) > 500) {                 \
+            _save = PyEval_SaveThread();         \
+        }                                        \
+    } while (0)
+#define NPY_ALLOW_C_API_DEF PyGILState_STATE __save__;
+#define NPY_ALLOW_C_API \
+    do {                \
+        __save__ = PyGILState_Ensure(); \
+    } while (0)
+#define NPY_DISABLE_C_API \
+    do {                  \
+        PyGILState_Release(__save__); \
+    } while (0)
+#else
+#define NPY_BEGIN_ALLOW_THREADS
+#define NPY_END_ALLOW_THREADS
+#define NPY_BEGIN_THREADS
+#define NPY_END_THREADS
+#define NPY_BEGIN_THREADS_THRESHOLDED(loop_size)
+#define NPY_BEGIN_THREADS_DESCR(dtype)
+#define NPY_END_THREADS_DESCR(dtype)
+#define NPY_ALLOW_C_API_DEF
+#define NPY_ALLOW_C_API
+#define NPY_DISABLE_C_API
+#endif
+
 #define NPY_ARRAY_C_CONTIGUOUS 0x0001
 #define NPY_ARRAY_F_CONTIGUOUS 0x0002
 #define NPY_ARRAY_OWNDATA 0x0004
@@ -428,6 +533,17 @@ typedef enum {
 #define NPY_ARRAY_NOTSWAPPED 0x0200
 #define NPY_ARRAY_WRITEBACKIFCOPY 0x2000
 #define NPY_ARRAY_ENSURENOCOPY 0x4000
+#define NPY_ARRAY_BEHAVED (NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE)
+#define NPY_ARRAY_BEHAVED_NS \
+    (NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE | NPY_ARRAY_NOTSWAPPED)
+#define NPY_ARRAY_CARRAY (NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_BEHAVED)
+#define NPY_ARRAY_CARRAY_RO (NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED)
+#define NPY_ARRAY_FARRAY (NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_BEHAVED)
+#define NPY_ARRAY_FARRAY_RO (NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED)
+#define NPY_ARRAY_DEFAULT NPY_ARRAY_CARRAY
+#define NPY_ARRAY_IN_ARRAY NPY_ARRAY_CARRAY_RO
+#define NPY_ARRAY_OUT_ARRAY NPY_ARRAY_CARRAY
+#define NPY_ARRAY_INOUT_ARRAY NPY_ARRAY_CARRAY
 
 #define NPY_ITEM_REFCOUNT 0x01
 #define NPY_NEEDS_PYAPI 0x02

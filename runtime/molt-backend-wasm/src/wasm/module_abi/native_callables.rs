@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use wasm_encoder::{EntityType, ValType};
 
 use crate::native_callable_abi::{
-    NATIVE_CALLABLE_ABI_CHOICES, NATIVE_CALLABLE_ABI_FORWARD_F32_V1, NativeCallableAbi,
-    parse_native_callable_abi,
+    NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, parse_native_callable_abi,
 };
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{STATIC_FUNC_TYPES, TypeSectionExt};
@@ -99,7 +98,8 @@ fn wasm_native_callable_abi(export_name: &str, abi: &str, arity: usize) -> Nativ
         && arity != expected_arity
     {
         panic!(
-            "native callable export `{export_name}` declares `{NATIVE_CALLABLE_ABI_FORWARD_F32_V1}` with arity {arity}; expected exactly one Float32Array payload"
+            "native callable export `{export_name}` declares `{}` with arity {arity}; expected exactly {expected_arity} ABI payload argument(s)",
+            parsed.token()
         );
     }
     parsed
@@ -116,6 +116,19 @@ impl NativeCallableRequest {
         }
         let binding = op.native_callable_binding.as_deref().unwrap_or("<missing>");
         let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
+        if binding == "module_attr" {
+            let parsed = parse_native_callable_abi(abi).unwrap_or_else(|| {
+                panic!(
+                    "native callable export `{export_name}` declares unknown ABI `{abi}`; known ABIs: {NATIVE_CALLABLE_ABI_CHOICES}"
+                )
+            });
+            if parsed == NativeCallableAbi::ForwardF32V1 {
+                panic!(
+                    "native callable export `{export_name}` uses module_attr with forward_f32 memory ABI"
+                );
+            }
+            return None;
+        }
         if binding != "direct_symbol" {
             panic!(
                 "native callable export `{export_name}` uses binding `{binding}`; wasm native ABI dispatch requires direct_symbol"
@@ -263,6 +276,7 @@ fn native_callable_type_idx(
         NativeCallableAbi::ObjectCallV1 => {
             i64_params_to_i64_result_type_idx(types, next_type_idx, dynamic_type_indices, arity)
         }
+        NativeCallableAbi::ObjectCallargsV1 => static_native_callable_type_idx(abi),
         NativeCallableAbi::ForwardF32V1 => static_native_callable_type_idx(abi),
     }
 }

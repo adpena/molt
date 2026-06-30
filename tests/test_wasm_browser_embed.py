@@ -137,6 +137,203 @@ console.log(JSON.stringify(Array.from(output)));
     assert json.loads(run.stdout) == [2.25, -3.75, 1.25]
 
 
+def test_browser_embed_object_call_native_callable_import_adapter(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_object_call_native_callable.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+const symbol = 'molt_scipy_ndimage_distance_transform_edt';
+const imports = createMoltNativeCallableImports(
+  {{ memory: new WebAssembly.Memory({{ initial: 1 }}), runtimeInstance: null }},
+  {{ funcImports: [{{ module: 'molt_native', name: symbol }}] }},
+  {{
+    manifest: {{
+      abi: {{
+        browser_embed: {{
+          native_callables: {{
+            module: 'molt_native',
+            symbols: {{
+              [symbol]: {{
+                abi: 'molt.object_call_v1',
+                binding: 'direct_symbol',
+                signature: {{
+                  params: ['molt.value...'],
+                  result: 'molt.value',
+                }},
+                exports: ['scipy.ndimage.distance_transform_edt'],
+              }},
+            }},
+          }},
+        }},
+      }},
+    }},
+    nativeCallables: {{
+      [symbol]: (maskBits, ctx) => {{
+        if (ctx.abi !== 'molt.object_call_v1') throw new Error('wrong abi');
+        if (ctx.arity !== 1) throw new Error('wrong arity');
+        if (typeof maskBits !== 'bigint') throw new Error('arg not bigint');
+        return maskBits + 7n;
+      }},
+    }},
+  }},
+);
+
+console.log(imports[symbol](35n).toString());
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "42"
+
+
+def test_browser_embed_object_call_native_callable_result_must_be_handle(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_bad_object_call_native_callable.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+const symbol = 'molt_scipy_ndimage_bad_result';
+const imports = createMoltNativeCallableImports(
+  {{ memory: new WebAssembly.Memory({{ initial: 1 }}), runtimeInstance: null }},
+  {{ funcImports: [{{ module: 'molt_native', name: symbol }}] }},
+  {{
+    manifest: {{
+      abi: {{
+        browser_embed: {{
+          native_callables: {{
+            module: 'molt_native',
+            symbols: {{
+              [symbol]: {{
+                abi: 'molt.object_call_v1',
+                binding: 'direct_symbol',
+                signature: {{
+                  params: ['molt.value...'],
+                  result: 'molt.value',
+                }},
+              }},
+            }},
+          }},
+        }},
+      }},
+    }},
+    nativeCallables: {{
+      [symbol]: () => 'not-a-handle',
+    }},
+  }},
+);
+
+try {{
+  imports[symbol](1n);
+  console.log('unexpected-ok');
+}} catch (err) {{
+  console.log(String(err.message || err));
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert "molt.object_call_v1 result must be a Molt value handle" in run.stdout
+
+
+def test_browser_embed_object_callargs_native_callable_import_adapter(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_object_callargs_native_callable.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+const symbol = 'molt_scipy_ndimage_gaussian_filter';
+const imports = createMoltNativeCallableImports(
+  {{ memory: new WebAssembly.Memory({{ initial: 1 }}), runtimeInstance: null }},
+  {{ funcImports: [{{ module: 'molt_native', name: symbol }}] }},
+  {{
+    manifest: {{
+      abi: {{
+        browser_embed: {{
+          native_callables: {{
+            module: 'molt_native',
+            symbols: {{
+              [symbol]: {{
+                abi: 'molt.object_callargs_v1',
+                binding: 'direct_symbol',
+                signature: {{
+                  params: ['molt.callargs'],
+                  result: 'molt.value',
+                }},
+                exports: ['scipy.ndimage.gaussian_filter'],
+              }},
+            }},
+          }},
+        }},
+      }},
+    }},
+    nativeCallables: {{
+      [symbol]: (callargsBits, ctx) => {{
+        if (ctx.abi !== 'molt.object_callargs_v1') throw new Error('wrong abi');
+        if (ctx.arity !== 1) throw new Error('wrong arity');
+        if (typeof callargsBits !== 'bigint') throw new Error('arg not bigint');
+        return callargsBits + 5n;
+      }},
+    }},
+  }},
+);
+
+console.log(imports[symbol](37n).toString());
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "42"
+
+
 def test_browser_embed_native_callable_import_must_be_manifest_declared(
     tmp_path: Path,
 ) -> None:

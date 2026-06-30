@@ -218,6 +218,7 @@ def _source_site_module_payload(
 
 
 def _module_roles(import_plan: Any, module_name: str) -> list[str]:
+    native_module_names = import_plan.native_artifact_plan.native_module_names()
     role_sets = (
         ("declared_root", import_plan.declared_root_modules),
         ("entry_reachable", import_plan.entry_reachable_modules),
@@ -225,10 +226,30 @@ def _module_roles(import_plan: Any, module_name: str) -> list[str]:
         ("stdlib_support", import_plan.stdlib_support_modules),
         ("package_parent", import_plan.package_parent_modules),
         ("namespace", import_plan.namespace_module_names),
+        ("native_artifact", native_module_names),
         ("compile", import_plan.compile_modules),
         ("known", import_plan.known_modules),
     )
-    return [name for name, modules in role_sets if module_name in modules]
+    roles = [name for name, modules in role_sets if module_name in modules]
+    if module_name not in import_plan.module_graph:
+        roles.append("source_graph_absent")
+    return roles
+
+
+def _logical_source_path_for_module(import_plan: Any, module_name: str) -> str:
+    logical_path = import_plan.module_graph_metadata.logical_source_path_by_module.get(
+        module_name
+    )
+    if logical_path is not None:
+        return str(logical_path)
+    module_path = import_plan.module_graph.get(module_name)
+    if module_path is not None:
+        return str(module_path)
+    if module_name in import_plan.native_artifact_plan.native_module_names():
+        return f"<external-native:{module_name}>"
+    if module_name in import_plan.namespace_module_names:
+        return f"<namespace:{module_name}>"
+    return f"<source-graph-absent:{module_name}>"
 
 
 def _source_site_identity_payload(
@@ -237,7 +258,6 @@ def _source_site_identity_payload(
     frontend_analysis: Any,
     target_python_tag: str,
 ) -> dict[str, Any]:
-    logical_paths = import_plan.module_graph_metadata.logical_source_path_by_module
     modules: list[dict[str, Any]] = []
     for name in sorted(import_plan.known_modules):
         source, module_path = _source_text_for_module(
@@ -254,9 +274,7 @@ def _source_site_identity_payload(
         modules.append(
             _source_site_module_payload(
                 module_name=name,
-                logical_path=str(
-                    logical_paths.get(name, import_plan.module_graph[name])
-                ),
+                logical_path=_logical_source_path_for_module(import_plan, name),
                 source=source or "",
                 tree=tree,
                 target_python=target_python_tag,
@@ -287,6 +305,7 @@ def _source_site_identity_payload(
                 "image": import_plan.image_scope.diagnostic_payload(),
                 "compile_modules": sorted(import_plan.compile_modules),
                 "modules": module_digest_payload,
+                "native_artifact_plan": import_plan.native_artifact_plan.digest_payload(),
             }
         ),
         "target_python": target_python_tag,

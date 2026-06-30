@@ -75,9 +75,13 @@ The remaining 30 imports (core runtime, arithmetic, IO/stdout, indirect calls, e
 > fail-closed. Split-runtime browser kernels therefore ask the shared runtime to
 > export the actual app import surface, not a duplicate broad pure lane.
 
-Use the `--wasm-profile` flag with values like `full` (default) and `pure`:
+Use the `--wasm-profile` flag with values `auto` (default), `full`, and `pure`:
+- In `auto` mode, plan imports from observed IR and strip unused host imports before
+  the app/runtime export check.
 - In `pure` mode, plan imports from observed IR and skip process/db/ws/socket/time
   categories in the module ABI import planner.
+- In `full` mode, preserve the whole generated host-import registry for hosts that
+  intentionally provide every import.
 - Guard the corresponding `emit_call` sites to emit `unreachable` instead of `call $import_idx` for omitted imports.
 - Run `wasm-opt --remove-unused-module-elements` as a post-emit step to DCE any code that transitively referenced stripped imports.
 

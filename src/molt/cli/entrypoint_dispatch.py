@@ -238,8 +238,8 @@ def _dispatch_entrypoint_command(
             wasm_opt_level_raw if isinstance(wasm_opt_level_raw, str) else "Oz"
         )
         precompile = bool(getattr(args, "precompile", False))
-        wasm_profile_raw = getattr(args, "wasm_profile", "full")
-        wasm_profile = wasm_profile_raw if isinstance(wasm_profile_raw, str) else "full"
+        wasm_profile_raw = getattr(args, "wasm_profile", "auto")
+        wasm_profile = wasm_profile_raw if isinstance(wasm_profile_raw, str) else "auto"
         stdlib_profile_raw = getattr(args, "stdlib_profile", None)
         stdlib_profile_flag = (
             stdlib_profile_raw if isinstance(stdlib_profile_raw, str) else None

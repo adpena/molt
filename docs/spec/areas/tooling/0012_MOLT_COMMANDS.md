@@ -388,13 +388,15 @@ runtime import/load metadata enforcement is required at spec + loader/exec bound
 Purpose: build and audit C extensions recompiled against `libmolt`.
 
 Subcommands:
-- `molt extension build` compiles configured extension sources, links against
-  `libmolt`, emits a wheel, and writes `extension_manifest.json`.
+- `molt extension build` compiles configured extension sources, emits either a
+  native shared library or a wasm32 static-link `.molt.wasm` artifact, packages
+  a wheel, and writes `extension_manifest.json`.
   Key flags:
   - `--project <path>` (default: cwd)
   - `--out-dir <path>` (default: `dist/`)
   - `--molt-abi <ver>` (default: `tool.molt.extension.molt_c_api_version` or `MOLT_C_API_VERSION`)
-  - `--target <native|triple>` (default: host `native`; `wasm` rejected)
+  - `--target <native|wasm|wasm32-*|triple>` (default: host `native`; `wasm`
+    emits a wasm32 static-link artifact)
   - `--capabilities <file|list|profiles>` (override metadata capabilities)
   - `--deterministic/--no-deterministic`
   - `--json`, `--verbose`

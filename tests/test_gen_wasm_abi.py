@@ -15,7 +15,7 @@ WASM_ABI_GEN_ROOT = ROOT / "tools"
 if str(WASM_ABI_GEN_ROOT) not in sys.path:
     sys.path.insert(0, str(WASM_ABI_GEN_ROOT))
 
-from wasm_abi_gen import manifest
+from wasm_abi_gen import manifest  # noqa: E402
 
 
 def _load_gen_wasm_abi():
@@ -1047,6 +1047,14 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     data = gen.load_manifest()
 
     allowed = [entry["name"] for entry in data["link_allowed_import"]]
+    allowed_classes = {
+        entry["name"]: entry["primitive_class"]
+        for entry in data["link_allowed_import"]
+    }
+    external_native_classes = {
+        entry["name"]: entry["primitive_class"]
+        for entry in data["external_native_link_import"]
+    }
     call_indirect = [
         name
         for name in allowed
@@ -1054,8 +1062,35 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     ]
     assert "fd_write" in allowed
     assert "__indirect_function_table" in allowed
+    assert allowed_classes["fd_write"] == "wasi_link_import"
+    assert allowed_classes["__indirect_function_table"] == (
+        "wasm_toolchain_link_import"
+    )
     assert call_indirect == [f"molt_call_indirect{arity}" for arity in range(14)]
+    assert all(
+        allowed_classes[name] == "molt_indirect_call_import"
+        for name in call_indirect
+    )
     assert "molt_cbor_parse_scalar" in allowed
+    assert allowed_classes["molt_cbor_parse_scalar"] == "molt_runtime_host_import"
+    assert external_native_classes["__cpp_exception"] == (
+        "wasm_toolchain_link_import"
+    )
+    assert external_native_classes["__cxa_atexit"] == "wasm_libc_link_import"
+    assert external_native_classes["acos"] == "wasm_libc_link_import"
+    assert external_native_classes["cpow"] == "wasm_libc_link_import"
+    assert external_native_classes["fwrite"] == "wasm_libc_link_import"
+    assert external_native_classes["aligned_alloc"] == "wasm_libc_link_import"
+    assert external_native_classes["printf"] == "wasm_libc_link_import"
+    assert external_native_classes["stdout"] == "wasm_libc_link_import"
+    assert external_native_classes["strtol"] == "wasm_libc_link_import"
+    assert external_native_classes["wmemchr"] == "wasm_libc_link_import"
+    assert external_native_classes["vfprintf"] == "wasm_libc_link_import"
+    assert external_native_classes["malloc"] == "wasm_libc_link_import"
+    assert external_native_classes["vsnprintf"] == "wasm_libc_link_import"
+    assert external_native_classes["__trunctfdf2"] == (
+        "wasm_compiler_rt_link_import"
+    )
     assert len(allowed) == len(set(allowed))
     broken = copy.deepcopy(data)
     broken["link_allowed_import"] = [
@@ -1090,6 +1125,9 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert "CALL_INDIRECT_IMPORTS" in rendered_rs
     assert "CALL_INDIRECT_MAX_ARITY" in rendered_rs
     assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
+    assert "WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES" in rendered_py
+    assert "WASM_EXTERNAL_NATIVE_LINK_IMPORTS" in rendered_py
+    assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES" in rendered_py
     assert "WASM_CALL_INDIRECT_IMPORTS" in rendered_py
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
     assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py

@@ -1,17 +1,21 @@
 //! Canonical native callable ABI tokens shared by SimpleIR validation and backends.
 
 pub const NATIVE_CALLABLE_ABI_OBJECT_CALL_V1: &str = "molt.object_call_v1";
+pub const NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1: &str = "molt.object_callargs_v1";
 pub const NATIVE_CALLABLE_ABI_FORWARD_F32_V1: &str = "molt.forward_f32_v1";
 
 pub const NATIVE_CALLABLE_ABIS: &[&str] = &[
     NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+    NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
     NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
 ];
-pub const NATIVE_CALLABLE_ABI_CHOICES: &str = "molt.object_call_v1, molt.forward_f32_v1";
+pub const NATIVE_CALLABLE_ABI_CHOICES: &str =
+    "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeCallableAbi {
     ObjectCallV1,
+    ObjectCallargsV1,
     ForwardF32V1,
 }
 
@@ -28,8 +32,10 @@ pub struct NativeCallableWasmSignature {
 }
 
 const OBJECT_CALL_BROWSER_PARAMS: &[&str] = &["molt.value..."];
+const OBJECT_CALLARGS_BROWSER_PARAMS: &[&str] = &["molt.callargs"];
 const FORWARD_F32_BROWSER_PARAMS: &[&str] = &["bytes.float32"];
 const OBJECT_CALL_WASM_PARAMS: &[&str] = &["i64..."];
+const OBJECT_CALLARGS_WASM_PARAMS: &[&str] = &["i64"];
 const OBJECT_CALL_WASM_RESULTS: &[&str] = &["i64"];
 const FORWARD_F32_WASM_PARAMS: &[&str] = &["i32", "i64", "i32"];
 const FORWARD_F32_WASM_RESULTS: &[&str] = &["i32"];
@@ -38,6 +44,7 @@ impl NativeCallableAbi {
     pub fn token(self) -> &'static str {
         match self {
             Self::ObjectCallV1 => NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+            Self::ObjectCallargsV1 => NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
             Self::ForwardF32V1 => NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
         }
     }
@@ -45,6 +52,7 @@ impl NativeCallableAbi {
     pub fn fixed_arity(self) -> Option<usize> {
         match self {
             Self::ObjectCallV1 => None,
+            Self::ObjectCallargsV1 => Some(1),
             Self::ForwardF32V1 => Some(1),
         }
     }
@@ -53,6 +61,10 @@ impl NativeCallableAbi {
         match self {
             Self::ObjectCallV1 => NativeCallableBrowserSignature {
                 params: OBJECT_CALL_BROWSER_PARAMS,
+                result: "molt.value",
+            },
+            Self::ObjectCallargsV1 => NativeCallableBrowserSignature {
+                params: OBJECT_CALLARGS_BROWSER_PARAMS,
                 result: "molt.value",
             },
             Self::ForwardF32V1 => NativeCallableBrowserSignature {
@@ -68,6 +80,10 @@ impl NativeCallableAbi {
                 params: OBJECT_CALL_WASM_PARAMS,
                 results: OBJECT_CALL_WASM_RESULTS,
             },
+            Self::ObjectCallargsV1 => NativeCallableWasmSignature {
+                params: OBJECT_CALLARGS_WASM_PARAMS,
+                results: OBJECT_CALL_WASM_RESULTS,
+            },
             Self::ForwardF32V1 => NativeCallableWasmSignature {
                 params: FORWARD_F32_WASM_PARAMS,
                 results: FORWARD_F32_WASM_RESULTS,
@@ -79,6 +95,7 @@ impl NativeCallableAbi {
 pub fn parse_native_callable_abi(abi: &str) -> Option<NativeCallableAbi> {
     match abi {
         NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 => Some(NativeCallableAbi::ObjectCallV1),
+        NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1 => Some(NativeCallableAbi::ObjectCallargsV1),
         NATIVE_CALLABLE_ABI_FORWARD_F32_V1 => Some(NativeCallableAbi::ForwardF32V1),
         _ => None,
     }
@@ -91,8 +108,8 @@ pub fn is_known_native_callable_abi(abi: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        NATIVE_CALLABLE_ABI_FORWARD_F32_V1, NATIVE_CALLABLE_ABI_OBJECT_CALL_V1, NativeCallableAbi,
-        parse_native_callable_abi,
+        NATIVE_CALLABLE_ABI_FORWARD_F32_V1, NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+        NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1, NativeCallableAbi, parse_native_callable_abi,
     };
 
     #[test]
@@ -105,6 +122,22 @@ mod tests {
         assert_eq!(object_call.browser_signature().result, "molt.value");
         assert_eq!(object_call.wasm_signature().params, ["i64..."]);
         assert_eq!(object_call.wasm_signature().results, ["i64"]);
+
+        let object_callargs =
+            parse_native_callable_abi(NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1).unwrap();
+        assert_eq!(object_callargs, NativeCallableAbi::ObjectCallargsV1);
+        assert_eq!(
+            object_callargs.token(),
+            NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1
+        );
+        assert_eq!(object_callargs.fixed_arity(), Some(1));
+        assert_eq!(
+            object_callargs.browser_signature().params,
+            ["molt.callargs"]
+        );
+        assert_eq!(object_callargs.browser_signature().result, "molt.value");
+        assert_eq!(object_callargs.wasm_signature().params, ["i64"]);
+        assert_eq!(object_callargs.wasm_signature().results, ["i64"]);
 
         let forward_f32 = parse_native_callable_abi(NATIVE_CALLABLE_ABI_FORWARD_F32_V1).unwrap();
         assert_eq!(forward_f32, NativeCallableAbi::ForwardF32V1);

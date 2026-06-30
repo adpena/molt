@@ -183,16 +183,19 @@ pub const PY_NULL: *mut PyObject = std::ptr::null_mut();
 
 /// Py_RETURN_NONE equivalent (returns a borrowed ref to None object).
 /// Callers must Py_INCREF before storing.
+#[unsafe(no_mangle)]
 pub static mut Py_None: PyObject = PyObject {
     ob_refcnt: 1 << 30, // effectively immortal
     ob_type: std::ptr::null_mut(),
 };
 
+#[unsafe(no_mangle)]
 pub static mut Py_True: PyObject = PyObject {
     ob_refcnt: 1 << 30,
     ob_type: std::ptr::null_mut(),
 };
 
+#[unsafe(no_mangle)]
 pub static mut Py_False: PyObject = PyObject {
     ob_refcnt: 1 << 30,
     ob_type: std::ptr::null_mut(),
@@ -202,7 +205,22 @@ pub static mut Py_False: PyObject = PyObject {
 /// Extensions compare against this pointer to decide whether to try the
 /// reflected operation.  Must be distinct from Py_None.
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut Py_NotImplementedSentinel: PyObject = PyObject {
+    ob_refcnt: 1 << 30,
+    ob_type: std::ptr::null_mut(),
+};
+
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut Py_EllipsisObject: PyObject = PyObject {
+    ob_refcnt: 1 << 30,
+    ob_type: std::ptr::null_mut(),
+};
+
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyDateTime_TimeZone_UTC_Object: PyObject = PyObject {
     ob_refcnt: 1 << 30,
     ob_type: std::ptr::null_mut(),
 };
@@ -210,25 +228,68 @@ pub static mut Py_NotImplementedSentinel: PyObject = PyObject {
 // We can't use the macro with const-init for tp_name (C strings aren't const).
 // Instead the names are patched in `init_static_types()`.
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyLong_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyFloat_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyComplex_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyUnicode_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyBytes_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyList_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyTuple_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyDict_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PySet_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyBool_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyModule_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PySlice_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyCFunction_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyDictProxy_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyMemberDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyGetSetDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyMethodDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyMemoryView_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyDateTime_DateTimeType: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyDateTime_DateType: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyDateTime_DeltaType: PyTypeObject = unsafe { std::mem::zeroed() };
 
 /// Called once at runtime init to patch static type objects.
 ///
@@ -244,6 +305,7 @@ pub unsafe fn init_static_types() {
     unsafe {
         set_name!(PyLong_Type, b"int\0");
         set_name!(PyFloat_Type, b"float\0");
+        set_name!(PyComplex_Type, b"complex\0");
         set_name!(PyUnicode_Type, b"str\0");
         set_name!(PyBytes_Type, b"bytes\0");
         set_name!(PyList_Type, b"list\0");
@@ -252,6 +314,16 @@ pub unsafe fn init_static_types() {
         set_name!(PySet_Type, b"set\0");
         set_name!(PyBool_Type, b"bool\0");
         set_name!(PyModule_Type, b"module\0");
+        set_name!(PySlice_Type, b"slice\0");
+        set_name!(PyCFunction_Type, b"builtin_function_or_method\0");
+        set_name!(PyDictProxy_Type, b"mappingproxy\0");
+        set_name!(PyMemberDescr_Type, b"member_descriptor\0");
+        set_name!(PyGetSetDescr_Type, b"getset_descriptor\0");
+        set_name!(PyMethodDescr_Type, b"method_descriptor\0");
+        set_name!(PyMemoryView_Type, b"memoryview\0");
+        set_name!(PyDateTime_DateTimeType, b"datetime.datetime\0");
+        set_name!(PyDateTime_DateType, b"datetime.date\0");
+        set_name!(PyDateTime_DeltaType, b"datetime.timedelta\0");
 
         set_name!(PyNone_Type, b"NoneType\0");
         set_name!(PyNotImplemented_Type, b"NotImplementedType\0");
@@ -263,6 +335,8 @@ pub unsafe fn init_static_types() {
         Py_True.ob_type = &raw mut PyBool_Type;
         Py_False.ob_type = &raw mut PyBool_Type;
         Py_NotImplementedSentinel.ob_type = &raw mut PyNotImplemented_Type;
+        Py_EllipsisObject.ob_type = &raw mut PyBaseObject_Type;
+        PyDateTime_TimeZone_UTC_Object.ob_type = &raw mut PyBaseObject_Type;
     }
 }
 
@@ -294,6 +368,8 @@ exc_singleton!(PyExc_AttributeError);
 exc_singleton!(PyExc_OverflowError);
 exc_singleton!(PyExc_ZeroDivisionError);
 exc_singleton!(PyExc_ImportError);
+exc_singleton!(PyExc_ImportWarning);
+exc_singleton!(PyExc_ModuleNotFoundError);
 exc_singleton!(PyExc_StopIteration);
 exc_singleton!(PyExc_NotImplementedError);
 exc_singleton!(PyExc_OSError);
@@ -350,20 +426,25 @@ pub struct Py_buffer {
 
 /// NoneType type object (for type(None) checks).
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyNone_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 
 /// NotImplemented type object.
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyNotImplemented_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 
 /// Type type object.
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyType_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 
 /// Base object type.
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyBaseObject_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 
 /// FrozenSet type.
 #[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyFrozenSet_Type: PyTypeObject = unsafe { std::mem::zeroed() };

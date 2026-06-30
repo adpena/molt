@@ -347,6 +347,65 @@ def _build_host_call_indirect_module(
     return wasm_link._build_sections(sections)
 
 
+def _build_tag_then_host_call_indirect_import_module() -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(2))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(3))
+    type_payload.extend(b"\x7e\x7e\x7e")
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(2))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("__cpp_exception"))
+    import_payload.append(0x04)  # tag import
+    import_payload.append(0x00)  # exception attribute
+    import_payload.extend(write_varuint(0))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("molt_call_indirect3"))
+    import_payload.append(0x00)  # function import
+    import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(1))
+    func_payload.extend(write_varuint(1))
+    sections.append((3, bytes(func_payload)))
+
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(1))
+    sections.append((4, bytes(table_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    element_payload = bytearray()
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(0))
+    element_payload.extend(b"\x41\x00\x0b")
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(1))
+    sections.append((9, bytes(element_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
 def _function_import_pairs(wasm_bytes: bytes) -> list[tuple[str, str]]:
     return [
         (wasm_import.module, wasm_import.name)
@@ -1190,6 +1249,14 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
 
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
     module = _build_host_call_indirect_module()
+    assert wasm_link._neutralize_dead_element_entries(module) is None
+
+
+def test_import_walkers_handle_tag_imports_before_host_call_indirect() -> None:
+    module = _build_tag_then_host_call_indirect_import_module()
+    sections = wasm_link._parse_sections(module)
+
+    assert wasm_link._count_func_imports(sections) == 1
     assert wasm_link._neutralize_dead_element_entries(module) is None
 
 
@@ -3022,3 +3089,33 @@ def test_allowlist_file_exists():
     assert runtime_syms == set(), (
         f"Unexpected molt_runtime symbols in allowlist: {runtime_syms}"
     )
+
+
+def test_native_object_link_allowlist_includes_generated_external_imports(tmp_path):
+    base = tmp_path / "base_allowlist.txt"
+    base.write_text("fd_write\n", encoding="utf-8")
+    native = tmp_path / "extension.molt.wasm"
+    native.write_bytes(b"\0asm\x01\0\0\0")
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+        assert (
+            wasm_link._compose_wasm_ld_allowlist(
+                base_allowlist=base,
+                native_objects=(),
+                temp_dir=temp_dir,
+            )
+            == base
+        )
+
+        composed = wasm_link._compose_wasm_ld_allowlist(
+            base_allowlist=base,
+            native_objects=(native,),
+            temp_dir=temp_dir,
+        )
+
+        symbols = _parse_allowlist(composed)
+        assert "fd_write" in symbols
+        assert "__cpp_exception" in symbols
+        assert "malloc" in symbols
+        assert "__cpp_exception" not in _parse_allowlist(base)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from molt.cli.c_api_symbols import c_api_primitive_class, is_c_api_external_requirement
 from molt.cli.config_resolution import _config_value
 from molt.cli.deps import _load_toml
 from molt.cli.extension_manifest import _coerce_str_list
@@ -217,7 +218,11 @@ def extension_scan(
 
     for source_path, source_text in source_text_by_path.items():
         file_required = sorted(
-            _extract_c_api_tokens(source_text)
+            {
+                symbol
+                for symbol in _extract_c_api_tokens(source_text)
+                if is_c_api_external_requirement(symbol)
+            }
             - file_local_symbols_by_path[source_path]
         )
         required_by_file[str(source_path)] = file_required
@@ -269,7 +274,29 @@ def extension_scan(
         + source_compile_only_used_sorted
         + project_defined_used_sorted
     )
-    symbol_status = {symbol: symbol_status(symbol) for symbol in required_sorted}
+    symbol_status_map = {symbol: symbol_status(symbol) for symbol in required_sorted}
+    symbol_primitive_class = {
+        symbol: c_api_primitive_class(symbol) for symbol in required_sorted
+    }
+    symbols_by_primitive_class: dict[str, list[str]] = {}
+    for symbol in required_sorted:
+        primitive_class = symbol_primitive_class[symbol]
+        symbols_by_primitive_class.setdefault(primitive_class, []).append(symbol)
+    symbols_by_primitive_class = {
+        primitive_class: sorted(symbols)
+        for primitive_class, symbols in sorted(symbols_by_primitive_class.items())
+    }
+    primitive_class_counts = {
+        primitive_class: len(symbols)
+        for primitive_class, symbols in symbols_by_primitive_class.items()
+    }
+    primitive_class_by_file = {
+        file_path: {
+            symbol: c_api_primitive_class(symbol)
+            for symbol in symbols
+        }
+        for file_path, symbols in required_by_file.items()
+    }
     warnings: list[str] = []
     if missing_sorted and not fail_on_missing:
         warnings.append(
@@ -308,11 +335,15 @@ def extension_scan(
                 "project_defined_symbols": project_defined_used_sorted,
                 "fail_fast_symbols": fail_fast_sorted,
                 "missing_symbols": missing_sorted,
-                "symbol_status": symbol_status,
+                "symbol_status": symbol_status_map,
+                "symbol_primitive_class": symbol_primitive_class,
+                "symbols_by_primitive_class": symbols_by_primitive_class,
+                "primitive_class_counts": primitive_class_counts,
                 "required_by_file": required_by_file,
                 "missing_by_file": missing_by_file,
                 "fail_fast_by_file": fail_fast_by_file,
                 "symbol_status_by_file": symbol_status_by_file,
+                "primitive_class_by_file": primitive_class_by_file,
                 "fail_on_missing": fail_on_missing,
             },
             warnings=warnings,
@@ -332,6 +363,10 @@ def extension_scan(
         print(f"Project-defined C/API symbols used: {len(project_defined_used_sorted)}")
         print(f"Fail-fast C/API symbols: {len(fail_fast_sorted)}")
         print(f"Missing C/API symbols: {len(missing_sorted)}")
+        if primitive_class_counts:
+            print("C/API primitive classes:")
+            for primitive_class, count in primitive_class_counts.items():
+                print(f"  {primitive_class}: {count}")
         if fail_fast_sorted:
             limit = len(fail_fast_sorted) if verbose else min(30, len(fail_fast_sorted))
             for symbol in fail_fast_sorted[:limit]:

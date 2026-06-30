@@ -136,6 +136,7 @@ class _ScopedLoweringInputs:
     known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]]
     native_callable_exports_by_module: dict[str, dict[str, dict[str, Any]]]
+    native_python_exports_by_module: dict[str, tuple[str, ...]]
     pgo_hot_function_names_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
 
@@ -151,6 +152,7 @@ class _ScopedLoweringInputView:
     native_callable_exports: dict[str, dict[str, Any]] = field(
         default_factory=dict
     )
+    native_python_exports: tuple[str, ...] = ()
     known_modules_payload: list[str] = field(default_factory=list)
     known_modules_set: frozenset[str] = field(default_factory=frozenset)
     direct_call_modules_payload: list[str] = field(default_factory=list)
@@ -158,6 +160,8 @@ class _ScopedLoweringInputView:
     native_callable_exports_payload: dict[str, dict[str, Any]] = field(
         default_factory=dict
     )
+    native_python_exports_payload: list[str] = field(default_factory=list)
+    native_python_exports_set: frozenset[str] = field(default_factory=frozenset)
     pgo_hot_function_names_payload: list[str] = field(default_factory=list)
     pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
 
@@ -189,6 +193,18 @@ class _ScopedLoweringInputView:
                     name: dict(self.native_callable_exports[name])
                     for name in sorted(self.native_callable_exports)
                 },
+            )
+        if not self.native_python_exports_payload and self.native_python_exports:
+            object.__setattr__(
+                self,
+                "native_python_exports_payload",
+                list(self.native_python_exports),
+            )
+        if not self.native_python_exports_set and self.native_python_exports:
+            object.__setattr__(
+                self,
+                "native_python_exports_set",
+                frozenset(self.native_python_exports),
             )
         if not self.pgo_hot_function_names_payload and self.pgo_hot_function_names:
             object.__setattr__(
@@ -409,6 +425,7 @@ class _FrontendLayerExecutionContext:
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     native_callable_exports: Mapping[str, Mapping[str, Any]]
+    native_python_exports: Collection[str]
     module_deps: dict[str, set[str]]
     source_modules: Collection[str]
     module_chunk_max_ops: int
@@ -469,6 +486,7 @@ class _SerialFrontendLoweringContext:
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     native_callable_exports: Mapping[str, Mapping[str, Any]]
+    native_python_exports: Collection[str]
     module_deps: dict[str, set[str]]
     source_modules: Collection[str]
     module_chunking: bool
@@ -524,6 +542,7 @@ class _EntryFrontendLoweringContext:
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
     native_callable_exports: Mapping[str, Mapping[str, Any]]
+    native_python_exports: Collection[str]
     module_chunking: bool
     module_chunk_max_ops: int
     optimization_profile: str
@@ -778,6 +797,13 @@ class _ExternalPackageNativeArtifactPlan:
             export.qualified_name
             for artifact in self.artifacts
             for export in artifact.callable_exports
+        )
+
+    def native_python_export_names(self) -> frozenset[str]:
+        return frozenset(
+            export_name
+            for artifact in self.artifacts
+            for export_name in artifact.python_exports
         )
 
     def native_callable_exports_by_qualified_name(self) -> dict[str, dict[str, Any]]:

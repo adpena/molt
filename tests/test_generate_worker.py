@@ -438,14 +438,30 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
 
 
 def test_effective_split_worker_table_base_uses_backend_authority() -> None:
+    from molt._wasm_abi_generated import (
+        WASM_POLL_TABLE_IMPORTS,
+        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    )
     from molt.cli import _effective_split_worker_table_base
+
+    first_live_slot = min(
+        [
+            slot
+            for slot, _name in WASM_POLL_TABLE_IMPORTS
+            if isinstance(slot, int) and slot > 0
+        ]
+        + [WASM_RESERVED_RUNTIME_CALLABLE_BASE]
+    )
 
     assert (
         _effective_split_worker_table_base(
             wasm_table_base=4096,
             runtime_table_min=315,
             app_table_ref_signatures={
-                _table_ref_export_name(4096): {"params": ["i64"], "result": "i64"},
+                _table_ref_export_name(4096 + first_live_slot): {
+                    "params": ["i64"],
+                    "result": "i64",
+                },
                 _table_ref_export_name(4189): {"params": ["i64"], "result": "i64"},
             },
         )
