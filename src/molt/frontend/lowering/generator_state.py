@@ -10,7 +10,7 @@ and module chunk reset paths.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Literal, Mapping
 
 from molt.frontend._types import (
     _ClassNsScope,
@@ -291,7 +291,7 @@ class GeneratorStateMixin(_MixinBase):
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
         native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
-        native_python_exports: set[str] | None = None,
+        native_python_exports: Collection[str] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",

@@ -90,6 +90,7 @@ _TYPING_NAMES = {
     "Any",
     "Callable",
     "ClassVar",
+    "Collection",
     "Final",
     "Iterable",
     "Iterator",
