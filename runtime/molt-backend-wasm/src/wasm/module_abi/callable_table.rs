@@ -230,7 +230,7 @@ impl WasmBackend {
             let main_index = self
                 .molt_main_index
                 .unwrap_or_else(|| panic!("molt_main missing for table init wrapper"));
-            let wrapper_index = self.compile_molt_main_wrapper(
+            let wrapper_index = self.compile_entry_wrapper(
                 reloc_enabled,
                 main_index,
                 table_init_index,
@@ -239,6 +239,17 @@ impl WasmBackend {
             );
             self.exports
                 .export("molt_main", ExportKind::Func, wrapper_index);
+            if let Some(host_init_index) = self.molt_host_init_index {
+                let host_init_wrapper_index = self.compile_entry_wrapper(
+                    reloc_enabled,
+                    host_init_index,
+                    table_init_index,
+                    manifest_segment,
+                    manifest_len as u32,
+                );
+                self.exports
+                    .export("molt_host_init", ExportKind::Func, host_init_wrapper_index);
+            }
 
             let mut ref_exported = BTreeSet::new();
             for (slot, func_index) in plan.runtime_initialized_entries() {
@@ -314,10 +325,10 @@ impl WasmBackend {
         func_index
     }
 
-    fn compile_molt_main_wrapper(
+    fn compile_entry_wrapper(
         &mut self,
         reloc_enabled: bool,
-        main_index: u32,
+        entry_index: u32,
         table_init_index: u32,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
@@ -334,7 +345,7 @@ impl WasmBackend {
             manifest_segment,
             manifest_len,
         );
-        emit_call(&mut func, reloc_enabled, main_index);
+        emit_call(&mut func, reloc_enabled, entry_index);
         func.instruction(&Instruction::End);
         self.codes.function(&func);
         func_index

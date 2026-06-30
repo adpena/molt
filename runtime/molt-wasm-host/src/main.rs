@@ -25,8 +25,8 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, connect};
 use url::Url;
 use wasmtime::{
-    Cache, Caller, Config, Engine, Extern, ExternType, Func, FuncType, Linker, Memory, MemoryType,
-    Module, OptLevel, Ref, Store, Table, TableType, Val,
+    Cache, Caller, Config, Engine, Extern, ExternType, Func, FuncType, Instance, Linker, Memory,
+    MemoryType, Module, OptLevel, Ref, Store, Table, TableType, Val, ValType,
 };
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder, p1};
@@ -239,6 +239,8 @@ struct HostState {
     wasi: WasiP1Ctx,
     memory: Option<Memory>,
     call_indirect: Arc<Mutex<HashMap<String, Option<Func>>>>,
+    isolate_bootstrap_export: Option<Func>,
+    isolate_import_export: Option<Func>,
     db_worker: Option<DbWorker>,
     db_pending: HashMap<u64, PendingDbRequest>,
     db_cancel_index: Vec<u64>,
@@ -462,10 +464,120 @@ fn force_linked() -> bool {
     matches!(env::var("MOLT_WASM_LINKED").as_deref(), Ok("1"))
 }
 
+fn define_isolate_host_imports(
+    linker: &mut Linker<HostState>,
+    store: &mut Store<HostState>,
+    engine: &Engine,
+) -> Result<()> {
+    let bootstrap_ty = FuncType::new(engine, [], [ValType::I64]);
+    let bootstrap = Func::new(
+        &mut *store,
+        bootstrap_ty,
+        |mut caller: Caller<'_, HostState>, params, results| {
+            debug_log(|| "env::molt_isolate_bootstrap -> app export".to_string());
+            let func = caller
+                .data()
+                .isolate_bootstrap_export
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| {
+                    wasmtime::Error::msg("molt_isolate_bootstrap export not registered")
+                })?;
+            let result = func.call(&mut caller, params, results);
+            debug_log(|| format!("env::molt_isolate_bootstrap <- {result:?}"));
+            result
+        },
+    );
+    linker.define(&mut *store, "env", "molt_isolate_bootstrap", bootstrap)?;
+
+    let import_ty = FuncType::new(engine, [ValType::I64], [ValType::I64]);
+    let import = Func::new(
+        &mut *store,
+        import_ty,
+        |mut caller: Caller<'_, HostState>, params, results| {
+            debug_log(|| format!("env::molt_isolate_import -> app export params={params:?}"));
+            let func = caller
+                .data()
+                .isolate_import_export
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| wasmtime::Error::msg("molt_isolate_import export not registered"))?;
+            let result = func.call(&mut caller, params, results);
+            debug_log(|| format!("env::molt_isolate_import <- {result:?} results={results:?}"));
+            result
+        },
+    );
+    linker.define(&mut *store, "env", "molt_isolate_import", import)?;
+    Ok(())
+}
+
+fn register_isolate_exports(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
+    let bootstrap = instance
+        .get_func(&mut *store, "molt_isolate_bootstrap")
+        .context("missing molt_isolate_bootstrap export")?;
+    let import = instance
+        .get_func(&mut *store, "molt_isolate_import")
+        .context("missing molt_isolate_import export")?;
+    let state = store.data_mut();
+    state.isolate_bootstrap_export = Some(bootstrap);
+    state.isolate_import_export = Some(import);
+    Ok(())
+}
+
+fn call_zero_arg_export(
+    store: &mut Store<HostState>,
+    instance: &Instance,
+    export_name: &'static str,
+) -> Result<()> {
+    let func = instance
+        .get_func(&mut *store, export_name)
+        .with_context(|| format!("missing {export_name} export"))?;
+    debug_log(|| format!("calling {export_name}"));
+    let mut results = alloc_results(&func.ty(&*store), export_name)?;
+    func.call(&mut *store, &[], &mut results)
+        .map_err(|err| anyhow::anyhow!("call {export_name}: {err}"))?;
+    debug_log(|| format!("{export_name} returned"));
+    Ok(())
+}
+
+fn call_app_startup_entries(store: &mut Store<HostState>, instance: &Instance) -> Result<()> {
+    // App-owned lazy-import entrypoints need the same bootstrap phase in the
+    // Rust host as in the JS runners. The exported molt_main wrapper owns
+    // runtime/table init; this call owns only the app bootstrap surface.
+    call_zero_arg_export(store, instance, "molt_isolate_bootstrap")?;
+    call_zero_arg_export(store, instance, "molt_main")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{linked_path_candidates, wasm_path_candidates};
+    use super::{
+        HostState, ProcessManager, SocketManager, WebSocketManager, call_app_startup_entries,
+        define_isolate_host_imports, linked_path_candidates, wasm_path_candidates,
+    };
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use wasmtime::{Engine, Func, Linker, Module, Store, Val, ValType};
+    use wasmtime_wasi::WasiCtxBuilder;
+
+    fn test_host_state() -> HostState {
+        HostState {
+            wasi: WasiCtxBuilder::new().build_p1(),
+            memory: None,
+            call_indirect: Arc::new(Mutex::new(HashMap::new())),
+            isolate_bootstrap_export: None,
+            isolate_import_export: None,
+            db_worker: None,
+            db_pending: HashMap::new(),
+            db_cancel_index: Vec::new(),
+            db_cancel_positions: HashMap::new(),
+            db_cancel_cursor: 0,
+            last_cancel_check: None,
+            socket_manager: SocketManager::new(),
+            ws_manager: WebSocketManager::new(),
+            process_manager: ProcessManager::new(),
+        }
+    }
 
     #[test]
     fn wasm_path_candidates_prefer_explicit_then_canonical_dist() {
@@ -513,6 +625,100 @@ mod tests {
             candidates,
             vec![PathBuf::from("/repo/dist/output_linked.wasm")]
         );
+    }
+
+    #[test]
+    fn isolate_host_imports_are_registered_with_runtime_abi_shapes() {
+        let engine = Engine::default();
+        let mut store = Store::new(&engine, test_host_state());
+        let mut linker = Linker::new(&engine);
+
+        define_isolate_host_imports(&mut linker, &mut store, &engine).unwrap();
+
+        let bootstrap = linker
+            .get(&mut store, "env", "molt_isolate_bootstrap")
+            .expect("molt_isolate_bootstrap env linker item")
+            .into_func()
+            .expect("molt_isolate_bootstrap env import");
+        let bootstrap_ty = bootstrap.ty(&store);
+        let mut bootstrap_params = bootstrap_ty.params();
+        assert!(bootstrap_params.next().is_none());
+        let mut bootstrap_results = bootstrap_ty.results();
+        assert!(matches!(bootstrap_results.next(), Some(ValType::I64)));
+        assert!(bootstrap_results.next().is_none());
+
+        let isolate_import = linker
+            .get(&mut store, "env", "molt_isolate_import")
+            .expect("molt_isolate_import env linker item")
+            .into_func()
+            .expect("molt_isolate_import env import");
+        let import_ty = isolate_import.ty(&store);
+        let mut import_params = import_ty.params();
+        assert!(matches!(import_params.next(), Some(ValType::I64)));
+        assert!(import_params.next().is_none());
+        let mut import_results = import_ty.results();
+        assert!(matches!(import_results.next(), Some(ValType::I64)));
+        assert!(import_results.next().is_none());
+
+        let exported_bootstrap = Func::wrap(&mut store, || -> i64 { 41 });
+        let exported_import = Func::wrap(&mut store, |name_bits: i64| -> i64 { name_bits + 1 });
+        store.data_mut().isolate_bootstrap_export = Some(exported_bootstrap);
+        store.data_mut().isolate_import_export = Some(exported_import);
+
+        let mut bootstrap_results = [Val::I64(0)];
+        bootstrap
+            .call(&mut store, &[], &mut bootstrap_results)
+            .expect("bootstrap bridge call");
+        assert!(matches!(bootstrap_results[0], Val::I64(41)));
+
+        let mut import_results = [Val::I64(0)];
+        isolate_import
+            .call(&mut store, &[Val::I64(41)], &mut import_results)
+            .expect("import bridge call");
+        assert!(matches!(import_results[0], Val::I64(42)));
+    }
+
+    #[test]
+    fn app_startup_calls_isolate_bootstrap_before_main() {
+        let engine = Engine::default();
+        let mut store = Store::new(&engine, test_host_state());
+        let mut linker = Linker::new(&engine);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let bootstrap_order = Arc::clone(&order);
+        let main_order = Arc::clone(&order);
+        let mark_bootstrap = Func::wrap(&mut store, move || {
+            bootstrap_order.lock().unwrap().push("bootstrap");
+        });
+        let mark_main = Func::wrap(&mut store, move || {
+            main_order.lock().unwrap().push("main");
+        });
+        linker
+            .define(&mut store, "env", "mark_bootstrap", mark_bootstrap)
+            .unwrap();
+        linker
+            .define(&mut store, "env", "mark_main", mark_main)
+            .unwrap();
+        let module = Module::new(
+            &engine,
+            r#"
+            (module
+              (import "env" "mark_bootstrap" (func $mark_bootstrap))
+              (import "env" "mark_main" (func $mark_main))
+              (func (export "molt_isolate_bootstrap") (result i64)
+                call $mark_bootstrap
+                i64.const 0)
+              (func (export "molt_isolate_import") (param i64) (result i64)
+                local.get 0)
+              (func (export "molt_main")
+                call $mark_main))
+            "#,
+        )
+        .unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+
+        call_app_startup_entries(&mut store, &instance).unwrap();
+
+        assert_eq!(&*order.lock().unwrap(), &["bootstrap", "main"]);
     }
 }
 
@@ -2196,11 +2402,11 @@ fn register_call_indirect_exports(
     Ok(())
 }
 
-fn alloc_results(ty: &FuncType) -> Result<Vec<Val>> {
+fn alloc_results(ty: &FuncType, export_name: &str) -> Result<Vec<Val>> {
     let mut results = Vec::new();
     for val_ty in ty.results() {
         let Some(val) = Val::default_for_ty(&val_ty) else {
-            bail!("unsupported molt_main return type: {val_ty:?}");
+            bail!("unsupported {export_name} return type: {val_ty:?}");
         };
         results.push(val);
     }
@@ -2466,6 +2672,8 @@ fn main() -> Result<()> {
             wasi: build_wasi_ctx(&vfs_envs, &guest_args)?,
             memory: None,
             call_indirect: Arc::new(Mutex::new(HashMap::new())),
+            isolate_bootstrap_export: None,
+            isolate_import_export: None,
             db_worker: None,
             db_pending: HashMap::new(),
             db_cancel_index: Vec::new(),
@@ -2515,6 +2723,7 @@ fn main() -> Result<()> {
     define_process_host(&mut linker, &mut store)?;
     define_time_host(&mut linker, &mut store)?;
     define_resource_host(&mut linker, &mut store)?;
+    define_isolate_host_imports(&mut linker, &mut store, &engine)?;
     let getpid = Func::wrap(&mut store, || -> i64 { std::process::id() as i64 });
     linker.define(&mut store, "env", "molt_getpid_host", getpid)?;
 
@@ -2585,20 +2794,9 @@ fn main() -> Result<()> {
             .instantiate(&mut store, &output_module)
             .map_err(|err| err.context("instantiate output"))?;
         debug_log(|| "output module instantiated".to_string());
+        register_isolate_exports(&mut store, &output_instance)?;
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
-
-        // Initialize the indirect function table if the export exists.
-        // New binaries use molt_table_init to populate the table dynamically
-        // via table.set + ref.func instead of passive element segments.
-        if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
-            debug_log(|| "calling molt_table_init".to_string());
-            let mut no_results: [Val; 0] = [];
-            table_init
-                .call(&mut store, &[], &mut no_results)
-                .map_err(|err| err.context("molt_table_init failed"))?;
-            debug_log(|| "molt_table_init completed".to_string());
-        }
 
         // Snapshot restore: if valid, skip molt_main.
         let restored = if let Some(ref restore_path) = snapshot_restore_path {
@@ -2613,13 +2811,7 @@ fn main() -> Result<()> {
         };
 
         if !restored {
-            let main = output_instance
-                .get_func(&mut store, "molt_main")
-                .context("missing molt_main export")?;
-            debug_log(|| "calling molt_main".to_string());
-            let mut results = alloc_results(&main.ty(&store))?;
-            main.call(&mut store, &[], &mut results)?;
-            debug_log(|| "molt_main returned".to_string());
+            call_app_startup_entries(&mut store, &output_instance)?;
         } else {
             debug_log(|| "molt_main skipped (restored from snapshot)".to_string());
         }
@@ -2650,18 +2842,9 @@ fn main() -> Result<()> {
             .instantiate(&mut store, &output_module)
             .map_err(|err| err.context("instantiate linked output"))?;
         debug_log(|| "linked output instantiated".to_string());
+        register_isolate_exports(&mut store, &output_instance)?;
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
-
-        // Initialize the indirect function table (linked binary path).
-        if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
-            debug_log(|| "calling molt_table_init (linked)".to_string());
-            let mut no_results: [Val; 0] = [];
-            table_init
-                .call(&mut store, &[], &mut no_results)
-                .map_err(|err| err.context("molt_table_init failed"))?;
-            debug_log(|| "molt_table_init completed (linked)".to_string());
-        }
 
         // Snapshot restore: if valid, skip molt_main.
         let restored = if let Some(ref restore_path) = snapshot_restore_path {
@@ -2676,13 +2859,7 @@ fn main() -> Result<()> {
         };
 
         if !restored {
-            let main = output_instance
-                .get_func(&mut store, "molt_main")
-                .context("missing molt_main export")?;
-            debug_log(|| "calling molt_main".to_string());
-            let mut results = alloc_results(&main.ty(&store))?;
-            main.call(&mut store, &[], &mut results)?;
-            debug_log(|| "molt_main returned".to_string());
+            call_app_startup_entries(&mut store, &output_instance)?;
         } else {
             debug_log(|| "molt_main skipped (restored from snapshot)".to_string());
         }

@@ -1251,10 +1251,6 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   });
   state.appInstance = appInstance;
   ensureTableCapacityForExportedRefs(appInstance, table);
-  if (typeof appInstance.exports.molt_table_init === 'function') {
-    appInstance.exports.molt_table_init();
-  }
-  installTableRefs(appInstance, table);
   return {
     appInstance,
     runtimeInstance,

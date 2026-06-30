@@ -260,7 +260,9 @@ pub(crate) fn add_reloc_sections(
         // Preserve explicit call_indirect export symbols because wasm_link.py
         // resolves/aliases those by name for runtime ABI wiring.
         let name = match export_name.as_deref() {
-            Some("molt_main") | Some("molt_table_init") => export_name.clone().unwrap_or_default(),
+            Some("molt_host_init") | Some("molt_main") | Some("molt_table_init") => {
+                export_name.clone().unwrap_or_default()
+            }
             Some(exported) if is_manifest_call_indirect_import_name(exported) => {
                 exported.to_string()
             }

@@ -23,6 +23,7 @@ pub struct WasmBackend {
     pub(in crate::wasm) import_ids: TrackedImportIds,
     pub(in crate::wasm) data_segments: WasmDataSegments,
     pub(in crate::wasm) molt_main_index: Option<u32>,
+    pub(in crate::wasm) molt_host_init_index: Option<u32>,
     pub(in crate::wasm) options: WasmCompileOptions,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
     pub(in crate::wasm) tail_calls_emitted: usize,
@@ -53,6 +54,7 @@ impl WasmBackend {
             import_ids: TrackedImportIds::new(BTreeMap::new()),
             data_segments: WasmDataSegments::new(options.data_base),
             molt_main_index: None,
+            molt_host_init_index: None,
             options,
             tail_calls_emitted: 0,
         }
