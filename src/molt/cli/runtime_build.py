@@ -35,7 +35,7 @@ from molt.cli.cargo_execution import (
     _maybe_enable_sccache,
     _run_cargo_with_sccache_retry,
 )
-from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE
+from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE, _resolve_cargo_profile_name
 from molt.cli.command_runtime import (
     _run_completed_command,
     _run_subprocess_captured_to_tempfiles,
@@ -67,7 +67,7 @@ from molt.cli.runtime_wasm_validation import (
     _write_runtime_wasm_integrity_sidecar,
 )
 from molt.cli import wasm_toolchain
-from molt.cli.models import _RuntimeArtifactState
+from molt.cli.models import BuildProfile, _RuntimeArtifactState
 from molt.wasm_artifact import inspect_wasm_binary as _inspect_wasm_binary
 
 
@@ -583,6 +583,83 @@ def _ensure_runtime_wasm_artifact(
     return True
 
 
+def _prebuild_runtime_wasm(
+    *,
+    project_root: Path,
+    kind: Literal["shared", "reloc", "both"],
+    json_output: bool,
+    build_profile: BuildProfile,
+    cargo_timeout: float | None,
+    simd_enabled: bool = True,
+    freestanding: bool = False,
+    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    verbose: bool = False,
+) -> int:
+    cargo_profile, profile_error = _resolve_cargo_profile_name(build_profile)
+    if profile_error is not None:
+        if json_output:
+            print(json.dumps({"ok": False, "error": profile_error}))
+        else:
+            print(profile_error, file=sys.stderr)
+        return 1
+    runtime_state = _initialize_runtime_artifact_state(
+        is_rust_transpile=False,
+        is_wasm=True,
+        emit_mode="wasm",
+        molt_root=project_root,
+        runtime_cargo_profile=cargo_profile,
+        target_triple=None,
+        stdlib_profile=stdlib_profile,
+    )
+    artifacts: dict[str, str] = {}
+    plans: list[tuple[str, bool, Path | None]] = []
+    if kind in {"shared", "both"}:
+        plans.append(("shared", False, runtime_state.runtime_wasm))
+    if kind in {"reloc", "both"}:
+        plans.append(("reloc", True, runtime_state.runtime_reloc_wasm))
+    for label, reloc, runtime_path in plans:
+        if runtime_path is None:
+            if not json_output:
+                print(
+                    f"Runtime wasm {label} artifact path is unavailable.",
+                    file=sys.stderr,
+                )
+            return 1
+        if verbose and not json_output:
+            print(
+                f"Prebuilding runtime wasm {label} artifact: {runtime_path}",
+                file=sys.stderr,
+            )
+        if not _ensure_runtime_wasm_artifact(
+            runtime_state,
+            reloc=reloc,
+            json_output=json_output,
+            cargo_profile=cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=project_root,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=None,
+            required_exports=None,
+        ):
+            if not json_output:
+                print(f"Runtime wasm {label} prebuild failed.", file=sys.stderr)
+            return 1
+        artifacts[label] = os.fspath(runtime_path)
+    if json_output:
+        print(
+            json.dumps(
+                {"status": "ok", "artifacts": artifacts},
+                sort_keys=True,
+            )
+        )
+    elif verbose:
+        for label, path in artifacts.items():
+            print(f"Runtime wasm {label}: {path}", file=sys.stderr)
+    return 0
+
+
 def _configure_wasm_cc_env(env: dict[str, str]) -> None:
     if env.get("CC_wasm32-wasip1") or env.get("CC_wasm32_wasip1"):
         return
@@ -595,6 +672,21 @@ def _configure_wasm_cc_env(env: dict[str, str]) -> None:
             env["CC_wasm32-wasip1"] = str(cc_path)
             env["CC_wasm32_wasip1"] = str(cc_path)
             return
+
+
+def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
+    explicit_sysroot = env.get("WASI_SYSROOT") or env.get("MOLT_WASI_SYSROOT")
+    if explicit_sysroot:
+        normalized = wasm_toolchain.normalize_wasi_sysroot(explicit_sysroot)
+        sysroot = str(normalized if normalized is not None else Path(explicit_sysroot))
+        env.setdefault("WASI_SYSROOT", sysroot)
+        env.setdefault("MOLT_WASI_SYSROOT", sysroot)
+        return
+    wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot()
+    if wasi_sysroot is not None:
+        sysroot = str(wasi_sysroot)
+        env["WASI_SYSROOT"] = sysroot
+        env["MOLT_WASI_SYSROOT"] = sysroot
 
 
 def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
@@ -740,10 +832,7 @@ def _ensure_wasm_cpython_abi_staticlib(
         if rustflags:
             env["RUSTFLAGS"] = rustflags
         _configure_wasm_cc_env(env)
-        if not env.get("WASI_SYSROOT"):
-            wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot()
-            if wasi_sysroot is not None:
-                env["WASI_SYSROOT"] = str(wasi_sysroot)
+        _configure_wasi_sysroot_env(env)
         if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
             _maybe_enable_sccache(env)
         else:
@@ -801,12 +890,11 @@ def _ensure_wasm_cpython_abi_staticlib(
                 build_raw.stderr.decode("utf-8", errors="replace"),
             )
         if build.returncode != 0:
-            if not json_output:
-                detail = (build.stderr or build.stdout or "").strip()
-                msg = "CPython ABI wasm build failed"
-                if detail:
-                    msg = f"{msg}: {detail}"
-                print(msg, file=sys.stderr)
+            detail = (build.stderr or build.stdout or "").strip()
+            msg = "CPython ABI wasm build failed"
+            if detail:
+                msg = f"{msg}: {detail}"
+            print(msg, file=sys.stderr)
             return None
         candidates = _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir)
         if not candidates:
@@ -1541,6 +1629,7 @@ def _ensure_runtime_wasm(
             env["RUSTFLAGS"] = cargo_rustflags
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
+        _configure_wasi_sysroot_env(env)
         # Deterministic proof builds default Cargo incremental off at the env
         # boundary; an explicit operator-provided CARGO_INCREMENTAL remains
         # authoritative for local incremental-debug sessions.
@@ -1602,12 +1691,11 @@ def _ensure_runtime_wasm(
                 print(timeout_note, file=sys.stderr)
             return False
         if build.returncode != 0:
-            if not json_output:
-                detail = _runtime_wasm_build_error_detail(build)
-                msg = "Runtime wasm build failed"
-                if detail:
-                    msg = f"{msg}: {detail}"
-                print(msg, file=sys.stderr)
+            detail = _runtime_wasm_build_error_detail(build)
+            msg = "Runtime wasm build failed"
+            if detail:
+                msg = f"{msg}: {detail}"
+            print(msg, file=sys.stderr)
             return False
         if reloc:
             if not src.exists():

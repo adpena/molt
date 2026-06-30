@@ -5676,8 +5676,8 @@ const runDirectLink = async () => {
         try {
           return callWithWasmSignature(
             appIndirectFn,
-            callIndirectObjectSignature(name, { includeIndex: true }) ||
-              outputExportSignatures[`molt_call_indirect${arity}`],
+            outputExportSignatures[`molt_call_indirect${arity}`] ||
+              callIndirectObjectSignature(name, { includeIndex: true }),
             [rawIdx, ...args.slice(1)],
           );
         } catch (err) {

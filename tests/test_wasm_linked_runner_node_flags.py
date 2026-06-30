@@ -7,7 +7,16 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 import tests.wasm_linked_runner as wasm_runner
+
+
+def _require_node_binary() -> str:
+    node_bin = wasm_runner._select_node_binary()
+    if node_bin is None:
+        pytest.skip("Node >= 18 is required for explicit JS-runner coverage.")
+    return node_bin
 
 
 def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> None:
@@ -71,13 +80,55 @@ def test_wasm_test_process_preserves_timeout_semantics(
         raise AssertionError("expected TimeoutExpired")
 
 
-def test_run_wasm_linked_uses_stable_node_flags(
+def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin.write_bytes(b"host")
+    target_host = (
+        tmp_path
+        / "target"
+        / "dev-fast"
+        / wasm_runner._molt_wasm_host_exe_name()
+    )
+    target_host.parent.mkdir(parents=True)
+    target_host.write_bytes(b"target")
+
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_host.parent.parent))
+
+    assert wasm_runner._resolve_molt_wasm_host_binary(tmp_path) == str(host_bin)
+
+
+def test_resolve_molt_wasm_host_binary_uses_dev_fast_target_dir(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    host_bin = (
+        tmp_path
+        / "target"
+        / "dev-fast"
+        / wasm_runner._molt_wasm_host_exe_name()
+    )
+    host_bin.parent.mkdir(parents=True)
+    host_bin.write_bytes(b"host")
+
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    monkeypatch.setenv("MOLT_WASM_TEST_CARGO_TARGET_DIR", str(host_bin.parent.parent))
+
+    assert wasm_runner._resolve_molt_wasm_host_binary(tmp_path) == str(host_bin)
+
+
+def test_run_wasm_linked_uses_molt_wasm_host(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
-    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin.write_bytes(b"host")
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     recorded: dict[str, Any] = {}
 
     def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -89,30 +140,21 @@ def test_run_wasm_linked_uses_stable_node_flags(
     result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
     assert result.returncode == 0
     cmd = cast(list[str], recorded["args"])
-    assert cmd[0] == "/usr/bin/node"
-    assert "--no-warnings" in cmd
-    assert "--no-wasm-tier-up" in cmd
-    assert "--no-wasm-dynamic-tiering" in cmd
-    assert "--wasm-num-compilation-tasks=1" in cmd
-    assert cmd[-2:] == [str(tmp_path / "wasm" / "run_wasm.js"), str(wasm_path)]
+    assert cmd == [str(host_bin), str(wasm_path)]
     env = cast(dict[str, str], recorded["env"])
-    assert env.get("NODE_NO_WARNINGS") == "1"
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
-    limits = wasm_runner.harness_memory_guard.limits_from_env("MOLT_WASM_TEST", env)
-    assert limits.enabled is True
-    assert limits.max_process_rss_gb > 0
-    assert limits.max_total_rss_gb > 0
-    assert limits.max_global_rss_gb > 0
-    assert limits.child_rlimit_gb == 0
+    assert "NODE_NO_WARNINGS" not in env
+    assert "MOLT_WASM_TEST_CHILD_RLIMIT_GB" not in env
 
 
-def test_run_wasm_linked_disables_inherited_node_child_rlimit_by_default(
+def test_run_wasm_linked_preserves_inherited_child_rlimit_by_default(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
-    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin.write_bytes(b"host")
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "16")
     recorded: dict[str, Any] = {}
 
@@ -125,16 +167,18 @@ def test_run_wasm_linked_disables_inherited_node_child_rlimit_by_default(
 
     assert result.returncode == 0
     env = cast(dict[str, str], recorded["env"])
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "16"
 
 
-def test_run_wasm_linked_preserves_explicit_node_child_rlimit_overrides(
+def test_run_wasm_linked_preserves_explicit_env_overrides(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
-    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin.write_bytes(b"host")
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     recorded: dict[str, Any] = {}
 
     def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -146,70 +190,18 @@ def test_run_wasm_linked_preserves_explicit_node_child_rlimit_overrides(
     result = wasm_runner.run_wasm_linked(
         tmp_path,
         wasm_path,
-        env_overrides={"MOLT_WASM_TEST_CHILD_RLIMIT_GB": "192"},
-    )
-    assert result.returncode == 0
-    result = wasm_runner.run_wasm_linked(
-        tmp_path,
-        wasm_path,
-        env_overrides={"MOLT_WASM_TEST_CHILD_RLIMIT_GB": "0"},
+        env_overrides={
+            "MOLT_RUNTIME_WASM": "",
+            "MOLT_WASM_HOST_DEBUG": "1",
+            "MOLT_WASM_TEST_CHILD_RLIMIT_GB": "0",
+        },
     )
     assert result.returncode == 0
 
     envs = cast(list[dict[str, str]], recorded["envs"])
-    assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "192"
-    assert envs[1].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
-
-
-def test_run_wasm_linked_preserves_explicit_global_child_rlimit_override(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    wasm_path = tmp_path / "output_linked.wasm"
-    wasm_path.write_bytes(b"\x00asm")
-    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
-    recorded: dict[str, Any] = {}
-
-    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        recorded["env"] = dict(kwargs["env"])
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
-
-    result = wasm_runner.run_wasm_linked(
-        tmp_path,
-        wasm_path,
-        env_overrides={"MOLT_CHILD_RLIMIT_GB": "64"},
-    )
-
-    assert result.returncode == 0
-    env = cast(dict[str, str], recorded["env"])
-    assert env.get("MOLT_CHILD_RLIMIT_GB") == "64"
-    assert "MOLT_WASM_TEST_CHILD_RLIMIT_GB" not in env
-
-
-def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    wasm_path = tmp_path / "output_linked.wasm"
-    wasm_path.write_bytes(b"\x00asm")
-    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
-    recorded: dict[str, Any] = {}
-
-    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        recorded["env"] = dict(kwargs["env"])
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
-    result = wasm_runner.run_wasm_linked(
-        tmp_path,
-        wasm_path,
-        env_overrides={"NODE_NO_WARNINGS": "0"},
-    )
-    assert result.returncode == 0
-    env = cast(dict[str, str], recorded["env"])
-    assert env.get("NODE_NO_WARNINGS") == "0"
+    assert envs[0].get("MOLT_RUNTIME_WASM") == ""
+    assert envs[0].get("MOLT_WASM_HOST_DEBUG") == "1"
+    assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
 
 
 def test_run_wasm_linked_scrubs_stale_direct_mode_env(
@@ -218,7 +210,9 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
 ) -> None:
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
-    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
+    host_bin.write_bytes(b"host")
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("MOLT_WASM_DIRECT_LINK", "1")
     monkeypatch.setenv("MOLT_WASM_PREFER_LINKED", "0")
     monkeypatch.setenv("MOLT_WASM_LINKED_PATH", "/tmp/stale-linked.wasm")
@@ -392,7 +386,8 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     tmp_path: Path,
 ) -> None:
     root = Path(__file__).resolve().parents[1]
-    wasm_runner.require_wasm_toolchain()
+    wasm_runner.require_wasm_build_toolchain()
+    node_bin = _require_node_binary()
     src = tmp_path / "direct_bootstrap.py"
     src.write_text("import abc\nprint('after')\n", encoding="utf-8")
 
@@ -429,7 +424,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(tmp_path / "molt_runtime.wasm")
     result = wasm_runner._run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(tmp_path / "app.wasm")],
+        [node_bin, "wasm/run_wasm.js", str(tmp_path / "app.wasm")],
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -448,8 +443,7 @@ def test_linked_wasm_exports_table_base_setter_when_available(
     wasm_runner.require_wasm_toolchain()
     src = root / "examples" / "hello.py"
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
-    node_bin = wasm_runner._select_node_binary()
-    assert node_bin is not None
+    node_bin = _require_node_binary()
     probe = wasm_runner._run_wasm_test_process(
         [
             node_bin,

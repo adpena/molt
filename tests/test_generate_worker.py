@@ -275,7 +275,7 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
     assert "output_linked.wasm" not in content
 
 
-def test_generate_split_worker_delegates_app_table_init_to_main_wrapper() -> None:
+def test_generate_split_worker_installs_manifest_table_refs_before_main_wrapper() -> None:
     from molt.cli import _generate_split_worker_js
 
     app_ref = _table_ref_export_name(7)
@@ -298,10 +298,20 @@ def test_generate_split_worker_delegates_app_table_init_to_main_wrapper() -> Non
     )
     assert "installTableRefs(rtInstance, sharedTable);" in content
     assert "ensureTableCapacityForExportedRefs(appInstance, sharedTable);" in content
-    assert "installTableRefs(appInstance, sharedTable);" not in content
+    assert (
+        "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
+        in content
+    )
+    assert "installTableRefs(appInstance, sharedTable);" in content
+    assert content.index(
+        "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
+    ) < content.index("installTableRefs(appInstance, sharedTable);")
+    assert content.index("installTableRefs(appInstance, sharedTable);") < content.index(
+        "if (appInstance.exports.molt_main) appInstance.exports.molt_main();"
+    )
     assert (
         "App-owned table slots are initialized by the exported molt_main wrapper."
-        in content
+        not in content
     )
     assert "? [`MOLT_WASM_TABLE_BASE=${32}`]" in content
     assert (
@@ -354,16 +364,37 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         in content
     )
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
-    assert 'if (typeof tableFn === "function") {' in content
     assert (
-        "const signature = callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
+        "const directSignature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;"
         in content
     )
-    assert "return callWithSignature(tableFn, signature, args);" in content
+    assert 'if (typeof tableFn === "function" && directSignature) {' in content
+    assert (
+        "return callWithSignature(tableFn, directSignature, args);"
+        in content
+    )
+    assert 'if (typeof tableFn === "function") {' in content
+    assert (
+        "return callWithSignature(tableFn, callIndirectObjectSignature(indirectName), args);"
+        in content
+    )
     assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
     assert (
-        "return callWithSignature(rtDirectFn, callIndirectObjectSignature(indirectName) || runtimeTableRefSignatures[directName], args);"
+        "const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;"
         in content
+    )
+    assert 'if (typeof rtDirectFn === "function" && runtimeDirectSignature) {' in content
+    assert (
+        "return callWithSignature(rtDirectFn, runtimeDirectSignature, args);"
+        in content
+    )
+    assert (
+        "callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName]"
+        not in content
+    )
+    assert (
+        "runtimeTableRefSignatures[directName] || callIndirectObjectSignature(indirectName)"
+        not in content
     )
     assert content.index(
         "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);"
@@ -377,8 +408,9 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "hasExportedTableRefs(appInstance)" not in content
     assert (
         "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
-        not in content
+        in content
     )
+    assert "installTableRefs(appInstance, sharedTable);" in content
     browser_abi = _split_runtime_browser_abi_from_manifest()
     assert browser_abi["reserved_runtime_callables"] == (
         _reserved_runtime_callable_manifest_entries()
