@@ -675,11 +675,18 @@ def _configure_wasm_cc_env(env: dict[str, str]) -> None:
 
 
 def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
-    if env.get("WASI_SYSROOT") or env.get("MOLT_WASI_SYSROOT"):
+    explicit_sysroot = env.get("WASI_SYSROOT") or env.get("MOLT_WASI_SYSROOT")
+    if explicit_sysroot:
+        normalized = wasm_toolchain.normalize_wasi_sysroot(explicit_sysroot)
+        sysroot = str(normalized if normalized is not None else Path(explicit_sysroot))
+        env.setdefault("WASI_SYSROOT", sysroot)
+        env.setdefault("MOLT_WASI_SYSROOT", sysroot)
         return
     wasi_sysroot = wasm_toolchain.resolve_wasi_sysroot()
     if wasi_sysroot is not None:
-        env["WASI_SYSROOT"] = str(wasi_sysroot)
+        sysroot = str(wasi_sysroot)
+        env["WASI_SYSROOT"] = sysroot
+        env["MOLT_WASI_SYSROOT"] = sysroot
 
 
 def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
@@ -883,12 +890,11 @@ def _ensure_wasm_cpython_abi_staticlib(
                 build_raw.stderr.decode("utf-8", errors="replace"),
             )
         if build.returncode != 0:
-            if not json_output:
-                detail = (build.stderr or build.stdout or "").strip()
-                msg = "CPython ABI wasm build failed"
-                if detail:
-                    msg = f"{msg}: {detail}"
-                print(msg, file=sys.stderr)
+            detail = (build.stderr or build.stdout or "").strip()
+            msg = "CPython ABI wasm build failed"
+            if detail:
+                msg = f"{msg}: {detail}"
+            print(msg, file=sys.stderr)
             return None
         candidates = _wasm_cpython_abi_staticlib_candidates(target_root, profile_dir)
         if not candidates:
@@ -1685,12 +1691,11 @@ def _ensure_runtime_wasm(
                 print(timeout_note, file=sys.stderr)
             return False
         if build.returncode != 0:
-            if not json_output:
-                detail = _runtime_wasm_build_error_detail(build)
-                msg = "Runtime wasm build failed"
-                if detail:
-                    msg = f"{msg}: {detail}"
-                print(msg, file=sys.stderr)
+            detail = _runtime_wasm_build_error_detail(build)
+            msg = "Runtime wasm build failed"
+            if detail:
+                msg = f"{msg}: {detail}"
+            print(msg, file=sys.stderr)
             return False
         if reloc:
             if not src.exists():

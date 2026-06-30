@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
+#[path = "../build_support/wasi_sysroot.rs"]
+mod wasi_sysroot;
 
 fn resolve_build_python() -> String {
     println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
@@ -20,118 +22,6 @@ fn resolve_build_python() -> String {
     } else {
         "python3".to_string()
     }
-}
-
-fn wasi_sdk_sysroot_candidates(raw: &str) -> Vec<PathBuf> {
-    let sdk_root = PathBuf::from(raw);
-    vec![
-        sdk_root.clone(),
-        sdk_root.join("share").join("wasi-sysroot"),
-        sdk_root.join("wasi-sysroot"),
-    ]
-}
-
-fn wasi_sysroot_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    for key in ["MOLT_WASI_SYSROOT", "WASI_SYSROOT"] {
-        if let Ok(value) = env::var(key) {
-            candidates.push(PathBuf::from(value));
-        }
-    }
-    for key in ["WASI_SDK_PATH", "WASI_SDK_PREFIX"] {
-        if let Ok(value) = env::var(key) {
-            candidates.extend(wasi_sdk_sysroot_candidates(&value));
-        }
-    }
-    if let Ok(value) = env::var("MOLT_TARGET_ROOT") {
-        let target_root = PathBuf::from(value);
-        candidates.extend([
-            target_root.join("toolchains").join("wasi-sysroot"),
-            target_root
-                .join("toolchains")
-                .join("wasi-sdk")
-                .join("share")
-                .join("wasi-sysroot"),
-            target_root
-                .join("toolchains")
-                .join("wasi-sdk")
-                .join("wasi-sysroot"),
-            target_root.join("wasi-sysroot"),
-            target_root
-                .join("wasi-sdk")
-                .join("share")
-                .join("wasi-sysroot"),
-            target_root.join("wasi-sdk").join("wasi-sysroot"),
-        ]);
-        if let Ok(entries) = std::fs::read_dir(target_root.join("toolchains")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                    if name.starts_with("wasi-sysroot") {
-                        candidates.push(path.clone());
-                    }
-                    if name.starts_with("wasi-sdk") {
-                        candidates.push(path.join("share").join("wasi-sysroot"));
-                        candidates.push(path.join("wasi-sysroot"));
-                    }
-                }
-            }
-        }
-    }
-    candidates
-}
-
-fn normalize_wasi_sysroot(path: PathBuf) -> Option<PathBuf> {
-    let mut roots = vec![path.clone()];
-    if path.file_name().and_then(|name| name.to_str()) == Some("include") {
-        if let Some(parent) = path.parent() {
-            roots.push(parent.to_path_buf());
-        }
-    }
-    if path
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str())
-        == Some("include")
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("wasm32-"))
-    {
-        if let Some(parent) = path.parent().and_then(|parent| parent.parent()) {
-            roots.push(parent.to_path_buf());
-        }
-    }
-    for root in roots {
-        if root.join("include").join("errno.h").exists()
-            || root
-                .join("include")
-                .join("wasm32-wasip1")
-                .join("errno.h")
-                .exists()
-        {
-            return Some(root);
-        }
-    }
-    None
-}
-
-fn resolve_wasi_sysroot() -> Option<PathBuf> {
-    for key in [
-        "MOLT_WASI_SYSROOT",
-        "WASI_SYSROOT",
-        "WASI_SDK_PATH",
-        "WASI_SDK_PREFIX",
-        "MOLT_TARGET_ROOT",
-    ] {
-        println!("cargo:rerun-if-env-changed={key}");
-    }
-    wasi_sysroot_candidates()
-        .into_iter()
-        .find_map(normalize_wasi_sysroot)
 }
 
 fn main() {
@@ -156,7 +46,7 @@ fn main() {
         build.flag_if_supported("-fno-semantic-interposition");
     }
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
-        let sysroot = resolve_wasi_sysroot().unwrap_or_else(|| {
+        let sysroot = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
             panic!(
                 "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
                  WASI_SDK_PATH, WASI_SDK_PREFIX, or MOLT_TARGET_ROOT so \
