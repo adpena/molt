@@ -72,7 +72,7 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
             project_root=tmp_path,
             kind="shared",
             json_output=True,
-            cargo_profile="dev",
+            build_profile="dev",
             cargo_timeout=1200.0,
             simd_enabled=True,
             freestanding=False,
@@ -81,7 +81,7 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
         == 0
     )
 
-    assert calls == [(False, "dev", 1200.0, "micro", tmp_path)]
+    assert calls == [(False, "dev-fast", 1200.0, "micro", tmp_path)]
     payload = json.loads(capsys.readouterr().out)
     assert payload["artifacts"]["shared"] == str(runtime_root / "molt_runtime.wasm")
 

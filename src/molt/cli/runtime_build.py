@@ -35,7 +35,7 @@ from molt.cli.cargo_execution import (
     _maybe_enable_sccache,
     _run_cargo_with_sccache_retry,
 )
-from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE
+from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE, _resolve_cargo_profile_name
 from molt.cli.command_runtime import (
     _run_completed_command,
     _run_subprocess_captured_to_tempfiles,
@@ -67,7 +67,7 @@ from molt.cli.runtime_wasm_validation import (
     _write_runtime_wasm_integrity_sidecar,
 )
 from molt.cli import wasm_toolchain
-from molt.cli.models import _RuntimeArtifactState
+from molt.cli.models import BuildProfile, _RuntimeArtifactState
 from molt.wasm_artifact import inspect_wasm_binary as _inspect_wasm_binary
 
 
@@ -588,13 +588,20 @@ def _prebuild_runtime_wasm(
     project_root: Path,
     kind: Literal["shared", "reloc", "both"],
     json_output: bool,
-    cargo_profile: str,
+    build_profile: BuildProfile,
     cargo_timeout: float | None,
     simd_enabled: bool = True,
     freestanding: bool = False,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     verbose: bool = False,
 ) -> int:
+    cargo_profile, profile_error = _resolve_cargo_profile_name(build_profile)
+    if profile_error is not None:
+        if json_output:
+            print(json.dumps({"ok": False, "error": profile_error}))
+        else:
+            print(profile_error, file=sys.stderr)
+        return 1
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=False,
         is_wasm=True,
