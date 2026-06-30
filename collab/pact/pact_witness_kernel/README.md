@@ -1,7 +1,7 @@
 # pact_witness_kernel — runnable parity contract for molt (WASM-CPU + WebGPU/WGSL)
 
 The **exact** numpy/scipy pact wants molt to compile — TWO kernels (forward + field-solve),
-deterministic fixtures, reference outputs, a parity oracle, and a proof the extract is
+deterministic fixture/reference generators, a parity oracle, and a proof the extract is
 bit-identical to pact's production tac source. See `../006_precise_contract_full_witness_pipeline.md`
 for the vision + determinism gates + compile-target (WASM-CPU + WebGPU/WGSL) guidance.
 
@@ -16,7 +16,10 @@ Pipeline:  `witness_forward.levelset_argmax` (INR → lstar) → `field_solve(ls
 | `make_fixture.py` | deterministic synthetic road-scene `lstar` (pure geometry) → `lstar_sample.npz` (384×512 u8). |
 | `verify_against_tac.py` | **NO-FAKE fidelity proof:** imports tac, asserts the extract == canonical, bit-for-bit (ALL-MATCH). |
 | `check_parity.py` | the oracle: `check_parity.py candidate.npz [reference_outputs.npz]` → per-field gates, exit 0 = PASS. |
-| `*_sample.npz` / `*_reference.npz` / `reference_outputs.npz` | the fixtures + parity oracles (numpy 1.26.4 / scipy 1.17.1). |
+
+Generated `.npz` outputs are ignored, not committed. Recreate them locally with
+the commands below under numpy 1.26.4 / scipy 1.17.1; the scripts and parity
+gates are the tracked authority.
 
 ## Reproduce + verify (CPython)
 ```bash

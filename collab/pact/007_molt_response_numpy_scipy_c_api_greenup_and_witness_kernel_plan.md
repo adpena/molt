@@ -4,7 +4,7 @@ Status: Molt-side enabling layer delivered on `pact-collab`, 2026-06-27.
 Kernel A WASM parity remains the next acceptance milestone.
 
 This is the Molt-team reply to `006_precise_contract_full_witness_pipeline.md`.
-Pact has now supplied the exact kernel bundle, fixtures, reference outputs, and
+Pact has now supplied the exact kernel bundle, fixture/reference generators, and
 oracle. Molt owns the compiler/runtime/browser side from here.
 
 ## Ownership boundary
@@ -12,12 +12,13 @@ oracle. Molt owns the compiler/runtime/browser side from here.
 Pact owns:
 
 - the exact Python kernels in `pact_witness_kernel/`;
-- deterministic fixtures and reference outputs;
+- deterministic fixture and reference output generators;
 - `check_parity.py` as the acceptance oracle;
 - `verify_against_tac.py` as the Kernel B bit-identity proof against Pact/TAC;
-- `reference_outputs.npz` as the Kernel A authority, because Kernel A is a
-  faithful field-solve extract with intentional deterministic tie/eigvec
-  canonicalizations rather than a byte-for-byte copy of the visualization code.
+- regenerated `reference_outputs.npz` plus `check_parity.py` as the Kernel A
+  authority, because Kernel A is a faithful field-solve extract with intentional
+  deterministic tie/eigvec canonicalizations rather than a byte-for-byte copy of
+  the visualization code.
 
 Molt owns:
 
@@ -107,16 +108,16 @@ Result: 11 pytest checks passed; Ruff passed.
 Pact kernel oracle sanity:
 
 ```bash
-uv run --project . --python 3.12 --with numpy==1.26.4 python check_parity.py reference_outputs.npz
-uv run --project . --python 3.12 --with numpy==1.26.4 --with scipy==1.17.1 python field_solve.py lstar_sample.npz
-uv run --project . --python 3.12 --with numpy==1.26.4 python check_parity.py tmp\pact_kernel_a_cpython_reference\reference_outputs.npz collab\pact\pact_witness_kernel\reference_outputs.npz
-uv run --project . --python 3.12 --with numpy==1.26.4 python witness_forward.py witness_weights_sample.npz
+cd collab/pact/pact_witness_kernel
+uv run --project ..\..\.. --python 3.12 --with numpy==1.26.4 python make_fixture.py
+uv run --project ..\..\.. --python 3.12 --with numpy==1.26.4 --with scipy==1.17.1 python field_solve.py lstar_sample.npz
+uv run --project ..\..\.. --python 3.12 --with numpy==1.26.4 python check_parity.py reference_outputs.npz
+uv run --project ..\..\.. --python 3.12 --with numpy==1.26.4 python make_weights_fixture.py
+uv run --project ..\..\.. --python 3.12 --with numpy==1.26.4 python witness_forward.py witness_weights_sample.npz
 ```
 
-Result: committed Kernel A reference passed the updated, order-robust
-`check_parity.py`; regenerated Kernel A CPython/SciPy output passed against the
-committed reference with max float drift `3.553e-15`; regenerated Kernel B
-output matched
+Result: regenerated Kernel A reference passed the updated, order-robust
+`check_parity.py`; regenerated Kernel B output matched
 `witness_forward_reference.npz["lstar"]` exactly (`mismatch_px=0`).
 
 ## Boundary of the claim
@@ -136,7 +137,7 @@ The next Molt milestone is Kernel A first:
 
 1. Treat `pact_witness_kernel/field_solve.py` as the executable contract.
 2. Compile `field_solve(lstar)` through the Molt path chosen for determinism.
-3. Run on `pact_witness_kernel/lstar_sample.npz`.
+3. Run on generated `pact_witness_kernel/lstar_sample.npz`.
 4. Save all 11 output keys to `candidate_outputs.npz`.
 5. Pass `check_parity.py` against `reference_outputs.npz`.
 

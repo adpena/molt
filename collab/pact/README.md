@@ -12,7 +12,7 @@ The requested end criterion is still:
 python check_parity.py candidate_outputs.npz
 ```
 
-`PASS` is the milestone, with the same committed fixture keys as
+`PASS` is the milestone, with the same generated reference keys as
 `pact_witness_kernel/reference_outputs.npz`.
 
 The live recovery evidence says the current tree cannot honestly produce that
