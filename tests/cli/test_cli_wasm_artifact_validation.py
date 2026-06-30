@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
 import os
 import shutil
 import subprocess
@@ -24,6 +25,65 @@ def _valid_wasm_bytes(label: bytes = b"") -> bytes:
         return wasm_artifact._build_wasm_sections([])
     payload = wasm_artifact._write_wasm_string("molt.test") + label
     return wasm_artifact._build_wasm_sections([(0, payload)])
+
+
+def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime_root = tmp_path / "wasm-root"
+    monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(runtime_root))
+    calls: list[tuple[bool, str, float | None, str | None, Path]] = []
+
+    def fake_ensure_runtime_wasm_artifact(
+        runtime_state,
+        *,
+        reloc,
+        json_output,
+        cargo_profile,
+        cargo_timeout,
+        project_root,
+        simd_enabled,
+        freestanding,
+        stdlib_profile,
+        resolved_modules,
+        required_exports,
+    ) -> bool:
+        del json_output, simd_enabled, freestanding, resolved_modules, required_exports
+        runtime_wasm = (
+            runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
+        )
+        assert runtime_wasm is not None
+        runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+        runtime_wasm.write_bytes(_valid_wasm_bytes(b"runtime"))
+        calls.append((reloc, cargo_profile, cargo_timeout, stdlib_profile, project_root))
+        return True
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_ensure_runtime_wasm_artifact",
+        fake_ensure_runtime_wasm_artifact,
+        raising=True,
+    )
+
+    assert (
+        RUNTIME_BUILD._prebuild_runtime_wasm(
+            project_root=tmp_path,
+            kind="shared",
+            json_output=True,
+            cargo_profile="dev",
+            cargo_timeout=1200.0,
+            simd_enabled=True,
+            freestanding=False,
+            stdlib_profile="micro",
+        )
+        == 0
+    )
+
+    assert calls == [(False, "dev", 1200.0, "micro", tmp_path)]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["artifacts"]["shared"] == str(runtime_root / "molt_runtime.wasm")
 
 
 def test_is_valid_wasm_binary_accepts_structural_empty_module(
