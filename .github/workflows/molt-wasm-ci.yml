@@ -130,6 +130,15 @@ jobs:
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \
             cargo build --profile dev-fast -p molt-wasm-host
 
+      - name: Prebuild shared Molt WASM runtime
+        timeout-minutes: 25
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \
+            python3 tools/venv_exec.py python3 -m molt.cli internal-runtime-wasm-build \
+            --build-profile dev --kind shared --cargo-timeout "$MOLT_CARGO_TIMEOUT" --json
+        env:
+          RUSTC_WRAPPER: ""
+
       # ── WASM target: hello.py (class + arithmetic) ──
       - name: Compile hello.py to WASM
         timeout-minutes: 16
