@@ -1727,42 +1727,64 @@ pub(crate) fn alloc_memoryview(
     readonly: bool,
     format_bits: u64,
 ) -> *mut u8 {
+    let Some(storage) = crate::object::memoryview::TypedStridedStorage::one_dim(
+        std::ptr::null_mut(),
+        readonly,
+        len,
+        itemsize,
+        stride,
+        offset,
+        owner_bits,
+        format_bits,
+    ) else {
+        return std::ptr::null_mut();
+    };
+    alloc_memoryview_from_storage(_py, storage)
+}
+
+pub(crate) fn alloc_memoryview_from_storage(
+    _py: &PyToken<'_>,
+    storage: crate::object::memoryview::TypedStridedStorage,
+) -> *mut u8 {
+    if storage.base_bits == 0 || storage.format_bits == 0 {
+        return std::ptr::null_mut();
+    }
     let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
     let ptr = alloc_object(_py, total, TYPE_ID_MEMORYVIEW);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        let shape = [len as isize];
-        let strides = [stride];
-        let Some(shape_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(shape.as_slice(), shape.len())
-        else {
+        let Some(shape_ptr) = crate::object::backing::tracked_vec_box_from_slice(
+            storage.shape.as_slice(),
+            storage.shape.len(),
+        ) else {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
-        let Some(strides_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(strides.as_slice(), strides.len())
-        else {
+        let Some(strides_ptr) = crate::object::backing::tracked_vec_box_from_slice(
+            storage.strides.as_slice(),
+            storage.strides.len(),
+        ) else {
             drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
         let mv_ptr = memoryview_ptr(ptr);
-        (*mv_ptr).owner_bits = owner_bits;
-        (*mv_ptr).offset = offset;
-        (*mv_ptr).len = len;
-        (*mv_ptr).itemsize = itemsize;
-        (*mv_ptr).stride = stride;
-        (*mv_ptr).readonly = if readonly { 1 } else { 0 };
-        (*mv_ptr).ndim = 1;
+        (*mv_ptr).owner_bits = storage.base_bits;
+        (*mv_ptr).offset = storage.offset;
+        (*mv_ptr).len = storage.memoryview_len_field();
+        (*mv_ptr).itemsize = storage.itemsize;
+        (*mv_ptr).stride = storage.memoryview_stride_field();
+        (*mv_ptr).readonly = if storage.readonly { 1 } else { 0 };
+        (*mv_ptr).ndim = storage.shape.len() as u8;
         (*mv_ptr)._pad = [0; 6];
-        (*mv_ptr).format_bits = format_bits;
+        (*mv_ptr).format_bits = storage.format_bits;
         (*mv_ptr).shape_ptr = shape_ptr;
         (*mv_ptr).strides_ptr = strides_ptr;
     }
-    inc_ref_bits(_py, owner_bits);
-    inc_ref_bits(_py, format_bits);
+    inc_ref_bits(_py, storage.base_bits);
+    inc_ref_bits(_py, storage.format_bits);
     ptr
 }
 
@@ -1777,42 +1799,17 @@ pub(crate) fn alloc_memoryview_shaped(
     shape: Vec<isize>,
     strides: Vec<isize>,
 ) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
-    let ptr = alloc_object(_py, total, TYPE_ID_MEMORYVIEW);
-    if ptr.is_null() {
-        return ptr;
-    }
-    let ndim = shape.len();
-    let len = shape.first().copied().unwrap_or(0).max(0) as usize;
-    let stride = strides.first().copied().unwrap_or(0);
-    unsafe {
-        let Some(shape_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(shape.as_slice(), shape.len())
-        else {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let Some(strides_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(strides.as_slice(), strides.len())
-        else {
-            drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let mv_ptr = memoryview_ptr(ptr);
-        (*mv_ptr).owner_bits = owner_bits;
-        (*mv_ptr).offset = offset;
-        (*mv_ptr).len = len;
-        (*mv_ptr).itemsize = itemsize;
-        (*mv_ptr).stride = stride;
-        (*mv_ptr).readonly = if readonly { 1 } else { 0 };
-        (*mv_ptr).ndim = ndim.min(u8::MAX as usize) as u8;
-        (*mv_ptr)._pad = [0; 6];
-        (*mv_ptr).format_bits = format_bits;
-        (*mv_ptr).shape_ptr = shape_ptr;
-        (*mv_ptr).strides_ptr = strides_ptr;
-    }
-    inc_ref_bits(_py, owner_bits);
-    inc_ref_bits(_py, format_bits);
-    ptr
+    let Some(storage) = crate::object::memoryview::TypedStridedStorage::new(
+        std::ptr::null_mut(),
+        readonly,
+        itemsize,
+        offset,
+        owner_bits,
+        format_bits,
+        shape,
+        strides,
+    ) else {
+        return std::ptr::null_mut();
+    };
+    alloc_memoryview_from_storage(_py, storage)
 }
