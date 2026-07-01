@@ -66,6 +66,7 @@ Kernel B `witness_forward.levelset_argmax` against
 | `005_max_in_browser_witness_acceptance_kernel.md` | acceptance-kernel concept |
 | `006_precise_contract_full_witness_pipeline.md` | exact kernels, gates, and vision |
 | `007_molt_response_numpy_scipy_c_api_greenup_and_witness_kernel_plan.md` | ABI/package-native plan notes |
+| `008_addendum_v2_witness_decoder_20260629.md` | decode-chain, contest-runtime contracts, and runtime-rs sister-backend notes |
 | `pact_witness_kernel/` | runnable bundle, fixture oracle, and parity script |
 
 ## The Two Asks That Unblock The Rest
