@@ -165,6 +165,9 @@ MoltHandle molt_dict_from_pairs(const MoltHandle *keys, const MoltHandle *values
 
 int32_t molt_buffer_acquire(MoltHandle obj_bits, MoltBufferView *out_view);
 int32_t molt_buffer_release(MoltBufferView *view);
+MoltHandle molt_memoryview_new(MoltHandle obj_bits);
+MoltHandle molt_memoryview_from_buffer(const MoltBufferView *view);
+int32_t molt_memoryview_check(MoltHandle obj_bits);
 
 MoltHandle molt_bytes_from(const uint8_t *data, uint64_t len);
 const uint8_t *molt_bytes_as_ptr(MoltHandle bytes_bits, uint64_t *out_len);
@@ -284,6 +287,9 @@ static inline void *_molt_host_abi_symbol(const char *name) {
 #define molt_dict_from_pairs ((MoltHandle (*)(const MoltHandle *, const MoltHandle *, uint64_t))_molt_host_abi_symbol("molt_dict_from_pairs"))
 #define molt_buffer_acquire ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_acquire"))
 #define molt_buffer_release ((int32_t (*)(MoltBufferView *))_molt_host_abi_symbol("molt_buffer_release"))
+#define molt_memoryview_new ((MoltHandle (*)(MoltHandle))_molt_host_abi_symbol("molt_memoryview_new"))
+#define molt_memoryview_from_buffer ((MoltHandle (*)(const MoltBufferView *))_molt_host_abi_symbol("molt_memoryview_from_buffer"))
+#define molt_memoryview_check ((int32_t (*)(MoltHandle))_molt_host_abi_symbol("molt_memoryview_check"))
 #define molt_bytes_from ((MoltHandle (*)(const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_bytes_from"))
 #define molt_bytes_as_ptr ((const uint8_t *(*)(MoltHandle, uint64_t *))_molt_host_abi_symbol("molt_bytes_as_ptr"))
 #define molt_string_from ((MoltHandle (*)(const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_string_from"))

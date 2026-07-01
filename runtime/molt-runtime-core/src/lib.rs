@@ -974,7 +974,7 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 2;
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1030,6 +1030,7 @@ pub struct RuntimeVtable {
     pub memoryview_nbytes: unsafe extern "C" fn(*mut u8) -> usize,
     pub memoryview_offset: unsafe extern "C" fn(*mut u8) -> isize,
     pub memoryview_owner_bits: unsafe extern "C" fn(*mut u8) -> u64,
+    pub memoryview_data: unsafe extern "C" fn(*mut u8) -> *mut u8,
 
     // --- Reference counting ---
     pub release_ptr: unsafe extern "C" fn(*mut u8),

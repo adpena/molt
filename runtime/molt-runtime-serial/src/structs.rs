@@ -663,18 +663,16 @@ fn unsigned_range_message(code: char, bits: usize) -> String {
 
 unsafe fn memoryview_contiguous_bytes(ptr: *mut u8) -> Option<&'static [u8]> {
     unsafe {
-        let (owner_ptr, base_offset, nbytes) = memoryview_contiguous_window(ptr, false)?;
-        let base = bytes_like_slice_raw(owner_ptr)?;
-        Some(&base[base_offset..base_offset + nbytes])
+        let (data_ptr, nbytes) = memoryview_contiguous_window(ptr, false)?;
+        Some(std::slice::from_raw_parts(data_ptr.cast_const(), nbytes))
     }
 }
 
 unsafe fn memoryview_contiguous_window(
-    mut view_ptr: *mut u8,
+    view_ptr: *mut u8,
     writable: bool,
-) -> Option<(*mut u8, usize, usize)> {
+) -> Option<(*mut u8, usize)> {
     unsafe {
-        const MAX_DEPTH: usize = 64;
         if !memoryview_is_c_contiguous_view(view_ptr) {
             return None;
         }
@@ -682,37 +680,11 @@ unsafe fn memoryview_contiguous_window(
             return None;
         }
         let nbytes = memoryview_nbytes(view_ptr);
-        let mut base_offset = 0usize;
-        for _ in 0..MAX_DEPTH {
-            if !memoryview_is_c_contiguous_view(view_ptr) {
-                return None;
-            }
-            if writable && memoryview_readonly(view_ptr) {
-                return None;
-            }
-            let rel_offset = memoryview_offset(view_ptr);
-            if rel_offset < 0 {
-                return None;
-            }
-            base_offset = base_offset.checked_add(rel_offset as usize)?;
-            let owner = obj_from_bits(memoryview_owner_bits(view_ptr));
-            let owner_ptr = owner.as_ptr()?;
-            let owner_type_id = object_type_id(owner_ptr);
-            if owner_type_id == TYPE_ID_MEMORYVIEW {
-                view_ptr = owner_ptr;
-                continue;
-            }
-            if writable && owner_type_id != TYPE_ID_BYTEARRAY {
-                return None;
-            }
-            let base = bytes_like_slice_raw(owner_ptr)?;
-            let end = base_offset.checked_add(nbytes)?;
-            if end > base.len() {
-                return None;
-            }
-            return Some((owner_ptr, base_offset, nbytes));
+        let data_ptr = memoryview_data(view_ptr);
+        if data_ptr.is_null() {
+            return None;
         }
-        None
+        Some((data_ptr, nbytes))
     }
 }
 
@@ -1409,7 +1381,7 @@ pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data
                 };
                 return raise_exception::<u64>(_py, "ValueError", msg.as_str());
             }
-            let Some((owner_ptr, owner_offset, owner_nbytes)) =
+            let Some((data_ptr, owner_nbytes)) =
                 (unsafe { memoryview_contiguous_window(buffer_ptr, true) })
             else {
                 return raise_exception::<u64>(
@@ -1425,22 +1397,14 @@ pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data
                     "argument must be read-write bytes-like object, not memoryview",
                 );
             }
-            let Some(start_abs) = owner_offset.checked_add(start) else {
+            let Some(end_abs) = start.checked_add(payload_len) else {
                 return raise_exception::<u64>(
                     _py,
                     "TypeError",
                     "argument must be read-write bytes-like object, not memoryview",
                 );
             };
-            let Some(end_abs) = start_abs.checked_add(payload_len) else {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be read-write bytes-like object, not memoryview",
-                );
-            };
-            let owner_buf = unsafe { bytearray_vec(owner_ptr) };
-            if end_abs > owner_buf.len() {
+            if end_abs > owner_nbytes {
                 return raise_exception::<u64>(
                     _py,
                     "TypeError",
@@ -1448,7 +1412,9 @@ pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data
                 );
             }
             if payload_len > 0 {
-                owner_buf[start_abs..end_abs].copy_from_slice(&payload);
+                let dst =
+                    unsafe { std::slice::from_raw_parts_mut(data_ptr.add(start), payload_len) };
+                dst.copy_from_slice(&payload);
             }
             return MoltObject::none().bits();
         }

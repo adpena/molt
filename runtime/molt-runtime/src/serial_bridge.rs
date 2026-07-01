@@ -224,6 +224,13 @@ extern "C" fn bridge_memoryview_owner_bits(ptr: *mut u8) -> u64 {
     unsafe { memoryview_owner_bits(ptr) }
 }
 
+extern "C" fn bridge_memoryview_data(ptr: *mut u8) -> *mut u8 {
+    if unsafe { memoryview_released(ptr) } {
+        return std::ptr::null_mut();
+    }
+    unsafe { memoryview_data(ptr) }
+}
+
 // ---------------------------------------------------------------------------
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------
@@ -831,6 +838,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     memoryview_nbytes: bridge_memoryview_nbytes,
     memoryview_offset: bridge_memoryview_offset,
     memoryview_owner_bits: bridge_memoryview_owner_bits,
+    memoryview_data: bridge_memoryview_data,
     release_ptr: bridge_release_ptr,
     dec_ref_bits: bridge_dec_ref_bits,
     inc_ref_bits: bridge_inc_ref_bits,

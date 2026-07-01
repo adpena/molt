@@ -232,16 +232,24 @@ pub extern "C" fn molt_memoryview_cast(
                 strides[idx] = stride;
                 stride = stride.saturating_mul(shape[idx].max(1));
             }
-            let out_ptr = alloc_memoryview_shaped(
-                _py,
-                memoryview_owner_bits(view_ptr),
-                memoryview_offset(view_ptr),
-                fmt.itemsize,
+            let data = memoryview_data(view_ptr);
+            if data.is_null() {
+                return MoltObject::none().bits();
+            }
+            let storage = TypedStridedStorage::new(
+                data,
                 memoryview_readonly(view_ptr),
+                fmt.itemsize,
+                memoryview_offset(view_ptr),
+                memoryview_base_bits(view_ptr),
                 format_bits,
                 shape,
                 strides,
             );
+            let out_ptr = match storage {
+                Some(storage) => alloc_memoryview_from_storage(_py, storage),
+                None => std::ptr::null_mut(),
+            };
             if out_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -280,7 +288,7 @@ pub extern "C" fn molt_memoryview_tobytes(bits: u64) -> u64 {
 
 unsafe fn memoryview_tolist_recursive(
     _py: &PyToken<'_>,
-    data: &[u8],
+    data: *const u8,
     fmt: MemoryViewFormat,
     shape: &[isize],
     strides: &[isize],
@@ -295,7 +303,7 @@ unsafe fn memoryview_tolist_recursive(
     if dim + 1 == shape.len() {
         for i in 0..dim_len {
             let item_offset = base_offset.checked_add((i as isize).saturating_mul(strides[dim]))?;
-            let scalar = unsafe { memoryview_read_scalar(_py, data, item_offset, fmt) }?;
+            let scalar = unsafe { memoryview_read_scalar_at(_py, data, item_offset, fmt) }?;
             items.push(scalar);
         }
     } else {
@@ -340,40 +348,20 @@ pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
                     );
                 }
             };
-            let owner_bits = memoryview_owner_bits(ptr);
-            let owner = obj_from_bits(owner_bits);
-            let owner_ptr = match owner.as_ptr() {
-                Some(ptr) => ptr,
-                None => return MoltObject::none().bits(),
-            };
-            let data = match bytes_like_slice_raw(owner_ptr) {
-                Some(slice) => slice,
-                None => {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "memoryview: tolist() requires a bytes-like exporter",
-                    );
-                }
-            };
+            let data = memoryview_data(ptr);
+            if data.is_null() {
+                return MoltObject::none().bits();
+            }
             let shape = memoryview_shape(ptr).unwrap_or(&[]);
             let strides = memoryview_strides(ptr).unwrap_or(&[]);
             if shape.is_empty() || memoryview_ndim(ptr) == 0 {
-                let scalar = match memoryview_read_scalar(_py, data, memoryview_offset(ptr), fmt) {
+                let scalar = match memoryview_read_scalar_at(_py, data.cast_const(), 0, fmt) {
                     Some(bits) => bits,
                     None => return MoltObject::none().bits(),
                 };
                 return scalar;
             }
-            match memoryview_tolist_recursive(
-                _py,
-                data,
-                fmt,
-                shape,
-                strides,
-                0,
-                memoryview_offset(ptr),
-            ) {
+            match memoryview_tolist_recursive(_py, data.cast_const(), fmt, shape, strides, 0, 0) {
                 Some(bits) => bits,
                 None => MoltObject::none().bits(),
             }
@@ -417,25 +405,18 @@ pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
                     );
                 }
             };
-            let owner_bits = memoryview_owner_bits(ptr);
-            let owner = obj_from_bits(owner_bits);
-            let Some(owner_ptr) = owner.as_ptr() else {
+            let base = memoryview_data(ptr);
+            if base.is_null() {
                 return MoltObject::none().bits();
-            };
-            let Some(base) = bytes_like_slice_raw(owner_ptr) else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "memoryview: count() requires a bytes-like exporter",
-                );
-            };
+            }
             let len = memoryview_len(ptr);
-            let offset = memoryview_offset(ptr);
             let stride = memoryview_stride(ptr);
             let mut count = 0i64;
             for idx in 0..len {
-                let item_offset = offset.saturating_add((idx as isize).saturating_mul(stride));
-                let Some(item_bits) = memoryview_read_scalar(_py, base, item_offset, fmt) else {
+                let item_offset = (idx as isize).saturating_mul(stride);
+                let Some(item_bits) =
+                    memoryview_read_scalar_at(_py, base.cast_const(), item_offset, fmt)
+                else {
                     return MoltObject::none().bits();
                 };
                 let eq = match eq_bool_from_bits(_py, item_bits, val_bits) {
@@ -495,24 +476,17 @@ pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
                     );
                 }
             };
-            let owner_bits = memoryview_owner_bits(ptr);
-            let owner = obj_from_bits(owner_bits);
-            let Some(owner_ptr) = owner.as_ptr() else {
+            let base = memoryview_data(ptr);
+            if base.is_null() {
                 return MoltObject::none().bits();
-            };
-            let Some(base) = bytes_like_slice_raw(owner_ptr) else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "memoryview: index() requires a bytes-like exporter",
-                );
-            };
+            }
             let len = memoryview_len(ptr);
-            let offset = memoryview_offset(ptr);
             let stride = memoryview_stride(ptr);
             for idx in 0..len {
-                let item_offset = offset.saturating_add((idx as isize).saturating_mul(stride));
-                let Some(item_bits) = memoryview_read_scalar(_py, base, item_offset, fmt) else {
+                let item_offset = (idx as isize).saturating_mul(stride);
+                let Some(item_bits) =
+                    memoryview_read_scalar_at(_py, base.cast_const(), item_offset, fmt)
+                else {
                     return MoltObject::none().bits();
                 };
                 let eq = match eq_bool_from_bits(_py, item_bits, val_bits) {

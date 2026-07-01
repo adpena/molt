@@ -362,6 +362,8 @@ pub(crate) struct Buffer2D {
 #[repr(C)]
 pub(crate) struct MemoryView {
     pub(crate) owner_bits: u64,
+    pub(crate) base_bits: u64,
+    pub(crate) data: *mut u8,
     pub(crate) offset: isize,
     pub(crate) len: usize,
     pub(crate) itemsize: usize,
@@ -1408,6 +1410,14 @@ pub(crate) unsafe fn memoryview_ptr(ptr: *mut u8) -> *mut MemoryView {
 
 pub(crate) unsafe fn memoryview_owner_bits(ptr: *mut u8) -> u64 {
     unsafe { (*memoryview_ptr(ptr)).owner_bits }
+}
+
+pub(crate) unsafe fn memoryview_base_bits(ptr: *mut u8) -> u64 {
+    unsafe { (*memoryview_ptr(ptr)).base_bits }
+}
+
+pub(crate) unsafe fn memoryview_data(ptr: *mut u8) -> *mut u8 {
+    unsafe { (*memoryview_ptr(ptr)).data }
 }
 
 pub(crate) unsafe fn memoryview_offset(ptr: *mut u8) -> isize {
