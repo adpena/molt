@@ -1271,6 +1271,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
         ),
         key=lambda item: item[0],
     )
+    reserved_callables = _shared_runtime_callables(data)
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
@@ -1348,7 +1349,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
             "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
         ]
     )
-    for entry in data.get("reserved_runtime_callable", []):
+    for entry in reserved_callables:
         lines.extend(
             [
                 "    ReservedRuntimeCallableSpec {\n",
@@ -1385,13 +1386,17 @@ def _render_rs_runtime_callables(data: dict) -> str:
             "    match runtime_name {\n",
         ]
     )
+    arity_runtime_names: set[str] = set()
     for entry in data["import"]:
         if "callable_arity" not in entry:
             continue
         lines.append(
             f'        "{entry["runtime_name"]}" => Some({entry["callable_arity"]}),\n'
         )
-    for entry in data.get("reserved_runtime_callable", []):
+        arity_runtime_names.add(entry["runtime_name"])
+    for entry in reserved_callables:
+        if entry["runtime_name"] in arity_runtime_names:
+            continue
         lines.append(
             f'        "{entry["runtime_name"]}" => Some({entry["callable_arity"]}),\n'
         )
@@ -1405,6 +1410,62 @@ def _render_rs_runtime_callables(data: dict) -> str:
     return "".join(lines)
 
 
+def _shared_runtime_callables(data: dict) -> list[dict]:
+    """Return runtime callables with shared table ownership.
+
+    Explicit reserved callables keep their stable manifest indexes. Imports
+    marked shared_runtime_callable then receive the next shared index so
+    runtime-owned Python function objects do not depend on app-owned compact
+    wrappers in split-runtime/browser execution.
+    """
+
+    shared: list[dict] = []
+    seen_runtime_names: set[str] = set()
+    seen_import_names: set[str] = set()
+    imports_by_name = {entry["name"]: entry for entry in data["import"]}
+    for entry in sorted(
+        data.get("reserved_runtime_callable", []),
+        key=lambda item: item["index"],
+    ):
+        import_entry = imports_by_name.get(entry["import_name"], {})
+        shared_entry = {
+            "index": len(shared),
+            "runtime_name": entry["runtime_name"],
+            "import_name": entry["import_name"],
+            "callable_arity": entry["callable_arity"],
+            "callable_result": import_entry.get("callable_result"),
+            "runtime_feature": import_entry.get("runtime_feature"),
+            "symbol_path": entry["runtime_name"],
+        }
+        if entry["index"] != shared_entry["index"]:
+            raise ValueError("reserved runtime callable indices must be contiguous")
+        shared.append(shared_entry)
+        seen_runtime_names.add(shared_entry["runtime_name"])
+        seen_import_names.add(shared_entry["import_name"])
+
+    for entry in data["import"]:
+        if entry.get("shared_runtime_callable") is not True:
+            continue
+        runtime_name = entry["runtime_name"]
+        import_name = entry["name"]
+        if runtime_name in seen_runtime_names or import_name in seen_import_names:
+            continue
+        shared.append(
+            {
+                "index": len(shared),
+                "runtime_name": runtime_name,
+                "import_name": import_name,
+                "callable_arity": entry["callable_arity"],
+                "callable_result": entry.get("callable_result"),
+                "runtime_feature": entry.get("runtime_feature"),
+                "symbol_path": f"crate::{runtime_name}",
+            }
+        )
+        seen_runtime_names.add(runtime_name)
+        seen_import_names.add(import_name)
+    return shared
+
+
 def render_runtime_callables_rs(data: dict) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
     poll_imports = sorted(
@@ -1415,13 +1476,7 @@ def render_runtime_callables_rs(data: dict) -> str:
         ),
         key=lambda item: item[0],
     )
-    reserved_callables = sorted(
-        data.get("reserved_runtime_callable", []),
-        key=lambda entry: entry["index"],
-    )
-    void_runtime_callables = [
-        entry for entry in data["import"] if entry.get("callable_result") == "void"
-    ]
+    reserved_callables = _shared_runtime_callables(data)
     lines.extend(
         [
             "#![allow(dead_code)]\n\n",
@@ -1440,6 +1495,47 @@ def render_runtime_callables_rs(data: dict) -> str:
             "#[cfg(target_arch = \"wasm32\")]\n",
             "pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =\n",
             "    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;\n\n",
+            "#[derive(Clone, Copy)]\n",
+            "pub(crate) struct ReservedRuntimeCallableInfo {\n",
+            "    pub(crate) index: u64,\n",
+            "    pub(crate) runtime_name: &'static str,\n",
+            "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) arity: usize,\n",
+            "}\n\n",
+            "#[rustfmt::skip]\n",
+            "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
+        ]
+    )
+    for entry in reserved_callables:
+        runtime_feature = entry.get("runtime_feature")
+        if isinstance(runtime_feature, str):
+            lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
+        lines.extend(
+            [
+                "    ReservedRuntimeCallableInfo {\n",
+                f"        index: {entry['index']},\n",
+                f'        runtime_name: "{entry["runtime_name"]}",\n',
+                f'        import_name: "{entry["import_name"]}",\n',
+                f"        arity: {entry['callable_arity']},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "#[rustfmt::skip]\n",
+            "const VOID_RESERVED_RUNTIME_CALLABLE_INDICES: &[u64] = &[\n",
+        ]
+    )
+    for entry in reserved_callables:
+        if entry.get("callable_result") == "void":
+            runtime_feature = entry.get("runtime_feature")
+            if isinstance(runtime_feature, str):
+                lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
+            lines.append(f"    {entry['index']},\n")
+    lines.extend(
+        [
+            "];\n\n",
             "#[inline]\n",
             "pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
             "    runtime_reserved_callable_key_from_symbol_name(symbol_name)\n",
@@ -1459,18 +1555,10 @@ def render_runtime_callables_rs(data: dict) -> str:
             "}\n\n",
             "#[inline]\n",
             "fn runtime_reserved_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
-            "    match symbol_name {\n",
-        ]
-    )
-    for entry in reserved_callables:
-        lines.append(
-            f'        "{entry["runtime_name"]}" => '
-            f"Some(RUNTIME_CALLABLE_KEY_BASE + {entry['index']}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
+            "    RESERVED_RUNTIME_CALLABLES\n",
+            "        .iter()\n",
+            "        .find(|entry| entry.runtime_name == symbol_name)\n",
+            "        .map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)\n",
             "}\n\n",
             "#[inline]\n",
             "fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
@@ -1497,47 +1585,22 @@ def render_runtime_callables_rs(data: dict) -> str:
             "pub(crate) fn runtime_callable_returns_void_from_target_ptr(\n",
             "    fn_ptr: u64,\n",
             ") -> bool {\n",
-        ]
-    )
-    for entry in void_runtime_callables:
-        runtime_name = entry["runtime_name"]
-        runtime_feature = entry.get("runtime_feature")
-        cfg = (
-            f'feature = "{runtime_feature}"'
-            if isinstance(runtime_feature, str)
-            else None
-        )
-        if cfg is not None:
-            lines.extend(
-                [
-                    f"    #[cfg({cfg})]\n",
-                    "    {\n",
-                    f"        if fn_ptr == fn_addr!(crate::{runtime_name}) {{\n",
-                    "            return true;\n",
-                    "        }\n",
-                    "    }\n",
-                ]
-            )
-        else:
-            lines.extend(
-                [
-                    f"    if fn_ptr == fn_addr!(crate::{runtime_name}) {{\n",
-                    "        return true;\n",
-                    "    }\n",
-                ]
-            )
-    lines.extend(
-        [
-            "    false\n",
+            "    fn_ptr\n",
+            "        .checked_sub(RUNTIME_CALLABLE_KEY_BASE)\n",
+            "        .is_some_and(|idx| VOID_RESERVED_RUNTIME_CALLABLE_INDICES.contains(&idx))\n",
             "}\n\n",
             "#[inline]\n",
+            "#[rustfmt::skip]\n",
             "fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
             "    match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {\n",
         ]
     )
     for entry in reserved_callables:
+        runtime_feature = entry.get("runtime_feature")
+        if isinstance(runtime_feature, str):
+            lines.append(f'        #[cfg(feature = "{runtime_feature}")]\n')
         lines.append(
-            f"        {entry['index']} => Some({entry['runtime_name']} as *const ()),\n"
+            f"        {entry['index']} => Some({entry['symbol_path']} as *const ()),\n"
         )
     lines.extend(
         [
@@ -1562,31 +1625,22 @@ def render_runtime_callables_rs(data: dict) -> str:
             "pub(crate) fn reserved_wasm_runtime_callable_info(\n",
             "    fn_ptr: u64,\n",
             ") -> Option<(u64, &'static str, &'static str, usize)> {\n",
-        ]
-    )
-    for entry in reserved_callables:
-        lines.extend(
-            [
-                f"    if fn_ptr == fn_addr!({entry['runtime_name']}) {{\n",
-                "        return Some((\n",
-                f"            {entry['index']},\n",
-                f'            "{entry["runtime_name"]}",\n',
-                f'            "{entry["import_name"]}",\n',
-                f"            {entry['callable_arity']},\n",
-                "        ));\n",
-                "    }\n",
-            ]
-        )
-    lines.extend(
-        [
-            "    None\n",
+            "    let idx = fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)?;\n",
+            "    RESERVED_RUNTIME_CALLABLES\n",
+            "        .iter()\n",
+            "        .find(|entry| entry.index == idx)\n",
+            "        .map(|entry| (entry.index, entry.runtime_name, entry.import_name, entry.arity))\n",
             "}\n\n",
             "#[cfg(test)]\n",
+            "#[rustfmt::skip]\n",
             "pub(crate) fn assert_reserved_runtime_symbols_resolve() {\n",
         ]
     )
     for entry in reserved_callables:
-        lines.append(f"    let _ = {entry['runtime_name']} as *const ();\n")
+        runtime_feature = entry.get("runtime_feature")
+        if isinstance(runtime_feature, str):
+            lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
+        lines.append(f"    let _ = {entry['symbol_path']} as *const ();\n")
     lines.extend(
         [
             "}\n",
@@ -1638,6 +1692,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
 
 def render_py(data: dict) -> str:
     lines: list[str] = [_header("#")]
+    reserved_callables = _shared_runtime_callables(data)
     lines.append(
         "WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (\n"
     )
@@ -1693,7 +1748,7 @@ def render_py(data: dict) -> str:
         )
     lines.append(")\n\n")
     lines.append("WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n")
-    for entry in data.get("reserved_runtime_callable", []):
+    for entry in reserved_callables:
         lines.append(
             f'    ({entry["index"]}, "{entry["runtime_name"]}", '
             f'"{entry["import_name"]}", {entry["callable_arity"]}),\n'

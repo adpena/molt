@@ -2994,6 +2994,7 @@ name = "importlib_import_transaction"
 type = 12
 runtime_name = "molt_importlib_import_transaction"
 callable_arity = 5
+shared_runtime_callable = true
 
 [[import]]
 name = "importlib_import_optional"

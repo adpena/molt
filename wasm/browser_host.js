@@ -80,8 +80,8 @@ const reservedRuntimeCallables = [
   { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
   { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
   { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
+  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5 },
 ];
-
 let browserVfsModulePromise = null;
 const loadBrowserVfsModule = () => {
   if (!browserVfsModulePromise) {
@@ -131,6 +131,7 @@ const {
   parseWasmImports,
   remapLegacyRuntimeSharedTableIndex,
   reservedRuntimeCallableForTableIndex,
+  reservedRuntimeCallablesFromManifest,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
 } = globalThis.MoltWasmLoaderBridge;
@@ -3941,6 +3942,8 @@ export const loadMoltWasm = async (options = {}) => {
   if (!runtimeImportAbi || !Array.isArray(runtimeImportAbi.names)) {
     throw new Error('split-runtime manifest missing abi.runtime_imports.names');
   }
+  const activeReservedRuntimeCallables =
+    reservedRuntimeCallablesFromManifest(splitManifest) || reservedRuntimeCallables;
   const runtimeImportFallbacks =
     splitManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
   const appTableRefSignatures = splitManifest?.abi?.table_refs?.app || {};
@@ -3980,12 +3983,12 @@ export const loadMoltWasm = async (options = {}) => {
         sharedTableBase: detectedWasmTableBase,
         legacyTableBase: LEGACY_WASM_TABLE_BASE,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
-        reservedRuntimeCallableCount: reservedRuntimeCallables.length,
+        reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
       });
       const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
         sharedTableBase: detectedWasmTableBase,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
-        reservedRuntimeCallables,
+        reservedRuntimeCallables: activeReservedRuntimeCallables,
       });
       if (reservedRuntimeCallable) {
         try {

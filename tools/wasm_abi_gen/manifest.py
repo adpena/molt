@@ -1106,6 +1106,11 @@ def validate_loaded_manifest(
         runtime_name = entry.get("runtime_name")
         callable_arity = entry.get("callable_arity")
         callable_result = entry.get("callable_result", "i64")
+        shared_runtime_callable = entry.get("shared_runtime_callable", False)
+        if not isinstance(shared_runtime_callable, bool):
+            raise WasmAbiManifestError(
+                f"import {name!r} has invalid shared_runtime_callable"
+            )
         if runtime_name is not None:
             if not isinstance(runtime_name, str) or not runtime_name:
                 raise WasmAbiManifestError(f"import {name!r} has invalid runtime_name")
@@ -1130,6 +1135,10 @@ def validate_loaded_manifest(
         elif callable_result != "i64":
             raise WasmAbiManifestError(
                 f"import {name!r} cannot set callable_result without callable_arity"
+            )
+        if shared_runtime_callable and callable_arity is None:
+            raise WasmAbiManifestError(
+                f"import {name!r} cannot set shared_runtime_callable without callable_arity"
             )
         poll_table_slot = entry.get("poll_table_slot")
         if poll_table_slot is not None:
