@@ -221,7 +221,7 @@ impl<'ctx> LlvmBackend<'ctx> {
 
     /// Create a native target machine for the host CPU at the given opt level.
     fn create_target_machine(&self, opt_level: &MoltOptLevel) -> TargetMachine {
-        use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target};
+        use inkwell::targets::{CodeModel, InitializationConfig, Target};
 
         Target::initialize_native(&InitializationConfig::default())
             .expect("Failed to initialize native target");
