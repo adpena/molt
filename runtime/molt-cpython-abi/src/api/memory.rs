@@ -211,7 +211,7 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
     size: Py_ssize_t,
     flags: c_int,
 ) -> *mut PyObject {
-    if mem.is_null() || size < 0 {
+    if size < 0 || (mem.is_null() && size != 0) {
         return std::ptr::null_mut();
     }
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
@@ -236,6 +236,29 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
         },
         view,
         base: std::ptr::null_mut(),
+    });
+    Box::into_raw(object).cast()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMemoryView_FromBuffer(info: *mut Py_buffer) -> *mut PyObject {
+    if info.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+    if unsafe { crate::api::buffer::copy_pybuffer_for_memoryview(&mut view, info.cast_const()) }
+        != 0
+    {
+        return std::ptr::null_mut();
+    }
+    let base = view.obj;
+    let object = Box::new(PyMemoryViewObject {
+        ob_base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut PyMemoryView_Type,
+        },
+        view,
+        base,
     });
     Box::into_raw(object).cast()
 }
