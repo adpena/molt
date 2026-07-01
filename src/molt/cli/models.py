@@ -1586,6 +1586,7 @@ class _PreparedBackendRuntimeContext:
 @dataclass(frozen=True)
 class _PreparedBackendIR:
     ir: dict[str, Any]
+    required_link_features: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

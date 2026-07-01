@@ -538,6 +538,7 @@ def _ensure_runtime_wasm_artifact(
     freestanding: bool,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
+    required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
     runtime_path = (
@@ -572,6 +573,7 @@ def _ensure_runtime_wasm_artifact(
         freestanding=freestanding,
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
         required_exports=required_exports,
     ):
         return False
@@ -1346,6 +1348,7 @@ def _ensure_runtime_wasm(
     freestanding: bool = False,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
+    required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
     validate_exports = not reloc
@@ -1431,9 +1434,7 @@ def _ensure_runtime_wasm(
         simd_enabled=simd_enabled,
         freestanding=freestanding,
     )
-    cargo_runtime_features = tuple(
-        ["molt_gpu_primitives"] + (["wasm_freestanding"] if freestanding else [])
-    )
+    cargo_runtime_features = tuple(["wasm_freestanding"] if freestanding else [])
     builtin_features = _runtime_builtin_features_for_profile(
         effective_stdlib_profile,
         target_triple="wasm32-wasip1",
@@ -1445,6 +1446,7 @@ def _ensure_runtime_wasm(
             runtime_features=runtime_features,
             builtin_features=builtin_features,
             resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
         )
     )
     fingerprint_path = _runtime_fingerprint_path(

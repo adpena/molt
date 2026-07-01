@@ -128,6 +128,7 @@ def _run_backend_pipeline(
         return prepared_backend_ir_error
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
+    required_link_features = prepared_backend_ir.required_link_features
     if prepared_build_preamble.diagnostics_enabled:
         record_binary_image_analysis(
             "backend_ir",
@@ -195,6 +196,7 @@ def _run_backend_pipeline(
             molt_root=prepared_build_roots.molt_root,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
             target_triple=output_layout.target_triple,
         )
     )

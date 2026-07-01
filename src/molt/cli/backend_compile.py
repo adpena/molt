@@ -201,6 +201,7 @@ def _prepare_backend_runtime_context(
     molt_root: Path,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
+    required_link_features: frozenset[str] = frozenset(),
     target_triple: str | None = None,
 ) -> tuple[_PreparedBackendRuntimeContext | None, _CliFailure | None]:
     runtime_state = prepared_backend_setup.runtime_state
@@ -219,6 +220,7 @@ def _prepare_backend_runtime_context(
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
             required_exports=required_exports,
         )
 
@@ -236,6 +238,7 @@ def _prepare_backend_runtime_context(
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
             required_exports=required_exports,
         )
 

@@ -1286,7 +1286,15 @@ def _prepare_backend_ir(
     )
     if module_call_issue is not None:
         return None, fail(module_call_issue, json_output, command="build")
+    functions_for_features = ir.get("functions")
+    required_link_features = (
+        _required_features.required_link_features(
+            cast(Sequence[Mapping[str, object]], functions_for_features)
+        )
+        if isinstance(functions_for_features, list)
+        else frozenset()
+    )
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
     if emit_ir_error is not None:
         return None, fail(emit_ir_error, json_output, command="build")
-    return _PreparedBackendIR(ir=ir), None
+    return _PreparedBackendIR(ir=ir, required_link_features=required_link_features), None
