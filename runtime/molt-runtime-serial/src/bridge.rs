@@ -276,6 +276,14 @@ pub unsafe fn memoryview_owner_bits(ptr: *mut u8) -> u64 {
     unsafe { (vt().memoryview_owner_bits)(ptr) }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt memoryview object for the duration of this
+/// call.
+pub unsafe fn memoryview_data(ptr: *mut u8) -> *mut u8 {
+    unsafe { (vt().memoryview_data)(ptr) }
+}
+
 // ---------------------------------------------------------------------------
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------

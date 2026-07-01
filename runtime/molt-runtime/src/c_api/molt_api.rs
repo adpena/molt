@@ -1412,6 +1412,76 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_memoryview_check(obj_bits: MoltHandle) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = obj_from_bits(obj_bits).as_ptr() else {
+            return 0;
+        };
+        unsafe { (object_type_id(ptr) == TYPE_ID_MEMORYVIEW) as i32 }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView) -> MoltHandle {
+    crate::with_gil_entry_nopanic!(_py, {
+        if view.is_null() {
+            return raise_exception::<u64>(_py, "TypeError", "buffer view cannot be null");
+        }
+        let view = unsafe { &*view };
+        if view.data.is_null() && view.len != 0 {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "buffer descriptor has no data pointer",
+            );
+        }
+        if view.ndim as usize > MOLT_BUFFER_MAX_NDIM {
+            return raise_exception::<u64>(_py, "BufferError", "buffer ndim exceeds Molt limit");
+        }
+        if view.itemsize == 0 {
+            return raise_exception::<u64>(_py, "BufferError", "buffer itemsize cannot be zero");
+        }
+        let ndim = view.ndim as usize;
+        let shape = view.shape[..ndim].to_vec();
+        let strides = view.strides[..ndim].to_vec();
+        let format_len = view
+            .format
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(MOLT_BUFFER_FORMAT_CAP)
+            .max(1);
+        let format_ptr = alloc_string(_py, &view.format[..format_len]);
+        if format_ptr.is_null() {
+            return none_bits();
+        }
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+        let storage = crate::object::memoryview::TypedStridedStorage::new(
+            view.data,
+            view.readonly != 0,
+            view.itemsize as usize,
+            view.offset,
+            view.base,
+            format_bits,
+            shape,
+            strides,
+        );
+        let out_ptr = match storage {
+            Some(storage) => crate::object::builders::alloc_memoryview_from_storage(_py, storage),
+            None => std::ptr::null_mut(),
+        };
+        dec_ref_bits(_py, format_bits);
+        if out_ptr.is_null() {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "invalid buffer descriptor for memoryview",
+            );
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandle {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {

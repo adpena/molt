@@ -1528,6 +1528,104 @@ fn memoryview_clone_and_c_export_share_typed_strided_descriptor() {
 }
 
 #[test]
+fn memoryview_from_c_buffer_roundtrips_typed_descriptor() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let mut data = [1u8, 2, 3, 4];
+        let mut source = MoltBufferView {
+            data: data.as_mut_ptr(),
+            len: data.len() as u64,
+            readonly: 0,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        source.shape[0] = data.len() as isize;
+        source.strides[0] = 1;
+        source.format[0] = b'B';
+
+        let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
+        assert!(!obj_from_bits(view_bits).is_none());
+        assert_eq!(molt_memoryview_check(view_bits), 1);
+
+        let mut exported = MoltBufferView {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        let rc = unsafe { molt_buffer_acquire(view_bits, &mut exported as *mut MoltBufferView) };
+        assert_eq!(rc, 0);
+        assert_eq!(exported.data, data.as_mut_ptr());
+        assert_eq!(exported.len, 4);
+        assert_eq!(exported.readonly, 0);
+        assert_eq!(exported.ndim, 1);
+        assert_eq!(exported.itemsize, 1);
+        assert_eq!(exported.owner, view_bits);
+        assert_eq!(exported.base, 0);
+        assert_eq!(exported.shape[0], 4);
+        assert_eq!(exported.strides[0], 1);
+        assert_eq!(exported.format[0], b'B');
+        let rc_release = unsafe { molt_buffer_release(&mut exported as *mut MoltBufferView) };
+        assert_eq!(rc_release, 0);
+
+        let store_result = crate::molt_store_index(
+            view_bits,
+            MoltObject::from_int(1).bits(),
+            MoltObject::from_int(9).bits(),
+        );
+        assert_eq!(store_result, view_bits);
+        assert_eq!(data[1], 9);
+
+        let slice_bits = crate::molt_slice_new(
+            MoltObject::from_int(1).bits(),
+            MoltObject::from_int(3).bits(),
+            none_bits(),
+        );
+        assert!(!obj_from_bits(slice_bits).is_none());
+        let sliced_bits = crate::molt_index(view_bits, slice_bits);
+        assert!(!obj_from_bits(sliced_bits).is_none());
+        let mut sliced = MoltBufferView {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        let slice_rc =
+            unsafe { molt_buffer_acquire(sliced_bits, &mut sliced as *mut MoltBufferView) };
+        assert_eq!(slice_rc, 0);
+        assert_eq!(sliced.data, unsafe { data.as_mut_ptr().add(1) });
+        assert_eq!(sliced.len, 2);
+        assert_eq!(sliced.base, 0);
+        assert_eq!(sliced.shape[0], 2);
+        let slice_release = unsafe { molt_buffer_release(&mut sliced as *mut MoltBufferView) };
+        assert_eq!(slice_release, 0);
+        dec_ref_bits(_py, sliced_bits);
+        dec_ref_bits(_py, slice_bits);
+        dec_ref_bits(_py, view_bits);
+    });
+}
+
+#[test]
 fn memoryview_release_closes_typed_storage_export_and_runtime_access() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
