@@ -621,12 +621,12 @@ pub(crate) use crate::object::layout::{
     zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
-    MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR, TypedStridedStorage,
-    TypedStridedStorageError, bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice,
-    memoryview_collect_bytes, memoryview_format_from_bits, memoryview_format_from_str,
-    memoryview_is_c_contiguous_view, memoryview_nbytes, memoryview_nbytes_big,
-    memoryview_read_scalar, memoryview_shape_product, memoryview_write_scalar,
-    raise_released_memoryview,
+    BytesLikeSliceError, MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR,
+    TypedStridedStorage, TypedStridedStorageError, bytes_like_slice, bytes_like_slice_checked,
+    bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
+    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
+    memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar, memoryview_shape_product,
+    memoryview_write_scalar, raise_released_memoryview,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::object::memoryview::{memoryview_bytes_slice_mut, memoryview_write_bytes};

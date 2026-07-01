@@ -20,6 +20,41 @@ use super::ops::{
     simd_is_all_ascii_whitespace,
 };
 
+fn bytes_like_arg_or_type_error<F>(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    make_type_error: F,
+) -> Result<&'static [u8], u64>
+where
+    F: FnOnce() -> String,
+{
+    match unsafe { bytes_like_slice_checked(ptr) } {
+        Ok(slice) => Ok(slice),
+        Err(BytesLikeSliceError::ReleasedMemoryView) => Err(raise_released_memoryview::<u64>(_py)),
+        Err(BytesLikeSliceError::NotBytesLike) => {
+            let msg = make_type_error();
+            Err(raise_exception::<u64>(_py, "TypeError", &msg))
+        }
+    }
+}
+
+fn bytes_join_part_or_type_error<F>(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    make_type_error: F,
+) -> Result<&'static [u8], u64>
+where
+    F: FnOnce() -> String,
+{
+    match unsafe { bytes_like_slice_checked(ptr) } {
+        Ok(slice) => Ok(slice),
+        Err(BytesLikeSliceError::ReleasedMemoryView | BytesLikeSliceError::NotBytesLike) => {
+            let msg = make_type_error();
+            Err(raise_exception::<u64>(_py, "TypeError", &msg))
+        }
+    }
+}
+
 pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Option<Vec<u8>> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
@@ -540,15 +575,14 @@ pub extern "C" fn molt_bytes_replace(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 let repl_ptr = match replacement.as_ptr() {
                     Some(ptr) => ptr,
@@ -560,15 +594,14 @@ pub extern "C" fn molt_bytes_replace(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let repl_bytes = match bytes_like_slice(repl_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, replacement)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let repl_bytes = match bytes_like_arg_or_type_error(_py, repl_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, replacement)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 let out = if count < 0 {
                     match replace_bytes_impl(hay_bytes, needle_bytes, repl_bytes) {
@@ -1366,12 +1399,14 @@ fn bytes_remove_affix_impl(
         if object_type_id(hay_ptr) != type_id {
             return MoltObject::none().bits();
         }
-        let Some(affix_bytes) = bytes_like_slice(affix_ptr) else {
-            let msg = format!(
+        let affix_bytes = match bytes_like_arg_or_type_error(_py, affix_ptr, || {
+            format!(
                 "a bytes-like object is required, not '{}'",
                 type_name(_py, affix)
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            )
+        }) {
+            Ok(slice) => slice,
+            Err(bits) => return bits,
         };
         let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
         let out = if suffix {
@@ -1736,15 +1771,14 @@ fn bytes_translate_impl(
                 return Err(raise_exception::<_>(_py, "TypeError", &msg));
             }
         };
-        let table_bytes = match unsafe { bytes_like_slice(table_ptr) } {
-            Some(slice) => slice,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, table_obj)
-                );
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
-            }
+        let table_bytes = match bytes_like_arg_or_type_error(_py, table_ptr, || {
+            format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(_py, table_obj)
+            )
+        }) {
+            Ok(slice) => slice,
+            Err(bits) => return Err(bits),
         };
         if table_bytes.len() != 256 {
             return Err(raise_exception::<_>(
@@ -1769,15 +1803,14 @@ fn bytes_translate_impl(
                 return Err(raise_exception::<_>(_py, "TypeError", &msg));
             }
         };
-        match unsafe { bytes_like_slice(delete_ptr) } {
-            Some(slice) => slice,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, delete_obj)
-                );
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
-            }
+        match bytes_like_arg_or_type_error(_py, delete_ptr, || {
+            format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(_py, delete_obj)
+            )
+        }) {
+            Ok(slice) => slice,
+            Err(bits) => return Err(bits),
         }
     };
     if hay_bytes.is_empty() {
@@ -1888,25 +1921,23 @@ pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         };
-        let from_bytes = match unsafe { bytes_like_slice(from_ptr) } {
-            Some(slice) => slice,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, from_obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+        let from_bytes = match bytes_like_arg_or_type_error(_py, from_ptr, || {
+            format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(_py, from_obj)
+            )
+        }) {
+            Ok(slice) => slice,
+            Err(bits) => return bits,
         };
-        let to_bytes = match unsafe { bytes_like_slice(to_ptr) } {
-            Some(slice) => slice,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, to_obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+        let to_bytes = match bytes_like_arg_or_type_error(_py, to_ptr, || {
+            format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(_py, to_obj)
+            )
+        }) {
+            Ok(slice) => slice,
+            Err(bits) => return bits,
         };
         if from_bytes.len() != to_bytes.len() {
             return raise_exception::<_>(
@@ -2156,15 +2187,14 @@ pub extern "C" fn molt_bytearray_replace(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 let repl_ptr = match replacement.as_ptr() {
                     Some(ptr) => ptr,
@@ -2176,15 +2206,14 @@ pub extern "C" fn molt_bytearray_replace(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let repl_bytes = match bytes_like_slice(repl_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, replacement)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let repl_bytes = match bytes_like_arg_or_type_error(_py, repl_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, replacement)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 let out = if count < 0 {
                     match replace_bytes_impl(hay_bytes, needle_bytes, repl_bytes) {

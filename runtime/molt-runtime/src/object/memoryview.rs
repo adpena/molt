@@ -762,15 +762,27 @@ pub(crate) unsafe fn memoryview_write_scalar(
     }
 }
 
-pub(crate) unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BytesLikeSliceError {
+    NotBytesLike,
+    ReleasedMemoryView,
+}
+
+pub(crate) unsafe fn bytes_like_slice_checked(
+    ptr: *mut u8,
+) -> Result<&'static [u8], BytesLikeSliceError> {
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_MEMORYVIEW {
             if memoryview_released(ptr) {
-                return None;
+                return Err(BytesLikeSliceError::ReleasedMemoryView);
             }
-            return memoryview_bytes_slice(ptr);
+            return memoryview_bytes_slice(ptr).ok_or(BytesLikeSliceError::NotBytesLike);
         }
-        bytes_like_slice_raw(ptr)
+        bytes_like_slice_raw(ptr).ok_or(BytesLikeSliceError::NotBytesLike)
     }
+}
+
+pub(crate) unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
+    unsafe { bytes_like_slice_checked(ptr).ok() }
 }
