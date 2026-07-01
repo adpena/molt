@@ -18,6 +18,44 @@ except ModuleNotFoundError:  # pragma: no cover - direct import from tools/
     import harness_memory_guard  # type: ignore
 
 
+def _bounded_protocol_text(value: str, *, limit: int = 512) -> str:
+    text = value.rstrip("\r\n")
+    if len(text) <= limit:
+        return text
+    return f"... <truncated to last {limit} chars>{text[-limit:]}"
+
+
+class BatchCompileProtocolError(RuntimeError):
+    """Raised when the line protocol can no longer be correlated safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected_id: object | None = None,
+        actual_id: object | None = None,
+        op: str | None = None,
+        raw_response: str | None = None,
+    ) -> None:
+        self.expected_id = expected_id
+        self.actual_id = actual_id
+        self.op = op
+        self.raw_response = raw_response
+        parts = [message]
+        context: list[str] = []
+        if expected_id is not None:
+            context.append(f"expected id {expected_id!r}")
+        if actual_id is not None:
+            context.append(f"got id {actual_id!r}")
+        if op is not None:
+            context.append(f"op {op!r}")
+        if context:
+            parts.append("; ".join(context))
+        if raw_response is not None:
+            parts.append(f"raw response: {_bounded_protocol_text(raw_response)}")
+        super().__init__(": ".join(parts))
+
+
 class BatchCompileServerClient:
     """Line-delimited JSON client for `molt.cli internal-batch-build-server`."""
 
@@ -80,6 +118,7 @@ class BatchCompileServerClient:
                 self._guard_sentinel.__exit__(*sys.exc_info())
             raise
         self._next_id = 1
+        self._poisoned = False
         self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
         self._response_reader = threading.Thread(
             target=self._stdout_reader_loop,
@@ -136,6 +175,10 @@ class BatchCompileServerClient:
         params: dict[str, object] | None = None,
         timeout: float,
     ) -> dict[str, object]:
+        if self._poisoned:
+            raise RuntimeError(
+                "batch compile server protocol state is unsynchronized; restart required"
+            )
         if self._proc.poll() is not None:
             raise RuntimeError("batch compile server process is not running")
         if self._proc.stdin is None:
@@ -151,15 +194,38 @@ class BatchCompileServerClient:
             self._proc.stdin.flush()
         except OSError as exc:
             raise RuntimeError(f"failed to write batch compile request: {exc}") from exc
-        raw = self._readline(timeout)
+        try:
+            raw = self._readline(timeout)
+        except (RuntimeError, TimeoutError):
+            self._poisoned = True
+            raise
         try:
             response = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"invalid batch compile response JSON: {exc}") from exc
+            self._poisoned = True
+            raise BatchCompileProtocolError(
+                f"invalid batch compile response JSON: {exc}",
+                expected_id=req_id,
+                op=op,
+                raw_response=raw,
+            ) from exc
         if not isinstance(response, dict):
-            raise RuntimeError("batch compile response must be an object")
+            self._poisoned = True
+            raise BatchCompileProtocolError(
+                "batch compile response must be an object",
+                expected_id=req_id,
+                op=op,
+                raw_response=raw,
+            )
         if response.get("id") != req_id:
-            raise RuntimeError("batch compile response id mismatch")
+            self._poisoned = True
+            raise BatchCompileProtocolError(
+                "batch compile response id mismatch",
+                expected_id=req_id,
+                actual_id=response.get("id"),
+                op=op,
+                raw_response=raw,
+            )
         return response
 
     def force_close(self) -> None:
@@ -180,7 +246,7 @@ class BatchCompileServerClient:
 
     def close(self, *, force: bool = False, timeout: float = 60.0) -> None:
         try:
-            if not force and self._proc.poll() is None:
+            if not force and not self._poisoned and self._proc.poll() is None:
                 with contextlib.suppress(Exception):
                     self.request("shutdown", timeout=timeout)
             self.force_close()
