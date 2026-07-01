@@ -621,11 +621,12 @@ pub(crate) use crate::object::layout::{
     zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
-    MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, TypedStridedStorage, bytes_like_slice,
-    bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
-    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
-    memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar, memoryview_shape_product,
-    memoryview_write_scalar,
+    MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR, TypedStridedStorage,
+    TypedStridedStorageError, bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice,
+    memoryview_collect_bytes, memoryview_format_from_bits, memoryview_format_from_str,
+    memoryview_is_c_contiguous_view, memoryview_nbytes, memoryview_nbytes_big,
+    memoryview_read_scalar, memoryview_shape_product, memoryview_write_scalar,
+    raise_released_memoryview,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::object::memoryview::{memoryview_bytes_slice_mut, memoryview_write_bytes};
@@ -688,11 +689,12 @@ pub(crate) use crate::object::{
     dataclass_fields_mut, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
     file_handle_ptr, header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
     instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
-    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
-    memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
-    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_class_bits,
-    object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size, object_set_class_bits,
-    object_type_id, pending_bits_i64, ptr_from_bits, string_bytes, string_len,
+    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_mark_released,
+    memoryview_ndim, memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
+    memoryview_released, memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits,
+    object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size,
+    object_set_class_bits, object_type_id, pending_bits_i64, ptr_from_bits, string_bytes,
+    string_len,
 };
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,

@@ -6,15 +6,28 @@ use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
     TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bigint_bits, bytes_data, bytes_len,
     index_bigint_from_obj, is_truthy, memoryview_format_bits, memoryview_itemsize, memoryview_len,
-    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_shape,
-    memoryview_stride, memoryview_strides, obj_from_bits, object_type_id, string_bytes, string_len,
-    string_obj_to_owned, to_f64,
+    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_released,
+    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_type_id,
+    raise_exception, string_bytes, string_len, string_obj_to_owned, to_f64,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
 pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
 pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
+pub(crate) const RELEASED_MEMORYVIEW_ERROR: &str =
+    "operation forbidden on released memoryview object";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypedStridedStorageError {
+    NotBuffer,
+    ReleasedMemoryView,
+    InvalidDescriptor,
+}
+
+pub(crate) fn raise_released_memoryview<T: crate::ExceptionSentinel>(_py: &PyToken<'_>) -> T {
+    raise_exception(_py, "ValueError", RELEASED_MEMORYVIEW_ERROR)
+}
 
 fn default_buffer_format() -> [u8; MOLT_BUFFER_FORMAT_CAP] {
     let mut format = [0; MOLT_BUFFER_FORMAT_CAP];
@@ -130,45 +143,59 @@ impl TypedStridedStorage {
         self
     }
 
-    pub(crate) unsafe fn from_object_bits(obj_bits: u64) -> Option<Self> {
+    pub(crate) unsafe fn from_object_bits(obj_bits: u64) -> Result<Self, TypedStridedStorageError> {
         unsafe {
             let obj = obj_from_bits(obj_bits);
-            let ptr = obj.as_ptr()?;
+            let ptr = obj.as_ptr().ok_or(TypedStridedStorageError::NotBuffer)?;
             match object_type_id(ptr) {
                 TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => Self::from_bytes_like_ptr(obj_bits, ptr),
                 TYPE_ID_MEMORYVIEW => Self::from_memoryview_ptr(ptr),
-                _ => None,
+                _ => Err(TypedStridedStorageError::NotBuffer),
             }
         }
     }
 
-    unsafe fn from_bytes_like_ptr(obj_bits: u64, ptr: *mut u8) -> Option<Self> {
+    unsafe fn from_bytes_like_ptr(
+        obj_bits: u64,
+        ptr: *mut u8,
+    ) -> Result<Self, TypedStridedStorageError> {
         unsafe {
             let type_id = object_type_id(ptr);
             let data = bytes_data(ptr) as *mut u8;
             let len = bytes_len(ptr);
             let readonly = type_id == TYPE_ID_BYTES;
             Self::one_dim(data, readonly, len, 1, 1, 0, obj_bits, 0)
+                .ok_or(TypedStridedStorageError::InvalidDescriptor)
         }
     }
 
-    unsafe fn from_memoryview_ptr(ptr: *mut u8) -> Option<Self> {
+    unsafe fn from_memoryview_ptr(ptr: *mut u8) -> Result<Self, TypedStridedStorageError> {
         unsafe {
+            if memoryview_released(ptr) {
+                return Err(TypedStridedStorageError::ReleasedMemoryView);
+            }
             let base_bits = memoryview_owner_bits(ptr);
             let base = obj_from_bits(base_bits);
-            let base_ptr = base.as_ptr()?;
-            let base_slice = bytes_like_slice_raw(base_ptr)?;
+            let base_ptr = base
+                .as_ptr()
+                .ok_or(TypedStridedStorageError::InvalidDescriptor)?;
+            let base_slice = bytes_like_slice_raw(base_ptr)
+                .ok_or(TypedStridedStorageError::InvalidDescriptor)?;
             let offset = memoryview_offset(ptr);
             if offset < 0 {
-                return None;
+                return Err(TypedStridedStorageError::InvalidDescriptor);
             }
             let offset_usize = offset as usize;
             if offset_usize > base_slice.len() {
-                return None;
+                return Err(TypedStridedStorageError::InvalidDescriptor);
             }
             let data = base_slice.as_ptr().add(offset_usize) as *mut u8;
-            let shape = memoryview_shape(ptr)?.to_vec();
-            let strides = memoryview_strides(ptr)?.to_vec();
+            let shape = memoryview_shape(ptr)
+                .ok_or(TypedStridedStorageError::InvalidDescriptor)?
+                .to_vec();
+            let strides = memoryview_strides(ptr)
+                .ok_or(TypedStridedStorageError::InvalidDescriptor)?
+                .to_vec();
             Self::new(
                 data,
                 memoryview_readonly(ptr),
@@ -179,6 +206,7 @@ impl TypedStridedStorage {
                 shape,
                 strides,
             )
+            .ok_or(TypedStridedStorageError::InvalidDescriptor)
         }
     }
 }
@@ -268,6 +296,9 @@ fn memoryview_is_c_contiguous(shape: &[isize], strides: &[isize], itemsize: usiz
 
 pub(crate) unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
     unsafe {
+        if memoryview_released(ptr) {
+            return false;
+        }
         let shape = memoryview_shape(ptr).unwrap_or(&[]);
         let strides = memoryview_strides(ptr).unwrap_or(&[]);
         memoryview_is_c_contiguous(shape, strides, memoryview_itemsize(ptr))
@@ -276,6 +307,9 @@ pub(crate) unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
 
 pub(crate) unsafe fn memoryview_nbytes(ptr: *mut u8) -> usize {
     unsafe {
+        if memoryview_released(ptr) {
+            return 0;
+        }
         let shape = memoryview_shape(ptr).unwrap_or(&[]);
         let itemsize = memoryview_itemsize(ptr);
         if let Some(total) = memoryview_nbytes_big(shape, itemsize)
@@ -314,6 +348,9 @@ unsafe fn bytes_like_slice_raw_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
 
 pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     unsafe {
+        if memoryview_released(ptr) {
+            return None;
+        }
         if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
             return None;
         }
@@ -337,6 +374,9 @@ pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
     unsafe {
+        if memoryview_released(ptr) {
+            return None;
+        }
         if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
             return None;
         }
@@ -360,6 +400,9 @@ pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result<usize, String> {
     unsafe {
+        if memoryview_released(ptr) {
+            return Err(RELEASED_MEMORYVIEW_ERROR.to_string());
+        }
         if memoryview_readonly(ptr) {
             return Err("memoryview is readonly".to_string());
         }
@@ -446,6 +489,9 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
 
 pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
     unsafe {
+        if memoryview_released(ptr) {
+            return None;
+        }
         let owner_bits = memoryview_owner_bits(ptr);
         let owner = obj_from_bits(owner_bits);
         let owner_ptr = owner.as_ptr()?;
@@ -720,6 +766,9 @@ pub(crate) unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_MEMORYVIEW {
+            if memoryview_released(ptr) {
+                return None;
+            }
             return memoryview_bytes_slice(ptr);
         }
         bytes_like_slice_raw(ptr)

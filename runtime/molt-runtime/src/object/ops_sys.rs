@@ -1023,6 +1023,9 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                     return MoltObject::from_int(bytes_len(ptr) as i64).bits();
                 }
                 if type_id == TYPE_ID_MEMORYVIEW {
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     if memoryview_ndim(ptr) == 0 {
                         return raise_exception::<_>(
                             _py,

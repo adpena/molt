@@ -1018,6 +1018,9 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return format!("<buffer2d {}x{}>", buf.rows, buf.cols);
             }
             if type_id == TYPE_ID_MEMORYVIEW {
+                if memoryview_released(ptr) {
+                    return "<released memoryview>".to_string();
+                }
                 let len = memoryview_len(ptr);
                 let stride = memoryview_stride(ptr);
                 let readonly = memoryview_readonly(ptr);
