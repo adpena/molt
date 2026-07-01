@@ -67,6 +67,7 @@ UNSUPPORTED_DIRECT_CALL_RE = re.compile(
     r"(?:direct call|direct-call).*?"
     r"(?P<symbol>[A-Za-z_][A-Za-z0-9_.]*)"
 )
+DIAGNOSTIC_JSON_RE = re.compile(r"diagnostic_json=(?P<path>\S+)")
 
 
 def _utc_now() -> str:
@@ -849,6 +850,7 @@ def _diagnostic(
     evidence: str,
     next_action: str,
     scopes: Sequence[str] = (),
+    artifacts: Sequence[str] = (),
 ) -> dict[str, object]:
     return {
         "signal_id": signal_id,
@@ -857,6 +859,7 @@ def _diagnostic(
         "evidence": _shorten(evidence, 320),
         "next_action": next_action,
         "scopes": list(scopes),
+        "artifacts": list(artifacts),
     }
 
 
@@ -899,6 +902,9 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     if match is not None:
         module = match.group("module")
         detail = match.group("detail").strip(" ;")
+        artifacts = tuple(
+            match.group("path") for match in DIAGNOSTIC_JSON_RE.finditer(log_tail)
+        )
         if detail:
             next_action = (
                 "Fix the pending Python/C-API error surfaced by module exec, then "
@@ -910,6 +916,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 "changes. Inspect the extension's Py_mod_exec body and route the "
                 "missing C-API/ABI primitive through shared runtime authority."
             )
+        if artifacts:
+            next_action += " Start with the diagnostic_json artifact."
         diagnostics.append(
             _diagnostic(
                 signal_id="static-pymodexec-nonzero",
@@ -925,6 +933,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "runtime/molt-runtime/src/cpython_abi_hooks.rs",
                     "src/molt/cli/external_native.py",
                 ),
+                artifacts=artifacts,
             )
         )
 
@@ -1013,9 +1022,14 @@ def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | No
 def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]]) -> str:
     if diagnostics:
         first = diagnostics[0]
+        artifacts = first.get("artifacts", [])
+        artifact_text = ""
+        if isinstance(artifacts, list) and artifacts:
+            artifact_text = " artifacts: " + ", ".join(str(path) for path in artifacts)
         return (
             f"diagnosis: {row['run_id']} {row['status']} rc={row['returncode']} "
-            f"{first['signal_id']}: {first['summary']} next: {first['next_action']}"
+            f"{first['signal_id']}: {first['summary']}{artifact_text} "
+            f"next: {first['next_action']}"
         )
     return (
         f"diagnosis: {row['run_id']} {row['status']} rc={row['returncode']} "
@@ -2327,6 +2341,9 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
             print(f"- {item['signal_id']} [{item['severity']}] {item['summary']}")
             if item["evidence"]:
                 print(f"  evidence: {item['evidence']}")
+            artifacts = item.get("artifacts", [])
+            if isinstance(artifacts, list) and artifacts:
+                print(f"  artifacts: {', '.join(str(path) for path in artifacts)}")
             print(f"  next: {item['next_action']}")
     if args.append_note:
         note_id = _insert_note(
