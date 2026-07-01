@@ -9,6 +9,7 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "chan_new",
     "cast",
     "widen",
+    "store_var",
     "copy_var",
     "aiter",
     "gen_send",
@@ -141,7 +142,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // preserved-op guard remains a true fail-loud backstop rather than a
             // backend skew. No runtime call, ownership transfer, or new value is
             // introduced here.
-            "cast" | "widen" | "copy_var" => {
+            "cast" | "widen" | "store_var" | "copy_var" => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
