@@ -7,7 +7,12 @@ from typing import Collection
 
 from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.compiler_metadata import _compiler_root
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, _coerce_bool
+from molt.cli.config_resolution import (
+    AUTO_STDLIB_PROFILE,
+    DEFAULT_STDLIB_PROFILE,
+    RUNTIME_STDLIB_PROFILE_TIERS,
+    _coerce_bool,
+)
 
 
 @functools.lru_cache(maxsize=32)
@@ -114,6 +119,16 @@ _PROFILE_CARGO_FEATURE: dict[str, str] = {
 }
 
 
+def runtime_cargo_feature_for_profile(profile: str) -> str:
+    cargo_feature = _PROFILE_CARGO_FEATURE.get(profile)
+    if cargo_feature is None:
+        raise ValueError(
+            "runtime stdlib profile must be one of "
+            f"{list(RUNTIME_STDLIB_PROFILE_TIERS)}; got {profile!r}"
+        )
+    return cargo_feature
+
+
 @functools.lru_cache(maxsize=1)
 def _runtime_cargo_feature_graph() -> dict[str, tuple[str, ...]]:
     """The ``[features]`` table of ``runtime/molt-runtime/Cargo.toml``.
@@ -182,13 +197,10 @@ def profile_link_features(
     are subtracted for ``wasm32`` targets so the derived set matches the features
     the WASM staticlib actually links.
     """
-    effective_profile = profile or "micro"
-    cargo_feature = _PROFILE_CARGO_FEATURE.get(effective_profile)
-    if cargo_feature is None:
-        raise ValueError(
-            "stdlib_profile must be one of "
-            f"{sorted(_PROFILE_CARGO_FEATURE)}; got {profile!r}"
-        )
+    effective_profile = profile or DEFAULT_STDLIB_PROFILE
+    if effective_profile == AUTO_STDLIB_PROFILE:
+        effective_profile = "full"
+    cargo_feature = runtime_cargo_feature_for_profile(effective_profile)
     reached = _expand_cargo_feature(cargo_feature)
     if target_triple is not None and target_triple.startswith("wasm32"):
         reached = frozenset(
@@ -197,6 +209,31 @@ def profile_link_features(
             if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
         )
     return reached
+
+
+def runtime_stdlib_profile_for_required_features(
+    stdlib_profile: str | None,
+    required_link_features: Collection[str],
+    *,
+    target_triple: str | None,
+) -> str:
+    """Resolve user stdlib intent to one concrete runtime artifact tier.
+
+    ``auto`` selects the smallest Cargo ladder tier whose link-affecting feature
+    ceiling contains every reached required feature. Explicit tiers remain
+    concrete artifact requests; the reachability ceiling check has already
+    rejected programs that exceed them.
+    """
+
+    effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
+    if effective_profile != AUTO_STDLIB_PROFILE:
+        runtime_cargo_feature_for_profile(effective_profile)
+        return effective_profile
+    required = frozenset(required_link_features)
+    for tier in RUNTIME_STDLIB_PROFILE_TIERS:
+        if required.issubset(profile_link_features(tier, target_triple=target_triple)):
+            return tier
+    return "full"
 
 
 _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
@@ -242,6 +279,11 @@ def _wasm_runtime_feature_plan(
     required_link_features: Collection[str] | None = None,
 ) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
     effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
+    if effective_profile == AUTO_STDLIB_PROFILE:
+        raise ValueError(
+            "runtime stdlib profile must be concrete before WASM feature planning"
+        )
+    runtime_cargo_feature_for_profile(effective_profile)
     required_features = sorted(required_link_features or ())
     del builtin_features
     profile_features = [

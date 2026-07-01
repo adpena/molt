@@ -4,7 +4,10 @@ import functools
 import os
 from pathlib import Path
 
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.config_resolution import (
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
+    RUNTIME_STDLIB_PROFILE_TIERS,
+)
 from molt.dx import (
     development_artifact_env,
     development_artifacts_requested,
@@ -12,15 +15,15 @@ from molt.dx import (
 )
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
-    "micro": "stdlib_micro",
-    "full": "stdlib_full",
+    profile: f"stdlib_{profile}" for profile in RUNTIME_STDLIB_PROFILE_TIERS
 }
 
 
 def _normalize_runtime_stdlib_profile(stdlib_profile: str | None) -> str:
-    profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
+    profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     if profile not in _RUNTIME_STDLIB_PROFILE_ALIASES:
-        raise ValueError("stdlib_profile must be 'micro' or 'full'")
+        choices = "', '".join(RUNTIME_STDLIB_PROFILE_TIERS)
+        raise ValueError(f"runtime stdlib_profile must be one of '{choices}'")
     return profile
 
 
@@ -56,8 +59,10 @@ def _runtime_cargo_scratch_lib_path(
 
 def _runtime_lib_archive_names(target_triple: str | None = None) -> tuple[str, ...]:
     names = [
-        _runtime_lib_archive_name("micro", target_triple),
-        _runtime_lib_archive_name("full", target_triple),
+        *(
+            _runtime_lib_archive_name(profile, target_triple)
+            for profile in RUNTIME_STDLIB_PROFILE_TIERS
+        ),
         _runtime_cargo_scratch_lib_name(target_triple),
     ]
     return tuple(dict.fromkeys(names))
@@ -168,7 +173,7 @@ def _runtime_lib_path(
     project_root: Path,
     cargo_profile: str,
     target_triple: str | None,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = None,
 ) -> Path:
     return _runtime_lib_path_cached(
         os.fspath(project_root),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
 from molt.cli.build_results import _emit_native_link_result, _emit_non_native_build_result
@@ -47,7 +47,7 @@ def _emit_backend_pipeline_outputs(
     snapshot: bool = False,
     profile: BuildProfile = "dev",
     json_output: bool = False,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
 ) -> int:
     diagnostics_payload, diagnostics_path = build_diagnostics_payload()
     runtime_lib = prepared_backend_runtime_context.runtime_lib
