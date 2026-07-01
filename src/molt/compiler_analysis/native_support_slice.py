@@ -65,7 +65,7 @@ def used_names(nodes: Sequence[ast.AST]) -> set[str]:
     return names
 
 
-def _support_runtime_node(node: ast.AST) -> ast.AST:
+def _support_runtime_node(node: ast.stmt) -> ast.stmt:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         stripped = copy.copy(node)
         stripped.decorator_list = []
