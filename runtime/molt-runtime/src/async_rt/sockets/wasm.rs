@@ -566,6 +566,9 @@ pub extern "C" fn molt_socket_recv_into(
         if type_id == TYPE_ID_BYTEARRAY {
             target_len = unsafe { bytearray_len(buffer_ptr) };
         } else if type_id == TYPE_ID_MEMORYVIEW {
+            if unsafe { memoryview_released(buffer_ptr) } {
+                return raise_released_memoryview(_py);
+            }
             if unsafe { memoryview_readonly(buffer_ptr) } {
                 return raise_exception::<_>(
                     _py,
@@ -967,6 +970,9 @@ pub extern "C" fn molt_socket_recvfrom_into(
         if type_id == TYPE_ID_BYTEARRAY {
             target_len = unsafe { bytearray_len(buffer_ptr) };
         } else if type_id == TYPE_ID_MEMORYVIEW {
+            if unsafe { memoryview_released(buffer_ptr) } {
+                return raise_released_memoryview(_py);
+            }
             if unsafe { memoryview_readonly(buffer_ptr) } {
                 return raise_exception::<_>(
                     _py,

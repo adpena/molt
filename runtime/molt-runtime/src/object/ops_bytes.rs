@@ -36,6 +36,10 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
                 );
             }
             if type_id == TYPE_ID_MEMORYVIEW {
+                if memoryview_released(ptr) {
+                    let _ = raise_released_memoryview::<u64>(_py);
+                    return None;
+                }
                 if let Some(slice) = memoryview_bytes_slice(ptr) {
                     return Some(slice.to_vec());
                 }
@@ -2360,6 +2364,9 @@ fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64
                     return MoltObject::none().bits();
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
+            }
+            if type_id == TYPE_ID_MEMORYVIEW && memoryview_released(ptr) {
+                return raise_released_memoryview(_py);
             }
             if let Some(slice) = bytes_like_slice(ptr) {
                 let out_ptr = match kind {

@@ -374,6 +374,9 @@ pub(super) fn collect_recvmsg_into_targets(
                 continue;
             }
             if type_id == TYPE_ID_MEMORYVIEW {
+                if memoryview_released(ptr) {
+                    return Err(raise_released_memoryview(_py));
+                }
                 if memoryview_readonly(ptr) {
                     return Err(raise_exception::<u64>(
                         _py,
@@ -415,6 +418,9 @@ pub(super) fn write_recvmsg_into_targets(
         }
         let chunk = &data[offset..offset + count];
         if target.is_memoryview {
+            if unsafe { memoryview_released(target.ptr) } {
+                return Err(raise_released_memoryview(_py));
+            }
             if let Some(slice) = unsafe { memoryview_bytes_slice_mut(target.ptr) } {
                 let n = chunk.len().min(slice.len());
                 slice[..n].copy_from_slice(&chunk[..n]);
