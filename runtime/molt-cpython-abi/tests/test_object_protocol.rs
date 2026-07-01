@@ -5,7 +5,8 @@
 
 use molt_cpython_abi::abi_types::Py_NotImplementedSentinel;
 use molt_cpython_abi::abi_types::{
-    METH_NOARGS, METH_O, Py_OptimizeFlag, PyMethodDef, PyMutex, PyObject,
+    METH_NOARGS, METH_O, Py_OptimizeFlag, Py_buffer, PyBUF_FORMAT, PyBUF_STRIDES, PyMethodDef,
+    PyMutex, PyObject,
 };
 use std::os::raw::c_char;
 use std::ptr;
@@ -75,6 +76,58 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
     let same_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(view) };
     assert_eq!(same_view, view);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(same_view) };
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+
+    let empty_view =
+        unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromMemory(ptr::null_mut(), 0, 0) };
+    assert!(!empty_view.is_null());
+    let empty_buffer =
+        unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(empty_view) };
+    assert!(!empty_buffer.is_null());
+    assert_eq!(unsafe { (*empty_buffer).len }, 0);
+    assert!(unsafe { (*empty_buffer).buf }.is_null());
+    assert!(unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BASE(empty_view) }.is_null());
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(empty_view) };
+}
+
+#[test]
+fn test_memoryview_from_buffer_copies_descriptor_without_sharing_release() {
+    init();
+    let mut bytes = [1_u8, 2, 3, 4];
+    let mut info: Py_buffer = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+            &mut info,
+            ptr::null_mut(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len() as isize,
+            1,
+            PyBUF_FORMAT | PyBUF_STRIDES,
+        )
+    };
+    assert_eq!(rc, 0);
+    let original_internal = info.internal;
+    assert!(!original_internal.is_null());
+
+    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
+    assert!(!view.is_null());
+    unsafe { molt_cpython_abi::api::buffer::PyBuffer_Release(&mut info) };
+    assert!(info.internal.is_null());
+
+    assert!(unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BASE(view) }.is_null());
+    let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
+    assert!(!buffer.is_null());
+    assert_ne!(unsafe { (*buffer).internal }, original_internal);
+    assert_eq!(unsafe { (*buffer).buf }, bytes.as_mut_ptr().cast());
+    assert_eq!(unsafe { (*buffer).len }, bytes.len() as isize);
+    assert_eq!(unsafe { (*buffer).itemsize }, 1);
+    assert_eq!(unsafe { (*buffer).readonly }, 1);
+    assert_eq!(unsafe { (*buffer).ndim }, 1);
+    unsafe {
+        assert_eq!(*(*buffer).format as u8, b'B');
+        assert_eq!(*(*buffer).shape, bytes.len() as isize);
+        assert_eq!(*(*buffer).strides, 1);
+    }
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
 }
 
