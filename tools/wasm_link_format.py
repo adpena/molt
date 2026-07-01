@@ -934,6 +934,19 @@ def _declare_ref_func_elements(data: bytes) -> bytes | None:
     declared = _collect_element_declared_funcs(data)
     referenced = _scan_code_ref_funcs(data)
     undeclared = sorted(referenced - declared)
+    return _declare_ref_func_elements_for_undeclared(data, undeclared)
+
+
+def _declare_ref_func_elements_from_facts(
+    data: bytes, facts: WasmModuleFacts
+) -> bytes | None:
+    undeclared = sorted(set(facts.code_ref_funcs) - set(facts.element_declared_funcs))
+    return _declare_ref_func_elements_for_undeclared(data, undeclared)
+
+
+def _declare_ref_func_elements_for_undeclared(
+    data: bytes, undeclared: list[int]
+) -> bytes | None:
     if not undeclared:
         return None
 
