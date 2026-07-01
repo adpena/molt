@@ -982,6 +982,9 @@ class _ExternalPackageNativeArtifactPlan:
             names = set(self._module_prefixes(artifact.package))
             names.update(self._module_prefixes(artifact.module))
             names.update(self._support_init_module_names(artifact))
+            support_source_modules = self._support_python_module_names(artifact)
+            for module_name in support_source_modules:
+                names.update(self._module_prefixes(module_name))
             for exported_name in artifact.python_exports:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
