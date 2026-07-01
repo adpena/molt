@@ -565,7 +565,8 @@ def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None
             captured["cmd"] = cmd
             captured.update(kwargs)
 
-        def close(self, timeout: float = 5.0) -> None:
+        def close(self, *, force: bool = False, timeout: float = 5.0) -> None:
+            captured["force"] = force
             captured["closed"] = timeout
 
     monkeypatch.setattr(bench_tool, "BatchCompileServerClient", FakeClient)
@@ -580,6 +581,7 @@ def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None
     assert "process_group_kwargs" not in captured
     assert "force_close" not in captured
     assert captured["closed"] == 5.0
+    assert captured["force"] is False
 
 
 def test_bench_defaults_baseline_to_canonical_results_path() -> None:
