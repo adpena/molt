@@ -138,7 +138,20 @@ Optional:
   optional `callable_exports` entries that name direct native call bindings
   before backend dispatch. Each callable export declares `module`, `name`,
   `binding` (`module_attr` or `direct_symbol`), `abi`, optional `effects`,
-  optional `deterministic`, and a required native `symbol` for `direct_symbol`.
+  optional `deterministic`, optional `provider_module` for `module_attr`, and a
+  required native `symbol` for `direct_symbol`. A `module_attr` export without
+  `provider_module` is backed by the extension module itself and must name a
+  callable present in the admitted extension source `PyMethodDef` table. A
+  `provider_module` export must point at checksummed upstream `.py` support
+  source declared in `support_files`; support-source imports are scanned as a
+  bounded reachable closure instead of admitting the whole external package
+  tree. If reachable support source imports a child module under the same
+  source-recompiled native package, that child must be owned by compiled source
+  custody or a declared native artifact; package visibility alone cannot create
+  synthetic native package modules. Missing-child diagnostics search both the
+  admitted package root and sealed sidecar provenance such as `sources` and
+  `build.include_dirs` so staged artifacts can still point at the exact
+  upstream `.pyx`/C/C++ source that needs target-specific source-plan custody.
   The `abi` token must be one of the canonical native callable ABI contracts:
   `molt.object_call_v1` for positional boxed object-call dispatch,
   `molt.object_callargs_v1` for the canonical CallArgs-builder handle used by
@@ -236,6 +249,8 @@ Optional:
   WASM native-source packages without staged wasm static-link artifacts, rejects
   WASM source-recompiled packages whose static-link artifacts do not publish
   `python_exports` or `callable_exports`, rejects
+  reachable provider support-source imports whose native package child modules
+  lack source or artifact custody, rejects
   reachable external package extensions with missing or mismatched sidecar
   metadata before backend dispatch, uses sidecar `python_exports` to bind
   package-level imports to native artifacts, threads sidecar

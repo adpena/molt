@@ -409,6 +409,10 @@ pub(super) fn emit_dynamic_call_op(
                         out,
                         native_import,
                     );
+                } else if native_import.abi_contract == NativeCallableAbi::PyinitModuleV1 {
+                    emit_call(func, reloc_enabled, native_import.function_index);
+                    func.instruction(&Instruction::I64ExtendI32U);
+                    func.instruction(&Instruction::LocalSet(out));
                 } else {
                     for arg_name in args_names {
                         let arg = locals[arg_name];

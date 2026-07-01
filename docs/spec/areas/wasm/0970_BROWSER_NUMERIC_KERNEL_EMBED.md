@@ -155,11 +155,12 @@ typed storage, SIMD, native codegen, or WebGPU/GPU kernels.
 
 Current Pact recovery evidence reinforces that boundary. The old first failure,
 `scipy.ndimage.distance_transform_edt` becoming an unsupported fake Python
-direct call, is retired for sidecar-declared `direct_symbol` native callable
-exports: the witness `scipy.ndimage` operation closure now lowers to executable
-`invoke_ffi` ABI metadata, including keyword filters through
-`molt.object_callargs_v1`. NumPy/SciPy source roots without package admission
-still fail closed. Package admission against the local Python 3.14
+direct call, is retired for sidecar-declared native callable exports, but the
+stale `_nd_image` sidecar no longer counts as witness callable custody:
+high-level `scipy.ndimage` wrapper functions must be backed by a real
+extension `PyMethodDef` method or an explicit `provider_module` whose upstream
+`.py` support source is checksummed in `support_files`. NumPy/SciPy source
+roots without package admission still fail closed. Package admission against the local Python 3.14
 site-packages root now fails closed before graph expansion because the
 installed NumPy/SciPy roots contain native markers but no wasm32 `static_link`
 `libmolt_source` artifact manifests with package symbol custody; an earlier

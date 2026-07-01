@@ -1065,6 +1065,7 @@ def test_extension_build_emits_public_exports_in_manifest(
         project_root,
         extension_extra_lines=[
             'python_exports = ["demoext.ndimage.distance_transform_edt"]',
+            'support_files = ["demoext/ndimage/_morphology.py"]',
             "",
             "[[tool.molt.extension.callable_exports]]",
             'module = "demoext.ndimage"',
@@ -1075,6 +1076,12 @@ def test_extension_build_emits_public_exports_in_manifest(
             'effects = ["read", "write"]',
             "deterministic = true",
         ],
+    )
+    support_source = project_root / "demoext" / "ndimage" / "_morphology.py"
+    support_source.parent.mkdir(parents=True)
+    support_source.write_text(
+        "def distance_transform_edt(mask):\n    return mask\n",
+        encoding="utf-8",
     )
     source_path = project_root / "src" / "demoext.c"
     source_path.write_text(
@@ -1110,6 +1117,13 @@ def test_extension_build_emits_public_exports_in_manifest(
     manifest_path = out_dir / "extension_manifest.json"
     manifest = json.loads(manifest_path.read_text())
     assert manifest["python_exports"] == ["demoext.ndimage.distance_transform_edt"]
+    expected_support_files = [
+        {
+            "path": "demoext/ndimage/_morphology.py",
+            "sha256": hashlib.sha256(support_source.read_bytes()).hexdigest(),
+        }
+    ]
+    assert manifest["support_files"] == expected_support_files
     expected_callable_exports = [
         {
             "module": "demoext.ndimage",
@@ -1126,7 +1140,9 @@ def test_extension_build_emits_public_exports_in_manifest(
     wheel_path = next(out_dir.glob("*.whl"))
     with zipfile.ZipFile(wheel_path) as zf:
         embedded = json.loads(zf.read("extension_manifest.json"))
+        assert zf.read("demoext/ndimage/_morphology.py") == support_source.read_bytes()
     assert embedded["python_exports"] == manifest["python_exports"]
+    assert embedded["support_files"] == expected_support_files
     assert embedded["callable_exports"] == expected_callable_exports
 
 
@@ -1493,6 +1509,8 @@ def test_extension_build_export_custody_parser_surface() -> None:
             "numpy._core._multiarray_umath._ARRAY_API",
             "--callable-export-json",
             '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}',
+            "--support-file",
+            "numpy/_core/_multiarray_umath.py",
         ]
     )
     assert args.command == "extension"
@@ -1504,6 +1522,7 @@ def test_extension_build_export_custody_parser_surface() -> None:
     assert args.callable_export_json == [
         '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}'
     ]
+    assert args.support_file == ["numpy/_core/_multiarray_umath.py"]
 
 
 def test_extension_seal_parser_surface() -> None:
@@ -1520,6 +1539,8 @@ def test_extension_seal_parser_surface() -> None:
             "numpy",
             "--callable-export-json",
             '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}',
+            "--support-file",
+            "numpy/_core/_multiarray_umath.py",
             "--json",
         ]
     )
@@ -1531,6 +1552,7 @@ def test_extension_seal_parser_surface() -> None:
     assert args.callable_export_json == [
         '{"module":"numpy._core","name":"probe","binding":"module_attr","abi":"molt.object_callargs_v1"}'
     ]
+    assert args.support_file == ["numpy/_core/_multiarray_umath.py"]
     assert args.json is True
 
 
@@ -1654,6 +1676,58 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
     assert "wrong-cross" not in toolchain.detail
     assert seen_commands
     assert seen_commands[0][:3] == ["/tools/clang-wasm", "-target", "wasm32-wasip1"]
+
+
+def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sysroot = tmp_path / "wasi-sysroot-33.0+m"
+    include_dir = sysroot / "include" / "wasm32-wasip1"
+    include_dir.mkdir(parents=True)
+    (include_dir / "errno.h").write_text("#define EINVAL 28\n")
+    cli_wasm_toolchain._resolve_wasi_sysroot_cached.cache_clear()
+    monkeypatch.setenv("WASI_SYSROOT", str(sysroot))
+    monkeypatch.delenv("MOLT_WASM_CC", raising=False)
+    monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.shutil,
+        "which",
+        lambda tool: {
+            "clang": "/tools/clang",
+            "wasm-ld": "/tools/wasm-ld",
+        }.get(tool),
+    )
+    seen_commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.subprocess,
+        "run",
+        fake_run,
+    )
+
+    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+
+    assert toolchain.ok is True
+    assert toolchain.compiler_kind == "clang"
+    assert toolchain.compiler_cmd == (
+        "/tools/clang",
+        "--sysroot",
+        str(sysroot.resolve(strict=False)),
+    )
+    assert toolchain.wasi_sysroot == sysroot.resolve(strict=False)
+    assert seen_commands
+    assert seen_commands[0][:4] == [
+        "/tools/clang",
+        "--sysroot",
+        str(sysroot.resolve(strict=False)),
+        "-target",
+    ]
 
 
 def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
@@ -2334,6 +2408,254 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     assert errors == []
     assert plan is not None
     assert plan.native_python_export_names() == frozenset({"numpy"})
+    assert plan.native_module_names() >= frozenset(
+        {
+            "numpy",
+            "numpy._core",
+            "numpy._core._multiarray_umath",
+        }
+    )
+
+
+def test_extension_seal_rejects_fake_module_attr_callable_export(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "scipy" / "ndimage"
+    source_dir = artifact_dir / "src"
+    source_dir.mkdir(parents=True)
+    (source_root / "scipy" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    source_path = source_dir / "nd_image.c"
+    source_path.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "static PyObject *native_min_or_max_filter(PyObject *self, PyObject *args) {",
+                "    return PyLong_FromLong(1);",
+                "}",
+                "static PyMethodDef ndimage_methods[] = {",
+                '    {"min_or_max_filter", native_min_or_max_filter, METH_VARARGS, ""},',
+                "    {NULL, NULL, 0, NULL},",
+                "};",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__nd_image")
+    artifact_path = artifact_dir / "_nd_image.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "name": "scipy-ndimage-probe",
+        "version": "0.1.0",
+        "module": "scipy.ndimage._nd_image",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__nd_image",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "scipy/ndimage/_nd_image.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "sources": [str(source_path)],
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__nd_image",
+            "init_symbol_owner": "0_nd_image.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "object": "0_nd_image.o",
+                    "source_sha256": hashlib.sha256(
+                        source_path.read_bytes()
+                    ).hexdigest(),
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__nd_image"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(tmp_path / "sealed"),
+        python_export=["scipy.ndimage.distance_transform_edt"],
+        callable_export_json=[
+            json.dumps(
+                {
+                    "module": "scipy.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "module_attr",
+                    "abi": "molt.object_call_v1",
+                }
+            )
+        ],
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "not declared by a PyMethodDef entry" in captured.err
+    assert "scipy.ndimage.distance_transform_edt" in captured.err
+
+
+def test_extension_seal_publishes_provider_module_support_source(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "scipy" / "ndimage"
+    source_dir = artifact_dir / "src"
+    source_dir.mkdir(parents=True)
+    (source_root / "scipy" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    provider_source = artifact_dir / "_morphology.py"
+    provider_source.write_text(
+        "from . import _nd_image\n"
+        "def distance_transform_edt(mask):\n"
+        "    return _nd_image.euclidean_feature_transform(mask)\n",
+        encoding="utf-8",
+    )
+    source_path = source_dir / "nd_image.c"
+    source_path.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "static PyObject *native_euclidean_feature_transform(PyObject *self, PyObject *args) {",
+                "    return PyLong_FromLong(1);",
+                "}",
+                "static PyMethodDef ndimage_methods[] = {",
+                '    {"euclidean_feature_transform", native_euclidean_feature_transform, METH_VARARGS, ""},',
+                "    {NULL, NULL, 0, NULL},",
+                "};",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__nd_image")
+    artifact_path = artifact_dir / "_nd_image.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "name": "scipy-ndimage-probe",
+        "version": "0.1.0",
+        "module": "scipy.ndimage._nd_image",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__nd_image",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "scipy/ndimage/_nd_image.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "sources": [str(source_path)],
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__nd_image",
+            "init_symbol_owner": "0_nd_image.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "object": "0_nd_image.o",
+                    "source_sha256": hashlib.sha256(
+                        source_path.read_bytes()
+                    ).hexdigest(),
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__nd_image"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sealed_root = tmp_path / "sealed"
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(sealed_root),
+        python_export=["scipy.ndimage.distance_transform_edt"],
+        callable_export_json=[
+            json.dumps(
+                {
+                    "module": "scipy.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "module_attr",
+                    "provider_module": "scipy.ndimage._morphology",
+                    "abi": "molt.object_call_v1",
+                }
+            )
+        ],
+        support_file=[str(provider_source)],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["copied_support_files"] == [
+        str(sealed_root / "scipy" / "ndimage" / "_morphology.py")
+    ]
+    sealed_manifest = json.loads(
+        (
+            sealed_root / "scipy" / "ndimage" / "_nd_image.molt.wasm.extension_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert sealed_manifest["support_files"] == [
+        {
+            "path": "scipy/ndimage/_morphology.py",
+            "sha256": hashlib.sha256(provider_source.read_bytes()).hexdigest(),
+        }
+    ]
+    assert sealed_manifest["callable_exports"] == [
+        {
+            "module": "scipy.ndimage",
+            "name": "distance_transform_edt",
+            "binding": "module_attr",
+            "abi": "molt.object_call_v1",
+            "provider_module": "scipy.ndimage._morphology",
+            "effects": [],
+            "deterministic": False,
+        }
+    ]
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(sealed_root,),
+        admitted_packages={"scipy"},
+        required_modules={"scipy.ndimage.distance_transform_edt"},
+    )
+    assert errors == []
+    assert plan is not None
+    assert plan.support_source_module_names() == frozenset(
+        {"scipy.ndimage._morphology"}
+    )
 
 
 def test_extension_audit_requires_static_link_artifact_custody(
@@ -2867,13 +3189,21 @@ def test_numpy_header_arrayobject_cpython_abi_tier_smoke(tmp_path: Path) -> None
                 "        obj, PyArray_DescrFromType(NPY_DOUBLE), 1, 2,",
                 "        NPY_ARRAY_C_CONTIGUOUS, NULL);",
                 "    int ok = PyArray_Check(arr) + PyArray_DescrCheck(descr);",
+                "    PyArray_DTypeMeta *dtype_meta = (PyArray_DTypeMeta *)descr;",
+                "    int dtype_ok = PyObject_TypeCheck(dtype_meta, &PyArrayDTypeMeta_Type);",
+                "    int type_ok = PyType_Check(&PyArray_Type);",
+                "    PyObject *type_ref = Py_NewRef(&PyArray_Type);",
+                "    Py_XSETREF(type_ref, Py_NewRef(Py_TYPE(obj)));",
                 "    if (from_any != NULL) {",
                 "        Py_DECREF(from_any);",
+                "    }",
+                "    if (type_ref != NULL) {",
+                "        Py_DECREF(type_ref);",
                 "    }",
                 "    if (descr != NULL) {",
                 "        PyMem_Free(descr);",
                 "    }",
-                "    return ok + (int)PyArray_SIZE(arr);",
+                "    return ok + dtype_ok + type_ok + (int)PyArray_SIZE(arr);",
                 "}",
                 "",
                 "int main(void) {",

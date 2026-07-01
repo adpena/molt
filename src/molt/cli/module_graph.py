@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
@@ -35,6 +36,7 @@ from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
+from molt.compiler_analysis import native_support_slice as _native_support_slice
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 
 
@@ -42,6 +44,9 @@ STUB_PARENT_MODULES = {"molt"}
 
 
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
+
+
+_NATIVE_SUPPORT_ARTIFACT_SOURCE_SUFFIXES = (".pyx", ".c", ".cc", ".cpp", ".cxx")
 
 
 @dataclass(frozen=True)
@@ -431,6 +436,410 @@ def _modules_with_any_reason(
     )
 
 
+def _native_support_source_admission_policy(
+    native_artifact_plan,
+) -> _ImportAdmissionPolicy:
+    return _ImportAdmissionPolicy(
+        external_roots=native_artifact_plan.package_source_roots(),
+        admitted_external_packages=frozenset(),
+        native_artifact_source_packages=frozenset(
+            artifact.package for artifact in native_artifact_plan.artifacts
+        ),
+        native_artifact_plan=native_artifact_plan,
+    )
+
+
+def _extend_native_support_source_closure(
+    *,
+    module_graph: MutableMapping[str, Path],
+    module_reasons: MutableMapping[str, set[str]],
+    native_artifact_plan,
+    roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    resolver_cache: "_module_resolution._ModuleResolutionCache",
+    target_python: TargetPythonVersion,
+    capability_config_digest: str,
+) -> frozenset[str]:
+    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    if not support_paths_by_module:
+        return frozenset()
+    native_support_function_roots_by_module = (
+        _native_support_function_roots_by_module(native_artifact_plan)
+    )
+    entry_paths = tuple(
+        path
+        for module_name, path in support_paths_by_module.items()
+        if (
+            module_name not in module_graph
+            and module_name in native_support_function_roots_by_module
+        )
+    )
+    if not entry_paths:
+        return frozenset()
+    module_roots = [root for root in roots if root != stdlib_root]
+    closure_graph, explicit_imports = _graph_discovery._discover_module_graph_from_paths(
+        entry_paths,
+        roots,
+        module_roots,
+        stdlib_root,
+        project_root=None,
+        stdlib_allowlist=stdlib_allowlist,
+        skip_modules=STUB_MODULES,
+        stub_parents=STUB_PARENT_MODULES,
+        resolver_cache=resolver_cache,
+        precomputed_imports_by_path=_native_support_source_imports_by_path(
+            native_artifact_plan,
+            native_support_function_roots_by_module,
+        ),
+        import_admission_policy=_native_support_source_admission_policy(
+            native_artifact_plan
+        ),
+        allow_entry_external_imports=False,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    for module_name, path in closure_graph.items():
+        module_graph.setdefault(module_name, path)
+        _graph_discovery._record_module_reason(
+            module_reasons,
+            module_name,
+            (
+                "native_support_source"
+                if module_name in support_paths_by_module
+                else "native_support_source_closure"
+            ),
+        )
+    return frozenset(explicit_imports)
+
+
+def _relative_import_module_name(
+    current_module: str,
+    *,
+    level: int,
+    module: str | None,
+) -> str:
+    if level <= 0:
+        return module or ""
+    package_parts = current_module.split(".")[:-1]
+    if level > 1:
+        package_parts = package_parts[: max(0, len(package_parts) - (level - 1))]
+    tail = [part for part in (module or "").split(".") if part]
+    return ".".join([*package_parts, *tail])
+
+
+def _support_source_import_bindings(
+    module_name: str,
+    tree: ast.Module,
+) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    imported_functions: dict[str, tuple[str, str]] = {}
+    imported_modules: dict[str, str] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                bind_name = alias.asname or alias.name.split(".", 1)[0]
+                imported_modules[bind_name] = alias.name
+        elif isinstance(stmt, ast.ImportFrom):
+            source_module = _relative_import_module_name(
+                module_name,
+                level=stmt.level,
+                module=stmt.module,
+            )
+            for alias in stmt.names:
+                if alias.name == "*":
+                    continue
+                bind_name = alias.asname or alias.name
+                if stmt.module is None:
+                    imported_modules[bind_name] = ".".join(
+                        part for part in (source_module, alias.name) if part
+                    )
+                else:
+                    imported_functions[bind_name] = (source_module, alias.name)
+    return imported_functions, imported_modules
+
+
+def _support_source_top_level_defs(
+    tree: ast.Module,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
+    return _native_support_slice.top_level_support_defs(tree)
+
+
+def _native_support_function_roots_by_module(native_artifact_plan) -> dict[str, tuple[str, ...]]:
+    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    if not support_paths_by_module:
+        return {}
+    roots: dict[str, set[str]] = {}
+    for artifact in native_artifact_plan.artifacts:
+        for export in artifact.callable_exports:
+            provider_module = export.provider_module
+            if provider_module is None or provider_module not in support_paths_by_module:
+                continue
+            roots.setdefault(provider_module, set()).add(export.name)
+    parsed: dict[str, ast.Module] = {}
+    support_defs_by_module: dict[
+        str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]
+    ] = {}
+    imports_by_module: dict[
+        str, tuple[dict[str, tuple[str, str]], dict[str, str]]
+    ] = {}
+
+    def module_tree(module: str) -> ast.Module | None:
+        if module in parsed:
+            return parsed[module]
+        path = support_paths_by_module.get(module)
+        if path is None:
+            return None
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return None
+        parsed[module] = tree
+        support_defs_by_module[module] = _support_source_top_level_defs(tree)
+        imports_by_module[module] = _support_source_import_bindings(module, tree)
+        return tree
+
+    class _ReferenceVisitor(ast.NodeVisitor):
+        def __init__(self, module: str) -> None:
+            self.module = module
+            self.local_refs: set[str] = set()
+            self.import_refs: set[tuple[str, str]] = set()
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if not isinstance(node.ctx, ast.Load):
+                return
+            local_defs = support_defs_by_module.get(self.module, {})
+            if node.id in local_defs:
+                self.local_refs.add(node.id)
+            imported_functions, _imported_modules = imports_by_module.get(
+                self.module,
+                ({}, {}),
+            )
+            target = imported_functions.get(node.id)
+            if target is not None:
+                self.import_refs.add(target)
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if isinstance(node.value, ast.Name):
+                _imported_functions, imported_modules = imports_by_module.get(
+                    self.module,
+                    ({}, {}),
+                )
+                target_module = imported_modules.get(node.value.id)
+                if target_module is not None:
+                    self.import_refs.add((target_module, node.attr))
+            self.generic_visit(node)
+
+    queue: list[tuple[str, str]] = [
+        (module, root) for module, module_roots in roots.items() for root in module_roots
+    ]
+    seen: set[tuple[str, str]] = set()
+    while queue:
+        module, root = queue.pop()
+        if (module, root) in seen:
+            continue
+        seen.add((module, root))
+        if module_tree(module) is None:
+            continue
+        support_defs = support_defs_by_module.get(module, {})
+        support_def = support_defs.get(root)
+        if support_def is None:
+            continue
+        visitor = _ReferenceVisitor(module)
+        visitor.visit(support_def)
+        for local_ref in sorted(visitor.local_refs):
+            if local_ref not in roots.setdefault(module, set()):
+                roots[module].add(local_ref)
+                queue.append((module, local_ref))
+        for target_module, target_name in sorted(visitor.import_refs):
+            if target_module not in support_paths_by_module:
+                continue
+            target_defs = support_defs_by_module.get(target_module)
+            if target_defs is None:
+                if module_tree(target_module) is None:
+                    continue
+                target_defs = support_defs_by_module.get(target_module, {})
+            if target_name not in target_defs:
+                continue
+            if target_name not in roots.setdefault(target_module, set()):
+                roots[target_module].add(target_name)
+                queue.append((target_module, target_name))
+    return {module: tuple(sorted(module_roots)) for module, module_roots in sorted(roots.items())}
+
+
+def _native_support_source_imports_by_path(
+    native_artifact_plan,
+    roots_by_module: Mapping[str, Sequence[str]],
+) -> dict[Path, tuple[str, ...]]:
+    imports_by_path: dict[Path, tuple[str, ...]] = {}
+    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    for module, path in support_paths_by_module.items():
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        roots = frozenset(roots_by_module.get(module, ()))
+        if not roots:
+            imports_by_path[path] = tuple(
+                _module_import_scanner._collect_imports(
+                    tree,
+                    module_name=module,
+                    is_package=path.name == "__init__.py",
+                    import_scan_mode="module_init",
+                )
+            )
+            continue
+        pruned_tree, _reachable, _missing = (
+            _native_support_slice.prune_native_support_module(tree, roots)
+        )
+        imports_by_path[path] = tuple(
+            _module_import_scanner._collect_imports(
+                pruned_tree,
+                module_name=module,
+                is_package=path.name == "__init__.py",
+                import_scan_mode="full",
+            )
+        )
+    return imports_by_path
+
+
+def _longest_module_prefix(
+    module_name: str,
+    candidates: Collection[str],
+) -> str | None:
+    for candidate in reversed(
+        _module_dependency_authority._expand_module_chain_cached(module_name)
+    ):
+        if candidate in candidates:
+            return candidate
+    return None
+
+
+def _missing_native_support_artifact_imports(
+    *,
+    support_explicit_imports: Collection[str],
+    module_graph: Mapping[str, Path],
+    native_artifact_plan,
+) -> tuple[str, ...]:
+    if not support_explicit_imports or not native_artifact_plan.artifacts:
+        return ()
+    native_packages = frozenset(
+        artifact.package for artifact in native_artifact_plan.artifacts
+    )
+    native_modules = native_artifact_plan.native_module_names()
+    exact_native_providers = frozenset(
+        {artifact.module for artifact in native_artifact_plan.artifacts}
+        | native_artifact_plan.support_source_module_names()
+    )
+    source_modules = frozenset(module_graph)
+    missing: list[str] = []
+    for import_name in sorted(set(support_explicit_imports)):
+        if import_name in source_modules or import_name in native_modules:
+            continue
+        if not any(
+            import_name == package or import_name.startswith(package + ".")
+            for package in native_packages
+        ):
+            continue
+        source_prefix = _longest_module_prefix(import_name, source_modules)
+        if source_prefix is not None:
+            source_path = module_graph[source_prefix]
+            if source_prefix == import_name or source_path.name != "__init__.py":
+                continue
+        native_prefix = _longest_module_prefix(import_name, native_modules)
+        if native_prefix in exact_native_providers:
+            continue
+        missing.append(import_name)
+    return tuple(missing)
+
+
+def _native_support_artifact_source_candidates(
+    *,
+    native_artifact_plan,
+    module_name: str,
+) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for artifact in native_artifact_plan.artifacts:
+        package = artifact.package
+        if module_name == package:
+            continue
+        if not module_name.startswith(package + "."):
+            continue
+        module_parts = tuple(
+            part for part in module_name[len(package) + 1 :].split(".") if part
+        )
+        if not module_parts:
+            continue
+        leaf = module_parts[-1]
+        parent_parts = module_parts[:-1]
+        search_roots = (
+            artifact.package_dir.joinpath(*parent_parts),
+            artifact.package_dir.joinpath(*parent_parts, "src"),
+            artifact.package_dir / "src",
+            *_native_support_artifact_manifest_search_roots(artifact),
+        )
+        for search_root in search_roots:
+            for suffix in _NATIVE_SUPPORT_ARTIFACT_SOURCE_SUFFIXES:
+                candidate = (search_root / f"{leaf}{suffix}").resolve()
+                if candidate in seen or not candidate.is_file():
+                    continue
+                seen.add(candidate)
+                candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _native_support_artifact_manifest_search_roots(artifact) -> tuple[Path, ...]:
+    try:
+        manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(manifest, Mapping):
+        return ()
+    roots: list[Path] = []
+    for raw_path in manifest.get("sources") or ():
+        if isinstance(raw_path, str) and raw_path.strip():
+            roots.append(Path(raw_path).expanduser().resolve().parent)
+    build = manifest.get("build")
+    if isinstance(build, Mapping):
+        for raw_path in build.get("include_dirs") or ():
+            if isinstance(raw_path, str) and raw_path.strip():
+                roots.append(Path(raw_path).expanduser().resolve())
+    return tuple(dict.fromkeys(roots))
+
+
+def _format_missing_native_support_artifact_imports(
+    *,
+    missing_imports: Sequence[str],
+    native_artifact_plan,
+) -> str:
+    details: list[str] = []
+    for module_name in missing_imports:
+        candidates = _native_support_artifact_source_candidates(
+            native_artifact_plan=native_artifact_plan,
+            module_name=module_name,
+        )
+        if candidates:
+            preview = ", ".join(str(path) for path in candidates[:4])
+            suffix = "" if len(candidates) <= 4 else ", ..."
+            details.append(f"{module_name} (source candidates: {preview}{suffix})")
+        else:
+            details.append(
+                f"{module_name} (no .pyx/.c/.cpp source candidate found under the "
+                "admitted package roots)"
+            )
+    return (
+        "reachable native support source imports native package modules without "
+        "source or artifact custody: "
+        + "; ".join(details)
+        + ". Configure the upstream package for the target, publish reachable "
+        "static_link artifacts from that target-specific source plan, and admit "
+        "those modules through sidecar custody; Molt will not synthesize native "
+        "package modules from package visibility."
+    )
+
+
 def _materialize_import_plan(
     *,
     prepared_module_graph: _PreparedEntryModuleGraph,
@@ -443,6 +852,42 @@ def _materialize_import_plan(
     module_graph = dict(prepared_module_graph.module_graph)
     stdlib_allowlist = set(prepared_module_graph.stdlib_allowlist)
     stub_parents = set(prepared_module_graph.stub_parents)
+    support_explicit_imports: set[str] = set()
+    native_artifact_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+    for _iteration in range(len(prepared_module_graph.native_artifact_plan.artifacts) + 2):
+        native_artifact_reachable_imports = (
+            set(module_graph)
+            | set(prepared_module_graph.explicit_imports)
+            | set(prepared_module_graph.runtime_import_dispatch_roots)
+            | support_explicit_imports
+        )
+        next_native_artifact_plan = (
+            prepared_module_graph.native_artifact_plan.with_reachable_imports(
+                native_artifact_reachable_imports
+            )
+        )
+        before_modules = frozenset(module_graph)
+        before_support_imports = frozenset(support_explicit_imports)
+        support_explicit_imports.update(
+            _extend_native_support_source_closure(
+                module_graph=module_graph,
+                module_reasons=module_reasons,
+                native_artifact_plan=next_native_artifact_plan,
+                roots=list(prepared_module_graph.roots),
+                stdlib_root=stdlib_root,
+                stdlib_allowlist=stdlib_allowlist,
+                resolver_cache=prepared_module_graph.module_resolution_cache,
+                target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+                capability_config_digest="",
+            )
+        )
+        if (
+            next_native_artifact_plan == native_artifact_plan
+            and frozenset(module_graph) == before_modules
+            and frozenset(support_explicit_imports) == before_support_imports
+        ):
+            break
+        native_artifact_plan = next_native_artifact_plan
     support_modules = _augment_support_modules(
         module_graph=module_graph,
         module_reasons=module_reasons,
@@ -461,18 +906,23 @@ def _materialize_import_plan(
     )
     namespace_module_names = support_modules.namespace_module_names
     generated_module_source_paths = dict(support_modules.generated_module_source_paths)
-    source_modules = frozenset(module_graph)
-    native_artifact_reachable_imports = (
-        set(module_graph)
-        | set(prepared_module_graph.explicit_imports)
-        | set(prepared_module_graph.runtime_import_dispatch_roots)
+    missing_native_support_imports = _missing_native_support_artifact_imports(
+        support_explicit_imports=support_explicit_imports,
+        module_graph=module_graph,
+        native_artifact_plan=native_artifact_plan,
     )
-    native_artifact_plan = (
-        prepared_module_graph.native_artifact_plan.with_reachable_imports(
-            native_artifact_reachable_imports
+    if missing_native_support_imports:
+        raise ValueError(
+            _format_missing_native_support_artifact_imports(
+                missing_imports=missing_native_support_imports,
+                native_artifact_plan=native_artifact_plan,
+            )
         )
-    )
+    source_modules = frozenset(module_graph)
     native_artifact_modules = native_artifact_plan.native_module_names()
+    native_support_function_roots_by_module = (
+        _native_support_function_roots_by_module(native_artifact_plan)
+    )
     known_modules = source_modules | native_artifact_modules
     stdlib_allowlist.update(STUB_MODULES)
     stdlib_allowlist.update(stub_parents)
@@ -499,6 +949,9 @@ def _materialize_import_plan(
     package_parent_modules = _modules_with_any_reason(
         module_graph, module_reasons, _PACKAGE_PARENT_REASONS
     )
+    runtime_import_dispatch_roots = frozenset(
+        prepared_module_graph.runtime_import_dispatch_roots | support_explicit_imports
+    )
     return _ImportPlan(
         image_scope=prepared_module_graph.image_scope,
         stdlib_allowlist=frozenset(stdlib_allowlist),
@@ -507,9 +960,7 @@ def _materialize_import_plan(
         module_resolution_cache=prepared_module_graph.module_resolution_cache,
         module_graph=MappingProxyType(dict(module_graph)),
         explicit_imports=frozenset(prepared_module_graph.explicit_imports),
-        runtime_import_dispatch_roots=frozenset(
-            prepared_module_graph.runtime_import_dispatch_roots
-        ),
+        runtime_import_dispatch_roots=runtime_import_dispatch_roots,
         stub_parents=frozenset(stub_parents),
         spawn_enabled=prepared_module_graph.spawn_enabled,
         runtime_import_support_policy=prepared_module_graph.runtime_import_support_policy,
@@ -537,6 +988,9 @@ def _materialize_import_plan(
         stdlib_allowlist_sorted=tuple(sorted(stdlib_allowlist)),
         module_graph_metadata=module_graph_metadata,
         native_artifact_plan=native_artifact_plan,
+        native_support_function_roots_by_module=(
+            native_support_function_roots_by_module
+        ),
     )
 
 

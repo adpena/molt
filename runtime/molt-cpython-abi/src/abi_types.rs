@@ -27,6 +27,9 @@ pub type PyCFunctionFastWithKeywords = unsafe extern "C" fn(
 pub type PyVectorcallFunc =
     unsafe extern "C" fn(*mut PyObject, *mut *mut PyObject, usize, *mut PyObject) -> *mut PyObject;
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
+pub type PyDescrGetFunc =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+pub type PyDescrSetFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int;
 
 /// Opaque reference-counted object header.
 ///
@@ -296,8 +299,8 @@ pub struct PyTypeObject {
     pub tp_getset: *mut c_void,
     pub tp_base: *mut PyTypeObject,
     pub tp_dict: *mut PyObject,
-    pub tp_descr_get: *mut c_void,
-    pub tp_descr_set: *mut c_void,
+    pub tp_descr_get: Option<PyDescrGetFunc>,
+    pub tp_descr_set: Option<PyDescrSetFunc>,
     pub tp_dictoffset: Py_ssize_t,
     pub tp_init: Option<unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int>,
     pub tp_alloc: Option<unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject>,
@@ -363,15 +366,28 @@ pub struct PyInterpreterState {
     pub _molt_reserved: c_int,
 }
 
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct _PyErr_StackItem {
+    pub exc_type: *mut PyObject,
+    pub exc_value: *mut PyObject,
+    pub exc_traceback: *mut PyObject,
+    pub previous_item: *mut _PyErr_StackItem,
+}
+
 #[repr(C)]
 pub struct PyThreadState {
     pub interp: *mut PyInterpreterState,
     pub current_exception: *mut PyObject,
+    pub exc_info: *mut _PyErr_StackItem,
+    pub exc_state: _PyErr_StackItem,
     pub _molt_reserved: c_int,
 }
 
 unsafe impl Send for PyInterpreterState {}
 unsafe impl Sync for PyInterpreterState {}
+unsafe impl Send for _PyErr_StackItem {}
+unsafe impl Sync for _PyErr_StackItem {}
 unsafe impl Send for PyThreadState {}
 unsafe impl Sync for PyThreadState {}
 
@@ -449,6 +465,7 @@ pub const METH_NOARGS: c_int = 0x0004;
 pub const METH_O: c_int = 0x0008;
 pub const METH_CLASS: c_int = 0x0010;
 pub const METH_STATIC: c_int = 0x0020;
+pub const METH_COEXIST: c_int = 0x0040;
 pub const METH_FASTCALL: c_int = 0x0080;
 pub const METH_METHOD: c_int = 0x0200;
 
@@ -458,6 +475,10 @@ pub const Py_TPFLAGS_READY: c_ulong = 1 << 12;
 pub const Py_TPFLAGS_READYING: c_ulong = 1 << 13;
 pub const Py_TPFLAGS_HEAPTYPE: c_ulong = 1 << 9;
 pub const Py_TPFLAGS_HAVE_GC: c_ulong = 1 << 14;
+pub const Py_TPFLAGS_HAVE_VERSION_TAG: c_ulong = 1 << 18;
+pub const Py_TPFLAGS_CHECKTYPES: c_ulong = 0;
+pub const Py_TPFLAGS_HAVE_NEWBUFFER: c_ulong = 0;
+pub const Py_TPFLAGS_IS_ABSTRACT: c_ulong = 1 << 20;
 pub const Py_TPFLAGS_BASE_EXC_SUBCLASS: c_ulong = 1 << 30;
 pub const Py_TPFLAGS_DEFAULT: c_ulong = Py_TPFLAGS_BASETYPE;
 
@@ -778,6 +799,14 @@ exc_singleton!(PyExc_UserWarning);
 /// Py_HASH_EXTERNAL constant — used by some extensions.
 pub const Py_HASH_EXTERNAL: c_int = 0;
 pub const PyBUF_WRITABLE: c_int = 0x0001;
+pub const PyBUF_FORMAT: c_int = 0x0004;
+pub const PyBUF_ND: c_int = 0x0008;
+pub const PyBUF_STRIDES: c_int = 0x0010 | PyBUF_ND;
+pub const PyBUF_INDIRECT: c_int = 0x0100 | PyBUF_STRIDES;
+pub const PyBUF_RECORDS_RO: c_int = PyBUF_STRIDES | PyBUF_FORMAT;
+
+#[allow(non_upper_case_globals)]
+pub const Py_mp_subscript: c_int = 5;
 
 /// Buffer protocol — minimal Py_buffer struct.
 #[repr(C)]

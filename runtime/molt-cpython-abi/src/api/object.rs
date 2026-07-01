@@ -6,11 +6,11 @@
 //! to reasonable defaults.
 
 use crate::abi_types::{
-    METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O, METH_VARARGS, Py_False,
-    Py_None, Py_True, Py_ssize_t, PyCFunction, PyCFunctionFast, PyCFunctionFastWithKeywords,
-    PyCFunctionObject, PyCFunctionWithKeywords, PyCodeObject, PyFrameObject, PyGenericAliasObject,
-    PyInterpreterState, PyMethodDef, PyMethodObject, PyMutex, PyObject, PyThreadState,
-    PyTypeObject,
+    _PyErr_StackItem, METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O,
+    METH_VARARGS, Py_False, Py_None, Py_True, Py_ssize_t, PyCFunction, PyCFunctionFast,
+    PyCFunctionFastWithKeywords, PyCFunctionObject, PyCFunctionWithKeywords, PyCodeObject,
+    PyFrameObject, PyGenericAliasObject, PyInterpreterState, PyMethodDef, PyMethodObject,
+    PyMutex, PyObject, PyThreadState, PyTypeObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
@@ -513,6 +513,24 @@ pub unsafe extern "C" fn PyUnstable_Object_IsUniqueReferencedTemporary(
     obj: *mut PyObject,
 ) -> c_int {
     unsafe { PyUnstable_Object_IsUniquelyReferenced(obj) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnstable_Object_EnableDeferredRefcount(_obj: *mut PyObject) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnstable_SetImmortal(obj: *mut PyObject) {
+    if obj.is_null() {
+        return;
+    }
+    unsafe {
+        (*obj).ob_refcnt = 1 << 30;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Py_IsOwnedByCurrentThread(_obj: *mut PyObject) -> c_int {
+    1
 }
 
 #[unsafe(no_mangle)]
@@ -1729,9 +1747,22 @@ pub unsafe extern "C" fn PyCFunction_GetFlags(op: *mut PyObject) -> c_int {
 }
 
 static mut MOLT_INTERPRETER_STATE: PyInterpreterState = PyInterpreterState { _molt_reserved: 0 };
+static mut MOLT_ERR_STACK_ITEM: _PyErr_StackItem = _PyErr_StackItem {
+    exc_type: ptr::null_mut(),
+    exc_value: ptr::null_mut(),
+    exc_traceback: ptr::null_mut(),
+    previous_item: ptr::null_mut(),
+};
 static mut MOLT_THREAD_STATE: PyThreadState = PyThreadState {
     interp: &raw mut MOLT_INTERPRETER_STATE,
     current_exception: ptr::null_mut(),
+    exc_info: &raw mut MOLT_ERR_STACK_ITEM,
+    exc_state: _PyErr_StackItem {
+        exc_type: ptr::null_mut(),
+        exc_value: ptr::null_mut(),
+        exc_traceback: ptr::null_mut(),
+        previous_item: ptr::null_mut(),
+    },
     _molt_reserved: 0,
 };
 
@@ -1827,6 +1858,13 @@ pub unsafe extern "C" fn PyThreadState_GetID(_tstate: *mut PyThreadState) -> u64
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyInterpreterState_GetID(_interp: *mut PyInterpreterState) -> i64 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyInterpreterState_GetIDFromThreadState(
+    _tstate: *mut PyThreadState,
+) -> i64 {
     0
 }
 

@@ -101,6 +101,8 @@ fn main() {
                 "_PyErr_WarnFormat",
                 "_PyErr_Format",
                 "_PyErr_FormatV",
+                "_PyErr_FormatUnraisable",
+                "_PySys_WriteStderr",
             ] {
                 println!("cargo:rustc-cdylib-link-arg=-Wl,-exported_symbol,{sym}");
             }

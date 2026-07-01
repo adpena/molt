@@ -148,6 +148,7 @@ pub struct RuntimeHooks {
     pub register_c_function: unsafe extern "C" fn(
         meth_addr: u64,
         flags: std::os::raw::c_int,
+        self_bits: u64,
         name_data: *const u8,
         name_len: usize,
     ) -> u64,
@@ -333,6 +334,7 @@ unsafe extern "C" fn stub_module_set_attr(
 unsafe extern "C" fn stub_register_c_function(
     _meth: u64,
     _flags: std::os::raw::c_int,
+    _self_bits: u64,
     _data: *const u8,
     _len: usize,
 ) -> u64 {

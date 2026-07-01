@@ -239,7 +239,13 @@ def _scoped_native_callable_exports(
     scoped: dict[str, dict[str, Any]] = {}
     for qualified_name, spec in sorted(native_callable_exports.items()):
         export_module = _native_callable_export_module(qualified_name, spec)
-        if export_module in scoped_modules:
+        provider_module = spec.get("provider_module")
+        provider_module_name = (
+            provider_module.strip()
+            if isinstance(provider_module, str) and provider_module.strip()
+            else None
+        )
+        if export_module in scoped_modules or provider_module_name in scoped_modules:
             scoped[qualified_name] = dict(spec)
     return scoped
 
@@ -267,6 +273,18 @@ def _scoped_native_python_exports(
     )
 
 
+def _scoped_native_support_function_roots(
+    module_name: str,
+    roots_by_module: Mapping[str, Sequence[str]] | None,
+) -> tuple[str, ...]:
+    if not roots_by_module:
+        return ()
+    roots = roots_by_module.get(module_name)
+    if roots is None:
+        return ()
+    return tuple(sorted({root for root in roots if isinstance(root, str) and root}))
+
+
 def _build_scoped_lowering_inputs(
     module_names: Collection[str],
     *,
@@ -280,6 +298,7 @@ def _build_scoped_lowering_inputs(
     direct_call_modules: Collection[str] | None = None,
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
 ) -> _ScopedLoweringInputs:
     scoped_known_modules_by_module: dict[str, tuple[str, ...]] = {}
     scoped_direct_call_modules_by_module: dict[str, tuple[str, ...]] = {}
@@ -287,6 +306,7 @@ def _build_scoped_lowering_inputs(
     scoped_known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]] = {}
     scoped_native_callable_exports_by_module: dict[str, dict[str, dict[str, Any]]] = {}
     scoped_native_python_exports_by_module: dict[str, tuple[str, ...]] = {}
+    scoped_native_support_function_roots_by_module: dict[str, tuple[str, ...]] = {}
     scoped_pgo_hot_function_names_by_module: dict[str, tuple[str, ...]] = {}
     scoped_type_facts_by_module: dict[str, TypeFacts | None] = {}
     source_modules = frozenset(module_names)
@@ -340,6 +360,12 @@ def _build_scoped_lowering_inputs(
                 module_dep_closures=module_dep_closures,
             )
         )
+        scoped_native_support_function_roots_by_module[module_name] = (
+            _scoped_native_support_function_roots(
+                module_name,
+                native_support_function_roots_by_module,
+            )
+        )
         scoped_pgo_hot_function_names_by_module[module_name] = (
             _scoped_pgo_hot_function_names(module_name, pgo_hot_function_names)
         )
@@ -356,6 +382,9 @@ def _build_scoped_lowering_inputs(
         known_func_kinds_by_module=scoped_known_func_kinds_by_module,
         native_callable_exports_by_module=scoped_native_callable_exports_by_module,
         native_python_exports_by_module=scoped_native_python_exports_by_module,
+        native_support_function_roots_by_module=(
+            scoped_native_support_function_roots_by_module
+        ),
         pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
         type_facts_by_module=scoped_type_facts_by_module,
     )
@@ -417,6 +446,7 @@ def _scoped_lowering_input_view(
     direct_call_modules: Collection[str] | None = None,
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
 ) -> _ScopedLoweringInputView:
     if (
         scoped_lowering_inputs is not None
@@ -521,6 +551,21 @@ def _scoped_lowering_input_view(
         )
     if (
         scoped_lowering_inputs is not None
+        and module_name
+        in scoped_lowering_inputs.native_support_function_roots_by_module
+    ):
+        scoped_native_support_function_roots = (
+            scoped_lowering_inputs.native_support_function_roots_by_module[
+                module_name
+            ]
+        )
+    else:
+        scoped_native_support_function_roots = _scoped_native_support_function_roots(
+            module_name,
+            native_support_function_roots_by_module,
+        )
+    if (
+        scoped_lowering_inputs is not None
         and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
     ):
         scoped_pgo_hot_function_names = (
@@ -555,6 +600,7 @@ def _scoped_lowering_input_view(
         known_func_kinds=scoped_known_func_kinds,
         native_callable_exports=scoped_native_callable_exports,
         native_python_exports=scoped_native_python_exports,
+        native_support_function_roots=scoped_native_support_function_roots,
         pgo_hot_function_names=scoped_pgo_hot_function_names,
         type_facts=scoped_type_facts,
         known_modules_payload=list(scoped_known_modules),
@@ -566,6 +612,12 @@ def _scoped_lowering_input_view(
         ),
         native_python_exports_payload=list(scoped_native_python_exports),
         native_python_exports_set=frozenset(scoped_native_python_exports),
+        native_support_function_roots_payload=list(
+            scoped_native_support_function_roots
+        ),
+        native_support_function_roots_set=frozenset(
+            scoped_native_support_function_roots
+        ),
         pgo_hot_function_names_payload=list(scoped_pgo_hot_function_names),
         pgo_hot_function_names_set=frozenset(scoped_pgo_hot_function_names),
     )
@@ -1126,6 +1178,7 @@ def _module_lowering_context_payload(
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
@@ -1160,6 +1213,9 @@ def _module_lowering_context_payload(
             known_func_kinds=known_func_kinds,
             native_callable_exports=native_callable_exports,
             native_python_exports=native_python_exports,
+            native_support_function_roots_by_module=(
+                native_support_function_roots_by_module
+            ),
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
@@ -1177,6 +1233,9 @@ def _module_lowering_context_payload(
     scoped_known_func_kinds = scoped_inputs.known_func_kinds
     scoped_native_callable_exports = scoped_inputs.native_callable_exports
     scoped_native_python_exports = scoped_inputs.native_python_exports
+    scoped_native_support_function_roots = (
+        scoped_inputs.native_support_function_roots
+    )
     if scoped_known_classes is None:
         scoped_known_classes = _scoped_known_classes_view(
             module_name,
@@ -1212,6 +1271,7 @@ def _module_lowering_context_payload(
         "known_func_kinds": scoped_known_func_kinds,
         "native_callable_exports": scoped_native_callable_exports,
         "native_python_exports": scoped_native_python_exports,
+        "native_support_function_roots": scoped_native_support_function_roots,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
@@ -1262,6 +1322,7 @@ def _module_lowering_context_digest_for_module(
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
@@ -1299,6 +1360,9 @@ def _module_lowering_context_digest_for_module(
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
+        native_support_function_roots_by_module=(
+            native_support_function_roots_by_module
+        ),
         module_deps=module_deps,
         module_is_namespace=module_is_namespace,
         module_chunking=module_chunking,
@@ -1429,6 +1493,7 @@ def _load_cached_module_lowering_result(
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
@@ -1473,6 +1538,9 @@ def _load_cached_module_lowering_result(
             known_func_kinds=known_func_kinds,
             native_callable_exports=native_callable_exports,
             native_python_exports=native_python_exports,
+            native_support_function_roots_by_module=(
+                native_support_function_roots_by_module
+            ),
             module_deps=module_deps,
             module_is_namespace=module_is_namespace,
             module_chunking=module_chunking,
@@ -1527,6 +1595,7 @@ def _module_worker_payload(
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
@@ -1555,6 +1624,9 @@ def _module_worker_payload(
             known_func_kinds=known_func_kinds,
             native_callable_exports=native_callable_exports,
             native_python_exports=native_python_exports,
+            native_support_function_roots_by_module=(
+                native_support_function_roots_by_module
+            ),
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
@@ -1592,6 +1664,9 @@ def _module_worker_payload(
         "known_func_kinds": scoped_inputs.known_func_kinds,
         "native_callable_exports": scoped_inputs.native_callable_exports_payload,
         "native_python_exports": scoped_inputs.native_python_exports_payload,
+        "native_support_function_roots": (
+            scoped_inputs.native_support_function_roots_payload
+        ),
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,

@@ -13,6 +13,7 @@ from typing import Any
 
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_toolchain import _zig_target_query
+from molt.cli.wasm_toolchain import resolve_wasi_sysroot as _resolve_wasi_sysroot
 
 _SOURCE_EXTENSION_ABI_TIERS = {"source-compat", "cpython-abi"}
 _SOURCE_EXTENSION_INCLUDE_FILE_SUFFIXES = {
@@ -50,30 +51,14 @@ class _SourceExtensionTargetMetadata:
 
 def _wasi_sysroot_setup_advice(_system: str) -> list[str]:
     return [
+        "Set MOLT_WASI_SYSROOT=<path-to-wasi-sysroot>",
         "Set WASI_SYSROOT=<path-to-wasi-sysroot>",
         "or set WASI_SDK_PATH=<path-to-wasi-sdk>",
+        "or set MOLT_TARGET_ROOT=<path-with-toolchains/wasi-sysroot*>",
         "or install zig for the wasm source-extension compiler path",
         "or set MOLT_WASM_CC=<wasm-capable-compiler-with-sysroot>",
         "or set MOLT_CROSS_CC=<wasm-capable-compiler-with-sysroot>",
     ]
-
-
-def _resolve_wasi_sysroot() -> Path | None:
-    candidates: list[Path] = []
-    raw_sysroot = os.environ.get("WASI_SYSROOT")
-    if raw_sysroot:
-        candidates.append(Path(raw_sysroot).expanduser())
-    for env_name in ("WASI_SDK_PATH", "WASI_SDK_PREFIX"):
-        raw_sdk = os.environ.get(env_name)
-        if not raw_sdk:
-            continue
-        sdk_path = Path(raw_sdk).expanduser()
-        candidates.extend((sdk_path / "share" / "wasi-sysroot", sdk_path))
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if (resolved / "include" / "errno.h").is_file():
-            return resolved
-    return None
 
 
 def _path_like_command(command: str) -> bool:

@@ -25,6 +25,7 @@ from molt.cli.extension_manifest import (
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
     _host_target_triple,
+    _py_methoddef_names,
     _validate_extension_manifest,
 )
 from molt.cli.file_hashing import _sha256_file
@@ -34,6 +35,7 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _ExternalNativeAbiSymbol,
+    _ExternalNativeCallableExport,
     _ExternalNativeCapiSymbol,
     _ImportAdmissionPolicy,
     _StagedExternalPackageNativeArtifact,
@@ -68,7 +70,7 @@ _EXTERNAL_PACKAGE_ARTIFACT_SUFFIXES = (
     *_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES,
     *_EXTERNAL_PACKAGE_STATIC_LINK_ARTIFACT_SUFFIXES,
 )
-_EXTERNAL_PACKAGE_STATIC_SUPPORT_SUFFIXES = (".molt.wasm", ".o", ".a")
+_EXTERNAL_PACKAGE_STATIC_SUPPORT_SUFFIXES = (".molt.wasm", ".o", ".a", ".py")
 _EXTERNAL_PACKAGE_NATIVE_SOURCE_SUFFIXES = (
     ".c",
     ".cc",
@@ -394,7 +396,8 @@ def _manifest_support_file_sha256(
         ):
             errors.append(
                 f"{label}.path must name a wasm static-link support artifact "
-                "(.molt.wasm, .o, or .a)"
+                "(.molt.wasm, .o, or .a) or checksummed upstream Python source "
+                "(.py)"
             )
             continue
         if not isinstance(sha_value, str) or not re.fullmatch(
@@ -427,6 +430,131 @@ def _manifest_support_file_sha256(
         seen.add(rel_text)
         out.append((rel_text, expected))
     return tuple(sorted(out))
+
+
+def _support_python_module_names(
+    support_file_sha256: Collection[tuple[str, str]],
+) -> frozenset[str]:
+    names: set[str] = set()
+    for rel_path, _digest in support_file_sha256:
+        normalized = rel_path.replace("\\", "/")
+        if not normalized.endswith(".py"):
+            continue
+        parts = normalized.split("/")
+        if not parts:
+            continue
+        if parts[-1] == "__init__.py":
+            module_parts = parts[:-1]
+        else:
+            module_parts = [*parts[:-1], parts[-1][:-3]]
+        if module_parts:
+            names.add(".".join(module_parts))
+    return frozenset(names)
+
+
+def _manifest_source_paths(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+    errors: list[str],
+) -> tuple[Path, ...]:
+    raw_sources = manifest.get("sources")
+    if raw_sources is None:
+        return ()
+    if not isinstance(raw_sources, list) or not all(
+        isinstance(item, str) and item.strip() for item in raw_sources
+    ):
+        errors.append("extension_manifest.json sources must be a list of paths")
+        return ()
+    paths: list[Path] = []
+    for index, raw_source in enumerate(raw_sources):
+        source_path = Path(raw_source).expanduser()
+        if not source_path.is_absolute():
+            source_path = (manifest_path.parent / source_path).resolve()
+        if not source_path.is_file():
+            errors.append(
+                f"extension_manifest.json sources[{index}] does not exist: "
+                f"{source_path}"
+            )
+            continue
+        paths.append(source_path)
+    return tuple(paths)
+
+
+def _manifest_py_methoddef_names(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+    errors: list[str],
+) -> frozenset[str]:
+    names: set[str] = set()
+    for source_path in _manifest_source_paths(
+        manifest,
+        manifest_path=manifest_path,
+        errors=errors,
+    ):
+        try:
+            names.update(
+                _py_methoddef_names(
+                    source_path.read_text(encoding="utf-8", errors="replace")
+                )
+            )
+        except OSError as exc:
+            errors.append(
+                f"extension_manifest.json source {source_path} could not be read: "
+                f"{exc}"
+            )
+    return frozenset(names)
+
+
+def _validate_module_attr_callable_export_custody(
+    *,
+    package: str,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    module_name: str,
+    callable_exports: Collection["_ExternalNativeCallableExport"],
+    support_file_sha256: Collection[tuple[str, str]],
+) -> list[str]:
+    errors: list[str] = []
+    module_attr_exports = [
+        export for export in callable_exports if export.binding == "module_attr"
+    ]
+    if not module_attr_exports:
+        return []
+
+    support_modules = _support_python_module_names(support_file_sha256)
+    method_names: frozenset[str] | None = None
+    for export in module_attr_exports:
+        provider_module = export.provider_module or module_name
+        if provider_module == module_name:
+            if method_names is None:
+                method_errors: list[str] = []
+                method_names = _manifest_py_methoddef_names(
+                    manifest,
+                    manifest_path=manifest_path,
+                    errors=method_errors,
+                )
+                errors.extend(f"{package}: {error}" for error in method_errors)
+            if export.name not in method_names:
+                errors.append(
+                    f"{package}: callable export {export.qualified_name!r} uses "
+                    f"module_attr provider {module_name!r}, but {export.name!r} "
+                    "is not declared by a PyMethodDef entry in the admitted "
+                    "extension sources. Declare an explicit provider_module backed "
+                    "by checksummed upstream Python support source, or publish an "
+                    "actual native extension method/direct_symbol export."
+                )
+            continue
+        if provider_module not in support_modules:
+            errors.append(
+                f"{package}: callable export {export.qualified_name!r} uses "
+                f"provider_module {provider_module!r}, but that provider is not "
+                "a checksummed .py entry in extension_manifest.json support_files. "
+                "Native wrapper publication must be backed by admitted upstream "
+                "support source instead of package ancestry."
+            )
+    return errors
 
 
 def _manifest_str_tuple(
@@ -992,6 +1120,16 @@ def _validate_external_package_native_artifact(
         manifest_path=manifest_path,
         package_source_root=package_source_root,
         errors=errors,
+    )
+    errors.extend(
+        _validate_module_attr_callable_export_custody(
+            package=package,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            module_name=module_name,
+            callable_exports=callable_exports,
+            support_file_sha256=manifest_support_file_sha256,
+        )
     )
     wasm_import_symbols, wasm_import_errors = _wasm_relocatable_import_symbols(
         package=package,
