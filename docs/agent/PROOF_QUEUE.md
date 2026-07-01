@@ -97,8 +97,10 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witne
 script owns the full acceptance sequence: build `field_solve.py`, run the WASM
 artifact from an isolated fixture directory, write
 `tmp/pact_witness_acceptance_queue/runs/<attempt>/run/candidate_outputs.npz`,
-then run
-`check_parity.py` against the checked Pact reference. A row whose command is
+then run `check_parity.py` against the checked Pact reference. The runner writes
+`tmp/pact_witness_acceptance_queue/latest_attempt.txt` for quick navigation and
+never deletes previous attempt directories, because Windows may keep linked
+`.wat` or `.wasm` files open briefly after a failed run. A row whose command is
 only `python -m molt build ... field_solve.py` is historical build evidence, not
 Pact acceptance, and must be rerun through the named current spec after it exits.
 
@@ -110,8 +112,8 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witne
 
 Root selection is priority ordered, not directory-discovery ordered. The default
 selector should prefer the canonical sealed witness roots
-`tmp/pact_numpy_multiarray_sealed_axiserror` and
-`tmp/pact_scipy_ndimage_provider_sealed_support_closure`, followed by required
+`tmp/pact_numpy_multiarray_sealed_for_witness` and
+`tmp/pact_scipy_ndimage_sealed_for_witness_next`, followed by required
 native sidecars and source roots. Older recovery roots may remain under `tmp/` as
 fallback evidence, but they must not shadow the canonical roots. A staged root
 may publish either a root `extension_manifest.json` or artifact-specific
