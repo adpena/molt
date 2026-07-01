@@ -137,3 +137,4 @@ class _GeneratorProtocolAttrs(Protocol):
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
+    imported_modules: dict[str, str]
