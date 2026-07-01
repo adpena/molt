@@ -2120,6 +2120,25 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
     }
 }
 
+pub(crate) unsafe fn function_fixed_positional_call_needs_binding(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    supplied: usize,
+) -> bool {
+    unsafe {
+        // Fixed-arity helpers are also the binder's already-bound execution
+        // lane. Exact runtime arity is the canonical bound shape; only
+        // non-exact positional calls need to re-enter argument binding.
+        if supplied == function_arity(func_ptr) as usize {
+            return false;
+        }
+        if function_requires_binder_flag(func_ptr) {
+            return true;
+        }
+        function_raw_positional_call_needs_binding(_py, func_ptr, supplied)
+    }
+}
+
 pub(crate) unsafe fn call_function_obj_via_positional_bind(
     _py: &PyToken<'_>,
     func_bits: u64,
@@ -2356,7 +2375,10 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 inc_ref_bits(_py, self_bits);
                 args.pos.insert(0, self_bits);
             }
-            if function_trampoline_ptr(func_ptr) != 0 && args.kw_names.is_empty() {
+            if function_trampoline_ptr(func_ptr) != 0
+                && args.kw_names.is_empty()
+                && !function_raw_positional_call_needs_binding(_py, func_ptr, args.pos.len())
+            {
                 let result = call_function_obj_bound_vec(_py, func_bits, args.pos.as_slice());
                 return protect_callargs_aliased_return(_py, result, args_ptr);
             }

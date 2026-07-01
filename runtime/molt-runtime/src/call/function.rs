@@ -339,6 +339,27 @@ unsafe fn raise_call_arity_mismatch(
 }
 
 #[inline]
+unsafe fn maybe_bind_fixed_positional_call(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    func_ptr: *mut u8,
+    args: &[u64],
+) -> Option<u64> {
+    unsafe {
+        if crate::call::bind::function_fixed_positional_call_needs_binding(
+            _py,
+            func_ptr,
+            args.len(),
+        ) {
+            return Some(crate::call::bind::call_function_obj_via_positional_bind(
+                _py, func_bits, args,
+            ));
+        }
+        None
+    }
+}
+
+#[inline]
 unsafe fn maybe_call_function_obj_trampoline(
     _py: &PyToken<'_>,
     func_bits: u64,
@@ -393,6 +414,10 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(_py, func_bits, func_ptr, &[arg0_bits])
+        {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 1 && !function_has_variadic_trampoline(func_ptr) {
@@ -541,7 +566,6 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj1");
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj7");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -639,6 +663,9 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(_py, func_bits, func_ptr, &[]) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 0 && !function_has_variadic_trampoline(func_ptr) {
@@ -779,7 +806,6 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                 res
             );
         }
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj8");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -801,6 +827,11 @@ pub(crate) unsafe fn call_function_obj2(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) =
+            maybe_bind_fixed_positional_call(_py, func_bits, func_ptr, &[arg0_bits, arg1_bits])
+        {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 2 && !function_has_variadic_trampoline(func_ptr) {
@@ -893,7 +924,6 @@ pub(crate) unsafe fn call_function_obj2(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj2");
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj9");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -916,6 +946,14 @@ pub(crate) unsafe fn call_function_obj3(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits, arg2_bits],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 3 && !function_has_variadic_trampoline(func_ptr) {
@@ -1001,7 +1039,6 @@ pub(crate) unsafe fn call_function_obj3(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj3");
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj10");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -1025,6 +1062,14 @@ pub(crate) unsafe fn call_function_obj4(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits, arg2_bits, arg3_bits],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 4 && !function_has_variadic_trampoline(func_ptr) {
@@ -1112,7 +1157,6 @@ pub(crate) unsafe fn call_function_obj4(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj4");
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj11");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -1137,6 +1181,14 @@ unsafe fn call_function_obj5(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 5 && !function_has_variadic_trampoline(func_ptr) {
@@ -1244,7 +1296,6 @@ unsafe fn call_function_obj5(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj5");
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj12");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -1271,6 +1322,16 @@ unsafe fn call_function_obj6(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 6 && !function_has_variadic_trampoline(func_ptr) {
@@ -1392,7 +1453,6 @@ unsafe fn call_function_obj6(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj6");
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj_trampoline");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -1420,6 +1480,16 @@ unsafe fn call_function_obj7(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 7 && !function_has_variadic_trampoline(func_ptr) {
@@ -1576,6 +1646,17 @@ unsafe fn call_function_obj8(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 8 && !function_has_variadic_trampoline(func_ptr) {
@@ -1740,6 +1821,17 @@ unsafe fn call_function_obj9(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 9 && !function_has_variadic_trampoline(func_ptr) {
@@ -1919,6 +2011,17 @@ unsafe fn call_function_obj10(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 10 && !function_has_variadic_trampoline(func_ptr) {
@@ -2125,6 +2228,17 @@ unsafe fn call_function_obj11(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits, arg10_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 11 && !function_has_variadic_trampoline(func_ptr) {
@@ -2350,6 +2464,17 @@ unsafe fn call_function_obj12(
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        }
+        if let Some(res) = maybe_bind_fixed_positional_call(
+            _py,
+            func_bits,
+            func_ptr,
+            &[
+                arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
+                arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
+            ],
+        ) {
+            return res;
         }
         let arity = function_arity(func_ptr);
         if arity != 12 && !function_has_variadic_trampoline(func_ptr) {
@@ -2794,7 +2919,7 @@ mod tests {
         fixed_arity_trampoline_target_ptr, protect_borrowed_args_aliased_return,
         should_force_trampoline_for_fixed_arity_call,
     };
-    use crate::object::builders::alloc_list;
+    use crate::object::builders::{alloc_list, alloc_tuple};
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
     use molt_obj_model::MoltObject;
     use std::sync::Once;
@@ -2823,6 +2948,37 @@ mod tests {
 
     extern "C" fn identity_returns_arg(arg_bits: u64) -> i64 {
         arg_bits as i64
+    }
+
+    extern "C" fn return_varargs_tuple(_self_bits: u64, args_bits: u64, _kwargs_bits: u64) -> i64 {
+        args_bits as i64
+    }
+
+    fn intern_metadata_name(_py: &crate::PyToken<'_>, name: &'static [u8]) -> u64 {
+        let interned = &crate::runtime_state(_py).interned;
+        let slot = match name {
+            b"__molt_arg_names__" => &interned.molt_arg_names,
+            b"__molt_posonly__" => &interned.molt_posonly,
+            b"__molt_kwonly_names__" => &interned.molt_kwonly_names,
+            b"__molt_vararg__" => &interned.molt_vararg,
+            b"__molt_varkw__" => &interned.molt_varkw,
+            b"__defaults__" => &interned.defaults_name,
+            b"__kwdefaults__" => &interned.kwdefaults_name,
+            other => panic!("unknown metadata name {:?}", other),
+        };
+        crate::intern_static_name(_py, slot, name)
+    }
+
+    unsafe fn set_function_metadata_attr(
+        _py: &crate::PyToken<'_>,
+        func_ptr: *mut u8,
+        name: &'static [u8],
+        value_bits: u64,
+    ) {
+        let attr_bits = intern_metadata_name(_py, name);
+        unsafe {
+            crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, value_bits)
+        };
     }
 
     fn ref_count(bits: u64) -> u32 {
@@ -2891,6 +3047,69 @@ mod tests {
 
             dec_ref_bits(_py, result);
             dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[test]
+    fn fixed_arity_entry_routes_varargs_functions_through_binder() {
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                return_varargs_tuple as *const () as usize as u64,
+                3,
+            );
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            let self_name = string_bits("self");
+            let arg_names_ptr = alloc_tuple(_py, &[self_name]);
+            assert!(!arg_names_ptr.is_null());
+            let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
+            let empty_tuple_ptr = alloc_tuple(_py, &[]);
+            assert!(!empty_tuple_ptr.is_null());
+            let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+            let vararg_bits = string_bits("args");
+            let varkw_bits = string_bits("kwargs");
+            let none_bits = MoltObject::none().bits();
+
+            unsafe {
+                set_function_metadata_attr(_py, func_ptr, b"__molt_arg_names__", arg_names_bits);
+                set_function_metadata_attr(
+                    _py,
+                    func_ptr,
+                    b"__molt_posonly__",
+                    MoltObject::from_int(0).bits(),
+                );
+                set_function_metadata_attr(
+                    _py,
+                    func_ptr,
+                    b"__molt_kwonly_names__",
+                    empty_tuple_bits,
+                );
+                set_function_metadata_attr(_py, func_ptr, b"__molt_vararg__", vararg_bits);
+                set_function_metadata_attr(_py, func_ptr, b"__molt_varkw__", varkw_bits);
+                set_function_metadata_attr(_py, func_ptr, b"__defaults__", none_bits);
+                set_function_metadata_attr(_py, func_ptr, b"__kwdefaults__", none_bits);
+                crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
+            }
+
+            let result_bits = unsafe { super::call_function_obj1(_py, func_bits, int(7)) };
+            assert!(
+                !crate::exception_pending(_py),
+                "fixed-arity helper must not raise before binder dispatch"
+            );
+            let result_ptr = obj_from_bits(result_bits).as_ptr().expect("tuple result");
+            assert_eq!(
+                unsafe { crate::object_type_id(result_ptr) },
+                crate::TYPE_ID_TUPLE
+            );
+            assert!(
+                unsafe { crate::seq_vec_ref(result_ptr) }.is_empty(),
+                "binder must pack no extra positional arguments into an empty *args tuple"
+            );
+
+            dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, func_bits);
         });
     }

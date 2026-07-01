@@ -4,7 +4,8 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS,
-    RESERVED_RUNTIME_CALLABLE_COUNT, STATIC_TYPE_COUNT, WasmRuntimeImport,
+    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+    ReservedRuntimeCallableDispatch, STATIC_TYPE_COUNT, WasmRuntimeImport,
     wasm_runtime_export_name, wasm_runtime_import,
 };
 use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
@@ -1040,6 +1041,48 @@ fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option<u32>) -> V
     calls
 }
 
+fn wasm_table_set_refs_for_export(wasm: &[u8], export_name: &str) -> BTreeMap<i32, u32> {
+    let export_index = *wasm_function_export_indices(wasm)
+        .get(export_name)
+        .unwrap_or_else(|| panic!("missing function export {export_name}"));
+    let import_count = wasm_function_import_indices(wasm).len() as u32;
+    let body_filter = export_index
+        .checked_sub(import_count)
+        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
+    let mut refs = BTreeMap::new();
+    let mut body_index = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload
+            && let Ok(mut ops) = body.get_operators_reader()
+        {
+            if body_filter != body_index {
+                body_index += 1;
+                continue;
+            }
+            let mut slot = None;
+            let mut func = None;
+            while let Ok(op) = ops.read() {
+                match op {
+                    wasmparser::Operator::I32Const { value } => {
+                        slot = Some(value);
+                    }
+                    wasmparser::Operator::RefFunc { function_index } => {
+                        func = Some(function_index);
+                    }
+                    wasmparser::Operator::TableSet { .. } => {
+                        if let (Some(slot), Some(func)) = (slot.take(), func.take()) {
+                            refs.insert(slot, func);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return refs;
+        }
+    }
+    panic!("requested WASM body {body_filter}, but no matching code body was found")
+}
+
 fn wasm_i64_consts(wasm: &[u8]) -> Vec<i64> {
     let mut values = Vec::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -1493,6 +1536,97 @@ fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
         sigs[import_type as usize],
         (5, 1),
         "importlib_import_transaction import ABI must consume the five values emitted by its callable wrapper"
+    );
+}
+
+#[test]
+fn reserved_runtime_callable_function_objects_own_linked_table_slots() {
+    let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());
+    import_transaction.value = Some(5);
+    let func = wasm_test_function(
+        "molt_main",
+        vec![],
+        None,
+        vec![import_transaction, wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: true,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("reserved runtime callable table ownership must emit valid WASM");
+
+    let import_transaction_spec = RESERVED_RUNTIME_CALLABLE_SPECS
+        .iter()
+        .find(|spec| spec.runtime_name == "molt_importlib_import_transaction")
+        .expect("import transaction must stay in reserved runtime callable manifest");
+    assert_eq!(
+        import_transaction_spec.dispatch,
+        ReservedRuntimeCallableDispatch::Trampoline
+    );
+
+    let first_call_indirect_import = CALL_INDIRECT_IMPORTS
+        .first()
+        .expect("generated call_indirect import family must be non-empty");
+    let export_indices = wasm_function_export_indices(&wasm);
+    let first_call_indirect_idx = *export_indices
+        .get(first_call_indirect_import.import_name)
+        .expect("first call_indirect export must exist");
+    let sentinel_func_idx = first_call_indirect_idx + CALL_INDIRECT_IMPORTS.len() as u32;
+
+    let poll_table_prefix = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let reserved_callable_start = poll_table_prefix;
+    let reserved_trampoline_start = reserved_callable_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+    let direct_table_index =
+        RELOC_TABLE_BASE_DEFAULT + reserved_callable_start + import_transaction_spec.index;
+    let trampoline_table_index =
+        RELOC_TABLE_BASE_DEFAULT + reserved_trampoline_start + import_transaction_spec.index;
+
+    let table_refs = wasm_table_set_refs_for_export(&wasm, "molt_table_init");
+    assert_eq!(
+        table_refs.get(&(direct_table_index as i32)),
+        Some(&sentinel_func_idx),
+        "trampoline-only reserved direct slot must be reset to the sentinel, not left for native extension element segments"
+    );
+    let trampoline_func_idx = *table_refs
+        .get(&(trampoline_table_index as i32))
+        .expect("reachable reserved runtime trampoline slot must be initialized");
+    assert_ne!(
+        trampoline_func_idx, sentinel_func_idx,
+        "reachable reserved runtime trampoline slot must not remain sentinel-backed"
+    );
+
+    let imports = wasm_function_import_indices(&wasm);
+    let import_idx = *imports
+        .get("importlib_import_transaction")
+        .expect("import transaction runtime import must be registered");
+    assert_ne!(
+        trampoline_func_idx, import_idx,
+        "reserved trampoline slot must point at a generated argv trampoline, not the raw five-arg import"
+    );
+
+    let import_count = imports.len() as u32;
+    let function_type_indices = wasm_function_section_type_indices(&wasm);
+    let signatures = wasm_type_section_signatures(&wasm);
+    let trampoline_type_idx = function_type_indices[(trampoline_func_idx - import_count) as usize];
+    assert_eq!(
+        signatures[trampoline_type_idx as usize],
+        (3, 1),
+        "reserved runtime trampoline must consume closure, argv, argc and return one value"
     );
 }
 
