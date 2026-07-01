@@ -15715,14 +15715,18 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         stdlib_object_path=None,
         cache_candidates=[],
     )
-    captured: list[tuple[bool, frozenset[str]]] = []
+    captured: list[tuple[bool, frozenset[str], frozenset[str]]] = []
 
     monkeypatch.setattr(
         cli_backend_compile,
         "_ensure_runtime_wasm_artifact",
         lambda runtime_state, *, reloc, **kwargs: (
             captured.append(
-                (reloc, frozenset(cast(set[str], kwargs["resolved_modules"])))
+                (
+                    reloc,
+                    frozenset(cast(set[str], kwargs["resolved_modules"])),
+                    frozenset(cast(set[str], kwargs["required_link_features"])),
+                )
             )
             or True
         ),
@@ -15737,6 +15741,7 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         molt_root=tmp_path,
         stdlib_profile="micro",
         resolved_modules={"asyncio", "ssl"},
+        required_link_features=frozenset({"molt_gpu_primitives"}),
     )
 
     assert failure is None
@@ -15744,8 +15749,16 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
     assert runtime_context.ensure_runtime_wasm_shared() is True
     assert runtime_context.ensure_runtime_wasm_reloc() is True
     assert captured == [
-        (False, frozenset({"asyncio", "ssl"})),
-        (True, frozenset({"asyncio", "ssl"})),
+        (
+            False,
+            frozenset({"asyncio", "ssl"}),
+            frozenset({"molt_gpu_primitives"}),
+        ),
+        (
+            True,
+            frozenset({"asyncio", "ssl"}),
+            frozenset({"molt_gpu_primitives"}),
+        ),
     ]
 
 

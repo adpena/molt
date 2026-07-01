@@ -21,14 +21,7 @@ def _runtime_cargo_features_cached(
 ) -> tuple[str, ...]:
     features: list[str] = []
     if target_triple is not None and target_triple.startswith("wasm32"):
-        features.append("molt_gpu_primitives")
-        if (
-            True
-            if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == ""
-            else _coerce_bool(gpu_webgpu_raw, True)
-        ):
-            pass
-        return tuple(features)
+        return ()
     tk_enabled = (
         True if tk_raw is None or tk_raw.strip() == "" else _coerce_bool(tk_raw, True)
     )
@@ -246,22 +239,32 @@ def _wasm_runtime_feature_plan(
     runtime_features: tuple[str, ...],
     builtin_features: Collection[str],
     resolved_modules: set[str] | frozenset[str] | None,
+    required_link_features: Collection[str] | None = None,
 ) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
     effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
-    profile_features = sorted(builtin_features)
+    required_features = sorted(required_link_features or ())
+    profile_features = [
+        feature
+        for feature in sorted(builtin_features)
+        if feature != "molt_gpu_primitives"
+    ]
+    resolved_module_set = frozenset(resolved_modules or ())
+    gpu_features = (
+        ["molt_gpu_primitives"]
+        if (
+            "molt_gpu_primitives" in required_features
+            or _resolved_modules_require_gpu_primitives(resolved_module_set)
+        )
+        else []
+    )
     if effective_profile == "micro":
         profile_features.append("stdlib_micro")
     cargo_features = tuple(
         _dedupe_preserve_order(
             list(runtime_features)
             + profile_features
-            + (
-                ["molt_gpu_primitives"]
-                if _resolved_modules_require_gpu_primitives(
-                    frozenset(resolved_modules or ())
-                )
-                else []
-            )
+            + required_features
+            + gpu_features
         )
     )
     fingerprint_features = tuple(
