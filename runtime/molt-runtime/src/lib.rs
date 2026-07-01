@@ -146,7 +146,8 @@ pub use molt_runtime_tk;
 pub mod audit;
 pub mod cpython_abi_hooks;
 pub use cpython_abi_hooks::{
-    molt_cpython_abi_prepare_static_extension, molt_cpython_abi_pyinit_module_to_bits,
+    molt_cpython_abi_cext_call_trampoline, molt_cpython_abi_prepare_static_extension,
+    molt_cpython_abi_pyinit_module_to_bits,
 };
 mod diagnostics;
 mod intrinsics;
@@ -409,8 +410,6 @@ pub(crate) use crate::builtins::attr::{
     property_no_setter, raise_attr_name_type_error, setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
-#[cfg(feature = "stdlib_compression")]
-pub use crate::builtins::bz2::*;
 pub use crate::builtins::callable::*;
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized, builtin_classes_shutdown,
@@ -418,8 +417,6 @@ pub(crate) use crate::builtins::classes::{
 };
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
-#[cfg(feature = "stdlib_compression")]
-pub use crate::builtins::compression_common::*;
 pub use crate::builtins::concurrent::*;
 pub(crate) use crate::builtins::containers::{
     dict_hashes, dict_hashes_ptr, dict_len, dict_method_bits, dict_order, dict_order_ptr,
@@ -496,8 +493,6 @@ pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::graphlib::*;
-#[cfg(feature = "stdlib_compression")]
-pub use crate::builtins::gzip::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
@@ -507,7 +502,7 @@ pub(crate) use crate::builtins::io::{
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
-#[cfg(feature = "stdlib_compression")]
+#[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
 pub use crate::builtins::lzma::*;
 pub(crate) use crate::builtins::methods::*;
 pub use crate::builtins::modules::*;
@@ -548,8 +543,6 @@ pub(crate) use crate::builtins::strings::{
 };
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
-#[cfg(feature = "stdlib_compression")]
-pub use crate::builtins::tarfile::*;
 #[cfg(feature = "stdlib_fs_extra")]
 pub use crate::builtins::tempfile_mod::*;
 pub(crate) use crate::builtins::type_ops::{
@@ -559,8 +552,6 @@ pub(crate) use crate::builtins::type_ops::{
 };
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
-#[cfg(feature = "stdlib_compression")]
-pub use crate::builtins::zlib::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
@@ -723,6 +714,18 @@ pub(crate) use crate::state::{
 pub use molt_runtime_collections::argparse::*;
 #[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections::collections_ext::*;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression::bz2::*;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression::compression_common::*;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression::gzip::*;
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+pub use molt_runtime_compression::lzma::*;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression::tarfile::*;
+#[cfg(feature = "stdlib_compression")]
+pub use molt_runtime_compression::zlib::*;
 #[cfg(feature = "stdlib_difflib")]
 pub use molt_runtime_difflib::difflib::*;
 #[cfg(feature = "stdlib_http")]

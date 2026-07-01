@@ -14,6 +14,7 @@ use super::common::{
 ///
 /// Returns a Molt list of [key, value] pairs (each pair is a 2-element list).
 /// Raises RuntimeError if the element count is odd.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(tcl_str) = bits_to_string(tcl_str_bits) else {

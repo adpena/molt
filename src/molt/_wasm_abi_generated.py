@@ -5670,7 +5670,8 @@ WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int, str], ...] = (
     (19, "molt_types_prepare_class", "types_prepare_class", 2, "direct"),
     (20, "molt_types_resolve_bases", "types_resolve_bases", 2, "direct"),
     (21, "molt_types_new_class", "types_new_class", 2, "direct"),
-    (22, "molt_importlib_import_transaction", "importlib_import_transaction", 5, "trampoline"),
+    (22, "molt_cpython_abi_cext_call_trampoline", "cpython_abi_cext_call_trampoline", 3, "direct"),
+    (23, "molt_importlib_import_transaction", "importlib_import_transaction", 5, "trampoline"),
 )
 
 WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
@@ -8711,6 +8712,7 @@ WASM_RUNTIME_HOST_EXPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str
     ("molt_c_api_version", (), ("i32",)),
     ("molt_cfunction_create_bytes", ("i64", "i32", "i64", "i32", "i32", "i32", "i64"), ("i64",)),
     ("molt_cfunction_create_keywords_bytes", ("i64", "i32", "i64", "i32", "i32", "i32", "i64"), ("i64",)),
+    ("molt_py_cfunction_create_bytes", ("i64", "i32", "i64", "i32", "i32", "i32", "i64"), ("i64",)),
     ("molt_dec_ref_obj", ("i64",), ()),
     ("molt_dict_from_pairs", ("i32", "i32", "i64"), ("i64",)),
     ("molt_dict_getitem_borrowed", ("i64", "i64"), ("i64",)),
@@ -8771,6 +8773,7 @@ WASM_RUNTIME_HOST_EXPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str
     ("molt_mapping_setitem", ("i64", "i64", "i64"), ("i32",)),
     ("molt_module_add_cfunction_bytes", ("i64", "i32", "i64", "i32", "i32", "i32", "i64"), ("i32",)),
     ("molt_module_add_cfunction_keywords_bytes", ("i64", "i32", "i64", "i32", "i32", "i32", "i64"), ("i32",)),
+    ("molt_module_add_py_cfunction_bytes", ("i64", "i32", "i64", "i32", "i32", "i32", "i64"), ("i32",)),
     ("molt_module_add_int_constant", ("i64", "i64", "i64"), ("i32",)),
     ("molt_module_add_object", ("i64", "i64", "i64"), ("i32",)),
     ("molt_module_add_object_bytes", ("i64", "i32", "i64", "i64"), ("i32",)),
@@ -14633,6 +14636,7 @@ WASM_RUNTIME_HOST_EXPORTS: frozenset[str] = frozenset(
         "molt_c_api_version",
         "molt_cfunction_create_bytes",
         "molt_cfunction_create_keywords_bytes",
+        "molt_py_cfunction_create_bytes",
         "molt_dec_ref_obj",
         "molt_dict_from_pairs",
         "molt_dict_getitem_borrowed",
@@ -14693,6 +14697,7 @@ WASM_RUNTIME_HOST_EXPORTS: frozenset[str] = frozenset(
         "molt_mapping_setitem",
         "molt_module_add_cfunction_bytes",
         "molt_module_add_cfunction_keywords_bytes",
+        "molt_module_add_py_cfunction_bytes",
         "molt_module_add_int_constant",
         "molt_module_add_object",
         "molt_module_add_object_bytes",

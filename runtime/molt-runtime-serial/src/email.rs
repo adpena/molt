@@ -1532,6 +1532,7 @@ pub extern "C" fn molt_email_address_format(
     })
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let data = match quopri_expect_bytes_like(_py, data_bits, "encodestring") {
