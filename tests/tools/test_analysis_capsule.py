@@ -656,7 +656,9 @@ def test_build_capsule_rejects_malformed_backend_allocation_fields() -> None:
     )
 
 
-def test_build_capsule_rejects_empty_allocation_categories_with_positive_events() -> None:
+def test_build_capsule_rejects_empty_allocation_categories_with_positive_events() -> (
+    None
+):
     capsule_mod = _load_capsule()
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]

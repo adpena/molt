@@ -335,12 +335,7 @@ def _split_rust_top_level_commas(text: str) -> list[str]:
             bracket_depth += 1
         elif ch == "]":
             bracket_depth = max(0, bracket_depth - 1)
-        elif (
-            ch == ","
-            and angle_depth == 0
-            and paren_depth == 0
-            and bracket_depth == 0
-        ):
+        elif ch == "," and angle_depth == 0 and paren_depth == 0 and bracket_depth == 0:
             parts.append(text[start:idx].strip())
             start = idx + 1
     parts.append(text[start:].strip())
@@ -1732,8 +1727,7 @@ def validate_loaded_manifest(
     if missing_host_exports:
         raise WasmAbiManifestError(
             "runtime_export_policy host exports are not defined by shipped "
-            "Rust extern \"C\" symbols: "
-            + ", ".join(missing_host_exports)
+            'Rust extern "C" symbols: ' + ", ".join(missing_host_exports)
         )
     data["runtime_host_export_signature"] = _runtime_host_export_signatures(
         host_exports,
@@ -1960,7 +1954,9 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
     )
 
 
-def generator_runtime_export_signature_rows() -> tuple[tuple[str, tuple[str, ...], str], ...]:
+def generator_runtime_export_signature_rows() -> tuple[
+    tuple[str, tuple[str, ...], str], ...
+]:
     """Return the normalized runtime extern ABI surface used by the generator."""
     return tuple(
         (name, params, result)

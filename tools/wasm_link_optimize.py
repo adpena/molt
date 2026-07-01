@@ -49,19 +49,25 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
             keep.append((section_id, payload))
             continue
         # Strip name, debug, producers, source-mapping and reloc sections
-        if name in (
-            "name",
-            "producers",
-            "sourceMappingURL",
-            "linking",
-            "dylink.0",
-        ) or name.startswith(".debug") or name.startswith("reloc."):
+        if (
+            name
+            in (
+                "name",
+                "producers",
+                "sourceMappingURL",
+                "linking",
+                "dylink.0",
+            )
+            or name.startswith(".debug")
+            or name.startswith("reloc.")
+        ):
             stripped = True
             continue
         keep.append((section_id, payload))
     if not stripped:
         return None
     return _build_sections(keep)
+
 
 def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int]:
     """Scan the code section for function indices referenced by ``call`` instructions.
@@ -121,6 +127,7 @@ def _collect_code_referenced_funcs(sections: list[tuple[int, bytes]]) -> set[int
             offset = body_end
     return called
 
+
 def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]:
     """Return the set of function indices referenced by active element segments."""
     indices: set[int] = set()
@@ -173,6 +180,7 @@ def _collect_element_func_indices(sections: list[tuple[int, bytes]]) -> set[int]
                 break
     return indices
 
+
 def _code_section_has_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
     """Return True if the code section contains any ``call_indirect`` (0x11).
 
@@ -184,6 +192,7 @@ def _code_section_has_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
         if sid == 10:
             return b"\x11" in payload
     return False
+
 
 def _module_imports_host_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
     """Return True when the module imports host `molt_call_indirect*` shims.
@@ -217,6 +226,7 @@ def _module_imports_host_call_indirect(sections: list[tuple[int, bytes]]) -> boo
             ):
                 return True
     return False
+
 
 def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     """Replace indirect-call table entries for dead functions with the sentinel.
@@ -332,6 +342,7 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
         file=sys.stderr,
     )
     return _build_sections(new_sections)
+
 
 def _stub_dead_functions(data: bytes) -> bytes | None:
     """Replace bodies of provably-dead functions with a minimal trap stub.
@@ -483,6 +494,7 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
         file=sys.stderr,
     )
     return _build_sections(new_sections)
+
 
 def _strip_unused_module_function_imports(
     data: bytes,
@@ -923,6 +935,7 @@ def _strip_unused_module_function_imports(
     )
     return updated
 
+
 def _dedup_data_segments(data: bytes) -> bytes | None:
     """Strip embedded file paths from data segments to reduce binary size.
 
@@ -1053,6 +1066,7 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
     )
     return _build_sections(new_sections)
 
+
 def _fixup_func_type_indices(
     data: bytes, reference_data: bytes | None = None, runtime_data: bytes | None = None
 ) -> bytes | None:
@@ -1135,6 +1149,7 @@ def _fixup_func_type_indices(
         file=sys.stderr,
     )
     return _build_sections(new_sections)
+
 
 def _post_link_optimize(
     data: bytes,

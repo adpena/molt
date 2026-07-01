@@ -32,8 +32,14 @@ def test_browser_embed_prefers_manifest_table_ref_signatures() -> None:
         "try {\n"
         "return callWithSignature(rtDirectFn, runtimeDirectSignature, args);"
     ) in source
-    assert "return callWithSignature(tableFn, callIndirectObjectSignature(name), args);" in source
-    assert "callIndirectObjectSignature(name) ||\nappTableRefSignatures[directName]" not in source
+    assert (
+        "return callWithSignature(tableFn, callIndirectObjectSignature(name), args);"
+        in source
+    )
+    assert (
+        "callIndirectObjectSignature(name) ||\nappTableRefSignatures[directName]"
+        not in source
+    )
     assert (
         "appTableRefSignatures[directName] ||\n"
         "runtimeTableRefSignatures[directName] ||\n"

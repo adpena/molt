@@ -160,7 +160,9 @@ def test_update_baseline_and_write_board_share_one_cli_scan(
         == 0
     )
 
-    baseline = json.loads((tmp_path / "tools" / "structural_audit_baseline.json").read_text())
+    baseline = json.loads(
+        (tmp_path / "tools" / "structural_audit_baseline.json").read_text()
+    )
     board = (
         tmp_path / "docs" / "design" / "foundation" / "STRUCTURAL_AUDIT_BOARD.md"
     ).read_text()
@@ -200,7 +202,7 @@ def test_debt_probe_counts_comments_and_rust_macros(tmp_path: Path):
     rust.mkdir(parents=True)
     (rust / "lib.rs").write_text(
         'const TEXT: &str = "todo!(not code)";\n'
-        "pub fn missing() { todo!(\"real implementation\"); }\n",
+        'pub fn missing() { todo!("real implementation"); }\n',
         encoding="utf-8",
     )
 
@@ -323,7 +325,7 @@ def test_rust_backend_lowering_gap_probe_counts_unsupported_op_groups(
         "                );\n"
         "            }\n"
         "            other => {\n"
-        "                self.emit_unsupported_op(op, format!(\"unsupported {other}\"));\n"
+        '                self.emit_unsupported_op(op, format!("unsupported {other}"));\n'
         "            }\n",
         encoding="utf-8",
     )

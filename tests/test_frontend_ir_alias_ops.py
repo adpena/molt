@@ -328,8 +328,7 @@ def test_invoke_ffi_bridge_lane_marker_is_emitted_for_non_allowlisted_module_cal
 
 def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
     sources = (
-        "import nativepkg.ndimage as ndi\n"
-        "value = ndi.distance_transform_edt(data)\n",
+        "import nativepkg.ndimage as ndi\nvalue = ndi.distance_transform_edt(data)\n",
         "from nativepkg.ndimage import distance_transform_edt\n"
         "value = distance_transform_edt(data)\n",
     )
@@ -398,7 +397,9 @@ def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:
         )
 
 
-def test_native_callable_fixed_arity_rejects_bad_payload_count_before_invoke_ffi() -> None:
+def test_native_callable_fixed_arity_rejects_bad_payload_count_before_invoke_ffi() -> (
+    None
+):
     gen = SimpleTIRGenerator(
         known_modules={"nativepkg", "nativepkg.ndimage"},
         direct_call_modules={"__main__"},
@@ -446,10 +447,7 @@ def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
     )
     ir = gen.to_json()
     invoke_ops = [
-        op
-        for fn in ir["functions"]
-        for op in fn["ops"]
-        if op["kind"] == "invoke_ffi"
+        op for fn in ir["functions"] for op in fn["ops"] if op["kind"] == "invoke_ffi"
     ]
 
     assert len(invoke_ops) == 1

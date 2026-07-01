@@ -15,7 +15,9 @@ TIR_SRC_CANDIDATES = (
     ROOT / "runtime/molt-passes/src/tir/passes",
     ROOT / "runtime/molt-tir/src/tir",
 )
-TIR_SRC = next((path for path in TIR_SRC_CANDIDATES if path.exists()), TIR_SRC_CANDIDATES[0])
+TIR_SRC = next(
+    (path for path in TIR_SRC_CANDIDATES if path.exists()), TIR_SRC_CANDIDATES[0]
+)
 
 
 def tir_path(relative: str) -> Path:

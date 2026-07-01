@@ -87,10 +87,7 @@ def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
     host_bin = tmp_path / wasm_runner._molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     target_host = (
-        tmp_path
-        / "target"
-        / "dev-fast"
-        / wasm_runner._molt_wasm_host_exe_name()
+        tmp_path / "target" / "dev-fast" / wasm_runner._molt_wasm_host_exe_name()
     )
     target_host.parent.mkdir(parents=True)
     target_host.write_bytes(b"target")
@@ -105,12 +102,7 @@ def test_resolve_molt_wasm_host_binary_uses_dev_fast_target_dir(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    host_bin = (
-        tmp_path
-        / "target"
-        / "dev-fast"
-        / wasm_runner._molt_wasm_host_exe_name()
-    )
+    host_bin = tmp_path / "target" / "dev-fast" / wasm_runner._molt_wasm_host_exe_name()
     host_bin.parent.mkdir(parents=True)
     host_bin.write_bytes(b"host")
 

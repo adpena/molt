@@ -295,11 +295,14 @@ def select_external_artifact_root(
         env,
         prefer_external=prefer_external,
     )
-    if not _env_bool(
-        env,
-        ("MOLT_PREFER_EXTERNAL_ARTIFACTS", "MOLT_USE_EXTERNAL_ARTIFACTS"),
-        default=prefer_external,
-    ) and not require_external:
+    if (
+        not _env_bool(
+            env,
+            ("MOLT_PREFER_EXTERNAL_ARTIFACTS", "MOLT_USE_EXTERNAL_ARTIFACTS"),
+            default=prefer_external,
+        )
+        and not require_external
+    ):
         return None
 
     min_free_gb = _env_float(env, "MOLT_EXTERNAL_MIN_FREE_GB", default=20.0)

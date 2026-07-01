@@ -43,8 +43,10 @@ def _validate_board_for_emit(doc: dict, *, context: str) -> None:
     if problems:
         raise ScoreboardSchemaError(context, problems)
 
+
 def _write_scoreboard_doc(path: Path, doc: dict, *, context: str) -> None:
     _write_scoreboard_doc_atomic(path, doc, context=context)
+
 
 def _write_scoreboard_doc_atomic(path: Path, doc: dict, *, context: str) -> None:
     _validate_board_for_emit(doc, context=context)
@@ -53,10 +55,12 @@ def _write_scoreboard_doc_atomic(path: Path, doc: dict, *, context: str) -> None
     tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
 
+
 def _print_schema_error(exc: ScoreboardSchemaError) -> None:
     print(f"[schema] {exc.context} FAILED:", file=sys.stderr)
     for problem in exc.problems:
         print(f"    - {problem}", file=sys.stderr)
+
 
 def print_summary(doc: dict) -> None:
     cells = _flatten_cells(doc)
@@ -324,10 +328,12 @@ def print_summary(doc: dict) -> None:
             print(f"  ... and {len(doc['benchmarks_deferred']) - 8} more")
     print("=" * 100 + "\n")
 
+
 def _short(sha: str | None) -> str:
     if not sha:
         return "-"
     return sha[:12]
+
 
 def _fastest_next_unlock(warm_reds: list[dict], cold_reds: list[dict]) -> str:
     """One structural fact / one file lane / one gate — the highest-leverage next move.
@@ -365,12 +371,14 @@ def _molt_failure_summary(cell: dict) -> str | None:
 def _flatten_cells(doc: dict) -> list[dict]:
     return [dict(cell) for cell in flatten_cells(doc)]
 
+
 def _fmt(v: float | None, places: int = 2) -> str:
     if v is None:
         return "-"
     if places == 0:
         return f"{v:.0f}"
     return f"{v:.{places}f}"
+
 
 def diff_against_baseline(
     doc: dict, baseline_path: Path
@@ -414,8 +422,10 @@ def diff_against_baseline(
             )
     return newly_red, regressed
 
+
 def _cell_key(c: dict) -> str:
     return f"{c['benchmark']} [{c['backend']}/{c['profile']}]"
+
 
 def _latest_baseline(exclude: Path | None = None) -> Path | None:
     """The most recent committed board, EXCLUDING in-progress ``.partial.json``
@@ -434,6 +444,7 @@ def _latest_baseline(exclude: Path | None = None) -> Path | None:
         and (exclude_resolved is None or p.resolve() != exclude_resolved)
     ]
     return candidates[-1] if candidates else None
+
 
 def _gate_exit_code(
     doc: dict,
@@ -459,6 +470,7 @@ def _gate_exit_code(
     if (not allow_nonauthoritative) and s.get("cells_fail_stale", 0) > 0:
         return 1
     return 0
+
 
 def _finalize_with_board_context(
     cells: list[Cell], doc_like: dict, *, allow_nonauthoritative: bool = False
@@ -493,6 +505,7 @@ def _finalize_with_board_context(
             authoritative=effective_auth,
         )
 
+
 def _rederive_stability(cell: Cell) -> None:
     """Recompute ``cell.stable`` from the stored molt/cpython stats dicts.
 
@@ -508,6 +521,7 @@ def _rederive_stability(cell: Cell) -> None:
         return
     cell.stable = _robust_cell_stable(molt, cpy)
 
+
 def _phasestats_from_dict(d: dict) -> PhaseStats | None:
     import dataclasses
 
@@ -515,6 +529,7 @@ def _phasestats_from_dict(d: dict) -> PhaseStats | None:
         return None
     known = {f.name for f in dataclasses.fields(PhaseStats)}
     return PhaseStats(**{k: v for k, v in d.items() if k in known})
+
 
 def _proc_summary(procs: object) -> str:
     """One-line summary of a build-process list (pid:exe pairs)."""
@@ -528,6 +543,7 @@ def _proc_summary(procs: object) -> str:
     suffix = ", ".join(parts)
     extra = f" (+{len(procs) - 6} more)" if len(procs) > 6 else ""
     return f"{len(procs)} [{suffix}{extra}]"
+
 
 def _print_provenance(provenance: dict) -> None:
     """Emit the FULL provenance block (#69 --print-provenance).
@@ -587,6 +603,7 @@ def _print_provenance(provenance: dict) -> None:
     print(f"    authoritative                = {p.get('authoritative')}")
     print(f"    authoritative_reason         = {p.get('authoritative_reason')}")
     print("=" * 100)
+
 
 def _checkpoint(
     path: Path,

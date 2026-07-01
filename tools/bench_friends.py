@@ -202,6 +202,7 @@ __all__ = [
     "daemon_custody",
 ]
 
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(

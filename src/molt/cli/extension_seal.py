@@ -146,7 +146,9 @@ def _copy_support_files(
         try:
             _atomic_copy_file(support_file.source_path, dest)
         except OSError as exc:
-            errors.append(f"support file copy failed for {support_file.rel_path}: {exc}")
+            errors.append(
+                f"support file copy failed for {support_file.rel_path}: {exc}"
+            )
             continue
         copied.append(dest)
     return copied, errors
@@ -214,7 +216,9 @@ def _support_file_payloads(
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            errors.append(f"--support-file[{index}] must be a path or JSON object: {exc}")
+            errors.append(
+                f"--support-file[{index}] must be a path or JSON object: {exc}"
+            )
             continue
         if not isinstance(parsed, dict):
             errors.append(f"--support-file[{index}] JSON must be an object")
@@ -378,7 +382,10 @@ def extension_seal(
             "extension_sha256 does not match extension artifact; rebuild or "
             "repair artifact custody before sealing exports"
         )
-    if not isinstance(expected_extension_sha, str) or not expected_extension_sha.strip():
+    if (
+        not isinstance(expected_extension_sha, str)
+        or not expected_extension_sha.strip()
+    ):
         errors.append("extension seal requires existing extension_sha256 custody")
 
     raw_python_exports = (

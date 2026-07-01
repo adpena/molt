@@ -445,9 +445,7 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
     assert cell.molt_failure_phase == "build"
     assert cell.molt_failure_status == "daemon_crash"
     assert cell.molt_failure_detail == "backend_daemon_empty_response"
-    assert "backend daemon returned empty response" in (
-        cell.molt_failure_message or ""
-    )
+    assert "backend daemon returned empty response" in (cell.molt_failure_message or "")
     assert ps.validate_board(doc) == []
     log_text = (tmp_path / cell.log_artifact).read_text(encoding="utf-8")
     assert "BUILD FAILURE MESSAGE: backend daemon returned empty response" in log_text

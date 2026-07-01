@@ -62,6 +62,4 @@ def test_cli_build_output_layout_authority_is_single_home() -> None:
 def test_arg_helpers_use_build_output_layout_authority_directly() -> None:
     source = inspect.getsource(arg_helpers)
     assert "cli._BUILD_PROFILE_CHOICES" not in source
-    assert (
-        "from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES" in source
-    )
+    assert "from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES" in source

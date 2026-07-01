@@ -23,7 +23,11 @@ import sys
 import numpy as np
 
 EXACT = ("sdf_argmax", "boundary")
-EXACT_SET = ("crit_max_rc", "crit_min_rc", "crit_saddle_rc")  # compare as row-sorted sets
+EXACT_SET = (
+    "crit_max_rc",
+    "crit_min_rc",
+    "crit_saddle_rc",
+)  # compare as row-sorted sets
 ATOL = {
     "sdf_margin_m12": 1e-3,
     "sdf_gap13": 1e-3,
@@ -56,7 +60,9 @@ def _rowsort(a: np.ndarray) -> np.ndarray:
 def main() -> int:
     cand_path = sys.argv[1] if len(sys.argv) > 1 else "candidate_outputs.npz"
     ref_path = sys.argv[2] if len(sys.argv) > 2 else "reference_outputs.npz"
-    missing = _missing_input(cand_path, "candidate") or _missing_input(ref_path, "reference")
+    missing = _missing_input(cand_path, "candidate") or _missing_input(
+        ref_path, "reference"
+    )
     if missing is not None:
         return missing
     cand, ref = np.load(cand_path), np.load(ref_path)
@@ -74,11 +80,15 @@ def main() -> int:
             continue
         if k in EXACT:
             same = np.array_equal(a, b)
-            print(f"  {'PASS' if same else 'FAIL'} {k:20s} exact  (mismatch px={int((a!=b).sum())})")
+            print(
+                f"  {'PASS' if same else 'FAIL'} {k:20s} exact  (mismatch px={int((a != b).sum())})"
+            )
             ok &= same
         elif k in EXACT_SET:
             same = np.array_equal(_rowsort(a), _rowsort(b))
-            print(f"  {'PASS' if same else 'FAIL'} {k:20s} exact-set  (cand n={len(a)} ref n={len(b)})")
+            print(
+                f"  {'PASS' if same else 'FAIL'} {k:20s} exact-set  (cand n={len(a)} ref n={len(b)})"
+            )
             ok &= same
         elif k == "crit_saddle_eigvec":
             # order-robust: each row is (c, r, dx, dy); (c,r) uniquely identify a saddle, so
@@ -89,15 +99,27 @@ def main() -> int:
                 ok = False
                 continue
             sa, sb = _rowsort(a), _rowsort(b)
-            d = float(np.max(np.abs(sa.astype(np.float64) - sb.astype(np.float64)))) if a.size else 0.0
+            d = (
+                float(np.max(np.abs(sa.astype(np.float64) - sb.astype(np.float64))))
+                if a.size
+                else 0.0
+            )
             same = d <= ATOL[k]
-            print(f"  {'PASS' if same else 'FAIL'} {k:20s} max|Δ|={d:.3e}  (atol {ATOL[k]:.0e}, order-robust)")
+            print(
+                f"  {'PASS' if same else 'FAIL'} {k:20s} max|Δ|={d:.3e}  (atol {ATOL[k]:.0e}, order-robust)"
+            )
             ok &= same
         else:
             atol = ATOL.get(k, 1e-3)
-            d = float(np.max(np.abs(a.astype(np.float64) - b.astype(np.float64)))) if a.size else 0.0
+            d = (
+                float(np.max(np.abs(a.astype(np.float64) - b.astype(np.float64))))
+                if a.size
+                else 0.0
+            )
             same = d <= atol
-            print(f"  {'PASS' if same else 'FAIL'} {k:20s} max|Δ|={d:.3e}  (atol {atol:.0e})")
+            print(
+                f"  {'PASS' if same else 'FAIL'} {k:20s} max|Δ|={d:.3e}  (atol {atol:.0e})"
+            )
             ok &= same
 
     print("PARITY:", "PASS ✅" if ok else "FAIL ❌")

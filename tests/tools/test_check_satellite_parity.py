@@ -7,7 +7,9 @@ from pathlib import Path
 def _load_tool():
     root = Path(__file__).resolve().parents[2]
     path = root / "tools" / "check_satellite_parity.py"
-    spec = importlib.util.spec_from_file_location("check_satellite_parity_under_test", path)
+    spec = importlib.util.spec_from_file_location(
+        "check_satellite_parity_under_test", path
+    )
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

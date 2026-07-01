@@ -26,6 +26,7 @@ def _resolve_pypy(arg: str) -> str | None:
             return cand
     return None
 
+
 def _resolve_codon(arg: str) -> str | None:
     """Resolve a Codon binary path (explicit, or auto-detect ~/.codon/bin)."""
     import shutil
@@ -36,6 +37,7 @@ def _resolve_codon(arg: str) -> str | None:
     if default.exists():
         return str(default)
     return shutil.which("codon")
+
 
 def _probe_interp_version(interp_bin: str | None) -> str | None:
     if not interp_bin:
@@ -48,6 +50,7 @@ def _probe_interp_version(interp_bin: str | None) -> str | None:
     out = (res.stdout or res.stderr or "").strip().splitlines()
     return out[0].replace("Python ", "") if out else None
 
+
 def _probe_codon_version(codon_bin: str | None) -> str | None:
     if not codon_bin:
         return None
@@ -58,6 +61,7 @@ def _probe_codon_version(codon_bin: str | None) -> str | None:
         return None
     out = (res.stdout or res.stderr or "").strip()
     return f"codon {out}" if out else None
+
 
 def _path_executable_candidates(name: str) -> list[str]:
     path = Path(name)
@@ -89,10 +93,12 @@ def _path_executable_candidates(name: str) -> list[str]:
                 out.append(str(candidate))
     return out
 
+
 def _canonical_interpreter_cmd(raw_cmd: tuple[str, ...]) -> tuple[str, ...]:
     if not raw_cmd or not raw_cmd[0]:
         raise FileNotFoundError("empty CPython candidate command")
     return (bench._canonical_interpreter(raw_cmd[0]), *raw_cmd[1:])
+
 
 def _is_project_managed_interpreter(path: str) -> bool:
     normalized = path.replace("\\", "/").lower()
@@ -101,6 +107,7 @@ def _is_project_managed_interpreter(path: str) -> bool:
         or "/target/sessions/" in normalized
         or "/sessions/" in normalized
     )
+
 
 def _normalize_arch(machine: str) -> str:
     normalized = machine.strip().lower().replace("-", "_").replace(" ", "")
@@ -112,6 +119,7 @@ def _normalize_arch(machine: str) -> str:
         return "x86"
     return normalized or "unknown"
 
+
 def _python_version_key(version: str) -> tuple[int, int, int]:
     parts: list[int] = []
     for raw in version.split(".")[:3]:
@@ -121,8 +129,10 @@ def _python_version_key(version: str) -> tuple[int, int, int]:
         parts.append(0)
     return (parts[0], parts[1], parts[2])
 
+
 def _format_cmd(cmd: tuple[str, ...]) -> str:
     return " ".join(cmd)
+
 
 def _probe_tail(res: subprocess.CompletedProcess[str]) -> str:
     lines = [

@@ -107,9 +107,7 @@ def dirty_source_paths(root: Path) -> tuple[str, ...]:
             raise LandingAuditError(f"unexpected git diff --name-status line: {line!r}")
         tracked.add(_normalize_path(parts[-1]))
 
-    untracked = set(
-        _git_lines(root, ["ls-files", "--others", "--exclude-standard"])
-    )
+    untracked = set(_git_lines(root, ["ls-files", "--others", "--exclude-standard"]))
     return tuple(sorted(tracked | untracked))
 
 

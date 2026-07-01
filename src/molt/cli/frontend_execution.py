@@ -55,11 +55,6 @@ from molt.cli.target_python import (
 )
 
 
-
-
-
-
-
 def _lower_entry_module_as_main(
     *,
     lowering_context: _EntryFrontendLoweringContext,
@@ -330,6 +325,7 @@ def _prepare_frontend_execution(
         policy_outcomes_by_function=midend_policy_outcomes_by_function,
         pass_stats_by_function=midend_pass_stats_by_function,
     )
+
     def _run_serial_frontend_lower(
         module_name: str,
         module_path: Path,
@@ -595,7 +591,9 @@ def _run_frontend_parallel_layer_batches(
                 _ParallelWorkerSubmission(
                     module_name=module_name,
                     submitted_ns=time.time_ns(),
-                    future=executor.submit(_frontend_worker._frontend_lower_module_worker, payload),
+                    future=executor.submit(
+                        _frontend_worker._frontend_lower_module_worker, payload
+                    ),
                 )
             )
         for submission in worker_submissions:
@@ -704,7 +702,9 @@ def _consume_frontend_parallel_layer_result(
     result: Mapping[str, Any],
     target_python: TargetPythonVersion,
 ) -> _CliFailure | None:
-    result_error = _frontend_parallel._frontend_parallel_result_error(module_name, result)
+    result_error = _frontend_parallel._frontend_parallel_result_error(
+        module_name, result
+    )
     if result_error is not None:
         return fail(result_error, json_output, command="build")
     result_timings = _frontend_parallel._frontend_result_timings(result)
@@ -893,10 +893,12 @@ def _run_frontend_layer(
                 batch_error, runtime_hooks.json_output, command="build"
             )
         if layer_failure_detail is not None:
-            layer_state = _frontend_parallel._fallback_frontend_parallel_layer_to_serial(
-                frontend_parallel_details=runtime_hooks.frontend_parallel_details,
-                warnings=runtime_hooks.warnings,
-                failure_detail=layer_failure_detail,
+            layer_state = (
+                _frontend_parallel._fallback_frontend_parallel_layer_to_serial(
+                    frontend_parallel_details=runtime_hooks.frontend_parallel_details,
+                    warnings=runtime_hooks.warnings,
+                    failure_detail=layer_failure_detail,
+                )
             )
             layer_plan = _FrontendLayerPlan(
                 candidates=layer_plan.candidates,
@@ -911,7 +913,9 @@ def _run_frontend_layer(
 
     for module_name in layer:
         module_path = execution_context.module_graph[module_name]
-        result = _frontend_parallel._take_frontend_parallel_layer_result(layer_state, module_name)
+        result = _frontend_parallel._take_frontend_parallel_layer_result(
+            layer_state, module_name
+        )
         if result is not None:
             consume_error = _consume_frontend_parallel_layer_result(
                 layer_state=layer_state,
@@ -942,7 +946,9 @@ def _run_frontend_layer(
             json_output=runtime_hooks.json_output,
             layer_state=layer_state,
             layer_index=layer_index,
-            serial_mode=_frontend_parallel._frontend_serial_worker_mode(layer_plan.mode),
+            serial_mode=_frontend_parallel._frontend_serial_worker_mode(
+                layer_plan.mode
+            ),
         )
         if serial_error is not None:
             return None, serial_error

@@ -412,8 +412,7 @@ def _record_molt_failure(cell: Cell, failure: bench.MoltFailure) -> None:
     groups = payload["orphaned_process_groups"]
     cell.molt_failure_orphaned_process_groups = (
         [int(value) for value in groups]
-        if isinstance(groups, list)
-        and all(isinstance(value, int) for value in groups)
+        if isinstance(groups, list) and all(isinstance(value, int) for value in groups)
         else []
     )
 

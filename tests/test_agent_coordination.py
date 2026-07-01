@@ -100,9 +100,9 @@ def test_load_records_tolerates_utf16_and_bom_records(tmp_path: Path) -> None:
     assert by_task["utf16-lane"]["planned_proof_lane"] == "lane/utf16"
     assert by_task["bom-lane"]["status"] == "blocked"
     # None of the three were dropped as invalid.
-    assert all(
-        payload.get("status") != "invalid" for payload in by_task.values()
-    ), by_task
+    assert all(payload.get("status") != "invalid" for payload in by_task.values()), (
+        by_task
+    )
 
 
 def test_agent_coordination_environment_snapshot_prefers_explicit_python(
@@ -668,12 +668,15 @@ def test_codex_crash_classifies_unsupported_exec_interrupt(
 
     assert rc == 0
     payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["parsed"]["most_recent_error"]["error"] == (
-        crash_error["fields"]["error"]
+    assert (
+        payload["parsed"]["most_recent_error"]["error"]
+        == (crash_error["fields"]["error"])
     )
     assert "exec_backend_interrupt_unsupported" in payload["parsed"]["markers"]
     assert {item["id"] for item in payload["classification"]} == {
         "windows_status_control_c_exit",
         "exec_backend_interrupt_unsupported",
     }
-    assert any("proof_queue prune-stale" in action for action in payload["next_actions"])
+    assert any(
+        "proof_queue prune-stale" in action for action in payload["next_actions"]
+    )

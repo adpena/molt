@@ -73,7 +73,9 @@ def _coerce_windows_process_snapshot_rows(
         if elapsed_sec is not None and not isinstance(elapsed_sec, int):
             raise ValueError("Windows process snapshot elapsed_sec must be int or null")
         if started_at_ns is not None and not isinstance(started_at_ns, int):
-            raise ValueError("Windows process snapshot started_at_ns must be int or null")
+            raise ValueError(
+                "Windows process snapshot started_at_ns must be int or null"
+            )
         rows.append((pid, ppid, rss_kb, command, elapsed_sec, started_at_ns))
     return rows
 
@@ -126,7 +128,9 @@ def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
     return (ticks - 116444736000000000) / 10_000_000
 
 
-def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | None, int | None]]:
+def _windows_process_snapshot_rows() -> list[
+    tuple[int, int, int, str, int | None, int | None]
+]:
     if os.name != "nt":
         return []
     timeout_sec = _windows_process_snapshot_timeout_sec()

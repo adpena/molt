@@ -916,8 +916,7 @@ def parse_codex_crash_text(text: str) -> dict[str, Any]:
 
     warning_paths = sorted(
         dict.fromkeys(
-            match.group(1)
-            for match in re.finditer(r'"path"\s*:\s*"([^"]+)"', text)
+            match.group(1) for match in re.finditer(r'"path"\s*:\s*"([^"]+)"', text)
         )
     )
     return {
@@ -929,7 +928,9 @@ def parse_codex_crash_text(text: str) -> dict[str, Any]:
         "signal": signal,
         "most_recent_error": {
             "parsed": most_recent_error is not None,
-            "timestamp": most_recent_error.get("timestamp") if most_recent_error else None,
+            "timestamp": most_recent_error.get("timestamp")
+            if most_recent_error
+            else None,
             "level": most_recent_error.get("level") if most_recent_error else None,
             "target": most_recent_error.get("target") if most_recent_error else None,
             "message": fields.get("message"),
@@ -964,7 +965,10 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                 ),
             }
         )
-    if target == "codex_core::responses_retry" or "stream disconnected" in diagnostic_text:
+    if (
+        target == "codex_core::responses_retry"
+        or "stream disconnected" in diagnostic_text
+    ):
         classifications.append(
             {
                 "id": "responses_retry_stream_disconnected",
@@ -976,7 +980,10 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                 ),
             }
         )
-    if "interface.defaultPrompt" in diagnostic_text or "maximum of 3 prompts" in diagnostic_text:
+    if (
+        "interface.defaultPrompt" in diagnostic_text
+        or "maximum of 3 prompts" in diagnostic_text
+    ):
         classifications.append(
             {
                 "id": "plugin_default_prompt_manifest_warning",
@@ -988,7 +995,10 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                 ),
             }
         )
-    if "state db discrepancy" in diagnostic_text or "read_repair_rollout_path" in diagnostic_text:
+    if (
+        "state db discrepancy" in diagnostic_text
+        or "read_repair_rollout_path" in diagnostic_text
+    ):
         classifications.append(
             {
                 "id": "rollout_state_repair_symptom",
@@ -1204,7 +1214,9 @@ def run_codex_crash_diagnostic(args: argparse.Namespace) -> int:
         print("agent_coordination: codex-crash requires crash text", file=sys.stderr)
         return 2
     if args.max_plugin_manifests < 0:
-        print("agent_coordination: --max-plugin-manifests must be >= 0", file=sys.stderr)
+        print(
+            "agent_coordination: --max-plugin-manifests must be >= 0", file=sys.stderr
+        )
         return 2
 
     try:

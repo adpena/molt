@@ -18,14 +18,13 @@ NATIVE_CALLABLE_ABIS: tuple[str, ...] = (
 KNOWN_NATIVE_CALLABLE_ABIS: frozenset[str] = frozenset(NATIVE_CALLABLE_ABIS)
 NATIVE_CALLABLE_ABI_CHOICES = ", ".join(NATIVE_CALLABLE_ABIS)
 
+
 class _NativeCallableBrowserSignature(TypedDict):
     params: list[str]
     result: str
 
 
-_NATIVE_CALLABLE_BROWSER_SIGNATURES: dict[
-    str, _NativeCallableBrowserSignature
-] = {
+_NATIVE_CALLABLE_BROWSER_SIGNATURES: dict[str, _NativeCallableBrowserSignature] = {
     NATIVE_CALLABLE_ABI_OBJECT_CALL_V1: {
         "params": ["molt.value..."],
         "result": "molt.value",

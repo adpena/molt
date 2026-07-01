@@ -63,30 +63,36 @@ from tools.op_kinds.paths import (  # noqa: E402
 )  # noqa: E402
 
 for _module in (_schema, _validate, _render_rust, _render_python):
-    for _name in getattr(_module, '__all__', ()):  # re-export generator authority
+    for _name in getattr(_module, "__all__", ()):  # re-export generator authority
         globals()[_name] = getattr(_module, _name)
 
 OpKindTableError = _validate.OpKindTableError
+
 
 def _sync_facade_hooks() -> None:
     _validate.TABLE = TABLE
     _render_rust.ROOT = ROOT
     _render_rust.harness_memory_guard = harness_memory_guard
 
+
 def load_table(table_path: Path | None = None) -> dict:
     _sync_facade_hooks()
     return _validate.load_table(TABLE if table_path is None else table_path)
+
 
 def _rustfmt_rust_source(source: str) -> str:
     _sync_facade_hooks()
     return _render_rust._rustfmt_rust_source(source)
 
+
 def render_rs(data: dict) -> str:
     _sync_facade_hooks()
     return _render_rust.render_rs(data)
 
+
 def render_py(data: dict) -> str:
     return _render_python.render_py(data)
+
 
 def _check(path: Path, rendered: str) -> bool:
     """Return True if *path* is in sync with *rendered* (prints a diff hint)."""
@@ -101,9 +107,10 @@ def _check(path: Path, rendered: str) -> bool:
             f"  run `python3 tools/gen_op_kinds.py` to regenerate from "
             f"{TABLE.relative_to(ROOT)}",
             file=sys.stderr,
-)
+        )
         return False
     return True
+
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -130,6 +137,7 @@ def main(argv: list[str]) -> int:
     print(f"wrote {OUT_RS.relative_to(ROOT)}")
     print(f"wrote {OUT_PY.relative_to(ROOT)}")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))

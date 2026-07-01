@@ -714,9 +714,7 @@ def test_populate_sema_state_fills_god_object_dicts_from_result() -> None:
     assert not hasattr(gen, "module_subclassed_names")
     assert gen._sema.class_facts.method_names_by_class == {"A": frozenset({"m"})}
     assert gen._sema.class_facts.block_exec_class_nodes == frozenset()
-    assert gen._sema.class_facts.super_fold_sound_methods_by_class == {
-        "A": frozenset()
-    }
+    assert gen._sema.class_facts.super_fold_sound_methods_by_class == {"A": frozenset()}
     assert gen.module_func_defaults["f"]["params"] == 2
     assert gen._sema is sema
 

@@ -86,9 +86,7 @@ def test_unclassified_process_object_signal_fails(tmp_path: Path) -> None:
     module = _load_audit_tool()
     source = tmp_path / "bad_process_signal.py"
     source.write_text(
-        "def close(proc):\n"
-        "    proc.terminate()\n"
-        "    proc.kill()\n",
+        "def close(proc):\n    proc.terminate()\n    proc.kill()\n",
         encoding="utf-8",
     )
 

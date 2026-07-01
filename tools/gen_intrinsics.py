@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Generate intrinsics registry artifacts from the canonical manifest."""
 
 from __future__ import annotations
@@ -31,7 +31,9 @@ MATH_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-math/src/intrinsics_gener
 MATH_LEAF_RESOLVER_INDEX = MATH_LEAF_RESOLVERS_DIR / "mod.rs"
 XML_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-xml/src/intrinsics_generated"
 XML_LEAF_RESOLVER_INDEX = XML_LEAF_RESOLVERS_DIR / "mod.rs"
-DIFFLIB_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-difflib/src/intrinsics_generated"
+DIFFLIB_LEAF_RESOLVERS_DIR = (
+    ROOT / "runtime/molt-runtime-difflib/src/intrinsics_generated"
+)
 DIFFLIB_LEAF_RESOLVER_INDEX = DIFFLIB_LEAF_RESOLVERS_DIR / "mod.rs"
 IPADDRESS_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-runtime-ipaddress/src/intrinsics_generated"
@@ -43,9 +45,13 @@ COLLECTIONS_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-runtime-collections/src/intrinsics_generated"
 )
 COLLECTIONS_LEAF_RESOLVER_INDEX = COLLECTIONS_LEAF_RESOLVERS_DIR / "mod.rs"
-SERIAL_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-serial/src/intrinsics_generated"
+SERIAL_LEAF_RESOLVERS_DIR = (
+    ROOT / "runtime/molt-runtime-serial/src/intrinsics_generated"
+)
 SERIAL_LEAF_RESOLVER_INDEX = SERIAL_LEAF_RESOLVERS_DIR / "mod.rs"
-CRYPTO_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-crypto/src/intrinsics_generated"
+CRYPTO_LEAF_RESOLVERS_DIR = (
+    ROOT / "runtime/molt-runtime-crypto/src/intrinsics_generated"
+)
 CRYPTO_LEAF_RESOLVER_INDEX = CRYPTO_LEAF_RESOLVERS_DIR / "mod.rs"
 LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
@@ -751,7 +757,9 @@ def _write_text_if_changed(path: Path, text: str) -> bool:
     if path.exists() and path.read_text(encoding="utf-8") == text:
         return False
     if _CHECK_MODE:
-        _record_check_diff(path, path.read_text(encoding="utf-8") if path.exists() else "", text)
+        _record_check_diff(
+            path, path.read_text(encoding="utf-8") if path.exists() else "", text
+        )
         return True
     path.write_text(text, encoding="utf-8")
     return True
@@ -780,7 +788,9 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
             return False
         if _CHECK_MODE:
             _record_check_diff(
-                path, path.read_text(encoding="utf-8") if path.exists() else "", formatted
+                path,
+                path.read_text(encoding="utf-8") if path.exists() else "",
+                formatted,
             )
             return True
         tmp.replace(path)
@@ -952,7 +962,9 @@ def _write_leaf_facade_resolver_module(
 def _write_leaf_resolver_indexes(indexes: dict[Path, set[str]]) -> None:
     for index_path, modules in indexes.items():
         module_dir = (
-            index_path.parent if index_path.name == "mod.rs" else index_path.parent / index_path.stem
+            index_path.parent
+            if index_path.name == "mod.rs"
+            else index_path.parent / index_path.stem
         )
         module_dir.mkdir(parents=True, exist_ok=True)
         expected_files = {f"{module}.rs" for module in modules}
@@ -1158,7 +1170,7 @@ def _write_runtime_feature_gates_py() -> None:
     lines.append("    }\n")
     lines.append(")\n\n\n")
     lines.append("def feature_gate_for_symbol(symbol: str) -> str | None:\n")
-    lines.append("    \"\"\"Return the Cargo feature gate for *symbol*, or None.\"\"\"\n")
+    lines.append('    """Return the Cargo feature gate for *symbol*, or None."""\n')
     lines.append("    best: tuple[int, str] | None = None\n")
     lines.append("    for prefix, feature in RUNTIME_FEATURE_GATES:\n")
     lines.append("        if symbol.startswith(prefix):\n")
@@ -1166,9 +1178,11 @@ def _write_runtime_feature_gates_py() -> None:
     lines.append("            if best is None or prefix_len > best[0]:\n")
     lines.append("                best = (prefix_len, feature)\n")
     lines.append("    return best[1] if best is not None else None\n\n\n")
-    lines.append("def link_affecting_feature_gate_for_symbol(symbol: str) -> str | None:\n")
     lines.append(
-        "    \"\"\"Return *symbol*'s feature only when disabling it breaks link.\"\"\"\n"
+        "def link_affecting_feature_gate_for_symbol(symbol: str) -> str | None:\n"
+    )
+    lines.append(
+        '    """Return *symbol*\'s feature only when disabling it breaks link."""\n'
     )
     lines.append("    feature = feature_gate_for_symbol(symbol)\n")
     lines.append("    if feature is None or feature not in LINK_AFFECTING_FEATURES:\n")
@@ -1180,7 +1194,9 @@ def _write_runtime_feature_gates_py() -> None:
 def _remove_backend_overrides_rs() -> None:
     if _CHECK_MODE and OUT_BACKEND_OVERRIDES_RS.exists():
         _record_check_diff(
-            OUT_BACKEND_OVERRIDES_RS, OUT_BACKEND_OVERRIDES_RS.read_text(encoding="utf-8"), ""
+            OUT_BACKEND_OVERRIDES_RS,
+            OUT_BACKEND_OVERRIDES_RS.read_text(encoding="utf-8"),
+            "",
         )
         return
     OUT_BACKEND_OVERRIDES_RS.unlink(missing_ok=True)

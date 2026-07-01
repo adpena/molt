@@ -67,9 +67,7 @@ def test_every_tracked_codex_agent_doc_chain_fits_loader_budget() -> None:
     for agent_doc in _tracked_agent_docs():
         chain = _codex_agent_doc_chain_for(agent_doc)
         payload_size = sum(path.stat().st_size for path in chain)
-        pretty_chain = " -> ".join(
-            path.relative_to(ROOT).as_posix() for path in chain
-        )
+        pretty_chain = " -> ".join(path.relative_to(ROOT).as_posix() for path in chain)
         assert payload_size <= PROJECT_DOC_MAX_BYTES, (
             f"Codex instruction chain for {agent_doc.relative_to(ROOT).as_posix()} "
             f"is {payload_size} bytes, exceeding {PROJECT_DOC_MAX_BYTES}: "

@@ -11,7 +11,9 @@ def is_type_checking_test(
     expr: ast.expr,
     *,
     type_checking_names: Collection[str] = DEFAULT_TYPE_CHECKING_NAMES,
-    type_checking_module_aliases: Collection[str] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
+    type_checking_module_aliases: Collection[
+        str
+    ] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
 ) -> bool:
     if isinstance(expr, ast.Name):
         return expr.id in type_checking_names
@@ -27,7 +29,9 @@ def static_test_truthiness(
     expr: ast.expr,
     *,
     type_checking_names: Collection[str] = DEFAULT_TYPE_CHECKING_NAMES,
-    type_checking_module_aliases: Collection[str] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
+    type_checking_module_aliases: Collection[
+        str
+    ] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
 ) -> bool | None:
     """Return the compile-time truth value of an if/while test, or None.
 
@@ -110,7 +114,9 @@ def static_if_live_branch(
     node: ast.If,
     *,
     type_checking_names: Collection[str] = DEFAULT_TYPE_CHECKING_NAMES,
-    type_checking_module_aliases: Collection[str] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
+    type_checking_module_aliases: Collection[
+        str
+    ] = DEFAULT_TYPE_CHECKING_MODULE_ALIASES,
 ) -> list[ast.stmt] | None:
     truth = static_test_truthiness(
         node.test,

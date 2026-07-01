@@ -1260,10 +1260,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             else None
         )
         terminable_violations = [
-            violation for violation in violations if explicitly_owned_violation(violation)
+            violation
+            for violation in violations
+            if explicitly_owned_violation(violation)
         ]
         observed_violations = [
-            violation for violation in violations if violation not in terminable_violations
+            violation
+            for violation in violations
+            if violation not in terminable_violations
         ]
         incident_at = _utc_timestamp()
         if observed_violations:

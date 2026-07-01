@@ -41,7 +41,10 @@ from molt.cli.backend_execution import (
 )
 from molt.cli.build_locks import _build_lock
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
-from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
+from molt.cli.config_resolution import (
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
+    ENTRY_OVERRIDE_ENV,
+)
 from molt.cli.models import (
     BuildProfile,
     _BackendCacheSetup,

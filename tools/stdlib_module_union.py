@@ -17,9 +17,13 @@ import importlib.util as _importlib_util
 from pathlib import Path as _Path
 from types import ModuleType as _ModuleType
 
-BASELINE_PYTHON_VERSIONS = ('3.12', '3.13', '3.14')
+BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.14")
 
-_VERSION_MODULE_STEMS = {'3.12': 'stdlib_module_union_3_12', '3.13': 'stdlib_module_union_3_13', '3.14': 'stdlib_module_union_3_14'}
+_VERSION_MODULE_STEMS = {
+    "3.12": "stdlib_module_union_3_12",
+    "3.13": "stdlib_module_union_3_13",
+    "3.14": "stdlib_module_union_3_14",
+}
 
 
 def _load_version_data(version: str) -> _ModuleType:
@@ -34,8 +38,7 @@ def _load_version_data(version: str) -> _ModuleType:
 
 
 _VERSION_DATA = {
-    version: _load_version_data(version)
-    for version in BASELINE_PYTHON_VERSIONS
+    version: _load_version_data(version) for version in BASELINE_PYTHON_VERSIONS
 }
 
 STDLIB_MODULES_BY_VERSION = {

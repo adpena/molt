@@ -342,7 +342,8 @@ def compare(
         parts: list[str] = []
         if not verdict.stdout_ok:
             parts.append(
-                "stdout mismatch" if tier == TIER_STRICT
+                "stdout mismatch"
+                if tier == TIER_STRICT
                 else "stdout mismatch (normalized)"
             )
         if not verdict.exit_ok:

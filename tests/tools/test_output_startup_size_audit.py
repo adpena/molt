@@ -297,17 +297,12 @@ def test_main_writes_json_report_without_running_real_build(
     captured = capsys.readouterr()
     stdout_payload = json.loads(captured.out)
     progress_events = [
-        json.loads(line)
-        for line in captured.err.splitlines()
-        if line.strip()
+        json.loads(line) for line in captured.err.splitlines() if line.strip()
     ]
     payload = json.loads(json_out.read_text(encoding="utf-8"))
     assert rc == 0
     assert stdout_payload == payload
-    assert [
-        event["event"]
-        for event in progress_events
-    ] == [
+    assert [event["event"] for event in progress_events] == [
         "output_startup_size_audit.case_start",
         "output_startup_size_audit.case_done",
         "output_startup_size_audit.baseline_start",

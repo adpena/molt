@@ -43,4 +43,6 @@ def test_artifact_newer_than_sources_rejects_invalid_static_library(
     source = tmp_path / "source.rs"
     source.write_text("// source\n")
 
-    assert cli_backend_binary._artifact_newer_than_sources(runtime_lib, [source]) is False
+    assert (
+        cli_backend_binary._artifact_newer_than_sources(runtime_lib, [source]) is False
+    )

@@ -150,11 +150,10 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
     )
 
     # Closure reader A: module_stdlib_policy core-module selection.
-    assert (
-        module_stdlib_policy._core_stdlib_module_names_for_profile(None)
-        == module_stdlib_policy._core_stdlib_module_names_for_profile(
-            DEFAULT_STDLIB_PROFILE
-        )
+    assert module_stdlib_policy._core_stdlib_module_names_for_profile(
+        None
+    ) == module_stdlib_policy._core_stdlib_module_names_for_profile(
+        DEFAULT_STDLIB_PROFILE
     )
     # Raw artifact helpers operate on concrete runtime tiers; absent a selected
     # tier, their safe concrete fallback is micro, not the user-facing auto
@@ -162,10 +161,9 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
     assert module_stdlib_policy.DEFAULT_STDLIB_PROFILE is DEFAULT_STDLIB_PROFILE
     assert module_graph.DEFAULT_STDLIB_PROFILE is DEFAULT_STDLIB_PROFILE
     assert runtime_paths._normalize_runtime_stdlib_profile(None) == "micro"
-    assert (
-        module_stdlib_policy._core_stdlib_module_names_for_profile("auto")
-        == module_stdlib_policy._core_stdlib_module_names_for_profile("micro")
-    )
+    assert module_stdlib_policy._core_stdlib_module_names_for_profile(
+        "auto"
+    ) == module_stdlib_policy._core_stdlib_module_names_for_profile("micro")
     lower_artifact_functions = [
         backend_cache_setup._build_cache_variant,
         backend_cache_setup._prepare_backend_cache_setup,
@@ -214,9 +212,7 @@ def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
             captured["env"] = os.environ.get(MOLT_STDLIB_PROFILE_ENV)
             return None, 0  # (no inputs, sentinel error) -> build() returns early
 
-        monkeypatch.setattr(
-            cli._build_inputs, "_prepare_build_inputs", fake_prepare
-        )
+        monkeypatch.setattr(cli._build_inputs, "_prepare_build_inputs", fake_prepare)
         cli.build("examples/hello.py", stdlib_profile=None)
 
         assert captured.get("env") == expected
@@ -242,9 +238,7 @@ def test_no_independent_micro_literal_default_in_cli() -> None:
     # ``params.get("stdlib_profile", "micro")`` dict-default fallback.
     literal_get_default = re.compile(r'"stdlib_profile"\s*,\s*"micro"')
     # ``os.environ.get("MOLT_STDLIB_PROFILE", "micro")`` env fallback.
-    literal_env_get = re.compile(
-        r'"MOLT_STDLIB_PROFILE"\s*,\s*"micro"'
-    )
+    literal_env_get = re.compile(r'"MOLT_STDLIB_PROFILE"\s*,\s*"micro"')
     patterns = (
         literal_kwarg_default,
         literal_or,

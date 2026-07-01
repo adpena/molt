@@ -110,7 +110,9 @@ def test_windows_process_snapshot_timeout_env_contract() -> None:
         windows_snapshot._windows_process_snapshot_timeout_sec({})
         == windows_snapshot.DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
     )
-    assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "0.25"}) == 0.25
+    assert (
+        windows_snapshot._windows_process_snapshot_timeout_sec({name: "0.25"}) == 0.25
+    )
     assert windows_snapshot._windows_process_snapshot_timeout_sec({name: "bad"}) == (
         windows_snapshot.DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC
     )
@@ -327,8 +329,7 @@ def test_windows_codex_and_claude_processes_are_host_control_plane() -> None:
             ppid=1,
             rss_kb=1,
             command=(
-                "/usr/bin/node "
-                "/usr/local/lib/node_modules/@openai/codex/bin/codex.js"
+                "/usr/bin/node /usr/local/lib/node_modules/@openai/codex/bin/codex.js"
             ),
         ),
         module.ProcessSample(

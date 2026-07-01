@@ -504,19 +504,17 @@ def _load_module_imports(
         import_scan_mode=import_scan_mode,
     )
     if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
-        imports = (
-            _module_import_scanner._expand_imports_with_static_package_all_star_children(
-                imports,
-                tree,
-                module_name=module_name,
-                is_package=is_package,
-                import_scan_mode=import_scan_mode,
-                roots=roots,
-                stdlib_root=stdlib_root,
-                stdlib_allowlist=stdlib_allowlist,
-                resolution_cache=resolution_cache,
-                target_python=target_python,
-            )
+        imports = _module_import_scanner._expand_imports_with_static_package_all_star_children(
+            imports,
+            tree,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolution_cache=resolution_cache,
+            target_python=target_python,
         )
     if project_root is not None:
         with contextlib.suppress(OSError):

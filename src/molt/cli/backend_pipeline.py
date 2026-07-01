@@ -135,10 +135,14 @@ def _run_backend_pipeline(
         or target in {"wasm", "wasm-freestanding"}
         or (output_layout.target_triple or "").startswith("wasm32")
     )
-    runtime_stdlib_profile = _runtime_features.runtime_stdlib_profile_for_required_features(
-        stdlib_profile,
-        required_link_features,
-        target_triple="wasm32-wasip1" if is_wasm_target else output_layout.target_triple,
+    runtime_stdlib_profile = (
+        _runtime_features.runtime_stdlib_profile_for_required_features(
+            stdlib_profile,
+            required_link_features,
+            target_triple="wasm32-wasip1"
+            if is_wasm_target
+            else output_layout.target_triple,
+        )
     )
     if prepared_build_preamble.diagnostics_enabled:
         record_binary_image_analysis(

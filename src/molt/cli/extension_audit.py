@@ -67,15 +67,13 @@ def extension_audit(
             "Invalid --require-abi value. Expected MAJOR[.MINOR[.PATCH]].",
             json_output,
             command="extension-audit",
-    )
+        )
     required_abi = require_abi.strip() if require_abi is not None else None
     required_loader_kind = (
         require_loader_kind.strip() if require_loader_kind is not None else None
     )
     required_runtime_linkage = (
-        require_runtime_linkage.strip()
-        if require_runtime_linkage is not None
-        else None
+        require_runtime_linkage.strip() if require_runtime_linkage is not None else None
     )
     required_artifact_kind = (
         require_artifact_kind.strip() if require_artifact_kind is not None else None
@@ -240,7 +238,10 @@ def extension_audit(
             errors.append(f"extension artifact is not a regular file: {candidate}")
         else:
             expected_extension_sha = manifest.get("extension_sha256")
-            if isinstance(expected_extension_sha, str) and expected_extension_sha.strip():
+            if (
+                isinstance(expected_extension_sha, str)
+                and expected_extension_sha.strip()
+            ):
                 actual_extension_sha = _sha256_file(candidate)
                 if actual_extension_sha != expected_extension_sha.strip():
                     extension_file_status = "sha256-mismatch"
@@ -297,9 +298,7 @@ def extension_audit(
         )
         object_closure_summary = {
             "present": True,
-            "has_closure_sha256": isinstance(
-                object_closure.get("closure_sha256"), str
-            )
+            "has_closure_sha256": isinstance(object_closure.get("closure_sha256"), str)
             and bool(object_closure.get("closure_sha256")),
             "object_count": len(object_closure.get("objects") or [])
             if isinstance(object_closure.get("objects"), list)

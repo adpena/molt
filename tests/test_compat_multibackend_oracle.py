@@ -147,8 +147,7 @@ def install_fake_registry(monkeypatch):
 
     def _install(backend_results: dict, cpython=("42\n", "", 0)):
         registry = {
-            name: _FakeAdapter(name, result)
-            for name, result in backend_results.items()
+            name: _FakeAdapter(name, result) for name, result in backend_results.items()
         }
         # native still flows through run_molt -> stub run_molt to return the
         # native scripted result so even native is in-memory here.
@@ -164,9 +163,7 @@ def install_fake_registry(monkeypatch):
 
         monkeypatch.setattr(molt_diff, "run_molt", _fake_run_molt)
         monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", registry)
-        monkeypatch.setattr(
-            molt_diff, "run_cpython", lambda *a, **k: cpython
-        )
+        monkeypatch.setattr(molt_diff, "run_cpython", lambda *a, **k: cpython)
 
     return _install
 
@@ -181,9 +178,7 @@ def test_all_backends_agree_with_cpython_passes(
         },
         cpython=("42\n", "", 0),
     )
-    status = molt_diff.diff_test(
-        str(fake_test_file), targets=("native", "wasm")
-    )
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
     assert status == "pass"
 
 
@@ -203,9 +198,7 @@ def test_one_backend_wrong_vs_cpython_fails(
     native_only = molt_diff.diff_test(str(fake_test_file), targets=("native",))
     assert native_only == "pass"
     # Multi-backend: RED.
-    status = molt_diff.diff_test(
-        str(fake_test_file), targets=("native", "wasm")
-    )
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
     assert status == "fail"
 
 
@@ -221,9 +214,7 @@ def test_backends_disagree_with_each_other_fails(
         },
         cpython=("Z\n", "", 0),
     )
-    status = molt_diff.diff_test(
-        str(fake_test_file), targets=("native", "wasm")
-    )
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
     assert status == "fail"
 
 
@@ -246,9 +237,7 @@ def test_fault_injection_seam_produces_divergence(
         },
         cpython=("42\n", "", 0),
     )
-    status = molt_diff.diff_test(
-        str(fake_test_file), targets=("native", "wasm")
-    )
+    status = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
     assert status == "fail"
 
 
@@ -258,9 +247,7 @@ def test_fault_injection_inert_when_unset() -> None:
     assert out.stdout == base.stdout  # no env -> no perturbation
 
 
-def test_uncalibrated_when_no_backend_available(
-    fake_test_file, monkeypatch
-) -> None:
+def test_uncalibrated_when_no_backend_available(fake_test_file, monkeypatch) -> None:
     # A backend whose toolchain is unavailable is a LOUD uncalibrated, never a
     # silent pass. With only an unavailable backend requested, the test resolves
     # to "uncalibrated".
@@ -275,9 +262,7 @@ def test_uncalibrated_when_no_backend_available(
         def build_and_run(self, *a, **k):  # pragma: no cover - never called
             raise AssertionError("unavailable backend must not run")
 
-    monkeypatch.setattr(
-        molt_diff, "_COMPAT_BACKEND_REGISTRY", {"luau": _Unavailable()}
-    )
+    monkeypatch.setattr(molt_diff, "_COMPAT_BACKEND_REGISTRY", {"luau": _Unavailable()})
     monkeypatch.setattr(molt_diff, "run_cpython", lambda *a, **k: ("42\n", "", 0))
     status = molt_diff.diff_test(str(fake_test_file), targets=("luau",))
     assert status == "uncalibrated"

@@ -298,7 +298,9 @@ def materialize_deploy_bundle(
             Path(surface["artifacts"]["tokenizer_json"]), assets_root / "tokenizer.json"
         )
     _copy_file(REPO_ROOT / "wasm" / "browser_host.js", assets_root / "browser_host.js")
-    _copy_file(REPO_ROOT / "wasm" / "loader_bridge.js", assets_root / "loader_bridge.js")
+    _copy_file(
+        REPO_ROOT / "wasm" / "loader_bridge.js", assets_root / "loader_bridge.js"
+    )
     _copy_file(
         REPO_ROOT / "wasm" / "molt_vfs_browser.js", assets_root / "molt_vfs_browser.js"
     )

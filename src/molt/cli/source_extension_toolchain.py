@@ -94,9 +94,7 @@ def _source_extension_toolchain_advice() -> str:
 
 
 def _wasm_compiler_probe_target_args(command: tuple[str, ...]) -> tuple[str, ...]:
-    has_target = any(
-        arg == "-target" or arg.startswith("--target") for arg in command
-    )
+    has_target = any(arg == "-target" or arg.startswith("--target") for arg in command)
     return () if has_target else ("-target", "wasm32-wasip1")
 
 
@@ -279,7 +277,10 @@ def _resolve_source_extension_wasm_toolchain() -> _SourceExtensionWasmToolchain:
         compiler_cmd=(),
         wasm_ld=wasm_ld_path,
         wasi_sysroot=wasi_sysroot,
-        detail="missing " + ", ".join(missing) + "; " + _source_extension_toolchain_advice(),
+        detail="missing "
+        + ", ".join(missing)
+        + "; "
+        + _source_extension_toolchain_advice(),
     )
 
 

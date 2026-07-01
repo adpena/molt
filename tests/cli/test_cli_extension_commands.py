@@ -146,7 +146,7 @@ def _write_extension_project(
         "int demoext_version(void) { return (int)molt_c_api_version(); }\n"
         "static PyModuleDef demoext_module = {\n"
         "    PyModuleDef_HEAD_INIT,\n"
-        "    \"demoext\",\n"
+        '    "demoext",\n'
         "    NULL,\n"
         "    -1,\n"
         "    NULL,\n"
@@ -858,9 +858,7 @@ def test_extension_scan_resolves_package_defined_py_symbols(
     assert "PyTripleDocOnly" not in data["required_symbols"]
 
 
-def test_extension_scan_preserves_guarded_body_symbols(
-    tmp_path: Path, capsys
-) -> None:
+def test_extension_scan_preserves_guarded_body_symbols(tmp_path: Path, capsys) -> None:
     project_root = tmp_path / "scan_guarded_body"
     src = project_root / "src"
     src.mkdir(parents=True)
@@ -1126,8 +1124,7 @@ def test_extension_build_emits_public_exports_in_manifest(
     )
     source_path = project_root / "src" / "demoext.c"
     source_path.write_text(
-        source_path.read_text()
-        + "\nstatic PyTypeObject PyLocal_Type = {0};\n"
+        source_path.read_text() + "\nstatic PyTypeObject PyLocal_Type = {0};\n"
     )
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -1327,7 +1324,9 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
             out_path.write_bytes(b"shared")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
     monkeypatch.setattr(
         cli_commands.shutil,
         "which",
@@ -1408,22 +1407,24 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
 
     assert rc == 0
     compile_cmd = next(
-        cmd for cmd in commands if "-c" in cmd and any("demoext.c" in part for part in cmd)
+        cmd
+        for cmd in commands
+        if "-c" in cmd and any("demoext.c" in part for part in cmd)
     )
     include_dirs = [
         Path(compile_cmd[idx + 1]).resolve()
         for idx, token in enumerate(compile_cmd[:-1])
         if token == "-I"
     ]
-    assert include_dirs.index((ROOT / "include" / "molt").resolve()) < include_dirs.index(
-        project_root.resolve()
-    )
+    assert include_dirs.index(
+        (ROOT / "include" / "molt").resolve()
+    ) < include_dirs.index(project_root.resolve())
     assert include_dirs.index(project_root.resolve()) < include_dirs.index(
         (project_root / "pkg" / "include").resolve()
     )
-    assert include_dirs.index((project_root / "pkg" / "include").resolve()) < include_dirs.index(
-        (ROOT / "include").resolve()
-    )
+    assert include_dirs.index(
+        (project_root / "pkg" / "include").resolve()
+    ) < include_dirs.index((ROOT / "include").resolve())
     link_cmd = next(cmd for cmd in commands if "-shared" in cmd)
     assert any("0_demoext.o" in part for part in link_cmd)
     assert any("1_helper_generated.o" in part for part in link_cmd)
@@ -1468,16 +1469,18 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert "NPY_DISABLED_SVE" not in required_c_api_symbols
     assert "PyCode_NewWithPosOnlyArgs" not in required_c_api_symbols
     assert "PyTuple_New" in required_c_api_symbols
-    assert (out_dir / "pkg" / "__init__.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert (out_dir / "pkg" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
     artifact_path = out_dir / manifest["extension"]
     artifact_manifest = json.loads(
         artifact_path.with_name(
             artifact_path.name + ".extension_manifest.json"
         ).read_text(encoding="utf-8")
     )
-    assert artifact_manifest["source_plan"]["digest"] == manifest["source_plan"][
-        "digest"
-    ]
+    assert (
+        artifact_manifest["source_plan"]["digest"] == manifest["source_plan"]["digest"]
+    )
     assert artifact_manifest["python_exports"] == ["pkg.demoext"]
 
 
@@ -1670,7 +1673,9 @@ def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
         fake_run,
     )
 
-    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+    toolchain = (
+        cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+    )
 
     assert toolchain.ok is False
     assert toolchain.compiler_kind == "molt_wasm_cc"
@@ -1708,7 +1713,9 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
         fake_run,
     )
 
-    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+    toolchain = (
+        cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+    )
 
     assert toolchain.ok is True
     assert toolchain.compiler_kind == "molt_wasm_cc"
@@ -1752,7 +1759,9 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
         fake_run,
     )
 
-    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+    toolchain = (
+        cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain()
+    )
 
     assert toolchain.ok is True
     assert toolchain.compiler_kind == "clang"
@@ -1816,7 +1825,9 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -1847,7 +1858,8 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
     assert artifact_path.exists()
     assert artifact_path.read_bytes() == wasm_bytes
     assert [
-        export.name for export in wasm_artifact.read_wasm_function_exports(artifact_path)
+        export.name
+        for export in wasm_artifact.read_wasm_function_exports(artifact_path)
     ] == [native_symbol]
 
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
@@ -1904,7 +1916,9 @@ def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -1957,7 +1971,9 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -2026,7 +2042,9 @@ def test_extension_build_wasm_target_rejects_missing_direct_symbol(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
     wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
     monkeypatch.setattr(
         cli_commands,
@@ -2065,7 +2083,9 @@ def test_extension_build_wasm_target_requires_wasi_sysroot(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True)
+    monkeypatch.setattr(
+        cli_commands, "_ensure_rustup_target", lambda _target, _warnings: True
+    )
     monkeypatch.setattr(
         cli_commands,
         "resolve_wasi_sysroot",
@@ -2350,9 +2370,7 @@ def test_extension_audit_reports_required_callable_exports_json(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "ok"
-    assert payload["data"]["python_exports"] == [
-        "scipy.ndimage.distance_transform_edt"
-    ]
+    assert payload["data"]["python_exports"] == ["scipy.ndimage.distance_transform_edt"]
     assert payload["data"]["callable_exports"] == [
         "scipy.ndimage.distance_transform_edt"
     ]
@@ -2576,15 +2594,13 @@ def test_extension_seal_publishes_provider_module_support_source(
     )
     stale_provider_source = artifact_dir / "_stale.py"
     stale_provider_source.write_text(
-        "def stale_distance_transform(mask):\n"
-        "    return mask\n",
+        "def stale_distance_transform(mask):\n    return mask\n",
         encoding="utf-8",
     )
     helper_source = tmp_path / "upstream_numpy" / "numpy" / "exceptions.py"
     helper_source.parent.mkdir(parents=True)
     helper_source.write_text(
-        "class AxisError(ValueError, IndexError):\n"
-        "    pass\n",
+        "class AxisError(ValueError, IndexError):\n    pass\n",
         encoding="utf-8",
     )
     source_path = source_dir / "nd_image.c"
@@ -2629,7 +2645,9 @@ def test_extension_seal_publishes_provider_module_support_source(
         "support_files": [
             {
                 "path": "scipy/ndimage/_stale.py",
-                "sha256": hashlib.sha256(stale_provider_source.read_bytes()).hexdigest(),
+                "sha256": hashlib.sha256(
+                    stale_provider_source.read_bytes()
+                ).hexdigest(),
             }
         ],
         "callable_exports": [
@@ -2700,7 +2718,10 @@ def test_extension_seal_publishes_provider_module_support_source(
     ]
     sealed_manifest = json.loads(
         (
-            sealed_root / "scipy" / "ndimage" / "_nd_image.molt.wasm.extension_manifest.json"
+            sealed_root
+            / "scipy"
+            / "ndimage"
+            / "_nd_image.molt.wasm.extension_manifest.json"
         ).read_text(encoding="utf-8")
     )
     assert sealed_manifest["support_files"] == [
@@ -2920,7 +2941,9 @@ def test_extension_audit_rejects_static_link_artifact_hash_mismatch(
     )
 
     assert rc == 1
-    assert "extension_sha256 does not match extension artifact" in capsys.readouterr().out
+    assert (
+        "extension_sha256 does not match extension artifact" in capsys.readouterr().out
+    )
 
 
 def test_verify_extension_manifest_requires_checksums(tmp_path: Path) -> None:

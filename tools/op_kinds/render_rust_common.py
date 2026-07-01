@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+
 def _rs_bool(value: bool) -> str:
     return "true" if value else "false"
+
 
 def _rs_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -10,6 +12,7 @@ def _rs_string(value: str) -> str:
 # ---------------------------------------------------------------------------
 # Table loading + validation
 # ---------------------------------------------------------------------------
+
 
 def _render_matches_arm(spellings: list[str]) -> str:
     """Render the body of a `matches!(kind, ...)` as one `|`-joined OR-pattern,
@@ -26,6 +29,7 @@ def _render_matches_arm(spellings: list[str]) -> str:
         lines.append(f'        "{s}"{sep}\n')
     return "".join(lines)
 
+
 def _render_opcode_bool_arms(opcodes: list[dict], truthy: list[str]) -> str:
     """Render exhaustive `OpCode::X => bool` arms in table order."""
     truthy_set = set(truthy)
@@ -34,6 +38,7 @@ def _render_opcode_bool_arms(opcodes: list[dict], truthy: list[str]) -> str:
         name = row["name"]
         lines.append(f"        OpCode::{name} => {_rs_bool(name in truthy_set)},\n")
     return "".join(lines)
+
 
 def _opcode_const_suffix(opcode: str) -> str:
     words: list[str] = []

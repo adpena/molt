@@ -216,6 +216,7 @@ def _normalize_tensor_index(shape, idx):
         raise IndexError("too many indices for tensor")
     return tuple(result)
 
+
 def _broadcast_shape_pair(lhs_shape, rhs_shape) -> tuple[int, ...]:
     out_ndim = max(len(lhs_shape), len(rhs_shape))
     lhs = (1,) * (out_ndim - len(lhs_shape)) + tuple(lhs_shape)
@@ -329,10 +330,6 @@ _INT_FORMAT_RANK = {
     "q": 4,
     "Q": 4,
 }
-
-
-
-
 
 
 def _div_result_dtype_and_format(

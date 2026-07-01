@@ -387,7 +387,9 @@ def _manifest_support_file_sha256(
             continue
         rel_text = rel_value.replace("\\", "/").strip()
         rel_path = Path(rel_text)
-        if rel_path.is_absolute() or any(part in {"", ".", ".."} for part in rel_path.parts):
+        if rel_path.is_absolute() or any(
+            part in {"", ".", ".."} for part in rel_path.parts
+        ):
             errors.append(f"{label}.path escapes the package root: {rel_value!r}")
             continue
         if not (
@@ -502,8 +504,7 @@ def _manifest_py_methoddef_names(
             )
         except OSError as exc:
             errors.append(
-                f"extension_manifest.json source {source_path} could not be read: "
-                f"{exc}"
+                f"extension_manifest.json source {source_path} could not be read: {exc}"
             )
     return frozenset(names)
 
@@ -951,8 +952,8 @@ def _validate_wasm_relocatable_undefined_symbol_custody(
             return import_errors
     assert binary_import_symbols is not None
     sidecar_symbols = _manifest_object_closure_undefined_symbols(manifest)
-    external_sidecar_symbols = (
-        _manifest_object_closure_external_undefined_symbols(manifest)
+    external_sidecar_symbols = _manifest_object_closure_external_undefined_symbols(
+        manifest
     )
     missing_from_sidecar = [
         symbol for symbol in binary_import_symbols if symbol not in sidecar_symbols
@@ -966,8 +967,7 @@ def _validate_wasm_relocatable_undefined_symbol_custody(
     if missing_from_sidecar:
         errors.append(
             f"{package}: {artifact_path.name} imports symbols absent from "
-            "object_closure.undefined_symbols: "
-            + ", ".join(missing_from_sidecar)
+            "object_closure.undefined_symbols: " + ", ".join(missing_from_sidecar)
         )
     if stale_in_sidecar:
         errors.append(
@@ -1550,9 +1550,11 @@ def _resolve_external_package_native_artifact_plan(
         )
     if errors:
         return None, errors
-    closed_artifacts, capsule_errors = _close_external_native_capsule_provider_artifacts(
-        artifacts,
-        provider_candidates,
+    closed_artifacts, capsule_errors = (
+        _close_external_native_capsule_provider_artifacts(
+            artifacts,
+            provider_candidates,
+        )
     )
     if capsule_errors:
         return None, capsule_errors
@@ -1612,9 +1614,7 @@ def _manifest_is_wasm_static_link_artifact(manifest: Mapping[str, Any]) -> bool:
     if artifact_kind not in {"wasm_relocatable_object", "static_archive"}:
         return False
     target_triple = manifest.get("target_triple")
-    return isinstance(target_triple, str) and target_triple.lower().startswith(
-        "wasm32"
-    )
+    return isinstance(target_triple, str) and target_triple.lower().startswith("wasm32")
 
 
 def _external_package_has_wasm_static_link_artifact(package_dir: Path) -> bool:
@@ -1796,9 +1796,7 @@ def _resolve_import_admission_policy(
         if wasm_native_source_errors:
             return None, _fail(
                 "External static package native-artifact custody errors: "
-                + _external_native_artifact_error_summary(
-                    wasm_native_source_errors
-                ),
+                + _external_native_artifact_error_summary(wasm_native_source_errors),
                 json_output,
                 command="build",
             )
@@ -1809,18 +1807,18 @@ def _resolve_import_admission_policy(
         if wasm_export_custody_errors:
             return None, _fail(
                 "External static package native-artifact custody errors: "
-                + _external_native_artifact_error_summary(
-                    wasm_export_custody_errors
-                ),
+                + _external_native_artifact_error_summary(wasm_export_custody_errors),
                 json_output,
                 command="build",
             )
     if defer_native_artifacts:
         native_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     else:
-        native_plan, native_plan_errors = _resolve_external_package_native_artifact_plan(
-            external_module_roots=external_module_roots,
-            admitted_packages=packages,
+        native_plan, native_plan_errors = (
+            _resolve_external_package_native_artifact_plan(
+                external_module_roots=external_module_roots,
+                admitted_packages=packages,
+            )
         )
         if native_plan_errors:
             return None, _fail(

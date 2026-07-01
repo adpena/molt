@@ -63,7 +63,7 @@ def test_allows_cfg_alternatives_inside_one_satellite(tmp_path: Path) -> None:
     ) as fh:
         fh.write(
             "\n#[cfg(unix)]\n"
-            '#[unsafe(no_mangle)]\n'
+            "#[unsafe(no_mangle)]\n"
             'pub extern "C" fn molt_cfg_owned() -> u64 { 2 }\n'
         )
 

@@ -306,9 +306,7 @@ def _molt_cmd(
     return cmd
 
 
-def _codon_run_binary(
-    binary: Path, args: Sequence[str]
-) -> list[str]:
+def _codon_run_binary(binary: Path, args: Sequence[str]) -> list[str]:
     return [str(binary), *args]
 
 
@@ -397,9 +395,7 @@ def _measure_lane(
             )
             return record
         binary = codon_build_dir / f"{kernel_id}.exe"
-        build = _build_codon_binary(
-            codon, codon_src, binary, timeout=timeout, env=None
-        )
+        build = _build_codon_binary(codon, codon_src, binary, timeout=timeout, env=None)
         build_info = {
             "cmd": [codon, "build", "-release", str(codon_src), "-o", str(binary)],
             "returncode": build.returncode,

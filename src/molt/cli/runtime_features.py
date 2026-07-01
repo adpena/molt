@@ -138,9 +138,7 @@ def _runtime_cargo_feature_graph() -> dict[str, tuple[str, ...]]:
     ``crate?/feat`` cross-crate feature activations, verbatim).  Anchored at the
     compiler root via ``_compiler_root`` so the read is cwd-independent.
     """
-    cargo_path = (
-        _compiler_root() / "runtime" / "molt-runtime" / "Cargo.toml"
-    )
+    cargo_path = _compiler_root() / "runtime" / "molt-runtime" / "Cargo.toml"
     with cargo_path.open("rb") as handle:
         manifest = tomllib.load(handle)
     features = manifest.get("features", {})
@@ -306,10 +304,7 @@ def _wasm_runtime_feature_plan(
         profile_features.append("stdlib_micro")
     cargo_features = tuple(
         _dedupe_preserve_order(
-            list(runtime_features)
-            + profile_features
-            + required_features
-            + gpu_features
+            list(runtime_features) + profile_features + required_features + gpu_features
         )
     )
     fingerprint_features = tuple(

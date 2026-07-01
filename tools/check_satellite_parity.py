@@ -188,7 +188,9 @@ def _strip_cfg_test_items(lines: list[str]) -> list[str]:
                 elif ch == "}":
                     depth -= 1
             i += 1
-            if (saw_brace and depth <= 0) or (not saw_brace and line.strip().endswith(";")):
+            if (saw_brace and depth <= 0) or (
+                not saw_brace and line.strip().endswith(";")
+            ):
                 break
     return out
 

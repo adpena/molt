@@ -51,7 +51,7 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
 
     registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text()
     assert "fn attach_function_defaults" in registry
-    assert "b\"__defaults__\"" in registry
+    assert 'b"__defaults__"' in registry
     assert "function_set_attr_bits(_py, ptr, defaults_name, defaults_bits)" in registry
     assert (
         registry.count("build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)")
@@ -320,8 +320,7 @@ def test_collections_and_argparse_resolvers_are_leaf_owned() -> None:
 
     assert "crate::argparse::molt_argparse_parser_new as *const ()" in leaf_argparse
     assert (
-        "molt_runtime_collections::argparse::molt_argparse_parser_new"
-        in leaf_argparse
+        "molt_runtime_collections::argparse::molt_argparse_parser_new" in leaf_argparse
     )
     assert "crate::collections_ext::molt_deque_append as *const ()" in (
         leaf_collections

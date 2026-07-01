@@ -961,9 +961,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     assert prepared is not None
     prepared = replace(
         prepared,
-        runtime_import_dispatch_roots=frozenset(
-            {"nativepkg.ndimage.gaussian_filter"}
-        ),
+        runtime_import_dispatch_roots=frozenset({"nativepkg.ndimage.gaussian_filter"}),
     )
 
     import_plan = cli._materialize_import_plan(
@@ -1010,8 +1008,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
         encoding="utf-8",
     )
     exceptions_path.write_text(
-        "class AxisError(Exception):\n"
-        "    pass\n",
+        "class AxisError(Exception):\n    pass\n",
         encoding="utf-8",
     )
     filters_sha = hashlib.sha256(filters_path.read_bytes()).hexdigest()
@@ -1119,7 +1116,8 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     assert "numpy.exceptions" in import_plan.known_modules
     assert "numpy" in import_plan.runtime_import_dispatch_roots
     native_init_modules = {
-        spec.module for spec in import_plan.native_artifact_plan.native_module_init_specs()
+        spec.module
+        for spec in import_plan.native_artifact_plan.native_module_init_specs()
     }
     assert "scipy._lib" in native_init_modules
     assert "scipy._lib._util" in native_init_modules
@@ -1201,9 +1199,7 @@ def test_materialize_import_plan_compiles_pruned_native_support_source(
     assert prepared is not None
     prepared = replace(
         prepared,
-        runtime_import_dispatch_roots=frozenset(
-            {"nativepkg.ndimage.gaussian_filter"}
-        ),
+        runtime_import_dispatch_roots=frozenset({"nativepkg.ndimage.gaussian_filter"}),
     )
 
     import_plan = cli._materialize_import_plan(
@@ -1233,11 +1229,17 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     external_root = tmp_path / "site"
     support_path = external_root / "nativepkg" / "ndimage" / "_measurements.py"
     support_path.parent.mkdir(parents=True)
-    source_candidate = tmp_path / "upstream" / "nativepkg" / "ndimage" / "src" / "_ni_label.pyx"
+    source_candidate = (
+        tmp_path / "upstream" / "nativepkg" / "ndimage" / "src" / "_ni_label.pyx"
+    )
     source_candidate.parent.mkdir(parents=True)
-    source_candidate.write_text("# upstream cython source candidate\n", encoding="utf-8")
+    source_candidate.write_text(
+        "# upstream cython source candidate\n", encoding="utf-8"
+    )
     provenance_source = source_candidate.with_name("ni_measure.c")
-    provenance_source.write_text("int ni_measure(void) { return 0; }\n", encoding="utf-8")
+    provenance_source.write_text(
+        "int ni_measure(void) { return 0; }\n", encoding="utf-8"
+    )
     support_path.write_text(
         "from . import _ni_label\n\n"
         "def label(value):\n"
@@ -1368,7 +1370,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
                 {
                     "path": "nativepkg/ndimage/_docstrings.py",
                     "sha256": doc_sha,
-                }
+                },
             ],
             "callable_exports": [
                 {
@@ -1409,9 +1411,7 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     assert prepared is not None
     prepared = replace(
         prepared,
-        runtime_import_dispatch_roots=frozenset(
-            {"nativepkg.ndimage.gaussian_filter"}
-        ),
+        runtime_import_dispatch_roots=frozenset({"nativepkg.ndimage.gaussian_filter"}),
     )
 
     import_plan = cli._materialize_import_plan(
@@ -1433,7 +1433,9 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     assert "math" not in import_plan.module_graph
     assert "math" not in import_plan.runtime_import_dispatch_roots
     assert "nativepkg.ndimage._docstrings" not in import_plan.module_graph
-    assert "nativepkg.ndimage._docstrings" not in import_plan.runtime_import_dispatch_roots
+    assert (
+        "nativepkg.ndimage._docstrings" not in import_plan.runtime_import_dispatch_roots
+    )
     assert "native_support_source_closure" in module_reasons["collections"]
     assert "native_support_source_closure" in module_reasons["collections.abc"]
 
@@ -2256,9 +2258,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
                 path=artifact_path,
                 manifest_path=manifest_path,
                 extension_sha256=hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-                manifest_sha256=hashlib.sha256(
-                    manifest_path.read_bytes()
-                ).hexdigest(),
+                manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                 capabilities=(),
                 abi_tag="molt_abi1",
                 target_triple="wasm32-wasip1",
@@ -3918,9 +3918,7 @@ def test_external_native_artifact_plan_shadows_later_duplicate_module_roots(
 
     assert errors == []
     assert plan is not None
-    assert [artifact.path for artifact in plan.artifacts] == [
-        staged_artifact.resolve()
-    ]
+    assert [artifact.path for artifact in plan.artifacts] == [staged_artifact.resolve()]
     assert plan.native_callable_exports_by_qualified_name() == {
         "nativepkg.ndimage.gaussian_filter": {
             "module": "nativepkg.ndimage",
@@ -3949,9 +3947,7 @@ def test_scoped_native_callable_exports_include_provider_module() -> None:
         "nativepkg.ndimage._filters",
         module_deps={"nativepkg.ndimage._filters": set()},
         module_dep_closures={
-            "nativepkg.ndimage._filters": frozenset(
-                {"nativepkg.ndimage._filters"}
-            )
+            "nativepkg.ndimage._filters": frozenset({"nativepkg.ndimage._filters"})
         },
         native_callable_exports=exports,
     )
@@ -17133,11 +17129,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         if module_name == "molt_runtime":
             return {"alloc"}
-        if (
-            module_name == "molt_native"
-            and path.name == "app.wasm"
-            and not link_calls
-        ):
+        if module_name == "molt_native" and path.name == "app.wasm" and not link_calls:
             return {"PyInit__nd_image"}
         return set()
 
@@ -17213,9 +17205,7 @@ def test_split_runtime_static_native_reuse_rejects_hidden_active_table_slot(
 
     type_payload = wasm_vec([b"\x60\x00\x00"])
     function_payload = wasm_vec([wasm_artifact._write_wasm_varuint(0)])
-    table_payload = wasm_vec(
-        [b"\x70\x00" + wasm_artifact._write_wasm_varuint(1025)]
-    )
+    table_payload = wasm_vec([b"\x70\x00" + wasm_artifact._write_wasm_varuint(1025)])
     element_payload = wasm_vec(
         [
             b"\x00\x41"

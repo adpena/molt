@@ -41,8 +41,7 @@ from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
 
 SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
 RUNTIME_IMPORT_ABI_FACTS_RS = (
-    ROOT
-    / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
 RUNTIME_IMPORT_FIXED_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
@@ -367,7 +366,10 @@ def runtime_import_abi_facts(
             continue
         fact = constants[const]
         expected_return = "I64" if match.group("ctor") == "i64_ret" else "Void"
-        if fact.arity == int(match.group("arity")) and fact.return_abi == expected_return:
+        if (
+            fact.arity == int(match.group("arity"))
+            and fact.return_abi == expected_return
+        ):
             _insert_abi_fact(facts, duplicates, fact)
     return facts, tuple(sorted(duplicates))
 

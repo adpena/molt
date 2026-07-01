@@ -107,33 +107,33 @@ def _seed_valid_repo(root: Path) -> None:
         root / "docs/design/foundation/authority_manifest.toml",
         "\n".join(
             [
-                '[[authority]]',
+                "[[authority]]",
                 'path = "docs/design/foundation/00_integrated_parallel_program.md"',
-                'required_markers = [',
+                "required_markers = [",
                 '  "Supersedes stale",',
                 '  "live codebase, executable tests, and generated evidence are authoritative",',
-                ']',
-                '',
-                '[[authority]]',
+                "]",
+                "",
+                "[[authority]]",
                 'path = "docs/design/foundation/51_ten_year_roadmap.md"',
                 'index_ref = "design/foundation/51_ten_year_roadmap.md"',
                 'canonicals_ref = "design/foundation/51_ten_year_roadmap.md"',
-                'required_markers = [',
+                "required_markers = [",
                 '  "Status: NORTH STAR",',
                 '  "Faster than CPython",',
                 '  "SEMANTIC FACT PLANE",',
-                ']',
-                '',
-                '[[authority]]',
+                "]",
+                "",
+                "[[authority]]",
                 'path = "docs/design/foundation/52_autonomous_operating_charter.md"',
                 'index_ref = "design/foundation/52_autonomous_operating_charter.md"',
                 'canonicals_ref = "design/foundation/52_autonomous_operating_charter.md"',
-                'required_markers = [',
+                "required_markers = [",
                 '  "Status: BINDING OPERATING DOCTRINE",',
                 '  "design docs go stale",',
                 '  "The verifier is the product",',
-                ']',
-                '',
+                "]",
+                "",
             ]
         ),
     )
@@ -328,7 +328,9 @@ def test_checker_requires_foundation_portfolio_numbering_to_match_filename(
     errors = module.check_repo()
 
     assert any("64_perf_scoreboards_and_harness.md" in error for error in errors)
-    assert any("heading number must match filename prefix 64" in error for error in errors)
+    assert any(
+        "heading number must match filename prefix 64" in error for error in errors
+    )
     assert any("Foundation blueprint metadata" in error for error in errors)
     assert any("doc metadata" in error for error in errors)
 

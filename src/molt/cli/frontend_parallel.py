@@ -159,7 +159,9 @@ def _choose_frontend_parallel_layer_workers(
     )
     effective_min_predicted_cost = float(min_predicted_cost)
     if stdlib_candidates > 0:
-        effective_min_predicted_cost *= _resolve_frontend_parallel_stdlib_min_cost_scale()
+        effective_min_predicted_cost *= (
+            _resolve_frontend_parallel_stdlib_min_cost_scale()
+        )
     if predicted_cost_total < effective_min_predicted_cost:
         return {
             "enabled": False,
@@ -257,6 +259,7 @@ def _frontend_result_timings(result: Mapping[str, Any]) -> _FrontendModuleResult
         lower_s=float(timings.get("lower_s", 0.0)),
         total_s=float(timings.get("total_s", 0.0)),
     )
+
 
 def _frontend_layer_policy_summary(
     layer_policy: Mapping[str, Any],

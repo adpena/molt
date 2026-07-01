@@ -37,6 +37,7 @@ from molt.cli.target_python import (
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
 from molt.compiler_analysis import native_support_slice as _native_support_slice
+
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 
 
@@ -114,7 +115,9 @@ def _collect_namespace_parents(
 
     if explicit_imports:
         for name in explicit_imports:
-            for candidate in _module_dependency_authority._expand_module_chain_cached(name):
+            for candidate in _module_dependency_authority._expand_module_chain_cached(
+                name
+            ):
                 maybe_add(candidate)
     return namespace_parents
 
@@ -403,9 +406,7 @@ def _augment_support_modules(
     ):
         generated_module_source_paths.setdefault(
             _module_import_scanner.IMPORTER_MODULE_NAME,
-            _logical_generated_module_path(
-                _module_import_scanner.IMPORTER_MODULE_NAME
-            ),
+            _logical_generated_module_path(_module_import_scanner.IMPORTER_MODULE_NAME),
         )
     return _SupportModuleAugmentation(
         namespace_module_names=frozenset(namespace_modules),
@@ -465,8 +466,8 @@ def _extend_native_support_source_closure(
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
     if not support_paths_by_module:
         return frozenset()
-    native_support_function_roots_by_module = (
-        _native_support_function_roots_by_module(native_artifact_plan)
+    native_support_function_roots_by_module = _native_support_function_roots_by_module(
+        native_artifact_plan
     )
     entry_paths = tuple(
         path
@@ -484,26 +485,28 @@ def _extend_native_support_source_closure(
         roots_by_module=native_support_function_roots_by_module,
         artifacts_root=artifacts_root,
     )
-    closure_graph, explicit_imports = _graph_discovery._discover_module_graph_from_paths(
-        entry_paths,
-        roots,
-        module_roots,
-        stdlib_root,
-        project_root=None,
-        stdlib_allowlist=stdlib_allowlist,
-        skip_modules=STUB_MODULES,
-        stub_parents=STUB_PARENT_MODULES,
-        resolver_cache=resolver_cache,
-        precomputed_imports_by_path=_native_support_source_imports_by_path(
-            native_artifact_plan,
-            native_support_function_roots_by_module,
-        ),
-        import_admission_policy=_native_support_source_admission_policy(
-            native_artifact_plan
-        ),
-        allow_entry_external_imports=False,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
+    closure_graph, explicit_imports = (
+        _graph_discovery._discover_module_graph_from_paths(
+            entry_paths,
+            roots,
+            module_roots,
+            stdlib_root,
+            project_root=None,
+            stdlib_allowlist=stdlib_allowlist,
+            skip_modules=STUB_MODULES,
+            stub_parents=STUB_PARENT_MODULES,
+            resolver_cache=resolver_cache,
+            precomputed_imports_by_path=_native_support_source_imports_by_path(
+                native_artifact_plan,
+                native_support_function_roots_by_module,
+            ),
+            import_admission_policy=_native_support_source_admission_policy(
+                native_artifact_plan
+            ),
+            allow_entry_external_imports=False,
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        )
     )
     for module_name, path in closure_graph.items():
         module_graph.setdefault(
@@ -573,7 +576,9 @@ def _support_source_top_level_defs(
     return _native_support_slice.top_level_support_defs(tree)
 
 
-def _native_support_function_roots_by_module(native_artifact_plan) -> dict[str, tuple[str, ...]]:
+def _native_support_function_roots_by_module(
+    native_artifact_plan,
+) -> dict[str, tuple[str, ...]]:
     support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
     if not support_paths_by_module:
         return {}
@@ -581,16 +586,17 @@ def _native_support_function_roots_by_module(native_artifact_plan) -> dict[str, 
     for artifact in native_artifact_plan.artifacts:
         for export in artifact.callable_exports:
             provider_module = export.provider_module
-            if provider_module is None or provider_module not in support_paths_by_module:
+            if (
+                provider_module is None
+                or provider_module not in support_paths_by_module
+            ):
                 continue
             roots.setdefault(provider_module, set()).add(export.name)
     parsed: dict[str, ast.Module] = {}
     support_defs_by_module: dict[
         str, dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]
     ] = {}
-    imports_by_module: dict[
-        str, tuple[dict[str, tuple[str, str]], dict[str, str]]
-    ] = {}
+    imports_by_module: dict[str, tuple[dict[str, tuple[str, str]], dict[str, str]]] = {}
 
     def module_tree(module: str) -> ast.Module | None:
         if module in parsed:
@@ -640,7 +646,9 @@ def _native_support_function_roots_by_module(native_artifact_plan) -> dict[str, 
             self.generic_visit(node)
 
     queue: list[tuple[str, str]] = [
-        (module, root) for module, module_roots in roots.items() for root in module_roots
+        (module, root)
+        for module, module_roots in roots.items()
+        for root in module_roots
     ]
     seen: set[tuple[str, str]] = set()
     while queue:
@@ -673,7 +681,10 @@ def _native_support_function_roots_by_module(native_artifact_plan) -> dict[str, 
             if target_name not in roots.setdefault(target_module, set()):
                 roots[target_module].add(target_name)
                 queue.append((target_module, target_name))
-    return {module: tuple(sorted(module_roots)) for module, module_roots in sorted(roots.items())}
+    return {
+        module: tuple(sorted(module_roots))
+        for module, module_roots in sorted(roots.items())
+    }
 
 
 def _native_support_source_imports_by_path(
@@ -915,7 +926,9 @@ def _materialize_import_plan(
     stub_parents = set(prepared_module_graph.stub_parents)
     support_explicit_imports: set[str] = set()
     native_artifact_plan = _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
-    for _iteration in range(len(prepared_module_graph.native_artifact_plan.artifacts) + 2):
+    for _iteration in range(
+        len(prepared_module_graph.native_artifact_plan.artifacts) + 2
+    ):
         native_artifact_reachable_imports = (
             set(module_graph)
             | set(prepared_module_graph.explicit_imports)
@@ -982,8 +995,8 @@ def _materialize_import_plan(
         )
     source_modules = frozenset(module_graph)
     native_artifact_modules = native_artifact_plan.native_module_names()
-    native_support_function_roots_by_module = (
-        _native_support_function_roots_by_module(native_artifact_plan)
+    native_support_function_roots_by_module = _native_support_function_roots_by_module(
+        native_artifact_plan
     )
     known_modules = source_modules | native_artifact_modules
     stdlib_allowlist.update(STUB_MODULES)
@@ -996,8 +1009,7 @@ def _materialize_import_plan(
         namespace_module_names=set(namespace_module_names),
     )
     declared_root_modules = (
-        frozenset({entry_module})
-        | prepared_module_graph.declared_root_modules
+        frozenset({entry_module}) | prepared_module_graph.declared_root_modules
     )
     entry_reachable_modules = _modules_with_any_reason(
         module_graph, module_reasons, _ENTRY_REACHABLE_REASONS
@@ -1229,21 +1241,23 @@ def _prepare_entry_module_graph(
     )
     if static_import_error is not None:
         return None, _fail(static_import_error, json_output, command="build")
-    static_import_errors = _graph_discovery._extend_module_graph_with_static_import_modules(
-        module_graph=module_graph,
-        explicit_imports=explicit_imports,
-        module_names=static_import_modules,
-        roots=roots,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        project_root=project_root,
-        stdlib_allowlist=stdlib_allowlist,
-        resolver_cache=module_resolution_cache,
-        diagnostics_enabled=True,
-        module_reasons=module_reasons,
-        import_admission_policy=import_admission_policy,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
+    static_import_errors = (
+        _graph_discovery._extend_module_graph_with_static_import_modules(
+            module_graph=module_graph,
+            explicit_imports=explicit_imports,
+            module_names=static_import_modules,
+            roots=roots,
+            module_roots=module_roots,
+            stdlib_root=stdlib_root,
+            project_root=project_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=module_resolution_cache,
+            diagnostics_enabled=True,
+            module_reasons=module_reasons,
+            import_admission_policy=import_admission_policy,
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        )
     )
     if static_import_errors:
         return None, _fail(
@@ -1411,11 +1425,7 @@ def _prepare_entry_module_graph(
     image_scope = image_scope.with_root_modules(
         [
             entry_module,
-            *(
-                name
-                for name in sorted(static_import_modules)
-                if name in module_graph
-            ),
+            *(name for name in sorted(static_import_modules) if name in module_graph),
         ]
     )
     return _PreparedEntryModuleGraph(

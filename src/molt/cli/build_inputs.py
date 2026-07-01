@@ -86,6 +86,7 @@ def _collect_env_overrides(file_path: str) -> dict[str, str]:
             overrides[key] = value
     return overrides
 
+
 def _resolve_entry_module(
     module_name: str, roots: list[Path]
 ) -> tuple[str, Path] | None:
@@ -100,6 +101,7 @@ def _resolve_entry_module(
     if mod_path is not None:
         return stripped, mod_path
     return None
+
 
 def _build_config_entry_value(
     build_config: Mapping[str, Any] | None,
@@ -119,6 +121,7 @@ def _build_config_entry_value(
         return value, key
     return None, None
 
+
 def _entry_value_looks_like_path(value: str) -> bool:
     path_markers = ("/", "\\")
     return (
@@ -126,6 +129,7 @@ def _entry_value_looks_like_path(value: str) -> bool:
         or value.startswith(".")
         or any(marker in value for marker in path_markers)
     )
+
 
 def _configured_build_entry_selector(
     build_config: Mapping[str, Any] | None,
@@ -216,6 +220,7 @@ def _configured_build_entry_selector(
         )
     return None, None
 
+
 def _resolve_build_entry_selector(
     *,
     file_path: str | None,
@@ -270,6 +275,7 @@ def _resolve_build_entry_selector(
         "[tool.molt.build] entry-file/entry-module.",
     )
 
+
 def _binary_image_kind(
     *,
     selector: _BuildEntrySelector,
@@ -282,6 +288,7 @@ def _binary_image_kind(
     if module_selected:
         return "project_entry_module" if config_selected else "entry_module"
     return "project_entry_script" if config_selected else "entry_script"
+
 
 def _resolve_build_entry(
     *,
@@ -427,6 +434,7 @@ def _resolve_build_entry(
             module_roots=module_roots,
         ),
     ), None
+
 
 def _prepare_build_config(
     *,
@@ -610,6 +618,7 @@ def _prepare_build_config(
         target_python=target_python,
     ), None
 
+
 def _prepare_build_preamble(
     *,
     diagnostics: bool | None,
@@ -720,6 +729,7 @@ def _prepare_build_preamble(
         native_arch_perf_enabled=native_arch_perf_enabled,
     ), None
 
+
 def _prepare_build_roots(
     *,
     file_path: str | None,
@@ -762,6 +772,7 @@ def _prepare_build_roots(
         molt_root=molt_root,
         sysroot_path=sysroot_path,
     ), None
+
 
 def _prepare_build_inputs(
     *,
@@ -858,6 +869,7 @@ def _prepare_build_inputs(
         resolved_build_entry,
     ), None
 
+
 def _resolve_module_root_resolution(
     project_root: Path,
     cwd_root: Path,
@@ -945,6 +957,7 @@ def _resolve_module_root_resolution(
     )
     return _ModuleRootResolution(roots=roots, external_roots=external)
 
+
 def _resolve_module_roots(
     project_root: Path,
     cwd_root: Path,
@@ -961,10 +974,12 @@ def _resolve_module_roots(
         ).roots
     )
 
+
 def _build_args_respect_pythonpath(args: list[str]) -> bool:
     if any(arg == "--no-respect-pythonpath" for arg in args):
         return False
     return any(arg == "--respect-pythonpath" for arg in args)
+
 
 def _build_args_lib_paths(args: Sequence[str]) -> list[str]:
     lib_paths: list[str] = []
@@ -983,6 +998,7 @@ def _build_args_lib_paths(args: Sequence[str]) -> list[str]:
                 lib_paths.append(value)
         idx += 1
     return lib_paths
+
 
 def _resolve_wrapper_build_entry(
     *,
@@ -1028,6 +1044,7 @@ def _resolve_wrapper_build_entry(
         build_config=build_cfg,
     )
 
+
 def _package_root_for_override(source_path: Path, package_name: str) -> Path | None:
     parts = [part for part in package_name.split(".") if part]
     if not parts:
@@ -1042,10 +1059,12 @@ def _package_root_for_override(source_path: Path, package_name: str) -> Path | N
         root = root.parent
     return root
 
+
 def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
     resolved = path.resolve()
     resolved_stdlib_root = stdlib_root.resolve()
     return _is_stdlib_resolved_path(resolved, resolved_stdlib_root)
+
 
 def _merge_module_graph_with_reason(
     module_graph: MutableMapping[str, Path],
@@ -1057,6 +1076,7 @@ def _merge_module_graph_with_reason(
         _record_module_reason(module_reasons, name, reason)
         module_graph.setdefault(name, path)
 
+
 def _latest_mtime(paths: list[Path]) -> float:
     latest = 0.0
     for path in paths:
@@ -1067,6 +1087,7 @@ def _latest_mtime(paths: list[Path]) -> float:
         elif path.exists():
             latest = max(latest, path.stat().st_mtime)
     return latest
+
 
 def _load_molt_config(project_root: Path) -> dict[str, Any]:
     config: dict[str, Any] = {}
@@ -1089,7 +1110,9 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
             config["tool"]["molt"].update(tool_cfg)
     return config
 
+
 _VALID_AUDIT_SINKS = frozenset({"jsonl", "stderr", "null", "buffered"})
+
 
 def _parse_audit_log_flag(value: str) -> dict[str, str]:
     """Parse --audit-log flag value into environment variables.
@@ -1110,6 +1133,7 @@ def _parse_audit_log_flag(value: str) -> dict[str, str]:
         "MOLT_AUDIT_OUTPUT": output,
     }
 
+
 def _parse_io_mode_flag(value: str) -> dict[str, str]:
     """Parse --io-mode flag value into environment variables.
 
@@ -1124,11 +1148,13 @@ def _parse_io_mode_flag(value: str) -> dict[str, str]:
         env["MOLT_IO_MODE"] = value
     return env
 
+
 def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
     """Propagate --type-gate to the backend via environment variable."""
     if enabled:
         return {"MOLT_TYPE_GATE": "1"}
     return {}
+
 
 @functools.lru_cache(maxsize=32)
 def _native_arch_perf_requested_cached(
@@ -1141,11 +1167,13 @@ def _native_arch_perf_requested_cached(
     raw = native_arch_raw.strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
+
 def _native_arch_perf_requested() -> bool:
     return _native_arch_perf_requested_cached(
         os.environ.get("MOLT_PERF_PROFILE", ""),
         os.environ.get("MOLT_NATIVE_ARCH_PERF", ""),
     )
+
 
 def _enable_native_arch_rustflags() -> bool:
     flag = "-C target-cpu=native"
@@ -1155,6 +1183,7 @@ def _enable_native_arch_rustflags() -> bool:
     _append_rustflags(os.environ, flag)
     return True
 
+
 def _capability_ambient_env_for_cache(env: Mapping[str, str]) -> dict[str, str]:
     return {
         key: value
@@ -1163,6 +1192,7 @@ def _capability_ambient_env_for_cache(env: Mapping[str, str]) -> dict[str, str]:
         or key.startswith("MOLT_RESOURCE_")
         or key.startswith("MOLT_AUDIT_")
     }
+
 
 def _capability_config_cache_digest_from_env(env: Mapping[str, str]) -> str:
     ambient_env = _capability_ambient_env_for_cache(env)
@@ -1176,6 +1206,7 @@ def _capability_config_cache_digest_from_env(env: Mapping[str, str]) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
 
 def _capability_config_cache_digest(
     *,
@@ -1208,6 +1239,7 @@ def _capability_config_cache_digest(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
 
 def _append_rustflags(env: MutableMapping[str, str], flags: str) -> None:
     existing = env.get("RUSTFLAGS", "")
