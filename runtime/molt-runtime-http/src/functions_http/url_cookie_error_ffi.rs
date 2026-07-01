@@ -1,4 +1,5 @@
 use super::*;
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
@@ -16,6 +17,7 @@ pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
         }
     })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
@@ -33,6 +35,7 @@ pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u6
         }
     })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {

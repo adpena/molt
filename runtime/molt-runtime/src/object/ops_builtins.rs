@@ -962,17 +962,16 @@ pub extern "C" fn molt_call_func_dispatch(
             _ => return molt_call_func_via_callargs(effective_func, effective_args),
         };
 
-        // --- Step 3: Check for closure ---
-        // Closures need the full callargs path for env capture setup.
+        // --- Step 3: Check for runtime trampolines before ordinary closures. ---
+        // Trampoline-backed functions use the closure slot as callable payload
+        // (for example a C-extension registry id). Ordinary closures still take
+        // the full callargs path for env capture setup below.
         let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
         let trampoline_ptr = unsafe { function_trampoline_ptr(func_ptr) };
         let has_trampoline = trampoline_ptr != 0;
         let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
         let func_arity = unsafe { function_arity(func_ptr) } as usize;
         let eff_nargs = effective_args.len();
-        if has_closure {
-            return molt_call_func_via_callargs(effective_func, effective_args);
-        }
         if unsafe { crate::call::bind::function_needs_full_binder(_py, func_ptr) } {
             unsafe {
                 crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
@@ -983,6 +982,7 @@ pub extern "C" fn molt_call_func_dispatch(
             let variadic_trampoline =
                 unsafe { crate::call::function::function_has_variadic_trampoline(func_ptr) };
             let force_trampoline = func_arity != eff_nargs
+                || has_closure
                 || variadic_trampoline
                 || crate::call::function::fixed_arity_call_requires_trampoline(
                     fn_ptr_val,
@@ -1005,6 +1005,9 @@ pub extern "C" fn molt_call_func_dispatch(
                     )
                 };
             }
+        }
+        if has_closure {
+            return molt_call_func_via_callargs(effective_func, effective_args);
         }
 
         // --- Step 4: Direct call fast path ---

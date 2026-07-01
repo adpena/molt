@@ -292,6 +292,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
 
     rendered_runtime = gen.render_runtime_callables_rs(data)
     assert "molt_importlib_import_transaction" in rendered_runtime
+    assert "molt_cpython_abi_cext_call_trampoline" in rendered_runtime
     assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_runtime
     assert "molt_types_bootstrap" not in rendered_runtime
     assert (
@@ -1200,7 +1201,13 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
         "import_name": "type_call",
         "callable_arity": 1,
     }
-    assert reserved[-1]["runtime_name"] == "molt_types_new_class"
+    assert reserved[-2]["runtime_name"] == "molt_types_new_class"
+    assert reserved[-1] == {
+        "index": 22,
+        "runtime_name": "molt_cpython_abi_cext_call_trampoline",
+        "import_name": "cpython_abi_cext_call_trampoline",
+        "callable_arity": 3,
+    }
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
     rendered_rs = _rendered_rs(gen, data)

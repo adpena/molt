@@ -732,6 +732,58 @@ fn test_module_from_def_and_spec_runs_py_mod_exec_slot() {
 }
 
 #[test]
+fn test_module_from_def_and_spec_accepts_python312_metadata_slots() {
+    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
+    init();
+    MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
+    let mut slots = [
+        PyModuleDef_Slot {
+            slot: 2,
+            value: fake_module_exec as *mut c_void,
+        },
+        PyModuleDef_Slot {
+            slot: 3,
+            value: 2usize as *mut c_void,
+        },
+        PyModuleDef_Slot {
+            slot: 4,
+            value: 1usize as *mut c_void,
+        },
+        PyModuleDef_Slot {
+            slot: 0,
+            value: ptr::null_mut(),
+        },
+    ];
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"moduledef_metadata_slots_module".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: -1,
+        m_methods: ptr::null_mut(),
+        m_slots: slots.as_mut_ptr(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+
+    let module = unsafe {
+        molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(&mut def, ptr::null_mut(), 0)
+    };
+
+    assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+}
+
+#[test]
 fn test_module_from_def_and_spec_registers_capi_state_once_before_exec() {
     let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
     init();

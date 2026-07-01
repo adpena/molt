@@ -540,6 +540,7 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED ((void *)0)
 #define Py_MOD_MULTIPLE_INTERPRETERS_SUPPORTED ((void *)1)
 #define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED ((void *)2)
+#define Py_mod_create 1
 #define Py_mod_exec 2
 #define Py_mod_multiple_interpreters 3
 #define Py_mod_gil 4
@@ -1785,21 +1786,11 @@ static inline PyObject *_molt_type_make_slot_callable(
     if (doc != NULL) {
         doc_len = (uint64_t)strlen(doc);
     }
-    if ((call_flags & METH_KEYWORDS) != 0) {
-        return _molt_pyobject_from_result(molt_cfunction_create_keywords_bytes(
-            self_bits,
-            (const uint8_t *)name,
-            name_len,
-            (MoltCFunctionWithKeywords)method_ptr,
-            call_flags,
-            (const uint8_t *)doc,
-            doc_len));
-    }
-    return _molt_pyobject_from_result(molt_cfunction_create_bytes(
+    return _molt_pyobject_from_result(molt_py_cfunction_create_bytes(
         self_bits,
         (const uint8_t *)name,
         name_len,
-        (MoltCFunction)method_ptr,
+        method_ptr,
         call_flags,
         (const uint8_t *)doc,
         doc_len));
@@ -3903,27 +3894,15 @@ static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *functions
             PyErr_Format(PyExc_TypeError, "method '%s' has NULL function pointer", entry->ml_name);
             return -1;
         }
-        if ((entry->ml_flags & METH_KEYWORDS) != 0) {
-            if (molt_module_add_cfunction_keywords_bytes(
-                    _molt_py_handle(module),
-                    (const uint8_t *)entry->ml_name,
-                    (uint64_t)strlen(entry->ml_name),
-                    (MoltCFunctionWithKeywords)(uintptr_t)entry->ml_meth,
-                    (uint32_t)entry->ml_flags,
-                    (const uint8_t *)entry->ml_doc,
-                    entry->ml_doc != NULL ? (uint64_t)strlen(entry->ml_doc) : 0)
-                < 0) {
-                return -1;
-            }
-        } else if (molt_module_add_cfunction_bytes(
-                       _molt_py_handle(module),
-                       (const uint8_t *)entry->ml_name,
-                       (uint64_t)strlen(entry->ml_name),
-                       (MoltCFunction)(uintptr_t)entry->ml_meth,
-                       (uint32_t)entry->ml_flags,
-                       (const uint8_t *)entry->ml_doc,
-                       entry->ml_doc != NULL ? (uint64_t)strlen(entry->ml_doc) : 0)
-                   < 0) {
+        if (molt_module_add_py_cfunction_bytes(
+                _molt_py_handle(module),
+                (const uint8_t *)entry->ml_name,
+                (uint64_t)strlen(entry->ml_name),
+                (uintptr_t)entry->ml_meth,
+                (uint32_t)entry->ml_flags,
+                (const uint8_t *)entry->ml_doc,
+                entry->ml_doc != NULL ? (uint64_t)strlen(entry->ml_doc) : 0)
+            < 0) {
             return -1;
         }
     }
@@ -7852,24 +7831,14 @@ static inline PyObject *PyDescr_NewMethod(PyTypeObject *type, PyMethodDef *meth)
         PyErr_SetString(PyExc_TypeError, "type and method must not be NULL");
         return NULL;
     }
-    return _molt_pyobject_from_result(
-        ((meth->ml_flags & METH_KEYWORDS) != 0)
-            ? molt_cfunction_create_keywords_bytes(
-                  _molt_py_handle((PyObject *)type),
-                  (const uint8_t *)meth->ml_name,
-                  meth->ml_name != NULL ? (uint64_t)strlen(meth->ml_name) : 0,
-                  (MoltCFunctionWithKeywords)(uintptr_t)meth->ml_meth,
-                  (uint32_t)meth->ml_flags,
-                  (const uint8_t *)meth->ml_doc,
-                  meth->ml_doc != NULL ? (uint64_t)strlen(meth->ml_doc) : 0)
-            : molt_cfunction_create_bytes(
-                  _molt_py_handle((PyObject *)type),
-                  (const uint8_t *)meth->ml_name,
-                  meth->ml_name != NULL ? (uint64_t)strlen(meth->ml_name) : 0,
-                  (MoltCFunction)(uintptr_t)meth->ml_meth,
-                  (uint32_t)meth->ml_flags,
-                  (const uint8_t *)meth->ml_doc,
-                  meth->ml_doc != NULL ? (uint64_t)strlen(meth->ml_doc) : 0));
+    return _molt_pyobject_from_result(molt_py_cfunction_create_bytes(
+        _molt_py_handle((PyObject *)type),
+        (const uint8_t *)meth->ml_name,
+        meth->ml_name != NULL ? (uint64_t)strlen(meth->ml_name) : 0,
+        (uintptr_t)meth->ml_meth,
+        (uint32_t)meth->ml_flags,
+        (const uint8_t *)meth->ml_doc,
+        meth->ml_doc != NULL ? (uint64_t)strlen(meth->ml_doc) : 0));
 }
 
 static inline PyObject *PyDescr_NewClassMethod(PyTypeObject *type, PyMethodDef *meth) {

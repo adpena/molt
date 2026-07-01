@@ -14,6 +14,7 @@ use super::common::{bits_as_f64, bits_as_i64, bits_to_string};
 ///   - string of digits: parsed as int
 ///
 /// Returns None if the value cannot be interpreted as a delay.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_normalize_delay_ms(delay_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         // Already an integer?
@@ -58,6 +59,7 @@ pub extern "C" fn molt_tk_normalize_delay_ms(delay_bits: u64) -> u64 {
 ///
 /// This mirrors the tkinter `_convert_stringval` / `getint`/`getdouble`
 /// cascade used when reading widget configuration values from Tcl.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_convert_stringval(text_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         // If already int or float, return as-is

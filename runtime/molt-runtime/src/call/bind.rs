@@ -2356,6 +2356,10 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 inc_ref_bits(_py, self_bits);
                 args.pos.insert(0, self_bits);
             }
+            if function_trampoline_ptr(func_ptr) != 0 && args.kw_names.is_empty() {
+                let result = call_function_obj_bound_vec(_py, func_bits, args.pos.as_slice());
+                return protect_callargs_aliased_return(_py, result, args_ptr);
+            }
             let bind_kind_bits = function_attr_bits(
                 _py,
                 func_ptr,

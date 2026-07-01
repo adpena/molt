@@ -11,6 +11,7 @@ use super::common::{
 ///
 /// Recursively descends into list/tuple elements, collecting non-None leaf
 /// values into a flat list. None values are skipped.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_flatten_args(args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let mut out: Vec<u64> = Vec::new();
@@ -52,6 +53,7 @@ fn flatten_recursive(bits: u64, out: &mut Vec<u64>) {
 ///   - Append "-key" and value to output list
 ///
 /// Returns a Molt list of alternating "-key", value elements.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let mut out: Vec<u64> = Vec::new();
@@ -160,6 +162,7 @@ fn normalize_option_str(name: &str) -> String {
 /// Input is a Molt string. Returns a new Molt string with:
 ///   - Leading "-" prepended if missing
 ///   - (Underscores preserved — tkinter convention)
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_normalize_option(name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = bits_to_string(name_bits) else {

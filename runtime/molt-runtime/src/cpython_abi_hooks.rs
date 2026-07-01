@@ -6,7 +6,8 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_void};
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use molt_cpython_abi::abi_types::{
@@ -651,6 +652,38 @@ struct CExtCallable {
 unsafe impl Send for CExtCallable {}
 unsafe impl Sync for CExtCallable {}
 
+#[repr(C)]
+struct StaticLinkPyMethodDef {
+    ml_name: *const c_char,
+    ml_meth: *mut c_void,
+    ml_flags: i32,
+    ml_doc: *const c_char,
+}
+
+#[repr(C)]
+struct StaticLinkPyModuleDef {
+    m_base: *mut c_void,
+    m_name: *const c_char,
+    m_doc: *const c_char,
+    m_size: Py_ssize_t,
+    m_methods: *mut StaticLinkPyMethodDef,
+    m_slots: *mut StaticLinkPyModuleDefSlot,
+    m_traverse: *mut c_void,
+    m_clear: *mut c_void,
+    m_free: *mut c_void,
+}
+
+#[repr(C)]
+struct StaticLinkPyModuleDefSlot {
+    slot: c_int,
+    value: *mut c_void,
+}
+
+const STATIC_PY_MOD_CREATE: c_int = 1;
+const STATIC_PY_MOD_EXEC: c_int = 2;
+const STATIC_PY_MOD_MULTIPLE_INTERPRETERS: c_int = 3;
+const STATIC_PY_MOD_GIL: c_int = 4;
+
 fn cext_callable_registry() -> &'static Mutex<Vec<CExtCallable>> {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<Mutex<Vec<CExtCallable>>> = OnceLock::new();
@@ -689,6 +722,374 @@ unsafe fn static_module_def_to_bits(def: *mut PyModuleDef) -> Option<u64> {
         return None;
     }
     Some(module_bits)
+}
+
+unsafe fn cext_bytes_from_raw<'a>(data: *const u8, len: u64) -> Result<&'a [u8], &'static str> {
+    let len = usize::try_from(len).map_err(|_| "byte length does not fit in usize")?;
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if data.is_null() {
+        return Err("byte pointer must not be NULL when length is non-zero");
+    }
+    Ok(unsafe { std::slice::from_raw_parts(data, len) })
+}
+
+unsafe fn cext_optional_bytes_from_raw<'a>(
+    data: *const u8,
+    len: u64,
+) -> Result<Option<&'a [u8]>, &'static str> {
+    if data.is_null() && len == 0 {
+        return Ok(None);
+    }
+    Ok(Some(unsafe { cext_bytes_from_raw(data, len)? }))
+}
+
+unsafe fn cext_set_str_attr(
+    obj_bits: u64,
+    attr_name: &[u8],
+    value_bytes: &[u8],
+) -> Result<(), &'static str> {
+    let value_bits = unsafe { hook_alloc_str(value_bytes.as_ptr(), value_bytes.len()) };
+    if value_bits == 0 {
+        return Err("failed to allocate C extension function metadata string");
+    }
+    let rc = unsafe {
+        crate::c_api::molt_object_setattr_bytes(
+            obj_bits,
+            attr_name.as_ptr(),
+            attr_name.len() as u64,
+            value_bits,
+        )
+    };
+    unsafe { hook_dec_ref(value_bits) };
+    if rc != 0 {
+        return Err("failed to attach C extension function metadata");
+    }
+    Ok(())
+}
+
+unsafe fn cext_create_py_cfunction_bits(
+    self_bits: u64,
+    name_bytes: &[u8],
+    method_addr: usize,
+    method_flags: u32,
+    doc_bytes: Option<&[u8]>,
+) -> Result<u64, &'static str> {
+    if name_bytes.is_empty() {
+        return Err("PyMethodDef name must not be empty");
+    }
+    if method_addr == 0 {
+        return Err("PyMethodDef method pointer must not be NULL");
+    }
+    let flags = i32::try_from(method_flags).map_err(|_| "PyMethodDef flags do not fit in c_int")?;
+    if CExtDispatchKind::from_flags(flags).is_none() {
+        return Err("unsupported PyMethodDef flags for CPython ABI bridge");
+    }
+    let func_bits = unsafe {
+        hook_register_c_function(
+            method_addr as u64,
+            flags,
+            self_bits,
+            name_bytes.as_ptr(),
+            name_bytes.len(),
+        )
+    };
+    if func_bits == 0 {
+        return Err("failed to register PyMethodDef callback with CPython ABI bridge");
+    }
+    if let Some(doc_bytes) = doc_bytes
+        && unsafe { cext_set_str_attr(func_bits, b"__doc__", doc_bytes) }.is_err()
+    {
+        unsafe { hook_dec_ref(func_bits) };
+        return Err("failed to attach PyMethodDef __doc__");
+    }
+    Ok(func_bits)
+}
+
+unsafe fn cext_attach_module_name(func_bits: u64, module_bits: u64) -> Result<(), &'static str> {
+    let module_name_attr = b"__name__";
+    let module_name_bits = unsafe {
+        crate::c_api::molt_object_getattr_bytes(
+            module_bits,
+            module_name_attr.as_ptr(),
+            module_name_attr.len() as u64,
+        )
+    };
+    if MoltObject::from_bits(module_name_bits).is_none() {
+        let _ = crate::molt_exception_clear();
+        return Ok(());
+    }
+    let rc = unsafe {
+        crate::c_api::molt_object_setattr_bytes(
+            func_bits,
+            b"__module__".as_ptr(),
+            b"__module__".len() as u64,
+            module_name_bits,
+        )
+    };
+    unsafe { hook_dec_ref(module_name_bits) };
+    if rc != 0 {
+        return Err("failed to attach PyMethodDef __module__");
+    }
+    Ok(())
+}
+
+unsafe fn cext_add_py_cfunction_to_module(
+    module_bits: u64,
+    name_bytes: &[u8],
+    method_addr: usize,
+    method_flags: u32,
+    doc_bytes: Option<&[u8]>,
+) -> Result<(), &'static str> {
+    let func_bits = unsafe {
+        cext_create_py_cfunction_bits(
+            module_bits,
+            name_bytes,
+            method_addr,
+            method_flags,
+            doc_bytes,
+        )?
+    };
+    if let Err(message) = unsafe { cext_attach_module_name(func_bits, module_bits) } {
+        unsafe { hook_dec_ref(func_bits) };
+        return Err(message);
+    }
+    let rc = unsafe {
+        hook_module_set_attr(
+            module_bits,
+            name_bytes.as_ptr(),
+            name_bytes.len(),
+            func_bits,
+        )
+    };
+    unsafe { hook_dec_ref(func_bits) };
+    if rc != 0 {
+        return Err("failed to attach PyMethodDef callback to module");
+    }
+    Ok(())
+}
+
+unsafe fn static_link_module_add_methods(
+    module_bits: u64,
+    methods: *mut StaticLinkPyMethodDef,
+) -> Result<(), &'static str> {
+    if methods.is_null() {
+        return Ok(());
+    }
+    let mut cursor = methods;
+    unsafe {
+        while !(*cursor).ml_name.is_null() {
+            let entry = &*cursor;
+            if entry.ml_meth.is_null() {
+                return Err("PyMethodDef method pointer must not be NULL");
+            }
+            let name_bytes = CStr::from_ptr(entry.ml_name).to_bytes();
+            let doc_bytes = if entry.ml_doc.is_null() {
+                None
+            } else {
+                Some(CStr::from_ptr(entry.ml_doc).to_bytes())
+            };
+            cext_add_py_cfunction_to_module(
+                module_bits,
+                name_bytes,
+                entry.ml_meth as usize,
+                entry.ml_flags as u32,
+                doc_bytes,
+            )?;
+            cursor = cursor.add(1);
+        }
+    }
+    Ok(())
+}
+
+unsafe fn static_link_module_exec_slots(
+    module_bits: u64,
+    slots: *mut StaticLinkPyModuleDefSlot,
+) -> Result<(), &'static str> {
+    if slots.is_null() {
+        return Ok(());
+    }
+    let mut cursor = slots;
+    unsafe {
+        while (*cursor).slot != 0 {
+            let slot = &*cursor;
+            match slot.slot {
+                STATIC_PY_MOD_CREATE => {
+                    return Err(
+                        "static-link PyModuleDef Py_mod_create slot requires module creation bridge",
+                    );
+                }
+                STATIC_PY_MOD_EXEC => {
+                    if slot.value.is_null() {
+                        return Err("static-link PyModuleDef Py_mod_exec slot is NULL");
+                    }
+                    type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
+                    let exec: ExecFn = std::mem::transmute(slot.value);
+                    let module_obj = cext_pyobject_from_bits(module_bits);
+                    if module_obj.is_null() {
+                        return Err("static-link PyModuleDef Py_mod_exec module bridge failed");
+                    }
+                    let rc = exec(module_obj);
+                    molt_cpython_abi::api::refcount::Py_DECREF(module_obj);
+                    if rc != 0 {
+                        return Err("static-link PyModuleDef Py_mod_exec slot returned non-zero");
+                    }
+                }
+                STATIC_PY_MOD_MULTIPLE_INTERPRETERS | STATIC_PY_MOD_GIL => {}
+                _ => return Err("unsupported static-link PyModuleDef slot"),
+            }
+            cursor = cursor.add(1);
+        }
+    }
+    Ok(())
+}
+
+unsafe fn static_link_module_def_to_bits(
+    def: *mut StaticLinkPyModuleDef,
+) -> Result<Option<u64>, &'static str> {
+    if def.is_null() {
+        return Ok(None);
+    }
+    if unsafe { !(*def).m_base.is_null() } {
+        return Ok(None);
+    }
+    let name = unsafe { (*def).m_name };
+    if name.is_null() {
+        return Ok(None);
+    }
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    if name_bytes.is_empty() {
+        return Err("static-link PyModuleDef name must not be empty");
+    }
+    let module_bits = unsafe { hook_alloc_module(name_bytes.as_ptr(), name_bytes.len()) };
+    if module_bits == 0 {
+        return Err("static-link PyModuleDef module allocation failed");
+    }
+
+    let doc = unsafe { (*def).m_doc };
+    if !doc.is_null() {
+        let doc_bytes = unsafe { CStr::from_ptr(doc).to_bytes() };
+        let doc_bits = unsafe { hook_alloc_str(doc_bytes.as_ptr(), doc_bytes.len()) };
+        if doc_bits == 0 {
+            unsafe { hook_dec_ref(module_bits) };
+            return Err("static-link PyModuleDef doc allocation failed");
+        }
+        let doc_attr = b"__doc__";
+        let set_result = unsafe {
+            hook_module_set_attr(module_bits, doc_attr.as_ptr(), doc_attr.len(), doc_bits)
+        };
+        unsafe { hook_dec_ref(doc_bits) };
+        if set_result != 0 {
+            unsafe { hook_dec_ref(module_bits) };
+            return Err("static-link PyModuleDef doc registration failed");
+        }
+    }
+
+    let module_state_size = unsafe { (*def).m_size };
+    let module_state_size = if module_state_size > 0 {
+        module_state_size as u64
+    } else {
+        0
+    };
+    let module_def_ptr = def as usize;
+    if crate::c_api::molt_module_capi_register(module_bits, module_def_ptr, module_state_size) != 0
+    {
+        unsafe { hook_dec_ref(module_bits) };
+        return Err("static-link PyModuleDef C-API metadata registration failed");
+    }
+    if crate::c_api::molt_module_state_add(module_bits, module_def_ptr) != 0 {
+        unsafe { hook_dec_ref(module_bits) };
+        return Err("static-link PyModuleDef module-state registration failed");
+    }
+
+    let methods = unsafe { (*def).m_methods };
+    if let Err(message) = unsafe { static_link_module_add_methods(module_bits, methods) } {
+        let _ = crate::c_api::molt_module_state_remove(module_def_ptr);
+        unsafe { hook_dec_ref(module_bits) };
+        return Err(message);
+    }
+
+    let slots = unsafe { (*def).m_slots };
+    if let Err(message) = unsafe { static_link_module_exec_slots(module_bits, slots) } {
+        let _ = crate::c_api::molt_module_state_remove(module_def_ptr);
+        unsafe { hook_dec_ref(module_bits) };
+        return Err(message);
+    }
+
+    Ok(Some(module_bits))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_py_cfunction_create_bytes(
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len: u64,
+    method_addr: usize,
+    method_flags: u32,
+    doc_ptr: *const u8,
+    doc_len: u64,
+) -> u64 {
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    register_cpython_hooks();
+    with_gil(|_py| {
+        let name_bytes = match unsafe { cext_bytes_from_raw(name_ptr, name_len) } {
+            Ok(bytes) => bytes,
+            Err(message) => return crate::raise_exception::<u64>(&_py, "TypeError", message),
+        };
+        let doc_bytes = match unsafe { cext_optional_bytes_from_raw(doc_ptr, doc_len) } {
+            Ok(bytes) => bytes,
+            Err(message) => return crate::raise_exception::<u64>(&_py, "TypeError", message),
+        };
+        match unsafe {
+            cext_create_py_cfunction_bits(
+                self_bits,
+                name_bytes,
+                method_addr,
+                method_flags,
+                doc_bytes,
+            )
+        } {
+            Ok(bits) => bits,
+            Err(message) => crate::raise_exception::<u64>(&_py, "TypeError", message),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_module_add_py_cfunction_bytes(
+    module_bits: u64,
+    name_ptr: *const u8,
+    name_len: u64,
+    method_addr: usize,
+    method_flags: u32,
+    doc_ptr: *const u8,
+    doc_len: u64,
+) -> i32 {
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    register_cpython_hooks();
+    with_gil(|_py| {
+        let name_bytes = match unsafe { cext_bytes_from_raw(name_ptr, name_len) } {
+            Ok(bytes) => bytes,
+            Err(message) => return crate::raise_exception::<i32>(&_py, "TypeError", message),
+        };
+        let doc_bytes = match unsafe { cext_optional_bytes_from_raw(doc_ptr, doc_len) } {
+            Ok(bytes) => bytes,
+            Err(message) => return crate::raise_exception::<i32>(&_py, "TypeError", message),
+        };
+        match unsafe {
+            cext_add_py_cfunction_to_module(
+                module_bits,
+                name_bytes,
+                method_addr,
+                method_flags,
+                doc_bytes,
+            )
+        } {
+            Ok(()) => 0,
+            Err(message) => crate::raise_exception::<i32>(&_py, "TypeError", message),
+        }
+    })
 }
 
 unsafe fn static_pyinit_registered_bridge_module_bits(
@@ -802,6 +1203,14 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
                 return crate::raise_exception::<u64>(&_py, "ImportError", message);
             }
         }
+        match unsafe { static_link_module_def_to_bits(result_pyobj as *mut StaticLinkPyModuleDef) }
+        {
+            Ok(Some(module_bits)) => return module_bits,
+            Ok(None) => {}
+            Err(message) => {
+                return crate::raise_exception::<u64>(&_py, "ImportError", message);
+            }
+        }
         if unsafe { static_pyinit_is_module_def(result_ptr) } {
             if let Some(module_bits) =
                 unsafe { static_module_def_to_bits(result_pyobj as *mut PyModuleDef) }
@@ -861,7 +1270,12 @@ unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<(u64, *mut PyObject)> {
 /// Trampoline invoked by Molt's call dispatch for every registered C
 /// extension function.  Signature matches Molt's
 /// `extern "C" fn(closure_bits, args_ptr, args_len) -> i64`.
-extern "C" fn cext_call_trampoline(closure_bits: u64, args_ptr: u64, args_len: u64) -> i64 {
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
+    closure_bits: u64,
+    args_ptr: u64,
+    args_len: u64,
+) -> i64 {
     // The closure encodes the registry id as a NaN-boxed int.
     let id_obj = MoltObject::from_bits(closure_bits);
     let id = match id_obj.as_int() {
@@ -1064,24 +1478,19 @@ unsafe extern "C" fn hook_register_c_function(
             id
         };
         let closure_bits = MoltObject::from_int(id as i64).bits();
-        // Allocate a Molt function object. fn_ptr is unused on the trampoline
-        // path but must be non-zero so Molt's dispatcher does not try the
-        // runtime-callable shortcut.
-        //
-        // We use the trampoline address itself as the fn_ptr placeholder.
-        // It is never invoked directly because trampoline_ptr is set, and
-        // Molt's call_func_dispatch consults trampoline_ptr first.
-        let fn_ptr_value = cext_call_trampoline as *const () as usize as u64;
+        let raw_trampoline = molt_cpython_abi_cext_call_trampoline as *const ();
+        let fn_ptr_value = crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cpython_abi_cext_call_trampoline",
+            raw_trampoline,
+        );
         let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
         if func_ptr.is_null() {
             return 0;
         }
         unsafe {
-            function_set_call_target_ptr(func_ptr, cext_call_trampoline as *const ());
-            function_set_trampoline_ptr(
-                func_ptr,
-                cext_call_trampoline as *const () as usize as u64,
-            );
+            #[cfg(not(target_arch = "wasm32"))]
+            function_set_call_target_ptr(func_ptr, raw_trampoline);
+            function_set_trampoline_ptr(func_ptr, fn_ptr_value);
             if dispatch_kind.is_variadic() {
                 (*header_from_obj_ptr(func_ptr)).flags |= HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE;
             }
@@ -1180,9 +1589,35 @@ mod tests {
     use molt_cpython_abi::abi_types::{
         PyExc_RuntimeError, PyModuleDef_Base, PyObject, PyTypeObject,
     };
+    use std::os::raw::c_int;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard};
+
+    static STATIC_LINK_EXEC_MODULE_BITS: AtomicU64 = AtomicU64::new(0);
+
+    fn cpython_abi_test_guard() -> StdMutexGuard<'static, ()> {
+        static LOCK: StdMutex<()> = StdMutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn pending_exception_message_for_assertion() -> String {
+        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        if MoltObject::from_bits(exc_bits).is_none() {
+            return "no pending exception".to_string();
+        }
+        with_gil(|_py| {
+            let message = MoltObject::from_bits(exc_bits)
+                .as_ptr()
+                .map(|exc_ptr| crate::format_exception_message(&_py, exc_ptr))
+                .unwrap_or_else(|| "pending exception handle was not a heap object".to_string());
+            dec_ref_bits(&_py, exc_bits);
+            message
+        })
+    }
 
     #[test]
     fn cpython_abi_buffer_view_layout_matches_runtime_descriptor() {
+        let _guard = cpython_abi_test_guard();
         macro_rules! assert_field {
             ($field:ident) => {
                 assert_eq!(
@@ -1216,6 +1651,7 @@ mod tests {
 
     #[test]
     fn pyinit_module_to_bits_accepts_static_module_def_pointer() {
+        let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
         let mut def = PyModuleDef {
             m_base: PyModuleDef_Base {
@@ -1248,6 +1684,7 @@ mod tests {
 
     #[test]
     fn pyinit_module_to_bits_accepts_split_wasm_moduledef_type_clone() {
+        let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
         let mut app_moduledef_type: PyTypeObject = unsafe { std::mem::zeroed() };
         app_moduledef_type.tp_name = c"moduledef".as_ptr();
@@ -1281,7 +1718,269 @@ mod tests {
     }
 
     #[test]
+    fn pyinit_module_to_bits_accepts_static_link_compact_module_def_without_methods_or_slots() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut def = StaticLinkPyModuleDef {
+            m_base: std::ptr::null_mut(),
+            m_name: c"static_link_compact_module".as_ptr(),
+            m_doc: c"compact static-link module".as_ptr(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: std::ptr::null_mut(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits = molt_cpython_abi_pyinit_module_to_bits(
+            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
+        );
+        let module_ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("compact static-link PyModuleDef must convert to a Molt module");
+
+        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+        assert_eq!(
+            crate::c_api::molt_module_state_find((&mut def as *mut StaticLinkPyModuleDef) as usize),
+            bits
+        );
+        assert_eq!(
+            crate::c_api::molt_module_state_remove(
+                (&mut def as *mut StaticLinkPyModuleDef) as usize
+            ),
+            0
+        );
+    }
+
+    unsafe extern "C" fn static_link_exec_records_module(module_obj: *mut PyObject) -> c_int {
+        if module_obj.is_null() {
+            return -1;
+        }
+        let module_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(module_obj) };
+        let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() else {
+            return -1;
+        };
+        if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
+            return -1;
+        }
+        STATIC_LINK_EXEC_MODULE_BITS.store(module_bits, AtomicOrdering::Relaxed);
+        0
+    }
+
+    #[test]
+    fn pyinit_module_to_bits_executes_static_link_py_mod_exec_and_metadata_slots() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        STATIC_LINK_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
+        let mut slots = [
+            StaticLinkPyModuleDefSlot {
+                slot: STATIC_PY_MOD_EXEC,
+                value: static_link_exec_records_module as *mut c_void,
+            },
+            StaticLinkPyModuleDefSlot {
+                slot: STATIC_PY_MOD_MULTIPLE_INTERPRETERS,
+                value: 2usize as *mut c_void,
+            },
+            StaticLinkPyModuleDefSlot {
+                slot: STATIC_PY_MOD_GIL,
+                value: 1usize as *mut c_void,
+            },
+            StaticLinkPyModuleDefSlot {
+                slot: 0,
+                value: std::ptr::null_mut(),
+            },
+        ];
+        let mut def = StaticLinkPyModuleDef {
+            m_base: std::ptr::null_mut(),
+            m_name: c"static_link_exec_slot_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: slots.as_mut_ptr(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits = molt_cpython_abi_pyinit_module_to_bits(
+            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
+        );
+        let module_ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("static-link Py_mod_exec module must convert to a Molt module");
+
+        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+        assert_eq!(
+            STATIC_LINK_EXEC_MODULE_BITS.load(AtomicOrdering::Relaxed),
+            bits
+        );
+        assert_eq!(
+            crate::c_api::molt_module_state_remove(
+                (&mut def as *mut StaticLinkPyModuleDef) as usize
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn pyinit_module_to_bits_rejects_static_link_py_mod_create_slot() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut slots = [
+            StaticLinkPyModuleDefSlot {
+                slot: STATIC_PY_MOD_CREATE,
+                value: 1usize as *mut c_void,
+            },
+            StaticLinkPyModuleDefSlot {
+                slot: 0,
+                value: std::ptr::null_mut(),
+            },
+        ];
+        let mut def = StaticLinkPyModuleDef {
+            m_base: std::ptr::null_mut(),
+            m_name: c"static_link_create_slot_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: slots.as_mut_ptr(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits = molt_cpython_abi_pyinit_module_to_bits(
+            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
+        );
+
+        assert!(MoltObject::from_bits(bits).is_none());
+        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        let message = with_gil(|_py| {
+            let exc_ptr = MoltObject::from_bits(exc_bits)
+                .as_ptr()
+                .expect("static-link slot bridge gap must raise a pending ImportError");
+            let message = crate::format_exception_message(&_py, exc_ptr);
+            dec_ref_bits(&_py, exc_bits);
+            message
+        });
+        assert!(message.contains(
+            "static-link PyModuleDef Py_mod_create slot requires module creation bridge"
+        ));
+    }
+
+    unsafe extern "C" fn pyobject_bridge_tuple_len_method(
+        _self_obj: *mut PyObject,
+        args_obj: *mut PyObject,
+    ) -> *mut PyObject {
+        if args_obj.is_null() {
+            return std::ptr::null_mut();
+        }
+        let args_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(args_obj) };
+        let Some(args_ptr) = MoltObject::from_bits(args_bits).as_ptr() else {
+            return std::ptr::null_mut();
+        };
+        if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+            return std::ptr::null_mut();
+        }
+        let len = unsafe { tuple_len(args_ptr) };
+        unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(len as std::os::raw::c_long) }
+    }
+
+    #[test]
+    fn pyinit_module_to_bits_registers_static_link_methods_through_pyobject_bridge() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut methods = [
+            StaticLinkPyMethodDef {
+                ml_name: c"arg_count".as_ptr(),
+                ml_meth: pyobject_bridge_tuple_len_method as *mut c_void,
+                ml_flags: METH_VARARGS,
+                ml_doc: c"return positional argument count".as_ptr(),
+            },
+            StaticLinkPyMethodDef {
+                ml_name: std::ptr::null(),
+                ml_meth: std::ptr::null_mut(),
+                ml_flags: 0,
+                ml_doc: std::ptr::null(),
+            },
+        ];
+        let mut def = StaticLinkPyModuleDef {
+            m_base: std::ptr::null_mut(),
+            m_name: c"static_link_pyobject_method_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: methods.as_mut_ptr(),
+            m_slots: std::ptr::null_mut(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits = molt_cpython_abi_pyinit_module_to_bits(
+            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
+        );
+        let module_ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("static-link PyMethodDef module must convert to a Molt module");
+
+        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+
+        let method_bits =
+            unsafe { crate::c_api::molt_module_get_object_bytes(bits, b"arg_count".as_ptr(), 9) };
+        assert!(!MoltObject::from_bits(method_bits).is_none());
+        let args_bits = unsafe { hook_alloc_tuple(3) };
+        assert_ne!(args_bits, 0);
+        unsafe {
+            hook_tuple_set(args_bits, 0, MoltObject::from_int(1).bits());
+            hook_tuple_set(args_bits, 1, MoltObject::from_int(2).bits());
+            hook_tuple_set(args_bits, 2, MoltObject::from_int(3).bits());
+        }
+
+        let direct_out_bits = with_gil(|_py| unsafe {
+            crate::call::function::call_function_obj_bound_vec(
+                &_py,
+                method_bits,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                    MoltObject::from_int(3).bits(),
+                ],
+            )
+        });
+        assert_eq!(
+            to_i64(MoltObject::from_bits(direct_out_bits)),
+            Some(3),
+            "direct static-link PyMethodDef trampoline failed: {}",
+            pending_exception_message_for_assertion()
+        );
+        unsafe { hook_dec_ref(direct_out_bits) };
+
+        let out_bits =
+            crate::c_api::molt_object_call(method_bits, args_bits, MoltObject::none().bits());
+
+        assert_eq!(
+            to_i64(MoltObject::from_bits(out_bits)),
+            Some(3),
+            "public object-call route for static-link PyMethodDef failed: {}",
+            pending_exception_message_for_assertion()
+        );
+
+        unsafe {
+            hook_dec_ref(out_bits);
+            hook_dec_ref(args_bits);
+            hook_dec_ref(method_bits);
+        }
+        assert_eq!(
+            crate::c_api::molt_module_state_remove(
+                (&mut def as *mut StaticLinkPyModuleDef) as usize
+            ),
+            0
+        );
+    }
+
+    #[test]
     fn pyinit_module_to_bits_reports_static_pyinit_error_state() {
+        let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
         unsafe {
             molt_cpython_abi::api::errors::PyErr_SetString(
@@ -1308,6 +2007,7 @@ mod tests {
 
     #[test]
     fn pyinit_module_to_bits_reports_invalid_handle_error_state() {
+        let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
         let mut def = PyModuleDef {
             m_base: PyModuleDef_Base {

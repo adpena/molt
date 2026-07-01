@@ -15712,6 +15712,13 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
     },
     ReservedRuntimeCallableSpec {
         index: 22,
+        runtime_name: "molt_cpython_abi_cext_call_trampoline",
+        import_name: "cpython_abi_cext_call_trampoline",
+        arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableSpec {
+        index: 23,
         runtime_name: "molt_importlib_import_transaction",
         import_name: "importlib_import_transaction",
         arity: 5,
@@ -21298,6 +21305,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_types_prepare_class" => Some(2),
         "molt_types_resolve_bases" => Some(2),
         "molt_types_new_class" => Some(2),
+        "molt_cpython_abi_cext_call_trampoline" => Some(3),
         _ => None,
     }
 }

@@ -23,6 +23,7 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_c_api_version",
     "molt_cfunction_create_bytes",
     "molt_cfunction_create_keywords_bytes",
+    "molt_py_cfunction_create_bytes",
     "molt_dec_ref_obj",
     "molt_dict_from_pairs",
     "molt_dict_getitem_borrowed",
@@ -83,6 +84,7 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_mapping_setitem",
     "molt_module_add_cfunction_bytes",
     "molt_module_add_cfunction_keywords_bytes",
+    "molt_module_add_py_cfunction_bytes",
     "molt_module_add_int_constant",
     "molt_module_add_object",
     "molt_module_add_object_bytes",
@@ -233,6 +235,19 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
     },
     RuntimeHostExportSignature {
         name: "molt_cfunction_create_keywords_bytes",
+        params: &[
+            ValType::I64,
+            ValType::I32,
+            ValType::I64,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I64,
+        ],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_py_cfunction_create_bytes",
         params: &[
             ValType::I64,
             ValType::I32,
@@ -632,6 +647,19 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
     },
     RuntimeHostExportSignature {
         name: "molt_module_add_cfunction_keywords_bytes",
+        params: &[
+            ValType::I64,
+            ValType::I32,
+            ValType::I64,
+            ValType::I32,
+            ValType::I32,
+            ValType::I32,
+            ValType::I64,
+        ],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_module_add_py_cfunction_bytes",
         params: &[
             ValType::I64,
             ValType::I32,
