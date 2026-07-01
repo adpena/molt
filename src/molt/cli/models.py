@@ -860,18 +860,38 @@ class _ExternalPackageNativeArtifactPlan:
     ) -> set[str]:
         names: set[str] = set()
         for rel_path, _digest in artifact.support_file_sha256:
-            normalized = rel_path.replace("\\", "/")
-            if not normalized.endswith(".py"):
-                continue
-            parts = normalized.split("/")
-            if not parts:
-                continue
-            if parts[-1] == "__init__.py":
-                continue
-            module_parts = [*parts[:-1], parts[-1][:-3]]
-            if module_parts:
-                names.add(".".join(module_parts))
+            module_name = (
+                _ExternalPackageNativeArtifactPlan._support_python_module_name(rel_path)
+            )
+            if module_name is not None:
+                names.add(module_name)
         return names
+
+    @staticmethod
+    def _support_python_module_name(rel_path: str) -> str | None:
+        normalized = rel_path.replace("\\", "/")
+        if not normalized.endswith(".py"):
+            return None
+        parts = normalized.split("/")
+        if not parts or parts[-1] == "__init__.py":
+            return None
+        module_parts = [*parts[:-1], parts[-1][:-3]]
+        if not module_parts:
+            return None
+        return ".".join(module_parts)
+
+    @classmethod
+    def _artifact_base_module_names(
+        cls,
+        artifact: _ExternalPackageNativeArtifact,
+    ) -> tuple[set[str], set[str]]:
+        support_init_modules = cls._support_init_module_names(artifact)
+        names = set(cls._module_prefixes(artifact.package))
+        names.update(cls._module_prefixes(artifact.module))
+        names.update(support_init_modules)
+        for module_name in cls._support_python_module_names(artifact):
+            names.update(cls._module_prefixes(module_name))
+        return names, support_init_modules
 
     @staticmethod
     def _package_source_root(
@@ -906,18 +926,10 @@ class _ExternalPackageNativeArtifactPlan:
                 artifact.package,
             )
             for rel_path, _digest in artifact.support_file_sha256:
-                normalized = rel_path.replace("\\", "/")
-                if not normalized.endswith(".py"):
-                    continue
-                parts = normalized.split("/")
-                if not parts:
-                    continue
-                if parts[-1] == "__init__.py":
-                    continue
-                module_parts = [*parts[:-1], parts[-1][:-3]]
-                if module_parts:
-                    sources[".".join(module_parts)] = (
-                        package_source_root / Path(normalized)
+                module_name = self._support_python_module_name(rel_path)
+                if module_name is not None:
+                    sources[module_name] = (
+                        package_source_root / Path(rel_path.replace("\\", "/"))
                     ).resolve()
         return {module: sources[module] for module in sorted(sources)}
 
@@ -927,13 +939,10 @@ class _ExternalPackageNativeArtifactPlan:
     def native_module_names(self) -> frozenset[str]:
         names: set[str] = set()
         for artifact in self.artifacts:
-            names.update(self._module_prefixes(artifact.package))
-            names.update(self._module_prefixes(artifact.module))
-            support_init_modules = self._support_init_module_names(artifact)
-            names.update(support_init_modules)
-            support_source_modules = self._support_python_module_names(artifact)
-            for module_name in support_source_modules:
-                names.update(self._module_prefixes(module_name))
+            base_names, support_init_modules = self._artifact_base_module_names(
+                artifact
+            )
+            names.update(base_names)
             for exported_name in artifact.python_exports:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
@@ -979,12 +988,7 @@ class _ExternalPackageNativeArtifactPlan:
             str, set[_ExternalNativeModuleAttrPublishSpec]
         ] = {}
         for artifact in self.artifacts:
-            names = set(self._module_prefixes(artifact.package))
-            names.update(self._module_prefixes(artifact.module))
-            names.update(self._support_init_module_names(artifact))
-            support_source_modules = self._support_python_module_names(artifact)
-            for module_name in support_source_modules:
-                names.update(self._module_prefixes(module_name))
+            names, _support_init_modules = self._artifact_base_module_names(artifact)
             for exported_name in artifact.python_exports:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
