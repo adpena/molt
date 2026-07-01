@@ -46,12 +46,14 @@ pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
                                 return raise_exception::<_>(_py, "TypeError", &msg);
                             }
                         };
-                        let Some(elem_bytes) = bytes_like_slice(elem_ptr) else {
-                            let msg = format!(
+                        let elem_bytes = match bytes_join_part_or_type_error(_py, elem_ptr, || {
+                            format!(
                                 "sequence item {idx}: expected a bytes-like object, {} found",
                                 type_name(_py, elem_obj)
-                            );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                            )
+                        }) {
+                            Ok(slice) => slice,
+                            Err(bits) => return bits,
                         };
                         let len = elem_bytes.len();
                         total_len = total_len.saturating_add(len);
@@ -129,15 +131,19 @@ pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
                             return raise_exception::<_>(_py, "TypeError", &msg);
                         }
                     };
-                    let Some(elem_bytes) = bytes_like_slice(elem_ptr) else {
-                        for bits in owned_bits.iter().copied() {
-                            dec_ref_bits(_py, bits);
-                        }
-                        let msg = format!(
+                    let elem_bytes = match bytes_join_part_or_type_error(_py, elem_ptr, || {
+                        format!(
                             "sequence item {idx}: expected a bytes-like object, {} found",
                             type_name(_py, elem_obj)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        )
+                    }) {
+                        Ok(slice) => slice,
+                        Err(bits) => {
+                            for bits in owned_bits.iter().copied() {
+                                dec_ref_bits(_py, bits);
+                            }
+                            return bits;
+                        }
                     };
                     let len = elem_bytes.len();
                     total_len = total_len.saturating_add(len);
@@ -404,15 +410,14 @@ pub extern "C" fn molt_bytes_find_slice(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "argument should be integer or bytes-like object, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "argument should be integer or bytes-like object, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     if start_raw > total {
@@ -497,15 +502,14 @@ pub extern "C" fn molt_bytes_rfind_slice(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "argument should be integer or bytes-like object, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "argument should be integer or bytes-like object, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     if start_raw > total {
@@ -603,15 +607,14 @@ pub extern "C" fn molt_bytes_startswith_slice(
                                 return raise_exception::<_>(_py, "TypeError", &msg);
                             }
                         };
-                        let needle_bytes = match bytes_like_slice(elem_ptr) {
-                            Some(slice) => slice,
-                            None => {
-                                let msg = format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, elem)
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
+                        let needle_bytes = match bytes_like_arg_or_type_error(_py, elem_ptr, || {
+                            format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(_py, elem)
+                            )
+                        }) {
+                            Ok(slice) => slice,
+                            Err(bits) => return bits,
                         };
                         if slice_match(slice, needle_bytes, start_raw, total, false) {
                             return MoltObject::from_bool(true).bits();
@@ -619,10 +622,17 @@ pub extern "C" fn molt_bytes_startswith_slice(
                     }
                     return MoltObject::from_bool(false).bits();
                 }
-                if let Some(needle_bytes) = bytes_like_slice(needle_ptr) {
-                    let ok = slice_match(slice, needle_bytes, start_raw, total, false);
-                    return MoltObject::from_bool(ok).bits();
-                }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "startswith first arg must be bytes or a tuple of bytes, not {}",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
+                };
+                let ok = slice_match(slice, needle_bytes, start_raw, total, false);
+                return MoltObject::from_bool(ok).bits();
             }
             let msg = format!(
                 "startswith first arg must be bytes or a tuple of bytes, not {}",
@@ -681,15 +691,14 @@ pub extern "C" fn molt_bytes_endswith_slice(
                                 return raise_exception::<_>(_py, "TypeError", &msg);
                             }
                         };
-                        let needle_bytes = match bytes_like_slice(elem_ptr) {
-                            Some(slice) => slice,
-                            None => {
-                                let msg = format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, elem)
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
+                        let needle_bytes = match bytes_like_arg_or_type_error(_py, elem_ptr, || {
+                            format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(_py, elem)
+                            )
+                        }) {
+                            Ok(slice) => slice,
+                            Err(bits) => return bits,
                         };
                         if slice_match(slice, needle_bytes, start_raw, total, true) {
                             return MoltObject::from_bool(true).bits();
@@ -697,10 +706,17 @@ pub extern "C" fn molt_bytes_endswith_slice(
                     }
                     return MoltObject::from_bool(false).bits();
                 }
-                if let Some(needle_bytes) = bytes_like_slice(needle_ptr) {
-                    let ok = slice_match(slice, needle_bytes, start_raw, total, true);
-                    return MoltObject::from_bool(ok).bits();
-                }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "endswith first arg must be bytes or a tuple of bytes, not {}",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
+                };
+                let ok = slice_match(slice, needle_bytes, start_raw, total, true);
+                return MoltObject::from_bool(ok).bits();
             }
             let msg = format!(
                 "endswith first arg must be bytes or a tuple of bytes, not {}",
@@ -745,15 +761,14 @@ pub extern "C" fn molt_bytes_count(hay_bits: u64, needle_bits: u64) -> u64 {
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let needle_bytes = match bytes_like_slice(needle_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "argument should be integer or bytes-like object, not '{}'",
-                        type_name(_py, needle)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                format!(
+                    "argument should be integer or bytes-like object, not '{}'",
+                    type_name(_py, needle)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             let count = bytes_count_impl(hay_bytes, needle_bytes);
             MoltObject::from_int(count).bits()
@@ -811,15 +826,14 @@ pub extern "C" fn molt_bytes_count_slice(
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let needle_bytes = match bytes_like_slice(needle_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "argument should be integer or bytes-like object, not '{}'",
-                        type_name(_py, needle)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                format!(
+                    "argument should be integer or bytes-like object, not '{}'",
+                    type_name(_py, needle)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             if needle_bytes.is_empty() {
                 if start_raw > total {
@@ -950,15 +964,14 @@ pub extern "C" fn molt_bytearray_find_slice(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "argument should be integer or bytes-like object, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "argument should be integer or bytes-like object, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     if start_raw > total {
@@ -1027,15 +1040,14 @@ pub extern "C" fn molt_bytearray_rfind_slice(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "argument should be integer or bytes-like object, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "argument should be integer or bytes-like object, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     if start_raw > total {
@@ -1101,15 +1113,14 @@ pub extern "C" fn molt_bytearray_startswith_slice(
                                 return raise_exception::<_>(_py, "TypeError", &msg);
                             }
                         };
-                        let needle_bytes = match bytes_like_slice(elem_ptr) {
-                            Some(slice) => slice,
-                            None => {
-                                let msg = format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, elem)
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
+                        let needle_bytes = match bytes_like_arg_or_type_error(_py, elem_ptr, || {
+                            format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(_py, elem)
+                            )
+                        }) {
+                            Ok(slice) => slice,
+                            Err(bits) => return bits,
                         };
                         if slice_match(slice, needle_bytes, start_raw, total, false) {
                             return MoltObject::from_bool(true).bits();
@@ -1117,10 +1128,17 @@ pub extern "C" fn molt_bytearray_startswith_slice(
                     }
                     return MoltObject::from_bool(false).bits();
                 }
-                if let Some(needle_bytes) = bytes_like_slice(needle_ptr) {
-                    let ok = slice_match(slice, needle_bytes, start_raw, total, false);
-                    return MoltObject::from_bool(ok).bits();
-                }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "startswith first arg must be bytes or a tuple of bytes, not {}",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
+                };
+                let ok = slice_match(slice, needle_bytes, start_raw, total, false);
+                return MoltObject::from_bool(ok).bits();
             }
             let msg = format!(
                 "startswith first arg must be bytes or a tuple of bytes, not {}",
@@ -1179,15 +1197,14 @@ pub extern "C" fn molt_bytearray_endswith_slice(
                                 return raise_exception::<_>(_py, "TypeError", &msg);
                             }
                         };
-                        let needle_bytes = match bytes_like_slice(elem_ptr) {
-                            Some(slice) => slice,
-                            None => {
-                                let msg = format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, elem)
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
+                        let needle_bytes = match bytes_like_arg_or_type_error(_py, elem_ptr, || {
+                            format!(
+                                "a bytes-like object is required, not '{}'",
+                                type_name(_py, elem)
+                            )
+                        }) {
+                            Ok(slice) => slice,
+                            Err(bits) => return bits,
                         };
                         if slice_match(slice, needle_bytes, start_raw, total, true) {
                             return MoltObject::from_bool(true).bits();
@@ -1195,10 +1212,17 @@ pub extern "C" fn molt_bytearray_endswith_slice(
                     }
                     return MoltObject::from_bool(false).bits();
                 }
-                if let Some(needle_bytes) = bytes_like_slice(needle_ptr) {
-                    let ok = slice_match(slice, needle_bytes, start_raw, total, true);
-                    return MoltObject::from_bool(ok).bits();
-                }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "endswith first arg must be bytes or a tuple of bytes, not {}",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
+                };
+                let ok = slice_match(slice, needle_bytes, start_raw, total, true);
+                return MoltObject::from_bool(ok).bits();
             }
             let msg = format!(
                 "endswith first arg must be bytes or a tuple of bytes, not {}",
@@ -1243,15 +1267,14 @@ pub extern "C" fn molt_bytearray_count(hay_bits: u64, needle_bits: u64) -> u64 {
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let needle_bytes = match bytes_like_slice(needle_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "argument should be integer or bytes-like object, not '{}'",
-                        type_name(_py, needle)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                format!(
+                    "argument should be integer or bytes-like object, not '{}'",
+                    type_name(_py, needle)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             let count = bytes_count_impl(hay_bytes, needle_bytes);
             MoltObject::from_int(count).bits()
@@ -1309,15 +1332,14 @@ pub extern "C" fn molt_bytearray_count_slice(
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let needle_bytes = match bytes_like_slice(needle_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "argument should be integer or bytes-like object, not '{}'",
-                        type_name(_py, needle)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                format!(
+                    "argument should be integer or bytes-like object, not '{}'",
+                    type_name(_py, needle)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             if needle_bytes.is_empty() {
                 if start_raw > total {
@@ -1450,15 +1472,14 @@ pub extern "C" fn molt_bytes_partition(hay_bits: u64, sep_bits: u64) -> u64 {
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let sep_bytes = match bytes_like_slice(sep_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, sep)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let sep_bytes = match bytes_like_arg_or_type_error(_py, sep_ptr, || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, sep)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             if sep_bytes.is_empty() {
                 return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1494,15 +1515,14 @@ pub extern "C" fn molt_bytes_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let sep_bytes = match bytes_like_slice(sep_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, sep)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let sep_bytes = match bytes_like_arg_or_type_error(_py, sep_ptr, || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, sep)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             if sep_bytes.is_empty() {
                 return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1538,15 +1558,14 @@ pub extern "C" fn molt_bytearray_partition(hay_bits: u64, sep_bits: u64) -> u64 
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let sep_bytes = match bytes_like_slice(sep_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, sep)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let sep_bytes = match bytes_like_arg_or_type_error(_py, sep_ptr, || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, sep)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             if sep_bytes.is_empty() {
                 return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1582,15 +1601,14 @@ pub extern "C" fn molt_bytearray_rpartition(hay_bits: u64, sep_bits: u64) -> u64
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
-            let sep_bytes = match bytes_like_slice(sep_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, sep)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            let sep_bytes = match bytes_like_arg_or_type_error(_py, sep_ptr, || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, sep)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             };
             if sep_bytes.is_empty() {
                 return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1646,15 +1664,14 @@ pub extern "C" fn molt_bytes_split_max(hay_bits: u64, needle_bits: u64, maxsplit
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1722,15 +1739,14 @@ pub extern "C" fn molt_bytes_rsplit_max(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1797,15 +1813,14 @@ where
                 );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             };
-            match bytes_like_slice(chars_ptr) {
-                Some(slice) => slice,
-                None => {
-                    let msg = format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, chars)
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+            match bytes_like_arg_or_type_error(_py, chars_ptr, || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, chars)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
             }
         };
         let (start, end) = bytes_strip_range(hay_bytes, strip_bytes, left, right);
@@ -1922,15 +1937,14 @@ pub extern "C" fn molt_bytearray_split_max(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     return raise_exception::<_>(_py, "ValueError", "empty separator");
@@ -1998,15 +2012,14 @@ pub extern "C" fn molt_bytearray_rsplit_max(
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
-                let needle_bytes = match bytes_like_slice(needle_ptr) {
-                    Some(slice) => slice,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
+                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                    format!(
+                        "a bytes-like object is required, not '{}'",
+                        type_name(_py, needle)
+                    )
+                }) {
+                    Ok(slice) => slice,
+                    Err(bits) => return bits,
                 };
                 if needle_bytes.is_empty() {
                     return raise_exception::<_>(_py, "ValueError", "empty separator");
