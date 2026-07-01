@@ -729,6 +729,9 @@ fn pickle_extract_picklebuffer_payload(
         if raw_type == crate::TYPE_ID_BYTEARRAY {
             false
         } else if raw_type == crate::TYPE_ID_MEMORYVIEW {
+            if unsafe { crate::memoryview_released(raw_ptr) } {
+                return Err(crate::raise_released_memoryview(_py));
+            }
             unsafe { crate::memoryview_readonly(raw_ptr) }
         } else {
             true

@@ -100,6 +100,9 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_MEMORYVIEW {
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
                         Some(fmt) => fmt,
                         None => return MoltObject::none().bits(),
@@ -1183,6 +1186,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     return obj_bits;
                 }
                 if type_id == TYPE_ID_MEMORYVIEW {
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     if memoryview_readonly(ptr) {
                         return raise_exception::<_>(
                             _py,
@@ -1356,6 +1362,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 }
                                 bytes_like_slice_raw(src_ptr).unwrap_or(&[]).to_vec()
                             } else if src_type == TYPE_ID_MEMORYVIEW {
+                                if memoryview_released(src_ptr) {
+                                    return raise_released_memoryview(_py);
+                                }
                                 let src_fmt = match memoryview_format_from_bits(
                                     memoryview_format_bits(src_ptr),
                                 ) {
@@ -1691,6 +1700,9 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     return obj_bits;
                 }
                 if type_id == TYPE_ID_MEMORYVIEW {
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     if memoryview_readonly(ptr) {
                         return raise_exception::<_>(
                             _py,
@@ -2042,6 +2054,9 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         return MoltObject::from_bool(aligned).bits();
                     }
                     TYPE_ID_MEMORYVIEW => {
+                        if memoryview_released(ptr) {
+                            return raise_released_memoryview(_py);
+                        }
                         let owner_bits = memoryview_owner_bits(ptr);
                         let owner = obj_from_bits(owner_bits);
                         let owner_ptr = match owner.as_ptr() {

@@ -1778,7 +1778,8 @@ pub(crate) fn alloc_memoryview_from_storage(
         (*mv_ptr).stride = storage.memoryview_stride_field();
         (*mv_ptr).readonly = if storage.readonly { 1 } else { 0 };
         (*mv_ptr).ndim = storage.shape.len() as u8;
-        (*mv_ptr)._pad = [0; 6];
+        (*mv_ptr).released = 0;
+        (*mv_ptr)._pad = [0; 5];
         (*mv_ptr).format_bits = storage.format_bits;
         (*mv_ptr).shape_ptr = shape_ptr;
         (*mv_ptr).strides_ptr = strides_ptr;
