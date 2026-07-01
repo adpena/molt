@@ -44,7 +44,9 @@ from molt.cli.module_resolution import _case_exact_file
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
-from molt.cli.source_extensions import source_extension_required_capsule_imports
+from molt.cli.source_extensions import (
+    source_extension_manifest_required_capsule_imports,
+)
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
 
@@ -589,92 +591,12 @@ def _manifest_object_closure_required_capsules(
     return tuple(sorted(required))
 
 
-def _manifest_capsule_source_paths(
-    manifest: Mapping[str, Any],
-    *,
-    manifest_path: Path,
-) -> tuple[tuple[Path, ...] | None, list[str]]:
-    errors: list[str] = []
-    paths: list[Path] = list(
-        _manifest_source_paths(manifest, manifest_path=manifest_path, errors=errors)
-    )
-    object_closure = manifest.get("object_closure")
-    if isinstance(object_closure, Mapping):
-        objects = object_closure.get("objects")
-        if objects is not None:
-            if not isinstance(objects, list):
-                errors.append("extension_manifest.json object_closure.objects must be a list")
-            for index, item in enumerate(objects if isinstance(objects, list) else ()):
-                if not isinstance(item, Mapping):
-                    continue
-                source = item.get("source")
-                if isinstance(source, str):
-                    source_path = Path(source).expanduser()
-                    if not source_path.is_absolute():
-                        source_path = (manifest_path.parent / source_path).resolve()
-                    if not source_path.is_file():
-                        errors.append(
-                            "extension_manifest.json "
-                            f"object_closure.objects[{index}].source does not exist: "
-                            f"{source_path}"
-                        )
-                        continue
-                    paths.append(source_path)
-    if errors:
-        return None, errors
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for path in paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        unique.append(path)
-    return tuple(unique), []
-
-
-def _manifest_source_required_capsules(
-    manifest: Mapping[str, Any],
-    *,
-    manifest_path: Path,
-) -> tuple[dict[str, tuple[str, ...]] | None, list[str]]:
-    sources, source_errors = _manifest_capsule_source_paths(
-        manifest,
-        manifest_path=manifest_path,
-    )
-    if source_errors:
-        return None, source_errors
-    assert sources is not None
-    if not sources:
-        return {}, []
-    by_capsule: dict[str, set[str]] = {}
-    errors: list[str] = []
-    for source_path in sources:
-        try:
-            source_text = source_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            errors.append(
-                "cannot verify source-derived capsule requirements because "
-                f"manifest source {source_path} is unreadable: {exc}"
-            )
-            continue
-        for capsule, import_tokens in source_extension_required_capsule_imports(
-            source_text
-        ).items():
-            by_capsule.setdefault(capsule, set()).update(import_tokens)
-    if errors:
-        return None, errors
-    return {
-        capsule: tuple(sorted(import_tokens))
-        for capsule, import_tokens in sorted(by_capsule.items())
-    }, []
-
-
 def _validate_manifest_source_capsule_requirements(
     manifest: Mapping[str, Any],
     *,
     manifest_path: Path,
 ) -> list[str]:
-    source_required, errors = _manifest_source_required_capsules(
+    source_required, errors = source_extension_manifest_required_capsule_imports(
         manifest,
         manifest_path=manifest_path,
     )

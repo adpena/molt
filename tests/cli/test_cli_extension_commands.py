@@ -2476,6 +2476,102 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     )
 
 
+def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "scipy" / "ndimage"
+    source_dir = artifact_dir / "src"
+    source_dir.mkdir(parents=True)
+    (source_root / "scipy" / "__init__.py").write_text("", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    source_path = source_dir / "nd_image.c"
+    source_path.write_text(
+        "int PyInit__nd_image(void) {\n"
+        "    if (_import_array() < 0) { return -1; }\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__nd_image")
+    artifact_path = artifact_dir / "_nd_image.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    manifest = {
+        "schema_version": 1,
+        "name": "scipy-ndimage-probe",
+        "version": "0.1.0",
+        "module": "scipy.ndimage._nd_image",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__nd_image",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "scipy/ndimage/_nd_image.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "sources": [str(source_path)],
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__nd_image",
+            "init_symbol_owner": "0_nd_image.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "source": str(source_path),
+                    "object": "0_nd_image.o",
+                    "source_sha256": source_sha256,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__nd_image"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sealed_root = tmp_path / "sealed"
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(sealed_root),
+        python_export=["scipy.ndimage._nd_image"],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    capsys.readouterr()
+    root_manifest = json.loads(
+        (sealed_root / "extension_manifest.json").read_text(encoding="utf-8")
+    )
+    artifact_manifest = json.loads(
+        (
+            sealed_root
+            / "scipy"
+            / "ndimage"
+            / "_nd_image.molt.wasm.extension_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    for sealed_manifest in (root_manifest, artifact_manifest):
+        assert sealed_manifest["object_closure"]["required_capsules"] == [capsule]
+        assert sealed_manifest["object_closure"]["objects"][0]["required_capsules"] == [
+            capsule
+        ]
+
+
 def test_extension_seal_rejects_fake_module_attr_callable_export(
     tmp_path: Path,
     capsys,

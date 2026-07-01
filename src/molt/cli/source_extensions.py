@@ -1171,6 +1171,129 @@ def _extract_source_extension_required_capsules(source_text: str) -> tuple[str, 
     return tuple(source_extension_required_capsule_imports(source_text))
 
 
+def source_extension_manifest_path(raw_path: str, *, manifest_path: Path) -> Path:
+    source_path = Path(raw_path).expanduser()
+    if not source_path.is_absolute():
+        source_path = manifest_path.parent / source_path
+    return source_path.resolve()
+
+
+def _source_extension_manifest_source_paths(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> tuple[tuple[Path, ...] | None, list[str]]:
+    errors: list[str] = []
+    paths: list[Path] = []
+    raw_sources = manifest.get("sources")
+    if raw_sources is not None:
+        if not isinstance(raw_sources, list):
+            errors.append("extension_manifest.json sources must be a list of paths")
+        else:
+            for index, raw_source in enumerate(raw_sources):
+                if not isinstance(raw_source, str) or not raw_source.strip():
+                    errors.append(
+                        "extension_manifest.json sources must be a list of paths"
+                    )
+                    continue
+                source_path = source_extension_manifest_path(
+                    raw_source,
+                    manifest_path=manifest_path,
+                )
+                if not source_path.is_file():
+                    errors.append(
+                        f"extension_manifest.json sources[{index}] does not exist: "
+                        f"{source_path}"
+                    )
+                    continue
+                paths.append(source_path)
+
+    object_closure = manifest.get("object_closure")
+    if isinstance(object_closure, Mapping):
+        objects = object_closure.get("objects")
+        if objects is not None:
+            if not isinstance(objects, list):
+                errors.append(
+                    "extension_manifest.json object_closure.objects must be a list"
+                )
+            for index, item in enumerate(objects if isinstance(objects, list) else ()):
+                if not isinstance(item, Mapping):
+                    continue
+                source = item.get("source")
+                if isinstance(source, str) and source.strip():
+                    source_path = source_extension_manifest_path(
+                        source,
+                        manifest_path=manifest_path,
+                    )
+                    if not source_path.is_file():
+                        errors.append(
+                            "extension_manifest.json "
+                            f"object_closure.objects[{index}].source does not exist: "
+                            f"{source_path}"
+                        )
+                        continue
+                    paths.append(source_path)
+    if errors:
+        return None, errors
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return tuple(unique), []
+
+
+def source_extension_manifest_required_capsule_imports_by_source(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> tuple[dict[Path, dict[str, tuple[str, ...]]] | None, list[str]]:
+    sources, source_errors = _source_extension_manifest_source_paths(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    if source_errors:
+        return None, source_errors
+    assert sources is not None
+    by_source: dict[Path, dict[str, tuple[str, ...]]] = {}
+    for source_path in sources:
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return None, [
+                "cannot verify source-derived capsule requirements because "
+                f"manifest source {source_path} is unreadable: {exc}"
+            ]
+        required = source_extension_required_capsule_imports(source_text)
+        if required:
+            by_source[source_path] = required
+    return by_source, []
+
+
+def source_extension_manifest_required_capsule_imports(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> tuple[dict[str, tuple[str, ...]] | None, list[str]]:
+    by_source, errors = source_extension_manifest_required_capsule_imports_by_source(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    if errors:
+        return None, errors
+    assert by_source is not None
+    by_capsule: dict[str, set[str]] = {}
+    for imports_by_capsule in by_source.values():
+        for capsule, import_tokens in imports_by_capsule.items():
+            by_capsule.setdefault(capsule, set()).update(import_tokens)
+    return {
+        capsule: tuple(sorted(import_tokens))
+        for capsule, import_tokens in sorted(by_capsule.items())
+    }, []
+
+
 def _source_extension_definition_header_paths(
     header_roots: Sequence[Path],
 ) -> tuple[Path, ...]:
