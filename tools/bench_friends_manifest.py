@@ -11,6 +11,7 @@ from bench_friends_types import (
     SuiteSpec,
 )
 
+
 def _load_manifest(path: Path) -> tuple[dict[str, Any], list[SuiteSpec]]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     schema_version = int(data.get("schema_version", 1))
@@ -169,6 +170,7 @@ def _resolve_tokenized(parts: list[str], tokens: dict[str, str]) -> list[str]:
 
 def _resolve_env(raw_env: dict[str, str], tokens: dict[str, str]) -> dict[str, str]:
     return {key: value.format_map(tokens) for key, value in raw_env.items()}
+
 
 def _select_suites(
     suites: list[SuiteSpec], *, suite_filters: set[str], include_disabled: bool

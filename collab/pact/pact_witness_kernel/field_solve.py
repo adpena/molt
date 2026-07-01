@@ -25,7 +25,13 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage
-from scipy.ndimage import distance_transform_edt, gaussian_filter, label, maximum_filter, minimum_filter
+from scipy.ndimage import (
+    distance_transform_edt,
+    gaussian_filter,
+    label,
+    maximum_filter,
+    minimum_filter,
+)
 
 N_CLASSES = 5
 
@@ -79,7 +85,9 @@ def _critical_points(m_smooth: np.ndarray, gap13: np.ndarray, bnd: np.ndarray):
     """
     H, W = m_smooth.shape
     # index-2 maxima: local maxima of m (confident interiors)
-    locmax = (m_smooth == maximum_filter(m_smooth, size=15)) & (m_smooth > np.percentile(m_smooth, 90))
+    locmax = (m_smooth == maximum_filter(m_smooth, size=15)) & (
+        m_smooth > np.percentile(m_smooth, 90)
+    )
     mr, mc = np.where(locmax)
     if mr.size > 40:
         # DETERMINISM GATE (kernel-owned fix): keep the 40 LARGEST m, ties broken by (row, col).
@@ -101,7 +109,9 @@ def _critical_points(m_smooth: np.ndarray, gap13: np.ndarray, bnd: np.ndarray):
         nr, nc = nr[order], nc[order]
 
     # index-1 saddles == triple junctions: small top1-top3 gap, on boundary; cluster
-    tj = (gap13 < np.percentile(gap13[bnd], 8) if bnd.any() else np.zeros_like(bnd)) & bnd
+    tj = (
+        gap13 < np.percentile(gap13[bnd], 8) if bnd.any() else np.zeros_like(bnd)
+    ) & bnd
     lab_tj, n_tj = label(tj)
     sr, sc = [], []
     for i in range(1, n_tj + 1):
@@ -135,10 +145,18 @@ def _critical_points(m_smooth: np.ndarray, gap13: np.ndarray, bnd: np.ndarray):
                 vec = -vec
             eig_segs.append((c, r, float(vec[0]), float(vec[1])))
     return {
-        "max_rc": np.stack([mr, mc], 1).astype(np.int32) if mr.size else np.zeros((0, 2), np.int32),
-        "min_rc": np.stack([nr, nc], 1).astype(np.int32) if nr.size else np.zeros((0, 2), np.int32),
-        "saddle_rc": np.stack([sr, sc], 1).astype(np.int32) if sr.size else np.zeros((0, 2), np.int32),
-        "saddle_eigvec": (np.array(eig_segs, np.float32) if eig_segs else np.zeros((0, 4), np.float32)),
+        "max_rc": np.stack([mr, mc], 1).astype(np.int32)
+        if mr.size
+        else np.zeros((0, 2), np.int32),
+        "min_rc": np.stack([nr, nc], 1).astype(np.int32)
+        if nr.size
+        else np.zeros((0, 2), np.int32),
+        "saddle_rc": np.stack([sr, sc], 1).astype(np.int32)
+        if sr.size
+        else np.zeros((0, 2), np.int32),
+        "saddle_eigvec": (
+            np.array(eig_segs, np.float32) if eig_segs else np.zeros((0, 4), np.float32)
+        ),
     }
 
 
@@ -178,17 +196,21 @@ def field_solve(lstar: np.ndarray, n_classes: int = N_CLASSES) -> dict[str, np.n
     curv = _boundary_curvature(m12, bnd)
     dist = _signed_dist_to_boundary(lstar)
     return {
-        "sdf_argmax": am,                                  # (H,W) uint8 — MUST equal lstar
-        "sdf_margin_m12": m12,                             # (H,W) f32  — top1-top2 SDF margin
-        "sdf_gap13": gap13,                                # (H,W) f32  — top1-top3 (triple-junction proximity)
-        "boundary": bnd.astype(np.uint8),                  # (H,W) uint8 — inter-class boundary mask
-        "m_smooth": m_smooth.astype(np.float32),           # (H,W) f32  — gaussian_filter(m12, 2.0)
-        "crit_max_rc": crit["max_rc"],                     # (<=40,2) int32 — index-2 maxima
-        "crit_min_rc": crit["min_rc"],                     # (<=120,2) int32 — index-0 minima on boundary
-        "crit_saddle_rc": crit["saddle_rc"],               # (k,2) int32 — triple junctions
-        "crit_saddle_eigvec": crit["saddle_eigvec"],       # (k,4) f32 (x,y,dx,dy) — separatrix tangents
-        "curvature": curv,                                 # (H,W) f32 — |level-set curvature| on boundary
-        "dist": dist,                                      # (H,W) f32 — EDT to nearest boundary
+        "sdf_argmax": am,  # (H,W) uint8 — MUST equal lstar
+        "sdf_margin_m12": m12,  # (H,W) f32  — top1-top2 SDF margin
+        "sdf_gap13": gap13,  # (H,W) f32  — top1-top3 (triple-junction proximity)
+        "boundary": bnd.astype(np.uint8),  # (H,W) uint8 — inter-class boundary mask
+        "m_smooth": m_smooth.astype(
+            np.float32
+        ),  # (H,W) f32  — gaussian_filter(m12, 2.0)
+        "crit_max_rc": crit["max_rc"],  # (<=40,2) int32 — index-2 maxima
+        "crit_min_rc": crit["min_rc"],  # (<=120,2) int32 — index-0 minima on boundary
+        "crit_saddle_rc": crit["saddle_rc"],  # (k,2) int32 — triple junctions
+        "crit_saddle_eigvec": crit[
+            "saddle_eigvec"
+        ],  # (k,4) f32 (x,y,dx,dy) — separatrix tangents
+        "curvature": curv,  # (H,W) f32 — |level-set curvature| on boundary
+        "dist": dist,  # (H,W) f32 — EDT to nearest boundary
     }
 
 
@@ -203,5 +225,7 @@ if __name__ == "__main__":
     for k, v in out.items():
         print(f"  {k:20s} {str(v.shape):14s} {v.dtype}")
     # parity self-check: argmax(phi) must equal the input partition
-    assert np.array_equal(out["sdf_argmax"], z["lstar"].astype(np.uint8)), "SDF argmax != lstar"
+    assert np.array_equal(out["sdf_argmax"], z["lstar"].astype(np.uint8)), (
+        "SDF argmax != lstar"
+    )
     print("self-check OK: argmax(phi) == lstar")

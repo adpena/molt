@@ -194,7 +194,10 @@ def _shared_library_defines_symbol(path: Path, symbol: str) -> tuple[bool, str |
         failures.append(f"{tool}: exit {result.returncode} {' '.join(detail)}")
     if failures:
         return False, "unable to confirm exported init symbol: " + "; ".join(failures)
-    return False, "unable to inspect exported symbols with nm/llvm-nm or export-table tools"
+    return (
+        False,
+        "unable to inspect exported symbols with nm/llvm-nm or export-table tools",
+    )
 
 
 def _run_command(
@@ -2173,8 +2176,10 @@ def extension_build(
     source_recompiled_root = _source_recompiled_external_package_root(
         ".".join(module_parts)
     )
-    if wasm_static_link and source_recompiled_root and not (
-        python_exports or callable_exports
+    if (
+        wasm_static_link
+        and source_recompiled_root
+        and not (python_exports or callable_exports)
     ):
         errors.append(
             "WASM source-recompiled extension builds for "
@@ -2680,7 +2685,9 @@ def extension_build(
                 if link_result.returncode != 0:
                     detail = link_result.stderr.strip() or link_result.stdout.strip()
                     if not detail:
-                        detail = f"wasm linker exited with code {link_result.returncode}"
+                        detail = (
+                            f"wasm linker exited with code {link_result.returncode}"
+                        )
                     return _fail(
                         f"Failed linking wasm relocatable extension object: {detail}",
                         json_output,
@@ -2768,7 +2775,9 @@ def extension_build(
                 }
             )
             missing_direct_symbols = [
-                symbol for symbol in direct_symbols if symbol not in wasm_defined_symbols
+                symbol
+                for symbol in direct_symbols
+                if symbol not in wasm_defined_symbols
             ]
             if missing_direct_symbols:
                 return _fail(
@@ -2886,11 +2895,7 @@ def extension_build(
                     )
                     for symbol in symbols
                 )
-                | {
-                    symbol
-                    for symbol in wasm_import_symbols
-                    if is_c_api_symbol(symbol)
-                }
+                | {symbol for symbol in wasm_import_symbols if is_c_api_symbol(symbol)}
             )
             if required_c_api_symbols:
                 object_closure["required_c_api_symbols"] = required_c_api_symbols
@@ -2962,9 +2967,7 @@ def extension_build(
             (f"{dist_info}/METADATA", package_metadata),
         ]
         for support in support_files:
-            wheel_entries.append(
-                (support.rel_path, support.source_path.read_bytes())
-            )
+            wheel_entries.append((support.rel_path, support.source_path.read_bytes()))
         record_path = f"{dist_info}/RECORD"
         record_lines = [_wheel_record_line(path, data) for path, data in wheel_entries]
         record_lines.append(f"{record_path},,")

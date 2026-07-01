@@ -50,7 +50,10 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping, Sequence
 
-from molt._intrinsic_symbols import INTRINSIC_SYMBOL_NAMES, intrinsic_runtime_symbol_name
+from molt._intrinsic_symbols import (
+    INTRINSIC_SYMBOL_NAMES,
+    intrinsic_runtime_symbol_name,
+)
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt.cli import function_references as _function_references
 
@@ -187,7 +190,9 @@ def reachability_profile_feature_refusal(
     compile-time refusal, exactly the design's "no silent divergence / no raw
     link error" contract.
     """
-    by_feature = reached_intrinsic_symbols_by_feature(functions, extra_roots=extra_roots)
+    by_feature = reached_intrinsic_symbols_by_feature(
+        functions, extra_roots=extra_roots
+    )
     blocked = {
         feature: symbols
         for feature, symbols in by_feature.items()

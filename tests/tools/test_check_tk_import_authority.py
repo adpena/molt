@@ -70,7 +70,9 @@ def test_rejects_private_root_import_authority(tmp_path: Path) -> None:
 def test_rejects_tk_prelude_module_and_file(tmp_path: Path) -> None:
     module = _load_tool()
     root, tk_dir = _write_minimal_tree(tmp_path)
-    root.write_text("mod args;\nmod prelude;\npub use intrinsics::*;\n", encoding="utf-8")
+    root.write_text(
+        "mod args;\nmod prelude;\npub use intrinsics::*;\n", encoding="utf-8"
+    )
     (tk_dir / "prelude.rs").write_text("", encoding="utf-8")
 
     violations = module.find_tk_import_authority_violations(tk_root=root, tk_dir=tk_dir)

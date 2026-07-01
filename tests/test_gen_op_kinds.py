@@ -693,7 +693,8 @@ def test_audit_native_arms_include_extracted_op_family_authority() -> None:
     audit = _audit()
     native_arms = audit.extract_native_simpleir_arm_kinds()
     memory_consts = audit.extract_rust_str_slice_consts(
-        ROOT / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/memory.rs",
+        ROOT
+        / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/memory.rs",
         {"HANDLED_KINDS"},
     )
 
@@ -717,9 +718,9 @@ def test_audit_native_single_kind_handlers_may_be_matchless() -> None:
             ROOT
             / f"runtime/molt-backend-native/src/native_backend/function_compiler/fc/{module}.rs"
         )
-        assert audit.extract_native_handler_arm_kinds(path, fn_name, {expected_kind}) == {
-            expected_kind
-        }
+        assert audit.extract_native_handler_arm_kinds(
+            path, fn_name, {expected_kind}
+        ) == {expected_kind}
 
 
 def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
@@ -1237,7 +1238,9 @@ def test_fuzz_tir_passes_uses_generated_opcode_shapes() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    fuzz = _read_rs_module_cluster(ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs")
+    fuzz = _read_rs_module_cluster(
+        ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs"
+    )
 
     expected = {
         "Add": {"operands": 2, "attr_payload": "none"},
@@ -1356,7 +1359,9 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     branchless = _read_rs_module_cluster(tir_path("passes/branchless_count.rs"))
     fast_math = _read_rs_module_cluster(tir_path("passes/fast_math.rs"))
     gvn = _read_rs_module_cluster(tir_path("passes/gvn.rs"))
-    strength_reduction = _read_rs_module_cluster(tir_path("passes/strength_reduction.rs"))
+    strength_reduction = _read_rs_module_cluster(
+        tir_path("passes/strength_reduction.rs")
+    )
 
     expected = {
         "ConstInt": "i64",
@@ -3383,9 +3388,7 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
 
     assert _rust_pub_decl(rendered, "enum", "ModuleConcurrencyMarkerSourceRole")
     assert _rust_pub_decl(rendered, "struct", "ModuleConcurrencyMarkerSourceFacts")
-    assert _rust_pub_fn(
-        rendered, "opcode_module_concurrency_marker_source_facts_table"
-    )
+    assert _rust_pub_fn(rendered, "opcode_module_concurrency_marker_source_facts_table")
     assert _rust_pub_decl(rendered, "enum", "ModuleSlotAccessRole")
     assert _rust_pub_fn(rendered, "opcode_module_slot_access_role_table")
 
@@ -3432,8 +3435,7 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     assert "OpCode::ModuleGetAttr | OpCode::ModuleSetAttr" not in production
     assert (
         "OpCode::ModuleGetGlobal | OpCode::ModuleDelGlobal | "
-        "OpCode::ModuleDelGlobalIfPresent"
-        not in production
+        "OpCode::ModuleDelGlobalIfPresent" not in production
     )
     assert "matches!(op.opcode, OpCode::ModuleGetAttr" not in production
 
@@ -3785,7 +3787,9 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     rendered = gen.render_rs(data)
     lower_to_lir = _read_rs_module_cluster(tir_path("lower_to_lir.rs"))
     licm = _read_rs_module_cluster(tir_path("passes/licm.rs"))
-    check_exception = _read_rs_module_cluster(tir_path("passes/check_exception_elim.rs"))
+    check_exception = _read_rs_module_cluster(
+        tir_path("passes/check_exception_elim.rs")
+    )
 
     zero_divisor_guards = {"Div", "FloorDiv", "Mod"}
     shift_count_guards = {"Shl", "Shr"}
@@ -3847,7 +3851,9 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     rendered = gen.render_rs(data)
     sources = {
         "inliner": _read_rs_module_cluster(tir_path("passes/inliner.rs")),
-        "generator_fusion": _read_rs_module_cluster(tir_path("passes/generator_fusion.rs")),
+        "generator_fusion": _read_rs_module_cluster(
+            tir_path("passes/generator_fusion.rs")
+        ),
         "lower_to_simple": _read_rs_module_cluster(tir_path("lower_to_simple.rs")),
         "lower_from_simple": _read_rs_module_cluster(tir_path("lower_from_simple.rs")),
         "function": _read_rs_module_cluster(tir_path("function.rs")),
@@ -3878,9 +3884,9 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
     assert set(data["structured_scf_marker_opcodes"]) == structured_scf
     assert data["exception_region_nesting_roles"] == nesting_roles
 
-    handling_block = rendered.split("fn opcode_sets_exception_handling_table")[
-        1
-    ].split("fn opcode_is_exception_handler_region_table")[0]
+    handling_block = rendered.split("fn opcode_sets_exception_handling_table")[1].split(
+        "fn opcode_is_exception_handler_region_table"
+    )[0]
     handler_block = rendered.split("fn opcode_is_exception_handler_region_table")[
         1
     ].split("fn opcode_is_structured_scf_marker_table")[0]
@@ -4321,7 +4327,9 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
     canonicalize = _read_rs_module_cluster(tir_path("passes/canonicalize.rs"))
-    check_exception = _read_rs_module_cluster(tir_path("passes/check_exception_elim.rs"))
+    check_exception = _read_rs_module_cluster(
+        tir_path("passes/check_exception_elim.rs")
+    )
 
     assert "fn is_commutative" not in canonicalize
     assert "fn swap_comparison" not in canonicalize
@@ -4647,9 +4655,9 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
 
 
 def test_midend_effect_oracle_consumes_generated_authority_only() -> None:
-    source = (
-        ROOT / "src/molt/frontend/lowering/midend_canonicalization.py"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "src/molt/frontend/lowering/midend_canonicalization.py").read_text(
+        encoding="utf-8"
+    )
     method = source.split("def _op_effect_class", 1)[1].split(
         "def _is_pure_op_for_global_cse", 1
     )[0]

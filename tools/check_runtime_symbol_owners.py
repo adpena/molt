@@ -59,7 +59,9 @@ def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def collect_symbol_owners(runtime_root: Path = RUNTIME_ROOT) -> dict[str, list[SymbolOwner]]:
+def collect_symbol_owners(
+    runtime_root: Path = RUNTIME_ROOT,
+) -> dict[str, list[SymbolOwner]]:
     owners: dict[str, list[SymbolOwner]] = defaultdict(list)
     for src_root in _satellite_src_roots(runtime_root):
         crate = src_root.parent.name

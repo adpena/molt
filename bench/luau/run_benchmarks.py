@@ -64,8 +64,7 @@ def _base_env() -> dict[str, str]:
         REPO_ROOT,
         os.environ,
         session_prefix="bench-luau",
-        session_id=os.environ.get("MOLT_SESSION_ID")
-        or f"bench-luau-{os.getpid()}",
+        session_id=os.environ.get("MOLT_SESSION_ID") or f"bench-luau-{os.getpid()}",
         create_dirs=True,
     )
     env.update(

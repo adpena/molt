@@ -679,9 +679,7 @@ def _validate_molt_failure_cell(
     benchmark = cell.get("benchmark")
     payload = cell.get("molt_failure")
     if not isinstance(payload, Mapping):
-        problems.append(
-            f"cell {benchmark} is {verdict} without a molt_failure payload"
-        )
+        problems.append(f"cell {benchmark} is {verdict} without a molt_failure payload")
         return problems
 
     for field in ("phase", "status"):

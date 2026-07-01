@@ -136,7 +136,9 @@ def _scoped_direct_call_modules(
     if scoped_names is None:
         scoped_names = _module_dependency_closure(module_name, module_deps)
     direct_call_modules_set = set(direct_call_modules)
-    return tuple(sorted(name for name in scoped_names if name in direct_call_modules_set))
+    return tuple(
+        sorted(name for name in scoped_names if name in direct_call_modules_set)
+    )
 
 
 def _always_known_modules(
@@ -324,13 +326,11 @@ def _build_scoped_lowering_inputs(
             always_known_modules=always_known_modules,
             module_dep_closures=module_dep_closures,
         )
-        scoped_direct_call_modules_by_module[module_name] = (
-            _scoped_direct_call_modules(
-                module_name,
-                module_deps=module_deps,
-                direct_call_modules=direct_call_scope_source,
-                module_dep_closures=module_dep_closures,
-            )
+        scoped_direct_call_modules_by_module[module_name] = _scoped_direct_call_modules(
+            module_name,
+            module_deps=module_deps,
+            direct_call_modules=direct_call_scope_source,
+            module_dep_closures=module_dep_closures,
         )
         scoped_known_func_defaults_by_module[module_name] = _scoped_known_func_defaults(
             module_name,
@@ -555,9 +555,7 @@ def _scoped_lowering_input_view(
         in scoped_lowering_inputs.native_support_function_roots_by_module
     ):
         scoped_native_support_function_roots = (
-            scoped_lowering_inputs.native_support_function_roots_by_module[
-                module_name
-            ]
+            scoped_lowering_inputs.native_support_function_roots_by_module[module_name]
         )
     else:
         scoped_native_support_function_roots = _scoped_native_support_function_roots(
@@ -1233,9 +1231,7 @@ def _module_lowering_context_payload(
     scoped_known_func_kinds = scoped_inputs.known_func_kinds
     scoped_native_callable_exports = scoped_inputs.native_callable_exports
     scoped_native_python_exports = scoped_inputs.native_python_exports
-    scoped_native_support_function_roots = (
-        scoped_inputs.native_support_function_roots
-    )
+    scoped_native_support_function_roots = scoped_inputs.native_support_function_roots
     if scoped_known_classes is None:
         scoped_known_classes = _scoped_known_classes_view(
             module_name,

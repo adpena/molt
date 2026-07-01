@@ -123,8 +123,7 @@ def _write_external_static_packages_bundle(
                         continue
                     if arcname in seen:
                         raise ValueError(
-                            "external static package bundle path collision: "
-                            f"{arcname}"
+                            f"external static package bundle path collision: {arcname}"
                         )
                     seen.add(arcname)
                     payload = path.read_bytes()

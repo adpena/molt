@@ -172,9 +172,8 @@ def missing_local_function_references(
                 missing.append(FunctionReferenceEdge(owner, op_index, kind, target))
             if kind in POLL_COMPANION_OP_KINDS and not target.endswith("_poll"):
                 poll_target = f"{target}_poll"
-                if (
-                    poll_target not in defined
-                    and emitted_name_matches_module_symbol(poll_target, module_symbol)
+                if poll_target not in defined and emitted_name_matches_module_symbol(
+                    poll_target, module_symbol
                 ):
                     missing.append(
                         FunctionReferenceEdge(owner, op_index, kind, poll_target)

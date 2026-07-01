@@ -167,8 +167,7 @@ class _SourceExtensionCAPIRequirements:
                 len(symbols) for symbols in self.required_by_source.values()
             ),
             "required_capsule_count": sum(
-                len(capsules)
-                for capsules in self.required_capsules_by_source.values()
+                len(capsules) for capsules in self.required_capsules_by_source.values()
             ),
             "project_defined_symbol_count": len(self.project_defined_symbols),
             "project_generated_symbol_count": len(project_generated_symbols),
@@ -622,7 +621,9 @@ def _load_compile_command_units(
         if required_sources is not None
         else None
     )
-    preferred_output_roots = _dedupe_paths([root.resolve() for root in target_output_roots])
+    preferred_output_roots = _dedupe_paths(
+        [root.resolve() for root in target_output_roots]
+    )
     candidates_by_source: dict[
         Path,
         list[tuple[tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]], bool]],
@@ -657,7 +658,9 @@ def _load_compile_command_units(
         target_owned = (
             output_path is not None
             and bool(preferred_output_roots)
-            and any(_path_is_within(output_path, root) for root in preferred_output_roots)
+            and any(
+                _path_is_within(output_path, root) for root in preferred_output_roots
+            )
         )
         semantic_args = _compile_command_semantic_args(
             arguments,
@@ -671,11 +674,17 @@ def _load_compile_command_units(
         unit = (compiler, compile_args, include_dirs)
         candidates_by_source.setdefault(source_path, []).append((unit, target_owned))
 
-    commands_by_source: dict[Path, tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]] = {}
+    commands_by_source: dict[
+        Path, tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]
+    ] = {}
     for source_path, candidates in candidates_by_source.items():
         target_owned_units = [unit for unit, target_owned in candidates if target_owned]
-        selected_units = target_owned_units or [unit for unit, _target_owned in candidates]
-        unique_units: list[tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]] = []
+        selected_units = target_owned_units or [
+            unit for unit, _target_owned in candidates
+        ]
+        unique_units: list[
+            tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]
+        ] = []
         for unit in selected_units:
             if unit not in unique_units:
                 unique_units.append(unit)
@@ -1361,9 +1370,7 @@ def _source_extension_required_c_api_by_source(
         active_symbols.update(defined_by_args)
         active_symbols.difference_update(undefined_by_args)
         active_preprocessor_symbols = frozenset(active_symbols)
-        active_preprocessor_symbols_by_source[source_path] = (
-            active_preprocessor_symbols
-        )
+        active_preprocessor_symbols_by_source[source_path] = active_preprocessor_symbols
         file_local_symbols_by_path[source_path] = _extract_file_local_c_api_symbols(
             source_text,
             active_preprocessor_symbols=active_preprocessor_symbols,

@@ -1352,9 +1352,7 @@ def test_bench_main_writes_summary_and_failure_detail_sidecars(
         "signal": None,
         "guard_violation": None,
         "orphaned_process_groups": [],
-        "log_refs": [
-            {"kind": "stderr", "path": str(tmp_path / "molt.stderr.log")}
-        ],
+        "log_refs": [{"kind": "stderr", "path": str(tmp_path / "molt.stderr.log")}],
     }
 
     monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
@@ -1402,9 +1400,7 @@ def test_bench_main_writes_summary_and_failure_detail_sidecars(
 
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     assert payload["custody_artifacts"]["summary_md"] == str(summary.resolve())
-    cleanup_sidecar = Path(
-        payload["custody_artifacts"]["backend_daemon_cleanup_jsonl"]
-    )
+    cleanup_sidecar = Path(payload["custody_artifacts"]["backend_daemon_cleanup_jsonl"])
     assert cleanup_sidecar.name == "backend_daemon_cleanup.jsonl"
     assert cleanup_sidecar.parent.name == "memory_guard"
     details = payload["molt_failure_details"]
@@ -1412,9 +1408,7 @@ def test_bench_main_writes_summary_and_failure_detail_sidecars(
     assert details["records"][0]["detail"] == "backend_daemon_empty_response"
     detail_sidecar = Path(payload["custody_artifacts"]["molt_failure_details_jsonl"])
     assert detail_sidecar.exists()
-    assert "backend_daemon_empty_response" in detail_sidecar.read_text(
-        encoding="utf-8"
-    )
+    assert "backend_daemon_empty_response" in detail_sidecar.read_text(encoding="utf-8")
     summary_text = summary.read_text(encoding="utf-8")
     assert "## Custody Artifacts" in summary_text
     assert "## Molt Failure Details" in summary_text

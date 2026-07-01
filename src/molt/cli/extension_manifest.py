@@ -156,9 +156,7 @@ def _manifest_dotted_name_tuple(
     value = manifest.get(field_name)
     if value is None:
         return ()
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) for item in value
-    ):
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         errors.append(
             f"extension_manifest.json {field_name!r} must be a list of dotted "
             "Python import names"
@@ -212,7 +210,10 @@ def _manifest_support_file_payloads(
             raw_path = raw_path_value
             raw_source_value = item.get("source")
             if raw_source_value is not None:
-                if not isinstance(raw_source_value, str) or not raw_source_value.strip():
+                if (
+                    not isinstance(raw_source_value, str)
+                    or not raw_source_value.strip()
+                ):
                     errors.append(f"{label}.source must be a non-empty path string")
                     continue
                 raw_source = raw_source_value
@@ -248,7 +249,9 @@ def _manifest_support_file_payloads(
             try:
                 rel_path = source_path.relative_to(root).as_posix()
             except ValueError:
-                errors.append(f"{label} escapes support-file root {root}: {source_path}")
+                errors.append(
+                    f"{label} escapes support-file root {root}: {source_path}"
+                )
                 continue
         if raw_source is None:
             try:
@@ -377,8 +380,7 @@ def _manifest_callable_exports(
                 continue
         if binding == "direct_symbol" and normalized_symbol is None:
             errors.append(
-                f"extension_manifest.json {label} direct_symbol binding requires "
-                "symbol"
+                f"extension_manifest.json {label} direct_symbol binding requires symbol"
             )
             continue
 
@@ -421,9 +423,8 @@ def _manifest_callable_exports(
                 for effect in effects_raw
                 if isinstance(effect, str) and effect.strip()
             ]
-        if (
-            not isinstance(effects_raw, list)
-            or len(normalized_effects) != len(effects_raw)
+        if not isinstance(effects_raw, list) or len(normalized_effects) != len(
+            effects_raw
         ):
             errors.append(
                 f"extension_manifest.json {label}.effects must be a list of "
@@ -502,7 +503,9 @@ def _infer_module_attr_callable_export_payloads(
         if isinstance((module := export.get("module")), str)
         and isinstance((name := export.get("name")), str)
     }
-    normalized_effects = tuple(sorted({effect.strip() for effect in effects if effect.strip()}))
+    normalized_effects = tuple(
+        sorted({effect.strip() for effect in effects if effect.strip()})
+    )
     inferred: list[_ExternalNativeCallableExport] = []
     for qualified_name in sorted(set(python_exports)):
         if qualified_name in explicit_names or "." not in qualified_name:

@@ -11,7 +11,10 @@ from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
-from molt.compiler_analysis.static_truth import static_if_live_branch, static_test_truthiness
+from molt.compiler_analysis.static_truth import (
+    static_if_live_branch,
+    static_test_truthiness,
+)
 
 
 # Runtime helper bodies whose imports are required static graph edges. This is
@@ -22,13 +25,9 @@ STDLIB_STATIC_IMPORT_HELPER_QUALNAMES: Mapping[str, frozenset[str]] = {
     # EmailMessage inherits MIMEPart.__init__, which supplies email.policy.default.
     "email.message": frozenset({"MIMEPart.__init__"}),
 }
-STDLIB_STATIC_IMPORT_HELPER_MODULES = frozenset(
-    STDLIB_STATIC_IMPORT_HELPER_QUALNAMES
-)
+STDLIB_STATIC_IMPORT_HELPER_MODULES = frozenset(STDLIB_STATIC_IMPORT_HELPER_QUALNAMES)
 
-_IMPORT_SCAN_MODES = frozenset(
-    {"full", "module_init", "module_init_static_helpers"}
-)
+_IMPORT_SCAN_MODES = frozenset({"full", "module_init", "module_init_static_helpers"})
 
 
 IMPORTER_MODULE_NAME = "_molt_importer"
@@ -1176,7 +1175,10 @@ def _collect_imports(
                     function_truth_bindings.record_rebinding_target(ast.Name(id=name))
                 function_prefix = _qualified_child(qualname_prefix, node.name)
                 _visit_many(
-                    node.body, function_bindings, function_truth_bindings, function_prefix
+                    node.body,
+                    function_bindings,
+                    function_truth_bindings,
+                    function_prefix,
                 )
             return
         if isinstance(node, ast.Lambda):
@@ -1341,8 +1343,6 @@ def _tree_uses_runtime_import_protocol(
         if target in _RUNTIME_IMPORT_PROTOCOL_TARGETS:
             return True
     return False
-
-
 
 
 def _static_string_sequence(node: ast.expr) -> tuple[str, ...] | None:

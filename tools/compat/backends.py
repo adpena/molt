@@ -239,7 +239,9 @@ def _guarded_run(
     return proc.stdout, proc.stderr, proc.returncode, timed_out
 
 
-def _cross_build_env(extra_env: dict[str, str] | None, capabilities: str) -> dict[str, str]:
+def _cross_build_env(
+    extra_env: dict[str, str] | None, capabilities: str
+) -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONHASHSEED"] = "0"
     if capabilities:

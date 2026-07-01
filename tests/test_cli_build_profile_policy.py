@@ -123,8 +123,12 @@ def test_nested_build_keeps_platform_profile_and_forwards_dev_build_profile(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: project)
-    monkeypatch.setattr(cli_runtime_build, "_run_completed_command", fake_subprocess_run)
+    monkeypatch.setattr(
+        cli_commands, "_find_molt_root", lambda start, cwd=None: project
+    )
+    monkeypatch.setattr(
+        cli_runtime_build, "_run_completed_command", fake_subprocess_run
+    )
     monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
 
     rc = cli_commands.run_script(

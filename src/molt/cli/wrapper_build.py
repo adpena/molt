@@ -99,7 +99,9 @@ def _wrapper_target_python(
             return _parse_target_python_version(arg.split("=", 1)[1])
     return _resolve_target_python_version(
         explicit=None,
-        build_config=_resolve_build_config(_build_inputs._load_molt_config(project_root)),
+        build_config=_resolve_build_config(
+            _build_inputs._load_molt_config(project_root)
+        ),
         project_root=project_root,
     )
 
@@ -288,7 +290,9 @@ def _wrapper_build_cache_input(
     source_hash = _source_content_sha256(resolved_source_path)
     if source_hash is None:
         return None
-    capability_config_digest = _build_inputs._capability_config_cache_digest_from_env(env)
+    capability_config_digest = _build_inputs._capability_config_cache_digest_from_env(
+        env
+    )
     closure_fingerprints = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
         build_args=build_args,

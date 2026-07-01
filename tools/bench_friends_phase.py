@@ -11,6 +11,7 @@ from bench_friends_types import MAX_FAILURE_MESSAGE_CHARS, PhaseResult
 import harness_memory_guard
 import bench as bench_tool
 
+
 def _parse_stdout_json(stdout: str) -> tuple[Any | None, str | None]:
     text = stdout.strip()
     if not text:

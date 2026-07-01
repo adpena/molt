@@ -91,13 +91,14 @@ SERIALIZATION_MODULES = (
 SSA_RS = OP_KIND_TIR_SRC / "ssa.rs"
 LLVM_RS = ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
 LLVM_RUNTIME_IMPORT_ABI_FACTS_RS = (
-    ROOT
-    / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
+    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
 LLVM_RUNTIME_IMPORT_FIXED_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
 )
-LLVM_RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
+LLVM_RUNTIME_IMPORT_ABI_RS = (
+    ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
+)
 LLVM_PRESERVED_OPS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs"
 )
@@ -783,7 +784,9 @@ def _extract_fixed_boxed_runtime_imports() -> dict[str, ClassifiedRuntimeImport]
     excluded: the generic preserved-op fallback can emit only all-i64 parameters
     and i64/void returns.
     """
-    body = _runtime_import_array_body(LLVM_RUNTIME_IMPORT_FIXED_RS, "FIXED_RUNTIME_IMPORTS")
+    body = _runtime_import_array_body(
+        LLVM_RUNTIME_IMPORT_FIXED_RS, "FIXED_RUNTIME_IMPORTS"
+    )
     constants = extract_runtime_import_signature_constants()
     out: dict[str, ClassifiedRuntimeImport] = {}
     for ctor, symbol, param_count in re.findall(
@@ -802,9 +805,13 @@ def _extract_fixed_boxed_runtime_imports() -> dict[str, ClassifiedRuntimeImport]
     ):
         classified = constants.get(const)
         if classified is None:
-            raise RustMatchParseError(f"FIXED_RUNTIME_IMPORTS references unknown constant {const}")
+            raise RustMatchParseError(
+                f"FIXED_RUNTIME_IMPORTS references unknown constant {const}"
+            )
         expected_return = "I64" if ctor == "i64_ret" else "Void"
-        if classified.return_abi != expected_return or classified.param_count != int(param_count):
+        if classified.return_abi != expected_return or classified.param_count != int(
+            param_count
+        ):
             raise RustMatchParseError(
                 f"FIXED_RUNTIME_IMPORTS disagrees with {const}: "
                 f"{classified} vs {ctor}/{param_count}"
@@ -1047,7 +1054,9 @@ def extract_native_family_handlers() -> dict[str, tuple[str, str]]:
     matches = list(guard_re.finditer(text))
     for index, match in enumerate(matches):
         family = match.group(1)
-        block_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        block_end = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        )
         block = text[match.end() : block_end]
         call = re.search(r"\bfc::([A-Za-z0-9_]+)::(handle_[A-Za-z0-9_]+)\s*\(", block)
         if call is None:

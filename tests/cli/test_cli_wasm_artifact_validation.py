@@ -58,7 +58,9 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
         assert runtime_wasm is not None
         runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
         runtime_wasm.write_bytes(_valid_wasm_bytes(b"runtime"))
-        calls.append((reloc, cargo_profile, cargo_timeout, stdlib_profile, project_root))
+        calls.append(
+            (reloc, cargo_profile, cargo_timeout, stdlib_profile, project_root)
+        )
         return True
 
     monkeypatch.setattr(
@@ -1579,7 +1581,9 @@ def test_runtime_wasm_missing_rust_target_fails_before_cargo(
         raising=True,
     )
 
-    def fail_if_cargo_runs(**_kwargs: object) -> tuple[subprocess.CompletedProcess[str], Path]:
+    def fail_if_cargo_runs(
+        **_kwargs: object,
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
         raise AssertionError("runtime WASM Cargo build should not run")
 
     monkeypatch.setattr(

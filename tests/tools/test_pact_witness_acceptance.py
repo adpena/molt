@@ -15,7 +15,9 @@ def test_pact_witness_acceptance_uses_run_scoped_attempt_dirs(
     stale_build = out_dir / "build"
     stale_build.mkdir(parents=True)
     stale_file = stale_build / "output_linked.wat"
-    stale_file.write_text("still held by a previous Windows process\n", encoding="utf-8")
+    stale_file.write_text(
+        "still held by a previous Windows process\n", encoding="utf-8"
+    )
 
     build_dir, run_dir = acceptance._prepare_attempt_dirs(out_dir)
     second_build_dir, second_run_dir = acceptance._prepare_attempt_dirs(out_dir)

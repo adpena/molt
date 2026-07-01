@@ -48,8 +48,7 @@ def _load_authority_manifest(errors: list[str]) -> list[dict[str, object]]:
         data = tomllib.loads(_read_text(manifest_path))
     except tomllib.TOMLDecodeError as exc:
         errors.append(
-            "docs/design/foundation/authority_manifest.toml: invalid TOML: "
-            f"{exc}"
+            f"docs/design/foundation/authority_manifest.toml: invalid TOML: {exc}"
         )
         return []
     entries = data.get("authority")
@@ -82,8 +81,10 @@ def _load_authority_manifest(errors: list[str]) -> list[dict[str, object]]:
             continue
         seen_paths.add(path)
         markers = entry.get("required_markers")
-        if not isinstance(markers, list) or not markers or not all(
-            isinstance(marker, str) and marker for marker in markers
+        if (
+            not isinstance(markers, list)
+            or not markers
+            or not all(isinstance(marker, str) and marker for marker in markers)
         ):
             errors.append(
                 "docs/design/foundation/authority_manifest.toml: "

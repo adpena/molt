@@ -214,7 +214,9 @@ class CallModuleDispatchMixin(_MixinBase):
         if native_callable_uses_callargs(normalized_abi):
             callargs = self._emit_call_args_builder(node)
             res = MoltValue(self.next_var(), type_hint="Any")
-            op_args = [callargs] if module_attr_func is None else [module_attr_func, callargs]
+            op_args = (
+                [callargs] if module_attr_func is None else [module_attr_func, callargs]
+            )
             self.emit(
                 MoltOp(
                     kind="INVOKE_FFI",

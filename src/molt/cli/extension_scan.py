@@ -212,7 +212,9 @@ def extension_scan(
                 command="extension-scan",
             )
         source_text_by_path[source_path] = source_text
-        project_defined_symbols.update(_extract_project_defined_c_api_symbols(source_text))
+        project_defined_symbols.update(
+            _extract_project_defined_c_api_symbols(source_text)
+        )
         project_generated_c_api_prefixes.update(
             _extract_project_generated_c_api_prefixes(source_text)
         )
@@ -312,10 +314,7 @@ def extension_scan(
         for primitive_class, symbols in symbols_by_primitive_class.items()
     }
     primitive_class_by_file = {
-        file_path: {
-            symbol: c_api_primitive_class(symbol)
-            for symbol in symbols
-        }
+        file_path: {symbol: c_api_primitive_class(symbol) for symbol in symbols}
         for file_path, symbols in required_by_file.items()
     }
     warnings: list[str] = []

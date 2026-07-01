@@ -48,12 +48,14 @@ class LevelSetConfig:
     n_hidden: int = 4
     mod_dim: int = 32
     n_classes: int = 5
-    activation: str = "hosc"          # de-confound witness uses hosc; "wire"|"relu" also supported
+    activation: str = (
+        "hosc"  # de-confound witness uses hosc; "wire"|"relu" also supported
+    )
     wire_w0: float = 20.0
     wire_s0: float = 10.0
     hosc_beta: float = 4.0
     hosc_omega: float = 1.0
-    front_end: str = "curvelet"       # "curvelet" | "isotropic"
+    front_end: str = "curvelet"  # "curvelet" | "isotropic"
     iso_n_fourier: int = 48
     iso_sigma: float = 8.0
     max_freq: float | None = None
@@ -64,7 +66,9 @@ class LevelSetConfig:
         return curvelet_directional_B(self.bank, max_freq=self.max_freq)
 
 
-def curvelet_directional_B(cfg: CurveletBankConfig, max_freq: float | None = None) -> np.ndarray:
+def curvelet_directional_B(
+    cfg: CurveletBankConfig, max_freq: float | None = None
+) -> np.ndarray:
     """(2, n_feats) generic curvelet frequency matrix: J scales x L_j orientations + n_iso coarse."""
     cols: list[np.ndarray] = []
     for j in range(int(cfg.n_scales)):
@@ -72,11 +76,15 @@ def curvelet_directional_B(cfg: CurveletBankConfig, max_freq: float | None = Non
         l_j = int(cfg.n_orient0) * (2 ** (j // 2))  # parabolic curvelet doubling
         for l in range(l_j):
             theta = np.pi * l / l_j
-            cols.append(np.array([f_j * np.cos(theta), f_j * np.sin(theta)], dtype=np.float32))
+            cols.append(
+                np.array([f_j * np.cos(theta), f_j * np.sin(theta)], dtype=np.float32)
+            )
     for i in range(int(cfg.n_iso)):
         theta = np.pi * i / max(int(cfg.n_iso), 1)
         f_low = float(cfg.f0) * 0.5
-        cols.append(np.array([f_low * np.cos(theta), f_low * np.sin(theta)], dtype=np.float32))
+        cols.append(
+            np.array([f_low * np.cos(theta), f_low * np.sin(theta)], dtype=np.float32)
+        )
     stacked = np.stack(cols, axis=1).astype(np.float32)
     if max_freq is not None:
         norms = np.sqrt((stacked.astype(np.float64) ** 2).sum(axis=0))
@@ -95,7 +103,9 @@ def isotropic_fourier_B(n_fourier: int, sigma: float, seed: int = 0) -> np.ndarr
 def curvelet_feats(coords: np.ndarray, B: np.ndarray) -> np.ndarray:
     """[sin(2*pi X@B), cos(2*pi X@B)] -> (P, 2*n_feats). Identical at train + inflate."""
     with np.errstate(all="ignore"):
-        proj = (2.0 * np.pi) * (np.asarray(coords, np.float64) @ np.asarray(B, np.float64))
+        proj = (2.0 * np.pi) * (
+            np.asarray(coords, np.float64) @ np.asarray(B, np.float64)
+        )
         return np.concatenate([np.sin(proj), np.cos(proj)], axis=-1).astype(np.float32)
 
 
@@ -122,7 +132,9 @@ def _act(u: np.ndarray, name: str, **kw) -> np.ndarray:
     return np.maximum(u, 0.0).astype(np.float32)
 
 
-def numpy_levelset_forward(params: dict, feats: np.ndarray, mod_vec: np.ndarray, cfg: LevelSetConfig) -> np.ndarray:
+def numpy_levelset_forward(
+    params: dict, feats: np.ndarray, mod_vec: np.ndarray, cfg: LevelSetConfig
+) -> np.ndarray:
     """Pure-numpy mirror of the MLX level-set witness (float64). Returns (P, n_classes) SDF.
 
     FiLM-per-(pair,frame) modulates each hidden layer (scale,shift). Output head is LINEAR
@@ -133,21 +145,37 @@ def numpy_levelset_forward(params: dict, feats: np.ndarray, mod_vec: np.ndarray,
     mod_vec = np.asarray(mod_vec, np.float64)
     akw = dict(w0=cfg.wire_w0, s0=cfg.wire_s0, beta=cfg.hosc_beta, omega=cfg.hosc_omega)
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        h = _act(feats @ p["in_proj.weight"].T + p["in_proj.bias"], cfg.activation, **akw)
-        film = (mod_vec @ p["film.weight"].T + p["film.bias"]).reshape(cfg.n_hidden, 2, cfg.hidden_dim)
+        h = _act(
+            feats @ p["in_proj.weight"].T + p["in_proj.bias"], cfg.activation, **akw
+        )
+        film = (mod_vec @ p["film.weight"].T + p["film.bias"]).reshape(
+            cfg.n_hidden, 2, cfg.hidden_dim
+        )
         for li in range(cfg.n_hidden):
             scale = 1.0 + film[li, 0]
             shift = film[li, 1]
-            h = _act((h @ p[f"hidden.{li}.weight"].T + p[f"hidden.{li}.bias"]) * scale + shift,
-                     cfg.activation, **akw)
+            h = _act(
+                (h @ p[f"hidden.{li}.weight"].T + p[f"hidden.{li}.bias"]) * scale
+                + shift,
+                cfg.activation,
+                **akw,
+            )
         return (h @ p["out.weight"].T + p["out.bias"]).astype(np.float32)
 
 
-def levelset_argmax(params: dict, cfg: LevelSetConfig, coords: np.ndarray, pair_idx: int, h: int, w: int) -> np.ndarray:
+def levelset_argmax(
+    params: dict, cfg: LevelSetConfig, coords: np.ndarray, pair_idx: int, h: int, w: int
+) -> np.ndarray:
     """Per-(pair,frame) generator partition (H,W) uint8 = argmax_k phi_k (numpy-portable)."""
     B = cfg.build_B()
-    feats = curvelet_feats(coords, B) if cfg.front_end == "curvelet" else _iso_feats(coords, B)
-    sdf = numpy_levelset_forward(params, feats, np.asarray(params["code"])[pair_idx], cfg)
+    feats = (
+        curvelet_feats(coords, B)
+        if cfg.front_end == "curvelet"
+        else _iso_feats(coords, B)
+    )
+    sdf = numpy_levelset_forward(
+        params, feats, np.asarray(params["code"])[pair_idx], cfg
+    )
     return sdf.argmax(axis=-1).reshape(h, w).astype(np.uint8)
 
 
@@ -164,14 +192,25 @@ if __name__ == "__main__":
 
     src = sys.argv[1] if len(sys.argv) > 1 else "witness_weights_sample.npz"
     z = np.load(src, allow_pickle=False)
-    H = int(z["H"]); W = int(z["W"])
+    H = int(z["H"])
+    W = int(z["W"])
     cfg = LevelSetConfig(
-        num_pairs=int(z["num_pairs"]), hidden_dim=int(z["hidden_dim"]), n_hidden=int(z["n_hidden"]),
-        mod_dim=int(z["mod_dim"]), n_classes=int(z["n_classes"]), activation=str(z["activation"]),
+        num_pairs=int(z["num_pairs"]),
+        hidden_dim=int(z["hidden_dim"]),
+        n_hidden=int(z["n_hidden"]),
+        mod_dim=int(z["mod_dim"]),
+        n_classes=int(z["n_classes"]),
+        activation=str(z["activation"]),
         front_end=str(z["front_end"]),
     )
-    params = {k: z[k] for k in z.files if k.startswith(("in_proj", "hidden", "film", "out", "code"))}
+    params = {
+        k: z[k]
+        for k in z.files
+        if k.startswith(("in_proj", "hidden", "film", "out", "code"))
+    }
     coords = coord_grid(H, W)
     lstar = levelset_argmax(params, cfg, coords, pair_idx=0, h=H, w=W)
     np.savez_compressed("witness_forward_reference.npz", lstar=lstar)
-    print(f"witness forward -> lstar {lstar.shape} {lstar.dtype}; classes {np.bincount(lstar.ravel(), minlength=cfg.n_classes)}")
+    print(
+        f"witness forward -> lstar {lstar.shape} {lstar.dtype}; classes {np.bincount(lstar.ravel(), minlength=cfg.n_classes)}"
+    )

@@ -80,107 +80,110 @@ def _write_crate(root: Path, name: str, manifest: str, lib_text: str = "") -> Pa
     crate_root = root / "runtime" / name
     src = crate_root / "src" / "lib.rs"
     src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text(lib_text or f"pub const MARKER: &str = {name!r};\n", encoding="utf-8")
+    src.write_text(
+        lib_text or f"pub const MARKER: &str = {name!r};\n", encoding="utf-8"
+    )
     (crate_root / "Cargo.toml").write_text(manifest, encoding="utf-8")
     return src
 
 
-def _write_backend_identity_fixture(root: Path, *, include_wasm: bool = True) -> dict[str, Path]:
+def _write_backend_identity_fixture(
+    root: Path, *, include_wasm: bool = True
+) -> dict[str, Path]:
     root.mkdir(parents=True, exist_ok=True)
     (root / "Cargo.toml").write_text("[workspace]\nmembers = []\n", encoding="utf-8")
     (root / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
     wasm_dep = (
         'molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, '
-        'default-features = false }\n'
+        "default-features = false }\n"
         if include_wasm
         else ""
     )
     wasm_feature = (
-        'wasm-backend = ["dep:molt-backend-wasm", '
-        '"molt-backend-wasm/wasm-backend"]\n'
+        'wasm-backend = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]\n'
         if include_wasm
-        else 'wasm-backend = []\n'
+        else "wasm-backend = []\n"
     )
     backend = _write_crate(
         root,
         "molt-backend",
-        "[package]\nname = \"molt-backend\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-backend"\nversion = "0.1.0"\n'
         "[dependencies]\n"
-        "molt-ir = { path = \"../molt-ir\" }\n"
-        "molt-tir = { path = \"../molt-tir\" }\n"
-        "molt-backend-native = { path = \"../molt-backend-native\", optional = true, default-features = false }\n"
-        "molt-backend-rust = { path = \"../molt-backend-rust\", optional = true, default-features = false }\n"
-        "molt-backend-luau = { path = \"../molt-backend-luau\", optional = true, default-features = false }\n"
+        'molt-ir = { path = "../molt-ir" }\n'
+        'molt-tir = { path = "../molt-tir" }\n'
+        'molt-backend-native = { path = "../molt-backend-native", optional = true, default-features = false }\n'
+        'molt-backend-rust = { path = "../molt-backend-rust", optional = true, default-features = false }\n'
+        'molt-backend-luau = { path = "../molt-backend-luau", optional = true, default-features = false }\n'
         f"{wasm_dep}"
         "[features]\n"
-        "default = [\"native-backend\"]\n"
-        "native-backend = [\"dep:molt-backend-native\", \"molt-backend-native/native-backend\"]\n"
-        "rust-backend = [\"dep:molt-backend-rust\", \"molt-backend-rust/rust-backend\"]\n"
-        "luau-backend = [\"dep:molt-backend-luau\", \"molt-backend-luau/luau-backend\"]\n"
+        'default = ["native-backend"]\n'
+        'native-backend = ["dep:molt-backend-native", "molt-backend-native/native-backend"]\n'
+        'rust-backend = ["dep:molt-backend-rust", "molt-backend-rust/rust-backend"]\n'
+        'luau-backend = ["dep:molt-backend-luau", "molt-backend-luau/luau-backend"]\n'
         f"{wasm_feature}",
     )
     native = _write_crate(
         root,
         "molt-backend-native",
-        "[package]\nname = \"molt-backend-native\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-backend-native"\nversion = "0.1.0"\n'
         "[dependencies]\n"
-        "molt-ir = { path = \"../molt-ir\" }\n"
-        "molt-tir = { path = \"../molt-tir\" }\n"
-        "molt-codegen-abi = { path = \"../molt-codegen-abi\" }\n"
+        'molt-ir = { path = "../molt-ir" }\n'
+        'molt-tir = { path = "../molt-tir" }\n'
+        'molt-codegen-abi = { path = "../molt-codegen-abi" }\n'
         "[features]\ndefault = []\nnative-backend = []\nllvm = []\n",
     )
     wasm = _write_crate(
         root,
         "molt-backend-wasm",
-        "[package]\nname = \"molt-backend-wasm\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-backend-wasm"\nversion = "0.1.0"\n'
         "[dependencies]\n"
-        "molt-ir = { path = \"../molt-ir\", default-features = false }\n"
-        "molt-tir = { path = \"../molt-tir\", default-features = false }\n"
-        "molt-codegen-abi = { path = \"../molt-codegen-abi\" }\n"
-        "[features]\ndefault = []\nwasm-backend = [\"molt-ir/wasm-backend\", \"molt-tir/wasm-backend\"]\n",
+        'molt-ir = { path = "../molt-ir", default-features = false }\n'
+        'molt-tir = { path = "../molt-tir", default-features = false }\n'
+        'molt-codegen-abi = { path = "../molt-codegen-abi" }\n'
+        '[features]\ndefault = []\nwasm-backend = ["molt-ir/wasm-backend", "molt-tir/wasm-backend"]\n',
     )
     _write_crate(
         root,
         "molt-backend-rust",
-        "[package]\nname = \"molt-backend-rust\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-backend-rust"\nversion = "0.1.0"\n'
         "[dependencies]\n"
-        "molt-ir = { path = \"../molt-ir\" }\n"
-        "molt-tir = { path = \"../molt-tir\" }\n"
+        'molt-ir = { path = "../molt-ir" }\n'
+        'molt-tir = { path = "../molt-tir" }\n'
         "[features]\ndefault = []\nrust-backend = []\n",
     )
     _write_crate(
         root,
         "molt-backend-luau",
-        "[package]\nname = \"molt-backend-luau\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-backend-luau"\nversion = "0.1.0"\n'
         "[dependencies]\n"
-        "molt-ir = { path = \"../molt-ir\" }\n"
-        "molt-tir = { path = \"../molt-tir\" }\n"
+        'molt-ir = { path = "../molt-ir" }\n'
+        'molt-tir = { path = "../molt-tir" }\n'
         "[features]\ndefault = []\nluau-backend = []\n",
     )
     _write_crate(
         root,
         "molt-tir",
-        "[package]\nname = \"molt-tir\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-tir"\nversion = "0.1.0"\n'
         "[dependencies]\n"
-        "molt-ir = { path = \"../molt-ir\" }\n"
-        "molt-passes = { path = \"../molt-passes\" }\n"
-        "[features]\ndefault = []\nwasm-backend = [\"molt-ir/wasm-backend\"]\n",
+        'molt-ir = { path = "../molt-ir" }\n'
+        'molt-passes = { path = "../molt-passes" }\n'
+        '[features]\ndefault = []\nwasm-backend = ["molt-ir/wasm-backend"]\n',
     )
     _write_crate(
         root,
         "molt-ir",
-        "[package]\nname = \"molt-ir\"\nversion = \"0.1.0\"\n"
+        '[package]\nname = "molt-ir"\nversion = "0.1.0"\n'
         "[features]\ndefault = []\nwasm-backend = []\n",
     )
     _write_crate(
         root,
         "molt-passes",
-        "[package]\nname = \"molt-passes\"\nversion = \"0.1.0\"\n",
+        '[package]\nname = "molt-passes"\nversion = "0.1.0"\n',
     )
     _write_crate(
         root,
         "molt-codegen-abi",
-        "[package]\nname = \"molt-codegen-abi\"\nversion = \"0.1.0\"\n",
+        '[package]\nname = "molt-codegen-abi"\nversion = "0.1.0"\n',
     )
     return {"backend": backend, "native": native, "wasm": wasm}
 
@@ -195,7 +198,9 @@ def _backend_source_fingerprint(root: Path, features: tuple[str, ...]) -> str:
     )
 
 
-def test_backend_source_fingerprint_tracks_selected_leaf_sources(tmp_path: Path) -> None:
+def test_backend_source_fingerprint_tracks_selected_leaf_sources(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "repo"
     sources = _write_backend_identity_fixture(root)
 
@@ -203,7 +208,7 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(tmp_path: Path)
     native_first = _backend_source_fingerprint(root, ("native-backend",))
 
     sources["wasm"].write_text(
-        "pub const WASM_MARKER: &str = \"changed-wasm-leaf\";\n",
+        'pub const WASM_MARKER: &str = "changed-wasm-leaf";\n',
         encoding="utf-8",
     )
 
@@ -213,7 +218,7 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(tmp_path: Path)
     assert native_after_wasm == native_first
 
     sources["native"].write_text(
-        "pub const NATIVE_MARKER: &str = \"changed-native-leaf\";\n",
+        'pub const NATIVE_MARKER: &str = "changed-native-leaf";\n',
         encoding="utf-8",
     )
 

@@ -28,7 +28,22 @@ managed = true
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-extend-exclude = ["third_party", "tests/differential", "tests/harness/corpus"]
+extend-exclude = [
+    "bench/corpus",
+    "bench/friends/repos",
+    "bench/results",
+    "src/molt/_intrinsic_symbols.py",
+    "src/molt/_intrinsics.pyi",
+    "src/molt/_runtime_feature_gates.py",
+    "src/molt/_wasm_abi_generated.py",
+    "src/molt/frontend/_protocol.py",
+    "src/molt/frontend/_protocol_attrs.py",
+    "src/molt/frontend/lowering/op_kinds_generated.py",
+    "src/molt/stdlib",
+    "tests/differential",
+    "tests/harness/corpus",
+    "third_party",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "src/molt/stdlib/**/*.py" = ["E402"]
@@ -132,8 +147,8 @@ memory-guard-wiring-audit = "{project_python} tools/check_memory_guard_wiring.py
 dev-tooling-test = "{project_python} -m pytest -q -p no:cacheprovider tests/test_molt_dev.py"
 lint = [
     "{project_python} -m ruff check .",
-    "@rust-toolchain-check",
     "@format-check",
+    "@rust-toolchain-check",
     "{project_python} -m ty check src",
     "{project_python} tools/verified_subset.py check",
     "{project_python} tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",

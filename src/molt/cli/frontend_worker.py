@@ -59,6 +59,7 @@ def _format_syntax_error_message(info: ModuleSyntaxErrorInfo) -> str:
     filename = Path(info.filename).name if info.filename else "<unknown>"
     return f"{info.message} ({filename}, line {info.lineno})"
 
+
 def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
     msg = _format_syntax_error_message(info)
     err_name = ast.Name(id="err", ctx=ast.Store())
@@ -98,6 +99,7 @@ def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
     module = ast.Module(body=stmts, type_ignores=[])
     return ast.fix_missing_locations(module)
 
+
 def _read_worker_source_lease(raw_lease: object) -> str:
     if not isinstance(raw_lease, Mapping):
         raise ValueError("missing source lease")
@@ -123,6 +125,7 @@ def _read_worker_source_lease(raw_lease: object) -> str:
         if isinstance(expected_mtime_ns, int) and stat.st_mtime_ns != expected_mtime_ns:
             raise OSError(f"Source lease for {path} changed mtime during compile")
     return _read_module_source(path)
+
 
 def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     worker_started_ns = time.time_ns()
@@ -296,6 +299,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         },
     }
 
+
 def _module_frontend_payload(
     gen: SimpleTIRGenerator,
     ir: dict[str, Any],
@@ -322,6 +326,7 @@ def _module_frontend_payload(
             "total_s": total_s,
         },
     }
+
 
 def _module_frontend_generator(
     *,
@@ -636,7 +641,6 @@ def _run_serial_frontend_lower_with_context(
         total_s=result_timings.total_s,
     )
     return result, result_timings, None
-
 
 
 def _prepare_frontend_parallel_batch(

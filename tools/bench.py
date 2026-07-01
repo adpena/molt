@@ -839,9 +839,7 @@ def _batch_server_stream_failure(exc: BaseException) -> bool:
         return True
     if isinstance(exc, RuntimeError):
         message = str(exc).casefold()
-        return message.startswith(
-            ("batch compile server ", "batch compile response ")
-        )
+        return message.startswith(("batch compile server ", "batch compile response "))
     return False
 
 

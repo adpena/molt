@@ -397,7 +397,9 @@ class CallReductionMixin(_MixinBase):
             save_idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=save_idx))
             saved_cell_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[cell, save_idx], result=saved_cell_val))
+            self.emit(
+                MoltOp(kind="INDEX", args=[cell, save_idx], result=saved_cell_val)
+            )
 
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         pair = self._emit_iter_next_checked(iter_obj)
@@ -510,7 +512,9 @@ class CallReductionMixin(_MixinBase):
                 self.emit(MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res))
             return res
         if not node.args:
-            return self._emit_type_error_value("sum expected at least 1 argument, got 0")
+            return self._emit_type_error_value(
+                "sum expected at least 1 argument, got 0"
+            )
         if len(node.args) > 2:
             return self._emit_type_error_value(
                 f"sum expected at most 2 arguments, got {len(node.args)}"

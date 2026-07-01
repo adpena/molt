@@ -203,8 +203,7 @@ def wasm_runtime_export_link_args(
 ) -> str:
     if required_runtime_imports is None:
         export_names = {
-            _runtime_export_name_or_fail(name)
-            for name in wasm_runtime_import_names()
+            _runtime_export_name_or_fail(name) for name in wasm_runtime_import_names()
         }
         export_names.update(WASM_RUNTIME_HOST_EXPORTS)
         export_names.update(

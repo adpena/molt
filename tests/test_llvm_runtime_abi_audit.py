@@ -40,7 +40,9 @@ def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
     stdev_source = exports["molt_statistics_stdev_slice"].source.replace("\\", "/")
 
     assert mean_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
-    assert stdev_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
+    assert stdev_source.endswith(
+        "runtime/molt-runtime-math/src/math/statistics_tail.rs"
+    )
 
 
 def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None:
@@ -180,15 +182,9 @@ def test_classified_fact_validation_normalizes_return_aliases() -> None:
             "molt_chan_new", 1, "ChanHandle", "runtime.rs", "", ("u64",)
         )
     }
-    facts = {
-        ("molt_chan_new", 1): AUDIT.AbiFact(
-            "molt_chan_new", 1, "I64", ("I64",)
-        )
-    }
+    facts = {("molt_chan_new", 1): AUDIT.AbiFact("molt_chan_new", 1, "I64", ("I64",))}
 
     assert (
-        AUDIT.validate_classified_facts(
-            exports, facts, aliases={"ChanHandle": "u64"}
-        )
+        AUDIT.validate_classified_facts(exports, facts, aliases={"ChanHandle": "u64"})
         == ()
     )

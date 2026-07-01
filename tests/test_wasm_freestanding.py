@@ -719,9 +719,15 @@ def test_wasm_profile_auto_and_pure_accepted():
     parser = entrypoint_parser._build_entrypoint_parser()
     args = parser.parse_args(["build", "--target", "wasm", str(FIXTURE)])
     assert args.wasm_profile == "auto"
-    wasm_profile_action = next(
-        action for action in parser._actions if getattr(action, "dest", None) == "command"
-    ).choices["build"]._option_string_actions["--wasm-profile"]
+    wasm_profile_action = (
+        next(
+            action
+            for action in parser._actions
+            if getattr(action, "dest", None) == "command"
+        )
+        .choices["build"]
+        ._option_string_actions["--wasm-profile"]
+    )
     assert tuple(wasm_profile_action.choices) == ("auto", "full", "pure")
 
 

@@ -6,7 +6,10 @@ from typing import Any, Callable
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
-from molt.cli.build_results import _emit_native_link_result, _emit_non_native_build_result
+from molt.cli.build_results import (
+    _emit_native_link_result,
+    _emit_non_native_build_result,
+)
 from molt.cli.models import (
     BuildProfile,
     _BuildOutputLayout,
@@ -233,30 +236,32 @@ def _emit_backend_pipeline_outputs(
         return _fail("Runtime build failed", json_output, command="build")
     if prepared_build_preamble.diagnostics_enabled:
         diagnostics_payload, diagnostics_path = build_diagnostics_payload()
-    prepared_native_link, prepared_native_link_error = _link_pipeline._prepare_native_link(
-        output_artifact=output_layout.output_artifact,
-        trusted=trusted,
-        capabilities_list=prepared_build_config.capabilities_list,
-        artifacts_root=artifacts_root,
-        json_output=json_output,
-        output_binary=output_layout.output_binary,
-        runtime_lib=runtime_lib,
-        molt_root=prepared_build_roots.molt_root,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        target_triple=output_layout.target_triple,
-        sysroot_path=prepared_build_roots.sysroot_path,
-        profile=profile,
-        project_root=prepared_build_roots.project_root,
-        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-        phase_starts=prepared_build_preamble.phase_starts,
-        link_timeout=prepared_build_config.link_timeout,
-        warnings=prepared_build_preamble.warnings,
-        stdlib_obj_path=stdlib_link_obj_path,
-        stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
-        stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
-        stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
-        native_artifact_plan=native_artifact_plan,
-        stdlib_profile=stdlib_profile,
+    prepared_native_link, prepared_native_link_error = (
+        _link_pipeline._prepare_native_link(
+            output_artifact=output_layout.output_artifact,
+            trusted=trusted,
+            capabilities_list=prepared_build_config.capabilities_list,
+            artifacts_root=artifacts_root,
+            json_output=json_output,
+            output_binary=output_layout.output_binary,
+            runtime_lib=runtime_lib,
+            molt_root=prepared_build_roots.molt_root,
+            runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+            target_triple=output_layout.target_triple,
+            sysroot_path=prepared_build_roots.sysroot_path,
+            profile=profile,
+            project_root=prepared_build_roots.project_root,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            phase_starts=prepared_build_preamble.phase_starts,
+            link_timeout=prepared_build_config.link_timeout,
+            warnings=prepared_build_preamble.warnings,
+            stdlib_obj_path=stdlib_link_obj_path,
+            stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
+            stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
+            stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
+            native_artifact_plan=native_artifact_plan,
+            stdlib_profile=stdlib_profile,
+        )
     )
     if prepared_native_link_error is not None:
         return prepared_native_link_error

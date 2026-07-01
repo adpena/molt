@@ -13,11 +13,9 @@ def test_direct_os_exit_code_preserves_windows_ntstatus_values() -> None:
     assert process_returncode_for_direct_os_exit(None, windows=True) == 1
     assert process_returncode_for_direct_os_exit(7, windows=True) == 7
     assert (
-        process_returncode_for_direct_os_exit(0xC000013A, windows=True)
-        == -1073741510
+        process_returncode_for_direct_os_exit(0xC000013A, windows=True) == -1073741510
     )
     assert process_returncode_for_direct_os_exit(0xFFFFFFFF, windows=True) == -1
     assert (
-        process_returncode_for_direct_os_exit(-1073741510, windows=True)
-        == -1073741510
+        process_returncode_for_direct_os_exit(-1073741510, windows=True) == -1073741510
     )

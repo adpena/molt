@@ -110,7 +110,8 @@ def test_required_wasm_runtime_exports_have_no_mangle() -> None:
     missing = sorted(
         symbol
         for symbol in required
-        if symbol in defined and not any(has_no_mangle for has_no_mangle, _, _ in defined[symbol])
+        if symbol in defined
+        and not any(has_no_mangle for has_no_mangle, _, _ in defined[symbol])
     )
 
     detail = "\n".join(
@@ -122,7 +123,7 @@ def test_required_wasm_runtime_exports_have_no_mangle() -> None:
         for symbol in missing
     )
     assert not missing, (
-        "WASM-required runtime exports are defined as `pub extern \"C\"` but lack "
+        'WASM-required runtime exports are defined as `pub extern "C"` but lack '
         "`#[unsafe(no_mangle)]`, so the linker cannot export them and no program "
         f"can link to WASM:\n{detail}\n"
         "Add `#[unsafe(no_mangle)]` to the export-owning definition; the symbol "
@@ -152,10 +153,13 @@ def test_extracted_runtime_crates_do_not_duplicate_wrapper_exports() -> None:
 
     detail = "\n".join(
         f"  {symbol}: runtime="
-        + ", ".join(f"{path.relative_to(REPO_ROOT).as_posix()}:{line}" for path, line in runtime)
+        + ", ".join(
+            f"{path.relative_to(REPO_ROOT).as_posix()}:{line}" for path, line in runtime
+        )
         + " extracted="
         + ", ".join(
-            f"{path.relative_to(REPO_ROOT).as_posix()}:{line}" for path, line in extracted
+            f"{path.relative_to(REPO_ROOT).as_posix()}:{line}"
+            for path, line in extracted
         )
         for symbol, runtime, extracted in duplicate_owned
     )

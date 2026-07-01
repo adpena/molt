@@ -264,16 +264,16 @@ def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports(
 
 
 def test_reached_runtime_import_names_read_stdlib_intrinsics() -> None:
-    import_name = wasm_runtime_import_name(intrinsic_runtime_symbol_name("molt_os_name"))
+    import_name = wasm_runtime_import_name(
+        intrinsic_runtime_symbol_name("molt_os_name")
+    )
     assert import_name == "os_name"
     names = {import_name}
     assert "os_name" in names
     assert "ssl_cert_none" not in names
 
 
-def test_reached_runtime_import_names_keep_codec_numeric_slices_narrow() -> (
-    None
-):
+def test_reached_runtime_import_names_keep_codec_numeric_slices_narrow() -> None:
     codec_names = _reached_runtime_import_names_for(
         [
             _function(
@@ -283,7 +283,9 @@ def test_reached_runtime_import_names_keep_codec_numeric_slices_narrow() -> (
                     _builtin_func("molt_codecs_encode"),
                 ],
             ),
-            _function("dead_codec_helper", [_builtin_func("molt_codecs_charmap_build")]),
+            _function(
+                "dead_codec_helper", [_builtin_func("molt_codecs_charmap_build")]
+            ),
         ]
     )
     assert codec_names == {"codecs_decode", "codecs_encode"}

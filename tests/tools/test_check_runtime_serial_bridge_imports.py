@@ -36,7 +36,10 @@ unsafe extern "C" {
     violations = module.find_serial_bridge_import_violations(serial)
 
     assert [(v.symbol, v.reason) for v in violations] == [
-        ("molt_time_local_offset_host", "direct Molt host import bypasses RuntimeVtable")
+        (
+            "molt_time_local_offset_host",
+            "direct Molt host import bypasses RuntimeVtable",
+        )
     ]
 
 

@@ -276,7 +276,7 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
     assert "path_filestat_get(fd, _flags, pathPtr, pathLen, bufPtr)" in content
     assert "const writeBytesToFileEntry = (entry, bytes) => {" in content
     assert "writeBytesToFileEntry(entry, bytes);" in content
-    assert 'if (fdNum !== 1 && fdNum !== 2) {' in content
+    assert "if (fdNum !== 1 && fdNum !== 2) {" in content
 
 
 def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> None:
@@ -294,7 +294,9 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
     assert "output_linked.wasm" not in content
 
 
-def test_generate_split_worker_installs_manifest_table_refs_before_main_wrapper() -> None:
+def test_generate_split_worker_installs_manifest_table_refs_before_main_wrapper() -> (
+    None
+):
     from molt.cli import _generate_split_worker_js
 
     app_ref = _table_ref_export_name(7)
@@ -303,9 +305,7 @@ def test_generate_split_worker_installs_manifest_table_refs_before_main_wrapper(
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        app_table_ref_signatures={
-            app_ref: {"params": ["i64"], "result": "i64"}
-        },
+        app_table_ref_signatures={app_ref: {"params": ["i64"], "result": "i64"}},
         runtime_table_ref_signatures={
             runtime_ref: {"params": ["i32"], "result": "i32"}
         },
@@ -352,9 +352,7 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
-        app_table_ref_signatures={
-            app_ref: {"params": ["i64"], "result": "i64"}
-        },
+        app_table_ref_signatures={app_ref: {"params": ["i64"], "result": "i64"}},
         runtime_table_ref_signatures={
             runtime_ref: {"params": ["i32"], "result": "i32"}
         },
@@ -363,23 +361,23 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert 'const callIndirectImportNames = ["molt_call_indirect0"' in content
     assert "const reservedRuntimeCallables = [" in content
     assert "appOwnsReservedTrampoline" not in content
-    assert (
-        '"runtime_export":"molt_object_init_subclass"'
-        in content.replace(" ", "")
-    )
+    assert '"runtime_export":"molt_object_init_subclass"' in content.replace(" ", "")
     assert "for (const indirectName of callIndirectImportNames) {" in content
     assert "hostEnv[indirectName] = (fnIndex, ...args) => {" in content
     assert "const idx = Number(fnIndex);" in content
     assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
     assert "const directName = tableRefExportName(dispatchIdx);" in content
     assert "const reservedDispatch = planReservedRuntimeDispatch({" in content
-    assert "const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;" in content
     assert (
-        "return callReservedRuntimeCallable("
+        "const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;"
         in content
     )
+    assert "return callReservedRuntimeCallable(" in content
     assert f"/^{WASM_TABLE_REF_EXPORT_PREFIX}" not in content
-    assert "const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {" in content
+    assert (
+        "const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {"
+        in content
+    )
     assert "const appDirectFn = appInstance?.exports?.[directName];" in content
     assert 'if (typeof appDirectFn === "function") {' in content
     assert (
@@ -389,8 +387,7 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "app direct export ${directName} failed at idx=${idx}" in content
     assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
     assert (
-        "callIndirectObjectSignature(indirectName, { includeIndex: true })"
-        in content
+        "callIndirectObjectSignature(indirectName, { includeIndex: true })" in content
     )
     assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert (
@@ -398,10 +395,7 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         in content
     )
     assert 'if (typeof tableFn === "function" && directSignature) {' in content
-    assert (
-        "return callWithSignature(tableFn, directSignature, args);"
-        in content
-    )
+    assert "return callWithSignature(tableFn, directSignature, args);" in content
     assert 'if (typeof tableFn === "function") {' in content
     assert (
         "return callWithSignature(tableFn, callIndirectObjectSignature(indirectName), args);"
@@ -412,10 +406,11 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         "const runtimeDirectSignature = runtimeTableRefSignatures[directName] || null;"
         in content
     )
-    assert 'if (typeof rtDirectFn === "function" && runtimeDirectSignature) {' in content
     assert (
-        "return callWithSignature(rtDirectFn, runtimeDirectSignature, args);"
-        in content
+        'if (typeof rtDirectFn === "function" && runtimeDirectSignature) {' in content
+    )
+    assert (
+        "return callWithSignature(rtDirectFn, runtimeDirectSignature, args);" in content
     )
     assert (
         "callIndirectObjectSignature(indirectName) || appTableRefSignatures[directName]"
@@ -452,7 +447,9 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     )
 
 
-def test_static_browser_runners_reserved_runtime_callable_tables_track_generated_abi() -> None:
+def test_static_browser_runners_reserved_runtime_callable_tables_track_generated_abi() -> (
+    None
+):
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
@@ -606,7 +603,10 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
     assert "const resultKind = runtimeImportResultKinds[entry.name] || null;" in content
     assert "const signature = runtimeImportSignatures[entry.name] || null;" in content
-    assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in content
+    assert (
+        "let callSignature = runtimeExportSignatures[entry.name] || signature;"
+        in content
+    )
     assert "fn = runtimeFallback(entry.name);" in content
     assert "callSignature = signature;" in content
     assert 'entry.name === "fast_dict_get"' not in content
@@ -615,7 +615,9 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         in content
     )
     assert "const callArgs = args.map((value, index) =>" in content
-    assert "normalizeValueForKind(value, callSignature.params[index] || null)" in content
+    assert (
+        "normalizeValueForKind(value, callSignature.params[index] || null)" in content
+    )
     assert "return normalizeImportResult(out, resultKind);" in content
     assert "const callWithSignature = (fn, signature, args) => {" in content
     assert "value === undefined || value === null" in content
@@ -667,8 +669,14 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         "const runtimeExportSignatures = runtimeImports.runtime_export_signatures || {};"
         in browser_embed
     )
-    assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in browser_embed
-    assert "normalizeValueForKind(value, callSignature.params[index] || null)" in browser_embed
+    assert (
+        "let callSignature = runtimeExportSignatures[entry.name] || signature;"
+        in browser_embed
+    )
+    assert (
+        "normalizeValueForKind(value, callSignature.params[index] || null)"
+        in browser_embed
+    )
 
 
 def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
@@ -732,19 +740,37 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
     browser_host = (root / "wasm/browser_host.js").read_text(encoding="utf-8")
     assert "normalizeImportResult," in browser_host
     assert "normalizeValueForKind," in browser_host
-    assert "const loadSplitRuntimeManifest = async (options, wasmUrl) => {" in browser_host
+    assert (
+        "const loadSplitRuntimeManifest = async (options, wasmUrl) => {" in browser_host
+    )
     assert "split-runtime manifest missing abi.runtime_imports.names" in browser_host
     assert "const runtimeImportAbi = options.runtimeImportAbi || {};" in browser_host
-    assert "const manifestNames = new Set(runtimeImportAbi.names || []);" in browser_host
-    assert "const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};" in browser_host
+    assert (
+        "const manifestNames = new Set(runtimeImportAbi.names || []);" in browser_host
+    )
+    assert (
+        "const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};"
+        in browser_host
+    )
     assert "const resultKinds = runtimeImportAbi.result_kinds || {};" in browser_host
-    assert "const runtimeImportFallbacks = options.runtimeImportFallbacks || {};" in browser_host
+    assert (
+        "const runtimeImportFallbacks = options.runtimeImportFallbacks || {};"
+        in browser_host
+    )
     assert "app runtime import ${entry.name} missing from manifest" in browser_host
     assert "app runtime import ${entry.name} missing manifest signature" in browser_host
-    assert "app runtime import ${entry.name} missing manifest result kind" in browser_host
-    assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in browser_host
+    assert (
+        "app runtime import ${entry.name} missing manifest result kind" in browser_host
+    )
+    assert (
+        "let callSignature = runtimeExportSignatures[entry.name] || signature;"
+        in browser_host
+    )
     assert "fn = resolveFallback(entry.name);" in browser_host
-    assert "normalizeValueForKind(value, callSignature.params[index] || null)" in browser_host
+    assert (
+        "normalizeValueForKind(value, callSignature.params[index] || null)"
+        in browser_host
+    )
     assert "return normalizeImportResult(fn(...callArgs), resultKind);" in browser_host
     assert "runtimeImportAbi," in browser_host
     assert "runtimeImportFallbacks," in browser_host
@@ -861,10 +887,7 @@ def _active_table_fixture_wasm(*, base_slot: int) -> bytes:
     type_payload = _wasm_vec([_wasm_function_type([], [])])
     function_payload = _wasm_vec([wasm_artifact._write_wasm_varuint(0)])
     table_payload = _wasm_vec(
-        [
-            b"\x70\x00"
-            + wasm_artifact._write_wasm_varuint(max(base_slot + 1, 1))
-        ]
+        [b"\x70\x00" + wasm_artifact._write_wasm_varuint(max(base_slot + 1, 1))]
     )
     element_payload = _wasm_vec(
         [

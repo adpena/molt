@@ -843,9 +843,7 @@ def _default_cargo_target_dir() -> Path:
     session_id = os.environ.get("MOLT_SESSION_ID") or f"mutation-{os.getpid()}"
     ext = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if ext:
-        return cargo_target_dir_for_artifact_root(
-            Path(ext).expanduser(), session_id
-        )
+        return cargo_target_dir_for_artifact_root(Path(ext).expanduser(), session_id)
 
     return cargo_target_dir_for_artifact_root(REPO_ROOT, session_id)
 

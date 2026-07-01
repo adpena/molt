@@ -44,7 +44,9 @@ FORBIDDEN_IMPORT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "Tk widget modules must not reexport common as wildcard authority",
     ),
     (
-        re.compile(r"^pub\(super\)\s+use\s+super(?:::[A-Za-z0-9_]+)*::\*\s*;", re.MULTILINE),
+        re.compile(
+            r"^pub\(super\)\s+use\s+super(?:::[A-Za-z0-9_]+)*::\*\s*;", re.MULTILINE
+        ),
         "Tk modules must not reexport parent wildcard authority",
     ),
 )

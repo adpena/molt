@@ -1056,9 +1056,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    env = _split_runtime_build_env(
-        session_id="test-linked-host-tensor-scatter-dtype"
-    )
+    env = _split_runtime_build_env(session_id="test-linked-host-tensor-scatter-dtype")
     build = _run_wasm_test_process(
         [
             sys.executable,

@@ -1061,7 +1061,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             status=str(row.get("status")),
         )
 
-    _progress("baseline_start", baseline="cpython", enabled=not args.no_cpython_baseline)
+    _progress(
+        "baseline_start", baseline="cpython", enabled=not args.no_cpython_baseline
+    )
     cpython = (
         None
         if args.no_cpython_baseline

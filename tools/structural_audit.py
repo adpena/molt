@@ -267,9 +267,7 @@ _MATCH_HEAD_RE = re.compile(
 )
 _OPCODE_ARM_RE = re.compile(r"\bOpCode::[A-Za-z0-9_]+")
 _KIND_SCRUTINEE_RE = re.compile(r"\.opcode\b|\.kind\b|_original_kind|opcode\b|kind\b")
-_GENERATED_OPCODE_TABLE_SCRUTINEE_RE = re.compile(
-    r"\bopcode_[A-Za-z0-9_]*_table\s*\("
-)
+_GENERATED_OPCODE_TABLE_SCRUTINEE_RE = re.compile(r"\bopcode_[A-Za-z0-9_]*_table\s*\(")
 _WILDCARD_ARM_RE = re.compile(r"(^|\n)\s*_\s*(=>|if\b)")
 # matches!(scrutinee, PATTERN) — capture the whole call's argument region.
 _MATCHES_MACRO_RE = re.compile(r"\bmatches!\s*\(")
@@ -789,6 +787,7 @@ def probe_large_source_files(
         )
     return findings
 
+
 def probe_kitchen_sink_files(
     root: Path,
     ceiling: int = 4000,
@@ -873,6 +872,7 @@ def probe_undecomposed_god_files(
         )
     return findings
 
+
 _COMMENT_DEBT_RE = re.compile(
     r"\b(TODO|FIXME|HACK|XXX|WORKAROUND|KLUDGE)\b|"
     r"\bfor now\b|"
@@ -895,9 +895,7 @@ def _python_comment_segments(text: str) -> list[tuple[int, str]]:
     try:
         tokens = tokenize.generate_tokens(io.StringIO(text).readline)
         return [
-            (tok.start[0], tok.string)
-            for tok in tokens
-            if tok.type == tokenize.COMMENT
+            (tok.start[0], tok.string) for tok in tokens if tok.type == tokenize.COMMENT
         ]
     except tokenize.TokenError:
         return [
@@ -1107,9 +1105,7 @@ def probe_debt_markers(root: Path) -> list[Finding]:
         rel = path.relative_to(root).as_posix()
         sev = "medium" if count >= 15 else "low"
         first_line = hits[0].line
-        examples = ", ".join(
-            f"L{hit.line}:{hit.marker}" for hit in hits[:5]
-        )
+        examples = ", ".join(f"L{hit.line}:{hit.marker}" for hit in hits[:5])
         findings.append(
             Finding(
                 probe="debt_marker",
@@ -1230,7 +1226,11 @@ def _is_test_source_path(path: Path, root: Path) -> bool:
 
 def _rust_line_is_comment_only(line: str) -> bool:
     stripped = line.lstrip()
-    return stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*")
+    return (
+        stripped.startswith("//")
+        or stripped.startswith("/*")
+        or stripped.startswith("*")
+    )
 
 
 def _rust_cfg_test_line_numbers(text: str) -> set[int]:
@@ -1768,9 +1768,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     native_scalar_plan = [
         f for f in findings if f.probe == "native_scalar_plan_authority"
     ]
-    repr_name_scalar = [
-        f for f in findings if f.probe == "repr_name_scalar_authority"
-    ]
+    repr_name_scalar = [f for f in findings if f.probe == "repr_name_scalar_authority"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     kitchen_sink_files = float(len(kitchen_sink))
     max_kitchen_sink_structural_score = float(
@@ -1793,9 +1791,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         # hand-maintained opcode SETS via matches! (≥3 opcodes) in any file
         "handset_classifications": float(len(handsets)),
         "debt_markers_total": float(sum(int(f.metric) for f in debt)),
-        "python_stub_surfaces_total": float(
-            sum(int(f.metric) for f in python_stubs)
-        ),
+        "python_stub_surfaces_total": float(sum(int(f.metric) for f in python_stubs)),
         "rust_stub_surfaces_total": float(sum(int(f.metric) for f in rust_stubs)),
         "rust_backend_lowering_gaps_total": float(
             sum(int(f.metric) for f in rust_backend_lowering_gaps)
@@ -1840,7 +1836,9 @@ def _tooling_gaps(root: Path) -> list[tuple[str, str]]:
     call_fact_built = _repo_file_exists(root, "tools/call_fact_coverage.py")
     causality_built = _repo_file_exists(root, "tools/perf_causality.py")
     pass_delta_built = _repo_file_exists(root, "tools/pass_delta_dashboard.py")
-    fact_graph_built = _repo_file_exists(root, "runtime/molt-passes/src/tir/fact_graph.rs")
+    fact_graph_built = _repo_file_exists(
+        root, "runtime/molt-passes/src/tir/fact_graph.rs"
+    )
     fact_dump_built = _repo_file_exists(root, "tools/fact_graph_dump.py")
 
     gaps = [

@@ -624,8 +624,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert (
         'python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST --timeout "$MOLT_CARGO_TIMEOUT" -- \\\n'
-        "            cargo build --profile dev-fast -p molt-wasm-host"
-        in wasm_text
+        "            cargo build --profile dev-fast -p molt-wasm-host" in wasm_text
     )
     assert (
         "cargo build --profile dev-fast -p molt-runtime --target wasm32-wasip1"
@@ -681,9 +680,5 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
             "Build Molt WASM host",
             "Prebuild shared Molt WASM runtime",
         }
-        max_timeout = (
-            25
-            if step_name in wasm_build_steps
-            else 20
-        )
+        max_timeout = 25 if step_name in wasm_build_steps else 20
         assert 1 <= timeout_minutes <= max_timeout, block
