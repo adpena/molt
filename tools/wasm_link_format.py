@@ -4,7 +4,10 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _WASM_ABI_GENERATED = REPO_ROOT / "src/molt/_wasm_abi_generated.py"
@@ -126,6 +129,21 @@ _EMPTY_FUNC_BODY = bytes([0x00, 0x0B])
 _ESSENTIAL_EXPORTS = _WASM_ABI.WASM_ESSENTIAL_EXPORTS
 
 _TRAP_STUB_BODY = bytes([0x00, 0x00, 0x0B])
+
+
+@dataclass(frozen=True, slots=True)
+class WasmModuleFacts:
+    imports: tuple[tuple[str, str, int, bytes], ...]
+    exports: frozenset[str]
+    function_exports: Mapping[str, int]
+    custom_names: tuple[str, ...]
+    module_imports: Mapping[str, frozenset[str]]
+    table_import_mins: Mapping[tuple[str, str], int]
+    memory_import_mins: Mapping[tuple[str, str], int]
+    element_declared_funcs: frozenset[int]
+    code_ref_funcs: frozenset[int]
+    total_func_count: int
+    element_validation_error: str | None
 
 
 def _is_wasm_binary(data: bytes) -> bool:
@@ -579,24 +597,30 @@ def _collect_func_names(data: bytes) -> dict[int, str]:
     return names
 
 
+def _parse_export_payload(payload: bytes) -> tuple[set[str], dict[str, int]]:
+    exports: set[str] = set()
+    function_exports: dict[str, int] = {}
+    offset = 0
+    count, offset = _read_varuint(payload, offset)
+    for _ in range(count):
+        name, offset = _read_string(payload, offset)
+        if offset >= len(payload):
+            raise ValueError("Unexpected EOF while reading export kind")
+        kind = payload[offset]
+        offset += 1
+        index, offset = _read_varuint(payload, offset)
+        exports.add(name)
+        if kind == 0:
+            function_exports[name] = index
+    return exports, function_exports
+
+
 def _collect_function_exports(data: bytes) -> dict[str, int]:
-    exports: dict[str, int] = {}
     for section_id, payload in _parse_sections(data):
-        if section_id != 7:
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF while reading export kind")
-            kind = payload[offset]
-            offset += 1
-            index, offset = _read_varuint(payload, offset)
-            if kind == 0:
-                exports[name] = index
-        break
-    return exports
+        if section_id == 7:
+            _, exports = _parse_export_payload(payload)
+            return exports
+    return {}
 
 
 def _read_varsint(data: bytes, offset: int) -> tuple[int, int]:
@@ -617,12 +641,13 @@ def _read_varsint(data: bytes, offset: int) -> tuple[int, int]:
     return result, offset
 
 
-def _skip_init_expr(data: bytes, offset: int) -> int:
+def _read_init_expr_refs(data: bytes, offset: int) -> tuple[int, tuple[int, ...]]:
+    ref_funcs: list[int] = []
     while offset < len(data):
         opcode = data[offset]
         offset += 1
         if opcode == 0x0B:
-            return offset
+            return offset, tuple(ref_funcs)
         if opcode == 0x41 or opcode == 0x42:
             _, offset = _read_varuint(data, offset)
             continue
@@ -638,65 +663,78 @@ def _skip_init_expr(data: bytes, offset: int) -> int:
             offset += 1
             continue
         if opcode == 0xD2:  # ref.func
-            _, offset = _read_varuint(data, offset)
+            func_idx, offset = _read_varuint(data, offset)
+            ref_funcs.append(func_idx)
             continue
         raise ValueError(f"Unsupported init expr opcode 0x{opcode:02x}")
     raise ValueError("Unexpected EOF while reading init expr")
 
 
+def _skip_init_expr(data: bytes, offset: int) -> int:
+    offset, _ = _read_init_expr_refs(data, offset)
+    return offset
+
+
+def _parse_element_payload(payload: bytes) -> tuple[set[int], str | None]:
+    declared: set[int] = set()
+    validation_error: str | None = None
+
+    def remember_error(message: str) -> None:
+        nonlocal validation_error
+        if validation_error is None:
+            validation_error = message
+
+    offset = 0
+    count, offset = _read_varuint(payload, offset)
+    for _ in range(count):
+        flags, offset = _read_varuint(payload, offset)
+        if flags in (0x02, 0x06):
+            table_index, offset = _read_varuint(payload, offset)
+            if table_index != 0:
+                remember_error(f"element segment targets table {table_index}")
+            offset = _skip_init_expr(payload, offset)
+        elif flags in (0x00, 0x04):
+            offset = _skip_init_expr(payload, offset)
+        elif flags in (0x01, 0x03, 0x05, 0x07):
+            pass
+        else:
+            return declared, f"unsupported element segment flags 0x{flags:x}"
+
+        if flags in (0x00, 0x01, 0x02, 0x03):
+            if offset >= len(payload):
+                remember_error("unexpected EOF reading elemkind")
+                return declared, validation_error
+            if flags in (0x01, 0x02, 0x03) and payload[offset] == 0x00:
+                offset += 1
+            elem_count, offset = _read_varuint(payload, offset)
+            for _ in range(elem_count):
+                func_idx, offset = _read_varuint(payload, offset)
+                declared.add(func_idx)
+            continue
+
+        if offset >= len(payload):
+            remember_error("unexpected EOF reading elemtype")
+            return declared, validation_error
+        offset += 1
+        expr_count, offset = _read_varuint(payload, offset)
+        for _ in range(expr_count):
+            offset, refs = _read_init_expr_refs(payload, offset)
+            declared.update(refs)
+
+    return declared, validation_error
+
+
 def _collect_element_declared_funcs(data: bytes) -> set[int]:
     """Collect all function indices declared in element segments."""
-    declared: set[int] = set()
     for section_id, payload in _parse_sections(data):
         if section_id != 9:
             continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            flags, offset = _read_varuint(payload, offset)
-            # Parse offset expression for active segments
-            if flags in (0x02, 0x06):
-                _, offset = _read_varuint(payload, offset)  # table index
-                offset = _skip_init_expr(payload, offset)
-            elif flags in (0x00, 0x04):
-                offset = _skip_init_expr(payload, offset)
-            # Parse element entries
-            if flags in (0x00, 0x01, 0x02, 0x03):
-                # Legacy format: optional elemkind byte + function index vector
-                if flags in (0x01, 0x02, 0x03):
-                    if offset < len(payload) and payload[offset] == 0x00:
-                        offset += 1  # elemkind byte
-                elem_count, offset = _read_varuint(payload, offset)
-                for _ in range(elem_count):
-                    func_idx, offset = _read_varuint(payload, offset)
-                    declared.add(func_idx)
-            else:
-                # Expression format
-                if flags in (0x05, 0x07):
-                    offset += 1  # reftype
-                expr_count, offset = _read_varuint(payload, offset)
-                for _ in range(expr_count):
-                    while offset < len(payload) and payload[offset] != 0x0B:
-                        opcode = payload[offset]
-                        offset += 1
-                        if opcode == 0xD2:  # ref.func
-                            func_idx, offset = _read_varuint(payload, offset)
-                            declared.add(func_idx)
-                        elif opcode == 0xD0:  # ref.null
-                            offset += 1
-                        elif opcode in (0x41, 0x42, 0x23):
-                            _, offset = _read_varuint(payload, offset)
-                        elif opcode == 0x43:
-                            offset += 4
-                        elif opcode == 0x44:
-                            offset += 8
-                    if offset < len(payload):
-                        offset += 1  # skip 0x0B end
-        break
-    return declared
+        declared, _ = _parse_element_payload(payload)
+        return declared
+    return set()
 
 
-def _scan_code_ref_funcs(data: bytes) -> set[int]:
+def _scan_code_section_ref_funcs(sections: list[tuple[int, bytes]]) -> set[int]:
     """Scan all code bodies for ref.func (0xD2) instructions.
 
     Returns the set of function indices referenced by ref.func instructions.
@@ -704,7 +742,7 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
     desynchronisation on opcodes with multi-byte immediates.
     """
     ref_funcs: set[int] = set()
-    for section_id, payload in _parse_sections(data):
+    for section_id, payload in sections:
         if section_id != 10:
             continue
         offset = 0
@@ -878,6 +916,10 @@ def _scan_code_ref_funcs(data: bytes) -> set[int]:
     return ref_funcs
 
 
+def _scan_code_ref_funcs(data: bytes) -> set[int]:
+    return _scan_code_section_ref_funcs(_parse_sections(data))
+
+
 def _declare_ref_func_elements(data: bytes) -> bytes | None:
     """Add a declarative element segment for functions referenced by ref.func
     but not yet declared in any element segment.
@@ -941,24 +983,9 @@ def _declare_ref_func_elements(data: bytes) -> bytes | None:
 def _count_func_imports(sections: list[tuple[int, bytes]]) -> int:
     """Return the number of function imports in the import section."""
     for sid, payload in sections:
-        if sid != 2:
-            continue
-        offset = 0
-        total, offset = _read_varuint(payload, offset)
-        func_imports = 0
-        for _ in range(total):
-            mod_len, offset = _read_varuint(payload, offset)
-            offset += mod_len
-            field_len, offset = _read_varuint(payload, offset)
-            offset += field_len
-            kind = payload[offset]
-            offset += 1
-            if kind == 0:  # function
-                _, offset = _read_varuint(payload, offset)
-                func_imports += 1
-            else:
-                offset = _parse_import_desc(payload, offset, kind)
-        return func_imports
+        if sid == 2:
+            _, func_imports, _, _, _ = _parse_import_payload(payload)
+            return func_imports
     return 0
 
 
@@ -1027,41 +1054,78 @@ def _parse_import_desc(data: bytes, offset: int, kind: int) -> int:
     raise ValueError(f"Unknown import kind: {kind}")
 
 
+def _import_limits_min(kind: int, desc: bytes) -> int | None:
+    if not desc:
+        return None
+    if kind == 1:
+        _, minimum, _, _ = _read_limits(desc, 1)
+        return minimum
+    if kind == 2:
+        _, minimum, _, _ = _read_limits(desc, 0)
+        return minimum
+    return None
+
+
+def _parse_import_payload(
+    payload: bytes,
+) -> tuple[
+    list[tuple[str, str, int, bytes]],
+    int,
+    dict[str, set[str]],
+    dict[tuple[str, str], int],
+    dict[tuple[str, str], int],
+]:
+    imports: list[tuple[str, str, int, bytes]] = []
+    module_imports: dict[str, set[str]] = {}
+    table_import_mins: dict[tuple[str, str], int] = {}
+    memory_import_mins: dict[tuple[str, str], int] = {}
+    func_imports = 0
+    offset = 0
+    count, offset = _read_varuint(payload, offset)
+    for _ in range(count):
+        module, offset = _read_string(payload, offset)
+        name, offset = _read_string(payload, offset)
+        if offset >= len(payload):
+            raise ValueError("Unexpected EOF while reading import kind")
+        kind = payload[offset]
+        offset += 1
+        desc_start = offset
+        offset = _parse_import_desc(payload, offset, kind)
+        desc = payload[desc_start:offset]
+        imports.append((module, name, kind, desc))
+        module_imports.setdefault(module, set()).add(name)
+        if kind == 0:
+            func_imports += 1
+        elif kind == 1:
+            minimum = _import_limits_min(kind, desc)
+            if minimum is not None:
+                table_import_mins[(module, name)] = minimum
+        elif kind == 2:
+            minimum = _import_limits_min(kind, desc)
+            if minimum is not None:
+                memory_import_mins[(module, name)] = minimum
+    return (
+        imports,
+        func_imports,
+        module_imports,
+        table_import_mins,
+        memory_import_mins,
+    )
+
+
 def _collect_exports(data: bytes) -> set[str]:
-    exports: set[str] = set()
     for section_id, payload in _parse_sections(data):
-        if section_id != 7:
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF while reading export")
-            offset += 1
-            _, offset = _read_varuint(payload, offset)
-            exports.add(name)
-    return exports
+        if section_id == 7:
+            exports, _ = _parse_export_payload(payload)
+            return exports
+    return set()
 
 
 def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
     for section_id, payload in _parse_sections(data):
-        if section_id != 2:
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        imports: list[tuple[str, str, int, bytes]] = []
-        for _ in range(count):
-            module, offset = _read_string(payload, offset)
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF while reading import kind")
-            kind = payload[offset]
-            offset += 1
-            desc_start = offset
-            offset = _parse_import_desc(payload, offset, kind)
-            imports.append((module, name, kind, payload[desc_start:offset]))
-        return imports
+        if section_id == 2:
+            imports, _, _, _, _ = _parse_import_payload(payload)
+            return imports
     return []
 
 
@@ -1182,40 +1246,9 @@ def _collect_custom_names(data: bytes) -> list[str]:
 
 def _validate_elements(data: bytes) -> tuple[bool, str | None]:
     for section_id, payload in _parse_sections(data):
-        if section_id != 9:
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            flags, offset = _read_varuint(payload, offset)
-            if flags in (0x02, 0x06):
-                table_index, offset = _read_varuint(payload, offset)
-                if table_index != 0:
-                    return False, f"element segment targets table {table_index}"
-                offset = _skip_init_expr(payload, offset)
-            elif flags in (0x00, 0x04):
-                offset = _skip_init_expr(payload, offset)
-            elif flags in (0x01, 0x03, 0x05, 0x07):
-                pass
-            else:
-                return False, f"unsupported element segment flags 0x{flags:x}"
-            if flags in (0x00, 0x01, 0x02, 0x03):
-                if offset >= len(payload):
-                    return False, "unexpected EOF reading elemkind"
-                # Some toolchains omit the legacy elemkind byte; tolerate both.
-                if payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_varuint(payload, offset)
-            else:
-                if offset >= len(payload):
-                    return False, "unexpected EOF reading elemtype"
-                offset += 1
-                expr_count, offset = _read_varuint(payload, offset)
-                for _ in range(expr_count):
-                    offset = _skip_init_expr(payload, offset)
-        break
+        if section_id == 9:
+            _, error = _parse_element_payload(payload)
+            return error is None, error
     return True, None
 
 
@@ -1225,45 +1258,85 @@ def _collect_module_imports(wasm_data: bytes, module_name: str) -> set[str]:
     For example, if the app module imports ``(import "molt_runtime" "print_obj" ...)``,
     calling ``_collect_module_imports(app_data, "molt_runtime")`` returns ``{"print_obj"}``.
     """
-    sections = _parse_sections(wasm_data)
-    result: set[str] = set()
+    for section_id, payload in _parse_sections(wasm_data):
+        if section_id == 2:
+            _, _, module_imports, _, _ = _parse_import_payload(payload)
+            return set(module_imports.get(module_name, ()))
+    return set()
+
+
+def parse_wasm_module_facts(data: bytes) -> WasmModuleFacts:
+    sections = _parse_sections(data)
+    imports: list[tuple[str, str, int, bytes]] = []
+    exports: set[str] = set()
+    function_exports: dict[str, int] = {}
+    custom_names: list[str] = []
+    module_imports: dict[str, set[str]] = {}
+    table_import_mins: dict[tuple[str, str], int] = {}
+    memory_import_mins: dict[tuple[str, str], int] = {}
+    element_declared_funcs: set[int] = set()
+    code_ref_funcs: set[int] = set()
+    func_import_count = 0
+    defined_func_count = 0
+    element_validation_error: str | None = None
+    saw_imports = False
+    saw_exports = False
+    saw_function_section = False
+    saw_elements = False
+    saw_code = False
+
     for section_id, payload in sections:
-        if section_id != 2:  # import section
+        if section_id == 0:
+            try:
+                name, _ = _parse_custom_section(payload)
+            except ValueError:
+                continue
+            custom_names.append(name)
             continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            mod, offset = _read_string(payload, offset)
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF reading import kind")
-            kind = payload[offset]
-            offset += 1
-            # Skip the import descriptor based on kind.
-            if kind == 0:  # function
-                _, offset = _read_varuint(payload, offset)
-            elif kind == 1:  # table
-                offset += 1  # elemtype
-                flags, offset = _read_varuint(payload, offset)
-                _, offset = _read_varuint(payload, offset)  # initial
-                if flags & 0x1:
-                    _, offset = _read_varuint(payload, offset)  # maximum
-            elif kind == 2:  # memory
-                flags, offset = _read_varuint(payload, offset)
-                _, offset = _read_varuint(payload, offset)  # initial
-                if flags & 0x1:
-                    _, offset = _read_varuint(payload, offset)  # maximum
-            elif kind == 3:  # global
-                offset += 1  # valtype
-                offset += 1  # mutability
-            elif kind == 4:  # tag
-                offset += 1  # attribute
-                _, offset = _read_varuint(payload, offset)  # type index
-            else:
-                raise ValueError(f"Unknown import kind {kind}")
-            if mod == module_name:
-                result.add(name)
-    return result
+        if section_id == 2 and not saw_imports:
+            (
+                imports,
+                func_import_count,
+                module_imports,
+                table_import_mins,
+                memory_import_mins,
+            ) = _parse_import_payload(payload)
+            saw_imports = True
+            continue
+        if section_id == 3 and not saw_function_section:
+            defined_func_count, _ = _read_varuint(payload, 0)
+            saw_function_section = True
+            continue
+        if section_id == 7 and not saw_exports:
+            exports, function_exports = _parse_export_payload(payload)
+            saw_exports = True
+            continue
+        if section_id == 9 and not saw_elements:
+            element_declared_funcs, element_validation_error = _parse_element_payload(
+                payload
+            )
+            saw_elements = True
+            continue
+        if section_id == 10 and not saw_code:
+            code_ref_funcs = _scan_code_section_ref_funcs([(10, payload)])
+            saw_code = True
+
+    frozen_module_imports = {
+        module: frozenset(names) for module, names in module_imports.items()
+    }
+    return WasmModuleFacts(
+        imports=tuple(imports),
+        exports=frozenset(exports),
+        function_exports=MappingProxyType(dict(function_exports)),
+        custom_names=tuple(custom_names),
+        module_imports=MappingProxyType(frozen_module_imports),
+        table_import_mins=MappingProxyType(dict(table_import_mins)),
+        memory_import_mins=MappingProxyType(dict(memory_import_mins)),
+        element_declared_funcs=frozenset(element_declared_funcs),
+        code_ref_funcs=frozenset(code_ref_funcs),
+        total_func_count=func_import_count + defined_func_count,
+        element_validation_error=element_validation_error,
+    )
 
 
 def _build_call_graph(code_payload: bytes, import_count: int) -> dict[int, set[int]]:

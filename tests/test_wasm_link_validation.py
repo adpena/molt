@@ -979,6 +979,61 @@ def test_wasm_link_allows_ref_func_element_expr() -> None:
     assert ok, err
 
 
+def test_wasm_module_facts_capture_link_validation_surface() -> None:
+    data = _build_memory_import_ref_func_app_module(func_index=0)
+
+    facts = wasm_link.parse_wasm_module_facts(data)
+
+    assert facts.imports == (("env", "memory", 2, b"\x00\x01"),)
+    assert facts.module_imports["env"] == frozenset({"memory"})
+    assert facts.memory_import_mins[("env", "memory")] == 1
+    assert facts.code_ref_funcs == frozenset({0})
+    assert facts.element_declared_funcs == frozenset()
+    assert facts.total_func_count == 1
+
+
+def test_validate_linked_parses_module_facts_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    linked = tmp_path / "linked.wasm"
+    linked.write_bytes(_build_linked_host_table_module("__indirect_function_table"))
+    calls: list[int] = []
+    original_parse = wasm_link.parse_wasm_module_facts
+
+    def parse_once(data: bytes):
+        calls.append(len(data))
+        return original_parse(data)
+
+    monkeypatch.setattr(wasm_link, "parse_wasm_module_facts", parse_once)
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", lambda *_a, **_k: True)
+
+    assert wasm_link._validate_linked(linked)
+    assert calls == [len(linked.read_bytes())]
+
+
+def test_validate_split_runtime_outputs_parses_each_artifact_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    app = tmp_path / "app.wasm"
+    runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
+    app.write_bytes(_build_runtime_import_module(["molt_err_pending"], memory_min=1))
+    calls: list[int] = []
+    original_parse = wasm_link.parse_wasm_module_facts
+
+    def parse_once(data: bytes):
+        calls.append(len(data))
+        return original_parse(data)
+
+    monkeypatch.setattr(wasm_link, "parse_wasm_module_facts", parse_once)
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", lambda *_a, **_k: True)
+
+    assert wasm_link._validate_split_runtime_outputs(app, runtime)
+    assert calls == [len(app.read_bytes()), len(runtime.read_bytes())]
+
+
 def test_validate_linked_accepts_known_host_table_contract(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
