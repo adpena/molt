@@ -2020,6 +2020,10 @@ unsafe fn function_binding_meta(
 /// `func_ptr` must be a live function object; the GIL must be held.
 pub(crate) unsafe fn function_needs_full_binder(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
     unsafe {
+        if builtin_args::builtin_call_has_special_binding(func_ptr) {
+            return true;
+        }
+
         for name in [
             b"__molt_bind_kind__".as_slice(),
             b"__molt_vararg__",
