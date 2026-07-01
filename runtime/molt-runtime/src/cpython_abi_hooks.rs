@@ -906,7 +906,8 @@ unsafe fn static_link_module_add_methods(
 unsafe fn static_link_module_exec_slots(
     module_bits: u64,
     slots: *mut StaticLinkPyModuleDefSlot,
-) -> Result<(), &'static str> {
+    module_name: &str,
+) -> Result<(), String> {
     if slots.is_null() {
         return Ok(());
     }
@@ -916,28 +917,40 @@ unsafe fn static_link_module_exec_slots(
             let slot = &*cursor;
             match slot.slot {
                 STATIC_PY_MOD_CREATE => {
-                    return Err(
-                        "static-link PyModuleDef Py_mod_create slot requires module creation bridge",
-                    );
+                    return Err(format!(
+                        "{module_name}: static-link PyModuleDef Py_mod_create slot requires module creation bridge"
+                    ));
                 }
                 STATIC_PY_MOD_EXEC => {
                     if slot.value.is_null() {
-                        return Err("static-link PyModuleDef Py_mod_exec slot is NULL");
+                        return Err(format!(
+                            "{module_name}: static-link PyModuleDef Py_mod_exec slot is NULL"
+                        ));
                     }
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
                     let module_obj = cext_pyobject_from_bits(module_bits);
                     if module_obj.is_null() {
-                        return Err("static-link PyModuleDef Py_mod_exec module bridge failed");
+                        return Err(format!(
+                            "{module_name}: static-link PyModuleDef Py_mod_exec module bridge failed"
+                        ));
                     }
                     let rc = exec(module_obj);
                     molt_cpython_abi::api::refcount::Py_DECREF(module_obj);
                     if rc != 0 {
-                        return Err("static-link PyModuleDef Py_mod_exec slot returned non-zero");
+                        let detail = static_pyinit_import_error_message(
+                            "static-link PyModuleDef Py_mod_exec slot returned non-zero",
+                        );
+                        return Err(format!("{module_name}: {detail}"));
                     }
                 }
                 STATIC_PY_MOD_MULTIPLE_INTERPRETERS | STATIC_PY_MOD_GIL => {}
-                _ => return Err("unsupported static-link PyModuleDef slot"),
+                _ => {
+                    return Err(format!(
+                        "{module_name}: unsupported static-link PyModuleDef slot {}",
+                        slot.slot
+                    ));
+                }
             }
             cursor = cursor.add(1);
         }
@@ -947,7 +960,7 @@ unsafe fn static_link_module_exec_slots(
 
 unsafe fn static_link_module_def_to_bits(
     def: *mut StaticLinkPyModuleDef,
-) -> Result<Option<u64>, &'static str> {
+) -> Result<Option<u64>, String> {
     if def.is_null() {
         return Ok(None);
     }
@@ -960,11 +973,12 @@ unsafe fn static_link_module_def_to_bits(
     }
     let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
     if name_bytes.is_empty() {
-        return Err("static-link PyModuleDef name must not be empty");
+        return Err("static-link PyModuleDef name must not be empty".to_string());
     }
+    let module_name = String::from_utf8_lossy(name_bytes).into_owned();
     let module_bits = unsafe { hook_alloc_module(name_bytes.as_ptr(), name_bytes.len()) };
     if module_bits == 0 {
-        return Err("static-link PyModuleDef module allocation failed");
+        return Err(format!("{module_name}: module allocation failed"));
     }
 
     let doc = unsafe { (*def).m_doc };
@@ -973,7 +987,7 @@ unsafe fn static_link_module_def_to_bits(
         let doc_bits = unsafe { hook_alloc_str(doc_bytes.as_ptr(), doc_bytes.len()) };
         if doc_bits == 0 {
             unsafe { hook_dec_ref(module_bits) };
-            return Err("static-link PyModuleDef doc allocation failed");
+            return Err(format!("{module_name}: doc allocation failed"));
         }
         let doc_attr = b"__doc__";
         let set_result = unsafe {
@@ -982,7 +996,7 @@ unsafe fn static_link_module_def_to_bits(
         unsafe { hook_dec_ref(doc_bits) };
         if set_result != 0 {
             unsafe { hook_dec_ref(module_bits) };
-            return Err("static-link PyModuleDef doc registration failed");
+            return Err(format!("{module_name}: doc registration failed"));
         }
     }
 
@@ -996,22 +1010,23 @@ unsafe fn static_link_module_def_to_bits(
     if crate::c_api::molt_module_capi_register(module_bits, module_def_ptr, module_state_size) != 0
     {
         unsafe { hook_dec_ref(module_bits) };
-        return Err("static-link PyModuleDef C-API metadata registration failed");
+        return Err(format!("{module_name}: C-API metadata registration failed"));
     }
     if crate::c_api::molt_module_state_add(module_bits, module_def_ptr) != 0 {
         unsafe { hook_dec_ref(module_bits) };
-        return Err("static-link PyModuleDef module-state registration failed");
+        return Err(format!("{module_name}: module-state registration failed"));
     }
 
     let methods = unsafe { (*def).m_methods };
     if let Err(message) = unsafe { static_link_module_add_methods(module_bits, methods) } {
         let _ = crate::c_api::molt_module_state_remove(module_def_ptr);
         unsafe { hook_dec_ref(module_bits) };
-        return Err(message);
+        return Err(format!("{module_name}: {message}"));
     }
 
     let slots = unsafe { (*def).m_slots };
-    if let Err(message) = unsafe { static_link_module_exec_slots(module_bits, slots) } {
+    if let Err(message) = unsafe { static_link_module_exec_slots(module_bits, slots, &module_name) }
+    {
         let _ = crate::c_api::molt_module_state_remove(module_def_ptr);
         unsafe { hook_dec_ref(module_bits) };
         return Err(message);
@@ -1200,7 +1215,7 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
             Ok(Some(module_bits)) => return module_bits,
             Ok(None) => {}
             Err(message) => {
-                return crate::raise_exception::<u64>(&_py, "ImportError", message);
+                return crate::raise_exception::<u64>(&_py, "ImportError", &message);
             }
         }
         match unsafe { static_link_module_def_to_bits(result_pyobj as *mut StaticLinkPyModuleDef) }
@@ -1208,7 +1223,7 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
             Ok(Some(module_bits)) => return module_bits,
             Ok(None) => {}
             Err(message) => {
-                return crate::raise_exception::<u64>(&_py, "ImportError", message);
+                return crate::raise_exception::<u64>(&_py, "ImportError", &message);
             }
         }
         if unsafe { static_pyinit_is_module_def(result_ptr) } {
@@ -1866,6 +1881,53 @@ mod tests {
         assert!(message.contains(
             "static-link PyModuleDef Py_mod_create slot requires module creation bridge"
         ));
+    }
+
+    unsafe extern "C" fn static_link_exec_sets_runtime_error(_module_obj: *mut PyObject) -> c_int {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                &raw mut PyExc_RuntimeError,
+                c"missing PyArray dtype bootstrap".as_ptr(),
+            );
+        }
+        -1
+    }
+
+    #[test]
+    fn pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut slots = [
+            StaticLinkPyModuleDefSlot {
+                slot: STATIC_PY_MOD_EXEC,
+                value: static_link_exec_sets_runtime_error as *mut c_void,
+            },
+            StaticLinkPyModuleDefSlot {
+                slot: 0,
+                value: std::ptr::null_mut(),
+            },
+        ];
+        let mut def = StaticLinkPyModuleDef {
+            m_base: std::ptr::null_mut(),
+            m_name: c"static_link_exec_error_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: slots.as_mut_ptr(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits = molt_cpython_abi_pyinit_module_to_bits(
+            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
+        );
+
+        assert!(MoltObject::from_bits(bits).is_none());
+        let message = pending_exception_message_for_assertion();
+        assert!(message.contains("static_link_exec_error_module"));
+        assert!(message.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"));
+        assert!(message.contains("missing PyArray dtype bootstrap"));
     }
 
     unsafe extern "C" fn pyobject_bridge_tuple_len_method(
