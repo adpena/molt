@@ -8,6 +8,7 @@ from pathlib import Path
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
+    AUTO_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
     MOLT_STDLIB_PROFILE_ENV,
 )
@@ -221,7 +222,8 @@ _CORE_STDLIB_MODULES_MICRO = (
 def _core_stdlib_module_names_for_profile(
     stdlib_profile: str | None,
 ) -> tuple[str, ...]:
-    if (stdlib_profile or DEFAULT_STDLIB_PROFILE) == "micro":
+    profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
+    if profile in {AUTO_STDLIB_PROFILE, "micro", "edge", "standard", "server"}:
         return _CORE_STDLIB_MODULES_MICRO
     return _CORE_STDLIB_MODULES_FULL
 

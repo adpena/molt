@@ -1273,7 +1273,8 @@ def _normalize_internal_batch_stdlib_profile(
     if not isinstance(raw, str):
         return None, "stdlib_profile must be a string"
     if raw not in STDLIB_PROFILE_CHOICES:
-        return None, "stdlib_profile must be 'micro' or 'full'"
+        choices = "', '".join(STDLIB_PROFILE_CHOICES)
+        return None, f"stdlib_profile must be one of '{choices}'"
     return raw, None
 
 

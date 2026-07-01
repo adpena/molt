@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from molt.cli import build_inputs as _build_inputs
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
     _encode_stdlib_module_symbols,
@@ -49,7 +49,7 @@ def _build_cache_variant(
     codegen_env: str,
     linked: bool,
     target_python: TargetPythonVersion,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     partition_mode: bool = False,
     backend_binary_identity: str = "",
     external_static_packages_digest: str = "",
@@ -61,15 +61,14 @@ def _build_cache_variant(
     Changes to any parameter produce a different variant, ensuring cache
     entries for different build configurations never collide.
 
-    ``stdlib_profile`` (micro vs full) MUST be part of the variant: the two
-    profiles compile the molt-runtime hub with different Cargo features
-    (``stdlib_micro`` + ``no-default-features`` vs ``stdlib_full`` +
-    ``default-features``) and the frontend lowers the entry differently
-    (e.g. ``_inject_sys_init`` only under full). Two builds whose reachable
-    stdlib IR happens to be identical would otherwise collide on the same
-    ``stdlib_shared.o`` (and main backend object), so a micro build could
-    silently reuse a full build's object and vice versa — a stale cache hit
-    that yields the wrong runtime surface or a duplicate/missing-symbol link.
+    ``stdlib_profile`` MUST be the concrete runtime artifact tier selected from
+    the user-facing intent before cache setup. It is part of the variant because
+    each concrete tier compiles the molt-runtime hub with different Cargo
+    features. Two builds whose reachable stdlib IR happens to be identical would
+    otherwise collide on the same ``stdlib_shared.o`` (and main backend object),
+    so a smaller-tier build could silently reuse a larger-tier object and vice
+    versa - a stale cache hit that yields the wrong runtime surface or a
+    duplicate/missing-symbol link.
 
     ``backend_binary_identity`` MUST be part of the variant: it is the stat-based
     identity (path + mtime + size) of the backend binary that will compile these
@@ -131,7 +130,7 @@ def _prepare_backend_cache_setup(
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),

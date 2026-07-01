@@ -1246,11 +1246,11 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
 
 
 def test_internal_batch_build_stdlib_profile_is_explicit_and_validated() -> None:
-    assert cli_commands._normalize_internal_batch_stdlib_profile({}) == ("micro", None)
+    assert cli_commands._normalize_internal_batch_stdlib_profile({}) == ("auto", None)
     assert cli_commands._normalize_internal_batch_stdlib_profile(
-        {"stdlib_profile": "full"}
+        {"stdlib_profile": "standard"}
     ) == (
-        "full",
+        "standard",
         None,
     )
 
@@ -1261,10 +1261,13 @@ def test_internal_batch_build_stdlib_profile_is_explicit_and_validated() -> None
     assert type_error == "stdlib_profile must be a string"
 
     invalid_value, choice_error = cli_commands._normalize_internal_batch_stdlib_profile(
-        {"stdlib_profile": "standard"}
+        {"stdlib_profile": "nonsense"}
     )
     assert invalid_value is None
-    assert choice_error == "stdlib_profile must be 'micro' or 'full'"
+    assert choice_error == (
+        "stdlib_profile must be one of "
+        "'auto', 'micro', 'edge', 'standard', 'server', 'full'"
+    )
 
 
 def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(

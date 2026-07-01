@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Collection, Sequence, cast
 
 from molt.cli.artifact_state import _artifact_state_path
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _shared_stdlib_cache_matches_key_locked,
     _stage_shared_stdlib_object_for_link,
@@ -328,7 +328,7 @@ def _prepare_native_link(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path

@@ -28,7 +28,10 @@ from molt.cli.artifact_state import (
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_text
 from molt.cli.build_locks import _build_lock
 from molt.cli.capability_spec import _dedupe_preserve_order
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+from molt.cli.config_resolution import (
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
+    DEFAULT_STDLIB_PROFILE,
+)
 from molt.cli.cargo_execution import (
     _build_slot,
     _cargo_build_env,
@@ -45,6 +48,8 @@ from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
     _wasm_runtime_feature_plan,
+    runtime_cargo_feature_for_profile,
+    runtime_stdlib_profile_for_required_features,
 )
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
@@ -94,7 +99,7 @@ def _initialize_runtime_artifact_state(
     molt_root: Path,
     runtime_cargo_profile: str,
     target_triple: str | None,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     extra_runtime_features: Sequence[str] | None = None,
 ) -> _RuntimeArtifactState:
     state = _RuntimeArtifactState(
@@ -144,7 +149,7 @@ def _maybe_start_native_runtime_lib_ready_async(
     cargo_timeout: float | None,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float] | None,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> None:
     runtime_lib = runtime_state.runtime_lib
@@ -177,7 +182,7 @@ def _ensure_runtime_lib_ready(
     runtime_cargo_profile: str,
     molt_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
@@ -206,7 +211,7 @@ def _ensure_native_runtime_lib_ready_before_link(
     cargo_timeout: float | None,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
@@ -282,7 +287,7 @@ def _ensure_runtime_lib(
     cargo_profile: str,
     project_root: Path,
     cargo_timeout: float | None,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
     extra_runtime_features: Sequence[str] | None = None,
 ) -> bool:
@@ -300,17 +305,21 @@ def _ensure_runtime_lib(
     # Cargo writes the platform staticlib name as scratch output. Molt then
     # materializes a profile-qualified link alias, so the requested feature
     # profile must remain an explicit fingerprint input.
-    fingerprint_features: tuple[str, ...] = tuple(
-        _dedupe_preserve_order(
-            list(runtime_features) + ["stdlib_full", "default-features"]
+    concrete_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
+    concrete_stdlib_feature = runtime_cargo_feature_for_profile(concrete_stdlib_profile)
+    fingerprint_features: tuple[str, ...]
+    if concrete_stdlib_profile == "full":
+        fingerprint_features = tuple(
+            _dedupe_preserve_order(
+                list(runtime_features) + [concrete_stdlib_feature, "default-features"]
+            )
         )
-    )
-    if stdlib_profile == "micro":
+    else:
         fingerprint_features = tuple(
             _dedupe_preserve_order(
                 list(runtime_features)
                 + sorted(builtin_features)
-                + ["stdlib_micro", "no-default-features"]
+                + [concrete_stdlib_feature, "no-default-features"]
             )
         )
     fingerprint_path = _runtime_fingerprint_path(
@@ -398,14 +407,15 @@ def _ensure_runtime_lib(
             else:
                 print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         cmd = ["cargo", "build", "-p", "molt-runtime", "--profile", cargo_profile]
-        if stdlib_profile == "micro":
+        if concrete_stdlib_profile != "full":
             cmd.append("--no-default-features")
-            # Re-enable the stable micro runtime surface plus explicit runtime
-            # target features. User imports must not change this Cargo command.
-            micro_features = _dedupe_preserve_order(
-                list(runtime_features) + builtin_features + ["stdlib_micro"]
+            # Re-enable the selected concrete runtime tier plus explicit runtime
+            # target features. In auto mode, the caller has already resolved the
+            # tier from reached link features before artifact selection.
+            concrete_features = _dedupe_preserve_order(
+                list(runtime_features) + builtin_features + [concrete_stdlib_feature]
             )
-            cmd.extend(["--features", ",".join(micro_features)])
+            cmd.extend(["--features", ",".join(concrete_features)])
         else:
             # For WASM targets, exclude stdlib_ast (rustpython-parser, ~2MB) and
             # stdlib_unicode_names (unicode_names2, ~1MB) - not useful on WASM
@@ -428,7 +438,7 @@ def _ensure_runtime_lib(
                 cmd.extend(["--features", ",".join(wasm_features)])
             else:
                 full_features = _dedupe_preserve_order(
-                    list(runtime_features) + ["stdlib_full"]
+                    list(runtime_features) + [concrete_stdlib_feature]
                 )
                 cmd.extend(["--features", ",".join(full_features)])
         if target_triple:
@@ -536,7 +546,7 @@ def _ensure_runtime_wasm_artifact(
     project_root: Path,
     simd_enabled: bool,
     freestanding: bool,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
@@ -618,6 +628,11 @@ def _prebuild_runtime_wasm(
         else:
             print(profile_error, file=sys.stderr)
         return 1
+    concrete_stdlib_profile = runtime_stdlib_profile_for_required_features(
+        stdlib_profile,
+        frozenset(),
+        target_triple="wasm32-wasip1",
+    )
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=False,
         is_wasm=True,
@@ -625,7 +640,7 @@ def _prebuild_runtime_wasm(
         molt_root=project_root,
         runtime_cargo_profile=cargo_profile,
         target_triple=None,
-        stdlib_profile=stdlib_profile,
+        stdlib_profile=concrete_stdlib_profile,
     )
     artifacts: dict[str, str] = {}
     plans: list[tuple[str, bool, Path | None]] = []
@@ -655,7 +670,7 @@ def _prebuild_runtime_wasm(
             project_root=project_root,
             simd_enabled=simd_enabled,
             freestanding=freestanding,
-            stdlib_profile=stdlib_profile,
+            stdlib_profile=concrete_stdlib_profile,
             resolved_modules=None,
             required_exports=None,
         ):
@@ -1360,13 +1375,13 @@ def _ensure_runtime_wasm(
     project_root: Path | None = None,
     simd_enabled: bool = True,
     freestanding: bool = False,
-    stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
+    stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     required_link_features: frozenset[str] = frozenset(),
     required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
     validate_exports = not reloc
-    effective_stdlib_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
+    effective_stdlib_profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
 
     def _runtime_wasm_build_error_detail(
         build: subprocess.CompletedProcess[str],
