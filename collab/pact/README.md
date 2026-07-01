@@ -6,7 +6,7 @@ notes route the next structural move.
 
 ## Current State (2026-06-29)
 
-The requested end criterion is still:
+The requested end criterion is still the Kernel A oracle:
 
 ```powershell
 python check_parity.py candidate_outputs.npz
@@ -14,6 +14,27 @@ python check_parity.py candidate_outputs.npz
 
 `PASS` is the milestone, with the same generated reference keys as
 `pact_witness_kernel/reference_outputs.npz`.
+
+Heavy browser/WASM witness attempts are queue-native. Check queue state first,
+then launch the owned Pact lane instead of running raw `molt build` or browser
+proof commands:
+
+```powershell
+uv run --active --project . --python 3.12 python tools/proof_queue.py status
+uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance
+```
+
+The smallest current parity proof for the witness oracle is also queued:
+
+```powershell
+uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle
+```
+
+That oracle lane regenerates `lstar_sample.npz` and `reference_outputs.npz` in a
+temporary directory, then runs `check_parity.py reference_outputs.npz`. The
+browser/WASM acceptance lane remains the owner for producing a real
+Molt-generated `candidate_outputs.npz` once package-native closure reaches that
+point.
 
 The live recovery evidence says the current tree cannot honestly produce that
 candidate yet:

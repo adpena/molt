@@ -184,6 +184,10 @@ candidate must pass `python check_parity.py candidate_outputs.npz`, then Kernel 
 `witness_forward.levelset_argmax` must match
 `witness_forward_reference.npz["lstar"]`. WASM-CPU remains the determinism
 authority; WebGPU/WGSL/SIMD are speed lanes after the oracle path is green.
+The heavy Kernel A browser/WASM attempt is launched through
+`tools/proof_queue.py pact-witness-acceptance`; the regenerated oracle sanity
+lane is `tools/proof_queue.py pact-witness-oracle`. Raw local `molt build`
+invocations are not the pact witness acceptance authority.
 
 ## Proof
 
@@ -197,6 +201,8 @@ Pinned tests:
 The first test proves the pact-facing ABI: a JavaScript `Float32Array` reaches a
 Molt split-runtime export as `bytes`, the export returns `bytes`, and
 `browser_embed.js` decodes the result back into `Float32Array`.
+Pact witness acceptance itself is pinned to the queue lane, not to this typed
+array smoke test.
 
 Native callable exports use the same browser delivery path. A WASM app may
 import a sidecar-declared `direct_symbol` through `molt.object_call_v1`,
