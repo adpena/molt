@@ -454,6 +454,7 @@ def _extend_native_support_source_closure(
     module_graph: MutableMapping[str, Path],
     module_reasons: MutableMapping[str, set[str]],
     native_artifact_plan,
+    artifacts_root: Path,
     roots: list[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
@@ -478,6 +479,11 @@ def _extend_native_support_source_closure(
     if not entry_paths:
         return frozenset()
     module_roots = [root for root in roots if root != stdlib_root]
+    pruned_support_paths = _materialize_pruned_native_support_sources(
+        native_artifact_plan=native_artifact_plan,
+        roots_by_module=native_support_function_roots_by_module,
+        artifacts_root=artifacts_root,
+    )
     closure_graph, explicit_imports = _graph_discovery._discover_module_graph_from_paths(
         entry_paths,
         roots,
@@ -500,7 +506,10 @@ def _extend_native_support_source_closure(
         capability_config_digest=capability_config_digest,
     )
     for module_name, path in closure_graph.items():
-        module_graph.setdefault(module_name, path)
+        module_graph.setdefault(
+            module_name,
+            pruned_support_paths.get(path.resolve(), path),
+        )
         _graph_discovery._record_module_reason(
             module_reasons,
             module_name,
@@ -704,6 +713,42 @@ def _native_support_source_imports_by_path(
     return imports_by_path
 
 
+def _native_support_generated_path(module_name: str, artifacts_root: Path) -> Path:
+    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_")
+    if not safe:
+        safe = "module"
+    return artifacts_root / f"native_support_{safe}.py"
+
+
+def _materialize_pruned_native_support_sources(
+    *,
+    native_artifact_plan,
+    roots_by_module: Mapping[str, Sequence[str]],
+    artifacts_root: Path,
+) -> dict[Path, Path]:
+    generated_paths: dict[Path, Path] = {}
+    support_paths_by_module = native_artifact_plan.support_source_paths_by_module()
+    for module, source_path in support_paths_by_module.items():
+        roots = frozenset(roots_by_module.get(module, ()))
+        if not roots:
+            continue
+        try:
+            source = source_path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(source_path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        pruned_tree, _reachable, missing = (
+            _native_support_slice.prune_native_support_module(tree, roots)
+        )
+        if missing:
+            continue
+        ast.fix_missing_locations(pruned_tree)
+        generated_path = _native_support_generated_path(module, artifacts_root)
+        _write_text_if_changed(generated_path, ast.unparse(pruned_tree) + "\n")
+        generated_paths[source_path.resolve()] = generated_path
+    return generated_paths
+
+
 def _longest_module_prefix(
     module_name: str,
     candidates: Collection[str],
@@ -873,6 +918,7 @@ def _materialize_import_plan(
                 module_graph=module_graph,
                 module_reasons=module_reasons,
                 native_artifact_plan=next_native_artifact_plan,
+                artifacts_root=artifacts_root,
                 roots=list(prepared_module_graph.roots),
                 stdlib_root=stdlib_root,
                 stdlib_allowlist=stdlib_allowlist,
