@@ -61,13 +61,27 @@ impl WasmCallableTablePlan {
         )
     }
 
-    fn runtime_initialized_entries(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
+    fn table_ref_export_entries(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
         self.table_indices
             .iter()
             .copied()
             .enumerate()
             .filter(|(slot, func_index)| {
                 *func_index != self.sentinel_func_idx && self.runtime_initializes_slot(*slot)
+            })
+    }
+
+    fn table_init_entries(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
+        self.table_indices
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(slot, func_index)| {
+                if *slot < self.split_runtime_shared_abi_slot_end {
+                    return true;
+                }
+                *func_index != self.sentinel_func_idx
+                    && *slot >= self.split_runtime_owned_slot_start
             })
     }
 
@@ -255,7 +269,7 @@ impl WasmBackend {
             }
 
             let mut ref_exported = BTreeSet::new();
-            for (slot, func_index) in plan.runtime_initialized_entries() {
+            for (slot, func_index) in plan.table_ref_export_entries() {
                 let table_index = plan.table_base + slot as u32;
                 if ref_exported.insert(table_index) {
                     let name = format!("__molt_table_ref_{table_index}");
@@ -317,7 +331,7 @@ impl WasmBackend {
         self.funcs.function(8);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
-        for (slot, target_index) in plan.runtime_initialized_entries() {
+        for (slot, target_index) in plan.table_init_entries() {
             let table_index = plan.table_base + slot as u32;
             emit_i32_const(&mut func, reloc_enabled, table_index as i32);
             emit_ref_func(&mut func, reloc_enabled, target_index);

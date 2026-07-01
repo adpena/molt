@@ -16,6 +16,42 @@ an output.
 
 ## Current Blocker
 
+### 2026-07-01 Runtime ABI and DX Update
+
+The live aperture has moved again. Queue row
+`20260701T205002-pact-witness-acceptance-cdd2f00c403240e7` reached
+split-runtime `app.wasm` host initialization with the staged NumPy/SciPy native
+artifacts linked, then failed before `candidate_outputs.npz` with
+`TypeError: call arity mismatch (expected 3, got 1) for _LazyIntrinsic.__call__`.
+That exposed a shared runtime-call primitive, not a Pact-specific Python shim:
+fixed-arity `call_function_objN` helpers must route varargs/default/varkw
+metadata through the same `CallArgs` binder used by dynamic calls, while the
+raw-trampoline fast path must not recursively bypass binding.
+
+Green evidence for that primitive:
+
+- `20260701T210919-runtime-call-binder-varargs-r2-2ae9ce2369164665` passed
+  `cargo test -p molt-runtime --lib fixed_arity_entry_routes_varargs_functions_through_binder`.
+- `uv run --active --project . --python 3.12 python tools\gen_wasm_abi.py --check --timings`
+  now hits the persistent render cache in 1.362s after a source-rendering
+  no-cache check passed in 26.8s; the previous observed no-cache/check path
+  took 52.3s before the cache/batched-rustfmt/no-op-write move.
+- `uv run --active --project . --python 3.12 python -m pytest
+  tests\test_gen_wasm_abi.py::test_wasm_abi_manifest_owns_runtime_callable_registry
+  tests\test_gen_wasm_abi.py::test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed
+  tests\test_generate_worker.py::test_loader_bridge_enforces_manifest_reserved_callable_dispatch
+  -q` passed.
+- `20260701T211646-wasm-reserved-runtime-callable-table-slots-r3-627e26437ca049e2`
+  passed the existing import-transaction WASM ABI proof after reserved runtime
+  callables gained generated optional import-token authority. Tokenless reserved
+  callables remain sentinel-owned instead of leaking fake imports; import-backed
+  reserved callables can route through real ABI metadata.
+
+Queue row `20260701T211814-pact-witness-acceptance-09339473a62c443f` is the
+current full acceptance rerun derived from that table proof. Until it exits
+green and writes `candidate_outputs.npz`, Pact Kernel A acceptance is still
+open.
+
 The live evidence says the current tree can now build and link the Kernel A
 `field_solve.py` WASM package with canonical sealed NumPy/SciPy roots, but has
 not yet passed the full `candidate_outputs.npz` parity runner:

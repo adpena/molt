@@ -115,6 +115,27 @@ below `molt-tir`), (b) convert the advisory/ritual parts of the DX loop into
 and (c) build the observability plane (DX-4) the audit board explicitly lists as
 MISSING. Each is a structural FACT, not a script.
 
+### 2.1 Live latency evidence: WASM ABI generator and runtime crate proof
+
+The 2026-07-01 Pact recovery exposed two DX facts that should be treated as
+regression tests for developer velocity:
+
+- `tools/gen_wasm_abi.py --check` was observed at 52.3s before the generator
+  cache move. The structural fix is now in the generator itself: persistent
+  render-bundle cache keyed by manifest/generator/runtime inputs, batched
+  `rustfmt`, lru-cached manifest scans, and exact-content no-op writes for
+  generated files. The current source-rendering no-cache check is 26.8s, and
+  the measured hot check is 1.362s with `--check --timings`.
+- A one-test `molt-runtime` Cargo proof for the call binder still took 184.5s
+  in a session target even though the test body itself ran in 0.00s. That is the
+  current live example of why `molt-runtime` remains the highest-impact
+  crate-extraction target: runtime call/binder edits should not rebuild the
+  whole runtime facade.
+- The proof queue must carry latency intent in its notes. A queue row should say
+  whether it is using a warmed target/cache, whether the selector is exact, and
+  what changed. Otherwise the elapsed time cannot distinguish structural build
+  cost from avoidable operator drag.
+
 ---
 
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)

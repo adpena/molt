@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from wasm_abi_gen.manifest import (
@@ -20,6 +25,8 @@ from wasm_abi_gen.manifest import (
     WASM_VAL_TYPES,
     WasmAbiManifestError,
     _call_indirect_imports,
+    generator_input_files,
+    generator_runtime_export_signature_rows,
     load_manifest,
 )
 from wasm_abi_gen.paths import (
@@ -31,6 +38,19 @@ from wasm_abi_gen.paths import (
     OUT_RUNTIME_CALLABLES_RS,
     OUT_TABLE_LAYOUT_INC,
     REMOVED_GENERATED_FILES,
+    ROOT,
+    WASM_ABI_GEN_CACHE,
+)
+
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v1"
+RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
+RUSTFMT_CACHE_ENABLED = True
+RENDER_CACHE_FIELDS = (
+    "rendered_rs_modules",
+    "rendered_runtime_callables_rs",
+    "rendered_py",
+    "rendered_table_layout_inc",
+    "rendered_allowed_imports",
 )
 
 def _header(comment: str) -> str:
@@ -84,6 +104,212 @@ def _rustfmt(module_name: str, source: str) -> str:
     return proc.stdout.rstrip() + "\n"
 
 
+def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
+    if not modules:
+        return {}
+    rustfmt_version = _rustfmt_version()
+    formatted: dict[str, str] = {}
+    misses: dict[str, str] = {}
+    if RUSTFMT_CACHE_ENABLED:
+        for name, source in modules.items():
+            cached = _load_rustfmt_cache(name, source, rustfmt_version)
+            if cached is None:
+                misses[name] = source
+            else:
+                formatted[name] = cached
+    else:
+        misses = dict(modules)
+    if not misses:
+        return {name: formatted[name] for name in modules}
+    with tempfile.TemporaryDirectory(prefix="molt-wasm-abi-rustfmt-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        paths: list[Path] = []
+        for name, source in misses.items():
+            path = tmp / name
+            path.write_text(source, encoding="utf-8", newline="\n")
+            paths.append(path)
+        try:
+            proc = subprocess.run(
+                [
+                    "rustfmt",
+                    "--edition",
+                    "2024",
+                    "--emit",
+                    "files",
+                    *(str(path) for path in paths),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "rustfmt is required to generate canonical WASM ABI Rust modules"
+            ) from exc
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "rustfmt failed for generated WASM ABI modules:\n"
+                f"{proc.stderr.strip()}"
+            )
+        for name, source in misses.items():
+            rustfmt_output = (tmp / name).read_text(encoding="utf-8").rstrip() + "\n"
+            formatted[name] = rustfmt_output
+            if RUSTFMT_CACHE_ENABLED:
+                _store_rustfmt_cache(name, source, rustfmt_version, rustfmt_output)
+    return {name: formatted[name] for name in modules}
+
+
+def _rustfmt_version() -> str:
+    try:
+        proc = subprocess.run(
+            ["rustfmt", "--version"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "rustfmt is required to generate canonical WASM ABI Rust modules"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "rustfmt --version failed while preparing the WASM ABI generator cache:\n"
+            f"{proc.stderr.strip()}"
+        )
+    return proc.stdout.strip()
+
+
+def _rustfmt_cache_key(module_name: str, source: str, rustfmt_version: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"{RUSTFMT_CACHE_VERSION}\n".encode())
+    digest.update(f"module={module_name}\n".encode())
+    digest.update(f"rustfmt={rustfmt_version}\n".encode())
+    encoded_source = source.encode()
+    digest.update(f"len={len(encoded_source)}\n".encode())
+    digest.update(encoded_source)
+    return digest.hexdigest()
+
+
+def _rustfmt_cache_path(module_name: str, source: str, rustfmt_version: str) -> Path:
+    stem = Path(module_name).stem
+    cache_key = _rustfmt_cache_key(module_name, source, rustfmt_version)
+    return WASM_ABI_GEN_CACHE / "rustfmt" / f"{stem}-{cache_key}.rs"
+
+
+def _load_rustfmt_cache(
+    module_name: str, source: str, rustfmt_version: str
+) -> str | None:
+    path = _rustfmt_cache_path(module_name, source, rustfmt_version)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _store_rustfmt_cache(
+    module_name: str, source: str, rustfmt_version: str, formatted: str
+) -> None:
+    path = _rustfmt_cache_path(module_name, source, rustfmt_version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(formatted, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _cache_input_files() -> tuple[Path, ...]:
+    generator_pkg = Path(__file__).resolve().parent / "wasm_abi_gen"
+    files = {
+        Path(__file__).resolve(),
+        *(path.resolve() for path in generator_pkg.glob("*.py")),
+        *(path.resolve() for path in generator_input_files()),
+    }
+    return tuple(sorted(files, key=lambda path: _cache_relative_path(path)))
+
+
+def _cache_relative_path(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _render_cache_key(rustfmt_version: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"{GENERATOR_CACHE_VERSION}\n".encode())
+    digest.update(f"python={sys.version}\n".encode())
+    digest.update(f"rustfmt={rustfmt_version}\n".encode())
+    for path in _cache_input_files():
+        rel = _cache_relative_path(path)
+        digest.update(f"path={rel}\n".encode())
+        data = path.read_bytes()
+        digest.update(f"len={len(data)}\n".encode())
+        digest.update(data)
+        digest.update(b"\n")
+    for name, params, result in generator_runtime_export_signature_rows():
+        digest.update(
+            json.dumps(
+                {
+                    "runtime_export": name,
+                    "params": list(params),
+                    "result": result,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _cache_path(cache_key: str) -> Path:
+    return WASM_ABI_GEN_CACHE / f"{cache_key}.json"
+
+
+def _validate_cached_bundle(raw: object, cache_key: str) -> dict[str, object] | None:
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("version") != GENERATOR_CACHE_VERSION or raw.get("key") != cache_key:
+        return None
+    bundle = raw.get("bundle")
+    if not isinstance(bundle, dict):
+        return None
+    modules = bundle.get("rendered_rs_modules")
+    if not isinstance(modules, dict):
+        return None
+    if not all(isinstance(name, str) and isinstance(text, str) for name, text in modules.items()):
+        return None
+    for field in RENDER_CACHE_FIELDS:
+        if field == "rendered_rs_modules":
+            continue
+        if not isinstance(bundle.get(field), str):
+            return None
+    return bundle
+
+
+def _load_render_cache(cache_key: str) -> dict[str, object] | None:
+    path = _cache_path(cache_key)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return _validate_cached_bundle(raw, cache_key)
+
+
+def _store_render_cache(cache_key: str, bundle: dict[str, object]) -> None:
+    WASM_ABI_GEN_CACHE.mkdir(parents=True, exist_ok=True)
+    path = _cache_path(cache_key)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = {
+        "version": GENERATOR_CACHE_VERSION,
+        "key": cache_key,
+        "bundle": bundle,
+    }
+    tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def _py_tuple(vals: list[str]) -> str:
     if not vals:
         return "()"
@@ -122,6 +348,12 @@ def _runtime_import_variants(data: dict) -> dict[str, str]:
 
 def _rust_runtime_import(data: dict, import_name: str) -> str:
     variants = _runtime_import_variants(data)
+    return _rust_runtime_import_from_variants(variants, import_name)
+
+
+def _rust_runtime_import_from_variants(
+    variants: dict[str, str], import_name: str
+) -> str:
     return f"WasmRuntimeImport::{variants[import_name]}"
 
 
@@ -201,8 +433,8 @@ def _render_rs_mod() -> str:
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "    RUNTIME_CALLABLE_IMPORTS, RuntimeCallableResult, poll_table_import_slot,\n",
-            "    runtime_callable_arity, runtime_callable_import,\n",
+            "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult,\n",
+            "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;\n",
             "pub(crate) use static_types::{\n",
@@ -515,6 +747,7 @@ def _render_rs_import_metadata(data: dict) -> str:
 
 def _render_rs_import_registry(data: dict) -> str:
     lines: list[str] = [_header("//")]
+    import_variants = _runtime_import_variants(data)
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n",
@@ -532,7 +765,8 @@ def _render_rs_import_registry(data: dict) -> str:
         lines.extend(
             [
                 "    RuntimeImportSpec {\n",
-                f"        import: {_rust_runtime_import(data, entry['name'])},\n",
+                "        import: "
+                f"{_rust_runtime_import_from_variants(import_variants, entry['name'])},\n",
                 f"        name: \"{entry['name']}\",\n",
                 f"        type_idx: {entry['type']},\n",
                 "    },\n",
@@ -548,12 +782,14 @@ def _render_rs_import_registry(data: dict) -> str:
     )
     for entry in data["import"]:
         lines.append(
-            f"        \"{entry['name']}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
+            f"        \"{entry['name']}\" => Some("
+            f"{_rust_runtime_import_from_variants(import_variants, entry['name'])}),\n"
         )
         runtime_name = entry.get("runtime_name")
         if runtime_name is not None:
             lines.append(
-                f"        \"{runtime_name}\" => Some({_rust_runtime_import(data, entry['name'])}),\n"
+                f"        \"{runtime_name}\" => Some("
+                f"{_rust_runtime_import_from_variants(import_variants, entry['name'])}),\n"
             )
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
     lines.extend(
@@ -1276,6 +1512,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
         key=lambda item: item[0],
     )
     reserved_callables = _shared_runtime_callables(data)
+    import_variants = _runtime_import_variants(data)
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
@@ -1353,6 +1590,7 @@ def _render_rs_runtime_callables(data: dict) -> str:
             "    pub(crate) index: u32,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) import_name: &'static str,\n",
+            "    pub(crate) import: Option<WasmRuntimeImport>,\n",
             "    pub(crate) arity: usize,\n",
             "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
             "}\n\n",
@@ -1360,12 +1598,20 @@ def _render_rs_runtime_callables(data: dict) -> str:
         ]
     )
     for entry in reserved_callables:
+        import_token = (
+            "Some("
+            + _rust_runtime_import_from_variants(import_variants, entry["import_name"])
+            + ")"
+            if entry["import_name"] in import_variants
+            else "None"
+        )
         lines.extend(
             [
                 "    ReservedRuntimeCallableSpec {\n",
                 f"        index: {entry['index']},\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f'        import_name: "{entry["import_name"]}",\n',
+                f"        import: {import_token},\n",
                 f"        arity: {entry['callable_arity']},\n",
                 "        dispatch: ReservedRuntimeCallableDispatch::"
                 f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
@@ -1718,7 +1964,7 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "runtime_callables.rs": _render_rs_runtime_callables(data),
         "pure_profile.rs": _render_rs_pure_profile(data),
     }
-    return {name: _rustfmt(name, rendered) for name, rendered in modules.items()}
+    return _rustfmt_many(modules)
 
 
 def render_py(data: dict) -> str:
@@ -2189,22 +2435,82 @@ def _write_rs_modules(rendered_modules: dict[str, str]) -> None:
     for path in _unexpected_rs_files():
         path.unlink()
     for name, rendered in rendered_modules.items():
-        OUT_RS_FILES[name].write_text(rendered, encoding="utf-8", newline="\n")
+        _write_if_changed(OUT_RS_FILES[name], rendered)
+
+
+def _write_if_changed(path: Path, rendered: str) -> None:
+    try:
+        if path.read_text(encoding="utf-8") == rendered:
+            return
+    except FileNotFoundError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(rendered, encoding="utf-8", newline="\n")
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="render from source without reading or writing persistent caches",
+    )
+    parser.add_argument(
+        "--timings",
+        action="store_true",
+        help="print generator stage timings to stderr",
+    )
     args = parser.parse_args(argv)
 
-    data = load_manifest()
-    rendered_rs_modules = render_rs_modules(data)
-    rendered_runtime_callables_rs = render_runtime_callables_rs(data)
-    rendered_py = render_py(data)
-    rendered_table_layout_inc = render_table_layout_inc(data)
-    rendered_allowed_imports = render_allowed_imports(data)
+    global RUSTFMT_CACHE_ENABLED
+    RUSTFMT_CACHE_ENABLED = not args.no_cache
+
+    timings: list[tuple[str, float]] = []
+
+    def timed(label: str, func):
+        start = time.perf_counter()
+        result = func()
+        timings.append((label, time.perf_counter() - start))
+        return result
+
+    rustfmt_version = timed("rustfmt_version", _rustfmt_version)
+    cache_key = timed("cache_key", lambda: _render_cache_key(rustfmt_version))
+    bundle = None
+    if not args.no_cache:
+        bundle = timed("cache_load", lambda: _load_render_cache(cache_key))
+    cache_state = "hit" if bundle is not None else "miss"
+    if bundle is None:
+        data = timed("load_manifest", load_manifest)
+        rendered_rs_modules = timed(
+            "render_rs_modules", lambda: render_rs_modules(data)
+        )
+        rendered_runtime_callables_rs = timed(
+            "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
+        )
+        rendered_py = timed("render_py", lambda: render_py(data))
+        rendered_table_layout_inc = timed(
+            "render_table_layout_inc", lambda: render_table_layout_inc(data)
+        )
+        rendered_allowed_imports = timed(
+            "render_allowed_imports", lambda: render_allowed_imports(data)
+        )
+        bundle = {
+            "rendered_rs_modules": rendered_rs_modules,
+            "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
+            "rendered_py": rendered_py,
+            "rendered_table_layout_inc": rendered_table_layout_inc,
+            "rendered_allowed_imports": rendered_allowed_imports,
+        }
+        if not args.no_cache:
+            timed("cache_store", lambda: _store_render_cache(cache_key, bundle))
+    rendered_rs_modules = dict(bundle["rendered_rs_modules"])
+    rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
+    rendered_py = str(bundle["rendered_py"])
+    rendered_table_layout_inc = str(bundle["rendered_table_layout_inc"])
+    rendered_allowed_imports = str(bundle["rendered_allowed_imports"])
     if args.check:
-        return (
+        ok = (
             0
             if _check_rs_modules(rendered_rs_modules)
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
@@ -2214,17 +2520,26 @@ def main(argv: list[str]) -> int:
             and all(_check_absent(path) for path in REMOVED_GENERATED_FILES)
             else 1
         )
+        if args.timings:
+            total = sum(elapsed for _label, elapsed in timings)
+            print(f"cache: {cache_state} {cache_key[:12]}", file=sys.stderr)
+            for label, elapsed in timings:
+                print(f"{label}: {elapsed:.3f}s", file=sys.stderr)
+            print(f"total: {total:.3f}s", file=sys.stderr)
+        return ok
     _write_rs_modules(rendered_rs_modules)
-    OUT_RUNTIME_CALLABLES_RS.write_text(
-        rendered_runtime_callables_rs, encoding="utf-8", newline="\n"
-    )
-    OUT_PY.write_text(rendered_py, encoding="utf-8", newline="\n")
-    OUT_TABLE_LAYOUT_INC.write_text(rendered_table_layout_inc, encoding="utf-8", newline="\n")
-    OUT_ALLOWED_IMPORTS.write_text(
-        rendered_allowed_imports, encoding="utf-8", newline="\n"
-    )
+    _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+    _write_if_changed(OUT_PY, rendered_py)
+    _write_if_changed(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
+    _write_if_changed(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
     for path in REMOVED_GENERATED_FILES:
         path.unlink(missing_ok=True)
+    if args.timings:
+        total = sum(elapsed for _label, elapsed in timings)
+        print(f"cache: {cache_state} {cache_key[:12]}", file=sys.stderr)
+        for label, elapsed in timings:
+            print(f"{label}: {elapsed:.3f}s", file=sys.stderr)
+        print(f"total: {total:.3f}s", file=sys.stderr)
     return 0
 
 
