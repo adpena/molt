@@ -141,8 +141,10 @@ Status legend:
 ### 2.8 Buffer Protocol
 | Symbol | Semantics | Status | Notes |
 | --- | --- | --- | --- |
-| `PyObject_GetBuffer` | Export buffer | Partial | Header shim maps to `molt_buffer_acquire` and `Py_buffer` aliases `MoltBufferView`. |
-| `PyBuffer_Release` | Release buffer | Partial | Header shim maps to `molt_buffer_release`. |
+| `PyObject_GetBuffer` | Export buffer | Partial | Header shim maps to runtime-owned `molt_buffer_acquire`; `Py_buffer` embeds the acquired `MoltBufferView` and mirrors shape/strides/format from that single descriptor. |
+| `PyBuffer_Release` | Release buffer | Partial | Header shim releases runtime-acquired views only when `internal` marks the embedded `MoltBufferView`; `PyBuffer_FillInfo` raw-memory views release only their exporter reference. |
+| `PyBuffer_FillInfo` | Fill buffer view | Partial | Header shim fills `Py_buffer` fields and mirrors the raw-memory descriptor into the embedded `MoltBufferView` without claiming runtime ownership. |
+| `PyObject_CheckBuffer` | Buffer support probe | Partial | Header shim probes through `PyObject_GetBuffer`/`PyBuffer_Release` and clears probe errors. |
 
 ### 2.9 Bytes & Bytearray
 | Symbol | Semantics | Status | Notes |
