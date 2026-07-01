@@ -66,7 +66,10 @@ this file is the human/agent-readable index of the whole tool surface.
 - `tools/proof_queue.py` - the mandatory ledger/queue for expensive or
   contention-heavy proof lanes (Cargo, WASM/browser, benchmarks, stress,
   conformance). Run `status` first; use `exec`/`submit` with `--reason`,
-  `--resource-family`, `--contention-key`, and `--scope`; cite the log/evidence.
+  `--resource-family`, `--contention-key`, `--scope`, and `--note`; cite the
+  log/evidence. Append-only notes and acyclic proof DAG edges are exported in
+  evidence JSON and generated notebooks; use `--depends-on` for scheduled proof
+  dependencies and `link` for post-submit lineage.
   Proof commands using `uv run` must use
   `uv run --active --project . --python 3.12 ...`; the queue rejects non-active
   `uv run` because throwaway env creation is false work. Queue sessions are
