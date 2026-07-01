@@ -1024,12 +1024,11 @@ fn is_unhashable_type(type_id: u32) -> bool {
 /// types, and messages are reproduced exactly.
 fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     unsafe {
-        // CPython runs CHECK_RELEASED_INT first, raising
-        //   ValueError: operation forbidden on released memoryview object
-        // for a released view. molt does not yet model released-view state
-        // (`memoryview.release()` is a no-op), so there is no bit to test here.
-        // When the released-state bit lands, the released check belongs at THIS
-        // position — ahead of the writable/format checks — to preserve CPython's
+        if memoryview_released(ptr) {
+            return raise_released_memoryview(_py);
+        }
+        // CPython runs CHECK_RELEASED_INT first. The released-state check belongs at THIS
+        // position, ahead of the writable/format checks, to preserve CPython's
         // error precedence. The `memoryview_collect_bytes` fallback below already
         // raises this same ValueError when the buffer cannot be materialized.
 

@@ -368,7 +368,8 @@ pub(crate) struct MemoryView {
     pub(crate) stride: isize,
     pub(crate) readonly: u8,
     pub(crate) ndim: u8,
-    pub(crate) _pad: [u8; 6],
+    pub(crate) released: u8,
+    pub(crate) _pad: [u8; 5],
     pub(crate) format_bits: u64,
     pub(crate) shape_ptr: *mut Vec<isize>,
     pub(crate) strides_ptr: *mut Vec<isize>,
@@ -1427,6 +1428,16 @@ pub(crate) unsafe fn memoryview_readonly(ptr: *mut u8) -> bool {
 
 pub(crate) unsafe fn memoryview_ndim(ptr: *mut u8) -> usize {
     unsafe { (*memoryview_ptr(ptr)).ndim as usize }
+}
+
+pub(crate) unsafe fn memoryview_released(ptr: *mut u8) -> bool {
+    unsafe { (*memoryview_ptr(ptr)).released != 0 }
+}
+
+pub(crate) unsafe fn memoryview_mark_released(ptr: *mut u8) {
+    unsafe {
+        (*memoryview_ptr(ptr)).released = 1;
+    }
 }
 
 pub(crate) unsafe fn memoryview_format_bits(ptr: *mut u8) -> u64 {

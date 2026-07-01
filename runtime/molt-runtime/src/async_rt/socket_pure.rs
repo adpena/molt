@@ -92,6 +92,9 @@ pub extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u
         let obj = obj_from_bits(packed_bits);
         let data = if let Some(ptr) = obj.as_ptr() {
             unsafe {
+                if object_type_id(ptr) == TYPE_ID_MEMORYVIEW && memoryview_released(ptr) {
+                    return raise_released_memoryview(_py);
+                }
                 if let Some(slice) = bytes_like_slice_raw(ptr) {
                     slice.to_vec()
                 } else if let Some(slice) = memoryview_bytes_slice(ptr) {

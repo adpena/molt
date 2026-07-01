@@ -1149,7 +1149,14 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             return raise_exception::<_>(_py, "OSError", &msg);
         }
         let mut export = BufferExport::default();
-        if molt_buffer_export(buffer_bits, &mut export) != 0 || export.readonly != 0 {
+        if molt_buffer_export(buffer_bits, &mut export) != 0 {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let msg = format!("{name}() argument must be a writable bytes-like object");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        if export.readonly != 0 {
             let msg = format!("{name}() argument must be a writable bytes-like object");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
