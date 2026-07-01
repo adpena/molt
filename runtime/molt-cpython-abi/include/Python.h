@@ -1205,6 +1205,7 @@ extern Py_ssize_t PyByteArray_Size(PyObject *op);
 
 /* Memoryview / buffer */
 extern PyObject *PyMemoryView_FromMemory(char *mem, Py_ssize_t size, int flags);
+extern PyObject *PyMemoryView_FromBuffer(Py_buffer *info);
 extern PyObject *PyMemoryView_FromObject(PyObject *op);
 extern int       PyMemoryView_Check(PyObject *op);
 extern PyObject *PyMemoryView_GET_BASE(PyObject *op);

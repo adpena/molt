@@ -6,7 +6,8 @@ use crate::abi_types::{
     PyObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
-use crate::hooks::{MoltBufferView, hooks_or_stubs};
+use crate::hooks::{MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, MoltBufferView, hooks_or_stubs};
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
@@ -45,23 +46,105 @@ impl BufferInternal {
         }
     }
 
-    fn raw_1d(buf: *mut std::ffi::c_void, len: isize, readonly: c_int, base: u64) -> Self {
-        let mut descriptor = MoltBufferView::default();
-        descriptor.data = buf.cast();
-        descriptor.len = len as u64;
-        descriptor.readonly = u32::from(readonly != 0);
-        descriptor.ndim = 1;
-        descriptor.itemsize = 1;
-        descriptor.base = base;
-        descriptor.shape[0] = len;
-        descriptor.strides[0] = 1;
-        descriptor.format[0] = b'B';
-        descriptor.format[1] = 0;
+    fn raw_descriptor(descriptor: MoltBufferView) -> Self {
         Self {
             release_kind: BufferReleaseKind::Raw,
             descriptor,
         }
     }
+}
+
+fn raw_1d_descriptor(
+    buf: *mut std::ffi::c_void,
+    len: isize,
+    readonly: c_int,
+    base: u64,
+) -> MoltBufferView {
+    let mut descriptor = MoltBufferView::default();
+    descriptor.data = buf.cast();
+    descriptor.len = len as u64;
+    descriptor.readonly = u32::from(readonly != 0);
+    descriptor.ndim = 1;
+    descriptor.itemsize = 1;
+    descriptor.base = base;
+    descriptor.shape[0] = len;
+    descriptor.strides[0] = 1;
+    descriptor.format[0] = b'B';
+    descriptor.format[1] = 0;
+    descriptor
+}
+
+unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferView, ()> {
+    if info.is_null() {
+        return Err(());
+    }
+    let info = unsafe { &*info };
+    if info.len < 0 || info.itemsize <= 0 || info.ndim < 0 {
+        return Err(());
+    }
+    if info.buf.is_null() && info.len != 0 {
+        return Err(());
+    }
+    let ndim = if info.ndim == 0 {
+        1
+    } else {
+        info.ndim as usize
+    };
+    if ndim > MOLT_BUFFER_MAX_NDIM {
+        return Err(());
+    }
+
+    let mut descriptor = MoltBufferView::default();
+    descriptor.data = info.buf.cast();
+    descriptor.len = info.len as u64;
+    descriptor.readonly = u32::from(info.readonly != 0);
+    descriptor.ndim = ndim as u32;
+    descriptor.itemsize = info.itemsize as u64;
+    descriptor.base = if info.obj.is_null() {
+        0
+    } else {
+        GLOBAL_BRIDGE
+            .lock()
+            .pyobj_to_handle(info.obj)
+            .unwrap_or_default()
+    };
+
+    if !info.shape.is_null() {
+        for i in 0..ndim {
+            let dim = unsafe { *info.shape.add(i) };
+            if dim < 0 {
+                return Err(());
+            }
+            descriptor.shape[i] = dim;
+        }
+    } else {
+        descriptor.shape[0] = info.len / info.itemsize;
+        for i in 1..ndim {
+            descriptor.shape[i] = 1;
+        }
+    }
+
+    if !info.strides.is_null() {
+        for i in 0..ndim {
+            descriptor.strides[i] = unsafe { *info.strides.add(i) };
+        }
+    } else {
+        let mut stride = info.itemsize;
+        for i in (0..ndim).rev() {
+            descriptor.strides[i] = stride;
+            let dim = descriptor.shape[i].max(1);
+            stride = stride.saturating_mul(dim);
+        }
+    }
+
+    if !info.format.is_null() {
+        let bytes = unsafe { CStr::from_ptr(info.format) }.to_bytes();
+        let copy_len = bytes.len().min(MOLT_BUFFER_FORMAT_CAP.saturating_sub(1));
+        descriptor.format = [0; MOLT_BUFFER_FORMAT_CAP];
+        descriptor.format[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    }
+
+    Ok(descriptor)
 }
 
 unsafe fn reset_pybuffer(view: *mut Py_buffer) {
@@ -293,6 +376,10 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
         unsafe { set_buffer_error(b"buffer length must not be negative\0") };
         return -1;
     }
+    if buf.is_null() && len != 0 {
+        unsafe { set_buffer_error(b"buffer data pointer must not be NULL\0") };
+        return -1;
+    }
     if (flags & PyBUF_WRITABLE) != 0 && readonly != 0 {
         unsafe { set_buffer_error(b"writable buffer requested for readonly object\0") };
         return -1;
@@ -310,8 +397,37 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
         install_buffer_internal(
             view,
             obj,
-            Box::new(BufferInternal::raw_1d(buf, len, readonly, base)),
+            Box::new(BufferInternal::raw_descriptor(raw_1d_descriptor(
+                buf, len, readonly, base,
+            ))),
             flags,
+        )
+    }
+}
+
+pub(crate) unsafe fn copy_pybuffer_for_memoryview(
+    view: *mut Py_buffer,
+    info: *const Py_buffer,
+) -> c_int {
+    if view.is_null() || info.is_null() {
+        unsafe { set_type_error(b"memoryview buffer must not be NULL\0") };
+        return -1;
+    }
+    let descriptor = match unsafe { descriptor_from_pybuffer(info) } {
+        Ok(descriptor) => descriptor,
+        Err(()) => {
+            unsafe { set_buffer_error(b"invalid buffer descriptor for memoryview\0") };
+            return -1;
+        }
+    };
+    let obj = unsafe { (*info).obj };
+    unsafe {
+        reset_pybuffer(view);
+        install_buffer_internal(
+            view,
+            obj,
+            Box::new(BufferInternal::raw_descriptor(descriptor)),
+            PyBUF_FORMAT | PyBUF_STRIDES,
         )
     }
 }
