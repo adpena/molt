@@ -42,8 +42,6 @@ from wasm_link_format import (
     _read_limits,
     _read_string,
     _read_varuint,
-    _read_varsint,
-    _skip_init_expr,
     _write_limits,
     _write_string,
     _write_varuint,
@@ -147,98 +145,6 @@ def _append_table_ref_elements(
         new_sections.append((9, payload))
         modified = True
     if not modified:
-        return None
-    return _build_sections(new_sections)
-
-
-def _read_element_active_i32_offset(payload: bytes, offset: int) -> tuple[int, int]:
-    if offset >= len(payload) or payload[offset] != 0x41:
-        raise ValueError("active table element offset must be i32.const")
-    value, offset = _read_varsint(payload, offset + 1)
-    if offset >= len(payload) or payload[offset] != 0x0B:
-        raise ValueError("unterminated active table element offset")
-    return value, offset + 1
-
-
-def _linked_element_segment_end(
-    payload: bytes, offset: int
-) -> tuple[int, tuple[int, int] | None]:
-    flags, offset = _read_varuint(payload, offset)
-    active_table: tuple[int, int] | None = None
-    if flags in (0x00, 0x04):
-        start, offset = _read_element_active_i32_offset(payload, offset)
-        active_table = (0, start)
-    elif flags in (0x02, 0x06):
-        table_index, offset = _read_varuint(payload, offset)
-        start, offset = _read_element_active_i32_offset(payload, offset)
-        active_table = (table_index, start)
-    elif flags not in (0x01, 0x03, 0x05, 0x07):
-        raise ValueError(f"unsupported element segment flags 0x{flags:x}")
-
-    if flags in (0x00, 0x01, 0x02, 0x03):
-        if flags in (0x01, 0x02, 0x03):
-            if offset >= len(payload):
-                raise ValueError("missing element kind")
-            offset += 1
-        count, offset = _read_varuint(payload, offset)
-        for _ in range(count):
-            _, offset = _read_varuint(payload, offset)
-        return offset, active_table
-
-    if flags in (0x05, 0x06, 0x07):
-        if offset >= len(payload):
-            raise ValueError("missing element reference type")
-        offset += 1
-    count, offset = _read_varuint(payload, offset)
-    for _ in range(count):
-        offset = _skip_init_expr(payload, offset)
-    return offset, active_table
-
-
-def _drop_linked_app_active_table_elements(data: bytes) -> bytes | None:
-    """Remove app-owned active element segments from a linked monolith.
-
-    Relocatable app modules own callable-table population through
-    ``molt_table_init``.  When wasm-ld materializes those app entries as active
-    segments in the fully linked output, table contents gain a second authority
-    and can trap before the exported ``molt_main`` wrapper reaches its table
-    initializer.  Preserve the runtime's active prefix at table offset 1 plus
-    passive/declarative metadata; later ``ref.func`` declaration repair records
-    any declarations still needed by the initializer body.
-    """
-    sections = _parse_sections(data)
-    changed = False
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 9:
-            new_sections.append((section_id, payload))
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        kept_segments: list[bytes] = []
-        for _ in range(count):
-            segment_start = offset
-            offset, active_table = _linked_element_segment_end(payload, offset)
-            segment = payload[segment_start:offset]
-            if active_table is None:
-                kept_segments.append(segment)
-                continue
-            table_index, start = active_table
-            if table_index == 0 and start == 1:
-                kept_segments.append(segment)
-                continue
-            changed = True
-        if offset != len(payload):
-            raise ValueError("trailing bytes after element section")
-        if kept_segments:
-            rebuilt = bytearray()
-            rebuilt.extend(_write_varuint(len(kept_segments)))
-            for segment in kept_segments:
-                rebuilt.extend(segment)
-            new_sections.append((section_id, bytes(rebuilt)))
-        else:
-            changed = True
-    if not changed:
         return None
     return _build_sections(new_sections)
 
@@ -878,6 +784,65 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
             new_sections.append((section_id, bytes(rebuilt)))
             continue
         new_sections.append((section_id, payload))
+    if not changed:
+        return None
+    return _build_sections(new_sections)
+
+
+def _neutralize_linked_table_init(data: bytes) -> bytes | None:
+    """Replace linked-output ``molt_table_init`` with a no-op body.
+
+    Relocatable app modules need ``molt_table_init`` to install table entries
+    into a separate runtime table. A fully linked monolith must not replay that
+    initializer because its pre-link table indices can overlap runtime-owned
+    active table slots after wasm-ld. App-owned slots are materialized through
+    linked active element cleanup after the runtime-owned prefix is known.
+    """
+    export_indices = _collect_function_exports(data)
+    table_init_index = export_indices.get("molt_table_init")
+    if table_init_index is None:
+        return None
+
+    sections = _parse_sections(data)
+    import_count = _count_func_imports(sections)
+    local_index = table_init_index - import_count
+    if local_index < 0:
+        return None
+
+    types = _parse_type_section(sections)
+    _func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    if local_index >= len(func_type_indices):
+        return None
+    type_index = func_type_indices[local_index]
+    params, results = types[type_index]
+    if params or results:
+        raise ValueError("molt_table_init must have no params and no results")
+
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 10:
+            new_sections.append((section_id, payload))
+            continue
+
+        offset = 0
+        func_count, offset = _read_varuint(payload, offset)
+        if local_index >= func_count:
+            return None
+        rebuilt = bytearray(_write_varuint(func_count))
+        for idx in range(func_count):
+            body_size, body_start = _read_varuint(payload, offset)
+            body_end = body_start + body_size
+            if idx == local_index:
+                rebuilt.extend(_write_varuint(len(_EMPTY_FUNC_BODY)))
+                rebuilt.extend(_EMPTY_FUNC_BODY)
+                changed = True
+            else:
+                rebuilt.extend(_write_varuint(body_size))
+                rebuilt.extend(payload[body_start:body_end])
+            offset = body_end
+        new_sections.append((section_id, bytes(rebuilt)))
+
     if not changed:
         return None
     return _build_sections(new_sections)

@@ -751,6 +751,55 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help=argparse.SUPPRESS
     )
 
+    runtime_wasm_parser = subparsers.add_parser(
+        "internal-runtime-wasm-build",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--build-profile",
+        choices=_BUILD_PROFILE_CHOICES,
+        default="dev",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--kind",
+        choices=("shared", "reloc", "both"),
+        default="both",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--cargo-timeout",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--stdlib-profile",
+        choices=list(STDLIB_PROFILE_CHOICES),
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--no-simd",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--freestanding",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--json",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+
     debug_parser = subparsers.add_parser(
         "debug",
         help="Inspect and retain canonical compiler debug artifacts.",
