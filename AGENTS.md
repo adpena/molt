@@ -91,14 +91,22 @@ is reconciled.
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
   Non-active `uv run` creates throwaway environments and is not acceptable.
+- Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`. Read it before
+  queueing or interpreting long-running proof evidence.
 - Expensive or contention-heavy work must go through `tools/proof_queue.py`:
   Cargo builds, WASM/browser proofs, benchmark lanes, conformance shards,
   stress tests, and anything likely to contend for build/runtime resources.
 - Before queueing, run:
   `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
 - Submit queued work with a clear `--reason`, `--resource-family`,
-  `--contention-key`, and `--scope`. Prefer TOML DSL or `exec` over ad hoc
-  background processes. Cite queue run IDs/log paths as evidence.
+  `--contention-key`, `--scope`, and `--note` describing what changed or what is
+  being tested/explored and why. Prefer TOML DSL or `exec` over ad hoc
+  background processes. Cite queue run IDs/log/evidence paths as evidence.
+- Queue rows record a git snapshot, append-only notes, memory-guard summaries,
+  and deterministic marimo notebook projections under
+  `logs/proof_queue/notebooks/`. Append observations with
+  `tools/proof_queue.py note RUN_ID --kind observation --note "..."`; do not
+  edit/delete note history or hand-edit generated notebooks.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.
