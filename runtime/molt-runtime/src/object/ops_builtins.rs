@@ -3396,6 +3396,9 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     return MoltObject::from_ptr(out).bits();
                 }
                 if type_id == TYPE_ID_MEMORYVIEW {
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     let len = memoryview_len(ptr) as isize;
                     let start = match decode_slice_bound(_py, start_obj, len, 0) {
                         Ok(v) => v,

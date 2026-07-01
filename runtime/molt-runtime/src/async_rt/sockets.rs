@@ -182,6 +182,9 @@ pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
             return Ok(SendData::Borrowed(data, len));
         }
         if type_id == TYPE_ID_MEMORYVIEW {
+            if memoryview_released(ptr) {
+                return Err(RELEASED_MEMORYVIEW_ERROR.to_string());
+            }
             if let Some(slice) = memoryview_bytes_slice(ptr) {
                 return Ok(SendData::Borrowed(slice.as_ptr(), slice.len()));
             }
@@ -1523,6 +1526,9 @@ pub unsafe extern "C" fn molt_socket_recv_into(
             if type_id == TYPE_ID_BYTEARRAY {
                 target_len = bytearray_len(buffer_ptr);
             } else if type_id == TYPE_ID_MEMORYVIEW {
+                if memoryview_released(buffer_ptr) {
+                    return raise_released_memoryview(_py);
+                }
                 if memoryview_readonly(buffer_ptr) {
                     return raise_exception::<_>(
                         _py,
@@ -2019,6 +2025,9 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
         if type_id == TYPE_ID_BYTEARRAY {
             target_len = unsafe { bytearray_len(buffer_ptr) };
         } else if type_id == TYPE_ID_MEMORYVIEW {
+            if unsafe { memoryview_released(buffer_ptr) } {
+                return raise_released_memoryview(_py);
+            }
             if unsafe { memoryview_readonly(buffer_ptr) } {
                 return raise_exception::<_>(
                     _py,
