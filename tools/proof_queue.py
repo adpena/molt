@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import traceback
 from typing import Sequence
 import uuid
 
@@ -898,6 +899,24 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    if "proof queue failed before command execution" in log_tail:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="queue-preexecution-failure",
+                severity="infra",
+                summary=(
+                    "The queue failed before launching the proof command, but "
+                    "the row was made terminal and logged."
+                ),
+                evidence=_last_nonempty_log_line(Path(row["log_path"])) or "",
+                next_action=(
+                    "Fix the queue submission/projection bug, then resubmit or "
+                    "run the same queued lane; do not treat this row as product proof."
+                ),
+                scopes=("tools/proof_queue.py",),
+            )
+        )
+
     match = STATIC_PYMOD_EXEC_RE.search(log_tail)
     if match is not None:
         module = match.group("module")
@@ -1210,6 +1229,72 @@ def _write_failed_run_log(
         print("", file=log)
         for line in lines:
             print(line, file=log)
+
+
+def _fail_preexecution_run(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    logical_id: str,
+    reason: str,
+    repo_root: Path,
+    command: list[str],
+    log_path: Path,
+    exc: BaseException,
+    phase: str,
+) -> int:
+    now = _utc_now()
+    _update_run(
+        conn,
+        run_id,
+        status="failed",
+        returncode=2,
+        started_at=now,
+        finished_at=now,
+        elapsed_s=0.0,
+    )
+    lines = [
+        f"proof queue failed before command execution during {phase}:",
+        f"{type(exc).__name__}: {exc}",
+        "",
+        *traceback.format_exception(type(exc), exc, exc.__traceback__),
+    ]
+    _write_failed_run_log(
+        log_path,
+        run_id=run_id,
+        logical_id=logical_id,
+        reason=reason,
+        repo_root=repo_root,
+        command=command,
+        lines=lines,
+    )
+    try:
+        _insert_note(
+            conn,
+            run_id=run_id,
+            body=(
+                f"Queue failed before command execution during {phase}: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+            kind="finding",
+            author=_default_note_author(),
+        )
+    except Exception:
+        with log_path.open("a", encoding="utf-8") as log:
+            print("\nproof_queue note append failed:", file=log)
+            traceback.print_exc(file=log)
+    try:
+        _write_marimo_notebook(args, conn, run_id)
+    except Exception:
+        with log_path.open("a", encoding="utf-8") as log:
+            print(
+                "\nproof_queue notebook projection failed after terminal row:", file=log
+            )
+            traceback.print_exc(file=log)
+    print(f"failed {run_id} rc=2")
+    print(f"log: {log_path}")
+    return 2
 
 
 def _command_basename(command: str) -> str:
@@ -1591,18 +1676,33 @@ def _queue_one(
         log_path=logs_root / f"{run_id}.log",
         summary_json=logs_root / f"{run_id}.memory_guard.json",
     )
-    for parent_run_id in depends_on or []:
-        _insert_edge(
+    try:
+        for parent_run_id in depends_on or []:
+            _insert_edge(
+                conn,
+                parent_run_id=parent_run_id,
+                child_run_id=run_id,
+                kind=edge_kind,
+                note=edge_note,
+            )
+        for note in initial_notes or []:
+            _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
+        if initial_notes or depends_on:
+            _write_marimo_notebook(args, conn, run_id)
+    except Exception as exc:
+        rc = _fail_preexecution_run(
+            args,
             conn,
-            parent_run_id=parent_run_id,
-            child_run_id=run_id,
-            kind=edge_kind,
-            note=edge_note,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            log_path=logs_root / f"{run_id}.log",
+            exc=exc,
+            phase="submission projection",
         )
-    for note in initial_notes or []:
-        _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
-    if initial_notes or depends_on:
-        _write_marimo_notebook(args, conn, run_id)
+        return rc, run_id
     print(f"queued {run_id}")
     return 0, run_id
 
@@ -1731,18 +1831,32 @@ def _run_one(
             summary_json=summary_json,
         )
     if inserted_run:
-        for parent_run_id in depends_on or []:
-            _insert_edge(
+        try:
+            for parent_run_id in depends_on or []:
+                _insert_edge(
+                    conn,
+                    parent_run_id=parent_run_id,
+                    child_run_id=run_id,
+                    kind=edge_kind,
+                    note=edge_note,
+                )
+            for note in initial_notes or []:
+                _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
+            if initial_notes or depends_on:
+                _write_marimo_notebook(args, conn, run_id)
+        except Exception as exc:
+            return _fail_preexecution_run(
+                args,
                 conn,
-                parent_run_id=parent_run_id,
-                child_run_id=run_id,
-                kind=edge_kind,
-                note=edge_note,
+                run_id=run_id,
+                logical_id=logical_id,
+                reason=reason,
+                repo_root=repo_root,
+                command=command,
+                log_path=log_path,
+                exc=exc,
+                phase="submission projection",
             )
-        for note in initial_notes or []:
-            _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
-        if initial_notes or depends_on:
-            _write_marimo_notebook(args, conn, run_id)
     policy_error = _proof_command_policy_error(command)
     if policy_error is not None:
         now = _utc_now()
