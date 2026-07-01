@@ -293,3 +293,52 @@ def test_proof_queue_submit_rejects_uv_run_without_active_project_python(
                 str(dsl),
             ]
         )
+
+
+def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
+    spec = proof_queue._pact_witness_acceptance_spec()
+
+    assert spec["logical_id"] == "pact-witness-acceptance"
+    assert spec["resource_family"] == "wasm-browser"
+    assert spec["contention_key"] == "wasm:pact-witness"
+    command = list(spec["command"])
+    assert command[:7] == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+    ]
+    assert command[7:10] == ["python", "-m", "molt"]
+    assert "build" in command
+    assert "collab/pact/pact_witness_kernel/field_solve.py" in command
+    assert "--split-runtime" in command
+    assert "tmp/pact_witness_acceptance_queue" in command
+    assert "collab/pact/pact_witness_kernel/check_parity.py" in spec["scopes"]
+    assert proof_queue._proof_command_policy_error(command) is None
+
+
+def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
+    spec = proof_queue._pact_witness_oracle_spec()
+
+    assert spec["logical_id"] == "pact-witness-oracle-parity"
+    assert spec["resource_family"] == "wasm-browser"
+    assert spec["contention_key"] == "wasm:pact-witness"
+    command = list(spec["command"])
+    assert command[:7] == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+    ]
+    assert "--with" in command
+    assert "numpy==1.26.4" in command
+    assert "scipy==1.17.1" in command
+    assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
+    assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
+    assert proof_queue._proof_command_policy_error(command) is None

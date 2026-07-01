@@ -133,6 +133,12 @@ would be the wrong architecture.
 
 ## Proof Status
 
+Queue-native Pact witness lanes:
+
+- `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
+- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance` owns the heavy browser/WASM Kernel A aperture. On the current tree it is expected to fail closed before `candidate_outputs.npz` because package-native NumPy/SciPy closure is still incomplete.
+- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle` is the smallest queued witness parity proof: it regenerates the Kernel A fixture/reference pair and runs `check_parity.py reference_outputs.npz` under queue custody.
+
 Green in this recovery:
 
 - `uv run ruff check src\molt\cli\extension_scan_surface.py src\molt\cli\extension_scan.py src\molt\cli\source_extensions.py src\molt\cli\commands.py tests\cli\test_cli_extension_commands.py`
@@ -149,12 +155,12 @@ Green in this recovery:
 - `uv run pytest tests/cli/test_cli_import_collection.py::test_external_native_artifact_plan_rejects_unknown_callable_export_abi tests/cli/test_cli_import_collection.py::test_frontend_native_callable_callargs_export_lowers_keyword_child_module_attr tests/cli/test_cli_import_collection.py::test_browser_native_callable_manifest_is_import_driven tests/test_wasm_browser_embed.py::test_browser_embed_object_callargs_native_callable_import_adapter -q`
 - `cargo test -p molt-ir native_callable_abi_contracts_are_canonical --lib`
 - `cargo test -p molt-backend-wasm --features wasm-backend native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symbol --lib`
-- `uv run python -m molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm --profile browser --wasm-profile auto --split-runtime --out-dir tmp\pact_plain_build_probe_after_native_callable` fails closed at `distance_transform_edt` when no package/native callable metadata is admitted.
-- `MOLT_MODULE_ROOTS=<Python 3.14 site-packages> MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy" uv run python -m molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm --profile browser --wasm-profile auto --split-runtime --out-dir tmp\pact_package_admission_probe_after_native_callable` fails closed before graph expansion because no wasm32 `static_link` `libmolt_source` artifact manifests exist for the admitted NumPy/SciPy roots.
+- Queued `pact-witness-acceptance` fails closed at the same Kernel A build aperture when no package/native callable metadata is admitted.
+- Queued `pact-witness-acceptance` with `MOLT_MODULE_ROOTS=<Python 3.14 site-packages>` and `MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"` fails closed before graph expansion because no wasm32 `static_link` `libmolt_source` artifact manifests exist for the admitted NumPy/SciPy roots.
 - `uv run pytest tests/cli/test_cli_extension_commands.py::test_extension_build_wasm_target_emits_static_link_artifact_and_manifest tests/cli/test_cli_extension_commands.py::test_extension_build_wasm_target_rejects_missing_direct_symbol tests/cli/test_cli_extension_commands.py::test_extension_build_cross_target_uses_target_compiler_and_manifest tests/cli/test_cli_extension_commands.py::test_extension_build_emits_public_exports_in_manifest tests/cli/test_cli_extension_commands.py::test_extension_build_emits_wheel_and_manifest -q`
 - `uv run pytest tests/cli/test_cli_import_collection.py::test_external_static_package_wasm_artifact_plan_is_manifest_led tests/cli/test_cli_import_collection.py::test_source_recompiled_static_package_requires_native_artifact_candidate_pregraph tests/cli/test_cli_import_collection.py::test_admitted_external_native_package_does_not_close_source_only_ndimage_initializers tests/cli/test_cli_import_collection.py::test_external_native_artifact_plan_rejects_missing_wasm_callable_symbol tests/cli/test_cli_import_collection.py::test_external_native_artifact_plan_selects_callable_exported_imports -q`
 - `uv run pytest tests/cli/test_cli_import_collection.py::test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi tests/cli/test_cli_import_collection.py::test_browser_native_callable_manifest_is_import_driven tests/test_wasm_browser_embed.py::test_browser_embed_object_callargs_native_callable_import_adapter tests/test_wasm_browser_embed.py::test_browser_embed_native_callable_import_must_be_manifest_declared -q`
-- `MOLT_MODULE_ROOTS=<Python 3.14 site-packages> MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy" uv run python -m molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm --profile browser --wasm-profile auto --split-runtime --out-dir tmp\pact_package_admission_probe_after_wasm_extension_build` fails closed before graph expansion because the installed NumPy/SciPy roots still have no wasm32 `static_link` `libmolt_source` artifact manifests.
+- Queued `pact-witness-acceptance` with local Python package roots still fails closed before graph expansion because the installed NumPy/SciPy roots have no wasm32 `static_link` `libmolt_source` artifact manifests.
 - `cargo test -p molt-lang-cpython-abi pycomplex_binary_exports_fail_closed_until_bridge_storage_exists --lib`
 - `uv run pytest tests/cli/test_cli_extension_commands.py::test_cpython_abi_variadic_shim_does_not_export_header_inline_stubs -q`
 - `uv run pytest tests\test_gen_wasm_abi.py::test_wasm_abi_manifest_owns_lir_runtime_calls tests\test_gen_wasm_abi.py::test_wasm_abi_manifest_owns_runtime_export_policy -q`
@@ -172,7 +178,7 @@ Green in this recovery:
 - `uv run pytest tests\cli\test_cli_extension_commands.py::test_extension_seal_publishes_package_root_export_for_existing_static_artifact -q`
 - `uv run pytest tests\cli\test_cli_import_collection.py::test_materialize_import_plan_adds_reachable_native_support_source_closure tests\cli\test_cli_import_collection.py::test_materialize_import_plan_rejects_missing_native_support_artifact tests\cli\test_cli_import_collection.py::test_native_support_source_stdlib_imports_join_compile_closure tests\cli\test_cli_import_collection.py::test_native_support_provider_prunes_unreachable_functions tests\cli\test_cli_import_collection.py::test_native_support_function_roots_cross_imported_helpers -q`
 - `uv run ruff check src\molt\compiler_analysis\native_support_slice.py src\molt\cli\module_graph.py src\molt\cli\frontend_pipeline.py src\molt\cli\wrapper_build.py src\molt\frontend\visitors\statement_scope.py tests\cli\test_cli_import_collection.py`
-- `MOLT_MODULE_ROOTS=tmp\pact_numpy_multiarray_sealed_axiserror;tmp\pact_scipy_ndimage_provider_sealed_helpers MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy" uv run python -m molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm --profile browser --wasm-profile auto --split-runtime --out-dir tmp\pact_build_probe_missing_native_custody` fails closed in 5.9s with `scipy.ndimage._ni_label` missing source/artifact custody and the upstream source candidate `bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\src\_ni_label.pyx`. Evidence: `tmp\pact_build_probe_missing_native_custody.log` and `tmp\memory_guard\active\pact_missing_native_custody_build.json`.
+- Queued `pact-witness-acceptance` with the sealed NumPy/SciPy staging roots fails closed with `scipy.ndimage._ni_label` missing source/artifact custody and the upstream source candidate `bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\src\_ni_label.pyx`. Evidence remains in the queue log plus the prior `tmp\pact_build_probe_missing_native_custody.log` and `tmp\memory_guard\active\pact_missing_native_custody_build.json`.
 - `WASI_SYSROOT=E:\molt-target\toolchains\wasi-sysroot-33.0+m uv run python -m molt extension build --project bench\friends\repos\scipy_off_the_shelf --out-dir tmp\pact_scipy_ni_label_molt_ext_wasm_cpython_abi --module scipy.ndimage._ni_label --target wasm --abi-tier cpython-abi --source-plan tmp\pact_scipy_ni_label_source_plan.json --source-plan-target _ni_label --source-plan-source-root bench\friends\repos\scipy_off_the_shelf --source-plan-build-root bench\friends\repos\scipy_off_the_shelf\build --source-plan-compile-commands tmp\pact_scipy_ni_label_compile_commands.json --capabilities core --python-export scipy.ndimage._ni_label --no-deterministic --json` passes and emits `scipy\ndimage\_ni_label.molt.wasm`, `object_count=1`, `linked_object_count=1`, `warnings=[]`, `errors=[]`. Evidence: `tmp\pact_scipy_ni_label_extension_build.log` and `tmp\memory_guard\active\pact_scipy_ni_label_extension_build.json`.
 - `uv run python -c "from pathlib import Path; from molt.cli.external_native import _resolve_external_package_native_artifact_plan; root=Path('tmp/pact_scipy_ndimage_sealed_for_witness').resolve(); plan, errors=_resolve_external_package_native_artifact_plan(external_module_roots=(root,), admitted_packages={'scipy'}, required_modules={'scipy.ndimage.distance_transform_edt'}); print(plan is not None); print('\\n'.join(errors[:8]))"` fails fast with the new SciPy `_nd_image` module-attribute custody diagnostic for the stale high-level wrapper exports.
 - `uv run python -m molt extension audit --path tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi --require-python-export numpy --json` fails fast with `missing_python_exports=["numpy"]` and the rebuild hint `molt extension build --python-export numpy`.
@@ -189,10 +195,9 @@ Unknown in this recovery:
 
 The latest export-custody proof:
 
-- `MOLT_MODULE_ROOTS=tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi;bench\friends\repos\numpy_off_the_shelf;bench\friends\repos\scipy_off_the_shelf`
-  with `MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"` fails in
-  `molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm
-  --profile browser --wasm-profile auto --split-runtime` before graph
+- Queued `pact-witness-acceptance` with
+  `MOLT_MODULE_ROOTS=tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi;bench\friends\repos\numpy_off_the_shelf;bench\friends\repos\scipy_off_the_shelf`
+  and `MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"` fails before graph
   expansion: the staged NumPy static-link artifact is present, but its manifest
   publishes no `python_exports` or `callable_exports`, so it cannot own the
   `numpy` import or any callable symbol. A focused resolver regression also

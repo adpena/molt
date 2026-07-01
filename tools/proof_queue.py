@@ -350,6 +350,108 @@ def _env_overrides_from_spec(raw: object) -> dict[str, str]:
     )
 
 
+def _uv_active_python_command(
+    *args: str, with_packages: list[str] | None = None
+) -> list[str]:
+    command = ["uv", "run", "--active", "--project", ".", "--python", "3.12"]
+    for package in with_packages or []:
+        command.extend(["--with", package])
+    command.append("python")
+    command.extend(args)
+    return command
+
+
+def _pact_witness_acceptance_spec(timeout: float | None = None) -> dict[str, object]:
+    return {
+        "logical_id": "pact-witness-acceptance",
+        "reason": (
+            "Run the Pact Kernel A browser/WASM witness acceptance aperture "
+            "through queue custody."
+        ),
+        "command": _uv_active_python_command(
+            "-m",
+            "molt",
+            "build",
+            "collab/pact/pact_witness_kernel/field_solve.py",
+            "--target",
+            "wasm",
+            "--profile",
+            "browser",
+            "--wasm-profile",
+            "auto",
+            "--split-runtime",
+            "--out-dir",
+            "tmp/pact_witness_acceptance_queue",
+        ),
+        "resource_family": "wasm-browser",
+        "contention_key": "wasm:pact-witness",
+        "scopes": [
+            "collab/pact/pact_witness_kernel/field_solve.py",
+            "collab/pact/pact_witness_kernel/check_parity.py",
+            "wasm/browser_embed.js",
+            "wasm/browser_host.js",
+            "wasm/run_wasm.js",
+        ],
+        "env_overrides": {},
+        "timeout": timeout if timeout is not None else 1800.0,
+    }
+
+
+def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]:
+    return {
+        "logical_id": "pact-witness-oracle-parity",
+        "reason": (
+            "Regenerate the Pact Kernel A fixture/reference pair and prove the "
+            "check_parity.py oracle under queue custody."
+        ),
+        "command": _uv_active_python_command(
+            "tools/pact_witness_oracle.py",
+            with_packages=["numpy==1.26.4", "scipy==1.17.1"],
+        ),
+        "resource_family": "wasm-browser",
+        "contention_key": "wasm:pact-witness",
+        "scopes": [
+            "collab/pact/pact_witness_kernel/make_fixture.py",
+            "collab/pact/pact_witness_kernel/field_solve.py",
+            "collab/pact/pact_witness_kernel/check_parity.py",
+            "tools/pact_witness_oracle.py",
+        ],
+        "env_overrides": {},
+        "timeout": timeout if timeout is not None else 900.0,
+    }
+
+
+def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
+    env_overrides = dict(spec["env_overrides"])
+    env_overrides.update(_env_overrides_from_pairs(args.env))
+    runnable = {
+        **spec,
+        "env_overrides": env_overrides,
+    }
+    if args.print_spec:
+        print(json.dumps(runnable, indent=2, sort_keys=True))
+        return 0
+    return _run_one(
+        args,
+        logical_id=str(runnable["logical_id"]),
+        reason=str(runnable["reason"]),
+        command=list(runnable["command"]),
+        resource_family=str(runnable["resource_family"]),
+        contention_key=str(runnable["contention_key"]),
+        scopes=list(runnable["scopes"]),
+        env_overrides=dict(runnable["env_overrides"]),
+        timeout=float(runnable["timeout"]),
+    )
+
+
+def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
+    return _run_named_spec(args, _pact_witness_acceptance_spec(args.timeout))
+
+
+def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
+    return _run_named_spec(args, _pact_witness_oracle_spec(args.timeout))
+
+
 def _run_one(
     args: argparse.Namespace,
     *,
@@ -771,6 +873,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
     template_p = sub.add_parser("template", help="print a proof DSL template")
     template_p.set_defaults(func=_cmd_template)
+
+    pact_accept_p = sub.add_parser(
+        "pact-witness-acceptance",
+        help="run the queue-owned Pact Kernel A browser/WASM acceptance aperture",
+    )
+    pact_accept_p.add_argument(
+        "--env", action="append", default=[], metavar="NAME=VALUE"
+    )
+    pact_accept_p.add_argument("--timeout", type=float)
+    pact_accept_p.add_argument("--print-spec", action="store_true")
+    pact_accept_p.set_defaults(func=_cmd_pact_witness_acceptance)
+
+    pact_oracle_p = sub.add_parser(
+        "pact-witness-oracle",
+        help="run the queued Pact Kernel A fixture/reference parity oracle",
+    )
+    pact_oracle_p.add_argument(
+        "--env", action="append", default=[], metavar="NAME=VALUE"
+    )
+    pact_oracle_p.add_argument("--timeout", type=float)
+    pact_oracle_p.add_argument("--print-spec", action="store_true")
+    pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)
     return parser
 
 
