@@ -1112,8 +1112,18 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     ] == ["numpy._core._multiarray_umath", "scipy.ndimage._nd_image"]
     assert "scipy.ndimage._filters" in import_plan.compile_modules
     assert "scipy._lib._util" in import_plan.compile_modules
+    assert "scipy._lib" in import_plan.known_modules
+    assert "scipy._lib" in import_plan.runtime_import_dispatch_roots
+    assert "scipy._lib._array_api" not in import_plan.runtime_import_dispatch_roots
     assert "numpy.exceptions" in import_plan.compile_modules
     assert "numpy.exceptions" in import_plan.known_modules
+    assert "numpy" in import_plan.runtime_import_dispatch_roots
+    native_init_modules = {
+        spec.module for spec in import_plan.native_artifact_plan.native_module_init_specs()
+    }
+    assert "scipy._lib" in native_init_modules
+    assert "scipy._lib._util" in native_init_modules
+    assert "numpy.exceptions" in native_init_modules
     assert "native_support_source" in module_reasons["scipy.ndimage._filters"]
     assert "native_support_source" in module_reasons["scipy._lib._util"]
     assert "native_support_source" in module_reasons["numpy.exceptions"]
