@@ -187,7 +187,7 @@ lane. Molt-owned Python shims for NumPy/SciPy would be the wrong architecture.
 Queue-native Pact witness lanes:
 
 - `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
-- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance` owns the heavy browser/WASM Kernel A aperture. The current spec renders to `tools/pact_witness_acceptance.py`, which builds `field_solve.py`, runs the emitted WASM, writes `candidate_outputs.npz`, and executes `check_parity.py`.
+- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance --detach` owns the heavy browser/WASM Kernel A aperture. The current spec renders to `tools/pact_witness_acceptance.py`, which builds `field_solve.py`, runs the emitted WASM, writes `candidate_outputs.npz`, and executes `check_parity.py`.
   Latest full-acceptance evidence:
   `20260701T203840-pact-witness-acceptance-43e969d640e44709` builds and links,
   then fails in Node before `candidate_outputs.npz` with
@@ -196,7 +196,7 @@ Queue-native Pact witness lanes:
   artifact roots under `tmp/` when present, so the default acceptance command
   exercises manifest-led package-native closure instead of rediscovering the
   unauthenticated `distance_transform_edt` direct-call failure.
-- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle` is the smallest queued witness parity proof: it regenerates the Kernel A fixture/reference pair and runs `check_parity.py reference_outputs.npz` under queue custody.
+- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle --detach` is the smallest queued witness parity proof: it regenerates the Kernel A fixture/reference pair and runs `check_parity.py reference_outputs.npz` under queue custody.
 
 Green in this recovery:
 
