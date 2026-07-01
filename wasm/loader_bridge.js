@@ -691,6 +691,35 @@
     return spec ? { ...spec, trampoline } : null;
   };
 
+  const reservedRuntimeCallablesFromManifest = (manifest) => {
+    const entries = manifest?.abi?.browser_embed?.reserved_runtime_callables;
+    if (!Array.isArray(entries)) {
+      return null;
+    }
+    return entries.map((entry, idx) => {
+      if (!entry || typeof entry !== 'object') {
+        throw new Error(`reserved runtime callable manifest entry ${idx} must be an object`);
+      }
+      const index = Number(entry.index);
+      const runtimeExport = entry.runtime_export;
+      const importName = entry.import_name;
+      const arity = Number(entry.arity);
+      if (!Number.isInteger(index) || index < 0) {
+        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid index`);
+      }
+      if (typeof runtimeExport !== 'string' || runtimeExport.length === 0) {
+        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid runtime_export`);
+      }
+      if (typeof importName !== 'string' || importName.length === 0) {
+        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid import_name`);
+      }
+      if (!Number.isInteger(arity) || arity < 0) {
+        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid arity`);
+      }
+      return { index, runtimeExport, importName, arity };
+    });
+  };
+
   const remapLegacyRuntimeSharedTableIndex = (
     idx,
     {
@@ -901,6 +930,7 @@
     parseWasmImports,
     remapLegacyRuntimeSharedTableIndex,
     reservedRuntimeCallableForTableIndex,
+    reservedRuntimeCallablesFromManifest,
     runtimeImportByteSpanOutNames,
     runtimeImportObjectArrayArgNames,
   };

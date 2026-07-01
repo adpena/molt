@@ -233,8 +233,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_importlib_import_transaction"
     )
     assert imports["importlib_import_transaction"]["callable_arity"] == 5
+    assert imports["importlib_import_transaction"]["shared_runtime_callable"] is True
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
     assert imports["types_bootstrap"]["callable_arity"] == 0
+    assert imports["types_bootstrap"].get("shared_runtime_callable") is None
 
     assert imports["socket_drop"]["callable_result"] == "void"
     assert imports["stream_close"]["callable_result"] == "void"
@@ -258,6 +260,52 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["env_clear"].get("callable_result", "i64") == "i64"
     assert imports["typing_type_param"]["runtime_name"] == "molt_typing_type_param"
     assert imports["typing_type_param"]["callable_arity"] == 2
+
+    shared_callables = gen._shared_runtime_callables(data)
+    reserved_callables = data["reserved_runtime_callable"]
+    assert [entry["index"] for entry in shared_callables] == list(
+        range(len(shared_callables))
+    )
+    assert [
+        {
+            "index": entry["index"],
+            "runtime_name": entry["runtime_name"],
+            "import_name": entry["import_name"],
+            "callable_arity": entry["callable_arity"],
+        }
+        for entry in shared_callables[: len(reserved_callables)]
+    ] == reserved_callables
+    assert shared_callables[-1] == {
+        "index": len(reserved_callables),
+        "runtime_name": "molt_importlib_import_transaction",
+        "import_name": "importlib_import_transaction",
+        "callable_arity": 5,
+        "callable_result": None,
+        "runtime_feature": None,
+    }
+    assert all(
+        entry["runtime_name"] != "molt_types_bootstrap" for entry in shared_callables
+    )
+
+    rendered_runtime = gen.render_runtime_callables_rs(data)
+    assert "molt_importlib_import_transaction" in rendered_runtime
+    assert "molt_types_bootstrap" not in rendered_runtime
+
+    broken_marker = copy.deepcopy(data)
+    broken_marker["import"][0]["shared_runtime_callable"] = "yes"
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="invalid shared_runtime_callable"
+    ):
+        manifest.validate_loaded_manifest(broken_marker)
+
+    broken_missing_arity = copy.deepcopy(data)
+    broken_missing_arity["import"][0]["shared_runtime_callable"] = True
+    broken_missing_arity["import"][0].pop("callable_arity", None)
+    with pytest.raises(
+        manifest.WasmAbiManifestError,
+        match="cannot set shared_runtime_callable without callable_arity",
+    ):
+        manifest.validate_loaded_manifest(broken_missing_arity)
     assert imports["logging_formatter_format_time"]["callable_arity"] == 3
     assert imports["logging_stream_handler_new"]["callable_arity"] == 2
     assert imports["logging_basic_config"]["callable_arity"] == 4
@@ -374,16 +422,19 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         if entry.get("callable_result") == "void"
     }
     assert "molt_asyncio_future_drop" in void_runtime_names
+    shared_runtime_names = {entry["runtime_name"] for entry in shared_callables}
+    assert void_runtime_names.isdisjoint(shared_runtime_names)
+    assert "VOID_RESERVED_RUNTIME_CALLABLE_INDICES" in rendered_runtime_rs
     for runtime_name in sorted(void_runtime_names):
-        assert f"fn_addr!(crate::{runtime_name})" in rendered_runtime_rs
-    assert '#[cfg(feature = "stdlib_asyncio")]' in rendered_runtime_rs
-    assert '#[cfg(feature = "stdlib_email")]' in rendered_runtime_rs
-    assert '#[cfg(feature = "stdlib_xml")]' in rendered_runtime_rs
+        assert f"crate::{runtime_name} as *const" not in rendered_runtime_rs
+    assert "fn_addr!(crate::" not in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert (
-        '"molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0)' in rendered_runtime_rs
+        ".map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)"
+        in rendered_runtime_rs
     )
+    assert 'runtime_name: "molt_type_call"' in rendered_runtime_rs
     assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
     assert '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
     assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs

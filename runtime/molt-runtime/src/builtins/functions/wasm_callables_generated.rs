@@ -16,10 +16,164 @@ pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 32;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 22;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 23;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReservedRuntimeCallableInfo {
+    pub(crate) index: u64,
+    pub(crate) runtime_name: &'static str,
+    pub(crate) import_name: &'static str,
+    pub(crate) arity: usize,
+}
+
+#[rustfmt::skip]
+pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
+    ReservedRuntimeCallableInfo {
+        index: 0,
+        runtime_name: "molt_type_call",
+        import_name: "type_call",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 1,
+        runtime_name: "molt_type_new",
+        import_name: "type_new",
+        arity: 5,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 2,
+        runtime_name: "molt_type_init",
+        import_name: "type_init",
+        arity: 5,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 3,
+        runtime_name: "molt_object_new_bound",
+        import_name: "object_new_bound",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 4,
+        runtime_name: "molt_object_init",
+        import_name: "object_init",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 5,
+        runtime_name: "molt_object_init_subclass",
+        import_name: "object_init_subclass",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 6,
+        runtime_name: "molt_exception_new_bound",
+        import_name: "exception_new_bound",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 7,
+        runtime_name: "molt_exception_init",
+        import_name: "exception_init",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 8,
+        runtime_name: "molt_exceptiongroup_init",
+        import_name: "exceptiongroup_init",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 9,
+        runtime_name: "molt_types_mappingproxy_new",
+        import_name: "types_mappingproxy_new",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 10,
+        runtime_name: "molt_types_mappingproxy_init",
+        import_name: "types_mappingproxy_init",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 11,
+        runtime_name: "molt_types_method_new",
+        import_name: "types_method_new",
+        arity: 3,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 12,
+        runtime_name: "molt_types_method_init",
+        import_name: "types_method_init",
+        arity: 3,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 13,
+        runtime_name: "molt_types_simplenamespace_init",
+        import_name: "types_simplenamespace_init",
+        arity: 3,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 14,
+        runtime_name: "molt_types_capsule_new",
+        import_name: "types_capsule_new",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 15,
+        runtime_name: "molt_types_cell_new",
+        import_name: "types_cell_new",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 16,
+        runtime_name: "molt_types_dynamic_class_attr_init",
+        import_name: "types_dynamic_class_attr_init",
+        arity: 3,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 17,
+        runtime_name: "molt_types_coroutine",
+        import_name: "types_coroutine",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 18,
+        runtime_name: "molt_types_get_original_bases",
+        import_name: "types_get_original_bases",
+        arity: 1,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 19,
+        runtime_name: "molt_types_prepare_class",
+        import_name: "types_prepare_class",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 20,
+        runtime_name: "molt_types_resolve_bases",
+        import_name: "types_resolve_bases",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 21,
+        runtime_name: "molt_types_new_class",
+        import_name: "types_new_class",
+        arity: 2,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 22,
+        runtime_name: "molt_importlib_import_transaction",
+        import_name: "importlib_import_transaction",
+        arity: 5,
+    },
+];
+
+#[rustfmt::skip]
+const VOID_RESERVED_RUNTIME_CALLABLE_INDICES: &[u64] = &[
+];
 
 #[inline]
 pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
@@ -68,31 +222,10 @@ pub(crate) fn wasm_poll_table_slot_from_symbol_name(symbol_name: &str) -> Option
 
 #[inline]
 fn runtime_reserved_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    match symbol_name {
-        "molt_type_call" => Some(RUNTIME_CALLABLE_KEY_BASE + 0),
-        "molt_type_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 1),
-        "molt_type_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 2),
-        "molt_object_new_bound" => Some(RUNTIME_CALLABLE_KEY_BASE + 3),
-        "molt_object_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 4),
-        "molt_object_init_subclass" => Some(RUNTIME_CALLABLE_KEY_BASE + 5),
-        "molt_exception_new_bound" => Some(RUNTIME_CALLABLE_KEY_BASE + 6),
-        "molt_exception_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 7),
-        "molt_exceptiongroup_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 8),
-        "molt_types_mappingproxy_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 9),
-        "molt_types_mappingproxy_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 10),
-        "molt_types_method_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 11),
-        "molt_types_method_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 12),
-        "molt_types_simplenamespace_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 13),
-        "molt_types_capsule_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 14),
-        "molt_types_cell_new" => Some(RUNTIME_CALLABLE_KEY_BASE + 15),
-        "molt_types_dynamic_class_attr_init" => Some(RUNTIME_CALLABLE_KEY_BASE + 16),
-        "molt_types_coroutine" => Some(RUNTIME_CALLABLE_KEY_BASE + 17),
-        "molt_types_get_original_bases" => Some(RUNTIME_CALLABLE_KEY_BASE + 18),
-        "molt_types_prepare_class" => Some(RUNTIME_CALLABLE_KEY_BASE + 19),
-        "molt_types_resolve_bases" => Some(RUNTIME_CALLABLE_KEY_BASE + 20),
-        "molt_types_new_class" => Some(RUNTIME_CALLABLE_KEY_BASE + 21),
-        _ => None,
-    }
+    RESERVED_RUNTIME_CALLABLES
+        .iter()
+        .find(|entry| entry.runtime_name == symbol_name)
+        .map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)
 }
 
 #[inline]
@@ -145,109 +278,38 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
 #[cfg(target_arch = "wasm32")]
 #[inline]
 pub(crate) fn runtime_callable_returns_void_from_target_ptr(fn_ptr: u64) -> bool {
-    if fn_ptr == fn_addr!(crate::molt_spawn) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_stream_close) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_stream_drop) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_socket_drop) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_process_drop) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_ws_close) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_ws_drop) {
-        return true;
-    }
-    #[cfg(feature = "stdlib_email")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_email_message_drop) {
-            return true;
-        }
-    }
-    if fn_ptr == fn_addr!(crate::molt_stream_reader_drop) {
-        return true;
-    }
-    if fn_ptr == fn_addr!(crate::molt_socket_reader_drop) {
-        return true;
-    }
-    #[cfg(feature = "stdlib_asyncio")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_pipe_transport_drop) {
-            return true;
-        }
-    }
-    #[cfg(feature = "stdlib_asyncio")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_asyncio_future_drop) {
-            return true;
-        }
-    }
-    #[cfg(feature = "stdlib_asyncio")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_asyncio_event_drop) {
-            return true;
-        }
-    }
-    #[cfg(feature = "stdlib_asyncio")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_asyncio_lock_drop) {
-            return true;
-        }
-    }
-    #[cfg(feature = "stdlib_asyncio")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_asyncio_semaphore_drop) {
-            return true;
-        }
-    }
-    #[cfg(feature = "stdlib_asyncio")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_asyncio_queue_drop) {
-            return true;
-        }
-    }
-    #[cfg(feature = "stdlib_xml")]
-    {
-        if fn_ptr == fn_addr!(crate::molt_xml_element_drop) {
-            return true;
-        }
-    }
-    false
+    fn_ptr
+        .checked_sub(RUNTIME_CALLABLE_KEY_BASE)
+        .is_some_and(|idx| VOID_RESERVED_RUNTIME_CALLABLE_INDICES.contains(&idx))
 }
 
 #[inline]
+#[rustfmt::skip]
 fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {
-        0 => Some(molt_type_call as *const ()),
-        1 => Some(molt_type_new as *const ()),
-        2 => Some(molt_type_init as *const ()),
-        3 => Some(molt_object_new_bound as *const ()),
-        4 => Some(molt_object_init as *const ()),
-        5 => Some(molt_object_init_subclass as *const ()),
-        6 => Some(molt_exception_new_bound as *const ()),
-        7 => Some(molt_exception_init as *const ()),
-        8 => Some(molt_exceptiongroup_init as *const ()),
-        9 => Some(molt_types_mappingproxy_new as *const ()),
-        10 => Some(molt_types_mappingproxy_init as *const ()),
-        11 => Some(molt_types_method_new as *const ()),
-        12 => Some(molt_types_method_init as *const ()),
-        13 => Some(molt_types_simplenamespace_init as *const ()),
-        14 => Some(molt_types_capsule_new as *const ()),
-        15 => Some(molt_types_cell_new as *const ()),
-        16 => Some(molt_types_dynamic_class_attr_init as *const ()),
-        17 => Some(molt_types_coroutine as *const ()),
-        18 => Some(molt_types_get_original_bases as *const ()),
-        19 => Some(molt_types_prepare_class as *const ()),
-        20 => Some(molt_types_resolve_bases as *const ()),
-        21 => Some(molt_types_new_class as *const ()),
+        0 => Some(crate::molt_type_call as *const ()),
+        1 => Some(crate::molt_type_new as *const ()),
+        2 => Some(crate::molt_type_init as *const ()),
+        3 => Some(crate::molt_object_new_bound as *const ()),
+        4 => Some(crate::molt_object_init as *const ()),
+        5 => Some(crate::molt_object_init_subclass as *const ()),
+        6 => Some(crate::molt_exception_new_bound as *const ()),
+        7 => Some(crate::molt_exception_init as *const ()),
+        8 => Some(crate::molt_exceptiongroup_init as *const ()),
+        9 => Some(crate::molt_types_mappingproxy_new as *const ()),
+        10 => Some(crate::molt_types_mappingproxy_init as *const ()),
+        11 => Some(crate::molt_types_method_new as *const ()),
+        12 => Some(crate::molt_types_method_init as *const ()),
+        13 => Some(crate::molt_types_simplenamespace_init as *const ()),
+        14 => Some(crate::molt_types_capsule_new as *const ()),
+        15 => Some(crate::molt_types_cell_new as *const ()),
+        16 => Some(crate::molt_types_dynamic_class_attr_init as *const ()),
+        17 => Some(crate::molt_types_coroutine as *const ()),
+        18 => Some(crate::molt_types_get_original_bases as *const ()),
+        19 => Some(crate::molt_types_prepare_class as *const ()),
+        20 => Some(crate::molt_types_resolve_bases as *const ()),
+        21 => Some(crate::molt_types_new_class as *const ()),
+        22 => Some(crate::molt_importlib_import_transaction as *const ()),
         _ => None,
     }
 }
@@ -295,122 +357,44 @@ fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
 pub(crate) fn reserved_wasm_runtime_callable_info(
     fn_ptr: u64,
 ) -> Option<(u64, &'static str, &'static str, usize)> {
-    if fn_ptr == fn_addr!(molt_type_call) {
-        return Some((0, "molt_type_call", "type_call", 1));
-    }
-    if fn_ptr == fn_addr!(molt_type_new) {
-        return Some((1, "molt_type_new", "type_new", 5));
-    }
-    if fn_ptr == fn_addr!(molt_type_init) {
-        return Some((2, "molt_type_init", "type_init", 5));
-    }
-    if fn_ptr == fn_addr!(molt_object_new_bound) {
-        return Some((3, "molt_object_new_bound", "object_new_bound", 1));
-    }
-    if fn_ptr == fn_addr!(molt_object_init) {
-        return Some((4, "molt_object_init", "object_init", 1));
-    }
-    if fn_ptr == fn_addr!(molt_object_init_subclass) {
-        return Some((5, "molt_object_init_subclass", "object_init_subclass", 1));
-    }
-    if fn_ptr == fn_addr!(molt_exception_new_bound) {
-        return Some((6, "molt_exception_new_bound", "exception_new_bound", 2));
-    }
-    if fn_ptr == fn_addr!(molt_exception_init) {
-        return Some((7, "molt_exception_init", "exception_init", 2));
-    }
-    if fn_ptr == fn_addr!(molt_exceptiongroup_init) {
-        return Some((8, "molt_exceptiongroup_init", "exceptiongroup_init", 2));
-    }
-    if fn_ptr == fn_addr!(molt_types_mappingproxy_new) {
-        return Some((
-            9,
-            "molt_types_mappingproxy_new",
-            "types_mappingproxy_new",
-            2,
-        ));
-    }
-    if fn_ptr == fn_addr!(molt_types_mappingproxy_init) {
-        return Some((
-            10,
-            "molt_types_mappingproxy_init",
-            "types_mappingproxy_init",
-            2,
-        ));
-    }
-    if fn_ptr == fn_addr!(molt_types_method_new) {
-        return Some((11, "molt_types_method_new", "types_method_new", 3));
-    }
-    if fn_ptr == fn_addr!(molt_types_method_init) {
-        return Some((12, "molt_types_method_init", "types_method_init", 3));
-    }
-    if fn_ptr == fn_addr!(molt_types_simplenamespace_init) {
-        return Some((
-            13,
-            "molt_types_simplenamespace_init",
-            "types_simplenamespace_init",
-            3,
-        ));
-    }
-    if fn_ptr == fn_addr!(molt_types_capsule_new) {
-        return Some((14, "molt_types_capsule_new", "types_capsule_new", 1));
-    }
-    if fn_ptr == fn_addr!(molt_types_cell_new) {
-        return Some((15, "molt_types_cell_new", "types_cell_new", 1));
-    }
-    if fn_ptr == fn_addr!(molt_types_dynamic_class_attr_init) {
-        return Some((
-            16,
-            "molt_types_dynamic_class_attr_init",
-            "types_dynamic_class_attr_init",
-            3,
-        ));
-    }
-    if fn_ptr == fn_addr!(molt_types_coroutine) {
-        return Some((17, "molt_types_coroutine", "types_coroutine", 1));
-    }
-    if fn_ptr == fn_addr!(molt_types_get_original_bases) {
-        return Some((
-            18,
-            "molt_types_get_original_bases",
-            "types_get_original_bases",
-            1,
-        ));
-    }
-    if fn_ptr == fn_addr!(molt_types_prepare_class) {
-        return Some((19, "molt_types_prepare_class", "types_prepare_class", 2));
-    }
-    if fn_ptr == fn_addr!(molt_types_resolve_bases) {
-        return Some((20, "molt_types_resolve_bases", "types_resolve_bases", 2));
-    }
-    if fn_ptr == fn_addr!(molt_types_new_class) {
-        return Some((21, "molt_types_new_class", "types_new_class", 2));
-    }
-    None
+    let idx = fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)?;
+    RESERVED_RUNTIME_CALLABLES
+        .iter()
+        .find(|entry| entry.index == idx)
+        .map(|entry| {
+            (
+                entry.index,
+                entry.runtime_name,
+                entry.import_name,
+                entry.arity,
+            )
+        })
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
 pub(crate) fn assert_reserved_runtime_symbols_resolve() {
-    let _ = molt_type_call as *const ();
-    let _ = molt_type_new as *const ();
-    let _ = molt_type_init as *const ();
-    let _ = molt_object_new_bound as *const ();
-    let _ = molt_object_init as *const ();
-    let _ = molt_object_init_subclass as *const ();
-    let _ = molt_exception_new_bound as *const ();
-    let _ = molt_exception_init as *const ();
-    let _ = molt_exceptiongroup_init as *const ();
-    let _ = molt_types_mappingproxy_new as *const ();
-    let _ = molt_types_mappingproxy_init as *const ();
-    let _ = molt_types_method_new as *const ();
-    let _ = molt_types_method_init as *const ();
-    let _ = molt_types_simplenamespace_init as *const ();
-    let _ = molt_types_capsule_new as *const ();
-    let _ = molt_types_cell_new as *const ();
-    let _ = molt_types_dynamic_class_attr_init as *const ();
-    let _ = molt_types_coroutine as *const ();
-    let _ = molt_types_get_original_bases as *const ();
-    let _ = molt_types_prepare_class as *const ();
-    let _ = molt_types_resolve_bases as *const ();
-    let _ = molt_types_new_class as *const ();
+    let _ = crate::molt_type_call as *const ();
+    let _ = crate::molt_type_new as *const ();
+    let _ = crate::molt_type_init as *const ();
+    let _ = crate::molt_object_new_bound as *const ();
+    let _ = crate::molt_object_init as *const ();
+    let _ = crate::molt_object_init_subclass as *const ();
+    let _ = crate::molt_exception_new_bound as *const ();
+    let _ = crate::molt_exception_init as *const ();
+    let _ = crate::molt_exceptiongroup_init as *const ();
+    let _ = crate::molt_types_mappingproxy_new as *const ();
+    let _ = crate::molt_types_mappingproxy_init as *const ();
+    let _ = crate::molt_types_method_new as *const ();
+    let _ = crate::molt_types_method_init as *const ();
+    let _ = crate::molt_types_simplenamespace_init as *const ();
+    let _ = crate::molt_types_capsule_new as *const ();
+    let _ = crate::molt_types_cell_new as *const ();
+    let _ = crate::molt_types_dynamic_class_attr_init as *const ();
+    let _ = crate::molt_types_coroutine as *const ();
+    let _ = crate::molt_types_get_original_bases as *const ();
+    let _ = crate::molt_types_prepare_class as *const ();
+    let _ = crate::molt_types_resolve_bases as *const ();
+    let _ = crate::molt_types_new_class as *const ();
+    let _ = crate::molt_importlib_import_transaction as *const ();
 }
