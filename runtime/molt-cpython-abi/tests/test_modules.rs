@@ -261,7 +261,7 @@ fn test_getbuffer_uses_runtime_typed_descriptor() {
             .handle_to_pyobj(next_fake_handle())
     };
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
-    let flags = 0x0004 | 0x0010 | 0x0008;
+    let flags = PyBUF_FORMAT | PyBUF_STRIDES;
     let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(obj, &mut view, flags) };
     assert_eq!(rc, 0);
     assert_eq!(view.len, 4);
@@ -287,6 +287,70 @@ fn test_getbuffer_uses_runtime_typed_descriptor() {
         assert!(view.internal.is_null());
         molt_cpython_abi::api::refcount::Py_DECREF(obj);
     }
+}
+
+#[test]
+fn test_fillinfo_uses_typed_descriptor_without_runtime_release() {
+    let _guard = FAKE_BUFFER_LOCK.lock().unwrap();
+    init();
+    FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
+    let mut data = [9_u8, 8, 7, 6];
+    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+    let flags = PyBUF_FORMAT | PyBUF_STRIDES;
+
+    let rc = unsafe {
+        molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+            &mut view,
+            ptr::null_mut(),
+            data.as_mut_ptr().cast(),
+            data.len() as isize,
+            1,
+            flags,
+        )
+    };
+
+    assert_eq!(rc, 0);
+    assert_eq!(view.buf, data.as_mut_ptr().cast());
+    assert_eq!(view.len, 4);
+    assert_eq!(view.itemsize, 1);
+    assert_eq!(view.readonly, 1);
+    assert_eq!(view.ndim, 1);
+    assert!(view.obj.is_null());
+    assert!(!view.internal.is_null());
+    assert!(!view.format.is_null());
+    assert!(!view.shape.is_null());
+    assert!(!view.strides.is_null());
+    unsafe {
+        assert_eq!(*view.format as u8, b'B');
+        assert_eq!(*view.shape, 4);
+        assert_eq!(*view.strides, 1);
+        molt_cpython_abi::api::buffer::PyBuffer_Release(&mut view);
+    }
+    assert_eq!(FAKE_BUFFER_RELEASES.load(Ordering::Relaxed), 0);
+    assert!(view.buf.is_null());
+    assert!(view.internal.is_null());
+}
+
+#[test]
+fn test_fillinfo_rejects_writable_request_for_readonly_raw_buffer() {
+    init();
+    let mut data = [1_u8];
+    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+
+    let rc = unsafe {
+        molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+            &mut view,
+            ptr::null_mut(),
+            data.as_mut_ptr().cast(),
+            data.len() as isize,
+            1,
+            PyBUF_WRITABLE,
+        )
+    };
+
+    assert_eq!(rc, -1);
+    assert!(view.internal.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]

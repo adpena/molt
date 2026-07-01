@@ -63,6 +63,15 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
     let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
     assert!(!buffer.is_null());
     assert_eq!(unsafe { (*buffer).len }, 1);
+    assert!(!unsafe { (*buffer).internal }.is_null());
+    assert!(!unsafe { (*buffer).format }.is_null());
+    assert!(!unsafe { (*buffer).shape }.is_null());
+    assert!(!unsafe { (*buffer).strides }.is_null());
+    unsafe {
+        assert_eq!(*(*buffer).format as u8, b'B');
+        assert_eq!(*(*buffer).shape, 1);
+        assert_eq!(*(*buffer).strides, 1);
+    }
     let same_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(view) };
     assert_eq!(same_view, view);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(same_view) };
