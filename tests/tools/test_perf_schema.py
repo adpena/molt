@@ -211,6 +211,62 @@ def test_schema_rejects_invalid_attribution_fields() -> None:
     )
 
 
+def test_schema_requires_failure_payload_for_failed_molt_cells() -> None:
+    cell = _cell(
+        build_ok=False,
+        molt_ok=False,
+        cpython_ok=False,
+        verdict=schema.VERDICT_BUILD_FAILED,
+        binary_size_kib=None,
+        compile_time_s=None,
+        molt_peak_rss_mib=None,
+        cpython_peak_rss_mib=None,
+        output_parity=None,
+    )
+
+    problems = schema.validate_cell(cell)
+    assert any("without a molt_failure payload" in problem for problem in problems)
+
+    failure = {
+        "phase": "build",
+        "status": "daemon_crash",
+        "detail": "backend_daemon_empty_response",
+        "message": "backend daemon returned empty response",
+        "stdout_tail": None,
+        "stderr_tail": "backend daemon returned empty response",
+        "returncode": 1,
+        "timed_out": False,
+        "elapsed_s": 2.5,
+        "signal": None,
+        "guard_violation": None,
+        "orphaned_process_groups": [],
+    }
+    cell.update(
+        {
+            "molt_failure": failure,
+            "molt_failure_phase": "build",
+            "molt_failure_status": "daemon_crash",
+            "molt_failure_detail": "backend_daemon_empty_response",
+            "molt_failure_message": "backend daemon returned empty response",
+            "molt_failure_returncode": 1,
+            "molt_failure_timed_out": False,
+            "molt_failure_elapsed_s": 2.5,
+            "molt_failure_signal": None,
+            "molt_failure_guard_violation": None,
+            "molt_failure_orphaned_process_groups": [],
+        }
+    )
+
+    assert schema.validate_cell(cell) == []
+    perf_cell = schema.PerfCell.from_payload(cell)
+    assert perf_cell.molt_failure_phase == "build"
+    assert perf_cell.molt_failure_status == "daemon_crash"
+    assert perf_cell.molt_failure_returncode == 1
+    assert perf_cell.molt_failure_timed_out is False
+    assert perf_cell.molt_failure_elapsed_s == 2.5
+    assert perf_cell.molt_failure_orphaned_process_groups == []
+
+
 def test_schema_rejects_measured_verdict_without_method_facts() -> None:
     cell = _cell(warm_molt_s=None)
 
