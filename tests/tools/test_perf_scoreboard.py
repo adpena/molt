@@ -21,6 +21,7 @@ for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
         sys.path.insert(0, str(_p))
 
 import perf_scoreboard as ps  # noqa: E402
+import perf_scoreboard_measure as measure  # noqa: E402
 import harness_memory_guard  # noqa: E402
 
 
@@ -389,6 +390,67 @@ def test_scoreboard_writer_validates_before_emit(tmp_path: Path) -> None:
     assert atomic_out.read_text(encoding="utf-8") == "old-board\n"
     assert not atomic_out.with_suffix(".tmp").exists()
     assert any("compile_time_s" in problem for problem in atomic_exc.value.problems)
+
+
+def test_measure_cell_records_molt_failure_payload_without_live_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "bench_fib.py"
+    script.write_text("print('not built')\n", encoding="utf-8")
+    failure = measure.bench.MoltFailure(
+        phase="build",
+        status="daemon_crash",
+        returncode=1,
+        timed_out=False,
+        elapsed_s=2.5,
+        detail="backend_daemon_empty_response",
+        message="backend daemon returned empty response",
+        stderr="backend daemon returned empty response",
+    )
+
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec: {})
+    monkeypatch.setattr(
+        measure.bench_suites,
+        "canonical_benchmark_key",
+        lambda _script: "tests/benchmarks/bench_fib.py",
+    )
+    monkeypatch.setattr(
+        measure.bench_suites,
+        "molt_args_for_benchmark",
+        lambda _script: [],
+    )
+    monkeypatch.setattr(
+        measure.bench,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: failure,
+    )
+
+    cell = measure.measure_cell(
+        script_path=script,
+        spec=measure.BackendSpec("native", "llvm", "llvm", "native"),
+        profile="release-fast",
+        samples=1,
+        warmup=0,
+        rss_mb=64,
+        timeout_s=1.0,
+        batch_server=None,
+        cpython_cmd=(sys.executable,),
+        log_dir=tmp_path / "logs",
+    )
+    doc = _board([cell])
+
+    assert cell.verdict == ps.VERDICT_BUILD_FAILED
+    assert cell.molt_failure_phase == "build"
+    assert cell.molt_failure_status == "daemon_crash"
+    assert cell.molt_failure_detail == "backend_daemon_empty_response"
+    assert "backend daemon returned empty response" in (
+        cell.molt_failure_message or ""
+    )
+    assert ps.validate_board(doc) == []
+    log_text = (tmp_path / cell.log_artifact).read_text(encoding="utf-8")
+    assert "BUILD FAILURE MESSAGE: backend daemon returned empty response" in log_text
 
 
 def _oracle_payload(
