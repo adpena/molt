@@ -5776,6 +5776,100 @@ def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
     assert by_module["numpy._core._multiarray_umath"].provided_capsules == (capsule,)
 
 
+def test_external_native_artifact_plan_rejects_source_capsule_manifest_drift(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    source_path = tmp_path / "scipy" / "ndimage" / "src" / "nd_image.c"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "static int module_exec(PyObject *module) {\n"
+        "    if (_import_array() < 0) { return -1; }\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "sources": [str(source_path)],
+            "object_closure": {"required_capsules": []},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"scipy"},
+        required_modules={"scipy.ndimage"},
+    )
+
+    assert plan is None
+    assert len(errors) == 1
+    assert "source-derived capsule requirement(s)" in errors[0]
+    assert "numpy.core._multiarray_umath._ARRAY_API via _import_array" in errors[0]
+    assert "object_closure.required_capsules" in errors[0]
+
+
+def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    source_path = tmp_path / "scipy" / "ndimage" / "src" / "nd_image.c"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "static int module_exec(PyObject *module) {\n"
+        "    if (_import_array() < 0) { return -1; }\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="numpy",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={**wasm_manifest, "provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "sources": [str(source_path)],
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"numpy", "scipy"},
+        required_modules={"scipy.ndimage"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.module for artifact in plan.artifacts] == [
+        "numpy._core._multiarray_umath",
+        "scipy.ndimage._nd_image",
+    ]
+
+
 def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers(
     tmp_path: Path,
 ) -> None:
