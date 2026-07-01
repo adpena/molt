@@ -2962,6 +2962,7 @@ mod tests {
             b"__molt_kwonly_names__" => &interned.molt_kwonly_names,
             b"__molt_vararg__" => &interned.molt_vararg,
             b"__molt_varkw__" => &interned.molt_varkw,
+            b"__molt_bind_kind__" => &interned.molt_bind_kind,
             b"__defaults__" => &interned.defaults_name,
             b"__kwdefaults__" => &interned.kwdefaults_name,
             other => panic!("unknown metadata name {:?}", other),
@@ -3125,6 +3126,16 @@ mod tests {
 
             for func_bits in [type_new_bits, type_init_bits] {
                 let func_ptr = obj_from_bits(func_bits).as_ptr().expect("function object");
+                let bind_kind_name = intern_metadata_name(_py, b"__molt_bind_kind__");
+                let bind_kind_bits =
+                    unsafe { crate::function_attr_bits(_py, func_ptr, bind_kind_name) }
+                        .expect("constructor builtin bind kind");
+                dec_ref_bits(_py, bind_kind_name);
+                assert_eq!(
+                    obj_from_bits(bind_kind_bits).as_int(),
+                    Some(crate::BIND_KIND_TYPE_NEW_INIT),
+                    "constructor builtin binding policy must live in metadata"
+                );
                 assert!(
                     unsafe { crate::call::bind::function_requires_binder_flag(func_ptr) },
                     "constructor builtin must publish builtin binding policy"
@@ -3162,7 +3173,10 @@ mod tests {
                 "type.__new__ visible-arity call must bind instead of raising raw arity mismatch"
             );
             let cls_ptr = obj_from_bits(cls_bits).as_ptr().expect("created type");
-            assert_eq!(unsafe { crate::object_type_id(cls_ptr) }, crate::TYPE_ID_TYPE);
+            assert_eq!(
+                unsafe { crate::object_type_id(cls_ptr) },
+                crate::TYPE_ID_TYPE
+            );
 
             let init_result = unsafe {
                 super::call_function_obj4(

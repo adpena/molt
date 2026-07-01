@@ -1986,17 +1986,19 @@ pub(crate) fn type_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_type_call),
             1,
         )),
-        "__new__" => Some(builtin_func_bits(
+        "__new__" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.type_new,
             fn_addr!(molt_type_new),
             5,
+            BIND_KIND_TYPE_NEW_INIT,
         )),
-        "__init__" => Some(builtin_func_bits(
+        "__init__" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.type_init,
             fn_addr!(molt_type_init),
             5,
+            BIND_KIND_TYPE_NEW_INIT,
         )),
         "__prepare__" => Some(builtin_classmethod_bits(
             _py,

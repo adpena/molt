@@ -8,16 +8,16 @@ use crate::object::layout::ensure_function_code_bits;
 use crate::state::recursion::{recursion_guard_enter, recursion_guard_exit};
 use crate::state::tls::FRAME_STACK;
 use crate::{
-    ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
-    CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE, HEADER_FLAG_FUNC_REQUIRES_BINDER,
-    INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
-    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
-    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class,
-    alloc_instance_for_default_object_new, alloc_object, alloc_object_zeroed, alloc_string,
-    alloc_tuple, apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes,
+    ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, BIND_KIND_TYPE_NEW_INIT,
+    CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
+    HEADER_FLAG_FUNC_REQUIRES_BINDER, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader,
+    MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE,
+    TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_exception_from_class_bits,
+    alloc_instance_for_class, alloc_instance_for_default_object_new, alloc_object,
+    alloc_object_zeroed, alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup,
@@ -2020,10 +2020,6 @@ unsafe fn function_binding_meta(
 /// `func_ptr` must be a live function object; the GIL must be held.
 pub(crate) unsafe fn function_needs_full_binder(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
     unsafe {
-        if builtin_args::builtin_call_has_special_binding(func_ptr) {
-            return true;
-        }
-
         for name in [
             b"__molt_bind_kind__".as_slice(),
             b"__molt_vararg__",
