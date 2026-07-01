@@ -4567,6 +4567,56 @@ def test_external_native_artifact_plan_rejects_missing_c_api_symbol(
     )
 
 
+def test_external_native_artifact_plan_uses_cpython_abi_header_surface(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    required_symbols = [
+        "PyDescr_IsData",
+        "PyDict_SetDefaultRef",
+        "PyErr_FormatUnraisable",
+        "PyImport_ImportModuleLevel",
+        "PyInterpreterState_GetIDFromThreadState",
+        "PyLong_AsNativeBytes",
+        "PyLong_FromNativeBytes",
+        "PyLong_FromUnsignedNativeBytes",
+        "PyMapping_GetOptionalItem",
+        "PyUnicode_FindChar",
+        "PyUnstable_SetImmortal",
+    ]
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._ni_label",
+        artifact_name="_ni_label.molt.wasm",
+        manifest_overrides={
+            "abi_tier": "cpython-abi",
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": required_symbols,
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        required_modules={"nativepkg.ndimage._ni_label"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert len(plan.artifacts) == 1
+    c_api_status = {
+        record.symbol: record.status for record in plan.artifacts[0].c_api_symbols
+    }
+    for symbol in required_symbols:
+        assert c_api_status[symbol] == "runtime_backed"
+
+
 def test_external_native_artifact_plan_rejects_undefined_source_compile_only_symbol(
     tmp_path: Path,
 ) -> None:

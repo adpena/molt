@@ -674,6 +674,16 @@ def _molt_root_for_external_native_scan() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _c_api_scan_header_for_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    molt_root: Path,
+) -> Path | None:
+    if manifest.get("abi_tier") == "cpython-abi":
+        return molt_root / "runtime" / "molt-cpython-abi" / "include" / "Python.h"
+    return None
+
+
 @lru_cache(maxsize=1)
 def _wasm_runtime_backed_abi_symbols() -> frozenset[str]:
     symbols = set(WASM_LINK_ALLOWED_IMPORTS)
@@ -853,8 +863,10 @@ def _object_closure_c_api_symbol_board(
     if not c_api_symbols:
         return (), []
 
+    molt_root = _molt_root_for_external_native_scan()
     surface, header_path, load_error = _load_c_api_scan_surface(
-        _molt_root_for_external_native_scan()
+        molt_root,
+        header_path=_c_api_scan_header_for_manifest(manifest, molt_root=molt_root),
     )
     if surface is None:
         return None, [
