@@ -18,6 +18,7 @@ const {
   parseWasmImports,
   remapLegacyRuntimeSharedTableIndex,
   reservedRuntimeCallableForTableIndex,
+  reservedRuntimeCallablesFromManifest,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
 } = require('./loader_bridge.js');
@@ -85,7 +86,7 @@ const traceTableDiffEnabled = process.env.MOLT_WASM_TRACE_TABLE_DIFF === '1';
 const traceI32AtRaw = process.env.MOLT_WASM_TRACE_I32_AT || null;
 const LEGACY_WASM_TABLE_BASE = 256;
 const RESERVED_RUNTIME_CALLABLE_BASE = 33;
-const RESERVED_RUNTIME_CALLABLE_COUNT = 22;
+const RESERVED_RUNTIME_CALLABLE_COUNT = 23;
 const reservedRuntimeCallables = [
   { index: 0, runtimeExport: 'molt_type_call', arity: 1 },
   { index: 1, runtimeExport: 'molt_type_new', arity: 5 },
@@ -109,7 +110,10 @@ const reservedRuntimeCallables = [
   { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
   { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
   { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
+  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5 },
 ];
+let activeReservedRuntimeCallables = reservedRuntimeCallables;
+let activeReservedRuntimeCallableCount = RESERVED_RUNTIME_CALLABLE_COUNT;
 const formatTraceError = (err) => {
   if (err instanceof Error) {
     return err.stack || err.message || String(err);
@@ -207,6 +211,20 @@ const resolveSiblingBundlePath = (candidatePath) => {
   return path.join(path.dirname(candidatePath), 'bundle.tar');
 };
 
+const resolveSiblingManifestPath = (candidatePath) => {
+  if (!candidatePath) return null;
+  return path.join(path.dirname(candidatePath), 'manifest.json');
+};
+
+const loadReservedRuntimeCallablesFromSiblingManifest = (candidatePath) => {
+  const manifestPath = resolveSiblingManifestPath(candidatePath);
+  if (!manifestPath || !fs.existsSync(manifestPath)) {
+    return null;
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  return reservedRuntimeCallablesFromManifest(manifest);
+};
+
 const resolveWasmPaths = ({
   wasmPath = null,
   argv2 = process.argv[2],
@@ -255,6 +273,11 @@ const initWasmAssets = () => {
   const resolved = resolveWasmPaths();
   wasmPath = resolved.wasmPath;
   wasmBuffer = fs.readFileSync(wasmPath);
+  const manifestReservedRuntimeCallables =
+    loadReservedRuntimeCallablesFromSiblingManifest(wasmPath);
+  activeReservedRuntimeCallables =
+    manifestReservedRuntimeCallables || reservedRuntimeCallables;
+  activeReservedRuntimeCallableCount = activeReservedRuntimeCallables.length;
   linkedPath = resolved.linkedPath;
   linkedBuffer = null;
   if (linkedPath && linkedPath === wasmPath) {
@@ -5221,7 +5244,7 @@ const runDirectLink = async () => {
         sharedTableBase: detectedWasmTableBase,
         legacyTableBase: LEGACY_WASM_TABLE_BASE,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
-        reservedRuntimeCallableCount: RESERVED_RUNTIME_CALLABLE_COUNT,
+        reservedRuntimeCallableCount: activeReservedRuntimeCallableCount,
       });
       const directName = Number.isInteger(dispatchIdx) ? `__molt_table_ref_${dispatchIdx}` : null;
       const appIndirectFn =
@@ -5235,8 +5258,8 @@ const runDirectLink = async () => {
       const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
         sharedTableBase: detectedWasmTableBase,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
-        reservedRuntimeCallableCount: RESERVED_RUNTIME_CALLABLE_COUNT,
-        reservedRuntimeCallables,
+        reservedRuntimeCallableCount: activeReservedRuntimeCallableCount,
+        reservedRuntimeCallables: activeReservedRuntimeCallables,
       });
       if (reservedRuntimeCallable) {
         try {

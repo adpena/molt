@@ -67,6 +67,7 @@ impl WasmRuntimeCallableTablePlan {
 
         let wrapper_specs: Vec<WasmRuntimeCallableWrapperSpec> = RUNTIME_CALLABLE_IMPORTS
             .iter()
+            .filter(|spec| !reserved_runtime_callable_names.contains(spec.runtime_name))
             .filter(|spec| builtin_trampoline_specs.contains_key(spec.runtime_name))
             .map(|spec| WasmRuntimeCallableWrapperSpec {
                 runtime_name: spec.runtime_name.to_string(),

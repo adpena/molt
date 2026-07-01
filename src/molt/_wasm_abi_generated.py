@@ -5670,6 +5670,7 @@ WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
     (19, "molt_types_prepare_class", "types_prepare_class", 2),
     (20, "molt_types_resolve_bases", "types_resolve_bases", 2),
     (21, "molt_types_new_class", "types_new_class", 2),
+    (22, "molt_importlib_import_transaction", "importlib_import_transaction", 5),
 )
 
 WASM_RESERVED_RUNTIME_CALLABLE_COUNT: int = len(WASM_RESERVED_RUNTIME_CALLABLES)
