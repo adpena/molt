@@ -90,7 +90,9 @@ packaging/out/
 # Agent worktrees — Claude Code, Codex, Gemini
 .claude/worktrees/
 .codex/worktrees/
-.codex/
+.codex/*
+!.codex/
+!.codex/config.toml
 .gemini/worktrees/
 .claude/todos/
 .omx/

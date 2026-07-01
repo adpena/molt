@@ -63,6 +63,15 @@ this file is the human/agent-readable index of the whole tool surface.
 ### Build / run (always use these, never a raw binary)
 - `python -m molt build --release ...` — the perf-gate build profile (default `dev`
   is unoptimized, NOT the perf gate). Needs `.venv/Scripts/python.exe` on this host.
+- `tools/proof_queue.py` - the mandatory ledger/queue for expensive or
+  contention-heavy proof lanes (Cargo, WASM/browser, benchmarks, stress,
+  conformance). Run `status` first; use `exec`/`submit` with `--reason`,
+  `--resource-family`, `--contention-key`, and `--scope`; cite the log/evidence.
+  Proof commands using `uv run` must use
+  `uv run --active --project . --python 3.12 ...`; the queue rejects non-active
+  `uv run` because throwaway env creation is false work. Queue sessions are
+  contention-key-scoped, so serialized lanes reuse Cargo/uv caches while
+  independent keys stay isolated.
 - `tools/safe_run.py --rss-mb N --timeout S -- <binary>` — the ONLY safe way to run a
   raw molt binary (hard RSS+walltime caps; raw `./binary` can OOM the host).
 - `tests/molt_diff.py <files> --jobs 1` — the CPython differential (serial until the
