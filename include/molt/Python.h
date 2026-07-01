@@ -10768,33 +10768,127 @@ static inline PyObject *PyCoro_New(PyFrameObject *frame, PyObject *name, PyObjec
  * ======================================================================== */
 
 static inline PyObject *PyMemoryView_FromObject(PyObject *obj) {
-    (void)obj;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyMemoryView_FromObject: memoryview not yet supported in molt");
-    return NULL;
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "memoryview exporter must not be NULL");
+        return NULL;
+    }
+    return _molt_pyobject_from_result(molt_memoryview_new(_molt_py_handle(obj)));
 }
 
 static inline PyObject *PyMemoryView_FromMemory(char *mem, Py_ssize_t size, int flags) {
-    (void)mem; (void)size; (void)flags;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyMemoryView_FromMemory: memoryview not yet supported in molt");
-    return NULL;
+    MoltBufferView view;
+    if (size < 0) {
+        PyErr_SetString(PyExc_ValueError, "memoryview length must not be negative");
+        return NULL;
+    }
+    if (mem == NULL && size != 0) {
+        PyErr_SetString(PyExc_BufferError, "memoryview data pointer must not be NULL");
+        return NULL;
+    }
+    memset(&view, 0, sizeof(view));
+    view.data = (uint8_t *)mem;
+    view.len = (uint64_t)size;
+    view.readonly = (flags & PyBUF_WRITABLE) != 0 ? 0u : 1u;
+    view.ndim = 1;
+    view.itemsize = 1;
+    view.shape[0] = size;
+    view.strides[0] = 1;
+    view.format[0] = 'B';
+    return _molt_pyobject_from_result(molt_memoryview_from_buffer(&view));
 }
 
 static inline PyObject *PyMemoryView_FromBuffer(Py_buffer *info) {
-    (void)info;
-    PyErr_SetString(PyExc_NotImplementedError,
-        "PyMemoryView_FromBuffer: memoryview not yet supported in molt");
-    return NULL;
+    MoltBufferView view;
+    Py_ssize_t ndim;
+    Py_ssize_t i;
+    if (info == NULL) {
+        PyErr_SetString(PyExc_TypeError, "memoryview buffer must not be NULL");
+        return NULL;
+    }
+    view = info->_molt_view;
+    if (view.data == NULL) {
+        view.data = (uint8_t *)info->buf;
+    }
+    view.len = info->len < 0 ? 0u : (uint64_t)info->len;
+    view.itemsize = info->itemsize > 0 ? (uint64_t)info->itemsize : 1u;
+    view.readonly = info->readonly != 0 ? 1u : 0u;
+    ndim = info->ndim > 0 ? info->ndim : 1;
+    if (ndim > (Py_ssize_t)MOLT_BUFFER_MAX_NDIM) {
+        PyErr_SetString(PyExc_BufferError, "buffer ndim exceeds Molt limit");
+        return NULL;
+    }
+    view.ndim = (uint32_t)ndim;
+    view.base = info->obj != NULL ? _molt_py_handle(info->obj) : view.base;
+    if (info->shape != NULL) {
+        for (i = 0; i < ndim; i++) {
+            view.shape[i] = info->shape[i];
+        }
+    } else if (view.shape[0] == 0) {
+        view.shape[0] = view.itemsize == 0 ? 0 : (Py_ssize_t)(view.len / view.itemsize);
+    }
+    if (info->strides != NULL) {
+        for (i = 0; i < ndim; i++) {
+            view.strides[i] = info->strides[i];
+        }
+    } else if (view.strides[0] == 0) {
+        view.strides[0] = (Py_ssize_t)view.itemsize;
+    }
+    if (info->format != NULL && info->format[0] != '\0') {
+        size_t cap = MOLT_BUFFER_FORMAT_CAP - 1u;
+        size_t n = strlen(info->format);
+        if (n > cap) {
+            n = cap;
+        }
+        memset(view.format, 0, sizeof(view.format));
+        memcpy(view.format, info->format, n);
+    } else if (view.format[0] == '\0') {
+        view.format[0] = 'B';
+    }
+    return _molt_pyobject_from_result(molt_memoryview_from_buffer(&view));
 }
 
 static inline int PyMemoryView_Check(PyObject *op) {
-    (void)op;
-    return 0;
+    return op != NULL && molt_memoryview_check(_molt_py_handle(op)) != 0;
 }
 
-#define PyMemoryView_GET_BUFFER(mview) ((Py_buffer *)NULL)
-#define PyMemoryView_GET_BASE(mview) ((PyObject *)NULL)
+static inline Py_buffer *_molt_memoryview_export_slot(void) {
+#if defined(_MSC_VER)
+    static __declspec(thread) Py_buffer slot;
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+    static _Thread_local Py_buffer slot;
+#else
+    static Py_buffer slot;
+#endif
+    return &slot;
+}
+
+static inline Py_buffer *PyMemoryView_GET_BUFFER(PyObject *mview) {
+    Py_buffer *view;
+    if (!PyMemoryView_Check(mview)) {
+        return NULL;
+    }
+    view = _molt_memoryview_export_slot();
+    PyBuffer_Release(view);
+    if (PyObject_GetBuffer(mview, view, PyBUF_FORMAT | PyBUF_STRIDES) != 0) {
+        return NULL;
+    }
+    return view;
+}
+
+static inline PyObject *PyMemoryView_GET_BASE(PyObject *mview) {
+    MoltBufferView view;
+    MoltHandle base;
+    if (!PyMemoryView_Check(mview)) {
+        return NULL;
+    }
+    memset(&view, 0, sizeof(view));
+    if (molt_buffer_acquire(_molt_py_handle(mview), &view) != 0) {
+        return NULL;
+    }
+    base = view.base;
+    (void)molt_buffer_release(&view);
+    return base != 0 ? _molt_pyobject_from_handle(base) : NULL;
+}
 
 /* ========================================================================
  * Exception creation helpers

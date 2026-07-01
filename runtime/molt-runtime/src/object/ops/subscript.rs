@@ -107,16 +107,10 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         Some(fmt) => fmt,
                         None => return MoltObject::none().bits(),
                     };
-                    let owner_bits = memoryview_owner_bits(ptr);
-                    let owner = obj_from_bits(owner_bits);
-                    let owner_ptr = match owner.as_ptr() {
-                        Some(ptr) => ptr,
-                        None => return MoltObject::none().bits(),
-                    };
-                    let base = match bytes_like_slice_raw(owner_ptr) {
-                        Some(slice) => slice,
-                        None => return MoltObject::none().bits(),
-                    };
+                    let data = memoryview_data(ptr);
+                    if data.is_null() {
+                        return MoltObject::none().bits();
+                    }
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
                     let ndim = shape.len();
@@ -126,8 +120,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         {
                             let elems = seq_vec_ref(tup_ptr);
                             if elems.is_empty() {
-                                let val =
-                                    memoryview_read_scalar(_py, base, memoryview_offset(ptr), fmt);
+                                let val = memoryview_read_scalar_at(_py, data.cast_const(), 0, fmt);
                                 return val.unwrap_or_else(|| MoltObject::none().bits());
                             }
                         }
@@ -187,7 +180,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         if shape.len() != strides.len() {
                             return MoltObject::none().bits();
                         }
-                        let mut pos = memoryview_offset(ptr);
+                        let mut pos = 0isize;
                         for (dim, &elem_bits) in elems.iter().enumerate() {
                             let Some(idx) = sequence_index_i64_with_type_error(
                                 _py,
@@ -208,14 +201,14 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             }
                             pos = pos.saturating_add((i as isize).saturating_mul(strides[dim]));
                         }
-                        if pos < 0 || pos + fmt.itemsize as isize > base.len() as isize {
+                        if pos < 0 {
                             return raise_exception::<_>(
                                 _py,
                                 "IndexError",
                                 "index out of bounds on dimension 1",
                             );
                         }
-                        let val = memoryview_read_scalar(_py, base, pos, fmt);
+                        let val = memoryview_read_scalar_at(_py, data.cast_const(), pos, fmt);
                         return val.unwrap_or_else(|| MoltObject::none().bits());
                     }
                     if let Some(slice_ptr) = key.as_ptr()
@@ -244,16 +237,20 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             new_shape[0] = new_len as isize;
                             new_strides[0] = new_stride;
                         }
-                        let out_ptr = alloc_memoryview_shaped(
-                            _py,
-                            memoryview_owner_bits(ptr),
-                            new_offset,
-                            itemsize,
+                        let storage = TypedStridedStorage::new(
+                            data.offset(start.saturating_mul(base_stride)),
                             memoryview_readonly(ptr),
+                            itemsize,
+                            new_offset,
+                            memoryview_base_bits(ptr),
                             memoryview_format_bits(ptr),
                             new_shape,
                             new_strides,
                         );
+                        let out_ptr = match storage {
+                            Some(storage) => alloc_memoryview_from_storage(_py, storage),
+                            None => std::ptr::null_mut(),
+                        };
                         if out_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
@@ -285,15 +282,15 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "index out of bounds on dimension 1",
                         );
                     }
-                    let pos = memoryview_offset(ptr) + (i as isize) * strides[0];
-                    if pos < 0 || pos + fmt.itemsize as isize > base.len() as isize {
+                    let pos = (i as isize) * strides[0];
+                    if pos < 0 {
                         return raise_exception::<_>(
                             _py,
                             "IndexError",
                             "index out of bounds on dimension 1",
                         );
                     }
-                    let val = memoryview_read_scalar(_py, base, pos, fmt);
+                    let val = memoryview_read_scalar_at(_py, data.cast_const(), pos, fmt);
                     return val.unwrap_or_else(|| MoltObject::none().bits());
                 }
                 if type_id == TYPE_ID_STRING
@@ -1196,18 +1193,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "cannot modify read-only memory",
                         );
                     }
-                    let owner_bits = memoryview_owner_bits(ptr);
-                    let owner = obj_from_bits(owner_bits);
-                    let owner_ptr = match owner.as_ptr() {
-                        Some(ptr) => ptr,
-                        None => return MoltObject::none().bits(),
-                    };
-                    if object_type_id(owner_ptr) != TYPE_ID_BYTEARRAY {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "memoryview is not writable",
-                        );
+                    let data = memoryview_data(ptr);
+                    if data.is_null() {
+                        return MoltObject::none().bits();
                     }
                     let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
                         Some(fmt) => fmt,
@@ -1216,20 +1204,13 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
                     let ndim = shape.len();
-                    let data = bytearray_vec(owner_ptr);
                     if ndim == 0 {
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                         {
                             let elems = seq_vec_ref(tup_ptr);
                             if elems.is_empty() {
-                                let ok = memoryview_write_scalar(
-                                    _py,
-                                    data.as_mut_slice(),
-                                    memoryview_offset(ptr),
-                                    fmt,
-                                    val_bits,
-                                );
+                                let ok = memoryview_write_scalar_at(_py, data, 0, fmt, val_bits);
                                 if ok.is_none() {
                                     return MoltObject::none().bits();
                                 }
@@ -1292,7 +1273,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         if shape.len() != strides.len() {
                             return MoltObject::none().bits();
                         }
-                        let mut pos = memoryview_offset(ptr);
+                        let mut pos = 0isize;
                         for (dim, &elem_bits) in elems.iter().enumerate() {
                             let Some(idx) = sequence_index_i64_with_type_error(
                                 _py,
@@ -1313,15 +1294,14 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             }
                             pos = pos.saturating_add((i as isize).saturating_mul(strides[dim]));
                         }
-                        if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
+                        if pos < 0 {
                             return raise_exception::<_>(
                                 _py,
                                 "IndexError",
                                 "index out of bounds on dimension 1",
                             );
                         }
-                        let ok =
-                            memoryview_write_scalar(_py, data.as_mut_slice(), pos, fmt, val_bits);
+                        let ok = memoryview_write_scalar_at(_py, data, pos, fmt, val_bits);
                         if ok.is_none() {
                             return MoltObject::none().bits();
                         }
@@ -1420,12 +1400,12 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         let step_stride = base_stride * step;
                         let mut idx = 0usize;
                         while idx < src_bytes.len() {
-                            if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
+                            if pos < 0 {
                                 return MoltObject::none().bits();
                             }
-                            let start = pos as usize;
-                            let end = start + fmt.itemsize;
-                            data[start..end].copy_from_slice(&src_bytes[idx..idx + fmt.itemsize]);
+                            let dst =
+                                std::slice::from_raw_parts_mut(data.offset(pos), fmt.itemsize);
+                            dst.copy_from_slice(&src_bytes[idx..idx + fmt.itemsize]);
                             idx += fmt.itemsize;
                             pos += step_stride;
                         }
@@ -1457,15 +1437,15 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "index out of bounds on dimension 1",
                         );
                     }
-                    let pos = memoryview_offset(ptr) + (i as isize) * strides[0];
-                    if pos < 0 || pos + fmt.itemsize as isize > data.len() as isize {
+                    let pos = (i as isize) * strides[0];
+                    if pos < 0 {
                         return raise_exception::<_>(
                             _py,
                             "IndexError",
                             "index out of bounds on dimension 1",
                         );
                     }
-                    let ok = memoryview_write_scalar(_py, data.as_mut_slice(), pos, fmt, val_bits);
+                    let ok = memoryview_write_scalar_at(_py, data, pos, fmt, val_bits);
                     if ok.is_none() {
                         return MoltObject::none().bits();
                     }
@@ -2057,39 +2037,8 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         if memoryview_released(ptr) {
                             return raise_released_memoryview(_py);
                         }
-                        let owner_bits = memoryview_owner_bits(ptr);
-                        let owner = obj_from_bits(owner_bits);
-                        let owner_ptr = match owner.as_ptr() {
-                            Some(ptr) => ptr,
-                            None => {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    &format!(
-                                        "a bytes-like object is required, not '{}'",
-                                        type_name(_py, item)
-                                    ),
-                                );
-                            }
-                        };
-                        let base = match bytes_like_slice_raw(owner_ptr) {
-                            Some(slice) => slice,
-                            None => {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    &format!(
-                                        "a bytes-like object is required, not '{}'",
-                                        type_name(_py, item)
-                                    ),
-                                );
-                            }
-                        };
-                        let offset = memoryview_offset(ptr);
-                        let len = memoryview_len(ptr);
-                        let itemsize = memoryview_itemsize(ptr);
-                        let stride = memoryview_stride(ptr);
-                        if offset < 0 {
+                        let data = memoryview_data(ptr);
+                        if data.is_null() {
                             return raise_exception::<_>(
                                 _py,
                                 "TypeError",
@@ -2099,6 +2048,9 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                 ),
                             );
                         }
+                        let len = memoryview_len(ptr);
+                        let itemsize = memoryview_itemsize(ptr);
+                        let stride = memoryview_stride(ptr);
                         if itemsize != 1 {
                             return raise_exception::<_>(
                                 _py,
@@ -2107,9 +2059,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             );
                         }
                         if stride == 1 {
-                            let start = offset as usize;
-                            let end = start.saturating_add(len);
-                            let hay = &base[start.min(base.len())..end.min(base.len())];
+                            let hay = std::slice::from_raw_parts(data.cast_const(), len);
                             if let Some(byte) = item.as_int() {
                                 if !(0..=255).contains(&byte) {
                                     return raise_exception::<_>(
@@ -2147,7 +2097,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         }
                         let mut out = Vec::with_capacity(len);
                         for idx in 0..len {
-                            let start = offset + (idx as isize) * stride;
+                            let start = (idx as isize) * stride;
                             if start < 0 {
                                 return raise_exception::<_>(
                                     _py,
@@ -2158,11 +2108,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                     ),
                                 );
                             }
-                            let start = start as usize;
-                            if start >= base.len() {
-                                break;
-                            }
-                            out.push(base[start]);
+                            out.push(*data.offset(start));
                         }
                         let hay = out.as_slice();
                         if let Some(byte) = item.as_int() {
