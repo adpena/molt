@@ -37,6 +37,15 @@ NOTE_KIND_DESCRIPTIONS = {
 NOTE_KINDS = frozenset(NOTE_KIND_DESCRIPTIONS)
 DEFAULT_NOTE_KIND = "observation"
 SUBMISSION_NOTE_KIND = "submission"
+EDGE_KIND_DESCRIPTIONS = {
+    "depends_on": "child proof must wait for the parent proof to pass",
+    "derives_from": "child proof explores or narrows evidence from the parent proof",
+    "reruns": "child proof repeats the parent proof after a change",
+    "compares": "child proof is intended for side-by-side comparison with the parent",
+    "supersedes": "child proof replaces the parent proof as current evidence",
+}
+EDGE_KINDS = frozenset(EDGE_KIND_DESCRIPTIONS)
+DEFAULT_EDGE_KIND = "depends_on"
 
 
 def _utc_now() -> str:
@@ -171,6 +180,27 @@ def _connect(db: Path) -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS proof_edge_kinds (
+            kind TEXT PRIMARY KEY,
+            description TEXT NOT NULL
+        )
+        """
+    )
+    edge_placeholders = ",".join("?" for _ in EDGE_KINDS)
+    conn.execute(
+        f"DELETE FROM proof_edge_kinds WHERE kind NOT IN ({edge_placeholders})",
+        tuple(sorted(EDGE_KINDS)),
+    )
+    conn.executemany(
+        """
+        INSERT INTO proof_edge_kinds (kind, description)
+        VALUES (?, ?)
+        ON CONFLICT(kind) DO UPDATE SET description = excluded.description
+        """,
+        sorted(EDGE_KIND_DESCRIPTIONS.items()),
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS proof_notes (
             note_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
@@ -184,6 +214,28 @@ def _connect(db: Path) -> sqlite3.Connection:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS proof_notes_run_id_note_id ON proof_notes(run_id, note_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS proof_run_edges (
+            edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_run_id TEXT NOT NULL,
+            child_run_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            author TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(parent_run_id) REFERENCES proof_runs(run_id),
+            FOREIGN KEY(child_run_id) REFERENCES proof_runs(run_id),
+            UNIQUE(parent_run_id, child_run_id, kind)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS proof_run_edges_child_edge_id ON proof_run_edges(child_run_id, edge_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS proof_run_edges_parent_edge_id ON proof_run_edges(parent_run_id, edge_id)"
     )
     conn.execute(
         """
@@ -212,6 +264,36 @@ def _connect(db: Path) -> sqlite3.Connection:
         )
         BEGIN
             SELECT RAISE(ABORT, 'unknown proof note kind');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_run_edges_append_only_no_update
+        BEFORE UPDATE ON proof_run_edges
+        BEGIN
+            SELECT RAISE(ABORT, 'proof_run_edges is append-only');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_run_edges_append_only_no_delete
+        BEFORE DELETE ON proof_run_edges
+        BEGIN
+            SELECT RAISE(ABORT, 'proof_run_edges is append-only');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_run_edges_known_kind
+        BEFORE INSERT ON proof_run_edges
+        WHEN NOT EXISTS (
+            SELECT 1 FROM proof_edge_kinds WHERE kind = NEW.kind
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'unknown proof edge kind');
         END
         """
     )
@@ -269,14 +351,126 @@ def _insert_note(
     return int(cursor.lastrowid)
 
 
-def _notes_from_raw(raw: object) -> list[str]:
+def _strings_from_raw(raw: object, *, field_name: str) -> list[str]:
     if raw is None:
         return []
     if isinstance(raw, str):
         return [raw]
     if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
         return list(raw)
-    raise SystemExit("proof notes must be a string or list of strings")
+    raise SystemExit(f"{field_name} must be a string or list of strings")
+
+
+def _notes_from_raw(raw: object) -> list[str]:
+    return _strings_from_raw(raw, field_name="proof notes")
+
+
+def _dependencies_from_raw(raw: object) -> list[str]:
+    return _strings_from_raw(raw, field_name="proof dependencies")
+
+
+def _run_exists(conn: sqlite3.Connection, run_id: str) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM proof_runs WHERE run_id = ?", (run_id,)).fetchone()
+        is not None
+    )
+
+
+def _edge_would_create_cycle(
+    conn: sqlite3.Connection, *, parent_run_id: str, child_run_id: str
+) -> bool:
+    if parent_run_id == child_run_id:
+        return True
+    row = conn.execute(
+        """
+        WITH RECURSIVE descendants(run_id) AS (
+            SELECT child_run_id
+            FROM proof_run_edges
+            WHERE parent_run_id = ?
+            UNION
+            SELECT edge.child_run_id
+            FROM proof_run_edges edge
+            JOIN descendants ON edge.parent_run_id = descendants.run_id
+        )
+        SELECT 1
+        FROM descendants
+        WHERE run_id = ?
+        LIMIT 1
+        """,
+        (child_run_id, parent_run_id),
+    ).fetchone()
+    return row is not None
+
+
+def _planned_edge_would_create_cycle(
+    children_by_parent: dict[str, list[str]], parent_run_id: str, child_run_id: str
+) -> bool:
+    if parent_run_id == child_run_id:
+        return True
+    seen: set[str] = set()
+    stack = [child_run_id]
+    while stack:
+        current = stack.pop()
+        if current == parent_run_id:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(children_by_parent.get(current, []))
+    return False
+
+
+def _insert_edge(
+    conn: sqlite3.Connection,
+    *,
+    parent_run_id: str,
+    child_run_id: str,
+    kind: str = DEFAULT_EDGE_KIND,
+    note: str | None = None,
+    author: str | None = None,
+) -> int:
+    parent_run_id = parent_run_id.strip()
+    child_run_id = child_run_id.strip()
+    kind = kind.strip() or DEFAULT_EDGE_KIND
+    author = (author or _default_note_author()).strip() or "agent"
+    note = (note or "").strip()
+    if not parent_run_id or not child_run_id:
+        raise SystemExit("proof DAG edge endpoints must not be empty")
+    if kind not in EDGE_KINDS:
+        allowed = ", ".join(sorted(EDGE_KINDS))
+        raise SystemExit(f"unknown proof edge kind {kind!r}; allowed: {allowed}")
+    if not _run_exists(conn, parent_run_id):
+        raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
+    if not _run_exists(conn, child_run_id):
+        raise SystemExit(f"unknown child proof run {child_run_id!r}")
+    if parent_run_id == child_run_id:
+        raise SystemExit("proof DAG edge cannot point to itself")
+    if _edge_would_create_cycle(
+        conn, parent_run_id=parent_run_id, child_run_id=child_run_id
+    ):
+        raise SystemExit(
+            "proof DAG edge would create a cycle: "
+            f"{parent_run_id!r} -> {child_run_id!r}"
+        )
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO proof_run_edges (
+                parent_run_id, child_run_id, created_at, author, kind, note
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (parent_run_id, child_run_id, _utc_now(), author, kind, note),
+        )
+    except sqlite3.IntegrityError as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise SystemExit(
+                "duplicate proof DAG edge: "
+                f"{parent_run_id!r} -> {child_run_id!r} ({kind})"
+            ) from exc
+        raise
+    conn.commit()
+    return int(cursor.lastrowid)
 
 
 def _notes_for_run_ids(
@@ -312,6 +506,64 @@ def _notes_for_run_ids(
     return out
 
 
+def _edge_payload(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "edge_id": row["edge_id"],
+        "parent_run_id": row["parent_run_id"],
+        "parent_status": row["parent_status"],
+        "child_run_id": row["child_run_id"],
+        "child_status": row["child_status"],
+        "created_at": row["created_at"],
+        "author": row["author"],
+        "kind": row["kind"],
+        "note": row["note"],
+    }
+
+
+def _edges_for_run_ids(
+    conn: sqlite3.Connection, run_ids: list[str]
+) -> dict[str, dict[str, list[dict[str, object]]]]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    conn.row_factory = sqlite3.Row
+    rows = list(
+        conn.execute(
+            f"""
+            SELECT
+                edge.edge_id,
+                edge.parent_run_id,
+                parent.status AS parent_status,
+                edge.child_run_id,
+                child.status AS child_status,
+                edge.created_at,
+                edge.author,
+                edge.kind,
+                edge.note
+            FROM proof_run_edges edge
+            JOIN proof_runs parent ON parent.run_id = edge.parent_run_id
+            JOIN proof_runs child ON child.run_id = edge.child_run_id
+            WHERE edge.parent_run_id IN ({placeholders})
+               OR edge.child_run_id IN ({placeholders})
+            ORDER BY edge.edge_id
+            """,
+            tuple([*run_ids, *run_ids]),
+        )
+    )
+    out: dict[str, dict[str, list[dict[str, object]]]] = {
+        run_id: {"parents": [], "children": []} for run_id in run_ids
+    }
+    for row in rows:
+        edge = _edge_payload(row)
+        parent_id = str(row["parent_run_id"])
+        child_id = str(row["child_run_id"])
+        if parent_id in out:
+            out[parent_id]["children"].append(edge)
+        if child_id in out:
+            out[child_id]["parents"].append(edge)
+    return out
+
+
 def _format_note_summary(notes: list[dict[str, object]]) -> str | None:
     if not notes:
         return None
@@ -328,6 +580,29 @@ def _note_kind_counts(notes: list[dict[str, object]]) -> dict[str, int]:
         kind = str(note["kind"])
         counts[kind] = counts.get(kind, 0) + 1
     return {kind: counts[kind] for kind in sorted(counts)}
+
+
+def _edge_kind_counts(edges: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for edge in edges:
+        kind = str(edge["kind"])
+        counts[kind] = counts.get(kind, 0) + 1
+    return {kind: counts[kind] for kind in sorted(counts)}
+
+
+def _format_dag_summary(dag: dict[str, object]) -> str | None:
+    parents = list(dag.get("parents", []))
+    children = list(dag.get("children", []))
+    if not parents and not children:
+        return None
+    parts = [f"parents={len(parents)}", f"children={len(children)}"]
+    if parents:
+        last = parents[-1]
+        parts.append(
+            "last_parent="
+            f"{last['kind']} {last['parent_run_id']} status={last['parent_status']}"
+        )
+    return "  dag=" + " ".join(parts)
 
 
 def _git_snapshot(cwd: Path) -> dict[str, object]:
@@ -366,11 +641,20 @@ def _run_payload_with_notes(
     conn: sqlite3.Connection, rows: list[sqlite3.Row]
 ) -> list[dict[str, object]]:
     payload = [_row_to_payload(row) for row in rows]
-    notes = _notes_for_run_ids(conn, [str(item["run_id"]) for item in payload])
+    run_ids = [str(item["run_id"]) for item in payload]
+    notes = _notes_for_run_ids(conn, run_ids)
+    edges = _edges_for_run_ids(conn, run_ids)
     for item in payload:
         run_notes = notes.get(str(item["run_id"]), [])
+        run_edges = edges.get(str(item["run_id"]), {"parents": [], "children": []})
         item["notes"] = run_notes
         item["note_kind_counts"] = _note_kind_counts(run_notes)
+        item["dag"] = {
+            "parents": run_edges["parents"],
+            "children": run_edges["children"],
+            "parent_kind_counts": _edge_kind_counts(run_edges["parents"]),
+            "child_kind_counts": _edge_kind_counts(run_edges["children"]),
+        }
     return payload
 
 
@@ -404,8 +688,17 @@ def _(mo, run):
     head = git.get("head", "unknown")
     dirty = "dirty" if git.get("dirty") else "clean"
     note_counts = run.get("note_kind_counts", {{}})
+    dag = run.get("dag", {{}})
+    parent_counts = dag.get("parent_kind_counts", {{}})
+    child_counts = dag.get("child_kind_counts", {{}})
     note_summary = ", ".join(
         f"{{kind}}={{count}}" for kind, count in note_counts.items()
+    ) or "none"
+    parent_summary = ", ".join(
+        f"{{kind}}={{count}}" for kind, count in parent_counts.items()
+    ) or "none"
+    child_summary = ", ".join(
+        f"{{kind}}={{count}}" for kind, count in child_counts.items()
     ) or "none"
     mo.md(
         f"""
@@ -416,6 +709,8 @@ def _(mo, run):
 - git: `{{head}}` (`{{dirty}}`)
 - contention key: `{{run["contention_key"]}}`
 - notes: {{note_summary}}
+- parents: {{parent_summary}}
+- children: {{child_summary}}
 - reason: {{run["reason"]}}
 """
     )
@@ -459,7 +754,9 @@ def _write_marimo_notebook(
     output: str | None = None,
 ) -> Path:
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (run_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
     if row is None:
         raise SystemExit(f"unknown proof run {run_id!r}")
     run = _run_payload_with_notes(conn, [row])[0]
@@ -526,6 +823,35 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     )
 
 
+def _parent_statuses(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    return list(
+        conn.execute(
+            """
+            SELECT edge.parent_run_id, edge.kind, parent.status
+            FROM proof_run_edges edge
+            JOIN proof_runs parent ON parent.run_id = edge.parent_run_id
+            WHERE edge.child_run_id = ?
+            ORDER BY edge.edge_id
+            """,
+            (run_id,),
+        )
+    )
+
+
+def _dependency_state(
+    conn: sqlite3.Connection, run_id: str
+) -> tuple[str, list[sqlite3.Row]]:
+    parents = _parent_statuses(conn, run_id)
+    waiting = [row for row in parents if row["status"] in RUNNING]
+    if waiting:
+        return "waiting", waiting
+    blockers = [row for row in parents if row["status"] != "passed"]
+    if blockers:
+        return "blocked", blockers
+    return "ready", []
+
+
 def _insert_run(
     conn: sqlite3.Connection,
     *,
@@ -560,7 +886,10 @@ def _insert_run(
             contention_key,
             json.dumps(scopes),
             json.dumps(env_overrides or {}, sort_keys=True),
-            json.dumps(git_snapshot if git_snapshot is not None else _git_snapshot(cwd), sort_keys=True),
+            json.dumps(
+                git_snapshot if git_snapshot is not None else _git_snapshot(cwd),
+                sort_keys=True,
+            ),
             str(log_path),
             str(summary_json),
         ),
@@ -778,6 +1107,9 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         env_overrides=dict(runnable["env_overrides"]),
         timeout=float(runnable["timeout"]),
         initial_notes=initial_notes,
+        depends_on=getattr(args, "depends_on", []) or [],
+        edge_kind=getattr(args, "edge_kind", DEFAULT_EDGE_KIND),
+        edge_note=getattr(args, "edge_note", None),
     )
 
 
@@ -801,6 +1133,9 @@ def _run_one(
     env_overrides: dict[str, str],
     timeout: float,
     initial_notes: list[str] | None = None,
+    depends_on: list[str] | None = None,
+    edge_kind: str = DEFAULT_EDGE_KIND,
+    edge_note: str | None = None,
     existing_run_id: str | None = None,
     existing_log_path: Path | None = None,
     existing_summary_json: Path | None = None,
@@ -811,11 +1146,19 @@ def _run_one(
     logs_root = _logs_root(args)
     repo_root = _repo_root(args)
     conn = _connect(db)
-    active = [
-        row
-        for row in _active_for_key(conn, contention_key)
-        if existing_run_id is None or row["run_id"] != existing_run_id
-    ]
+    for parent_run_id in depends_on or []:
+        if not _run_exists(conn, parent_run_id):
+            raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
+    if edge_kind not in EDGE_KINDS:
+        allowed = ", ".join(sorted(EDGE_KINDS))
+        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
+    active = []
+    for row in _active_for_key(conn, contention_key):
+        if existing_run_id is not None and row["run_id"] == existing_run_id:
+            continue
+        if existing_run_id is not None and row["status"] == "queued":
+            continue
+        active.append(row)
     if active:
         print(
             f"contention key {contention_key!r} already has active run(s):",
@@ -846,9 +1189,17 @@ def _run_one(
             summary_json=summary_json,
         )
     if inserted_run:
+        for parent_run_id in depends_on or []:
+            _insert_edge(
+                conn,
+                parent_run_id=parent_run_id,
+                child_run_id=run_id,
+                kind=edge_kind,
+                note=edge_note,
+            )
         for note in initial_notes or []:
             _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
-        if initial_notes:
+        if initial_notes or depends_on:
             _write_marimo_notebook(args, conn, run_id)
     policy_error = _proof_command_policy_error(command)
     if policy_error is not None:
@@ -964,6 +1315,9 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         env_overrides=env_overrides,
         timeout=args.timeout,
         initial_notes=initial_notes,
+        depends_on=args.depends_on,
+        edge_kind=args.edge_kind,
+        edge_note=args.edge_note,
     )
 
 
@@ -986,8 +1340,12 @@ def _load_specs(path: Path) -> list[dict[str, object]]:
 def _cmd_submit(args: argparse.Namespace) -> int:
     specs = _load_specs(Path(args.dsl))
     conn = _connect(_db_path(args))
+    prepared: list[dict[str, object]] = []
+    logical_to_run: dict[str, str] = {}
     for spec in specs:
         logical_id = str(spec.get("id") or spec.get("logical_id") or "proof")
+        if logical_id in logical_to_run:
+            raise SystemExit(f"duplicate proof logical id {logical_id!r}")
         command = spec.get("command")
         if not isinstance(command, list) or not all(
             isinstance(x, str) for x in command
@@ -996,29 +1354,95 @@ def _cmd_submit(args: argparse.Namespace) -> int:
         policy_error = _proof_command_policy_error(list(command))
         if policy_error is not None:
             raise SystemExit(f"proof {logical_id!r}: {policy_error}")
+        edge_kind = str(spec.get("edge_kind") or DEFAULT_EDGE_KIND)
+        if edge_kind not in EDGE_KINDS:
+            allowed = ", ".join(sorted(EDGE_KINDS))
+            raise SystemExit(
+                f"proof {logical_id!r}: unknown proof edge kind "
+                f"{edge_kind!r}; allowed: {allowed}"
+            )
+        edge_note_raw = spec.get("edge_note")
+        if edge_note_raw is not None and not isinstance(edge_note_raw, str):
+            raise SystemExit(f"proof {logical_id!r}: edge_note must be a string")
         env_overrides = _env_overrides_from_spec(spec.get("env"))
         initial_notes = _notes_from_raw(spec.get("note"))
         initial_notes.extend(_notes_from_raw(spec.get("notes")))
+        depends_on = _dependencies_from_raw(spec.get("depends_on"))
+        depends_on.extend(_dependencies_from_raw(spec.get("after")))
         run_id = f"{_compact_utc()}-{_slug(logical_id)}-{uuid.uuid4().hex[:16]}"
+        logical_to_run[logical_id] = run_id
+        prepared.append(
+            {
+                "logical_id": logical_id,
+                "command": list(command),
+                "reason": str(spec.get("reason") or logical_id),
+                "resource_family": str(spec.get("resource_family") or "generic"),
+                "contention_key": str(spec.get("contention_key") or "generic:default"),
+                "scope": [str(x) for x in spec.get("scope", [])],
+                "env_overrides": env_overrides,
+                "initial_notes": initial_notes,
+                "depends_on": depends_on,
+                "edge_kind": edge_kind,
+                "edge_note": edge_note_raw or "",
+                "run_id": run_id,
+            }
+        )
+    planned_edges: set[tuple[str, str, str]] = set()
+    planned_children: dict[str, list[str]] = {}
+    for item in prepared:
+        child = str(item["run_id"])
+        for dependency in item["depends_on"]:
+            parent = logical_to_run.get(str(dependency), str(dependency))
+            if parent == child:
+                raise SystemExit(f"proof {item['logical_id']!r}: depends_on itself")
+            if parent not in logical_to_run.values() and not _run_exists(conn, parent):
+                raise SystemExit(
+                    f"proof {item['logical_id']!r}: unknown dependency {dependency!r}"
+                )
+            edge = (parent, child, str(item["edge_kind"]))
+            if edge in planned_edges:
+                raise SystemExit(
+                    f"proof {item['logical_id']!r}: duplicate dependency {dependency!r}"
+                )
+            planned_edges.add(edge)
+            planned_children.setdefault(parent, []).append(child)
+    for parent, child, _kind in planned_edges:
+        if _planned_edge_would_create_cycle(planned_children, parent, child):
+            raise SystemExit(
+                "proof DSL dependency graph would create a cycle: "
+                f"{parent!r} -> {child!r}"
+            )
+    for item in prepared:
+        run_id = str(item["run_id"])
         log_path = _logs_root(args) / f"{run_id}.log"
         summary_json = _logs_root(args) / f"{run_id}.memory_guard.json"
         _insert_run(
             conn,
             run_id=run_id,
-            logical_id=logical_id,
-            reason=str(spec.get("reason") or logical_id),
-            command=list(command),
+            logical_id=str(item["logical_id"]),
+            reason=str(item["reason"]),
+            command=list(item["command"]),
             cwd=_repo_root(args),
-            resource_family=str(spec.get("resource_family") or "generic"),
-            contention_key=str(spec.get("contention_key") or "generic:default"),
-            scopes=[str(x) for x in spec.get("scope", [])],
-            env_overrides=env_overrides,
+            resource_family=str(item["resource_family"]),
+            contention_key=str(item["contention_key"]),
+            scopes=list(item["scope"]),
+            env_overrides=dict(item["env_overrides"]),
             log_path=log_path,
             summary_json=summary_json,
         )
-        for note in initial_notes:
+    for item in prepared:
+        run_id = str(item["run_id"])
+        for dependency in item["depends_on"]:
+            _insert_edge(
+                conn,
+                parent_run_id=logical_to_run.get(str(dependency), str(dependency)),
+                child_run_id=run_id,
+                kind=str(item["edge_kind"]),
+                note=str(item["edge_note"]),
+            )
+        for note in item["initial_notes"]:
             _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
-        if initial_notes:
+        if item["initial_notes"] or item["depends_on"]:
             _write_marimo_notebook(args, conn, run_id)
         print(f"queued {run_id}")
     return 0
@@ -1027,12 +1451,30 @@ def _cmd_submit(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
-    rows = list(
-        conn.execute(
-            "SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid LIMIT ?",
-            (args.limit,),
-        )
+    queued = list(
+        conn.execute("SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid")
     )
+    rows = []
+    for row in queued:
+        state, blockers = _dependency_state(conn, row["run_id"])
+        if state == "ready":
+            rows.append(row)
+            if len(rows) >= args.limit:
+                break
+            continue
+        blocker_summary = ", ".join(
+            f"{blocker['parent_run_id']}:{blocker['status']}" for blocker in blockers
+        )
+        if state == "waiting":
+            print(f"waiting {row['run_id']} parents={blocker_summary}")
+            continue
+        _update_run(
+            conn,
+            row["run_id"],
+            status="blocked",
+            finished_at=_utc_now(),
+        )
+        print(f"blocked {row['run_id']} parents={blocker_summary}")
     rc = 0
     for row in rows:
         payload = _row_to_payload(row)
@@ -1052,8 +1494,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         if rc != 0:
             break
-    if not rows:
+    if not queued:
         print("no queued proofs")
+    elif not rows:
+        print("no queued proofs ready")
     return rc
 
 
@@ -1074,6 +1518,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
     notes_by_run = _notes_for_run_ids(
         conn, [row["run_id"] for row in [*active, *recent]]
     )
+    edges_by_run = _edges_for_run_ids(
+        conn, [row["run_id"] for row in [*active, *recent]]
+    )
     print("proof queue")
     print("active:")
     if not active:
@@ -1084,6 +1531,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         note_summary = _format_note_summary(notes_by_run.get(row["run_id"], []))
         if note_summary:
             print(note_summary)
+        dag_summary = _format_dag_summary(
+            edges_by_run.get(row["run_id"], {"parents": [], "children": []})
+        )
+        if dag_summary:
+            print(dag_summary)
         for line in _active_log_status(row):
             print(line)
     print("recent:")
@@ -1098,6 +1550,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         note_summary = _format_note_summary(notes_by_run.get(row["run_id"], []))
         if note_summary:
             print(note_summary)
+        dag_summary = _format_dag_summary(
+            edges_by_run.get(row["run_id"], {"parents": [], "children": []})
+        )
+        if dag_summary:
+            print(dag_summary)
     return 0
 
 
@@ -1174,9 +1631,34 @@ def _cmd_note(args: argparse.Namespace) -> int:
     notebook_path = None
     if not args.no_notebook:
         notebook_path = _write_marimo_notebook(args, conn, args.run_id, args.output)
-    print(f"noted {args.run_id} note_ids={','.join(str(note_id) for note_id in note_ids)}")
+    print(
+        f"noted {args.run_id} note_ids={','.join(str(note_id) for note_id in note_ids)}"
+    )
     if notebook_path is not None:
         print(f"notebook: {notebook_path}")
+    return 0
+
+
+def _cmd_link(args: argparse.Namespace) -> int:
+    conn = _connect(_db_path(args))
+    edge_id = _insert_edge(
+        conn,
+        parent_run_id=args.parent,
+        child_run_id=args.child_run_id,
+        kind=args.kind,
+        note=args.note,
+        author=args.author,
+    )
+    notebook_paths = []
+    if not args.no_notebook:
+        notebook_paths.append(_write_marimo_notebook(args, conn, args.parent))
+        notebook_paths.append(_write_marimo_notebook(args, conn, args.child_run_id))
+    print(
+        f"linked {args.parent} -> {args.child_run_id} "
+        f"kind={args.kind} edge_id={edge_id}"
+    )
+    for path in notebook_paths:
+        print(f"notebook: {path}")
     return 0
 
 
@@ -1198,6 +1680,9 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
         "\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py note "
         '<run-id> --kind observation --note "what happened, what it means, and the next bounded action"'
+        "\n"
+        "uv run --active --project . --python 3.12 python tools/proof_queue.py link "
+        '<child-run-id> --parent <parent-run-id> --kind derives_from --note "why this edge exists"'
     )
     return 0
 
@@ -1211,12 +1696,35 @@ def _cmd_template(args: argparse.Namespace) -> int:
         'resource_family = "python"\n'
         'contention_key = "python:focused"\n'
         'scope = ["src/molt/cli/runtime_features.py"]\n'
+        'depends_on = ["previous-run-id-or-logical-id"]\n'
         'note = "change: moved runtime feature authority into the generator-backed path"\n'
         'notes = ["test: targeted pytest proves the generated selector contract"]\n'
+        'edge_kind = "derives_from"\n'
+        'edge_note = "Narrows the previous failing proof to the generated selector contract."\n'
         'env = { MOLT_EXTERNAL_STATIC_PACKAGES = "numpy scipy" }\n'
         'command = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "pytest", "tests/path.py", "-q"]\n'
     )
     return 0
+
+
+def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--depends-on",
+        action="append",
+        default=[],
+        metavar="RUN_ID",
+        help="append a proof DAG parent; the run waits until parents pass",
+    )
+    parser.add_argument(
+        "--edge-kind",
+        default=DEFAULT_EDGE_KIND,
+        choices=sorted(EDGE_KINDS),
+        help="canonical relationship kind for --depends-on edges",
+    )
+    parser.add_argument(
+        "--edge-note",
+        help="immutable note attached to each --depends-on edge",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1245,6 +1753,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "tested or explored, and why"
         ),
     )
+    _add_dependency_args(exec_p)
     exec_p.add_argument("--timeout", type=float, default=1200.0)
     exec_p.add_argument("--wait", action="store_true")
     exec_p.add_argument("--wait-timeout", type=float)
@@ -1286,6 +1795,22 @@ def _build_parser() -> argparse.ArgumentParser:
     note_p.add_argument("--no-notebook", action="store_true")
     note_p.set_defaults(func=_cmd_note)
 
+    link_p = sub.add_parser(
+        "link", help="append an immutable proof DAG edge between existing runs"
+    )
+    link_p.add_argument("child_run_id")
+    link_p.add_argument("--parent", required=True)
+    link_p.add_argument(
+        "--kind",
+        default=DEFAULT_EDGE_KIND,
+        choices=sorted(EDGE_KINDS),
+        help="canonical proof DAG edge kind",
+    )
+    link_p.add_argument("--note")
+    link_p.add_argument("--author")
+    link_p.add_argument("--no-notebook", action="store_true")
+    link_p.set_defaults(func=_cmd_link)
+
     notebook_p = sub.add_parser(
         "notebook", help="write the deterministic marimo notebook for a proof run"
     )
@@ -1317,6 +1842,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="append submission context to the acceptance run",
     )
+    _add_dependency_args(pact_accept_p)
     pact_accept_p.add_argument("--timeout", type=float)
     pact_accept_p.add_argument("--print-spec", action="store_true")
     pact_accept_p.set_defaults(func=_cmd_pact_witness_acceptance)
@@ -1334,6 +1860,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="append submission context to the oracle run",
     )
+    _add_dependency_args(pact_oracle_p)
     pact_oracle_p.add_argument("--timeout", type=float)
     pact_oracle_p.add_argument("--print-spec", action="store_true")
     pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)

@@ -2,8 +2,9 @@
 
 `tools/proof_queue.py` is the custody boundary for expensive, contentious, or
 long-running Molt proof work. It serializes lanes by contention key, records the
-exact command and git snapshot, writes guarded logs, and projects each noted run
-into a deterministic marimo notebook for collaborative inspection.
+exact command and git snapshot, writes guarded logs, enforces proof DAG
+dependencies, and projects each noted or linked run into a deterministic marimo
+notebook for collaborative inspection.
 
 ## When To Use It
 
@@ -40,6 +41,11 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   -- cargo test -p molt-runtime --lib buffer -- --nocapture
 ```
 
+Use `--depends-on RUN_ID` when a proof is not valid until earlier evidence has
+passed. Dependency edges are immutable, acyclic, and queue-enforced: a child
+waits while parents are queued/running and becomes `blocked` if a parent has
+already failed or gone stale.
+
 Queue commands that invoke Python must use:
 
 ```powershell
@@ -61,8 +67,11 @@ reason = "Run Pact field_solve candidate after import transaction authority chan
 resource_family = "wasm-run"
 contention_key = "wasm:pact-field-solve"
 scope = ["collab/pact", "wasm/run_wasm.js"]
+depends_on = ["previous-run-id-or-logical-id"]
 note = "Testing whether relative import canonicalization moved the failure past import_transaction."
 notes = ["Expect candidate_outputs.npz or a precise next ABI primitive failure."]
+edge_kind = "derives_from"
+edge_note = "Narrows the previous failure to the import transaction path."
 command = [
   "uv", "run", "--active", "--project", ".", "--python", "3.12",
   "python", "tmp/pact_candidate_runner.py",
@@ -92,6 +101,23 @@ Canonical note kinds are `submission`, `change`, `hypothesis`, `test`,
 enforces this vocabulary so status, evidence JSON, and notebook summaries stay
 searchable across agents.
 
+## Proof DAG
+
+Proof edges are append-only at the SQLite layer and reject cycles. Use them to
+make experimental lineage machine-readable instead of burying it in prose.
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py link CHILD_RUN_ID `
+  --parent PARENT_RUN_ID `
+  --kind reruns `
+  --author codex `
+  --note "Replays the failed import path after the module-state fix."
+```
+
+Canonical edge kinds are `depends_on`, `derives_from`, `reruns`, `compares`,
+and `supersedes`. `depends_on` is the scheduling edge; the others preserve
+lineage and comparison intent for evidence review.
+
 ## Evidence And Notebooks
 
 Each run records:
@@ -102,6 +128,7 @@ Each run records:
 - git `HEAD`, dirty bit, and short status at submission
 - append-only notes
 - per-kind note counts
+- append-only proof DAG parents/children, edge notes, and per-kind edge counts
 
 Inspect machine-readable evidence with:
 
