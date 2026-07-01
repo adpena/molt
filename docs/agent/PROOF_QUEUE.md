@@ -96,7 +96,8 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witne
 `pact-witness-acceptance` renders to `tools/pact_witness_acceptance.py`. That
 script owns the full acceptance sequence: build `field_solve.py`, run the WASM
 artifact from an isolated fixture directory, write
-`tmp/pact_witness_acceptance_queue/run/candidate_outputs.npz`, then run
+`tmp/pact_witness_acceptance_queue/runs/<attempt>/run/candidate_outputs.npz`,
+then run
 `check_parity.py` against the checked Pact reference. A row whose command is
 only `python -m molt build ... field_solve.py` is historical build evidence, not
 Pact acceptance, and must be rerun through the named current spec after it exits.
