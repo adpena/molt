@@ -17976,6 +17976,65 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     ]
 
 
+def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+    detail = (
+        "Backend cargo build failed (exit 101):\n"
+        "error: duplicate symbol: PyMemoryView_FromMemory"
+    )
+
+    monkeypatch.setattr(
+        cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_ensure_backend_binary",
+        lambda *args, **kwargs: cli_backend_binary._BackendBinaryEnsureResult(
+            ok=False,
+            detail=detail,
+            returncode=101,
+            phase="backend_cargo_build",
+        ),
+    )
+
+    prepared, err = cli_backend_compile._prepare_backend_dispatch(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        split_runtime=False,
+        linked=False,
+        deterministic=False,
+        profile="dev",
+        runtime_state=cli._RuntimeArtifactState(
+            runtime_wasm=None,
+            runtime_reloc_wasm=None,
+        ),
+        runtime_cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        molt_root=tmp_path,
+        target_triple=None,
+        backend_cargo_profile="release-fast",
+        diagnostics_enabled=False,
+        phase_starts={},
+        json_output=True,
+        backend_daemon_config_digest=None,
+        ensure_runtime_wasm_shared=lambda required=None: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
+        resolved_modules=frozenset(),
+        ir={"functions": []},
+        warnings=[],
+    )
+
+    assert prepared is None
+    assert err == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errors"] == [detail]
+
+
 def test_ensure_backend_binary_uses_native_feature_for_native(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
