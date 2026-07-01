@@ -16,7 +16,6 @@ with the Rust dead-function authority.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import required_features as RF

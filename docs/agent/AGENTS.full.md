@@ -118,15 +118,21 @@ touching code, docs, tests, benchmarks, or roadmap state.
   edges, git snapshots, and deterministic marimo notebook projections under
   `logs/proof_queue/notebooks/`. Direct commands are allowed only for cheap
   formatting/static checks or to
-  bootstrap/repair the queue itself. Queue commands that invoke `uv run` must
-  use `uv run --active --project . --python 3.12 ...`; non-active `uv run`
-  commands are rejected because they create throwaway environments and destroy
-  proof latency. The queue derives `MOLT_SESSION_ID` from the contention key so
+  bootstrap/repair the queue itself. Cargo proof work must use
+  `tools/proof_queue.py cargo ... -- <cargo-args>` via the active uv command;
+  do not submit raw `cargo ...` through `exec`, TOML DSL, shell backgrounding,
+  or interactive sessions because the cargo lane owns uv, `guarded_exec`,
+  contention keys, timeouts, logs, and detached runners. Queue commands that
+  invoke `uv run` must use `uv run --active --project . --python 3.12 ...`;
+  non-active `uv run` commands are rejected because they create throwaway
+  environments and destroy proof latency. The queue derives `MOLT_SESSION_ID`
+  from the contention key so
   serialized lanes reuse their Cargo/uv artifact caches while disjoint
   contention keys remain isolated. Long-running work must use queue-owned
-  detached launch (`tools/proof_queue.py exec ... --detach` or a named lane
-  with `--detach`), never hand-rolled shell backgrounding, PowerShell
-  `Start-Process`, or Codex-held interactive sessions. Detached launch starts
+  detached launch (`tools/proof_queue.py cargo ... --detach`,
+  `tools/proof_queue.py exec ... --detach`, or a named lane with `--detach`),
+  never hand-rolled shell backgrounding, PowerShell `Start-Process`, or
+  Codex-held interactive sessions. Detached launch starts
   `tools/proof_queue.py run --run-id RUN_ID` for the exact queued row and
   records `*.runner.log`; WASM resource families preflight the checked-in Rust
   toolchain contract and required Rust targets before Cargo starts.

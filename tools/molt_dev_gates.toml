@@ -363,18 +363,38 @@ name = "dev-tooling"
 description = "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests."
 globs = [
   "tools/dev.py",
+  "tools/check_rust_ffi_blocks.py",
   "tools/check_rust_toolchain.py",
   "tools/check_rustfmt.py",
   "tools/molt_dev.py",
   "tools/molt_dev_gates.toml",
+  "tests/tools/test_check_rust_ffi_blocks.py",
   "tests/tools/test_rust_toolchain_contract.py",
   "tests/tools/test_check_rustfmt.py",
   "tests/test_molt_dev.py",
 ]
 gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
   "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
   "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py",
+]
+
+# --- Rust 2024 FFI declaration authority ---------------------------------
+[[rule]]
+name = "rust-ffi-blocks"
+description = "Rust 2024 FFI declaration blocks must be explicitly unsafe before Cargo spends a compile slot."
+globs = [
+  "runtime/**/*.rs",
+  "src/**/*.rs",
+  "tools/**/*.rs",
+  "tests/**/*.rs",
+  "tools/check_rust_ffi_blocks.py",
+  "tests/tools/test_check_rust_ffi_blocks.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python tools/check_rust_ffi_blocks.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
 ]
 
 # --- Rust toolchain authority -------------------------------------------

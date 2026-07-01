@@ -11,7 +11,6 @@ from ._wasm_abi_generated import (
     WASM_RUNTIME_HOST_EXPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
     wasm_runtime_export_name,
-    wasm_runtime_import_name,
 )
 
 _INTRINSIC_LOADER_CALL_NAMES = frozenset(

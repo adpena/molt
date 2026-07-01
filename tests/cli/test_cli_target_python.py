@@ -5,7 +5,6 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
-from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import backend_ir as cli_backend_ir
 from molt.cli import build_inputs as cli_build_inputs
 

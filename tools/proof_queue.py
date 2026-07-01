@@ -1004,12 +1004,18 @@ def _has_option(command: list[str], option: str, value: str | None = None) -> bo
 
 
 def _proof_command_policy_error(command: list[str]) -> str | None:
+    if not command:
+        return None
+    basename = _command_basename(command[0])
+    if basename in {"cargo", "cargo.exe"}:
+        return (
+            "proof queue refuses raw `cargo` commands; use "
+            "`tools/proof_queue.py cargo ... -- <cargo-args>` so the queue owns "
+            "the uv, guarded_exec, contention, timeout, and log envelope."
+        )
     if len(command) < 2:
         return None
-    if (
-        _command_basename(command[0]) != "uv.exe"
-        and _command_basename(command[0]) != "uv"
-    ):
+    if basename != "uv.exe" and basename != "uv":
         return None
     if command[1] != "run":
         return None
@@ -1075,6 +1081,33 @@ def _uv_active_python_command(
     command.append("python")
     command.extend(args)
     return command
+
+
+def _cargo_package_for_contention(cargo_args: list[str]) -> str:
+    for index, arg in enumerate(cargo_args):
+        if arg in {"-p", "--package"} and index + 1 < len(cargo_args):
+            return _slug(cargo_args[index + 1])
+        if arg.startswith("--package="):
+            return _slug(arg.split("=", 1)[1])
+    return "workspace"
+
+
+def _canonical_cargo_proof_command(cargo_args: list[str]) -> list[str]:
+    args = list(cargo_args)
+    if args[:1] == ["--"]:
+        args = args[1:]
+    if args and _command_basename(args[0]) in {"cargo", "cargo.exe"}:
+        args = args[1:]
+    if not args:
+        raise SystemExit("cargo proof command is empty")
+    return _uv_active_python_command(
+        "tools/guarded_exec.py",
+        "--prefix",
+        "MOLT_TEST_SUITE",
+        "--",
+        "cargo",
+        *args,
+    )
 
 
 def _first_existing_manifest_root(
@@ -1665,6 +1698,58 @@ def _cmd_exec(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_cargo(args: argparse.Namespace) -> int:
+    cargo_args = (
+        args.cargo_args[1:] if args.cargo_args[:1] == ["--"] else args.cargo_args
+    )
+    contention_key = args.contention_key or (
+        f"cargo:{_cargo_package_for_contention(cargo_args)}"
+    )
+    command = _canonical_cargo_proof_command(cargo_args)
+    env_overrides = _env_overrides_from_pairs(args.env)
+    initial_notes = getattr(args, "note", []) or []
+    if args.detach:
+        rc, run_id = _queue_one(
+            args,
+            logical_id=args.id,
+            reason=args.reason,
+            command=command,
+            resource_family="rust",
+            contention_key=contention_key,
+            scopes=args.scope,
+            env_overrides=env_overrides,
+            initial_notes=initial_notes,
+            depends_on=args.depends_on,
+            edge_kind=args.edge_kind,
+            edge_note=args.edge_note,
+        )
+        if rc != 0 or run_id is None:
+            return rc
+        pid, runner_log = _launch_detached_runner(
+            args,
+            run_id=run_id,
+            timeout=args.timeout,
+        )
+        print(f"detached {run_id} runner_pid={pid}")
+        print(f"runner_log: {runner_log}")
+        return 0
+    return _run_one(
+        args,
+        logical_id=args.id,
+        reason=args.reason,
+        command=command,
+        resource_family="rust",
+        contention_key=contention_key,
+        scopes=args.scope,
+        env_overrides=env_overrides,
+        timeout=args.timeout,
+        initial_notes=initial_notes,
+        depends_on=args.depends_on,
+        edge_kind=args.edge_kind,
+        edge_note=args.edge_note,
+    )
+
+
 def _load_specs(path: Path) -> list[dict[str, object]]:
     with path.open("rb") as handle:
         payload = tomllib.load(handle)
@@ -2032,6 +2117,10 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
     del args
     print(
         "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
+        "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo "
+        '--id focused-cargo-proof --reason "why this proves the Rust contract" '
+        '--scope runtime/molt-runtime/src/cpython_abi_hooks.rs --note "change: moved the Rust authority; test: proving the focused invariant" --timeout 900 -- '
+        "test -p molt-runtime exact_test_name --lib\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py exec "
         '--id focused-proof --reason "why this proves the changed contract" '
         '--resource-family python --contention-key python:focused --note "change: moved the shared authority; test: proving the focused invariant" --timeout 240 -- '
@@ -2062,6 +2151,21 @@ def _cmd_template(args: argparse.Namespace) -> int:
         'edge_note = "Narrows the previous failing proof to the generated selector contract."\n'
         'env = { MOLT_EXTERNAL_STATIC_PACKAGES = "numpy scipy" }\n'
         'command = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "pytest", "tests/path.py", "-q"]\n'
+    )
+    return 0
+
+
+def _cmd_cargo_template(args: argparse.Namespace) -> int:
+    del args
+    print(
+        "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo \\\n"
+        "  --id runtime-focused-proof \\\n"
+        '  --reason "Prove the changed Rust runtime contract." \\\n'
+        "  --scope runtime/molt-runtime/src/cpython_abi_hooks.rs \\\n"
+        '  --note "change: moved static-link Py_mod_exec diagnostics into the C-API authority" \\\n'
+        "  --timeout 900 \\\n"
+        "  --detach \\\n"
+        "  -- test -p molt-runtime exact_test_name --lib"
     )
     return 0
 
@@ -2119,6 +2223,30 @@ def _build_parser() -> argparse.ArgumentParser:
     exec_p.add_argument("--wait-timeout", type=float)
     exec_p.add_argument("command", nargs=argparse.REMAINDER)
     exec_p.set_defaults(func=_cmd_exec)
+
+    cargo_p = sub.add_parser(
+        "cargo",
+        help="submit a queue-owned Cargo proof with canonical uv and guard wrapping",
+    )
+    cargo_p.add_argument("--id", required=True)
+    cargo_p.add_argument("--reason", required=True)
+    cargo_p.add_argument("--contention-key")
+    cargo_p.add_argument("--scope", action="append", default=[])
+    cargo_p.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    cargo_p.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help=(
+            "append a submission note describing what changed, what is being "
+            "tested or explored, and why"
+        ),
+    )
+    _add_dependency_args(cargo_p)
+    cargo_p.add_argument("--timeout", type=float, default=1200.0)
+    cargo_p.add_argument("--detach", action="store_true")
+    cargo_p.add_argument("cargo_args", nargs=argparse.REMAINDER)
+    cargo_p.set_defaults(func=_cmd_cargo)
 
     submit_p = sub.add_parser("submit", help="submit proof specs from a TOML DSL")
     submit_p.add_argument("dsl")
@@ -2190,6 +2318,11 @@ def _build_parser() -> argparse.ArgumentParser:
     template_p = sub.add_parser("template", help="print a proof DSL template")
     template_p.set_defaults(func=_cmd_template)
 
+    cargo_template_p = sub.add_parser(
+        "cargo-template", help="print the canonical Cargo proof command shape"
+    )
+    cargo_template_p.set_defaults(func=_cmd_cargo_template)
+
     pact_accept_p = sub.add_parser(
         "pact-witness-acceptance",
         help="run the queue-owned Pact Kernel A browser/WASM acceptance aperture",
@@ -2232,11 +2365,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    if raw and raw[0] == "exec":
+    if raw and raw[0] in {"exec", "cargo"}:
         before, command = _command_after_dash(raw)
         parser = _build_parser()
         args = parser.parse_args(before)
-        args.command = command
+        if raw[0] == "exec":
+            args.command = command
+        else:
+            args.cargo_args = command
     else:
         parser = _build_parser()
         args = parser.parse_args(raw)

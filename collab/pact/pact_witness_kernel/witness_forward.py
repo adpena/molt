@@ -74,8 +74,8 @@ def curvelet_directional_B(
     for j in range(int(cfg.n_scales)):
         f_j = float(cfg.f0) * (float(cfg.base) ** j)
         l_j = int(cfg.n_orient0) * (2 ** (j // 2))  # parabolic curvelet doubling
-        for l in range(l_j):
-            theta = np.pi * l / l_j
+        for orientation_idx in range(l_j):
+            theta = np.pi * orientation_idx / l_j
             cols.append(
                 np.array([f_j * np.cos(theta), f_j * np.sin(theta)], dtype=np.float32)
             )

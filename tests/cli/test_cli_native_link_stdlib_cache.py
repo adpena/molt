@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 
 import molt.cli as cli
-from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 
 
