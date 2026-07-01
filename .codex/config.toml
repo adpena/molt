@@ -1,0 +1,5 @@
+# Keep Codex project guidance deterministic across fresh clones and worktrees.
+# The root AGENTS.md stays compact; full guides live under docs/agent/ and are
+# opened deliberately only when the task needs them.
+project_doc_max_bytes = 32768
+project_doc_fallback_filenames = []
