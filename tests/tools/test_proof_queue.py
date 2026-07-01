@@ -94,6 +94,108 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert '"submission": 1' in notebook_text
 
 
+def test_proof_queue_preexecution_projection_failure_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    marker = tmp_path / "should-not-run.txt"
+    followup_marker = tmp_path / "followup-ran.txt"
+
+    def fail_notebook(*_args: object, **_kwargs: object) -> Path:
+        raise RuntimeError("notebook projection exploded")
+
+    monkeypatch.setattr(proof_queue, "_write_marimo_notebook", fail_notebook)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "preexecution-crash",
+            "--reason",
+            "prove preexecution crash is terminal",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:preexecution-crash",
+            "--note",
+            "trigger projection before command execution",
+            "--",
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+            str(marker),
+        ]
+    )
+
+    assert rc == 2
+    assert not marker.exists()
+    rows = _rows(db)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "proof queue failed before command execution" in log_text
+    assert "RuntimeError: notebook projection exploded" in log_text
+    assert "proof_queue notebook projection failed after terminal row" in log_text
+
+    capsys.readouterr()
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                rows[0]["run_id"],
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    assert evidence[0]["diagnostics"][0]["signal_id"] == "queue-preexecution-failure"
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "preexecution-followup",
+            "--reason",
+            "prove contention key is released",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:preexecution-crash",
+            "--",
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+            str(followup_marker),
+        ]
+    )
+
+    assert rc == 0
+    assert followup_marker.read_text(encoding="utf-8") == "ran"
+
+
 def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     conn = proof_queue._connect(db)

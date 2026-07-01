@@ -287,6 +287,10 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose R
 `status` also prints the first diagnostic for recent failed rows. If a repeated
 failure only shows `unclassified-failed-proof`, add a deterministic diagnosis
 rule to `tools/proof_queue.py` before that pattern becomes tribal knowledge.
+If the queue itself fails before launching a proof command, it must mark the row
+terminal, write the failure log, release the contention key, and classify the
+row as `queue-preexecution-failure`; that row is infrastructure evidence, not
+product proof.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
