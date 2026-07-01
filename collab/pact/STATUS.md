@@ -47,10 +47,13 @@ Green evidence for that primitive:
   callables remain sentinel-owned instead of leaking fake imports; import-backed
   reserved callables can route through real ABI metadata.
 
-Queue row `20260701T211814-pact-witness-acceptance-09339473a62c443f` is the
-current full acceptance rerun derived from that table proof. Until it exits
-green and writes `candidate_outputs.npz`, Pact Kernel A acceptance is still
-open.
+Queue row `20260701T211814-pact-witness-acceptance-09339473a62c443f` was the
+full acceptance rerun derived from that table proof. It built and linked split
+`app.wasm` plus `molt_runtime.wasm`, then failed under Node before
+`candidate_outputs.npz` with `WebAssembly.instantiate(): Compiling function
+#4258 failed: undeclared reference to function #732`. That moves the next
+aperture to split-runtime function-index/table relocation authority; Pact Kernel
+A acceptance is still open.
 
 The live evidence says the current tree can now build and link the Kernel A
 `field_solve.py` WASM package with canonical sealed NumPy/SciPy roots, but has
