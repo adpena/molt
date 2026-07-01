@@ -2919,7 +2919,7 @@ mod tests {
         fixed_arity_trampoline_target_ptr, protect_borrowed_args_aliased_return,
         should_force_trampoline_for_fixed_arity_call,
     };
-    use crate::object::builders::{alloc_list, alloc_tuple};
+    use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
     use molt_obj_model::MoltObject;
     use std::sync::Once;
@@ -3111,6 +3111,79 @@ mod tests {
 
             dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[test]
+    fn fixed_arity_type_constructor_builtins_route_visible_args_through_binder() {
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            let type_new_bits =
+                crate::builtins::methods::type_method_bits(_py, "__new__").expect("type.__new__");
+            let type_init_bits =
+                crate::builtins::methods::type_method_bits(_py, "__init__").expect("type.__init__");
+
+            for func_bits in [type_new_bits, type_init_bits] {
+                let func_ptr = obj_from_bits(func_bits).as_ptr().expect("function object");
+                assert!(
+                    unsafe { crate::call::bind::function_requires_binder_flag(func_ptr) },
+                    "constructor builtin must publish builtin binding policy"
+                );
+                assert!(
+                    unsafe {
+                        crate::call::bind::function_fixed_positional_call_needs_binding(
+                            _py, func_ptr, 4,
+                        )
+                    },
+                    "visible constructor arity must bind before raw runtime arity checks"
+                );
+            }
+
+            let name_bits = string_bits("MoltBinderProbe");
+            let bases_ptr = alloc_tuple(_py, &[]);
+            assert!(!bases_ptr.is_null());
+            let bases_bits = MoltObject::from_ptr(bases_ptr).bits();
+            let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
+            assert!(!namespace_ptr.is_null());
+            let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
+
+            let cls_bits = unsafe {
+                super::call_function_obj4(
+                    _py,
+                    type_new_bits,
+                    crate::builtin_classes(_py).type_obj,
+                    name_bits,
+                    bases_bits,
+                    namespace_bits,
+                )
+            };
+            assert!(
+                !crate::exception_pending(_py),
+                "type.__new__ visible-arity call must bind instead of raising raw arity mismatch"
+            );
+            let cls_ptr = obj_from_bits(cls_bits).as_ptr().expect("created type");
+            assert_eq!(unsafe { crate::object_type_id(cls_ptr) }, crate::TYPE_ID_TYPE);
+
+            let init_result = unsafe {
+                super::call_function_obj4(
+                    _py,
+                    type_init_bits,
+                    cls_bits,
+                    name_bits,
+                    bases_bits,
+                    namespace_bits,
+                )
+            };
+            assert!(
+                !crate::exception_pending(_py),
+                "type.__init__ visible-arity call must bind instead of raising raw arity mismatch"
+            );
+            assert!(obj_from_bits(init_result).is_none());
+
+            dec_ref_bits(_py, cls_bits);
+            dec_ref_bits(_py, namespace_bits);
+            dec_ref_bits(_py, bases_bits);
+            dec_ref_bits(_py, name_bits);
         });
     }
 
