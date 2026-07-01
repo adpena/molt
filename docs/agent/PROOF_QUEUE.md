@@ -268,6 +268,8 @@ log tails. These are not guesses; they are first-party rules for recurring
 proof failure classes such as queue policy rejection, static-linked
 `Py_mod_exec` failure, unresolved native/WASM symbols, unsupported direct calls,
 and Pact missing-output acceptance failures.
+When the Pact runner emits `static_extension_init_failure.json`, the
+static-link diagnostic includes that path in its `artifacts` list.
 
 Use `diagnose` before manual log spelunking or hand-written status notes:
 

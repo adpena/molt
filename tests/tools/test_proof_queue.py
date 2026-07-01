@@ -869,7 +869,8 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     )
     log_path.write_text(
         "Error: Unhandled Molt exception: ImportError: "
-        "_nd_image: static-link PyModuleDef Py_mod_exec slot returned non-zero\n",
+        "_nd_image: static-link PyModuleDef Py_mod_exec slot returned non-zero\n"
+        f"diagnostic_json={tmp_path / 'static_extension_init_failure.json'}\n",
         encoding="utf-8",
     )
     proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
@@ -894,6 +895,9 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     diagnostics = evidence[0]["diagnostics"]
     assert diagnostics[0]["signal_id"] == "static-pymodexec-nonzero"
     assert "_nd_image" in diagnostics[0]["summary"]
+    assert diagnostics[0]["artifacts"] == [
+        str(tmp_path / "static_extension_init_failure.json")
+    ]
 
     assert (
         proof_queue.main(
@@ -917,9 +921,11 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     )
     diagnosis_text = capsys.readouterr().out
     assert "static-pymodexec-nonzero" in diagnosis_text
+    assert "static_extension_init_failure.json" in diagnosis_text
     notes = _notes(db)
     assert notes[-1]["kind"] == "finding"
     assert "static-pymodexec-nonzero" in notes[-1]["body"]
+    assert "static_extension_init_failure.json" in notes[-1]["body"]
     assert (notebooks / "failed-run.py").exists()
 
 
