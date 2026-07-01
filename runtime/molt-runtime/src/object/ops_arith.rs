@@ -869,6 +869,9 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
         };
         let other_type = object_type_id(other_ptr);
         let payload = if other_type == TYPE_ID_MEMORYVIEW {
+            if memoryview_released(other_ptr) {
+                return raise_released_memoryview(_py);
+            }
             if let Some(slice) = memoryview_bytes_slice(other_ptr) {
                 slice.to_vec()
             } else if let Some(buf) = memoryview_collect_bytes(other_ptr) {

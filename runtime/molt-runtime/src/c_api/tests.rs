@@ -1506,6 +1506,82 @@ fn memoryview_clone_and_c_export_share_typed_strided_descriptor() {
 }
 
 #[test]
+fn memoryview_release_closes_typed_storage_export_and_runtime_access() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"abcdefghijkl");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let format_ptr = alloc_string(_py, b"B");
+        assert!(!format_ptr.is_null());
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+            _py,
+            owner_bits,
+            0,
+            1,
+            false,
+            format_bits,
+            vec![3, 4],
+            vec![4, 1],
+        );
+        assert!(!view_ptr.is_null());
+        let view_bits = MoltObject::from_ptr(view_ptr).bits();
+
+        let release_bits = crate::molt_memoryview_release(view_bits);
+        assert!(obj_from_bits(release_bits).is_none());
+        assert!(!exception_pending(_py));
+        let second_release_bits = crate::molt_memoryview_release(view_bits);
+        assert!(obj_from_bits(second_release_bits).is_none());
+        assert!(!exception_pending(_py));
+
+        let clone_bits = crate::molt_memoryview_new(view_bits);
+        assert!(obj_from_bits(clone_bits).is_none());
+        assert!(exception_pending(_py));
+        clear_exception(_py);
+
+        let mut view = MoltBufferView {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        let rc = unsafe { molt_buffer_acquire(view_bits, &mut view as *mut MoltBufferView) };
+        assert_eq!(rc, -1);
+        assert!(exception_pending(_py));
+        assert!(view.data.is_null());
+        assert_eq!(view.owner, 0);
+        clear_exception(_py);
+
+        let bytes_bits = crate::molt_memoryview_tobytes(view_bits);
+        assert!(obj_from_bits(bytes_bits).is_none());
+        assert!(exception_pending(_py));
+        clear_exception(_py);
+
+        let len_bits = crate::molt_len(view_bits);
+        assert!(obj_from_bits(len_bits).is_none());
+        assert!(exception_pending(_py));
+        clear_exception(_py);
+
+        let item_bits = crate::molt_index(view_bits, MoltObject::from_int(0).bits());
+        assert!(obj_from_bits(item_bits).is_none());
+        assert!(exception_pending(_py));
+        clear_exception(_py);
+
+        dec_ref_bits(_py, view_bits);
+        dec_ref_bits(_py, owner_bits);
+        dec_ref_bits(_py, format_bits);
+    });
+}
+
+#[test]
 fn err_pending_peek_restore_roundtrip() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {

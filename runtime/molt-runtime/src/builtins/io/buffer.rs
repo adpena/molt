@@ -94,6 +94,9 @@ pub(crate) unsafe fn collect_bytes_like(_py: &PyToken<'_>, bits: u64) -> Result<
                 Ok(raw.to_vec())
             }
             TYPE_ID_MEMORYVIEW => {
+                if memoryview_released(ptr) {
+                    return Err(raise_released_memoryview(_py));
+                }
                 if let Some(out) = memoryview_collect_bytes(ptr) {
                     Ok(out)
                 } else {

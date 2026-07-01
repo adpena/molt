@@ -196,7 +196,7 @@ extern "C" fn bridge_memoryview_is_c_contiguous_view(ptr: *mut u8) -> i32 {
 }
 
 extern "C" fn bridge_memoryview_readonly(ptr: *mut u8) -> i32 {
-    if unsafe { memoryview_readonly(ptr) } {
+    if unsafe { memoryview_released(ptr) || memoryview_readonly(ptr) } {
         1
     } else {
         0
@@ -204,14 +204,23 @@ extern "C" fn bridge_memoryview_readonly(ptr: *mut u8) -> i32 {
 }
 
 extern "C" fn bridge_memoryview_nbytes(ptr: *mut u8) -> usize {
+    if unsafe { memoryview_released(ptr) } {
+        return 0;
+    }
     unsafe { crate::object::memoryview::memoryview_nbytes(ptr) }
 }
 
 extern "C" fn bridge_memoryview_offset(ptr: *mut u8) -> isize {
+    if unsafe { memoryview_released(ptr) } {
+        return 0;
+    }
     unsafe { memoryview_offset(ptr) }
 }
 
 extern "C" fn bridge_memoryview_owner_bits(ptr: *mut u8) -> u64 {
+    if unsafe { memoryview_released(ptr) } {
+        return 0;
+    }
     unsafe { memoryview_owner_bits(ptr) }
 }
 

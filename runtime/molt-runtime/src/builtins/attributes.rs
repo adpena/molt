@@ -1477,28 +1477,49 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     return Some(func_bits);
                 }
                 "format" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     let bits = memoryview_format_bits(obj_ptr);
                     inc_ref_bits(_py, bits);
                     return Some(bits);
                 }
                 "itemsize" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     return Some(MoltObject::from_int(memoryview_itemsize(obj_ptr) as i64).bits());
                 }
                 "ndim" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     return Some(MoltObject::from_int(memoryview_ndim(obj_ptr) as i64).bits());
                 }
                 "shape" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     let shape = memoryview_shape(obj_ptr).unwrap_or(&[]);
                     return Some(tuple_from_isize_slice(_py, shape));
                 }
                 "strides" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     let strides = memoryview_strides(obj_ptr).unwrap_or(&[]);
                     return Some(tuple_from_isize_slice(_py, strides));
                 }
                 "readonly" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     return Some(MoltObject::from_bool(memoryview_readonly(obj_ptr)).bits());
                 }
                 "nbytes" => {
+                    if memoryview_released(obj_ptr) {
+                        return Some(raise_released_memoryview(_py));
+                    }
                     return Some(MoltObject::from_int(memoryview_nbytes(obj_ptr) as i64).bits());
                 }
                 _ => {}
