@@ -640,6 +640,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert (
         wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
     )
+    assert "python3 -m molt.cli internal-runtime-wasm-build" in wasm_text
     assert "=== Guarded Command Hotspots ===" in wasm_text
     assert "python3 tools/profile_hotspots.py --limit 20" in wasm_text
     assert wasm_text.count("--build-profile dev") >= 5
