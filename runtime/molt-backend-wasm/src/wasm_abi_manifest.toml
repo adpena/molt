@@ -218,6 +218,12 @@ runtime_name = "molt_types_new_class"
 import_name = "types_new_class"
 callable_arity = 2
 
+[[reserved_runtime_callable]]
+index = 22
+runtime_name = "molt_cpython_abi_cext_call_trampoline"
+import_name = "cpython_abi_cext_call_trampoline"
+callable_arity = 3
+
 
 [[import]]
 name = "types_bootstrap"
@@ -6634,6 +6640,7 @@ host_exports = [
   "molt_c_api_version",
   "molt_cfunction_create_bytes",
   "molt_cfunction_create_keywords_bytes",
+  "molt_py_cfunction_create_bytes",
   "molt_dec_ref_obj",
   "molt_dict_from_pairs",
   "molt_dict_getitem_borrowed",
@@ -6694,6 +6701,7 @@ host_exports = [
   "molt_mapping_setitem",
   "molt_module_add_cfunction_bytes",
   "molt_module_add_cfunction_keywords_bytes",
+  "molt_module_add_py_cfunction_bytes",
   "molt_module_add_int_constant",
   "molt_module_add_object",
   "molt_module_add_object_bytes",

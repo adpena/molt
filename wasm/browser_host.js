@@ -80,7 +80,8 @@ const reservedRuntimeCallables = [
   { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
   { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
   { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
-  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
+  { index: 22, runtimeExport: 'molt_cpython_abi_cext_call_trampoline', arity: 3 },
+  { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 let browserVfsModulePromise = null;
 const loadBrowserVfsModule = () => {

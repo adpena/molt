@@ -124,6 +124,7 @@ const MODIFIER_NAMES: &[&str] = &[
 ///   strings: char, keysym, type, widget_path
 ///
 /// Returns None on malformed input.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(elems) = decode_value_list_bits(args_bits) else {
@@ -195,6 +196,7 @@ pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bit
 ///   - If value is already int, return it.
 ///   - If value is a string and `value.lstrip("-").isdigit()`, parse as int.
 ///   - Otherwise return value unchanged.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, event_int_convert(value_bits))
 }
@@ -210,6 +212,7 @@ pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
 /// just "0x0".
 ///
 /// Returns a Molt list of strings, or the "|"-joined string representation.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(state_value) = bits_as_i64(state_bits) else {

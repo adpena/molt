@@ -9,16 +9,12 @@ pub(crate) mod asyncio_queue;
 pub(crate) mod atexit;
 pub(crate) mod attr;
 pub(crate) mod attributes;
-#[cfg(feature = "stdlib_compression")]
-pub(crate) mod bz2;
 pub(crate) mod callable;
 pub(crate) mod classes;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_bridge;
-#[cfg(feature = "stdlib_compression")]
-pub(crate) mod compression_common;
 pub(crate) mod concurrent;
 pub(crate) mod containers;
 pub(crate) mod containers_alloc;
@@ -47,8 +43,6 @@ pub(crate) mod gpu_backend;
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) mod gpu_primitives;
 pub(crate) mod graphlib;
-#[cfg(feature = "stdlib_compression")]
-pub(crate) mod gzip;
 pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
@@ -57,8 +51,6 @@ pub(crate) mod io_path_utils;
 #[path = "../../../molt-runtime-itertools/src/itertools.rs"]
 pub(crate) mod itertools;
 pub(crate) mod json;
-#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
-pub(crate) mod lzma;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
 #[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
@@ -88,13 +80,9 @@ pub(crate) mod string_ext;
 pub(crate) mod strings;
 pub(crate) mod subprocess_ext;
 pub(crate) mod sys_ext;
-#[cfg(feature = "stdlib_compression")]
-pub(crate) mod tarfile;
 #[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod tempfile_mod;
 pub(crate) mod threading_helpers;
 pub(crate) mod type_ops;
 pub(crate) mod types;
 pub(crate) mod warnings_ext;
-#[cfg(feature = "stdlib_compression")]
-pub(crate) mod zlib;

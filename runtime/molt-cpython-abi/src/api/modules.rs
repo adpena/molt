@@ -10,6 +10,8 @@ use std::ptr;
 
 const PY_MOD_CREATE: c_int = 1;
 const PY_MOD_EXEC: c_int = 2;
+const PY_MOD_MULTIPLE_INTERPRETERS: c_int = 3;
+const PY_MOD_GIL: c_int = 4;
 
 fn set_module_system_error(message: impl AsRef<str>) {
     let message = CString::new(message.as_ref())
@@ -346,6 +348,7 @@ unsafe fn module_from_def_and_slots(
                         return ptr::null_mut();
                     }
                 }
+                PY_MOD_MULTIPLE_INTERPRETERS | PY_MOD_GIL => {}
                 _ => {
                     set_module_system_error(format!("unsupported PyModuleDef slot {}", slot.slot));
                     crate::api::refcount::Py_DECREF(module);
@@ -408,6 +411,7 @@ pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyMod
                         return -1;
                     }
                 }
+                PY_MOD_MULTIPLE_INTERPRETERS | PY_MOD_GIL => {}
                 _ => {
                     set_module_system_error(format!("unsupported PyModuleDef slot {}", slot.slot));
                     return -1;

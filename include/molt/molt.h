@@ -118,6 +118,13 @@ MoltHandle molt_cfunction_create_keywords_bytes(MoltHandle self_bits,
                                                 uint32_t method_flags,
                                                 const uint8_t *doc_ptr,
                                                 uint64_t doc_len);
+MoltHandle molt_py_cfunction_create_bytes(MoltHandle self_bits,
+                                          const uint8_t *name_ptr,
+                                          uint64_t name_len,
+                                          uintptr_t method_ptr,
+                                          uint32_t method_flags,
+                                          const uint8_t *doc_ptr,
+                                          uint64_t doc_len);
 int32_t molt_module_add_cfunction_bytes(MoltHandle module_bits,
                                         const uint8_t *name_ptr,
                                         uint64_t name_len,
@@ -133,6 +140,13 @@ int32_t molt_module_add_cfunction_keywords_bytes(
     uint32_t method_flags,
     const uint8_t *doc_ptr,
     uint64_t doc_len);
+int32_t molt_module_add_py_cfunction_bytes(MoltHandle module_bits,
+                                           const uint8_t *name_ptr,
+                                           uint64_t name_len,
+                                           uintptr_t method_ptr,
+                                           uint32_t method_flags,
+                                           const uint8_t *doc_ptr,
+                                           uint64_t doc_len);
 
 MoltHandle molt_number_add(MoltHandle a_bits, MoltHandle b_bits);
 MoltHandle molt_number_sub(MoltHandle a_bits, MoltHandle b_bits);
@@ -260,8 +274,10 @@ static inline void *_molt_host_abi_symbol(const char *name) {
 #define molt_module_add_string_constant ((int32_t (*)(MoltHandle, MoltHandle, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_string_constant"))
 #define molt_cfunction_create_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunction, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_cfunction_create_bytes"))
 #define molt_cfunction_create_keywords_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunctionWithKeywords, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_cfunction_create_keywords_bytes"))
+#define molt_py_cfunction_create_bytes ((MoltHandle (*)(MoltHandle, const uint8_t *, uint64_t, uintptr_t, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_py_cfunction_create_bytes"))
 #define molt_module_add_cfunction_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunction, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_cfunction_bytes"))
 #define molt_module_add_cfunction_keywords_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, MoltCFunctionWithKeywords, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_cfunction_keywords_bytes"))
+#define molt_module_add_py_cfunction_bytes ((int32_t (*)(MoltHandle, const uint8_t *, uint64_t, uintptr_t, uint32_t, const uint8_t *, uint64_t))_molt_host_abi_symbol("molt_module_add_py_cfunction_bytes"))
 #define molt_number_add ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_add"))
 #define molt_number_sub ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_sub"))
 #define molt_number_mul ((MoltHandle (*)(MoltHandle, MoltHandle))_molt_host_abi_symbol("molt_number_mul"))

@@ -89,7 +89,7 @@ const traceTableDiffEnabled = process.env.MOLT_WASM_TRACE_TABLE_DIFF === '1';
 const traceI32AtRaw = process.env.MOLT_WASM_TRACE_I32_AT || null;
 const LEGACY_WASM_TABLE_BASE = 256;
 const RESERVED_RUNTIME_CALLABLE_BASE = 33;
-const RESERVED_RUNTIME_CALLABLE_COUNT = 23;
+const RESERVED_RUNTIME_CALLABLE_COUNT = 24;
 const reservedRuntimeCallables = [
   { index: 0, runtimeExport: 'molt_type_call', arity: 1 },
   { index: 1, runtimeExport: 'molt_type_new', arity: 5 },
@@ -113,7 +113,8 @@ const reservedRuntimeCallables = [
   { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
   { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
   { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
-  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
+  { index: 22, runtimeExport: 'molt_cpython_abi_cext_call_trampoline', arity: 3 },
+  { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 let activeReservedRuntimeCallables = reservedRuntimeCallables;
 let activeReservedRuntimeCallableCount = RESERVED_RUNTIME_CALLABLE_COUNT;

@@ -2669,8 +2669,15 @@ pub(crate) unsafe fn call_function_obj_trampoline(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let func: extern "C" fn(u64, u64, u64) -> i64 =
-                    std::mem::transmute(tramp_ptr as usize);
+                let Some(call_target) = function_required_call_target_ptr(func_ptr, tramp_ptr)
+                else {
+                    return missing_function_call_target(
+                        _py,
+                        "call_function_obj_trampoline",
+                        tramp_ptr,
+                    );
+                };
+                let func: extern "C" fn(u64, u64, u64) -> i64 = std::mem::transmute(call_target);
                 func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
             }
         };
