@@ -41,6 +41,7 @@ from wasm_link_format import (  # noqa: E402
     WASM_EXTERNAL_NATIVE_LINK_IMPORTS as WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
     WASM_MAGIC as WASM_MAGIC,
     WASM_VERSION as WASM_VERSION,
+    WasmModuleFacts as WasmModuleFacts,
     _ESSENTIAL_EXPORTS as _ESSENTIAL_EXPORTS,
     _OUTPUT_EXPORT_ALIAS_PREFIX as _OUTPUT_EXPORT_ALIAS_PREFIX,
     _append_linking_function_symbols as _append_linking_function_symbols,
@@ -79,6 +80,7 @@ from wasm_link_format import (  # noqa: E402
     table_ref_export_name as table_ref_export_name,
     wasm_runtime_export_name as wasm_runtime_export_name,
     _get_total_func_count as _get_total_func_count,
+    parse_wasm_module_facts as parse_wasm_module_facts,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
     _skip_init_expr as _skip_init_expr,
     _validate_elements as _validate_elements,
@@ -1259,10 +1261,11 @@ def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
 def _validate_linked(linked: Path) -> bool:
     data = linked.read_bytes()
     try:
-        imports = _collect_imports(data)
+        facts = parse_wasm_module_facts(data)
     except ValueError as exc:
         print(f"Failed to parse linked wasm: {exc}", file=sys.stderr)
         return False
+    imports = list(facts.imports)
     if any(module == "molt_runtime" for module, _, _, _ in imports):
         print(
             "Linked wasm still imports molt_runtime; link step incomplete.",
@@ -1295,11 +1298,7 @@ def _validate_linked(linked: Path) -> bool:
     if memory_imports:
         print("Linked wasm still imports memory.", file=sys.stderr)
         return False
-    try:
-        custom_names = _collect_custom_names(data)
-    except ValueError as exc:
-        print(f"Failed to parse linked wasm custom sections: {exc}", file=sys.stderr)
-        return False
+    custom_names = facts.custom_names
     reloc_sections = [name for name in custom_names if name.startswith("reloc.")]
     if reloc_sections:
         print(
@@ -1311,26 +1310,24 @@ def _validate_linked(linked: Path) -> bool:
     if "linking" in custom_names or "dylink.0" in custom_names:
         print("Linked wasm still has linking metadata sections.", file=sys.stderr)
         return False
-    try:
-        exports = _collect_exports(data)
-    except ValueError as exc:
-        print(f"Failed to parse linked wasm exports: {exc}", file=sys.stderr)
-        return False
+    exports = facts.exports
     if "molt_memory" not in exports and "memory" not in exports:
         print("Linked wasm missing exported memory.", file=sys.stderr)
         return False
     if "molt_table" not in exports and "__indirect_function_table" not in exports:
         print("Linked wasm missing exported table.", file=sys.stderr)
         return False
-    try:
-        ok, err = _validate_elements(data)
-    except ValueError as exc:
-        print(f"Failed to parse linked wasm element section: {exc}", file=sys.stderr)
+    if facts.element_validation_error is not None:
+        print(
+            f"Linked wasm element validation failed: "
+            f"{facts.element_validation_error}",
+            file=sys.stderr,
+        )
         return False
-    if not ok:
-        print(f"Linked wasm element validation failed: {err}", file=sys.stderr)
-        return False
-    if not _validate_ref_func_declarations(data, description="Linked wasm"):
+    if not _validate_ref_func_declarations_from_facts(
+        facts,
+        description="Linked wasm",
+    ):
         return False
     return _validate_wasm_structural(data, description="Linked wasm")
 
@@ -1354,19 +1351,25 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
             file=sys.stderr,
         )
         return False
-    if not _validate_ref_func_declarations(app_data, description="Split-runtime app"):
-        return False
-    if not _validate_ref_func_declarations(
-        rt_data, description="Split-runtime shared runtime"
-    ):
-        return False
     try:
-        app_imports = _collect_module_imports(app_data, "molt_runtime")
-        rt_exports = _collect_function_exports(rt_data)
-        app_memory_min = _memory_import_min(app_data)
+        app_facts = parse_wasm_module_facts(app_data)
+        rt_facts = parse_wasm_module_facts(rt_data)
     except ValueError as exc:
         print(f"Failed to parse split-runtime staged output: {exc}", file=sys.stderr)
         return False
+    if not _validate_ref_func_declarations_from_facts(
+        app_facts,
+        description="Split-runtime app",
+    ):
+        return False
+    if not _validate_ref_func_declarations_from_facts(
+        rt_facts,
+        description="Split-runtime shared runtime",
+    ):
+        return False
+    app_imports = app_facts.module_imports.get("molt_runtime", frozenset())
+    rt_exports = rt_facts.function_exports
+    app_memory_min = app_facts.memory_import_mins.get(("env", "memory"))
     if app_memory_min is None:
         print(
             "Split-runtime app must import env.memory; a private app memory "
@@ -1508,16 +1511,18 @@ def _format_index_preview(indices: list[int]) -> str:
     return f"{preview}, ... (+{len(indices) - 12} more)"
 
 
-def _ref_func_invariant_error(data: bytes, *, description: str) -> str | None:
-    referenced = _scan_code_ref_funcs(data)
-    declared = _collect_element_declared_funcs(data)
+def _ref_func_invariant_error_from_facts(
+    facts: WasmModuleFacts, *, description: str
+) -> str | None:
+    referenced = set(facts.code_ref_funcs)
+    declared = set(facts.element_declared_funcs)
     missing = sorted(referenced - declared)
     if missing:
         return (
             f"{description} has undeclared ref.func function index(es): "
             f"{_format_index_preview(missing)}"
         )
-    total_funcs = _get_total_func_count(data)
+    total_funcs = facts.total_func_count
     out_of_bounds = sorted(
         index for index in referenced | declared if index >= total_funcs
     )
@@ -1530,19 +1535,36 @@ def _ref_func_invariant_error(data: bytes, *, description: str) -> str | None:
     return None
 
 
+def _ref_func_invariant_error(data: bytes, *, description: str) -> str | None:
+    return _ref_func_invariant_error_from_facts(
+        parse_wasm_module_facts(data),
+        description=description,
+    )
+
+
+def _validate_ref_func_declarations_from_facts(
+    facts: WasmModuleFacts, *, description: str
+) -> bool:
+    invariant_error = _ref_func_invariant_error_from_facts(
+        facts,
+        description=description,
+    )
+    if invariant_error is None:
+        return True
+    print(invariant_error, file=sys.stderr)
+    return False
+
+
 def _validate_ref_func_declarations(data: bytes, *, description: str) -> bool:
     try:
-        invariant_error = _ref_func_invariant_error(data, description=description)
+        facts = parse_wasm_module_facts(data)
     except ValueError as exc:
         print(
             f"Failed to inspect {description} ref.func declarations: {exc}",
             file=sys.stderr,
         )
         return False
-    if invariant_error is None:
-        return True
-    print(invariant_error, file=sys.stderr)
-    return False
+    return _validate_ref_func_declarations_from_facts(facts, description=description)
 
 
 def _run_wasm_opt_via_optimize(
