@@ -22,7 +22,6 @@ from wasm_link_format import (
     _read_string,
     _read_varsint,
     _read_varuint,
-    _repair_out_of_bounds_func_refs,
     _skip_init_expr,
     _validate_elements,
     _write_string,
@@ -1199,12 +1198,6 @@ def _post_link_optimize(
             break  # No new dead functions found -- converged
 
     updated = _dedup_data_segments(data)
-    if updated is not None:
-        data = updated
-
-    # Repair any out-of-bounds function references introduced by DCE or
-    # element neutralization before returning the optimized binary.
-    updated = _repair_out_of_bounds_func_refs(data)
     if updated is not None:
         data = updated
 
