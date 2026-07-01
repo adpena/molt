@@ -124,6 +124,19 @@ touching code, docs, tests, benchmarks, or roadmap state.
   proof latency. The queue derives `MOLT_SESSION_ID` from the contention key so
   serialized lanes reuse their Cargo/uv artifact caches while disjoint
   contention keys remain isolated.
+- Treat `write_stdin` as stdin input only, not process control. Never send
+  Ctrl-C (`\u0003`), SIGINT-like bytes, ESC/control sequences, or other
+  interrupt payloads through it to stop a command. On Windows Codex Desktop this
+  can crash the control plane with `code=3221225786` and
+  `write_stdin failed: Unified exec process failed: process interrupt is not
+  supported by this process backend` (`codex_core::tools::router`). Track as
+  upstream `openai/codex#30847`; adjacent stale-stdin lifecycle issue:
+  `openai/codex#18494`.
+- If a command is too broad, noisy, or slow, do not try to salvage it with an
+  interactive interrupt. Prefer bounded command timeouts, narrower selectors,
+  pytest deselection, proof-queue custody, passive polling until natural exit,
+  or exact live-proved Molt-owned PID cleanup with an incident record. Plan
+  future long commands so they can finish, timeout, or be owned by the queue.
 
 ## Anomaly Crux Protocol: Question The Question
 
