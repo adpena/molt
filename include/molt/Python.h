@@ -4532,70 +4532,92 @@ static inline int _molt_pybuffer_is_f_contiguous(const Py_buffer *view) {
     return 1;
 }
 
+static inline void _molt_pybuffer_reset(Py_buffer *view) {
+    if (view == NULL) {
+        return;
+    }
+    memset(view, 0, sizeof(*view));
+    view->itemsize = 1;
+    view->readonly = 1;
+    view->_molt_view.itemsize = 1;
+    view->_molt_view.readonly = 1;
+    view->_molt_view.ndim = 1;
+    view->_molt_view.format[0] = 'B';
+}
+
+static inline void _molt_pybuffer_apply_molt_view(Py_buffer *view, int flags) {
+    view->buf = view->_molt_view.data;
+    view->len = (Py_ssize_t)view->_molt_view.len;
+    view->readonly = (int)view->_molt_view.readonly;
+    view->itemsize = (Py_ssize_t)view->_molt_view.itemsize;
+    view->ndim = (int)view->_molt_view.ndim;
+    view->format = (flags & PyBUF_FORMAT) != 0 ? view->_molt_view.format : NULL;
+    view->shape = (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0
+        ? (Py_ssize_t *)view->_molt_view.shape
+        : NULL;
+    view->strides = (flags & PyBUF_STRIDES) != 0
+        ? (Py_ssize_t *)view->_molt_view.strides
+        : NULL;
+    view->suboffsets = NULL;
+}
+
+static inline int _molt_pybuffer_satisfies_flags(const Py_buffer *view, int flags) {
+    return ((flags & PyBUF_C_CONTIGUOUS) == 0 || _molt_pybuffer_is_c_contiguous(view))
+        && ((flags & PyBUF_F_CONTIGUOUS) == 0 || _molt_pybuffer_is_f_contiguous(view))
+        && ((flags & PyBUF_ANY_CONTIGUOUS) == 0
+            || _molt_pybuffer_is_c_contiguous(view)
+            || _molt_pybuffer_is_f_contiguous(view));
+}
+
 static inline void PyBuffer_Release(Py_buffer *view);
 
 static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
+    int rc;
     if (view == NULL) {
         PyErr_SetString(PyExc_TypeError, "buffer view must not be NULL");
         return -1;
     }
-    int rc;
-    memset(view, 0, sizeof(*view));
-    rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
-    if (rc == 0) {
-        if ((flags & PyBUF_WRITABLE) != 0 && view->_molt_view.readonly != 0) {
-            (void)molt_buffer_release(&view->_molt_view);
-            PyErr_SetString(PyExc_BufferError, "writable buffer requested for readonly object");
-            return -1;
-        }
-        view->buf = view->_molt_view.data;
-        view->len = (Py_ssize_t)view->_molt_view.len;
-        view->readonly = (int)view->_molt_view.readonly;
-        view->itemsize = (Py_ssize_t)view->_molt_view.itemsize;
-        view->ndim = (int)view->_molt_view.ndim;
-        view->format = (flags & PyBUF_FORMAT) != 0 ? view->_molt_view.format : NULL;
-        view->shape = (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0
-            ? (Py_ssize_t *)view->_molt_view.shape
-            : NULL;
-        view->strides = (flags & PyBUF_STRIDES) != 0
-            ? (Py_ssize_t *)view->_molt_view.strides
-            : NULL;
-        view->suboffsets = NULL;
-        view->internal = &view->_molt_view;
-        view->obj = obj;
-        if (obj != NULL) Py_INCREF(obj);
-        if (((flags & PyBUF_C_CONTIGUOUS) != 0 && !_molt_pybuffer_is_c_contiguous(view))
-            || ((flags & PyBUF_F_CONTIGUOUS) != 0 && !_molt_pybuffer_is_f_contiguous(view))
-            || ((flags & PyBUF_ANY_CONTIGUOUS) != 0
-                && !_molt_pybuffer_is_c_contiguous(view)
-                && !_molt_pybuffer_is_f_contiguous(view))) {
-            PyBuffer_Release(view);
-            PyErr_SetString(PyExc_BufferError, "requested contiguous buffer is not available");
-            return -1;
-        }
+    _molt_pybuffer_reset(view);
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "buffer exporter must not be NULL");
+        return -1;
     }
-    return rc;
+    rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
+    if (rc != 0) {
+        if (molt_err_pending() == 0) {
+            PyErr_SetString(PyExc_BufferError, "object does not export a buffer");
+        }
+        return -1;
+    }
+    if ((flags & PyBUF_WRITABLE) != 0 && view->_molt_view.readonly != 0) {
+        (void)molt_buffer_release(&view->_molt_view);
+        _molt_pybuffer_reset(view);
+        PyErr_SetString(PyExc_BufferError, "writable buffer requested for readonly object");
+        return -1;
+    }
+    _molt_pybuffer_apply_molt_view(view, flags);
+    view->internal = &view->_molt_view;
+    view->obj = obj;
+    Py_INCREF(obj);
+    if (!_molt_pybuffer_satisfies_flags(view, flags)) {
+        PyBuffer_Release(view);
+        PyErr_SetString(PyExc_BufferError, "requested contiguous buffer is not available");
+        return -1;
+    }
+    return 0;
 }
 
 static inline void PyBuffer_Release(Py_buffer *view) {
     if (view == NULL) {
         return;
     }
-    (void)molt_buffer_release(&view->_molt_view);
+    if (view->internal == &view->_molt_view) {
+        (void)molt_buffer_release(&view->_molt_view);
+    }
     if (view->obj != NULL) {
         Py_DECREF(view->obj);
-        view->obj = NULL;
     }
-    view->buf = NULL;
-    view->len = 0;
-    view->itemsize = 1;
-    view->readonly = 1;
-    view->ndim = 0;
-    view->format = NULL;
-    view->shape = NULL;
-    view->strides = NULL;
-    view->suboffsets = NULL;
-    view->internal = NULL;
+    _molt_pybuffer_reset(view);
 }
 
 static inline char *PyBytes_AsString(PyObject *value) {
@@ -11334,23 +11356,34 @@ static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
                                      int flags) {
     (void)flags;
     if (view == NULL) return -1;
-    memset(view, 0, sizeof(*view));
+    if (len < 0) {
+        PyErr_SetString(PyExc_ValueError, "buffer length must not be negative");
+        return -1;
+    }
+    _molt_pybuffer_reset(view);
     view->buf = buf;
     view->len = len;
     view->readonly = readonly;
     view->itemsize = 1;
     view->ndim = 1;
     view->obj = exporter;
+    view->_molt_view.data = (uint8_t *)buf;
+    view->_molt_view.len = (uint64_t)len;
+    view->_molt_view.readonly = readonly != 0 ? 1u : 0u;
+    view->_molt_view.ndim = 1;
+    view->_molt_view.itemsize = 1;
+    view->_molt_view.base = exporter != NULL ? _molt_py_handle(exporter) : 0;
+    view->_molt_view.shape[0] = len;
+    view->_molt_view.strides[0] = 1;
     if (exporter != NULL) Py_INCREF(exporter);
     return 0;
 }
 
 static inline int PyObject_CheckBuffer(PyObject *obj) {
-    MoltBufferView tmp;
+    Py_buffer tmp;
     if (obj == NULL) return 0;
-    memset(&tmp, 0, sizeof(tmp));
-    if (molt_buffer_acquire(_molt_py_handle(obj), &tmp) == 0) {
-        (void)molt_buffer_release(&tmp);
+    if (PyObject_GetBuffer(obj, &tmp, PyBUF_SIMPLE) == 0) {
+        PyBuffer_Release(&tmp);
         return 1;
     }
     if (molt_err_pending() != 0) {
