@@ -506,6 +506,21 @@ class Cell:
     cpython_stats: dict | None = None
     log_artifact: str | None = None
 
+    # Molt build/run failure custody. These flat fields mirror tools/bench.py's
+    # canonical molt_failure payload so CI artifacts can explain BUILD_FAILED and
+    # RUN_ERROR cells without requiring a separate live log fetch.
+    molt_failure: dict | None = None
+    molt_failure_phase: str | None = None
+    molt_failure_status: str | None = None
+    molt_failure_detail: str | None = None
+    molt_failure_message: str | None = None
+    molt_failure_returncode: int | None = None
+    molt_failure_timed_out: bool = False
+    molt_failure_elapsed_s: float | None = None
+    molt_failure_signal: dict | None = None
+    molt_failure_guard_violation: dict | None = None
+    molt_failure_orphaned_process_groups: list[int] = field(default_factory=list)
+
     # --- Measurement-hygiene classification (#69 --classify) --------------
     # The council's 5-state classification (orthogonal to ``verdict``): the
     # answer to "TRUE compiler target or measurement artifact?". Set only when
