@@ -11,6 +11,9 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_bool_from_i32",
     "molt_buffer_acquire",
     "molt_buffer_release",
+    "molt_memoryview_check",
+    "molt_memoryview_from_buffer",
+    "molt_memoryview_new",
     "molt_builtin_class_lookup",
     "molt_bytearray_as_ptr",
     "molt_bytearray_from",
@@ -164,6 +167,21 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
         name: "molt_buffer_release",
         params: &[ValType::I32],
         results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_memoryview_check",
+        params: &[ValType::I64],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_memoryview_from_buffer",
+        params: &[ValType::I32],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_memoryview_new",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
     },
     RuntimeHostExportSignature {
         name: "molt_builtin_class_lookup",
