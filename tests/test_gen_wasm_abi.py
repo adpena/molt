@@ -17,8 +17,20 @@ if str(WASM_ABI_GEN_ROOT) not in sys.path:
 
 from wasm_abi_gen import manifest  # noqa: E402
 
+_GEN_CACHE: object | None = None
+_MANIFEST_CACHE: dict | None = None
+_MANIFEST_CACHE_BASELINE: dict | None = None
+_RENDERED_RS_MODULES_CACHE: dict[str, str] | None = None
+_RENDERED_RUNTIME_CALLABLES_CACHE: str | None = None
+_RENDERED_PY_CACHE: str | None = None
+_RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
+_RENDERED_ALLOWED_IMPORTS_CACHE: str | None = None
+
 
 def _load_gen_wasm_abi():
+    global _GEN_CACHE
+    if _GEN_CACHE is not None:
+        return _GEN_CACHE
     spec = importlib.util.spec_from_file_location(
         "molt_test_gen_wasm_abi", GEN_WASM_ABI
     )
@@ -26,7 +38,106 @@ def _load_gen_wasm_abi():
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _install_gen_cache(module)
+    _GEN_CACHE = module
     return module
+
+
+def _install_gen_cache(gen) -> None:
+    uncached_load_manifest = gen.load_manifest
+    uncached_render_rs_modules = gen.render_rs_modules
+    uncached_render_runtime_callables_rs = gen.render_runtime_callables_rs
+    uncached_render_py = gen.render_py
+    uncached_render_table_layout_inc = gen.render_table_layout_inc
+    uncached_render_allowed_imports = gen.render_allowed_imports
+
+    def load_manifest_cached():
+        global _MANIFEST_CACHE, _MANIFEST_CACHE_BASELINE
+        if _MANIFEST_CACHE is None:
+            _MANIFEST_CACHE = uncached_load_manifest()
+            _MANIFEST_CACHE_BASELINE = copy.deepcopy(_MANIFEST_CACHE)
+        return _MANIFEST_CACHE
+
+    def render_rs_modules_cached(data: dict) -> dict[str, str]:
+        global _RENDERED_RS_MODULES_CACHE
+        if data is _MANIFEST_CACHE:
+            if _RENDERED_RS_MODULES_CACHE is None:
+                _RENDERED_RS_MODULES_CACHE = uncached_render_rs_modules(data)
+            return _RENDERED_RS_MODULES_CACHE
+        return uncached_render_rs_modules(data)
+
+    def render_runtime_callables_rs_cached(data: dict) -> str:
+        global _RENDERED_RUNTIME_CALLABLES_CACHE
+        if data is _MANIFEST_CACHE:
+            if _RENDERED_RUNTIME_CALLABLES_CACHE is None:
+                _RENDERED_RUNTIME_CALLABLES_CACHE = (
+                    uncached_render_runtime_callables_rs(data)
+                )
+            return _RENDERED_RUNTIME_CALLABLES_CACHE
+        return uncached_render_runtime_callables_rs(data)
+
+    def render_py_cached(data: dict) -> str:
+        global _RENDERED_PY_CACHE
+        if data is _MANIFEST_CACHE:
+            if _RENDERED_PY_CACHE is None:
+                _RENDERED_PY_CACHE = uncached_render_py(data)
+            return _RENDERED_PY_CACHE
+        return uncached_render_py(data)
+
+    def render_table_layout_inc_cached(data: dict) -> str:
+        global _RENDERED_TABLE_LAYOUT_INC_CACHE
+        if data is _MANIFEST_CACHE:
+            if _RENDERED_TABLE_LAYOUT_INC_CACHE is None:
+                _RENDERED_TABLE_LAYOUT_INC_CACHE = uncached_render_table_layout_inc(
+                    data
+                )
+            return _RENDERED_TABLE_LAYOUT_INC_CACHE
+        return uncached_render_table_layout_inc(data)
+
+    def render_allowed_imports_cached(data: dict) -> str:
+        global _RENDERED_ALLOWED_IMPORTS_CACHE
+        if data is _MANIFEST_CACHE:
+            if _RENDERED_ALLOWED_IMPORTS_CACHE is None:
+                _RENDERED_ALLOWED_IMPORTS_CACHE = uncached_render_allowed_imports(data)
+            return _RENDERED_ALLOWED_IMPORTS_CACHE
+        return uncached_render_allowed_imports(data)
+
+    gen.load_manifest = load_manifest_cached
+    gen.render_rs_modules = render_rs_modules_cached
+    gen.render_runtime_callables_rs = render_runtime_callables_rs_cached
+    gen.render_py = render_py_cached
+    gen.render_table_layout_inc = render_table_layout_inc_cached
+    gen.render_allowed_imports = render_allowed_imports_cached
+
+
+def _reset_render_caches() -> None:
+    global _RENDERED_RS_MODULES_CACHE
+    global _RENDERED_RUNTIME_CALLABLES_CACHE
+    global _RENDERED_PY_CACHE
+    global _RENDERED_TABLE_LAYOUT_INC_CACHE
+    global _RENDERED_ALLOWED_IMPORTS_CACHE
+
+    _RENDERED_RS_MODULES_CACHE = None
+    _RENDERED_RUNTIME_CALLABLES_CACHE = None
+    _RENDERED_PY_CACHE = None
+    _RENDERED_TABLE_LAYOUT_INC_CACHE = None
+    _RENDERED_ALLOWED_IMPORTS_CACHE = None
+
+
+@pytest.fixture(autouse=True)
+def _manifest_cache_is_read_only():
+    yield
+    global _MANIFEST_CACHE
+    if (
+        _MANIFEST_CACHE is not None
+        and _MANIFEST_CACHE_BASELINE is not None
+        and _MANIFEST_CACHE != _MANIFEST_CACHE_BASELINE
+    ):
+        _MANIFEST_CACHE = copy.deepcopy(_MANIFEST_CACHE_BASELINE)
+        _reset_render_caches()
+        raise AssertionError(
+            "tests must copy the cached WASM ABI manifest before mutating it"
+        )
 
 
 def _raw_manifest() -> dict:
@@ -192,10 +303,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert ".find(|export| *export == name)" in rendered_rs
     assert 'Self::Alloc => "molt_alloc"' in rendered_rs
     assert 'Self::RuntimeInit => "molt_runtime_init"' in rendered_rs
-    assert (
-        '"molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit)'
-        in rendered_rs
-    )
+    assert '"molt_runtime_init" => Some(WasmRuntimeImport::RuntimeInit)' in rendered_rs
     assert (
         '"molt_runtime_shutdown" => Some(WasmRuntimeImport::RuntimeShutdown)'
         in rendered_rs
@@ -297,8 +405,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "molt_types_bootstrap" not in rendered_runtime
     assert (
         f'({len(reserved_callables)}, "molt_importlib_import_transaction", '
-        '"importlib_import_transaction", 5, "trampoline")'
-        in gen.render_py(data)
+        '"importlib_import_transaction", 5, "trampoline")' in gen.render_py(data)
     )
 
     broken_marker = copy.deepcopy(data)
@@ -407,7 +514,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "use super::import_tokens::WasmRuntimeImport;" in rendered_rs
     assert "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
-    assert '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)' in rendered_rs
+    assert (
+        '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)'
+        in rendered_rs
+    )
     assert (
         '"socket_drop" => Some(WasmRuntimeImport::SocketDrop),\n'
         '        "molt_socket_drop" => Some(WasmRuntimeImport::SocketDrop),'
@@ -448,20 +558,26 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         runtime_name = entry["runtime_name"]
         symbol_path = entry["symbol_path"]
         if symbol_path == runtime_name:
-            assert f"Some(crate::{runtime_name} as *const ())" not in rendered_runtime_rs
-            assert f"let _ = crate::{runtime_name} as *const ();" not in rendered_runtime_rs
+            assert (
+                f"Some(crate::{runtime_name} as *const ())" not in rendered_runtime_rs
+            )
+            assert (
+                f"let _ = crate::{runtime_name} as *const ();"
+                not in rendered_runtime_rs
+            )
         assert f"Some({symbol_path} as *const ())" in rendered_runtime_rs
         assert f"let _ = {symbol_path} as *const ();" in rendered_runtime_rs
     assert "fn_addr!(crate::" not in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
     assert (
-        ".map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)"
-        in rendered_runtime_rs
+        ".map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)" in rendered_runtime_rs
     )
     assert 'runtime_name: "molt_type_call"' in rendered_runtime_rs
     assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' not in rendered_rs
-    assert '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
+    assert (
+        '"object_new_bound" => Some(WasmRuntimeImport::ObjectNewBound)' in rendered_rs
+    )
     assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
 
     wasm_abi = (ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs").read_text(
@@ -1217,7 +1333,10 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     assert "POLL_TABLE_IMPORTS" in rendered_rs
     assert "import: WasmRuntimeImport::AsyncSleepPoll" in rendered_rs
     assert "pub(crate) const fn poll_table_import_slot" in rendered_rs
-    assert "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(32)" in rendered_rs
+    assert (
+        "WasmRuntimeImport::ContextlibAsyncExitstackEnterContextPoll => Some(32)"
+        in rendered_rs
+    )
     assert "POLL_TABLE_FUNCS" not in rendered_rs
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(32, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
@@ -1251,18 +1370,13 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
 
     allowed = [entry["name"] for entry in data["link_allowed_import"]]
     allowed_classes = {
-        entry["name"]: entry["primitive_class"]
-        for entry in data["link_allowed_import"]
+        entry["name"]: entry["primitive_class"] for entry in data["link_allowed_import"]
     }
     external_native_classes = {
         entry["name"]: entry["primitive_class"]
         for entry in data["external_native_link_import"]
     }
-    call_indirect = [
-        name
-        for name in allowed
-        if name.startswith("molt_call_indirect")
-    ]
+    call_indirect = [name for name in allowed if name.startswith("molt_call_indirect")]
     assert "fd_write" in allowed
     assert "__indirect_function_table" in allowed
     assert allowed_classes["fd_write"] == "wasi_link_import"
@@ -1271,14 +1385,11 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     )
     assert call_indirect == [f"molt_call_indirect{arity}" for arity in range(14)]
     assert all(
-        allowed_classes[name] == "molt_indirect_call_import"
-        for name in call_indirect
+        allowed_classes[name] == "molt_indirect_call_import" for name in call_indirect
     )
     assert "molt_cbor_parse_scalar" in allowed
     assert allowed_classes["molt_cbor_parse_scalar"] == "molt_runtime_host_import"
-    assert external_native_classes["__cpp_exception"] == (
-        "wasm_toolchain_link_import"
-    )
+    assert external_native_classes["__cpp_exception"] == ("wasm_toolchain_link_import")
     assert external_native_classes["__cxa_atexit"] == "wasm_libc_link_import"
     assert external_native_classes["acos"] == "wasm_libc_link_import"
     assert external_native_classes["cpow"] == "wasm_libc_link_import"
@@ -1291,9 +1402,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert external_native_classes["vfprintf"] == "wasm_libc_link_import"
     assert external_native_classes["malloc"] == "wasm_libc_link_import"
     assert external_native_classes["vsnprintf"] == "wasm_libc_link_import"
-    assert external_native_classes["__trunctfdf2"] == (
-        "wasm_compiler_rt_link_import"
-    )
+    assert external_native_classes["__trunctfdf2"] == ("wasm_compiler_rt_link_import")
     assert len(allowed) == len(set(allowed))
     broken = copy.deepcopy(data)
     broken["link_allowed_import"] = [
