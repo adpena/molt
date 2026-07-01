@@ -22,6 +22,12 @@ def _notes(db: Path) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM proof_notes ORDER BY note_id"))
 
 
+def _edges(db: Path) -> list[sqlite3.Row]:
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    return list(conn.execute("SELECT * FROM proof_run_edges ORDER BY edge_id"))
+
+
 def test_proof_queue_session_id_is_contention_key_scoped() -> None:
     assert proof_queue._proof_session_id(
         "wasm", "wasm-build"
@@ -339,6 +345,117 @@ def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
     assert '"git": {' in notebook_text
 
 
+def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    dsl = tmp_path / "proof.toml"
+    dsl.write_text(
+        "\n".join(
+            [
+                "[[proof]]",
+                'id = "child-proof"',
+                'reason = "prove child waits"',
+                'resource_family = "python"',
+                'contention_key = "python:parent-child"',
+                'depends_on = ["parent-proof"]',
+                'edge_kind = "derives_from"',
+                'edge_note = "Child narrows the parent proof result."',
+                f'command = [{sys.executable!r}, "-c", "print(\'child\')"]',
+                "",
+                "[[proof]]",
+                'id = "parent-proof"',
+                'reason = "prove parent first"',
+                'resource_family = "python"',
+                'contention_key = "python:parent-child"',
+                f'command = [{sys.executable!r}, "-c", "print(\'parent\')"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "submit",
+                str(dsl),
+            ]
+        )
+        == 0
+    )
+
+    rows = _rows(db)
+    child = next(row for row in rows if row["logical_id"] == "child-proof")
+    parent = next(row for row in rows if row["logical_id"] == "parent-proof")
+    edges = _edges(db)
+    assert len(edges) == 1
+    assert edges[0]["parent_run_id"] == parent["run_id"]
+    assert edges[0]["child_run_id"] == child["run_id"]
+    assert edges[0]["kind"] == "derives_from"
+    assert edges[0]["note"] == "Child narrows the parent proof result."
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+                "--timeout",
+                "30",
+                "--limit",
+                "1",
+            ]
+        )
+        == 0
+    )
+    rows = _rows(db)
+    child = next(row for row in rows if row["logical_id"] == "child-proof")
+    parent = next(row for row in rows if row["logical_id"] == "parent-proof")
+    assert parent["status"] == "passed"
+    assert child["status"] == "queued"
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+                "--timeout",
+                "30",
+            ]
+        )
+        == 0
+    )
+    rows = _rows(db)
+    child = next(row for row in rows if row["logical_id"] == "child-proof")
+    assert child["status"] == "passed"
+    notebook_text = (notebooks / f"{child['run_id']}.py").read_text(encoding="utf-8")
+    assert '"parent_kind_counts": {' in notebook_text
+    assert '"derives_from": 1' in notebook_text
+
+
 def test_proof_queue_appends_notes_and_exports_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -420,6 +537,89 @@ def test_proof_queue_appends_notes_and_exports_evidence(
     assert '"head": "abc123"' in payload
     assert evidence[0]["note_kind_counts"] == {"observation": 1}
     assert "R18 is still running" in payload
+
+
+def test_proof_queue_links_runs_and_exports_dag_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    notebooks = tmp_path / "notebooks"
+    conn = proof_queue._connect(db)
+    for run_id in ("parent-run", "child-run"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove DAG link",
+            command=[sys.executable, "-c", "print('dag')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "link",
+                "child-run",
+                "--parent",
+                "parent-run",
+                "--kind",
+                "reruns",
+                "--author",
+                "codex",
+                "--note",
+                "Child replays the parent after the import fix.",
+            ]
+        )
+        == 0
+    )
+
+    edges = _edges(db)
+    assert len(edges) == 1
+    assert edges[0]["kind"] == "reruns"
+    assert edges[0]["author"] == "codex"
+    assert "import fix" in edges[0]["note"]
+    child_notebook = (notebooks / "child-run.py").read_text(encoding="utf-8")
+    assert '"parent_run_id": "parent-run"' in child_notebook
+
+    capsys.readouterr()
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "child-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    assert evidence[0]["dag"]["parent_kind_counts"] == {"reruns": 1}
+    assert evidence[0]["dag"]["parents"][0]["parent_run_id"] == "parent-run"
 
 
 def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:
@@ -507,6 +707,64 @@ def test_proof_queue_notes_are_database_append_only(tmp_path: Path) -> None:
         conn.execute("DELETE FROM proof_notes")
 
     assert [note["body"] for note in _notes(db)] == ["first observation"]
+
+
+def test_proof_queue_edges_are_append_only_and_acyclic(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id in ("a-run", "b-run"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove DAG guard",
+            command=[sys.executable, "-c", "print('dag')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="a-run",
+        child_run_id="b-run",
+        kind="depends_on",
+        note="b waits on a",
+    )
+
+    with pytest.raises(SystemExit, match="would create a cycle"):
+        proof_queue._insert_edge(
+            conn,
+            parent_run_id="b-run",
+            child_run_id="a-run",
+            kind="depends_on",
+        )
+
+    with pytest.raises(SystemExit, match="unknown proof edge kind"):
+        proof_queue._insert_edge(
+            conn,
+            parent_run_id="a-run",
+            child_run_id="b-run",
+            kind="blocks",
+        )
+
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("UPDATE proof_run_edges SET note = 'rewritten'")
+
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("DELETE FROM proof_run_edges")
+
+    edges = _edges(db)
+    assert len(edges) == 1
+    assert edges[0]["note"] == "b waits on a"
 
 
 def test_proof_queue_submit_rejects_uv_run_without_active_project_python(

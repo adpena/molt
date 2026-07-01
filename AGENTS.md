@@ -102,11 +102,14 @@ is reconciled.
   `--contention-key`, `--scope`, and `--note` describing what changed or what is
   being tested/explored and why. Prefer TOML DSL or `exec` over ad hoc
   background processes. Cite queue run IDs/log/evidence paths as evidence.
-- Queue rows record a git snapshot, append-only notes, memory-guard summaries,
-  and deterministic marimo notebook projections under
-  `logs/proof_queue/notebooks/`. Append observations with
+- Queue rows record a git snapshot, append-only notes, append-only acyclic proof
+  DAG edges, memory-guard summaries, and deterministic marimo notebook
+  projections under `logs/proof_queue/notebooks/`. Append observations with
   `tools/proof_queue.py note RUN_ID --kind observation --note "..."`; do not
-  edit/delete note history or hand-edit generated notebooks.
+  edit/delete note history, rewrite DAG edges, or hand-edit generated
+  notebooks. Use `--depends-on RUN_ID` for scheduling dependencies and
+  `tools/proof_queue.py link CHILD --parent PARENT --kind reruns --note "..."`
+  for post-submit lineage.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.
