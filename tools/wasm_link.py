@@ -103,6 +103,7 @@ from wasm_link_edit import (  # noqa: E402
     _inject_output_export_aliases as _inject_output_export_aliases,
     _is_public_output_export_name as _is_public_output_export_name,
     _memory_import_min as _memory_import_min,
+    _neutralize_linked_table_init as _neutralize_linked_table_init,
     _rename_export_names as _rename_export_names,
     _required_linked_table_min as _required_linked_table_min,
     _restore_output_export_aliases as _restore_output_export_aliases,

@@ -883,6 +883,65 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
     return _build_sections(new_sections)
 
 
+def _neutralize_linked_table_init(data: bytes) -> bytes | None:
+    """Replace linked-output ``molt_table_init`` with a no-op body.
+
+    Relocatable app modules need ``molt_table_init`` to install table entries
+    into a separate runtime table. A fully linked monolith must not replay that
+    initializer because its pre-link table indices can overlap runtime-owned
+    active table slots after wasm-ld. App-owned slots are materialized through
+    linked active element cleanup after the runtime-owned prefix is known.
+    """
+    export_indices = _collect_function_exports(data)
+    table_init_index = export_indices.get("molt_table_init")
+    if table_init_index is None:
+        return None
+
+    sections = _parse_sections(data)
+    import_count = _count_func_imports(sections)
+    local_index = table_init_index - import_count
+    if local_index < 0:
+        return None
+
+    types = _parse_type_section(sections)
+    _func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    if local_index >= len(func_type_indices):
+        return None
+    type_index = func_type_indices[local_index]
+    params, results = types[type_index]
+    if params or results:
+        raise ValueError("molt_table_init must have no params and no results")
+
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 10:
+            new_sections.append((section_id, payload))
+            continue
+
+        offset = 0
+        func_count, offset = _read_varuint(payload, offset)
+        if local_index >= func_count:
+            return None
+        rebuilt = bytearray(_write_varuint(func_count))
+        for idx in range(func_count):
+            body_size, body_start = _read_varuint(payload, offset)
+            body_end = body_start + body_size
+            if idx == local_index:
+                rebuilt.extend(_write_varuint(len(_EMPTY_FUNC_BODY)))
+                rebuilt.extend(_EMPTY_FUNC_BODY)
+                changed = True
+            else:
+                rebuilt.extend(_write_varuint(body_size))
+                rebuilt.extend(payload[body_start:body_end])
+            offset = body_end
+        new_sections.append((section_id, bytes(rebuilt)))
+
+    if not changed:
+        return None
+    return _build_sections(new_sections)
+
+
 def _runtime_import_rewrite_target(
     name: str, runtime_exports: set[str]
 ) -> tuple[str | None, bool]:
