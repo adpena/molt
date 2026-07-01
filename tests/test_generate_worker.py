@@ -573,6 +573,44 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     assert "normalizeValueForKind(value, callSignature.params[index] || null)" in browser_embed
 
 
+def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
+    assert "const extractWasmTableBase = (buffer) => {" in bridge
+    assert "const parseWasmExportFunctionSignatures = (buffer) => {" in bridge
+    assert "extractWasmTableBase," in bridge
+    assert "parseWasmExportFunctionSignatures," in bridge
+
+    consumers = {
+        "wasm/browser_host.js": (
+            "globalThis.MoltWasmLoaderBridge",
+            "extractWasmTableBase,",
+        ),
+        "wasm/run_wasm.js": (
+            "require('./loader_bridge.js')",
+            "parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge",
+        ),
+    }
+    forbidden_local_authority = (
+        "const readVarUint =",
+        "const readString =",
+        "const readLimits =",
+        "const readVarInt32 =",
+        "const skipImportDesc =",
+        "const extractWasmTableBase =",
+        "const decodeWasmValType =",
+        "const readWasmValTypeVec =",
+    )
+    for rel, required in consumers.items():
+        content = (root / rel).read_text(encoding="utf-8")
+        for needle in required:
+            assert needle in content
+        for needle in forbidden_local_authority:
+            assert needle not in content
+
+
 def test_static_browser_hosts_publish_positive_pid_surrogate() -> None:
     from pathlib import Path
 
