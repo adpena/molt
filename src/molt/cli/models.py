@@ -589,6 +589,12 @@ class _RuntimeArtifactState:
     runtime_reloc_wasm_ready_export_sets: set[frozenset[str] | None] = field(
         default_factory=set
     )
+    runtime_wasm_ready_feature_keys: set[
+        tuple[frozenset[str], frozenset[str] | None]
+    ] = field(default_factory=set)
+    runtime_reloc_wasm_ready_feature_keys: set[
+        tuple[frozenset[str], frozenset[str] | None]
+    ] = field(default_factory=set)
     runtime_lib_ready_future: Future[bool] | None = None
 
 

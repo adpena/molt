@@ -545,11 +545,19 @@ def _ensure_runtime_wasm_artifact(
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
     )
     requested_exports = None if required_exports is None else frozenset(required_exports)
+    requested_features = frozenset(required_link_features)
     ready_export_sets = (
         runtime_state.runtime_reloc_wasm_ready_export_sets
         if reloc
         else runtime_state.runtime_wasm_ready_export_sets
     )
+    ready_feature_keys = (
+        runtime_state.runtime_reloc_wasm_ready_feature_keys
+        if reloc
+        else runtime_state.runtime_wasm_ready_feature_keys
+    )
+    ready_key = (requested_features, requested_exports)
+    ready_all_exports_key = (requested_features, None)
     ready = (
         runtime_state.runtime_reloc_wasm_ready
         if reloc
@@ -557,10 +565,15 @@ def _ensure_runtime_wasm_artifact(
     )
     if runtime_path is None:
         return True
-    if None in ready_export_sets or requested_exports in ready_export_sets:
+    if ready_key in ready_feature_keys or ready_all_exports_key in ready_feature_keys:
         return True
-    if ready and required_exports is None:
+    if not requested_features and (
+        None in ready_export_sets or requested_exports in ready_export_sets
+    ):
+        return True
+    if ready and required_exports is None and not requested_features:
         ready_export_sets.add(None)
+        ready_feature_keys.add(ready_key)
         return True
     if not _ensure_runtime_wasm(
         runtime_path,
@@ -582,6 +595,7 @@ def _ensure_runtime_wasm_artifact(
     else:
         runtime_state.runtime_wasm_ready = True
     ready_export_sets.add(requested_exports)
+    ready_feature_keys.add(ready_key)
     return True
 
 

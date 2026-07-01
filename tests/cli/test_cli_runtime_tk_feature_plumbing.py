@@ -116,6 +116,10 @@ def test_wasm_runtime_feature_plan_requires_gpu_authority() -> None:
 
     assert "molt_gpu_primitives" not in cargo_features
     assert "molt_gpu_primitives" not in fingerprint_features
+    assert "builtin_set" not in cargo_features
+    assert "stdlib_crypto" not in cargo_features
+    assert "stdlib_serial" not in cargo_features
+    assert "stdlib_micro" in cargo_features
 
     _no_defaults, required_cargo, _required_fingerprint = (
         RUNTIME_FEATURES._wasm_runtime_feature_plan(
@@ -123,7 +127,7 @@ def test_wasm_runtime_feature_plan_requires_gpu_authority() -> None:
             runtime_features=(),
             builtin_features=builtin_features,
             resolved_modules=frozenset(),
-            required_link_features={"molt_gpu_primitives"},
+            required_link_features={"builtin_set", "molt_gpu_primitives"},
         )
     )
     _no_defaults, resolved_cargo, _resolved_fingerprint = (
@@ -136,6 +140,7 @@ def test_wasm_runtime_feature_plan_requires_gpu_authority() -> None:
     )
 
     assert "molt_gpu_primitives" in required_cargo
+    assert "builtin_set" in required_cargo
     assert "molt_gpu_primitives" in resolved_cargo
 
 
@@ -893,9 +898,11 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
         sysroot_path: Path | None,
         profile: str,
         stdlib_obj_path: Path | None = None,
+        export_molt_runtime_symbols: bool = False,
     ) -> tuple[list[str], str | None, str | None]:
         del output_obj, stub_path, output_binary, target_triple, sysroot_path, profile
         del stdlib_obj_path
+        assert not export_molt_runtime_symbols
         captured_runtime_libs.append(runtime_lib)
         return ["clang", str(runtime_lib)], None, None
 
