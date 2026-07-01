@@ -1292,10 +1292,10 @@ pub mod interpret {
                         FusedSrc::Buf(idx) => {
                             let buf = &bufs[*idx];
                             let offset = base * 4; // 4 bytes per f32
-                                                   // Load 4 contiguous f32 values in one shot via pointer cast.
-                                                   // CpuBuffer allocations are at least 16-byte aligned,
-                                                   // and base is always a multiple of 4 (chunk * 4), so offset is
-                                                   // always 16-byte aligned. Use ptr::read for aligned access.
+                            // Load 4 contiguous f32 values in one shot via pointer cast.
+                            // CpuBuffer allocations are at least 16-byte aligned,
+                            // and base is always a multiple of 4 (chunk * 4), so offset is
+                            // always 16-byte aligned. Use ptr::read for aligned access.
                             let ptr = buf[offset..].as_ptr() as *const [f32; 4];
                             // SAFETY: Buffer is at least 16-byte aligned,
                             // offset is 16-byte aligned (base = chunk * 4, so offset = chunk * 16),
@@ -1710,20 +1710,12 @@ pub mod interpret {
             PrimitiveOp::Idiv => {
                 let a = get_src(0) as i64;
                 let b = get_src(1) as i64;
-                if b == 0 {
-                    0.0
-                } else {
-                    (a / b) as f64
-                }
+                if b == 0 { 0.0 } else { (a / b) as f64 }
             }
             PrimitiveOp::Mod => {
                 let a = get_src(0) as i64;
                 let b = get_src(1) as i64;
-                if b == 0 {
-                    0.0
-                } else {
-                    (a % b) as f64
-                }
+                if b == 0 { 0.0 } else { (a % b) as f64 }
             }
             PrimitiveOp::Neg => -get_src(0),
             PrimitiveOp::Cmplt => {

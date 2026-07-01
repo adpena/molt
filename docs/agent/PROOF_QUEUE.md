@@ -57,6 +57,37 @@ uv run --active --project . --python 3.12 ...
 Non-active `uv run` is rejected because it creates throwaway environments and
 destroys proof latency.
 
+## Detached Long Runs
+
+Do not hand-roll background proof launchers with PowerShell `Start-Process`,
+shell-specific quoting, or Codex interactive sessions. The queue owns detached
+launch:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
+  --id runtime-buffer-descriptor-authority `
+  --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
+  --resource-family cargo `
+  --contention-key cargo:molt-runtime-buffer `
+  --scope runtime/molt-runtime/src/object/memoryview.rs `
+  --note "Detached queue-owned runner for the focused buffer proof." `
+  --timeout 900 `
+  --detach `
+  -- cargo test -p molt-runtime --lib buffer -- --nocapture
+```
+
+Named lanes support the same mode:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --detach
+```
+
+Detached submission creates a queued row, starts a queue-owned runner for that
+exact run ID, and prints both the run ID and `*.runner.log`. The runner then
+uses `tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
+queued row. WASM resource families also preflight the checked-in Rust toolchain
+contract and install/check required Rust targets before Cargo starts.
+
 ## Latency Discipline
 
 Treat avoidable proof latency as a bug. Before spending a heavy slot, ask
@@ -111,6 +142,12 @@ build` commands for this contract:
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance
+```
+
+For the normal heavyweight lane, prefer:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --detach
 ```
 
 `pact-witness-acceptance` renders to `tools/pact_witness_acceptance.py`. That

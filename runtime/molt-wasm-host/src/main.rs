@@ -1,4 +1,4 @@
-﻿use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail};
 use base64::Engine as Base64Engine;
 use base64::engine::general_purpose::STANDARD;
 use molt_runtime::vfs::snapshot::SnapshotHeader;

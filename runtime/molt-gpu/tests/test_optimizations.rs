@@ -7,9 +7,9 @@
 //! - SIMD path correctness (when simd-accel feature enabled)
 //! - Page-aligned allocations
 
+use molt_gpu::device::Allocator;
 use molt_gpu::device::arena::{Arena, ArenaConfig};
 use molt_gpu::device::cpu::CpuDevice;
-use molt_gpu::device::Allocator;
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::*;

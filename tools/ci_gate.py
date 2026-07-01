@@ -222,6 +222,15 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="rust-toolchain",
+            tier=1,
+            cmd=[sys.executable, str(TOOLS / "check_rust_toolchain.py")],
+            timeout=30,
+            needs_cargo=True,
+        )
+    )
+    checks.append(
+        Check(
             name="rustfmt",
             tier=1,
             cmd=[sys.executable, str(TOOLS / "check_rustfmt.py"), "--all"],

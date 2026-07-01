@@ -191,6 +191,188 @@ def test_proof_queue_status_shows_active_log_phase(
     assert "Runtime wasm build: still running elapsed=120s" in out
 
 
+def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    calls: list[tuple[str, Path | None]] = []
+
+    def fake_ensure(
+        target: str, warnings: list[str], *, root: Path | None = None
+    ) -> bool:
+        del warnings
+        calls.append((target, root))
+        return True
+
+    monkeypatch.setattr(proof_queue.wasm_toolchain, "ensure_rustup_target", fake_ensure)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "wasm-preflight",
+            "--reason",
+            "prove wasm target preflight",
+            "--resource-family",
+            "wasm-browser",
+            "--contention-key",
+            "wasm:preflight",
+            "--",
+            sys.executable,
+            "-c",
+            "print('ran')",
+        ]
+    )
+
+    assert rc == 0
+    assert calls == [
+        (target, proof_queue.ROOT)
+        for target in proof_queue.wasm_toolchain.rust_toolchain_contract(
+            proof_queue.ROOT
+        ).required_wasm_targets
+    ]
+    assert ("wasm32-wasip1", proof_queue.ROOT) in calls
+    rows = _rows(db)
+    assert rows[0]["status"] == "passed"
+    assert "ran" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+
+
+def test_proof_queue_wasm_preflight_fails_before_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    def fake_ensure(
+        target: str, warnings: list[str], *, root: Path | None = None
+    ) -> bool:
+        del root
+        warnings.append(f"missing {target}")
+        return False
+
+    monkeypatch.setattr(proof_queue.wasm_toolchain, "ensure_rustup_target", fake_ensure)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "wasm-preflight-fail",
+            "--reason",
+            "prove wasm target preflight fails closed",
+            "--resource-family",
+            "wasm-browser",
+            "--contention-key",
+            "wasm:preflight-fail",
+            "--",
+            sys.executable,
+            "-c",
+            "print('should-not-run')",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 2
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "proof queue toolchain preflight failed" in log_text
+    assert "missing wasm32-wasip1" in log_text
+    assert "should-not-run" in log_text
+
+
+def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id, marker in (("queued-a", "A"), ("queued-b", "B")):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=f"run {marker}",
+            command=[sys.executable, "-c", f"print('{marker}')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{marker}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--run-id",
+            "queued-b",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rc == 0
+    assert rows["queued-a"]["status"] == "queued"
+    assert rows["queued-b"]["status"] == "passed"
+    assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
+
+
+def test_proof_queue_named_lane_can_detach_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    launched: dict[str, object] = {}
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args
+        launched["run_id"] = run_id
+        launched["timeout"] = timeout
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "pact-witness-oracle",
+            "--timeout",
+            "42",
+            "--detach",
+            "--note",
+            "detached queue launch smoke",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]["status"] == "queued"
+    assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
+    assert [note["body"] for note in _notes(db)][-1:] == ["detached queue launch smoke"]
+
+
 def test_proof_queue_rejects_uv_run_without_active_project_python(
     tmp_path: Path,
 ) -> None:
@@ -876,7 +1058,10 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
 
     roots = proof_queue._pact_witness_native_roots(repo_root=tmp_path)
 
-    assert roots == [artifact_root.resolve(), *(root.resolve() for root in source_roots)]
+    assert roots == [
+        artifact_root.resolve(),
+        *(root.resolve() for root in source_roots),
+    ]
 
 
 def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:

@@ -9,8 +9,8 @@
 //!   - Read-only mounts must reject writes regardless of capabilities.
 
 use libfuzzer_sys::fuzz_target;
-use molt_runtime::vfs::caps::check_mount_capability;
 use molt_runtime::vfs::VfsError;
+use molt_runtime::vfs::caps::check_mount_capability;
 
 /// Known mount prefixes from the capability table.
 const KNOWN_PREFIXES: &[&str] = &["/bundle", "/tmp", "/state", "/dev"];
@@ -96,8 +96,7 @@ fuzz_target!(|data: &[u8]| {
     // (d) /bundle writes must always be ReadOnly, regardless of capabilities.
     if is_write
         && (mount_prefix == "/bundle"
-            || (mount_prefix.starts_with("/bundle/")
-                && mount_prefix.len() > "/bundle".len()))
+            || (mount_prefix.starts_with("/bundle/") && mount_prefix.len() > "/bundle".len()))
     {
         assert!(
             matches!(result, Err(VfsError::ReadOnly)),
@@ -111,8 +110,7 @@ fuzz_target!(|data: &[u8]| {
         // /dev requires no capabilities, so Ok is valid even with deny-all.
         assert!(
             mount_prefix == "/dev"
-                || (mount_prefix.starts_with("/dev/")
-                    && mount_prefix.len() > "/dev".len()),
+                || (mount_prefix.starts_with("/dev/") && mount_prefix.len() > "/dev".len()),
             "Ok(()) with deny-all caps on non-/dev mount: {mount_prefix:?}"
         );
     }

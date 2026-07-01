@@ -1284,6 +1284,33 @@ def test_windows_msvc_env_reports_inactive_dev_shell(
     assert any("VsDevCmd.bat" in advice for advice in msvc["advice"])
 
 
+def test_update_toolchain_plan_uses_pinned_rust_and_wasi_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: "rustup" if name == "rustup" else None,
+        raising=True,
+    )
+
+    steps, warnings = TOOLCHAIN_VALIDATION._planned_update_steps(
+        ROOT,
+        include_toolchains=True,
+        include_locks=False,
+        include_manifests=False,
+    )
+
+    commands = {step.name: step.cmd for step in steps}
+    install_cmd = commands["rustup-install-pinned-toolchain"]
+    assert install_cmd == WASM_TOOLCHAIN.rustup_toolchain_install_cmd(ROOT)
+    assert "1.96.1" in install_cmd
+    assert "wasm32-wasip1" in install_cmd
+    assert "rustup-target-add-wasm32-wasip1" not in commands
+    assert all("stable" not in command for cmd in commands.values() for command in cmd)
+    assert "cargo is not installed" in "; ".join(warnings)
+
+
 def test_llvm_detection_rejects_mismatched_config_major(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

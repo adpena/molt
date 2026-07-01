@@ -160,9 +160,9 @@ For a normal repo refresh:
 molt update
 ```
 
-This updates the Rust stable toolchain, ensures the wasm Rust targets exist,
-installs missing cargo-hosted helper tools such as `wasm-tools`/`wasm-pack`,
-and refreshes the repo lockfiles.
+This installs the Rust toolchain pinned by `rust-toolchain.toml`, ensures the
+checked-in WASM Rust targets exist, installs missing cargo-hosted helper tools
+such as `wasm-tools`/`wasm-pack`, and refreshes the repo lockfiles.
 
 Python dependency resolution is uv-owned and future-forward. The project floor
 is CPython `>=3.12` with no artificial upper cap; run floor checks with

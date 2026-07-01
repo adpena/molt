@@ -531,22 +531,16 @@ pub fn molt_class_merge_layout(
     let mut merged_offsets: Option<Vec<(MoltValue, MoltValue)>> = None;
     match offsets {
         MoltValue::None => {
-            if let Some((_, MoltValue::Dict(existing))) = class_dict
-                .iter()
-                .find(
-                    |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_field_offsets__"),
-                )
-            {
+            if let Some((_, MoltValue::Dict(existing))) = class_dict.iter().find(
+                |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_field_offsets__"),
+            ) {
                 merged_offsets = Some(existing.clone());
             }
         }
         MoltValue::Dict(source_offsets) => {
-            let target_index = if let Some(index) = class_dict
-                .iter()
-                .position(
-                    |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_field_offsets__"),
-                )
-            {
+            let target_index = if let Some(index) = class_dict.iter().position(
+                |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_field_offsets__"),
+            ) {
                 index
             } else {
                 class_dict.push((
@@ -603,9 +597,7 @@ pub fn molt_class_merge_layout(
 
     if let Some((_, value)) = class_dict
         .iter_mut()
-        .find(
-            |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_layout_size__"),
-        )
+        .find(|(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_layout_size__"))
     {
         *value = MoltValue::Int(layout_size as i64);
     } else {
@@ -699,20 +691,12 @@ pub fn molt_abs(x: MoltValue) -> MoltValue {
 
 /// Python `min(a, b)`.
 pub fn molt_min(a: MoltValue, b: MoltValue) -> MoltValue {
-    if molt_le(&a, &b) {
-        a
-    } else {
-        b
-    }
+    if molt_le(&a, &b) { a } else { b }
 }
 
 /// Python `max(a, b)`.
 pub fn molt_max(a: MoltValue, b: MoltValue) -> MoltValue {
-    if molt_ge(&a, &b) {
-        a
-    } else {
-        b
-    }
+    if molt_ge(&a, &b) { a } else { b }
 }
 
 /// Python `chr(x)`.

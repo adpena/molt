@@ -22,6 +22,7 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import _find_molt_root, _require_molt_root
+from molt.cli import wasm_toolchain
 
 from molt.cli.setup_readiness import (
     _canonical_env_defaults,
@@ -58,28 +59,17 @@ def _planned_update_steps(
 
     if include_toolchains:
         if shutil.which("rustup"):
-            steps.extend(
-                [
+            try:
+                steps.append(
                     _MaintenanceStep(
-                        "rustup-update-stable",
-                        ["rustup", "update", "stable"],
+                        "rustup-install-pinned-toolchain",
+                        wasm_toolchain.rustup_toolchain_install_cmd(root),
                         root,
                         "toolchain",
-                    ),
-                    _MaintenanceStep(
-                        "rustup-target-add-wasm32-unknown-unknown",
-                        ["rustup", "target", "add", "wasm32-unknown-unknown"],
-                        root,
-                        "toolchain",
-                    ),
-                    _MaintenanceStep(
-                        "rustup-target-add-wasm32-wasip1",
-                        ["rustup", "target", "add", "wasm32-wasip1"],
-                        root,
-                        "toolchain",
-                    ),
-                ]
-            )
+                    )
+                )
+            except wasm_toolchain.RustToolchainContractError as exc:
+                warnings.append(str(exc))
         else:
             warnings.append(
                 "rustup is not installed; skipping Rust toolchain refresh steps"

@@ -950,8 +950,8 @@ mod metal_tests {
     use super::*;
     use molt_gpu::device::metal::MetalDevice;
     use molt_gpu::device::{Allocator, Compiler, Executor};
-    use molt_gpu::render::msl::MslRenderer;
     use molt_gpu::render::Renderer;
+    use molt_gpu::render::msl::MslRenderer;
 
     #[test]
     fn test_metal_add() {

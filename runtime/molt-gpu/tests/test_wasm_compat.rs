@@ -219,8 +219,8 @@ mod wasm_api_leak_tests {
     /// verify by instantiating the device without any Mutex-dependent paths.
     #[test]
     fn test_no_mutex_in_wasm_device() {
-        use molt_gpu::device::wasm_cpu::WasmCpuDevice;
         use molt_gpu::device::Compiler;
+        use molt_gpu::device::wasm_cpu::WasmCpuDevice;
 
         let device = WasmCpuDevice::new();
         // If this compiled and runs, the device doesn't require Mutex at runtime.

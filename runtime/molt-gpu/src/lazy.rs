@@ -4,8 +4,8 @@
 //! No GPU kernel is executed until realize() is called. This enables
 //! the fusion engine to see the full computation graph.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;

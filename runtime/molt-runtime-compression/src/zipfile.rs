@@ -9,8 +9,8 @@ use crate::bridge::*;
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 // ── Handle-id counter ───────────────────────────────────────────────────
 // ── Archive state ───────────────────────────────────────────────────────

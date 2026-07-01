@@ -4,7 +4,7 @@ runtime vs CPython.
 
 Measures the full Molt -> Rust -> native pipeline:
   1. Transpile:  molt build --target rust
-  2. Compile:    rustc -O --edition=2021
+  2. Compile:    rustc -O --edition=2024
   3. Run:        native binary vs CPython
 
 Reports: transpile time, compile time, output size, runtime, speedup vs CPython,
@@ -206,7 +206,7 @@ def compile_rust(
         rs_path,
         "-o",
         bin_path,
-        "--edition=2021",
+        "--edition=2024",
         *(["-O"] if optimize else []),
         *[flag for lint in allow_lints for flag in ("-A", lint)],
     ]

@@ -118,6 +118,7 @@ clean-artifacts = "{project_python} tools/artifact_cleanup.py"
 bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-out bench/results/dev-bench-smoke.json"
 rustfmt = "{project_python} tools/check_rustfmt.py --changed --write"
 rustfmt-check = "{project_python} tools/check_rustfmt.py --changed"
+rust-toolchain-check = "{project_python} tools/check_rust_toolchain.py"
 format = [
     "{project_python} -m ruff format .",
     "@rustfmt",
@@ -131,6 +132,7 @@ memory-guard-wiring-audit = "{project_python} tools/check_memory_guard_wiring.py
 dev-tooling-test = "{project_python} -m pytest -q -p no:cacheprovider tests/test_molt_dev.py"
 lint = [
     "{project_python} -m ruff check .",
+    "@rust-toolchain-check",
     "@format-check",
     "{project_python} -m ty check src",
     "{project_python} tools/verified_subset.py check",

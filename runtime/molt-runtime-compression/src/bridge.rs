@@ -19,7 +19,7 @@ extern "C" {
     /// `index_i64_from_obj(_py, bits, err) -> i64`
     /// `err_ptr`/`err_len` are a UTF-8 string slice for the error message.
     pub fn molt_bridge_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize)
-        -> i64;
+    -> i64;
 
     // -- Exceptions -----------------------------------------------------------
     /// `raise_exception::<u64>(_py, kind, msg) -> u64`
@@ -141,11 +141,7 @@ pub fn index_i64_from_obj(_py: &PyToken, bits: u64, err: &str) -> i64 {
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
     let mut ok = false;
     let val = unsafe { molt_bridge_to_i64(obj.bits(), &mut ok) };
-    if ok {
-        Some(val)
-    } else {
-        None
-    }
+    if ok { Some(val) } else { None }
 }
 
 /// Allocate a new bytes object. Returns null on OOM.

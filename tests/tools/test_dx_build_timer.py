@@ -111,7 +111,7 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
     module._write_snapshot(
         args,
         {"inc-value_range": {"samples_sec": [1.25], "rc": 0}},
-        cargo_version="cargo 1.96.0",
+        cargo_version="cargo 1.96.1",
         prime={"elapsed_sec": 0.5, "rc": 0, "cmd": ["cargo", "build"]},
         active={"label": "test-lib", "run": 1, "cmd": ["cargo", "test"]},
     )

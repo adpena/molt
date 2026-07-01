@@ -98,7 +98,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: wasm32-wasip1
 

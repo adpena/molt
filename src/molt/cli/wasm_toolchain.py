@@ -1,14 +1,180 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import functools
 import os
 import shutil
 from pathlib import Path
+import tomllib
 
 from molt.cli.command_runtime import _run_completed_command
 
 
 _WASI_TARGET_INCLUDE_DIRS = ("wasm32-wasip1", "wasm32-wasi")
+_REQUIRED_WASM_RUST_TARGETS = ("wasm32-wasip1",)
+
+
+class RustToolchainContractError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class RustToolchainContract:
+    channel: str | None
+    components: tuple[str, ...]
+    targets: tuple[str, ...]
+
+    @property
+    def rustup_toolchain_args(self) -> tuple[str, ...]:
+        return () if self.channel is None else ("--toolchain", self.channel)
+
+    @property
+    def required_wasm_targets(self) -> tuple[str, ...]:
+        targets: list[str] = []
+        for target in (*_REQUIRED_WASM_RUST_TARGETS, *self.targets):
+            if target.startswith("wasm32") and target not in targets:
+                targets.append(target)
+        return tuple(targets)
+
+
+@functools.lru_cache(maxsize=32)
+def rust_toolchain_contract(root: Path | str | None = None) -> RustToolchainContract:
+    root_path = Path(root).resolve(strict=False) if root is not None else None
+    toolchain_path = (
+        root_path / "rust-toolchain.toml" if root_path is not None else None
+    )
+    if toolchain_path is None or not toolchain_path.exists():
+        return RustToolchainContract(channel=None, components=(), targets=())
+    try:
+        data = tomllib.loads(toolchain_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RustToolchainContractError(
+            f"invalid Rust toolchain contract {toolchain_path}: {exc}"
+        ) from exc
+    toolchain = data.get("toolchain", {})
+    if not isinstance(toolchain, dict):
+        toolchain = {}
+    channel_raw = toolchain.get("channel")
+    channel = channel_raw.strip() if isinstance(channel_raw, str) else None
+    if not channel:
+        channel = None
+
+    def string_tuple(key: str) -> tuple[str, ...]:
+        value = toolchain.get(key, ())
+        if not isinstance(value, list):
+            return ()
+        return tuple(
+            item.strip() for item in value if isinstance(item, str) and item.strip()
+        )
+
+    return RustToolchainContract(
+        channel=channel,
+        components=string_tuple("components"),
+        targets=string_tuple("targets"),
+    )
+
+
+def rustup_toolchain_install_cmd(root: Path) -> list[str]:
+    contract = rust_toolchain_contract(root)
+    cmd = ["rustup", "toolchain", "install"]
+    if contract.channel is not None:
+        cmd.append(contract.channel)
+    else:
+        cmd.append("stable")
+    cmd.extend(["--profile", "minimal"])
+    for component in contract.components:
+        cmd.extend(["--component", component])
+    for target in contract.required_wasm_targets:
+        cmd.extend(["--target", target])
+    return cmd
+
+
+def rustup_target_add_cmd(target_triple: str, root: Path | None = None) -> list[str]:
+    contract = rust_toolchain_contract(root)
+    return [
+        "rustup",
+        "target",
+        "add",
+        target_triple,
+        *contract.rustup_toolchain_args,
+    ]
+
+
+def rustup_installed_targets(root: Path | None = None) -> tuple[str, ...] | None:
+    rustup = shutil.which("rustup")
+    if rustup is None:
+        return None
+    contract = rust_toolchain_contract(root)
+    try:
+        result = _run_completed_command(
+            [
+                rustup,
+                "target",
+                "list",
+                "--installed",
+                *contract.rustup_toolchain_args,
+            ],
+            capture_output=True,
+            env=None,
+            cwd=root,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return tuple(result.stdout.split())
+
+
+def ensure_rustup_target(
+    target_triple: str, warnings: list[str], *, root: Path | None = None
+) -> bool:
+    rustup_path = shutil.which("rustup")
+    if not rustup_path:
+        warnings.append(f"rustup not found; cannot ensure target {target_triple}")
+        return False
+    try:
+        installed = rustup_installed_targets(root)
+    except RustToolchainContractError as exc:
+        warnings.append(str(exc))
+        return False
+    if installed is None:
+        warnings.append(f"Failed to query rustup targets for {target_triple}")
+        return False
+    if target_triple in installed:
+        return True
+    add_command = rustup_target_add_cmd(target_triple, root)
+    add_command[0] = rustup_path
+    try:
+        add = _run_completed_command(
+            add_command,
+            capture_output=True,
+            env=None,
+            cwd=root,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+    except OSError as exc:
+        warnings.append(f"Failed to install rustup target {target_triple}: {exc}")
+        return False
+    if add.returncode != 0:
+        detail = (add.stderr or add.stdout).strip() or "unknown error"
+        warnings.append(f"rustup target add failed for {target_triple}: {detail}")
+        return False
+    rust_target_libdir.cache_clear()
+    return True
+
+
+def rust_target_missing_message(
+    target_triple: str, *, root: Path | None = None, context: str = "WASM build"
+) -> str:
+    try:
+        cmd = rustup_target_add_cmd(target_triple, root)
+    except RustToolchainContractError as exc:
+        return f"{context} cannot resolve Rust target setup: {exc}"
+    return (
+        f"{context} requires Rust target {target_triple}, but the active Rust "
+        f"toolchain does not provide it. Run: {' '.join(cmd)}"
+    )
 
 
 def _normalize_target_include_path(candidate: Path) -> Path | None:

@@ -36,6 +36,20 @@ def test_generated_rust_is_classified_by_header(tmp_path) -> None:
     assert tool.generated_owner(generated) == "python tools/gen_codecs.py --check"
 
 
+def test_third_party_rust_is_skipped_by_default(tmp_path, monkeypatch) -> None:
+    tool = _load_check_rustfmt()
+    monkeypatch.setattr(tool, "ROOT", tmp_path)
+    source = tmp_path / "vendor" / "crate" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn vendored() {}\n", encoding="utf-8")
+
+    selection = tool.select_rust_paths((Path("vendor/crate/src/lib.rs"),))
+
+    assert selection.human == ()
+    assert selection.generated == ()
+    assert selection.third_party == (Path("vendor/crate/src/lib.rs"),)
+
+
 def test_rustfmt_command_chunking_keeps_windows_command_lines_bounded() -> None:
     tool = _load_check_rustfmt()
     paths = tuple(Path(f"runtime/crate/src/{idx:04d}_module.rs") for idx in range(800))
@@ -94,6 +108,27 @@ def test_write_mode_preserves_noop_crlf_bytes(monkeypatch, tmp_path) -> None:
 
     assert tool._run_rustfmt((Path("src/main.rs"),), check=False, edition="2024") == 0
     assert source.read_bytes() == b'fn main() {\r\n    println!("ok");\r\n}\r\n'
+
+
+def test_rustfmt_stdout_selects_requested_windows_section(
+    monkeypatch, tmp_path
+) -> None:
+    tool = _load_check_rustfmt()
+    monkeypatch.setattr(tool, "ROOT", tmp_path)
+    source = tmp_path / "src" / "lib.rs"
+    child = tmp_path / "src" / "child.rs"
+    source.parent.mkdir()
+    payload = (
+        f"\\\\?\\{source}:\n\n".encode("utf-8")
+        + b"mod child;\n"
+        + f"\n\\\\?\\{child}:\n\n".encode("utf-8")
+        + b"pub fn child() {}\n"
+    )
+
+    assert (
+        tool._select_rustfmt_stdout_section(payload, Path("src/lib.rs"))
+        == b"mod child;\n"
+    )
 
 
 def test_write_mode_rewrites_real_format_drift(monkeypatch, tmp_path) -> None:
