@@ -123,6 +123,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             contention_key TEXT NOT NULL,
             scopes_json TEXT NOT NULL,
             env_json TEXT NOT NULL DEFAULT '{}',
+            git_json TEXT NOT NULL DEFAULT '{}',
             log_path TEXT NOT NULL,
             summary_json TEXT NOT NULL,
             guard_pid INTEGER,
@@ -132,12 +133,274 @@ def _connect(db: Path) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS proof_notes (
+            note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            author TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            body TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES proof_runs(run_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS proof_notes_run_id_note_id ON proof_notes(run_id, note_id)"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_notes_append_only_no_update
+        BEFORE UPDATE ON proof_notes
+        BEGIN
+            SELECT RAISE(ABORT, 'proof_notes is append-only');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_notes_append_only_no_delete
+        BEFORE DELETE ON proof_notes
+        BEGIN
+            SELECT RAISE(ABORT, 'proof_notes is append-only');
+        END
+        """
+    )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(proof_runs)")}
     if "env_json" not in columns:
         conn.execute(
             "ALTER TABLE proof_runs ADD COLUMN env_json TEXT NOT NULL DEFAULT '{}'"
         )
+    if "git_json" not in columns:
+        conn.execute(
+            "ALTER TABLE proof_runs ADD COLUMN git_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    conn.commit()
     return conn
+
+
+def _default_note_author() -> str:
+    for name in ("MOLT_PROOF_QUEUE_AUTHOR", "USERNAME", "USER"):
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    return "agent"
+
+
+def _insert_note(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    body: str,
+    kind: str = "note",
+    author: str | None = None,
+) -> int:
+    body = body.strip()
+    kind = kind.strip() or "note"
+    author = (author or _default_note_author()).strip() or "agent"
+    if not body:
+        raise SystemExit("proof note body must not be empty")
+    exists = conn.execute(
+        "SELECT 1 FROM proof_runs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if exists is None:
+        raise SystemExit(f"unknown proof run {run_id!r}")
+    cursor = conn.execute(
+        """
+        INSERT INTO proof_notes (run_id, created_at, author, kind, body)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (run_id, _utc_now(), author, kind, body),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def _notes_from_raw(raw: object) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        return list(raw)
+    raise SystemExit("proof notes must be a string or list of strings")
+
+
+def _notes_for_run_ids(
+    conn: sqlite3.Connection, run_ids: list[str]
+) -> dict[str, list[dict[str, object]]]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    conn.row_factory = sqlite3.Row
+    rows = list(
+        conn.execute(
+            f"""
+            SELECT note_id, run_id, created_at, author, kind, body
+            FROM proof_notes
+            WHERE run_id IN ({placeholders})
+            ORDER BY run_id, note_id
+            """,
+            tuple(run_ids),
+        )
+    )
+    out: dict[str, list[dict[str, object]]] = {run_id: [] for run_id in run_ids}
+    for row in rows:
+        out.setdefault(row["run_id"], []).append(
+            {
+                "note_id": row["note_id"],
+                "run_id": row["run_id"],
+                "created_at": row["created_at"],
+                "author": row["author"],
+                "kind": row["kind"],
+                "body": row["body"],
+            }
+        )
+    return out
+
+
+def _format_note_summary(notes: list[dict[str, object]]) -> str | None:
+    if not notes:
+        return None
+    last = notes[-1]
+    return (
+        f"  notes={len(notes)} last_note="
+        f"{last['kind']} by {last['author']}: {_shorten(str(last['body']))}"
+    )
+
+
+def _git_snapshot(cwd: Path) -> dict[str, object]:
+    def run_git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+
+    head = run_git("rev-parse", "HEAD")
+    if head.returncode != 0:
+        return {"available": False}
+    status = run_git("status", "--short")
+    status_lines = status.stdout.splitlines() if status.returncode == 0 else []
+    return {
+        "available": True,
+        "head": head.stdout.strip(),
+        "dirty": bool(status_lines),
+        "status": status_lines[:200],
+    }
+
+
+def _notebooks_root(args: argparse.Namespace) -> Path:
+    return (
+        Path(args.notebooks_root)
+        if getattr(args, "notebooks_root", None)
+        else _logs_root(args).parent / "notebooks"
+    )
+
+
+def _run_payload_with_notes(
+    conn: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> list[dict[str, object]]:
+    payload = [_row_to_payload(row) for row in rows]
+    notes = _notes_for_run_ids(conn, [str(item["run_id"]) for item in payload])
+    for item in payload:
+        item["notes"] = notes.get(str(item["run_id"]), [])
+    return payload
+
+
+def _marimo_notebook_text(run: dict[str, object]) -> str:
+    run_json = json.dumps(run, indent=2, sort_keys=True)
+    return f'''# /// script
+# dependencies = [
+#   "marimo",
+# ]
+# ///
+import marimo
+
+__generated_with = "molt proof_queue"
+app = marimo.App(width="medium")
+
+
+@app.cell
+def _():
+    import json
+    from pathlib import Path
+    import marimo as mo
+
+    run = json.loads({run_json!r})
+    notes = run.get("notes", [])
+    return Path, mo, notes, run
+
+
+@app.cell
+def _(mo, run):
+    git = run.get("git", {{}})
+    head = git.get("head", "unknown")
+    dirty = "dirty" if git.get("dirty") else "clean"
+    mo.md(
+        f"""
+# Proof run `{{run["run_id"]}}`
+
+- logical id: `{{run["logical_id"]}}`
+- status: `{{run["status"]}}`, return code: `{{run["returncode"]}}`
+- git: `{{head}}` (`{{dirty}}`)
+- contention key: `{{run["contention_key"]}}`
+- reason: {{run["reason"]}}
+"""
+    )
+    return
+
+
+@app.cell
+def _(run):
+    run
+    return
+
+
+@app.cell
+def _(notes):
+    notes
+    return
+
+
+@app.cell
+def _(Path, run):
+    log_path = Path(run["log_path"])
+    if log_path.exists():
+        log_tail = "\\n".join(
+            log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-120:]
+        )
+    else:
+        log_tail = ""
+    log_tail
+    return
+
+
+if __name__ == "__main__":
+    app.run()
+'''
+
+
+def _write_marimo_notebook(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    run_id: str,
+    output: str | None = None,
+) -> Path:
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise SystemExit(f"unknown proof run {run_id!r}")
+    run = _run_payload_with_notes(conn, [row])[0]
+    path = Path(output) if output else _notebooks_root(args) / f"{run_id}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_marimo_notebook_text(run), encoding="utf-8")
+    return path
 
 
 def _db_path(args: argparse.Namespace) -> Path:
@@ -173,6 +436,7 @@ def _row_to_payload(row: sqlite3.Row) -> dict[str, object]:
         "contention_key": row["contention_key"],
         "scopes": json.loads(row["scopes_json"]),
         "env": json.loads(row["env_json"]),
+        "git": json.loads(row["git_json"]),
         "log_path": row["log_path"],
         "summary_json": row["summary_json"],
         "guard_pid": row["guard_pid"],
@@ -208,6 +472,7 @@ def _insert_run(
     contention_key: str,
     scopes: list[str],
     env_overrides: dict[str, str] | None = None,
+    git_snapshot: dict[str, object] | None = None,
     log_path: Path,
     summary_json: Path,
 ) -> None:
@@ -215,8 +480,9 @@ def _insert_run(
         """
         INSERT INTO proof_runs (
             run_id, logical_id, reason, status, command_json, cwd,
-            resource_family, contention_key, scopes_json, env_json, log_path, summary_json
-        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+            resource_family, contention_key, scopes_json, env_json, git_json,
+            log_path, summary_json
+        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -228,6 +494,7 @@ def _insert_run(
             contention_key,
             json.dumps(scopes),
             json.dumps(env_overrides or {}, sort_keys=True),
+            json.dumps(git_snapshot if git_snapshot is not None else _git_snapshot(cwd), sort_keys=True),
             str(log_path),
             str(summary_json),
         ),
@@ -424,6 +691,9 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
 def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
     env_overrides = dict(spec["env_overrides"])
     env_overrides.update(_env_overrides_from_pairs(args.env))
+    initial_notes = _notes_from_raw(spec.get("note"))
+    initial_notes.extend(_notes_from_raw(spec.get("notes")))
+    initial_notes.extend(getattr(args, "note", []) or [])
     runnable = {
         **spec,
         "env_overrides": env_overrides,
@@ -441,6 +711,7 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         scopes=list(runnable["scopes"]),
         env_overrides=dict(runnable["env_overrides"]),
         timeout=float(runnable["timeout"]),
+        initial_notes=initial_notes,
     )
 
 
@@ -463,6 +734,7 @@ def _run_one(
     scopes: list[str],
     env_overrides: dict[str, str],
     timeout: float,
+    initial_notes: list[str] | None = None,
     existing_run_id: str | None = None,
     existing_log_path: Path | None = None,
     existing_summary_json: Path | None = None,
@@ -491,6 +763,7 @@ def _run_one(
     logs_root.mkdir(parents=True, exist_ok=True)
     log_path = existing_log_path or logs_root / f"{run_id}.log"
     summary_json = existing_summary_json or logs_root / f"{run_id}.memory_guard.json"
+    inserted_run = existing_run_id is None
     if existing_run_id is None:
         _insert_run(
             conn,
@@ -506,6 +779,11 @@ def _run_one(
             log_path=log_path,
             summary_json=summary_json,
         )
+    if inserted_run:
+        for note in initial_notes or []:
+            _insert_note(conn, run_id=run_id, body=note, kind="submission")
+        if initial_notes:
+            _write_marimo_notebook(args, conn, run_id)
     policy_error = _proof_command_policy_error(command)
     if policy_error is not None:
         now = _utc_now()
@@ -529,6 +807,8 @@ def _run_one(
         print(f"rejected {run_id} rc=2")
         print(policy_error, file=sys.stderr)
         print(f"log: {log_path}")
+        if _notes_for_run_ids(conn, [run_id]).get(run_id):
+            _write_marimo_notebook(args, conn, run_id)
         return 2
     session_id = _proof_session_id(resource_family, contention_key)
     env = development_artifact_env(
@@ -589,6 +869,8 @@ def _run_one(
         finished_at=_utc_now(),
         elapsed_s=elapsed,
     )
+    if _notes_for_run_ids(conn, [run_id]).get(run_id):
+        _write_marimo_notebook(args, conn, run_id)
     print(f"{status} {run_id} rc={rc} elapsed={elapsed:.1f}s")
     print(f"log: {log_path}")
     return rc
@@ -604,6 +886,7 @@ def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
 def _cmd_exec(args: argparse.Namespace) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     env_overrides = _env_overrides_from_pairs(args.env)
+    initial_notes = getattr(args, "note", []) or []
     return _run_one(
         args,
         logical_id=args.id,
@@ -614,6 +897,7 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         scopes=args.scope,
         env_overrides=env_overrides,
         timeout=args.timeout,
+        initial_notes=initial_notes,
     )
 
 
@@ -647,6 +931,8 @@ def _cmd_submit(args: argparse.Namespace) -> int:
         if policy_error is not None:
             raise SystemExit(f"proof {logical_id!r}: {policy_error}")
         env_overrides = _env_overrides_from_spec(spec.get("env"))
+        initial_notes = _notes_from_raw(spec.get("note"))
+        initial_notes.extend(_notes_from_raw(spec.get("notes")))
         run_id = f"{_compact_utc()}-{_slug(logical_id)}-{uuid.uuid4().hex[:16]}"
         log_path = _logs_root(args) / f"{run_id}.log"
         summary_json = _logs_root(args) / f"{run_id}.memory_guard.json"
@@ -664,6 +950,10 @@ def _cmd_submit(args: argparse.Namespace) -> int:
             log_path=log_path,
             summary_json=summary_json,
         )
+        for note in initial_notes:
+            _insert_note(conn, run_id=run_id, body=note, kind="submission")
+        if initial_notes:
+            _write_marimo_notebook(args, conn, run_id)
         print(f"queued {run_id}")
     return 0
 
@@ -715,6 +1005,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
             (args.recent,),
         )
     )
+    notes_by_run = _notes_for_run_ids(
+        conn, [row["run_id"] for row in [*active, *recent]]
+    )
     print("proof queue")
     print("active:")
     if not active:
@@ -722,6 +1015,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
     for row in active:
         elapsed = f" elapsed={_elapsed_since(row['started_at'], row['elapsed_s'])}"
         print(f"- {row['status']}{elapsed} {row['run_id']} {row['reason']}")
+        note_summary = _format_note_summary(notes_by_run.get(row["run_id"], []))
+        if note_summary:
+            print(note_summary)
         for line in _active_log_status(row):
             print(line)
     print("recent:")
@@ -733,6 +1029,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print(
             f"- {row['status']:9} rc={rc} elapsed={elapsed} {row['run_id']} {row['reason']}"
         )
+        note_summary = _format_note_summary(notes_by_run.get(row["run_id"], []))
+        if note_summary:
+            print(note_summary)
     return 0
 
 
@@ -784,12 +1083,41 @@ def _cmd_evidence(args: argparse.Namespace) -> int:
                 "SELECT * FROM proof_runs ORDER BY rowid DESC LIMIT ?", (args.limit,)
             )
         )
-    payload = [_row_to_payload(row) for row in rows]
+    payload = _run_payload_with_notes(conn, rows)
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
     else:
         print(text)
+    return 0
+
+
+def _cmd_note(args: argparse.Namespace) -> int:
+    conn = _connect(_db_path(args))
+    note_ids = []
+    for body in args.note:
+        note_ids.append(
+            _insert_note(
+                conn,
+                run_id=args.run_id,
+                body=body,
+                kind=args.kind,
+                author=args.author,
+            )
+        )
+    notebook_path = None
+    if not args.no_notebook:
+        notebook_path = _write_marimo_notebook(args, conn, args.run_id, args.output)
+    print(f"noted {args.run_id} note_ids={','.join(str(note_id) for note_id in note_ids)}")
+    if notebook_path is not None:
+        print(f"notebook: {notebook_path}")
+    return 0
+
+
+def _cmd_notebook(args: argparse.Namespace) -> int:
+    conn = _connect(_db_path(args))
+    path = _write_marimo_notebook(args, conn, args.run_id, args.output)
+    print(f"notebook: {path}")
     return 0
 
 
@@ -826,6 +1154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db")
     parser.add_argument("--logs-root")
+    parser.add_argument("--notebooks-root")
     parser.add_argument("--repo-root")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -836,6 +1165,7 @@ def _build_parser() -> argparse.ArgumentParser:
     exec_p.add_argument("--contention-key")
     exec_p.add_argument("--scope", action="append", default=[])
     exec_p.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    exec_p.add_argument("--note", action="append", default=[])
     exec_p.add_argument("--timeout", type=float, default=1200.0)
     exec_p.add_argument("--wait", action="store_true")
     exec_p.add_argument("--wait-timeout", type=float)
@@ -863,6 +1193,22 @@ def _build_parser() -> argparse.ArgumentParser:
     evidence_p.add_argument("--output")
     evidence_p.set_defaults(func=_cmd_evidence)
 
+    note_p = sub.add_parser("note", help="append an immutable note to a proof run")
+    note_p.add_argument("run_id")
+    note_p.add_argument("--note", action="append", required=True)
+    note_p.add_argument("--kind", default="note")
+    note_p.add_argument("--author")
+    note_p.add_argument("--output")
+    note_p.add_argument("--no-notebook", action="store_true")
+    note_p.set_defaults(func=_cmd_note)
+
+    notebook_p = sub.add_parser(
+        "notebook", help="write the deterministic marimo notebook for a proof run"
+    )
+    notebook_p.add_argument("run_id")
+    notebook_p.add_argument("--output")
+    notebook_p.set_defaults(func=_cmd_notebook)
+
     prune_p = sub.add_parser("prune-stale", help="mark dead running records stale")
     prune_p.set_defaults(func=_cmd_prune_stale)
 
@@ -881,6 +1227,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_accept_p.add_argument(
         "--env", action="append", default=[], metavar="NAME=VALUE"
     )
+    pact_accept_p.add_argument("--note", action="append", default=[])
     pact_accept_p.add_argument("--timeout", type=float)
     pact_accept_p.add_argument("--print-spec", action="store_true")
     pact_accept_p.set_defaults(func=_cmd_pact_witness_acceptance)
@@ -892,6 +1239,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_oracle_p.add_argument(
         "--env", action="append", default=[], metavar="NAME=VALUE"
     )
+    pact_oracle_p.add_argument("--note", action="append", default=[])
     pact_oracle_p.add_argument("--timeout", type=float)
     pact_oracle_p.add_argument("--print-spec", action="store_true")
     pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)

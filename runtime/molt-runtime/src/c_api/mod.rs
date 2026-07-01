@@ -27,20 +27,7 @@ pub const MOLT_C_API_VERSION: u32 = 1;
 /// Opaque object handle used by the libmolt C-API.
 pub type MoltHandle = u64;
 
-#[repr(C)]
-pub struct MoltBufferView {
-    pub data: *mut u8,
-    pub len: u64,
-    pub readonly: u32,
-    pub ndim: u32,
-    pub itemsize: u64,
-    pub offset: isize,
-    pub owner: MoltHandle,
-    pub base: MoltHandle,
-    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
-    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
-    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
-}
+pub use crate::object::memoryview::MoltBufferView;
 
 #[derive(Default)]
 struct CApiModuleMetadata {

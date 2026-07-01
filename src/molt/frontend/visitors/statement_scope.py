@@ -414,6 +414,8 @@ class StatementScopeVisitorMixin(_MixinBase):
                 self._emit_relative_import_error(error_kind)
                 return None
             module_name = resolved
+            transaction_name = resolved
+            transaction_level = 0
         else:
             transaction_level = 0
         if module_name is None:

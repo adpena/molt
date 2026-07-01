@@ -620,6 +620,7 @@ pub(crate) use crate::object::layout::{
     staticmethod_func_bits, super_obj_bits, super_type_bits, union_type_args_bits, zip_iters_ptr,
     zip_set_strict_bits, zip_strict_bits,
 };
+pub use crate::object::memoryview::MoltBufferView;
 pub(crate) use crate::object::memoryview::{
     BytesLikeSliceError, MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR,
     TypedStridedStorage, TypedStridedStorageError, bytes_like_slice, bytes_like_slice_checked,
