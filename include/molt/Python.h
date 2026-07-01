@@ -182,14 +182,17 @@ typedef struct {
 #define PyBUF_STRIDES (0x0010 | PyBUF_ND)
 #endif
 #ifndef PyBUF_C_CONTIGUOUS
-#define PyBUF_C_CONTIGUOUS 0x0020
+#define PyBUF_C_CONTIGUOUS (0x0020 | PyBUF_STRIDES)
 #endif
 #ifndef PyBUF_F_CONTIGUOUS
-#define PyBUF_F_CONTIGUOUS 0x0040
+#define PyBUF_F_CONTIGUOUS (0x0040 | PyBUF_STRIDES)
 #endif
 #ifndef PyBUF_ANY_CONTIGUOUS
-#define PyBUF_ANY_CONTIGUOUS 0x0080
+#define PyBUF_ANY_CONTIGUOUS (0x0080 | PyBUF_STRIDES)
 #endif
+#define _MOLT_PYBUF_C_CONTIGUOUS_BIT 0x0020
+#define _MOLT_PYBUF_F_CONTIGUOUS_BIT 0x0040
+#define _MOLT_PYBUF_ANY_CONTIGUOUS_BIT 0x0080
 
 typedef struct _molt_pythreadstate {
     int _molt_reserved;
@@ -4562,9 +4565,9 @@ static inline void _molt_pybuffer_apply_molt_view(Py_buffer *view, int flags) {
 }
 
 static inline int _molt_pybuffer_satisfies_flags(const Py_buffer *view, int flags) {
-    return ((flags & PyBUF_C_CONTIGUOUS) == 0 || _molt_pybuffer_is_c_contiguous(view))
-        && ((flags & PyBUF_F_CONTIGUOUS) == 0 || _molt_pybuffer_is_f_contiguous(view))
-        && ((flags & PyBUF_ANY_CONTIGUOUS) == 0
+    return ((flags & _MOLT_PYBUF_C_CONTIGUOUS_BIT) == 0 || _molt_pybuffer_is_c_contiguous(view))
+        && ((flags & _MOLT_PYBUF_F_CONTIGUOUS_BIT) == 0 || _molt_pybuffer_is_f_contiguous(view))
+        && ((flags & _MOLT_PYBUF_ANY_CONTIGUOUS_BIT) == 0
             || _molt_pybuffer_is_c_contiguous(view)
             || _molt_pybuffer_is_f_contiguous(view));
 }
@@ -11354,19 +11357,16 @@ static inline double PyFloat_GetMin(void) {
 static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
                                      void *buf, Py_ssize_t len, int readonly,
                                      int flags) {
-    (void)flags;
     if (view == NULL) return -1;
     if (len < 0) {
         PyErr_SetString(PyExc_ValueError, "buffer length must not be negative");
         return -1;
     }
+    if ((flags & PyBUF_WRITABLE) != 0 && readonly != 0) {
+        PyErr_SetString(PyExc_BufferError, "writable buffer requested for readonly object");
+        return -1;
+    }
     _molt_pybuffer_reset(view);
-    view->buf = buf;
-    view->len = len;
-    view->readonly = readonly;
-    view->itemsize = 1;
-    view->ndim = 1;
-    view->obj = exporter;
     view->_molt_view.data = (uint8_t *)buf;
     view->_molt_view.len = (uint64_t)len;
     view->_molt_view.readonly = readonly != 0 ? 1u : 0u;
@@ -11375,7 +11375,14 @@ static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
     view->_molt_view.base = exporter != NULL ? _molt_py_handle(exporter) : 0;
     view->_molt_view.shape[0] = len;
     view->_molt_view.strides[0] = 1;
+    _molt_pybuffer_apply_molt_view(view, flags);
+    view->obj = exporter;
     if (exporter != NULL) Py_INCREF(exporter);
+    if (!_molt_pybuffer_satisfies_flags(view, flags)) {
+        PyBuffer_Release(view);
+        PyErr_SetString(PyExc_BufferError, "requested contiguous buffer is not available");
+        return -1;
+    }
     return 0;
 }
 
@@ -12062,13 +12069,22 @@ static inline void PyMem_SetupDebugHooks(void) {
 #define PyBUF_STRIDES (0x0010 | PyBUF_ND)
 #endif
 #ifndef PyBUF_C_CONTIGUOUS
-#define PyBUF_C_CONTIGUOUS 0x0020
+#define PyBUF_C_CONTIGUOUS (0x0020 | PyBUF_STRIDES)
 #endif
 #ifndef PyBUF_F_CONTIGUOUS
-#define PyBUF_F_CONTIGUOUS 0x0040
+#define PyBUF_F_CONTIGUOUS (0x0040 | PyBUF_STRIDES)
 #endif
 #ifndef PyBUF_ANY_CONTIGUOUS
-#define PyBUF_ANY_CONTIGUOUS 0x0080
+#define PyBUF_ANY_CONTIGUOUS (0x0080 | PyBUF_STRIDES)
+#endif
+#ifndef _MOLT_PYBUF_C_CONTIGUOUS_BIT
+#define _MOLT_PYBUF_C_CONTIGUOUS_BIT 0x0020
+#endif
+#ifndef _MOLT_PYBUF_F_CONTIGUOUS_BIT
+#define _MOLT_PYBUF_F_CONTIGUOUS_BIT 0x0040
+#endif
+#ifndef _MOLT_PYBUF_ANY_CONTIGUOUS_BIT
+#define _MOLT_PYBUF_ANY_CONTIGUOUS_BIT 0x0080
 #endif
 
 /* GC traversal types */

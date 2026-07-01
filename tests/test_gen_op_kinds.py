@@ -135,12 +135,11 @@ def test_render_rs_rustfmt_uses_shared_memory_guard(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
-        path = Path(cmd[-1])
-        path.write_text("fn main() {}\n", encoding="utf-8", newline="\n")
-        calls.append({"cmd": list(cmd), "path": path, **kwargs})
+        assert kwargs["input"] == "fn main(){}\n"
+        calls.append({"cmd": list(cmd), **kwargs})
         return SimpleNamespace(
             returncode=0,
-            stdout="",
+            stdout="fn main() {}\n",
             stderr="",
             check_returncode=lambda: None,
         )
@@ -158,14 +157,10 @@ def test_render_rs_rustfmt_uses_shared_memory_guard(monkeypatch) -> None:
     call = calls[0]
     cmd = call["cmd"]
     assert isinstance(cmd, list)
-    assert cmd[:3] == ["rustfmt", "--edition", "2024"]
-    temp_path = call["path"]
-    assert isinstance(temp_path, Path)
-    assert temp_path.parent == ROOT / "tmp" / "gen_op_kinds"
-    assert temp_path.suffix == ".rs"
-    assert not temp_path.exists()
+    assert cmd == ["rustfmt", "--edition", "2024", "--emit", "stdout"]
     assert call["prefix"] == "MOLT_GENERATOR"
     assert call["cwd"] == ROOT
+    assert call["input"] == "fn main(){}\n"
     assert call["capture_output"] is True
     assert call["text"] is True
     assert call["timeout"] == 60.0
