@@ -580,17 +580,21 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
     assert "const extractWasmTableBase = (buffer) => {" in bridge
     assert "const parseWasmExportFunctionSignatures = (buffer) => {" in bridge
+    assert "const reservedRuntimeCallablesFromManifest = (manifest) => {" in bridge
     assert "extractWasmTableBase," in bridge
     assert "parseWasmExportFunctionSignatures," in bridge
+    assert "reservedRuntimeCallablesFromManifest," in bridge
 
     consumers = {
         "wasm/browser_host.js": (
             "globalThis.MoltWasmLoaderBridge",
             "extractWasmTableBase,",
+            "reservedRuntimeCallablesFromManifest,",
         ),
         "wasm/run_wasm.js": (
             "require('./loader_bridge.js')",
             "parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge",
+            "reservedRuntimeCallablesFromManifest,",
         ),
     }
     forbidden_local_authority = (
@@ -602,6 +606,8 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
         "const extractWasmTableBase =",
         "const decodeWasmValType =",
         "const readWasmValTypeVec =",
+        "const reservedRuntimeCallablesFromManifest =",
+        "manifest?.abi?.browser_embed?.reserved_runtime_callables",
     )
     for rel, required in consumers.items():
         content = (root / rel).read_text(encoding="utf-8")

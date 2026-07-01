@@ -15681,6 +15681,12 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         import_name: "types_new_class",
         arity: 2,
     },
+    ReservedRuntimeCallableSpec {
+        index: 22,
+        runtime_name: "molt_importlib_import_transaction",
+        import_name: "importlib_import_transaction",
+        arity: 5,
+    },
 ];
 
 pub(crate) const RESERVED_RUNTIME_CALLABLE_COUNT: u32 =
