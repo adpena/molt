@@ -23,6 +23,20 @@ if str(SRC_ROOT) not in sys.path:
 from molt.dx import development_artifact_env  # noqa: E402
 
 RUNNING = {"queued", "running"}
+NOTE_KIND_DESCRIPTIONS = {
+    "submission": "note captured when the run is submitted",
+    "change": "source, config, artifact, or environment change being proved",
+    "hypothesis": "expected cause or behavior before the run finishes",
+    "test": "what the command is meant to prove or falsify",
+    "observation": "live status, log interpretation, or post-submit context",
+    "finding": "conclusion from evidence after inspection",
+    "decision": "chosen next structural move or rejected alternative",
+    "followup": "bounded next action that remains after the run",
+    "handoff": "context needed by another agent or future session",
+}
+NOTE_KINDS = frozenset(NOTE_KIND_DESCRIPTIONS)
+DEFAULT_NOTE_KIND = "observation"
+SUBMISSION_NOTE_KIND = "submission"
 
 
 def _utc_now() -> str:
@@ -109,6 +123,7 @@ def _connect(db: Path) -> sqlite3.Connection:
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS proof_runs (
@@ -132,6 +147,27 @@ def _connect(db: Path) -> sqlite3.Connection:
             elapsed_s REAL
         )
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS proof_note_kinds (
+            kind TEXT PRIMARY KEY,
+            description TEXT NOT NULL
+        )
+        """
+    )
+    placeholders = ",".join("?" for _ in NOTE_KINDS)
+    conn.execute(
+        f"DELETE FROM proof_note_kinds WHERE kind NOT IN ({placeholders})",
+        tuple(sorted(NOTE_KINDS)),
+    )
+    conn.executemany(
+        """
+        INSERT INTO proof_note_kinds (kind, description)
+        VALUES (?, ?)
+        ON CONFLICT(kind) DO UPDATE SET description = excluded.description
+        """,
+        sorted(NOTE_KIND_DESCRIPTIONS.items()),
     )
     conn.execute(
         """
@@ -167,6 +203,18 @@ def _connect(db: Path) -> sqlite3.Connection:
         END
         """
     )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS proof_notes_known_kind
+        BEFORE INSERT ON proof_notes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM proof_note_kinds WHERE kind = NEW.kind
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'unknown proof note kind');
+        END
+        """
+    )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(proof_runs)")}
     if "env_json" not in columns:
         conn.execute(
@@ -193,14 +241,17 @@ def _insert_note(
     *,
     run_id: str,
     body: str,
-    kind: str = "note",
+    kind: str = DEFAULT_NOTE_KIND,
     author: str | None = None,
 ) -> int:
     body = body.strip()
-    kind = kind.strip() or "note"
+    kind = kind.strip() or DEFAULT_NOTE_KIND
     author = (author or _default_note_author()).strip() or "agent"
     if not body:
         raise SystemExit("proof note body must not be empty")
+    if kind not in NOTE_KINDS:
+        allowed = ", ".join(sorted(NOTE_KINDS))
+        raise SystemExit(f"unknown proof note kind {kind!r}; allowed: {allowed}")
     exists = conn.execute(
         "SELECT 1 FROM proof_runs WHERE run_id = ?",
         (run_id,),
@@ -271,6 +322,14 @@ def _format_note_summary(notes: list[dict[str, object]]) -> str | None:
     )
 
 
+def _note_kind_counts(notes: list[dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for note in notes:
+        kind = str(note["kind"])
+        counts[kind] = counts.get(kind, 0) + 1
+    return {kind: counts[kind] for kind in sorted(counts)}
+
+
 def _git_snapshot(cwd: Path) -> dict[str, object]:
     def run_git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -309,7 +368,9 @@ def _run_payload_with_notes(
     payload = [_row_to_payload(row) for row in rows]
     notes = _notes_for_run_ids(conn, [str(item["run_id"]) for item in payload])
     for item in payload:
-        item["notes"] = notes.get(str(item["run_id"]), [])
+        run_notes = notes.get(str(item["run_id"]), [])
+        item["notes"] = run_notes
+        item["note_kind_counts"] = _note_kind_counts(run_notes)
     return payload
 
 
@@ -342,6 +403,10 @@ def _(mo, run):
     git = run.get("git", {{}})
     head = git.get("head", "unknown")
     dirty = "dirty" if git.get("dirty") else "clean"
+    note_counts = run.get("note_kind_counts", {{}})
+    note_summary = ", ".join(
+        f"{{kind}}={{count}}" for kind, count in note_counts.items()
+    ) or "none"
     mo.md(
         f"""
 # Proof run `{{run["run_id"]}}`
@@ -350,6 +415,7 @@ def _(mo, run):
 - status: `{{run["status"]}}`, return code: `{{run["returncode"]}}`
 - git: `{{head}}` (`{{dirty}}`)
 - contention key: `{{run["contention_key"]}}`
+- notes: {{note_summary}}
 - reason: {{run["reason"]}}
 """
     )
@@ -781,7 +847,7 @@ def _run_one(
         )
     if inserted_run:
         for note in initial_notes or []:
-            _insert_note(conn, run_id=run_id, body=note, kind="submission")
+            _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
         if initial_notes:
             _write_marimo_notebook(args, conn, run_id)
     policy_error = _proof_command_policy_error(command)
@@ -951,7 +1017,7 @@ def _cmd_submit(args: argparse.Namespace) -> int:
             summary_json=summary_json,
         )
         for note in initial_notes:
-            _insert_note(conn, run_id=run_id, body=note, kind="submission")
+            _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
         if initial_notes:
             _write_marimo_notebook(args, conn, run_id)
         print(f"queued {run_id}")
@@ -1127,8 +1193,11 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
         "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py exec "
         '--id focused-proof --reason "why this proves the changed contract" '
-        "--resource-family python --contention-key python:focused --timeout 240 -- "
+        '--resource-family python --contention-key python:focused --note "change: moved the shared authority; test: proving the focused invariant" --timeout 240 -- '
         "uv run --active --project . --python 3.12 pytest tests/path.py -q"
+        "\n"
+        "uv run --active --project . --python 3.12 python tools/proof_queue.py note "
+        '<run-id> --kind observation --note "what happened, what it means, and the next bounded action"'
     )
     return 0
 
@@ -1142,6 +1211,8 @@ def _cmd_template(args: argparse.Namespace) -> int:
         'resource_family = "python"\n'
         'contention_key = "python:focused"\n'
         'scope = ["src/molt/cli/runtime_features.py"]\n'
+        'note = "change: moved runtime feature authority into the generator-backed path"\n'
+        'notes = ["test: targeted pytest proves the generated selector contract"]\n'
         'env = { MOLT_EXTERNAL_STATIC_PACKAGES = "numpy scipy" }\n'
         'command = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "pytest", "tests/path.py", "-q"]\n'
     )
@@ -1165,7 +1236,15 @@ def _build_parser() -> argparse.ArgumentParser:
     exec_p.add_argument("--contention-key")
     exec_p.add_argument("--scope", action="append", default=[])
     exec_p.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
-    exec_p.add_argument("--note", action="append", default=[])
+    exec_p.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help=(
+            "append a submission note describing what changed, what is being "
+            "tested or explored, and why"
+        ),
+    )
     exec_p.add_argument("--timeout", type=float, default=1200.0)
     exec_p.add_argument("--wait", action="store_true")
     exec_p.add_argument("--wait-timeout", type=float)
@@ -1196,7 +1275,12 @@ def _build_parser() -> argparse.ArgumentParser:
     note_p = sub.add_parser("note", help="append an immutable note to a proof run")
     note_p.add_argument("run_id")
     note_p.add_argument("--note", action="append", required=True)
-    note_p.add_argument("--kind", default="note")
+    note_p.add_argument(
+        "--kind",
+        default=DEFAULT_NOTE_KIND,
+        choices=sorted(NOTE_KINDS),
+        help="canonical note lane for append-only collaboration",
+    )
     note_p.add_argument("--author")
     note_p.add_argument("--output")
     note_p.add_argument("--no-notebook", action="store_true")
@@ -1227,7 +1311,12 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_accept_p.add_argument(
         "--env", action="append", default=[], metavar="NAME=VALUE"
     )
-    pact_accept_p.add_argument("--note", action="append", default=[])
+    pact_accept_p.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help="append submission context to the acceptance run",
+    )
     pact_accept_p.add_argument("--timeout", type=float)
     pact_accept_p.add_argument("--print-spec", action="store_true")
     pact_accept_p.set_defaults(func=_cmd_pact_witness_acceptance)
@@ -1239,7 +1328,12 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_oracle_p.add_argument(
         "--env", action="append", default=[], metavar="NAME=VALUE"
     )
-    pact_oracle_p.add_argument("--note", action="append", default=[])
+    pact_oracle_p.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help="append submission context to the oracle run",
+    )
     pact_oracle_p.add_argument("--timeout", type=float)
     pact_oracle_p.add_argument("--print-spec", action="store_true")
     pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)

@@ -63,14 +63,17 @@ every consumer needed to delete or unify the old lane.
   build/runtime resources. Run
   `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
   before submitting work, use `exec` or a TOML DSL with a clear `--reason`,
-  `--resource-family`, `--contention-key`, and `--scope`, then cite the queue
-  log/evidence path. Direct commands are allowed only for cheap formatting/static
-  checks or to bootstrap/repair the queue itself. Queue commands that invoke
-  `uv run` must use `uv run --active --project . --python 3.12 ...`; non-active
-  `uv run` commands are rejected because they create throwaway environments and
-  destroy proof latency. The queue derives `MOLT_SESSION_ID` from the
-  contention key so serialized lanes reuse their Cargo/uv artifact caches while
-  disjoint contention keys remain isolated.
+  `--resource-family`, `--contention-key`, `--scope`, and `--note`, then cite
+  the queue log/evidence path. Read `docs/agent/PROOF_QUEUE.md` for the full
+  queue contract, including append-only notes, git snapshots, and deterministic
+  marimo notebook projections under `logs/proof_queue/notebooks/`. Direct
+  commands are allowed only for cheap formatting/static checks or to
+  bootstrap/repair the queue itself. Queue commands that invoke `uv run` must
+  use `uv run --active --project . --python 3.12 ...`; non-active `uv run`
+  commands are rejected because they create throwaway environments and destroy
+  proof latency. The queue derives `MOLT_SESSION_ID` from the contention key so
+  serialized lanes reuse their Cargo/uv artifact caches while disjoint
+  contention keys remain isolated.
 
 ### Comprehensive Analysis Spine: AST To Binary Closure
 

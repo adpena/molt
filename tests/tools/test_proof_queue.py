@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -82,6 +83,8 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert "import marimo" in notebook_text
     assert '"status": "passed"' in notebook_text
     assert "changed queue smoke to verify note capture" in notebook_text
+    assert '"note_kind_counts": {' in notebook_text
+    assert '"submission": 1' in notebook_text
 
 
 def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> None:
@@ -394,6 +397,7 @@ def test_proof_queue_appends_notes_and_exports_evidence(
     assert "abc123" in notebook_text
     assert "R18 is still running" in notebook_text
 
+    capsys.readouterr()
     assert (
         proof_queue.main(
             [
@@ -411,9 +415,59 @@ def test_proof_queue_appends_notes_and_exports_evidence(
         == 0
     )
     payload = capsys.readouterr().out
+    evidence = json.loads(payload)
     assert '"notes": [' in payload
     assert '"head": "abc123"' in payload
+    assert evidence[0]["note_kind_counts"] == {"observation": 1}
     assert "R18 is still running" in payload
+
+
+def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="kind-run",
+        logical_id="kind",
+        reason="prove note kind vocabulary",
+        command=[sys.executable, "-c", "print('kind')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:kind",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=tmp_path / "kind.log",
+        summary_json=tmp_path / "kind.memory_guard.json",
+    )
+
+    with pytest.raises(SystemExit, match="unknown proof note kind"):
+        proof_queue._insert_note(
+            conn,
+            run_id="kind-run",
+            author="codex",
+            kind="blocker",
+            body="this vocabulary should fail closed",
+        )
+
+    with pytest.raises(sqlite3.DatabaseError, match="unknown proof note kind"):
+        conn.execute(
+            """
+            INSERT INTO proof_notes (run_id, created_at, author, kind, body)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "kind-run",
+                proof_queue._utc_now(),
+                "codex",
+                "blocker",
+                "raw sqlite path should fail closed",
+            ),
+        )
 
 
 def test_proof_queue_notes_are_database_append_only(tmp_path: Path) -> None:
