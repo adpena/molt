@@ -292,6 +292,7 @@ class GeneratorStateMixin(_MixinBase):
         known_func_kinds: dict[str, dict[str, str]] | None = None,
         native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
         native_python_exports: Collection[str] | None = None,
+        native_support_function_roots: Collection[str] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -453,6 +454,11 @@ class GeneratorStateMixin(_MixinBase):
             qualified_name
             for qualified_name in (native_python_exports or set())
             if isinstance(qualified_name, str) and qualified_name
+        }
+        self.native_support_function_roots: set[str] = {
+            name
+            for name in (native_support_function_roots or set())
+            if isinstance(name, str) and name
         }
         self.module_func_defaults: dict[str, dict[str, Any]] = {}
         self.module_annotations: MoltValue | None = None

@@ -455,6 +455,9 @@ def _dispatch_entrypoint_command(
                 callable_export_json=args.callable_export_json
                 or extension_cfg.get("callable_exports")
                 or extension_cfg.get("callable-exports"),
+                support_file=args.support_file
+                or extension_cfg.get("support_files")
+                or extension_cfg.get("support-files"),
                 deterministic=deterministic,
                 target=args.target or extension_cfg.get("target"),
                 source_plan=args.source_plan or source_plan,
@@ -544,6 +547,9 @@ def _dispatch_entrypoint_command(
                 out_dir=args.out_dir,
                 python_export=args.python_export,
                 callable_export_json=args.callable_export_json,
+                support_file=args.support_file
+                or extension_cfg.get("support_files")
+                or extension_cfg.get("support-files"),
                 json_output=args.json,
                 verbose=args.verbose,
             )

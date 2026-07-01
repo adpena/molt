@@ -64,6 +64,7 @@ from molt.cli.extension_manifest import (
     _infer_module_attr_callable_export_payloads,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
+    _manifest_support_file_payloads,
     _module_parts,
     _normalize_effects,
     _wheel_record_line,
@@ -1819,6 +1820,7 @@ def extension_build(
     provided_capsules: str | list[str] | None = None,
     python_export: str | list[str] | None = None,
     callable_export_json: str | list[str] | None = None,
+    support_file: Any = None,
     deterministic: bool = True,
     profile: BuildProfile = "release",
     target: str | None = None,
@@ -1859,6 +1861,7 @@ def extension_build(
             provided_capsules,
             python_export,
             callable_export_json,
+            support_file,
         )
     )
 
@@ -1915,6 +1918,22 @@ def extension_build(
         extension_export_meta["python_exports"] = cli_python_exports
     if cli_callable_exports:
         extension_export_meta["callable_exports"] = cli_callable_exports
+    raw_support_files: list[Any] = []
+    extension_support_files = extension_meta.get("support_files") or extension_meta.get(
+        "support-files"
+    )
+    if extension_support_files is not None:
+        if isinstance(extension_support_files, list):
+            raw_support_files.extend(extension_support_files)
+        else:
+            errors.append("tool.molt.extension.support_files must be a list")
+    if support_file is not None:
+        if isinstance(support_file, str):
+            raw_support_files.append(support_file)
+        elif isinstance(support_file, list):
+            raw_support_files.extend(support_file)
+        else:
+            errors.append("--support-file must be a string or list")
 
     project_name = project_meta.get("name")
     project_version = project_meta.get("version")
@@ -1931,6 +1950,12 @@ def extension_build(
     if module_parts is None:
         errors.append("tool.molt.extension.module must be a dotted Python identifier")
         module_parts = ["extension"]
+    support_files = _manifest_support_file_payloads(
+        raw_support_files,
+        field_name="tool.molt.extension.support_files",
+        root=project_root,
+        errors=errors,
+    )
 
     source_paths: list[Path] = []
     include_paths: list[Path] = []
@@ -2807,6 +2832,7 @@ def extension_build(
             "effects": effects,
             "wheel": wheel_name,
             "extension": extension_archive_path,
+            "support_files": [entry.digest_payload() for entry in support_files],
             "build": build_payload,
         }
         if source_c_api_requirements is not None:
@@ -2901,6 +2927,8 @@ def extension_build(
             manifest_payload["python_exports"] = python_exports
         if callable_exports:
             manifest_payload["callable_exports"] = callable_exports
+        if not support_files:
+            manifest_payload.pop("support_files", None)
         manifest_bytes = (
             json.dumps(manifest_payload, sort_keys=True, indent=2).encode("utf-8")
             + b"\n"
@@ -2932,6 +2960,10 @@ def extension_build(
             (f"{dist_info}/WHEEL", wheel_metadata),
             (f"{dist_info}/METADATA", package_metadata),
         ]
+        for support in support_files:
+            wheel_entries.append(
+                (support.rel_path, support.source_path.read_bytes())
+            )
         record_path = f"{dist_info}/RECORD"
         record_lines = [_wheel_record_line(path, data) for path, data in wheel_entries]
         record_lines.append(f"{record_path},,")
@@ -2965,6 +2997,11 @@ def extension_build(
         dest_init = output_root.joinpath(*module_parts[:index], "__init__.py")
         _atomic_copy_file(source_init, dest_init)
         extracted_package_init_files.append(dest_init)
+    extracted_support_files: list[Path] = []
+    for support in support_files:
+        dest_support = output_root / Path(support.rel_path)
+        _atomic_copy_file(support.source_path, dest_support)
+        extracted_support_files.append(dest_support)
     artifact_manifest_payload = dict(sidecar_payload)
     artifact_manifest_payload["extension"] = extracted_extension_path.name
     artifact_manifest_path = extracted_extension_path.with_name(
@@ -2989,6 +3026,9 @@ def extension_build(
                 "artifact_manifest": str(artifact_manifest_path),
                 "extracted_package_init_files": [
                     str(path) for path in extracted_package_init_files
+                ],
+                "extracted_support_files": [
+                    str(path) for path in extracted_support_files
                 ],
                 "module": ".".join(module_parts),
                 "molt_c_api_version": abi_version,

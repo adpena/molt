@@ -571,7 +571,15 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             "JSON object describing one native callable export "
-            "(module/name/binding/abi/symbol/effects/deterministic)."
+            "(module/name/binding/abi/symbol/provider_module/effects/deterministic)."
+        ),
+    )
+    extension_build_parser.add_argument(
+        "--support-file",
+        action="append",
+        help=(
+            "Upstream support file to checksum and publish in support_files; "
+            "repeat for provider Python sources and static support artifacts."
         ),
     )
     extension_build_parser.add_argument(
@@ -725,6 +733,15 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help=(
             "JSON object describing one native callable export to publish in "
             "the sealed sidecar."
+        ),
+    )
+    extension_seal_parser.add_argument(
+        "--support-file",
+        action="append",
+        default=[],
+        help=(
+            "Support file to checksum and publish in the sealed manifest "
+            "support_files list; repeat for provider sources."
         ),
     )
     extension_seal_parser.add_argument(

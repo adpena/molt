@@ -170,14 +170,17 @@ def _prepare_build_module_outputs(
     out_dir_path: Path | None,
     project_root: Path,
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
-    import_plan = _materialize_import_plan(
-        prepared_module_graph=prepared_module_graph,
-        module_reasons=module_reasons,
-        stdlib_root=stdlib_root,
-        artifacts_root=artifacts_root,
-        entry_module=entry_module,
-        diagnostics_enabled=diagnostics_enabled,
-    )
+    try:
+        import_plan = _materialize_import_plan(
+            prepared_module_graph=prepared_module_graph,
+            module_reasons=module_reasons,
+            stdlib_root=stdlib_root,
+            artifacts_root=artifacts_root,
+            entry_module=entry_module,
+            diagnostics_enabled=diagnostics_enabled,
+        )
+    except ValueError as exc:
+        return None, str(exc)
     try:
         output_layout = _resolve_build_output_layout(
             target=target,
@@ -356,6 +359,8 @@ def _prepare_frontend_lowering_config(
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None,
     native_python_exports: Collection[str] | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]]
+    | None = None,
     pgo_hot_function_names: set[str],
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
@@ -431,6 +436,9 @@ def _prepare_frontend_lowering_config(
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
+        native_support_function_roots_by_module=(
+            native_support_function_roots_by_module
+        ),
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
@@ -887,6 +895,9 @@ def _prepare_frontend_stage_state(
             ),
             native_python_exports=(
                 import_plan.native_artifact_plan.native_python_export_names()
+            ),
+            native_support_function_roots_by_module=(
+                import_plan.native_support_function_roots_by_module
             ),
             pgo_hot_function_names=pgo_hot_function_names,
             generated_module_source_paths=dict(
