@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -818,13 +819,64 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
         "--python",
         "3.12",
     ]
-    assert command[7:10] == ["python", "-m", "molt"]
-    assert "build" in command
-    assert "collab/pact/pact_witness_kernel/field_solve.py" in command
-    assert "--split-runtime" in command
+    assert command[7:9] == ["python", "tools/pact_witness_acceptance.py"]
     assert "tmp/pact_witness_acceptance_queue" in command
+    assert "tools/pact_witness_acceptance.py" in spec["scopes"]
     assert "collab/pact/pact_witness_kernel/check_parity.py" in spec["scopes"]
+    assert any("candidate_outputs.npz" in note for note in spec["notes"])
     assert proof_queue._proof_command_policy_error(command) is None
+
+
+def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
+    tmp_path: Path,
+) -> None:
+    expected_roots = [
+        tmp_path / "tmp/pact_numpy_multiarray_sealed_axiserror",
+        tmp_path / "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
+        tmp_path / "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
+        tmp_path / "bench/friends/repos/numpy_off_the_shelf",
+        tmp_path / "bench/friends/repos/scipy_off_the_shelf",
+    ]
+    stale_roots = [
+        tmp_path / "tmp/pact_numpy_multiarray_sealed_for_witness",
+        tmp_path / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
+        tmp_path / "tmp/pact_scipy_ndimage_provider_sealed_helpers",
+    ]
+    for root in expected_roots:
+        root.mkdir(parents=True)
+    for root in stale_roots:
+        root.mkdir(parents=True)
+    for root in [*expected_roots[:3], *stale_roots]:
+        (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
+
+    spec = proof_queue._pact_witness_acceptance_spec(repo_root=tmp_path)
+    env = spec["env_overrides"]
+
+    assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy scipy"
+    assert env["MOLT_MODULE_ROOTS"].split(os.pathsep) == [
+        str(root.resolve()) for root in expected_roots
+    ]
+    assert any("manifest-led" in note for note in spec["notes"])
+
+
+def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "tmp/pact_scipy_ndimage_provider_sealed_support_closure"
+    artifact_root.joinpath("scipy", "ndimage").mkdir(parents=True)
+    artifact_root.joinpath(
+        "scipy", "ndimage", "_nd_image.molt.wasm.extension_manifest.json"
+    ).write_text("{}", encoding="utf-8")
+    source_roots = [
+        tmp_path / "bench/friends/repos/numpy_off_the_shelf",
+        tmp_path / "bench/friends/repos/scipy_off_the_shelf",
+    ]
+    for root in source_roots:
+        root.mkdir(parents=True)
+
+    roots = proof_queue._pact_witness_native_roots(repo_root=tmp_path)
+
+    assert roots == [artifact_root.resolve(), *(root.resolve() for root in source_roots)]
 
 
 def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:

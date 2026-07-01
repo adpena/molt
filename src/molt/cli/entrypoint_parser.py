@@ -242,7 +242,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--stdlib-profile",
         choices=list(STDLIB_PROFILE_CHOICES),
         default=None,
-        help="Runtime stdlib profile (full=all modules, micro=core only for smallest binary)",
+        help=(
+            "Runtime stdlib profile intent: auto (default) selects the smallest "
+            "reachable-feature tier; named tiers are explicit ceilings."
+        ),
     )
     build_parser.add_argument(
         "--emit-ir",
@@ -672,7 +675,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Dotted Python import/export name to publish in the sealed sidecar; "
-            "repeat for package roots and module attributes."
+            "repeat for package roots and module attributes. When supplied, "
+            "this replaces manifest python_exports in the sealed output."
         ),
     )
     extension_seal_parser.add_argument(
@@ -681,7 +685,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "JSON object describing one native callable export to publish in "
-            "the sealed sidecar."
+            "the sealed sidecar. When supplied, this replaces manifest "
+            "callable_exports in the sealed output."
         ),
     )
     extension_seal_parser.add_argument(
@@ -690,7 +695,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Upstream support file to checksum and publish in the sealed "
-            "support_files list; repeat for provider sources."
+            "support_files list; pass a path or JSON object with path/source "
+            "to copy an upstream source to a stable sealed destination. Repeat "
+            "for provider sources. When supplied, this replaces manifest "
+            "support_files in the sealed output."
         ),
     )
     extension_seal_parser.add_argument(

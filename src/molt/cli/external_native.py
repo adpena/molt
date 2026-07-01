@@ -1475,6 +1475,7 @@ def _resolve_external_package_native_artifact_plan(
     package_root_providers: dict[str, set[str]] = {
         package: set() for package in required_package_roots
     }
+    selected_modules: set[tuple[str, str]] = set()
     for package in sorted(admitted_packages):
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
@@ -1504,6 +1505,9 @@ def _resolve_external_package_native_artifact_plan(
                     *python_exports,
                     *callable_exports,
                 )
+                module_key = (package, module_name)
+                if module_key in selected_modules:
+                    continue
                 if package in package_root_providers:
                     package_root_providers[package].update(provider_names)
                 if (
@@ -1525,6 +1529,7 @@ def _resolve_external_package_native_artifact_plan(
                 errors.extend(artifact_errors)
                 if artifact is not None:
                     artifacts.append(artifact)
+                    selected_modules.add(module_key)
     for package, providers in sorted(package_root_providers.items()):
         if any(
             _external_native_provider_reaches_required(

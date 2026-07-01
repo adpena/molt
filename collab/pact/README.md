@@ -4,7 +4,7 @@ This folder is the correspondence and handoff index for the Pact browser
 witness work. The live codebase and executable proofs are authoritative; these
 notes route the next structural move.
 
-## Current State (2026-06-29)
+## Current State (2026-07-01)
 
 The requested end criterion is still the Kernel A oracle:
 
@@ -24,6 +24,15 @@ uv run --active --project . --python 3.12 python tools/proof_queue.py status
 uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance
 ```
 
+`pact-witness-acceptance` auto-admits conventional staged NumPy/SciPy
+static-link artifact roots when they exist under `tmp/`, so the default lane is
+the manifest-led package-native closure path. The selector is priority ordered:
+the current canonical roots are `tmp/pact_numpy_multiarray_sealed_for_witness`
+and `tmp/pact_scipy_ndimage_sealed_for_witness_next`, with older recovery roots
+kept only as fallback evidence. Use `--print-spec` to inspect the selected roots,
+or `--env MOLT_MODULE_ROOTS=... --env MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"`
+for an explicit power-user lane.
+
 The smallest current parity proof for the witness oracle is also queued:
 
 ```powershell
@@ -36,39 +45,50 @@ browser/WASM acceptance lane remains the owner for producing a real
 Molt-generated `candidate_outputs.npz` once package-native closure reaches that
 point.
 
-The live recovery evidence says the current tree cannot honestly produce that
-candidate yet:
+The named acceptance lane is owned by `tools/pact_witness_acceptance.py`: it
+builds `field_solve.py`, executes the emitted WASM through the canonical runner
+from an isolated fixture directory, renames the Molt-produced
+`reference_outputs.npz` to `candidate_outputs.npz`, then runs
+`check_parity.py candidate_outputs.npz reference_outputs.npz`. Queue row
+`20260701T203840-pact-witness-acceptance-43e969d640e44709` proves the build and
+link half of that lane, then fails during Node execution with
+`RuntimeError: null function or function signature mismatch` before
+`candidate_outputs.npz` exists. The next executable proof is therefore the
+runtime call-table/signature closure behind that trap:
 
 - The first native-callable lowering gap is retired: manifest-declared
   direct-symbol exports for the `scipy.ndimage` witness operation closure now
   lower to executable `invoke_ffi` ABI metadata without granting
   `known_modules` fake Python direct-call authority.
-- The remaining blocker is package-native execution custody: the live Pact
-  build still needs reachable NumPy/SciPy native artifacts, ndarray/storage and
-  buffer primitives, and C/API symbol closure before the emitted WASM can link
-  and execute those upstream extension symbols.
+- The manifest-led package-native plan now closes for the first SciPy ndimage
+  native sidecar layer: existing sealed roots select
+  `numpy._core._multiarray_umath`, `scipy.ndimage._nd_image`, and
+  `scipy.ndimage._ni_label`; publish exactly the five Kernel A ndimage callable
+  exports; and stage provider support modules `_morphology`, `_filters`,
+  `_measurements`, `_ni_support`, `scipy._lib._util`, and `numpy.exceptions`.
 - Adding NumPy/SciPy source roots without package admission correctly fails
   closed.
-- Adding package admission against the local Python 3.14 site-packages root now
+- Adding package admission against the local Python 3.14 site-packages root still
   fails closed before graph expansion because the installed NumPy/SciPy roots
   contain native markers but do not publish wasm32 `static_link`
   `libmolt_source` artifact manifests with package symbol custody.
-- Molt now has the producer-side command contract for that missing artifact
+- Molt now has the producer-side command contract for package-native artifact
   shape: `molt extension build --target wasm` emits a wasm32 static-link
-  `.molt.wasm` artifact and `extension_manifest.json` with direct-symbol and
-  object-closure custody. Source-recompiled NumPy/SciPy artifacts must also
-  publish `python_exports`/`callable_exports`; package-root imports such as
-  `numpy` need matching `python_exports` ownership rather than child artifact
-  ancestry. The installed NumPy/SciPy roots still need reachable
-  source-recompiled artifacts in that shape.
+  `.molt.wasm` artifact and `extension_manifest.json` with direct-symbol,
+  capsule, and object-closure custody. Sealed witness roots must publish
+  precise `python_exports`, `callable_exports`, checksummed provider support
+  files, and target-compatible capsule providers.
 - An earlier package-admission probe timed out after 300s in the live WASM build
   path.
 - A graph-only probe took 100.4s before backend work, found 186 modules, zero
   staged native artifacts, and pulled broad NumPy plus `scipy` and
   `scipy.ndimage` package initializer closure.
 
-That makes the next structural unit package-native closure for Kernel A, not a
-Molt-owned Python shim and not a checked-in browser artifact bundle.
+That makes the next structural unit the live Kernel A runtime/parity closure:
+turn the first missing runtime call-table/signature, C/API, ndarray/storage, or
+buffer primitive exposed by the Node trap into a shared Molt ABI surface, then
+rerun the queued full acceptance lane. It is not a Molt-owned Python shim and
+not a checked-in browser artifact bundle.
 
 Once package-native closure exists, replay Kernel A `field_solve(lstar)` first
 because it is the SciPy ndimage stress test and interactive payload, then run

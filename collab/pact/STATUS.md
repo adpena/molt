@@ -1,4 +1,4 @@
-# STATUS - Pact dogfooding of Molt (2026-06-30)
+# STATUS - Pact dogfooding of Molt (2026-07-01)
 
 Positive signal first: the browser call shape is no longer the core unknown.
 `wasm/browser_embed.js` owns the narrow split-runtime embed path, and
@@ -16,18 +16,24 @@ an output.
 
 ## Current Blocker
 
-The live evidence says the current tree cannot yet produce
-`candidate_outputs.npz` for the Pact witness:
+The live evidence says the current tree can now build and link the Kernel A
+`field_solve.py` WASM package with canonical sealed NumPy/SciPy roots, but has
+not yet passed the full `candidate_outputs.npz` parity runner:
 
 - The old first failure, `scipy.ndimage.distance_transform_edt` becoming an
   unsupported fake Python direct call, is retired for manifest-declared native
   callable exports. `known_modules` remains import visibility only, while
   direct-symbol and object-call `module_attr` callable exports now lower the
   `scipy.ndimage` witness closure to executable `invoke_ffi` ABI metadata.
-- The current remaining blocker is downstream of that lowering: the live Pact
-  build still lacks admitted reachable NumPy/SciPy native artifacts,
-  ndarray/storage/dtype/buffer truth, and the C/API primitive closure needed to
-  link and execute those upstream extension symbols in WASM.
+- The remaining blocker is now downstream of build/link: the full acceptance
+  runner must execute the emitted WASM, write `candidate_outputs.npz`, and pass
+  `check_parity.py`. Queue row
+  `20260701T203840-pact-witness-acceptance-43e969d640e44709` reaches that
+  runner and fails in Node before `candidate_outputs.npz` with
+  `RuntimeError: null function or function signature mismatch`. The immediate
+  aperture is the runtime call-table/signature closure for the linked
+  native/object-call path; ndarray/storage/dtype/buffer, C/API, capsule, and
+  module-state remain the next primitives to promote as the trap is traced.
 - Adding NumPy/SciPy source roots without package admission correctly fails
   closed.
 - Adding package admission against the local Python 3.14 site-packages root now
@@ -35,52 +41,40 @@ The live evidence says the current tree cannot yet produce
   source/artifact markers but do not publish wasm32 `static_link`
   `libmolt_source` artifact manifests with package symbol custody. Source roots
   alone are not linkable WASM evidence.
-- Adding the local staged NumPy `_multiarray_umath.molt.wasm` artifact root now
-  also fails closed before graph expansion because the artifact manifest has no
-  `python_exports` or `callable_exports`. Import visibility for `numpy` is not
-  allowed to select child native artifacts by directory ancestry; reachable
-  object closure must be manifest-symbol driven so binaries stay small and
-  tree-shaken. A required package-root import such as `numpy` must be covered
-  by matching `python_exports`, not merely by a child artifact module such as
-  `numpy._core._multiarray_umath`.
-- The current fast pre-build audit confirms the same frontier without entering
-  graph discovery: the stale staged NumPy artifact fails
-  `molt extension audit --require-python-export numpy` even though its
-  standalone `.molt.wasm` bytes, `static_link` loader metadata, SHA-256, and
-  object-closure sidecar custody are present. The stale friend-tree SciPy
-  `_nd_image.molt.wasm` sidecar now fails admission before graph/backend work:
-  its `callable_exports` publish high-level `scipy.ndimage` wrapper functions
-  such as `distance_transform_edt`, `gaussian_filter`, `label`,
-  `maximum_filter`, and `minimum_filter` as if they were `_nd_image`
-  `PyMethodDef` methods. They are not. A `module_attr` callable export must now
-  be backed either by the extension module's admitted `PyMethodDef` source or
-  by an explicit `provider_module` whose upstream `.py` support source is
-  checksummed in `support_files`.
+- The stale NumPy package-root export blocker is retired in the current witness
+  root: `tmp/pact_numpy_multiarray_sealed_for_witness` publishes `python_exports
+  = ["numpy"]`, target-compatible `static_link` WASM custody, and the modern and
+  legacy NumPy `_ARRAY_API` / `_UFUNC_API` capsule names required by SciPy.
+- The stale SciPy high-level wrapper export blocker is retired in the current
+  witness root: `tmp/pact_scipy_ndimage_sealed_for_witness_next` replaces the
+  bad `_nd_image`-owned wrapper exports with `module_attr` callable exports
+  backed by explicit provider support modules and checksummed source custody.
 - The corrected SciPy shape is provider-source plus reachable native artifacts:
   `distance_transform_edt` is provided by `scipy.ndimage._morphology`,
   gaussian/min/max filters by `scipy.ndimage._filters`, and `label` by
   `scipy.ndimage._measurements`. Those wrappers import `_nd_image`,
   `_ni_label`, `_rank_filter_1d`, `_ni_support`, `_ni_docstrings`, and narrow
-  SciPy/NumPy helpers. The local friend tree currently contains only
-  `_nd_image.molt.wasm`; `_ni_label` and `_rank_filter_1d` source exists
-  upstream but no generated/static-link artifacts or build-plan custody are
-  present yet.
-- The current recovery moved the next failure from late WASM execution into
-  import/link authority. Reachable provider support source is now sliced once
-  for graph discovery and frontend lowering, decorator/doc-only support imports
-  are stripped from executable closure, stdlib helper imports join the runtime
-  import-dispatch roots, and missing native-package child imports fail closed
-  during import-plan materialization. The live Pact build stopped in 4.7s with
-  `scipy.ndimage._ni_label` reported as lacking source or artifact custody,
-  instead of building a candidate that traps later with `ImportError`. That
-  failure now consults sealed-artifact sidecar provenance and points at the
+  SciPy/NumPy helpers. The current sealed witness plan selects the existing
+  `_nd_image` and `_ni_label` static-link artifacts plus NumPy
+  `_multiarray_umath`; `_rank_filter_1d` remains the next wrapper-reachable
+  native artifact to expose if graph/runtime execution reaches rank-filter
+  support.
+- The current recovery first moved the next failure from late WASM execution
+  into import/link authority. Reachable provider support source is now sliced
+  once for graph discovery and frontend lowering, decorator/doc-only support
+  imports are stripped from executable closure, stdlib helper imports join the
+  runtime import-dispatch roots, and missing native-package child imports fail
+  closed during import-plan materialization. An earlier Pact build stopped in
+  4.7s with `scipy.ndimage._ni_label` reported as lacking source or artifact
+  custody, instead of building a candidate that traps later with `ImportError`.
+  That failure consulted sealed-artifact sidecar provenance and pointed at the
   upstream source candidate:
   `bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\src\_ni_label.pyx`.
   With a target-specific WASI sysroot configured, the source-extension lane now
   builds `_ni_label` into a wasm32 static-link artifact without cloning or
   rewriting SciPy semantics: `object_count=1`, `linked_object_count=1`,
   `warnings=[]`, and `errors=[]`. This retires the first missing native child
-  artifact; it does not yet prove the full `field_solve.py` candidate output.
+  artifact.
 - An earlier package-admission probe timed out after 300s in the live WASM build
   path.
 - A graph-only probe took 100.4s before backend work, found 186 modules, zero
@@ -99,11 +93,29 @@ The live evidence says the current tree cannot yet produce
   NumPy/SciPy package execution still needs the remaining reachable native
   artifact, ndarray/storage, and C/API primitive closure.
 
-That means the next real structural unit is upstream package-native closure:
-NumPy/SciPy source admission, native artifact staging, C/API symbol closure,
-ndarray/storage/buffer primitives, capsule/module-state lifecycle, and
-tree-shaken reachable object closure. Molt-owned Python shims for NumPy/SciPy
-would be the wrong architecture.
+The latest custody/build probe closes the first manifest-led artifact plan
+without entering broad graph discovery: roots
+`tmp/pact_numpy_multiarray_sealed_for_witness` and
+`tmp/pact_scipy_ndimage_sealed_for_witness_next` select
+`numpy._core._multiarray_umath`, `scipy.ndimage._nd_image`, and
+`scipy.ndimage._ni_label`; publish the five Kernel A ndimage callable exports;
+stage `_morphology`, `_filters`, `_measurements`, `_ni_support`,
+`scipy._lib._util`, and `numpy.exceptions`; and pass the queued WASM build/link
+row `20260701T203639-pact-witness-acceptance-28ad06e50b3344bb`
+(`app.wasm` plus `molt_runtime.wasm`). The generated support files in
+`tmp\pact_witness_acceptance_queue\.molt_build\field_solve\` are
+`native_support_numpy_exceptions.py`,
+`native_support_scipy_ndimage__filters.py`,
+`native_support_scipy_ndimage__measurements.py`,
+`native_support_scipy_ndimage__morphology.py`,
+`native_support_scipy_ndimage__ni_support.py`, and
+`native_support_scipy__lib__util.py`.
+
+That means the next real structural unit is the live Kernel A runtime/parity
+closure: promote the first missing runtime call-table/signature, C/API,
+ndarray/storage, buffer, capsule, module-state, or object-call primitive exposed
+by the Node trap into shared Molt ABI surface, then rerun the named acceptance
+lane. Molt-owned Python shims for NumPy/SciPy would be the wrong architecture.
 
 ## What Worked
 
@@ -136,7 +148,15 @@ would be the wrong architecture.
 Queue-native Pact witness lanes:
 
 - `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
-- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance` owns the heavy browser/WASM Kernel A aperture. On the current tree it is expected to fail closed before `candidate_outputs.npz` because package-native NumPy/SciPy closure is still incomplete.
+- `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance` owns the heavy browser/WASM Kernel A aperture. The current spec renders to `tools/pact_witness_acceptance.py`, which builds `field_solve.py`, runs the emitted WASM, writes `candidate_outputs.npz`, and executes `check_parity.py`.
+  Latest full-acceptance evidence:
+  `20260701T203840-pact-witness-acceptance-43e969d640e44709` builds and links,
+  then fails in Node before `candidate_outputs.npz` with
+  `RuntimeError: null function or function signature mismatch`.
+  The named lane now auto-admits conventional staged NumPy/SciPy static-link
+  artifact roots under `tmp/` when present, so the default acceptance command
+  exercises manifest-led package-native closure instead of rediscovering the
+  unauthenticated `distance_transform_edt` direct-call failure.
 - `uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle` is the smallest queued witness parity proof: it regenerates the Kernel A fixture/reference pair and runs `check_parity.py reference_outputs.npz` under queue custody.
 
 Green in this recovery:

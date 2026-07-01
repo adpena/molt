@@ -93,6 +93,11 @@ is reconciled.
   Non-active `uv run` creates throwaway environments and is not acceptable.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`. Read it before
   queueing or interpreting long-running proof evidence.
+- Pact Kernel A acceptance must use the named queue lane
+  `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
+  `python -m molt build ... field_solve.py` is build evidence, not acceptance;
+  current acceptance is `tools/pact_witness_acceptance.py` producing
+  `candidate_outputs.npz` and passing `check_parity.py`.
 - Expensive or contention-heavy work must go through `tools/proof_queue.py`:
   Cargo builds, WASM/browser proofs, benchmark lanes, conformance shards,
   stress tests, and anything likely to contend for build/runtime resources.

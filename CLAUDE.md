@@ -61,6 +61,12 @@ is reconciled.
 ## DX, Queue, And Proof Discipline
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
+- Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`.
+- Pact Kernel A acceptance must use the named queue lane
+  `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
+  `python -m molt build ... field_solve.py` is build evidence, not acceptance;
+  current acceptance is `tools/pact_witness_acceptance.py` producing
+  `candidate_outputs.npz` and passing `check_parity.py`.
 - Expensive or contention-heavy work must go through `tools/proof_queue.py`:
   Cargo builds, WASM/browser proofs, benchmark lanes, conformance shards,
   stress tests, and any test likely to contend for shared resources.
