@@ -798,12 +798,22 @@ exc_singleton!(PyExc_UserWarning);
 
 /// Py_HASH_EXTERNAL constant — used by some extensions.
 pub const Py_HASH_EXTERNAL: c_int = 0;
+pub const PyBUF_SIMPLE: c_int = 0;
 pub const PyBUF_WRITABLE: c_int = 0x0001;
+pub const PyBUF_WRITEABLE: c_int = PyBUF_WRITABLE;
 pub const PyBUF_FORMAT: c_int = 0x0004;
 pub const PyBUF_ND: c_int = 0x0008;
 pub const PyBUF_STRIDES: c_int = 0x0010 | PyBUF_ND;
+pub const PyBUF_C_CONTIGUOUS: c_int = 0x0020 | PyBUF_STRIDES;
+pub const PyBUF_F_CONTIGUOUS: c_int = 0x0040 | PyBUF_STRIDES;
+pub const PyBUF_ANY_CONTIGUOUS: c_int = 0x0080 | PyBUF_STRIDES;
 pub const PyBUF_INDIRECT: c_int = 0x0100 | PyBUF_STRIDES;
+pub const PyBUF_CONTIG_RO: c_int = PyBUF_ND;
+pub const PyBUF_CONTIG: c_int = PyBUF_ND | PyBUF_WRITABLE;
 pub const PyBUF_RECORDS_RO: c_int = PyBUF_STRIDES | PyBUF_FORMAT;
+pub const PyBUF_RECORDS: c_int = PyBUF_STRIDES | PyBUF_FORMAT | PyBUF_WRITABLE;
+pub const PyBUF_FULL_RO: c_int = PyBUF_INDIRECT | PyBUF_FORMAT;
+pub const PyBUF_FULL: c_int = PyBUF_INDIRECT | PyBUF_FORMAT | PyBUF_WRITABLE;
 
 #[allow(non_upper_case_globals)]
 pub const Py_mp_subscript: c_int = 5;

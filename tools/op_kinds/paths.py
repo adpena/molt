@@ -30,7 +30,6 @@ def tir_path(relative: str) -> Path:
 TABLE = tir_path("op_kinds.toml")
 OUT_RS = tir_path("op_kinds_generated.rs")
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
-RUSTFMT_TMP = ROOT / "tmp" / "gen_op_kinds"
 
 __all__ = [
     "ROOT",
@@ -40,6 +39,5 @@ __all__ = [
     "TABLE",
     "OUT_RS",
     "OUT_PY",
-    "RUSTFMT_TMP",
     "harness_memory_guard",
 ]

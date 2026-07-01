@@ -1,13 +1,11 @@
 //! CPython memory allocator ABI.
 
 use crate::abi_types::{
-    Py_buffer, Py_ssize_t, PyMemoryView_Type, PyMemoryViewObject, PyObject, PyTypeObject,
-    PyVarObject,
+    Py_buffer, Py_ssize_t, PyBUF_FULL_RO, PyBUF_WRITABLE, PyMemoryView_Type, PyMemoryViewObject,
+    PyObject, PyTypeObject, PyVarObject,
 };
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int};
-
-const PYBUF_FULL_RO: c_int = 0x0004 | 0x0008 | 0x0010;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut c_void {
@@ -216,24 +214,27 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
     if mem.is_null() || size < 0 {
         return std::ptr::null_mut();
     }
+    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+    let readonly = (flags & PyBUF_WRITABLE == 0) as c_int;
+    if unsafe {
+        crate::api::buffer::PyBuffer_FillInfo(
+            &mut view,
+            std::ptr::null_mut(),
+            mem.cast(),
+            size,
+            readonly,
+            PyBUF_FULL_RO | (flags & PyBUF_WRITABLE),
+        )
+    } != 0
+    {
+        return std::ptr::null_mut();
+    }
     let object = Box::new(PyMemoryViewObject {
         ob_base: PyObject {
             ob_refcnt: 1,
             ob_type: &raw mut PyMemoryView_Type,
         },
-        view: Py_buffer {
-            buf: mem.cast(),
-            obj: std::ptr::null_mut(),
-            len: size,
-            itemsize: 1,
-            readonly: (flags & crate::abi_types::PyBUF_WRITABLE == 0) as c_int,
-            ndim: 1,
-            format: std::ptr::null_mut(),
-            shape: std::ptr::null_mut(),
-            strides: std::ptr::null_mut(),
-            suboffsets: std::ptr::null_mut(),
-            internal: std::ptr::null_mut(),
-        },
+        view,
         base: std::ptr::null_mut(),
     });
     Box::into_raw(object).cast()
@@ -286,7 +287,7 @@ pub unsafe extern "C" fn PyMemoryView_FromObject(op: *mut PyObject) -> *mut PyOb
         suboffsets: std::ptr::null_mut(),
         internal: std::ptr::null_mut(),
     };
-    if unsafe { crate::api::buffer::PyObject_GetBuffer(op, &raw mut view, PYBUF_FULL_RO) } != 0 {
+    if unsafe { crate::api::buffer::PyObject_GetBuffer(op, &raw mut view, PyBUF_FULL_RO) } != 0 {
         return std::ptr::null_mut();
     }
     let base = if view.obj.is_null() {
