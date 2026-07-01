@@ -97,7 +97,9 @@ is reconciled.
   `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
   `python -m molt build ... field_solve.py` is build evidence, not acceptance;
   current acceptance is `tools/pact_witness_acceptance.py` producing
-  `candidate_outputs.npz` and passing `check_parity.py`.
+  `candidate_outputs.npz` and passing `check_parity.py`. Static extension init
+  failures in that lane emit `static_extension_init_failure.json`; inspect that
+  dossier before manual manifest/source rummaging.
 - Expensive or contention-heavy work must go through `tools/proof_queue.py`:
   Cargo builds, WASM/browser proofs, benchmark lanes, conformance shards,
   stress tests, and anything likely to contend for build/runtime resources.
@@ -129,6 +131,12 @@ is reconciled.
   notebooks. Use `--depends-on RUN_ID` for scheduling dependencies and
   `tools/proof_queue.py link CHILD --parent PARENT --kind reruns --note "..."`
   for post-submit lineage.
+- After a failed/stale queue row, run `tools/proof_queue.py diagnose RUN_ID`
+  before manual log archaeology. Use `--append-note` to preserve the
+  deterministic finding in the append-only proof history. `status` and
+  `evidence` surface the same diagnostics; repeated
+  `unclassified-failed-proof` is a DX defect that should become a new
+  deterministic diagnosis rule.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.

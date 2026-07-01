@@ -189,6 +189,11 @@ never deletes previous attempt directories, because Windows may keep linked
 `.wat` or `.wasm` files open briefly after a failed run. A row whose command is
 only `python -m molt build ... field_solve.py` is historical build evidence, not
 Pact acceptance, and must be rerun through the named current spec after it exits.
+If Node reports a static extension `Py_mod_exec` init failure, the runner emits
+`run/static_extension_init_failure.json` with the matched staged manifest,
+object-closure summary, source-derived capsule requirements, and source line
+hints so agents do not hand-audit temp roots before reading the generated
+dossier.
 
 Before spending the heavy slot, inspect the rendered lane:
 
@@ -257,6 +262,29 @@ Inspect machine-readable evidence with:
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py evidence --run-id RUN_ID
 ```
+
+Evidence includes deterministic `diagnostics` derived from queue metadata and
+log tails. These are not guesses; they are first-party rules for recurring
+proof failure classes such as queue policy rejection, static-linked
+`Py_mod_exec` failure, unresolved native/WASM symbols, unsupported direct calls,
+and Pact missing-output acceptance failures.
+
+Use `diagnose` before manual log spelunking or hand-written status notes:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose RUN_ID
+```
+
+To preserve the finding for other agents, append the deterministic diagnosis as
+an immutable note and regenerate the notebook projection:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose RUN_ID --append-note
+```
+
+`status` also prints the first diagnostic for recent failed rows. If a repeated
+failure only shows `unclassified-failed-proof`, add a deterministic diagnosis
+rule to `tools/proof_queue.py` before that pattern becomes tribal knowledge.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated

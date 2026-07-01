@@ -135,12 +135,19 @@ touching code, docs, tests, benchmarks, or roadmap state.
   Codex-held interactive sessions. Detached launch starts
   `tools/proof_queue.py run --run-id RUN_ID` for the exact queued row and
   records `*.runner.log`; WASM resource families preflight the checked-in Rust
-  toolchain contract and required Rust targets before Cargo starts.
+  toolchain contract and required Rust targets before Cargo starts. After any
+  failed or stale queue row, run `tools/proof_queue.py diagnose RUN_ID` before
+  manual log archaeology, and use `--append-note` to preserve the deterministic
+  finding in the append-only proof history. `status` and `evidence` surface the
+  same diagnostics; repeated `unclassified-failed-proof` means the failure class
+  belongs in a new deterministic diagnosis rule.
 - Pact Kernel A acceptance must use the named queue lane
   `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
   `python -m molt build ... field_solve.py` is build evidence, not acceptance;
   current acceptance is `tools/pact_witness_acceptance.py` producing
-  `candidate_outputs.npz` and passing `check_parity.py`.
+  `candidate_outputs.npz` and passing `check_parity.py`. Static extension init
+  failures in that lane emit `static_extension_init_failure.json`; inspect that
+  dossier before manual manifest/source rummaging.
 - Treat `write_stdin` as stdin input only, not process control. Never send
   Ctrl-C (`\u0003`), SIGINT-like bytes, ESC/control sequences, or other
   interrupt payloads through it to stop a command. On Windows Codex Desktop this

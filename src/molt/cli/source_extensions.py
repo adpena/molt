@@ -1152,18 +1152,23 @@ def _source_extension_object_fact(
     )
 
 
-def _extract_source_extension_required_capsules(source_text: str) -> tuple[str, ...]:
+def source_extension_required_capsule_imports(
+    source_text: str,
+) -> dict[str, tuple[str, ...]]:
     sanitized = _strip_c_like_comments_and_literals(source_text)
     tokens = {match.group(0) for match in _C_IDENTIFIER_RE.finditer(sanitized)}
-    return tuple(
-        sorted(
-            {
-                capsule
-                for token, capsule in _SOURCE_EXTENSION_CAPSULE_IMPORT_TOKENS.items()
-                if token in tokens
-            }
-        )
-    )
+    imports_by_capsule: dict[str, list[str]] = {}
+    for token, capsule in _SOURCE_EXTENSION_CAPSULE_IMPORT_TOKENS.items():
+        if token in tokens:
+            imports_by_capsule.setdefault(capsule, []).append(token)
+    return {
+        capsule: tuple(sorted(import_tokens))
+        for capsule, import_tokens in sorted(imports_by_capsule.items())
+    }
+
+
+def _extract_source_extension_required_capsules(source_text: str) -> tuple[str, ...]:
+    return tuple(source_extension_required_capsule_imports(source_text))
 
 
 def _source_extension_definition_header_paths(
