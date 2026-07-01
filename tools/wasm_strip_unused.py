@@ -74,6 +74,17 @@ IMPORT_PREFIX_RULES: list[tuple[str, str, ImportCategory, str]] = [
     (module, prefix, ImportCategory(category), description)
     for module, prefix, category, description in _WASM_ABI.WASM_STRIP_IMPORT_PREFIX_RULES
 ]
+STRIPPABLE_CATEGORIES: frozenset[ImportCategory] = frozenset(
+    {
+        ImportCategory.IO_FILESYSTEM,
+        ImportCategory.PROCESS,
+        ImportCategory.DATABASE,
+        ImportCategory.WEBSOCKET,
+        ImportCategory.SOCKET,
+        ImportCategory.TIME,
+        ImportCategory.PURE_PROFILE,
+    }
+)
 
 
 @dataclass

@@ -25,6 +25,35 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py status
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
 
+## Cargo Proof Lanes
+
+Cargo proofs use the queue-native `cargo` subcommand. Do not submit raw
+`cargo ...` through `exec`, the TOML DSL, shell backgrounding, or a Codex-held
+interactive session. The cargo lane builds the canonical command envelope:
+active uv, `tools/guarded_exec.py --prefix MOLT_TEST_SUITE`, queue contention,
+memory guard, timeout, logs, optional detached runner, and a Cargo contention
+key inferred from `-p/--package` when one is present.
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py cargo `
+  --id runtime-buffer-descriptor-authority `
+  --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
+  --scope runtime/molt-runtime/src/object/memoryview.rs `
+  --note "Moved buffer descriptor authority beside TypedStridedStorage; proving C API and ABI layout stay aligned." `
+  --timeout 900 `
+  --detach `
+  -- test -p molt-runtime buffer --lib -- --nocapture
+```
+
+Use `--contention-key` only when the inferred `cargo:<package>` or
+`cargo:workspace` key is not precise enough for the shared artifact cache and
+compile slot being protected. Use `cargo-template` to print the current command
+shape instead of reconstructing it from memory:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py cargo-template
+```
+
 ## Required Submission Shape
 
 Every queued run needs a meaningful reason, resource family, contention key,
@@ -35,12 +64,12 @@ explored and why.
 uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   --id runtime-buffer-descriptor-authority `
   --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
-  --resource-family cargo `
-  --contention-key cargo:molt-runtime-buffer `
+  --resource-family python `
+  --contention-key python:runtime-buffer-descriptor `
   --scope runtime/molt-runtime/src/object/memoryview.rs `
   --note "Moved buffer descriptor authority beside TypedStridedStorage; proving C API and ABI layout stay aligned." `
   --timeout 900 `
-  -- cargo test -p molt-runtime --lib buffer -- --nocapture
+  -- uv run --active --project . --python 3.12 pytest tests/path.py -q
 ```
 
 Use `--depends-on RUN_ID` when a proof is not valid until earlier evidence has
@@ -67,13 +96,13 @@ launch:
 uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   --id runtime-buffer-descriptor-authority `
   --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
-  --resource-family cargo `
-  --contention-key cargo:molt-runtime-buffer `
+  --resource-family python `
+  --contention-key python:runtime-buffer-descriptor `
   --scope runtime/molt-runtime/src/object/memoryview.rs `
   --note "Detached queue-owned runner for the focused buffer proof." `
   --timeout 900 `
   --detach `
-  -- cargo test -p molt-runtime --lib buffer -- --nocapture
+  -- uv run --active --project . --python 3.12 pytest tests/path.py -q
 ```
 
 Named lanes support the same mode:

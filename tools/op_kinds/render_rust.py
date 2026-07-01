@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from tools import harness_memory_guard
 
 from .paths import ROOT
-from .schema import *  # noqa: F403
+from .schema import (
+    _CALL_OPCODE_ROLES,
+    _EXCEPTION_REGION_NESTING_ROLES,
+    _FUZZ_TIR_ATTR_PAYLOAD_RULES,
+    _GENERATOR_FUSION_ITER_USE_ROLES,
+    _GVN_VALUE_KEY_KINDS,
+    _LITERAL_PAYLOAD_KINDS,
+    _PASS_DELTA_FACT_FIELDS,
+    _SIMPLEIR_CONTROL_FACT_FIELDS,
+)
 from .validate import _opcode_role_members
 from .render_rust_analysis import (
     _render_counted_loop_comparison_roles,
@@ -34,9 +42,6 @@ from .render_rust_common import (
     _rs_string,
 )
 from .render_rust_ownership import (
-    _borrows_source_operand_index,
-    _container_absorb_operand_index,
-    _operand_ownership_arm,
     _render_explicit_release_operands,
     _render_operand_ownership,
     _render_result_absorption,

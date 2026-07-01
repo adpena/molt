@@ -9,7 +9,6 @@ from typing import cast
 
 from molt import cli
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt.cli import runtime_paths as RUNTIME_PATHS
 import pytest

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from .schema import *  # noqa: F403
-from .render_rust_common import _render_matches_arm, _rs_bool, _rs_string
+from .render_rust_common import _render_matches_arm, _rs_bool
 
 _OPERAND_OWNERSHIP_VARIANT = {
     "borrowed": "OperandOwnership::Borrowed",
