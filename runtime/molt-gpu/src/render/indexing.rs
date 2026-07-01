@@ -284,7 +284,7 @@ fn literal(value: i64, dialect: IndexDialect) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_reduction_input_index, render_shapetracker_index, IndexDialect};
+    use super::{IndexDialect, render_reduction_input_index, render_shapetracker_index};
     use crate::render::ReductionDomain;
     use crate::shapetracker::ShapeTracker;
 

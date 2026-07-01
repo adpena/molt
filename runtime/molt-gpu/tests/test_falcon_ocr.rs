@@ -813,8 +813,8 @@ fn test_falcon_softmax_masked_position_zeroed() {
 
 #[test]
 fn test_falcon_rms_norm_renders_wgsl() {
-    use molt_gpu::render::wgsl::WgslRenderer;
     use molt_gpu::render::Renderer;
+    use molt_gpu::render::wgsl::WgslRenderer;
 
     let kernel = FusedKernel {
         body: Default::default(),
@@ -854,8 +854,8 @@ fn test_falcon_rms_norm_renders_wgsl() {
 
 #[test]
 fn test_falcon_rms_norm_renders_cuda() {
-    use molt_gpu::render::cuda::CudaRenderer;
     use molt_gpu::render::Renderer;
+    use molt_gpu::render::cuda::CudaRenderer;
 
     let kernel = FusedKernel {
         body: Default::default(),
@@ -895,8 +895,8 @@ fn test_falcon_rms_norm_renders_cuda() {
 
 #[test]
 fn test_falcon_rms_norm_renders_msl() {
-    use molt_gpu::render::msl::MslRenderer;
     use molt_gpu::render::Renderer;
+    use molt_gpu::render::msl::MslRenderer;
 
     let kernel = FusedKernel {
         body: Default::default(),

@@ -76,8 +76,12 @@ fn main() -> ExitCode {
                 eprintln!("Options:");
                 eprintln!("  -o, --output PATH    Write MLIR text to file instead of stdout");
                 eprintln!("  --emit-llvm          Also lower to LLVM dialect and emit it");
-                eprintln!("  --opt-level LEVEL    Optimization level: O0, O1, O2, O3 (default: O2)");
-                eprintln!("  --jit FUNC           JIT-execute the named function (i64 args, i64 result)");
+                eprintln!(
+                    "  --opt-level LEVEL    Optimization level: O0, O1, O2, O3 (default: O2)"
+                );
+                eprintln!(
+                    "  --jit FUNC           JIT-execute the named function (i64 args, i64 result)"
+                );
                 eprintln!("  -h, --help           Show this help message");
                 return ExitCode::SUCCESS;
             }

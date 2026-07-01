@@ -101,7 +101,7 @@ jobs:
               raise SystemExit(f"pyproject.toml version {version} != {expected}")
           PY
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.1
         if: ${{ !matrix.self_hosted }}
 
       - name: Install Rust toolchain (self-hosted)
@@ -112,8 +112,8 @@ jobs:
             curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- -y --profile minimal
           fi
           echo "PATH=$HOME/.cargo/bin:$PATH" >> "$GITHUB_ENV"
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          rustup toolchain install 1.96.1 --profile minimal --component rustfmt --component clippy --no-self-update
+          rustup default 1.96.1
 
       - name: Install system deps (Linux)
         if: matrix.platform == 'linux'

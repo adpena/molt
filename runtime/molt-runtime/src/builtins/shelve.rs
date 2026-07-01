@@ -36,7 +36,13 @@ pub extern "C" fn molt_shelve_open(dbm_handle_bits: u64, protocol_bits: u64) -> 
         let protocol = to_i64(obj_from_bits(protocol_bits)).unwrap_or(4);
         let id = next_shelf_id();
         SHELF_MAP.with(|m| {
-            m.borrow_mut().insert(id, ShelfState { dbm_handle, protocol });
+            m.borrow_mut().insert(
+                id,
+                ShelfState {
+                    dbm_handle,
+                    protocol,
+                },
+            );
         });
         MoltObject::from_int(id).bits()
     })
@@ -50,7 +56,9 @@ pub extern "C" fn molt_shelve_close(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid handle");
         };
-        SHELF_MAP.with(|m| { m.borrow_mut().remove(&id); });
+        SHELF_MAP.with(|m| {
+            m.borrow_mut().remove(&id);
+        });
         MoltObject::none().bits()
     })
 }

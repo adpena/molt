@@ -2,7 +2,8 @@
 name = "molt-runtime-regex"
 version = "0.1.0"
 publish = false
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "Regex intrinsics for the Molt runtime (lookahead, lookbehind, verbose strip, fullmatch, etc.)"
 

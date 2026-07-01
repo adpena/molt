@@ -285,6 +285,18 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded rustfmt check child for selected human Rust files",
     ),
     AllowedRawSubprocessUse(
+        "tools/check_rust_toolchain.py",
+        "_run",
+        "run",
+        "bounded git/rustup/rustc/cargo metadata probes for Rust toolchain contract checks",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/setup_readiness.py",
+        "_build_toolchain_report",
+        "run",
+        "bounded rustc version metadata probe for setup-readiness diagnostics",
+    ),
+    AllowedRawSubprocessUse(
         "tools/dirty_tree_landing_audit.py",
         "_run_git",
         "run",
@@ -393,6 +405,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_run_one",
         "Popen",
         "proof queue custody boundary launching guarded proof commands with logs and contention keys",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue.py",
+        "_launch_detached_runner",
+        "Popen",
+        "proof queue detached runner custody boundary records run id, command, and log path",
     ),
     AllowedRawSubprocessUse(
         "tools/proof_queue.py",

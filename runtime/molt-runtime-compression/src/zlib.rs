@@ -1,8 +1,8 @@
 #![allow(dead_code, unused_imports)]
 use crate::bridge::*;
+use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, ZlibEncoder};
-use flate2::Compression;
 use molt_runtime_core::prelude::*;
 use std::io::{Read, Write};
 

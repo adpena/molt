@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import molt.cli as cli
-from molt.cli import build_pipeline as cli_build_pipeline
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import typecheck as cli_typecheck
 
@@ -15,7 +14,8 @@ COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 MLIR_BACKEND = importlib.import_module("molt.cli.mlir_backend")
-TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
+SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
+WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 
 
 def test_uv_lock_check_uses_build_memory_guard(
@@ -104,16 +104,16 @@ def test_rustup_target_install_uses_build_memory_guard(monkeypatch) -> None:
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append((cmd, kwargs))
-        if cmd[2:] == ["list", "--installed"]:
+        if cmd[1:] == ["target", "list", "--installed"]:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return subprocess.CompletedProcess(cmd, 0, "installed", "")
 
     monkeypatch.setattr(
-        TOOLCHAIN_VALIDATION.shutil,
+        SETUP_READINESS.shutil,
         "which",
         lambda name: f"/usr/bin/{name}",
     )
-    monkeypatch.setattr(TOOLCHAIN_VALIDATION, "_run_completed_command", fake_run)
+    monkeypatch.setattr(WASM_TOOLCHAIN, "_run_completed_command", fake_run)
 
     warnings: list[str] = []
     assert cli._ensure_rustup_target("wasm32-wasip1", warnings) is True
@@ -122,6 +122,47 @@ def test_rustup_target_install_uses_build_memory_guard(monkeypatch) -> None:
     assert calls[1][0] == ["/usr/bin/rustup", "target", "add", "wasm32-wasip1"]
     assert calls[0][1]["memory_guard_prefix"] == "MOLT_BUILD"
     assert calls[1][1]["memory_guard_prefix"] == "MOLT_BUILD"
+
+
+def test_root_pinned_rustup_target_install_uses_checked_in_toolchain(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs))
+        if cmd[1:3] == ["target", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "installed", "")
+
+    monkeypatch.setattr(
+        SETUP_READINESS.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(WASM_TOOLCHAIN, "_run_completed_command", fake_run)
+
+    warnings: list[str] = []
+    assert cli._ensure_rustup_target("wasm32-wasip1", warnings, root=Path.cwd()) is True
+    assert warnings == []
+    assert calls[0][0] == [
+        "/usr/bin/rustup",
+        "target",
+        "list",
+        "--installed",
+        "--toolchain",
+        "1.96.1",
+    ]
+    assert calls[1][0] == [
+        "/usr/bin/rustup",
+        "target",
+        "add",
+        "wasm32-wasip1",
+        "--toolchain",
+        "1.96.1",
+    ]
+    assert calls[0][1]["cwd"] == Path.cwd()
+    assert calls[1][1]["cwd"] == Path.cwd()
 
 
 def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
@@ -303,7 +344,9 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         "_backend_daemon_wait_until_ready",
         lambda *a, **k: (True, None),
     )
-    monkeypatch.setattr(BACKEND_EXECUTION, "_unix_socket_path_exceeds_limit", lambda path: False)
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_unix_socket_path_exceeds_limit", lambda path: False
+    )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
         "_backend_daemon_process_command",
@@ -397,7 +440,9 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
         BACKEND_EXECUTION, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
     monkeypatch.setattr(BACKEND_EXECUTION.socket, "AF_UNIX", 1, raising=False)
-    monkeypatch.setattr(BACKEND_EXECUTION.socket, "socket", lambda *args, **kwargs: FakeSocket())
+    monkeypatch.setattr(
+        BACKEND_EXECUTION.socket, "socket", lambda *args, **kwargs: FakeSocket()
+    )
 
     daemon_identity = cli._BackendDaemonIdentity(
         pid=1234,

@@ -260,7 +260,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     // Generate a deterministic 64x64 grayscale test image.
     let patch_size = 16;
     let n_patches = (64 / patch_size) * (64 / patch_size); // 16 patches
-                                                           // Project patches to dim via learned projection.
+    // Project patches to dim via learned projection.
     let patch_proj_w = wg.weights(patch_size * patch_size * dim, init_scale);
 
     // Generate test image pixels (diagonal gradient).

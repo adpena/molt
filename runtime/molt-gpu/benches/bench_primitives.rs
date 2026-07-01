@@ -8,8 +8,8 @@
 
 use std::time::{Duration, Instant};
 
-use molt_gpu::device::cpu::interpret;
 use molt_gpu::device::cpu::CpuDevice;
+use molt_gpu::device::cpu::interpret;
 use molt_gpu::device::{Allocator, DeviceBuffer};
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;

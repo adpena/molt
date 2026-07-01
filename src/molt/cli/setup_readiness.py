@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from molt.dx import DX_ENV_KEYS, DxProject
+from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
-from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
@@ -327,41 +327,10 @@ def _rustup_setup_advice(system: str) -> list[str]:
     return ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"]
 
 
-def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
-    rustup_path = shutil.which("rustup")
-    if not rustup_path:
-        warnings.append(f"rustup not found; cannot ensure target {target_triple}")
-        return False
-    try:
-        result = _run_completed_command(
-            [rustup_path, "target", "list", "--installed"],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError as exc:
-        warnings.append(f"Failed to query rustup targets: {exc}")
-        return False
-    installed = result.stdout.split()
-    if target_triple in installed:
-        return True
-    try:
-        add = _run_completed_command(
-            [rustup_path, "target", "add", target_triple],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError as exc:
-        warnings.append(f"Failed to install rustup target {target_triple}: {exc}")
-        return False
-    if add.returncode != 0:
-        detail = (add.stderr or add.stdout).strip() or "unknown error"
-        warnings.append(f"rustup target add failed for {target_triple}: {detail}")
-        return False
-    return True
+def _ensure_rustup_target(
+    target_triple: str, warnings: list[str], *, root: Path | None = None
+) -> bool:
+    return wasm_toolchain.ensure_rustup_target(target_triple, warnings, root=root)
 
 
 def _cargo_setup_advice(system: str) -> list[str]:
@@ -469,6 +438,80 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         level="error",
         advice=_cargo_setup_advice(system) if not cargo_path else None,
     )
+
+    try:
+        rust_contract = wasm_toolchain.rust_toolchain_contract(root)
+        rust_contract_error: str | None = None
+    except wasm_toolchain.RustToolchainContractError as exc:
+        rust_contract = wasm_toolchain.RustToolchainContract(
+            channel=None,
+            components=(),
+            targets=(),
+        )
+        rust_contract_error = str(exc)
+    pinned_rust = rust_contract.channel
+    pinned_components = rust_contract.components
+    rustc_path = shutil.which("rustc")
+    if rust_contract_error is not None:
+        record(
+            "rust-toolchain",
+            False,
+            rust_contract_error,
+            level="error",
+            advice=["Fix rust-toolchain.toml"],
+        )
+    elif pinned_rust is None:
+        record(
+            "rust-toolchain",
+            True,
+            "no rust-toolchain.toml channel pin detected",
+            level="warning",
+        )
+    elif rustc_path is None:
+        record(
+            "rust-toolchain",
+            False,
+            f"rustc not found; requires Rust {pinned_rust}",
+            level="error",
+            advice=[shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))],
+        )
+    else:
+        try:
+            rustc = subprocess.run(
+                [rustc_path, "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            record(
+                "rust-toolchain",
+                False,
+                f"failed to query rustc: {exc}",
+                level="error",
+                advice=[shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))],
+            )
+        else:
+            rustc_detail = (rustc.stdout or rustc.stderr).strip()
+            rustc_ok = rustc.returncode == 0 and re.search(
+                rf"\brustc\s+{re.escape(pinned_rust)}(?:\s|\b)", rustc_detail
+            )
+            record(
+                "rust-toolchain",
+                rustc_ok,
+                f"{rustc_detail or 'unknown rustc'} (requires {pinned_rust})",
+                level="error",
+                advice=[shlex.join(wasm_toolchain.rustup_toolchain_install_cmd(root))]
+                if not rustc_ok
+                else None,
+            )
+    if pinned_components:
+        record(
+            "rust-components",
+            True,
+            "pinned components: " + ", ".join(pinned_components),
+        )
 
     rustup_path = shutil.which("rustup")
     record(
@@ -827,28 +870,34 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
 
     wasm_target_ok = False
     if rustup_path:
+        target_query_failed = False
         try:
-            result = _run_completed_command(
-                ["rustup", "target", "list", "--installed"],
-                capture_output=True,
-                env=None,
-                cwd=root,
-                memory_guard_prefix="MOLT_BUILD",
-            )
-        except OSError as exc:
-            record("rustup-targets", False, f"failed to query: {exc}")
-        else:
-            targets = result.stdout.split()
-            wasm_target_ok = any(
-                target in targets
-                for target in ("wasm32-wasip1", "wasm32-unknown-unknown")
+            targets_tuple = wasm_toolchain.rustup_installed_targets(root)
+        except wasm_toolchain.RustToolchainContractError as exc:
+            record("rustup-targets", False, str(exc))
+            targets_tuple = None
+            target_query_failed = True
+        if targets_tuple is None and not target_query_failed:
+            record("rustup-targets", False, "failed to query installed targets")
+        elif targets_tuple is not None:
+            targets = set(targets_tuple)
+            required_wasm_targets = rust_contract.required_wasm_targets
+            missing_targets = [
+                target for target in required_wasm_targets if target not in targets
+            ]
+            wasm_target_ok = not missing_targets
+            target_detail = ", ".join(required_wasm_targets) + (
+                f" for Rust {pinned_rust}" if pinned_rust else ""
             )
             record(
                 "wasm-target",
                 wasm_target_ok,
-                "wasm32-wasip1 or wasm32-unknown-unknown",
+                target_detail,
                 level="warning",
-                advice=["rustup target add wasm32-wasip1"]
+                advice=[
+                    shlex.join(wasm_toolchain.rustup_target_add_cmd(target, root))
+                    for target in missing_targets
+                ]
                 if not wasm_target_ok
                 else None,
             )
