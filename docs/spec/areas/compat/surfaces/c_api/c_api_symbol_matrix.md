@@ -142,8 +142,8 @@ Status legend:
 | Symbol | Semantics | Status | Notes |
 | --- | --- | --- | --- |
 | `PyObject_GetBuffer` | Export buffer | Partial | Header shim maps to runtime-owned `molt_buffer_acquire`; `Py_buffer` embeds the acquired `MoltBufferView` and mirrors shape/strides/format from that single descriptor. |
-| `PyBuffer_Release` | Release buffer | Partial | Header shim releases runtime-acquired views only when `internal` marks the embedded `MoltBufferView`; `PyBuffer_FillInfo` raw-memory views release only their exporter reference. |
-| `PyBuffer_FillInfo` | Fill buffer view | Partial | Header shim fills `Py_buffer` fields and mirrors the raw-memory descriptor into the embedded `MoltBufferView` without claiming runtime ownership. |
+| `PyBuffer_Release` | Release buffer | Partial | Buffer release uses the typed descriptor ownership marker: runtime-acquired descriptors call `molt_buffer_release`; raw `PyBuffer_FillInfo` descriptors drop only local descriptor storage and the exporter reference. |
+| `PyBuffer_FillInfo` | Fill buffer view | Partial | `Py_buffer` fields are projected from the same typed descriptor used by `PyObject_GetBuffer`; raw-memory descriptors are marked non-runtime-owned. |
 | `PyObject_CheckBuffer` | Buffer support probe | Partial | Header shim probes through `PyObject_GetBuffer`/`PyBuffer_Release` and clears probe errors. |
 
 ### 2.9 Bytes & Bytearray
