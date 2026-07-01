@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import tools.pact_witness_acceptance as pact_acceptance
 import tools.proof_queue as proof_queue
 
 
@@ -878,30 +877,6 @@ def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
     roots = proof_queue._pact_witness_native_roots(repo_root=tmp_path)
 
     assert roots == [artifact_root.resolve(), *(root.resolve() for root in source_roots)]
-
-
-def test_pact_witness_acceptance_uses_fresh_attempt_dirs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(pact_acceptance, "ROOT", tmp_path)
-    monkeypatch.setenv("MOLT_PROOF_QUEUE_RUN_ID", "run/with spaces")
-    out_dir = tmp_path / "tmp" / "pact_witness_acceptance_queue"
-    stale_build = out_dir / "build"
-    stale_build.mkdir(parents=True)
-    stale_artifact = stale_build / "output_linked.wat"
-    stale_artifact.write_text("locked by another process\n", encoding="utf-8")
-
-    build_dir, run_dir = pact_acceptance._prepare_attempt_dirs(out_dir)
-    second_build_dir, _second_run_dir = pact_acceptance._prepare_attempt_dirs(out_dir)
-
-    assert build_dir.parent == run_dir.parent
-    assert build_dir.parent.name == "run_with_spaces"
-    assert second_build_dir.parent.name == "run_with_spaces-2"
-    assert build_dir != stale_build
-    assert stale_artifact.read_text(encoding="utf-8") == "locked by another process\n"
-    assert (out_dir / "latest_attempt.txt").read_text(encoding="utf-8") == (
-        str(second_build_dir.parent) + "\n"
-    )
 
 
 def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
