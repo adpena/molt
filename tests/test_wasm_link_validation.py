@@ -1287,8 +1287,7 @@ def test_validate_linked_rejects_out_of_bounds_ref_func_without_repair(
     captured = capsys.readouterr()
     assert (
         "Linked wasm has out-of-bounds function reference index(es): 999 "
-        "(function count: 1)"
-        in captured.err
+        "(function count: 1)" in captured.err
     )
     assert structural_calls == []
 
@@ -1835,9 +1834,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
             for part in cmd:
                 path = Path(part)
                 if path.name == "output_linked_runtime_imports.wasm":
-                    linked_app_imports.append(
-                        _function_import_pairs(path.read_bytes())
-                    )
+                    linked_app_imports.append(_function_import_pairs(path.read_bytes()))
                 if path.name.startswith("native_runtime_imports_"):
                     deployed_native_imports.append(
                         _function_import_pairs(path.read_bytes())
@@ -2132,9 +2129,7 @@ def test_split_runtime_validation_uses_generated_runtime_export_names(
     app = tmp_path / "app.wasm"
     runtime = tmp_path / "runtime.wasm"
     app.write_bytes(
-        _build_runtime_import_module(
-            ["socket_drop", "unknown_probe"], memory_min=1
-        )
+        _build_runtime_import_module(["socket_drop", "unknown_probe"], memory_min=1)
     )
     runtime.write_bytes(_build_exported_runtime_module("molt_socket_drop"))
 
@@ -3489,8 +3484,10 @@ def test_run_wasm_ld_split_runtime_materializes_final_optimized_app(
         "split-runtime app wasm",
         "optimized split-runtime app wasm",
     ]
-    assert (split_dir / "app.wasm").read_bytes().endswith(
-        b":pre-materialized:optimized:final-materialized"
+    assert (
+        (split_dir / "app.wasm")
+        .read_bytes()
+        .endswith(b":pre-materialized:optimized:final-materialized")
     )
 
 
@@ -3499,7 +3496,7 @@ def test_run_wasm_ld_rematerializes_split_app_ref_funcs_after_optimization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_bytes = _build_exported_runtime_module("molt_main")
-    output_bytes = _build_exported_runtime_module("molt_main")
+    output_bytes = _build_linked_ref_func_module(func_index=0)
     optimized_app_bytes = _build_memory_import_ref_func_app_module(func_index=0)
     assert wasm_link._undeclared_ref_func_indices(optimized_app_bytes) == [0]
 
@@ -3563,41 +3560,22 @@ def test_run_wasm_ld_rematerializes_split_app_ref_funcs_after_optimization(
 
 
 def test_run_wasm_ld_fails_when_ref_func_declaration_cannot_be_materialized(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_main")
-    output_bytes = _build_exported_runtime_module("molt_main")
-    runtime = tmp_path / "runtime.wasm"
-    output = tmp_path / "output.wasm"
-    linked = tmp_path / "output_linked.wasm"
-    runtime.write_bytes(runtime_bytes)
-    output.write_bytes(output_bytes)
-
-    def fake_run(cmd, **_kwargs):
-        _write_wasm_ld_output(cmd, output_bytes)
-
-        class Result:
-            returncode = 0
-            stderr = ""
-            stdout = ""
-
-        return Result()
-
-    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
-    monkeypatch.setattr(wasm_link, "_scan_code_ref_funcs", lambda _data: {0})
+    data = _build_linked_ref_func_module(func_index=0)
     monkeypatch.setattr(
         wasm_link,
-        "_declare_ref_func_elements",
-        lambda _data: (_ for _ in ()).throw(ValueError("boom")),
+        "_declare_ref_func_elements_from_facts",
+        lambda _data, _facts: (_ for _ in ()).throw(ValueError("boom")),
     )
 
-    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
-
-    assert rc == 1
-    captured = capsys.readouterr()
-    assert "Failed to materialize linked callable table refs: boom" in captured.err
+    with pytest.raises(ValueError, match="boom"):
+        wasm_link._materialize_callable_table_refs_and_ref_func_declarations(
+            data,
+            split_runtime=False,
+            output_data=data,
+            description="linked callable table refs",
+        )
 
 
 def test_split_runtime_app_materialization_declares_code_ref_funcs(
@@ -3631,6 +3609,11 @@ def test_split_runtime_app_materialization_declares_code_ref_funcs(
     data = wasm_link._build_sections(sections)
     assert wasm_link._scan_code_ref_funcs(data) == {0}
     assert wasm_link._collect_element_declared_funcs(data) == set()
+    monkeypatch.setattr(
+        wasm_link,
+        "_scan_code_ref_funcs",
+        lambda _data: (_ for _ in ()).throw(AssertionError("unexpected rescan")),
+    )
 
     updated, changed = (
         wasm_link._materialize_callable_table_refs_and_ref_func_declarations(
@@ -3642,8 +3625,9 @@ def test_split_runtime_app_materialization_declares_code_ref_funcs(
     )
 
     assert changed
-    assert wasm_link._scan_code_ref_funcs(updated) == {0}
-    assert wasm_link._collect_element_declared_funcs(updated) == {0}
+    facts = wasm_link.parse_wasm_module_facts(updated)
+    assert facts.code_ref_funcs == frozenset({0})
+    assert facts.element_declared_funcs == frozenset({0})
 
 
 def test_wasm_link_allows_ref_null_element_expr() -> None:

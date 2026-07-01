@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 TOOLS_ROOT = Path(__file__).resolve().parent
@@ -58,6 +58,7 @@ from wasm_link_format import (  # noqa: E402
     _collect_module_imports as _collect_module_imports,
     _count_func_imports as _count_func_imports,
     _declare_ref_func_elements as _declare_ref_func_elements,
+    _declare_ref_func_elements_from_facts as _declare_ref_func_elements_from_facts,
     _ensure_table_export as _ensure_table_export,
     _find_func_import_index as _find_func_import_index,
     _flatten_rec_groups as _flatten_rec_groups,
@@ -1319,8 +1320,7 @@ def _validate_linked(linked: Path) -> bool:
         return False
     if facts.element_validation_error is not None:
         print(
-            f"Linked wasm element validation failed: "
-            f"{facts.element_validation_error}",
+            f"Linked wasm element validation failed: {facts.element_validation_error}",
             file=sys.stderr,
         )
         return False
@@ -1487,13 +1487,25 @@ def _materialize_callable_table_refs_and_ref_func_declarations(
             current = updated
             changed = True
 
-    referenced_ref_funcs = _scan_code_ref_funcs(current)
-    if referenced_ref_funcs:
-        updated = _declare_ref_func_elements(current)
+    facts = parse_wasm_module_facts(current)
+    if facts.code_ref_funcs:
+        updated = _declare_ref_func_elements_from_facts(current, facts)
         if updated is not None:
             current = updated
             changed = True
-        invariant_error = _ref_func_invariant_error(current, description=description)
+            declared = set(facts.element_declared_funcs)
+            declared.update(facts.code_ref_funcs)
+            invariant_error = _ref_func_invariant_error_from_sets(
+                facts.code_ref_funcs,
+                declared,
+                facts.total_func_count,
+                description=description,
+            )
+        else:
+            invariant_error = _ref_func_invariant_error_from_facts(
+                facts,
+                description=description,
+            )
         if invariant_error is not None:
             raise ValueError(invariant_error)
 
@@ -1511,18 +1523,21 @@ def _format_index_preview(indices: list[int]) -> str:
     return f"{preview}, ... (+{len(indices) - 12} more)"
 
 
-def _ref_func_invariant_error_from_facts(
-    facts: WasmModuleFacts, *, description: str
+def _ref_func_invariant_error_from_sets(
+    referenced_indices: Iterable[int],
+    declared_indices: Iterable[int],
+    total_funcs: int,
+    *,
+    description: str,
 ) -> str | None:
-    referenced = set(facts.code_ref_funcs)
-    declared = set(facts.element_declared_funcs)
+    referenced = set(referenced_indices)
+    declared = set(declared_indices)
     missing = sorted(referenced - declared)
     if missing:
         return (
             f"{description} has undeclared ref.func function index(es): "
             f"{_format_index_preview(missing)}"
         )
-    total_funcs = facts.total_func_count
     out_of_bounds = sorted(
         index for index in referenced | declared if index >= total_funcs
     )
@@ -1533,6 +1548,17 @@ def _ref_func_invariant_error_from_facts(
             f"(function count: {total_funcs})"
         )
     return None
+
+
+def _ref_func_invariant_error_from_facts(
+    facts: WasmModuleFacts, *, description: str
+) -> str | None:
+    return _ref_func_invariant_error_from_sets(
+        facts.code_ref_funcs,
+        facts.element_declared_funcs,
+        facts.total_func_count,
+        description=description,
+    )
 
 
 def _ref_func_invariant_error(data: bytes, *, description: str) -> str | None:
@@ -2029,7 +2055,10 @@ def _run_wasm_ld(
                 )
             )
         except ValueError as exc:
-            print(f"Failed to materialize linked callable table refs: {exc}", file=sys.stderr)
+            print(
+                f"Failed to materialize linked callable table refs: {exc}",
+                file=sys.stderr,
+            )
             return 1
         if materialized:
             work_linked.write_bytes(updated)
