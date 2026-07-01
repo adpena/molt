@@ -70,7 +70,10 @@ if str(TOOLS_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from batch_compile_client import BatchCompileServerClient  # noqa: E402
+from batch_compile_client import (  # noqa: E402
+    BatchCompileProtocolError,
+    BatchCompileServerClient,
+)
 from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
@@ -537,12 +540,19 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
 
 class _BenchBatchBuildServer:
     def __init__(self, env: dict[str, str]) -> None:
+        self._env = dict(env)
         self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
             "MOLT_BENCH",
-            env,
+            self._env,
             repo_root=REPO_ROOT,
         )
         self._limits = self._guard_context.limits
+        self._client: BatchCompileServerClient | None = None
+        self.start()
+
+    def start(self) -> None:
+        if self._client is not None:
+            return
         self._client = BatchCompileServerClient(
             [
                 sys.executable,
@@ -551,7 +561,7 @@ class _BenchBatchBuildServer:
                 "internal-batch-build-server",
             ],
             cwd=REPO_ROOT,
-            env=env,
+            env=self._env,
             guard_context=self._guard_context,
             reader_name="molt-bench-batch-server-reader",
         )
@@ -559,10 +569,20 @@ class _BenchBatchBuildServer:
     def request_build(
         self, params: dict[str, object], *, timeout_s: float
     ) -> dict[str, object]:
+        self.start()
+        if self._client is None:
+            raise RuntimeError("batch compile server did not start")
         return self._client.request("build", params=params, timeout=timeout_s)
 
-    def close(self) -> None:
-        self._client.close(timeout=5.0)
+    def close(self, *, force: bool = False) -> None:
+        client = self._client
+        self._client = None
+        if client is not None:
+            client.close(force=force, timeout=5.0)
+
+    def restart(self) -> None:
+        self.close(force=True)
+        self.start()
 
 
 def _molt_build_params(
@@ -639,6 +659,12 @@ _BUILD_FAILURE_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("batch compile server response timed out", "batch_server_response_timeout"),
     ("batch compile server closed response pipe", "batch_server_closed_response_pipe"),
     ("batch compile server process is not running", "batch_server_process_not_running"),
+    (
+        "batch compile server protocol state is unsynchronized",
+        "batch_server_protocol_unsynchronized",
+    ),
+    ("batch compile response id mismatch", "batch_server_response_id_mismatch"),
+    ("batch compile response must be an object", "batch_server_invalid_response_type"),
     ("invalid batch compile response json", "batch_server_invalid_json"),
 )
 
@@ -808,6 +834,17 @@ def _classified_molt_exception(
     )
 
 
+def _batch_server_stream_failure(exc: BaseException) -> bool:
+    if isinstance(exc, (BatchCompileProtocolError, TimeoutError)):
+        return True
+    if isinstance(exc, RuntimeError):
+        message = str(exc).casefold()
+        return message.startswith(
+            ("batch compile server ", "batch compile response ")
+        )
+    return False
+
+
 def molt_failure_payload(failure: MoltFailure) -> dict[str, object]:
     return {
         "phase": failure.phase,
@@ -926,6 +963,15 @@ def prepare_molt_binary(
             ValueError,
             subprocess.TimeoutExpired,
         ) as exc:
+            if batch_server is not None and _batch_server_stream_failure(exc):
+                try:
+                    batch_server.restart()
+                except Exception as restart_exc:
+                    print(
+                        "warning: failed to restart batch compile server after "
+                        f"protocol failure: {restart_exc}",
+                        file=sys.stderr,
+                    )
             failure = _classified_molt_exception(
                 phase="build",
                 exc=exc,
