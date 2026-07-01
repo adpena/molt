@@ -93,6 +93,15 @@ every consumer needed to delete or unify the old lane.
   pytest deselection, proof-queue custody, passive polling until natural exit,
   or exact live-proved Molt-owned PID cleanup with an incident record. Plan
   future long commands so they can finish, timeout, or be owned by the queue.
+- Do not run raw workspace-wide `cargo fmt` for Molt DX or proof cleanup. Use
+  `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed`
+  to check changed human Rust, and add `--write` only when you intend to format
+  those human Rust files. `tools/dev.py fmt-check` and `tools/dev.py fmt` route
+  through the same authority. Write mode compares `rustfmt --emit stdout`
+  before touching files, so already-stable files do not churn Cargo
+  incremental state. Checked-in generated Rust is owned by its generator
+  `--check` gate; fix the generator or regenerate from authority instead of
+  formatting generated files by hand.
 
 ### Comprehensive Analysis Spine: AST To Binary Closure
 

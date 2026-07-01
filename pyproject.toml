@@ -116,12 +116,22 @@ backend = "cargo test --profile release-fast -p molt-backend --features native-b
 compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider -n auto --tb=line -q"
 clean-artifacts = "{project_python} tools/artifact_cleanup.py"
 bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-out bench/results/dev-bench-smoke.json"
+rustfmt = "{project_python} tools/check_rustfmt.py --changed --write"
+rustfmt-check = "{project_python} tools/check_rustfmt.py --changed"
+format = [
+    "{project_python} -m ruff format .",
+    "@rustfmt",
+]
+format-check = [
+    "{project_python} -m ruff format --check .",
+    "@rustfmt-check",
+]
 subprocess-guard-audit = "{project_python} tools/check_subprocess_guard_coverage.py"
 memory-guard-wiring-audit = "{project_python} tools/check_memory_guard_wiring.py"
 dev-tooling-test = "{project_python} -m pytest -q -p no:cacheprovider tests/test_molt_dev.py"
 lint = [
     "{project_python} -m ruff check .",
-    "{project_python} -m ruff format --check .",
+    "@format-check",
     "{project_python} -m ty check src",
     "{project_python} tools/verified_subset.py check",
     "{project_python} tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",

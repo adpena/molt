@@ -222,11 +222,10 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
-            name="cargo-fmt",
+            name="rustfmt",
             tier=1,
-            cmd=["cargo", "fmt", "--check"],
+            cmd=[sys.executable, str(TOOLS / "check_rustfmt.py"), "--all"],
             timeout=60,
-            needs_rust=True,
         )
     )
     checks.append(

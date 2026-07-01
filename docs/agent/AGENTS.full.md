@@ -142,6 +142,15 @@ touching code, docs, tests, benchmarks, or roadmap state.
   pytest deselection, proof-queue custody, passive polling until natural exit,
   or exact live-proved Molt-owned PID cleanup with an incident record. Plan
   future long commands so they can finish, timeout, or be owned by the queue.
+- Do not run raw workspace-wide `cargo fmt` for Molt DX or proof cleanup. Use
+  `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed`
+  to check changed human Rust, and add `--write` only when you intend to format
+  those human Rust files. `tools/dev.py fmt-check` and `tools/dev.py fmt` route
+  through the same authority. Write mode compares `rustfmt --emit stdout`
+  before touching files, so already-stable files do not churn Cargo
+  incremental state. Checked-in generated Rust is owned by its generator
+  `--check` gate; fix the generator or regenerate from authority instead of
+  formatting generated files by hand.
 
 ## Anomaly Crux Protocol: Question The Question
 
@@ -1365,7 +1374,13 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, `ruff` line length 88, target version 3.13, and strict typing via `ty`.
 - Formatting: use `ruff format` (black-style) as the canonical formatter before builds to avoid inconsistent quoting or style drift.
-- Rust: format with `cargo fmt` and keep clippy clean (`cargo clippy -- -D warnings`).
+- Rust: use `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed`
+  to check changed human Rust, add `--write` only when intentionally formatting
+  those human Rust files, or use `tools/dev.py fmt-check` / `tools/dev.py fmt`
+  for the same authority. Write mode compares `rustfmt --emit stdout` before
+  touching files. Keep clippy clean (`cargo clippy -- -D warnings`). Do not run
+  raw workspace-wide `cargo fmt`; checked-in generated Rust is owned by its
+  generator `--check` gate.
 - Tests follow `test_*.py` naming; keep test modules in `tests/` or subdirectories like `tests/differential/`.
 
 ## Stdlib Submodule Policy

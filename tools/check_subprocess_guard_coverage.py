@@ -151,6 +151,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata probe; wasm build/run phases use MOLT_BENCH guard",
     ),
     AllowedRawSubprocessUse(
+        "tools/build_graph_audit.py",
+        "run_cargo_metadata",
+        "run",
+        "bounded cargo metadata probe; no build/test child execution",
+    ),
+    AllowedRawSubprocessUse(
         "tools/agent_coordination.py",
         "run_codex_stall_diagnostic",
         "Popen",
@@ -243,10 +249,76 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git ls-files metadata probe for performance-artifact freshness",
     ),
     AllowedRawSubprocessUse(
+        "tools/check_generator_manifest.py",
+        "check_idempotence",
+        "run",
+        "bounded generator idempotence child with explicit timeout and captured output",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_rustfmt.py",
+        "_run_git",
+        "run",
+        "bounded git metadata probe selecting Rust files for repo-owned formatting",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_rustfmt.py",
+        "_merge_base",
+        "run",
+        "bounded git merge-base probe for committed-ahead changed Rust formatting",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_rustfmt.py",
+        "_upstream_ref",
+        "run",
+        "bounded git upstream probe for committed-ahead changed Rust formatting",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_rustfmt.py",
+        "_rustfmt_stdout",
+        "run",
+        "bounded rustfmt stdout child for no-op-safe Rust formatting writes",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_rustfmt.py",
+        "_run_rustfmt",
+        "run",
+        "bounded rustfmt check child for selected human Rust files",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/dirty_tree_landing_audit.py",
+        "_run_git",
+        "run",
+        "bounded git metadata/status probe for landing-safety diagnostics",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/gen_codecs.py",
+        "_rustfmt_rust_source",
+        "run",
+        "bounded rustfmt stdout child for generated codec Rust tables",
+    ),
+    AllowedRawSubprocessUse(
         "tools/gen_stringprep_tables.py",
         "_rustfmt_text",
         "run",
         "bounded rustfmt child for checked-in generated Rust stringprep tables",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/gen_wasm_abi.py",
+        "_rustfmt",
+        "run",
+        "bounded rustfmt stdout child for one generated WASM ABI Rust module",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/gen_wasm_abi.py",
+        "_rustfmt_many",
+        "run",
+        "bounded rustfmt batch child for generated WASM ABI Rust modules",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/gen_wasm_abi.py",
+        "_rustfmt_version",
+        "run",
+        "bounded rustfmt version probe for generated WASM ABI cache keys",
     ),
     AllowedRawSubprocessUse(
         "tools/gen_protocol.py",
@@ -297,6 +369,66 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run",
         "Windows child-runner custody preserves the guarded child under "
         "tools/memory_guard.py when POSIX exec is unavailable",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/pact_witness_acceptance.py",
+        "_run",
+        "run",
+        "named proof-queue lane runner; outer queue/memory guard owns timeout and process custody",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/pact_witness_oracle.py",
+        "_run",
+        "run",
+        "bounded oracle helper used by Pact witness tooling under explicit runner custody",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue.py",
+        "_git_snapshot.run_git",
+        "run",
+        "bounded git snapshot probe recorded with every proof-queue row",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue.py",
+        "_run_one",
+        "Popen",
+        "proof queue custody boundary launching guarded proof commands with logs and contention keys",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/proof_queue.py",
+        "_pid_alive",
+        "os.kill",
+        "bounded PID liveness probe for stale proof-queue row pruning",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_agent_contract_budget.py",
+        "_tracked_agent_docs",
+        "run",
+        "bounded git ls-files metadata probe for agent-doc budget tests",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_generate_worker.py",
+        "test_loader_bridge_enforces_manifest_reserved_callable_dispatch",
+        "run",
+        "bounded node fixture for generated worker loader manifest enforcement",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_build_graph_audit.py",
+        "test_cli_check_exits_zero_on_clean_tree",
+        "run",
+        "bounded subprocess smoke of build_graph_audit CLI",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_dirty_tree_landing_audit.py",
+        "_git",
+        "run",
+        "bounded synthetic-repository git helper for dirty-tree landing audit tests",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli/source_extension_toolchain.py",
+        "_probe_wasm_source_extension_compiler",
+        "run",
+        "bounded wasm source-extension compiler probe with explicit timeout",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
@@ -777,7 +909,7 @@ def _iter_text_files(paths: Sequence[Path], *, root: Path) -> Iterable[Path]:
 
 def _scan_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
     rel = _normalize_path(path, root=root)
-    source_text = path.read_text(encoding="utf-8")
+    source_text = path.read_text(encoding="utf-8-sig")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", SyntaxWarning)
         tree = ast.parse(source_text, filename=rel)
