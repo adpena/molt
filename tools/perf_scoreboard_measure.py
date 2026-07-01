@@ -121,7 +121,13 @@ def measure_cell(
             )
         except Exception as exc:  # noqa: BLE001 - record, never crash the sweep
             log_lines.append(f"BUILD EXCEPTION: {exc!r}")
-            binary = None
+            binary = bench.classify_molt_process_failure(
+                phase="build",
+                returncode=None,
+                stderr=repr(exc),
+                elapsed_s=None,
+                default_status="build_exception",
+            )
     else:
         # WASM build/link only — produced via the CLI, not run here.
         binary = _build_wasm_only(script_path, build_env, build_flag, log_lines)
@@ -129,9 +135,22 @@ def measure_cell(
     if not isinstance(binary, bench.MoltBinary):
         cell.build_ok = False
         if isinstance(binary, bench.MoltFailure):
+            _record_molt_failure(cell, binary)
             detail = f" detail={binary.detail}" if binary.detail else ""
             log_lines.append(f"BUILD FAILED status={binary.status}{detail}")
+            if binary.message:
+                log_lines.append(f"BUILD FAILURE MESSAGE: {binary.message}")
         else:
+            _record_molt_failure(
+                cell,
+                bench.classify_molt_process_failure(
+                    phase="build",
+                    returncode=None,
+                    stderr="Molt build returned no binary and no failure payload",
+                    elapsed_s=None,
+                    default_status="build_failed",
+                ),
+            )
             log_lines.append("BUILD FAILED")
         cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
         _write_log(log_path, log_lines)
@@ -305,6 +324,7 @@ def measure_cell(
         cell.output_parity = cold_molt.stdout.strip() == cold_cpy.stdout.strip()
 
     if not cell.molt_ok:
+        _record_molt_run_failure(cell, cold_molt, fallback_status="runtime_failed")
         cell.note = f"molt run unmeasurable (status={cold_molt.status})"
     elif not cell.cpython_ok:
         cell.note = f"cpython run unmeasurable (status={cold_cpy.status})"
@@ -362,12 +382,66 @@ def measure_cell(
     return cell
 
 
+def _record_molt_failure(cell: Cell, failure: bench.MoltFailure) -> None:
+    payload = bench.molt_failure_payload(failure)
+    cell.molt_failure = payload
+    cell.molt_failure_phase = (
+        payload["phase"] if isinstance(payload["phase"], str) else None
+    )
+    cell.molt_failure_status = (
+        payload["status"] if isinstance(payload["status"], str) else None
+    )
+    cell.molt_failure_detail = (
+        payload["detail"] if isinstance(payload["detail"], str) else None
+    )
+    cell.molt_failure_message = (
+        payload["message"] if isinstance(payload["message"], str) else None
+    )
+    returncode = payload["returncode"]
+    cell.molt_failure_returncode = returncode if isinstance(returncode, int) else None
+    timed_out = payload["timed_out"]
+    cell.molt_failure_timed_out = timed_out if isinstance(timed_out, bool) else False
+    elapsed_s = payload["elapsed_s"]
+    cell.molt_failure_elapsed_s = (
+        float(elapsed_s) if isinstance(elapsed_s, (int, float)) else None
+    )
+    signal = payload["signal"]
+    cell.molt_failure_signal = signal if isinstance(signal, dict) else None
+    guard = payload["guard_violation"]
+    cell.molt_failure_guard_violation = guard if isinstance(guard, dict) else None
+    groups = payload["orphaned_process_groups"]
+    cell.molt_failure_orphaned_process_groups = (
+        [int(value) for value in groups]
+        if isinstance(groups, list)
+        and all(isinstance(value, int) for value in groups)
+        else []
+    )
+
+
+def _record_molt_run_failure(
+    cell: Cell,
+    outcome: "RunOutcome",
+    *,
+    fallback_status: str,
+) -> None:
+    failure = bench.classify_molt_process_failure(
+        phase="run",
+        returncode=outcome.exit_code,
+        stdout=outcome.stdout_tail,
+        stderr=outcome.stderr_tail,
+        elapsed_s=outcome.elapsed_s,
+        timed_out=outcome.status == "timeout",
+        default_status=fallback_status,
+    )
+    _record_molt_failure(cell, failure)
+
+
 def _build_wasm_only(
     script_path: Path,
     build_env: dict[str, str],
     build_flag: str,
     log_lines: list[str],
-) -> bench.MoltBinary | None:
+) -> bench.MoltBinary | bench.MoltFailure:
     """Build+link a WASM artifact (run-path is blocked; we only verify it links).
 
     Uses the molt CLI directly with ``--target wasm``. Returns a MoltBinary-like
@@ -402,24 +476,52 @@ def _build_wasm_only(
         )
     except Exception as exc:  # noqa: BLE001
         log_lines.append(f"WASM BUILD EXCEPTION: {exc!r}")
-        return None
+        return bench.classify_molt_process_failure(
+            phase="build",
+            returncode=None,
+            stderr=repr(exc),
+            elapsed_s=None,
+            default_status="wasm_build_exception",
+        )
     build_s = time.perf_counter() - start
     if res.returncode != 0:
         tail = (res.stderr or res.stdout or "").strip()[-2000:]
         log_lines.append(f"WASM BUILD FAILED rc={res.returncode}\n{tail}")
-        return None
+        return bench.classify_molt_process_failure(
+            phase="build",
+            returncode=res.returncode,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            elapsed_s=build_s,
+            timed_out=bool(getattr(res, "timed_out", False)),
+            default_status="wasm_build_failed",
+        )
     try:
         payload = json.loads((res.stdout or "{}").strip() or "{}")
     except json.JSONDecodeError:
         log_lines.append("WASM BUILD: non-JSON stdout")
-        return None
+        return bench.classify_molt_process_failure(
+            phase="build",
+            returncode=res.returncode,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            elapsed_s=build_s,
+            default_status="wasm_build_output_invalid",
+        )
     out_str = payload.get("data", {}).get("output") or payload.get("output")
     if not out_str:
         # Fall back to scanning the out dir for a .wasm artifact.
         wasms = list(out_dir.rglob("*.wasm"))
         if not wasms:
             log_lines.append("WASM BUILD: no .wasm artifact")
-            return None
+            return bench.classify_molt_process_failure(
+                phase="build",
+                returncode=res.returncode,
+                stdout=res.stdout,
+                stderr="WASM BUILD: no .wasm artifact",
+                elapsed_s=build_s,
+                default_status="wasm_artifact_missing",
+            )
         out_path = wasms[0]
     else:
         out_path = Path(out_str)
@@ -428,7 +530,14 @@ def _build_wasm_only(
             out_path = wasms[0] if wasms else out_path
     if not out_path.exists():
         log_lines.append(f"WASM BUILD: artifact missing {out_path}")
-        return None
+        return bench.classify_molt_process_failure(
+            phase="build",
+            returncode=res.returncode,
+            stdout=res.stdout,
+            stderr=f"WASM BUILD: artifact missing {out_path}",
+            elapsed_s=build_s,
+            default_status="wasm_artifact_missing",
+        )
     size_kb = out_path.stat().st_size / 1024
 
     class _TmpHolder:
