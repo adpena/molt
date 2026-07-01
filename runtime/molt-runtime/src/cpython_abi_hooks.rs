@@ -1190,8 +1190,32 @@ unsafe fn static_module_spec_set_bits(spec_bits: u64, attr: &[u8], value_bits: u
     unsafe { hook_module_set_attr(spec_bits, attr.as_ptr(), attr.len(), value_bits) == 0 }
 }
 
+fn take_runtime_pyinit_error_message() -> Option<String> {
+    with_gil(|_py| {
+        if !crate::exception_pending(&_py) {
+            return None;
+        }
+        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        let message = if let Some(exc_ptr) = MoltObject::from_bits(exc_bits).as_ptr() {
+            let message = crate::format_exception_message(&_py, exc_ptr);
+            dec_ref_bits(&_py, exc_bits);
+            message
+        } else {
+            "pending Molt exception handle was not a heap object".to_string()
+        };
+        let _ = crate::molt_exception_clear();
+        Some(message)
+    })
+}
+
 fn static_pyinit_import_error_message(prefix: &str) -> String {
     if let Some(detail) = molt_cpython_abi::api::errors::take_current_error_message() {
+        if detail.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix}: {detail}")
+        }
+    } else if let Some(detail) = take_runtime_pyinit_error_message() {
         if detail.is_empty() {
             prefix.to_string()
         } else {
@@ -1928,6 +1952,55 @@ mod tests {
         assert!(message.contains("static_link_exec_error_module"));
         assert!(message.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"));
         assert!(message.contains("missing PyArray dtype bootstrap"));
+    }
+
+    unsafe extern "C" fn static_link_exec_sets_runtime_import_error(
+        _module_obj: *mut PyObject,
+    ) -> c_int {
+        let import_error =
+            with_gil(|_py| crate::exception_type_bits_from_name(&_py, "ImportError"));
+        let message = b"numpy.core._multiarray_umath._ARRAY_API capsule import failed";
+        unsafe {
+            crate::c_api::molt_err_set(import_error, message.as_ptr(), message.len() as u64);
+        }
+        -1
+    }
+
+    #[test]
+    fn pyinit_module_to_bits_reports_static_link_py_mod_exec_runtime_error() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut slots = [
+            StaticLinkPyModuleDefSlot {
+                slot: STATIC_PY_MOD_EXEC,
+                value: static_link_exec_sets_runtime_import_error as *mut c_void,
+            },
+            StaticLinkPyModuleDefSlot {
+                slot: 0,
+                value: std::ptr::null_mut(),
+            },
+        ];
+        let mut def = StaticLinkPyModuleDef {
+            m_base: std::ptr::null_mut(),
+            m_name: c"static_link_runtime_error_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: slots.as_mut_ptr(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits = molt_cpython_abi_pyinit_module_to_bits(
+            (&mut def as *mut StaticLinkPyModuleDef) as usize as u64,
+        );
+
+        assert!(MoltObject::from_bits(bits).is_none());
+        let message = pending_exception_message_for_assertion();
+        assert!(message.contains("static_link_runtime_error_module"));
+        assert!(message.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"));
+        assert!(message.contains("numpy.core._multiarray_umath._ARRAY_API"));
     }
 
     unsafe extern "C" fn pyobject_bridge_tuple_len_method(
