@@ -7,7 +7,7 @@ import re
 from functools import lru_cache
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
@@ -466,8 +466,9 @@ def _manifest_source_paths(
     ):
         errors.append("extension_manifest.json sources must be a list of paths")
         return ()
+    source_entries = cast(list[str], raw_sources)
     paths: list[Path] = []
-    for index, raw_source in enumerate(raw_sources):
+    for index, raw_source in enumerate(source_entries):
         source_path = Path(raw_source).expanduser()
         if not source_path.is_absolute():
             source_path = (manifest_path.parent / source_path).resolve()
