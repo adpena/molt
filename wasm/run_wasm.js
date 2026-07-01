@@ -80,6 +80,7 @@ const traceOsClose = process.env.MOLT_WASM_TRACE_OS_CLOSE === '1';
 const traceWasiIo = process.env.MOLT_WASM_TRACE_WASI_IO === '1';
 const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
 const traceSocketHost = process.env.MOLT_WASM_TRACE_SOCKET_HOST === '1';
+const traceIsolateImport = process.env.MOLT_WASM_TRACE_ISOLATE_IMPORT === '1';
 const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
 const verifyTableRefsEnabled = process.env.MOLT_WASM_VERIFY_TABLE_REFS === '1';
 const traceTableSlotRaw = process.env.MOLT_WASM_TRACE_TABLE_SLOT || null;
@@ -665,6 +666,28 @@ const readRuntimeStringBits = (instance, stringBits) => {
   } finally {
     freeTempBytes(temp);
   }
+};
+
+const traceIsolateImportCall = (phase, args, result = null, error = null) => {
+  if (!traceIsolateImport) {
+    return;
+  }
+  const handle = args && args.length ? args[0] : null;
+  const name =
+    runtimeInstance && handle !== null
+      ? readRuntimeStringBits(runtimeInstance, handle)
+      : null;
+  const detail =
+    error && typeof error.message === 'string'
+      ? ` error=${JSON.stringify(error.message)}`
+      : result !== null
+        ? ` result=${String(result)}`
+        : '';
+  console.error(
+    `[molt wasm] isolate_import ${phase}` +
+      ` name=${name === null ? '<unreadable>' : JSON.stringify(name)}` +
+      ` handle=${handle === null ? '<none>' : String(handle)}${detail}`,
+  );
 };
 
 const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
@@ -5194,7 +5217,15 @@ const runDirectLink = async () => {
       if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
         throw new Error('molt_isolate_import used before output instantiation');
       }
-      return callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
+      traceIsolateImportCall('enter', args);
+      try {
+        const result = callIsolateImportExport(outputInstance.exports.molt_isolate_import, args);
+        traceIsolateImportCall('exit', args, result);
+        return result;
+      } catch (err) {
+        traceIsolateImportCall('throw', args, null, err);
+        throw err;
+      }
     },
     molt_db_query_host: dbQueryHost,
     molt_db_exec_host: dbExecHost,
@@ -5596,10 +5627,18 @@ const runLinked = async () => {
     ) {
       throw new Error('molt_isolate_import used before linked instantiation');
     }
-    return callIsolateImportExport(
-      linkedModule.instance.exports.molt_isolate_import,
-      args,
-    );
+    traceIsolateImportCall('enter', args);
+    try {
+      const result = callIsolateImportExport(
+        linkedModule.instance.exports.molt_isolate_import,
+        args,
+      );
+      traceIsolateImportCall('exit', args, result);
+      return result;
+    } catch (err) {
+      traceIsolateImportCall('throw', args, null, err);
+      throw err;
+    }
   };
   installWasmTagImports(importObject, linkedImports);
 
