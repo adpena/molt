@@ -1,110 +1,5 @@
 use super::*;
 
-#[inline]
-unsafe fn runtime_symbol_matches(func_ptr: *mut u8, symbol_fn_ptr: u64) -> bool {
-    unsafe {
-        crate::builtins::functions::runtime_callable_represents_symbol(
-            function_fn_ptr(func_ptr),
-            function_trampoline_ptr(func_ptr),
-            symbol_fn_ptr,
-        )
-    }
-}
-
-macro_rules! matches_runtime_symbol {
-    ($func_ptr:expr, $($symbol:path),+ $(,)?) => {{
-        false $(|| unsafe { runtime_symbol_matches($func_ptr, fn_addr!($symbol)) })+
-    }};
-}
-
-pub(super) unsafe fn builtin_call_has_special_binding(func_ptr: *mut u8) -> bool {
-    matches_runtime_symbol!(
-        func_ptr,
-        crate::builtins::exceptions::molt_exception_init,
-        crate::builtins::exceptions::molt_exception_new_bound,
-        molt_object_init,
-        molt_object_init_subclass,
-        molt_object_new_bound,
-        molt_int_new,
-        molt_int_to_bytes,
-        molt_int_from_bytes,
-        molt_open_builtin,
-        crate::object::ops_builtins::molt_print_builtin,
-        molt_type_new,
-        molt_type_init,
-        dict_get_method,
-        dict_setdefault_method,
-        dict_fromkeys_method,
-        dict_update_method,
-        molt_dict_pop_method,
-        molt_list_sort,
-        molt_list_pop,
-        molt_bytearray_pop,
-        molt_list_index_range,
-        molt_tuple_index_range,
-        molt_string_find_slice,
-        molt_string_rfind_slice,
-        molt_string_index_slice,
-        molt_bytes_index_slice,
-        molt_bytearray_index_slice,
-        molt_string_rindex_slice,
-        molt_bytes_rindex_slice,
-        molt_bytearray_rindex_slice,
-        molt_bytes_find_slice,
-        molt_bytearray_find_slice,
-        molt_bytes_rfind_slice,
-        molt_bytearray_rfind_slice,
-        molt_string_split_max,
-        molt_bytes_split_max,
-        molt_bytearray_split_max,
-        molt_string_rsplit_max,
-        molt_bytes_rsplit_max,
-        molt_bytearray_rsplit_max,
-        molt_string_count_slice,
-        molt_bytes_count_slice,
-        molt_bytearray_count_slice,
-        molt_string_startswith_slice,
-        molt_string_endswith_slice,
-        molt_bytes_startswith_slice,
-        molt_bytearray_startswith_slice,
-        molt_bytes_endswith_slice,
-        molt_bytearray_endswith_slice,
-        molt_bytes_hex,
-        molt_bytearray_hex,
-        molt_memoryview_hex,
-        molt_string_format_method,
-        molt_string_splitlines,
-        molt_bytes_splitlines,
-        molt_bytearray_splitlines,
-        molt_set_union_multi,
-        molt_frozenset_union_multi,
-        molt_set_intersection_multi,
-        molt_frozenset_intersection_multi,
-        molt_set_difference_multi,
-        molt_frozenset_difference_multi,
-        molt_set_update_multi,
-        molt_set_intersection_update_multi,
-        molt_set_difference_update_multi,
-        molt_set_symmetric_difference,
-        molt_frozenset_symmetric_difference,
-        molt_set_symmetric_difference_update,
-        molt_set_isdisjoint,
-        molt_frozenset_isdisjoint,
-        molt_set_issubset,
-        molt_frozenset_issubset,
-        molt_set_issuperset,
-        molt_frozenset_issuperset,
-        molt_set_copy_method,
-        molt_frozenset_copy_method,
-        molt_set_clear,
-        molt_string_encode,
-        molt_bytes_decode,
-        molt_bytearray_decode,
-        molt_memoryview_cast,
-        molt_file_reconfigure,
-    )
-}
-
 pub(super) unsafe fn bind_builtin_call(
     _py: &PyToken<'_>,
     func_bits: u64,
@@ -113,6 +8,16 @@ pub(super) unsafe fn bind_builtin_call(
 ) -> Option<Vec<u64>> {
     unsafe {
         let fn_ptr = function_fn_ptr(func_ptr);
+        let bind_kind = function_attr_bits(
+            _py,
+            func_ptr,
+            intern_static_name(
+                _py,
+                &runtime_state(_py).interned.molt_bind_kind,
+                b"__molt_bind_kind__",
+            ),
+        )
+        .and_then(|bits| obj_from_bits(bits).as_int());
         if fn_ptr == fn_addr!(crate::builtins::exceptions::molt_exception_init)
             || fn_ptr == fn_addr!(crate::builtins::exceptions::molt_exception_new_bound)
         {
@@ -158,7 +63,10 @@ pub(super) unsafe fn bind_builtin_call(
         if fn_ptr == fn_addr!(crate::object::ops_builtins::molt_print_builtin) {
             return bind_builtin_print(_py, args);
         }
-        if fn_ptr == fn_addr!(molt_type_new) || fn_ptr == fn_addr!(molt_type_init) {
+        if bind_kind == Some(BIND_KIND_TYPE_NEW_INIT)
+            || fn_ptr == fn_addr!(molt_type_new)
+            || fn_ptr == fn_addr!(molt_type_init)
+        {
             if matches!(
                 std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
                 Some("1")

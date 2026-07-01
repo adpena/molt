@@ -218,7 +218,6 @@ pub(crate) fn alloc_runtime_function_obj(
     }
     unsafe {
         init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, 0, false);
-        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
     }
     ptr
 }
@@ -242,7 +241,6 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
         } else {
             unsafe {
                 init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
-                crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -293,7 +291,6 @@ fn molt_func_new_builtin_raw_impl(
     }
     unsafe {
         init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, false);
-        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         object_set_class_bits(_py, ptr, builtin_bits);
         inc_ref_bits(_py, builtin_bits);

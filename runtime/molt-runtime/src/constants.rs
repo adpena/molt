@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU64;
 pub(crate) const BIND_KIND_OPEN: i64 = 1;
 pub(crate) const BIND_KIND_CAPI_METHOD: i64 = 2;
 pub(crate) const BIND_KIND_PACKED_BUILTIN: i64 = 3;
+pub(crate) const BIND_KIND_TYPE_NEW_INIT: i64 = 4;
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
