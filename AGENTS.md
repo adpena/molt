@@ -113,10 +113,19 @@ is reconciled.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.
-- Do not try to interrupt running tool sessions by sending Ctrl-C/control bytes
-  through `write_stdin`; the Windows unified exec backend may reject that and
-  crash Codex. Use bounded command timeouts, pytest deselection, proof-queue
-  custody, or exact live-proved Molt-owned PID cleanup with an incident record.
+- Treat `write_stdin` as stdin input only, not process control. Never send
+  Ctrl-C (`\u0003`), SIGINT-like bytes, ESC/control sequences, or other
+  interrupt payloads through it to stop a command. On Windows Codex Desktop this
+  can crash the control plane with `code=3221225786` and
+  `write_stdin failed: Unified exec process failed: process interrupt is not
+  supported by this process backend` (`codex_core::tools::router`). Track as
+  upstream `openai/codex#30847`; adjacent stale-stdin lifecycle issue:
+  `openai/codex#18494`.
+- If a command is too broad, noisy, or slow, do not try to salvage it with an
+  interactive interrupt. Prefer bounded command timeouts, narrower selectors,
+  pytest deselection, proof-queue custody, passive polling until natural exit,
+  or exact live-proved Molt-owned PID cleanup with an incident record. Plan
+  future long commands so they can finish, timeout, or be owned by the queue.
 - Direct commands are acceptable for cheap formatting, static checks, narrow
   source inspection, and queue/bootstrap repair.
 - Keep proof scoped to the claim. Broad regrtest, conformance, benchmark, and
@@ -127,6 +136,11 @@ is reconciled.
 
 - Crash recovery constrains fanout, not ambition: one active structural arc, one
   bounded proof lane, no retry storms, no parallel proof fanout.
+- If Codex crashes with the unsupported `write_stdin` interrupt error, classify
+  it as a Codex control-plane/backend capability failure, not Molt evidence.
+  Preserve the exact error text/screenshot when available, restart from live
+  `git status`, inspect queue/guard evidence, and continue with bounded
+  commands. Do not retry the same interrupt path.
 - Before risky commands, leave or rely on evidence paths under
   `tmp/memory_guard/active/`, `tmp/memory_guard/incidents/`,
   `logs/proof_queue/runs/`, and `logs/agents/codex_stall/`.
