@@ -3,13 +3,14 @@ use crate::object::layout::function_call_target_ptr;
 use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
-    ensure_function_code_bits, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, frame_stack_pop, frame_stack_push_function, function_arity,
-    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
-    function_trampoline_ptr, header_from_obj_ptr, inc_ref_bits, intern_static_name, is_truthy,
-    molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
-    recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref, type_name,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, PyToken,
+    TYPE_ID_FUNCTION, TYPE_ID_TUPLE, ensure_function_code_bits, exception_pending,
+    exception_stack_baseline_get, exception_stack_baseline_set, frame_stack_pop,
+    frame_stack_push_function, function_arity, function_attr_bits, function_closure_bits,
+    function_fn_ptr, function_name_bits, function_trampoline_ptr, header_from_obj_ptr,
+    inc_ref_bits, intern_static_name, is_truthy, molt_exception_clear, obj_from_bits,
+    object_type_id, profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit,
+    runtime_state, seq_vec_ref, type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -330,7 +331,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 1 {
+        if arity != 1 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 1);
         }
         if let Some(res) =
@@ -510,6 +511,11 @@ unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
     }
 }
 
+#[inline]
+unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool {
+    unsafe { ((*header_from_obj_ptr(func_ptr)).flags & HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE) != 0 }
+}
+
 pub(crate) unsafe fn refresh_function_task_trampoline_cache(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
@@ -571,7 +577,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 0 {
+        if arity != 0 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 0);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[]) {
@@ -733,7 +739,7 @@ pub(crate) unsafe fn call_function_obj2(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 2 {
+        if arity != 2 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 2);
         }
         if let Some(res) =
@@ -848,7 +854,7 @@ pub(crate) unsafe fn call_function_obj3(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 3 {
+        if arity != 3 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 3);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -957,7 +963,7 @@ pub(crate) unsafe fn call_function_obj4(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 4 {
+        if arity != 4 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 4);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -1069,7 +1075,7 @@ unsafe fn call_function_obj5(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 5 {
+        if arity != 5 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 5);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -1203,7 +1209,7 @@ unsafe fn call_function_obj6(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 6 {
+        if arity != 6 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 6);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -1352,7 +1358,7 @@ unsafe fn call_function_obj7(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 7 {
+        if arity != 7 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 7);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -1508,7 +1514,7 @@ unsafe fn call_function_obj8(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 8 {
+        if arity != 8 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 8);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -1672,7 +1678,7 @@ unsafe fn call_function_obj9(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 9 {
+        if arity != 9 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 9);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -1851,7 +1857,7 @@ unsafe fn call_function_obj10(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 10 {
+        if arity != 10 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 10);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -2057,7 +2063,7 @@ unsafe fn call_function_obj11(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 11 {
+        if arity != 11 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 11);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -2282,7 +2288,7 @@ unsafe fn call_function_obj12(
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
         let arity = function_arity(func_ptr);
-        if arity != 12 {
+        if arity != 12 && !function_has_variadic_trampoline(func_ptr) {
             return raise_call_arity_mismatch(_py, func_ptr, arity, 12);
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
@@ -2504,7 +2510,7 @@ pub(crate) unsafe fn call_function_obj_trampoline(
         }
         trace_function_vec_call(_py, func_ptr, args, "trampoline");
         let arity = function_arity(func_ptr);
-        if arity != args.len() as u64 {
+        if arity != args.len() as u64 && !function_has_variadic_trampoline(func_ptr) {
             // Arity mismatch: the caller provided a different number of args
             // than the function's stored arity.  Instead of immediately
             // erroring, try to resolve via __defaults__ (for too-few args) or

@@ -611,44 +611,44 @@ def _append_static_native_module_attr_export_ops(
     register_global_code_id: Callable[[str], int],
     next_var: int,
 ) -> int:
-    exports_by_extension: dict[str, list[str]] = {}
+    exports_by_provider: dict[str, list[str]] = {}
     for export in spec.module_attr_exports:
-        exports_by_extension.setdefault(export.extension_module, []).append(export.attr)
-    for extension_module in sorted(exports_by_extension):
-        extension_init = SimpleTIRGenerator.module_init_symbol(extension_module)
-        extension_init_var = f"v{next_var}"
+        exports_by_provider.setdefault(export.provider_module, []).append(export.attr)
+    for provider_module in sorted(exports_by_provider):
+        provider_init = SimpleTIRGenerator.module_init_symbol(provider_module)
+        provider_init_var = f"v{next_var}"
         next_var += 1
         ops.extend(
             [
                 {
                     "kind": "call",
-                    "s_value": extension_init,
+                    "s_value": provider_init,
                     "args": [],
-                    "out": extension_init_var,
-                    "value": register_global_code_id(extension_init),
+                    "out": provider_init_var,
+                    "value": register_global_code_id(provider_init),
                 },
                 {"kind": "check_exception", "value": 1},
             ]
         )
-        extension_name_var = f"v{next_var}"
+        provider_name_var = f"v{next_var}"
         next_var += 1
-        extension_module_var = f"v{next_var}"
+        provider_module_var = f"v{next_var}"
         next_var += 1
         ops.extend(
             [
                 {
                     "kind": "const_str",
-                    "s_value": extension_module,
-                    "out": extension_name_var,
+                    "s_value": provider_module,
+                    "out": provider_name_var,
                 },
                 {
                     "kind": "module_cache_get",
-                    "args": [extension_name_var],
-                    "out": extension_module_var,
+                    "args": [provider_name_var],
+                    "out": provider_module_var,
                 },
             ]
         )
-        for attr in sorted(set(exports_by_extension[extension_module])):
+        for attr in sorted(set(exports_by_provider[provider_module])):
             attr_name_var = f"v{next_var}"
             next_var += 1
             attr_value_var = f"v{next_var}"
@@ -660,7 +660,7 @@ def _append_static_native_module_attr_export_ops(
                     {"kind": "const_str", "s_value": attr, "out": attr_name_var},
                     {
                         "kind": "module_get_attr",
-                        "args": [extension_module_var, attr_name_var],
+                        "args": [provider_module_var, attr_name_var],
                         "out": attr_value_var,
                     },
                     {"kind": "check_exception", "value": 1},
@@ -1248,7 +1248,9 @@ def _prepare_backend_ir(
     import_ops = _build_isolate_import_ops(
         code_slot_count=len(global_code_ids),
         module_order=_isolate_import_module_order(
-            module_order, runtime_import_dispatch_roots, native_module_order
+            module_order,
+            runtime_import_dispatch_roots,
+            native_module_order=native_module_order,
         ),
         register_global_code_id=register_global_code_id,
     )

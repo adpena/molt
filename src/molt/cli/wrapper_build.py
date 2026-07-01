@@ -213,14 +213,17 @@ def _wrapper_build_dependency_fingerprints(
         prepared_module_graph,
         native_artifact_plan=native_artifact_plan,
     )
-    import_plan = _materialize_import_plan(
-        prepared_module_graph=prepared_module_graph,
-        module_reasons=module_reasons,
-        stdlib_root=stdlib_root,
-        artifacts_root=project_root / "tmp" / "wrapper-build-closure",
-        entry_module=resolved_build_entry.entry_module,
-        diagnostics_enabled=False,
-    )
+    try:
+        import_plan = _materialize_import_plan(
+            prepared_module_graph=prepared_module_graph,
+            module_reasons=module_reasons,
+            stdlib_root=stdlib_root,
+            artifacts_root=project_root / "tmp" / "wrapper-build-closure",
+            entry_module=resolved_build_entry.entry_module,
+            diagnostics_enabled=False,
+        )
+    except ValueError:
+        return None
     graph = import_plan.module_graph
     native_artifact_plan = import_plan.native_artifact_plan
     closure_payload = import_plan.closure_payload()

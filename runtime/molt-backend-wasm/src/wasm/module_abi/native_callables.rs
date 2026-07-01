@@ -6,10 +6,8 @@ use crate::native_callable_abi::{
     NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, parse_native_callable_abi,
 };
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{STATIC_FUNC_TYPES, TypeSectionExt};
+use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, STATIC_FUNC_TYPES, TypeSectionExt};
 use crate::{OpIR, SimpleIR};
-
-const NATIVE_CALLABLE_IMPORT_MODULE: &str = "molt_native";
 
 pub(super) struct WasmNativeCallableImportEmission {
     pub(super) imports: WasmNativeCallableImports,
@@ -174,6 +172,7 @@ impl WasmBackend {
         let requests = native_callable_requests(ir);
         let mut imports = WasmNativeCallableImports::default();
         let mut dynamic_type_indices = BTreeMap::new();
+        let mut dynamic_fixed_type_indices = BTreeMap::new();
         let mut symbol_imports: BTreeMap<String, NativeSymbolImport> = BTreeMap::new();
 
         for request in requests.values() {
@@ -181,6 +180,7 @@ impl WasmBackend {
                 &mut self.types,
                 &mut next_type_idx,
                 &mut dynamic_type_indices,
+                &mut dynamic_fixed_type_indices,
                 request.abi_contract,
                 request.arity,
             );
@@ -272,6 +272,7 @@ fn native_callable_type_idx(
     types: &mut wasm_encoder::TypeSection,
     next_type_idx: &mut u32,
     dynamic_type_indices: &mut BTreeMap<usize, u32>,
+    dynamic_fixed_type_indices: &mut BTreeMap<NativeCallableAbi, u32>,
     abi: NativeCallableAbi,
     arity: usize,
 ) -> u32 {
@@ -281,11 +282,25 @@ fn native_callable_type_idx(
         }
         NativeCallableAbi::ObjectCallargsV1 => static_native_callable_type_idx(abi),
         NativeCallableAbi::ForwardF32V1 => static_native_callable_type_idx(abi),
-        NativeCallableAbi::PyinitModuleV1 => static_native_callable_type_idx(abi),
+        NativeCallableAbi::PyinitModuleV1 => {
+            exact_native_callable_type_idx(types, next_type_idx, dynamic_fixed_type_indices, abi)
+        }
     }
 }
 
 fn static_native_callable_type_idx(abi: NativeCallableAbi) -> u32 {
+    static_native_callable_type_idx_opt(abi).unwrap_or_else(|| {
+        let signature = abi.wasm_signature();
+        panic!(
+            "native callable ABI {} has no static WASM type {:?} -> {:?}",
+            abi.token(),
+            signature.params,
+            signature.results
+        )
+    })
+}
+
+fn static_native_callable_type_idx_opt(abi: NativeCallableAbi) -> Option<u32> {
     let signature = abi.wasm_signature();
     STATIC_FUNC_TYPES
         .iter()
@@ -303,14 +318,37 @@ fn static_native_callable_type_idx(abi: NativeCallableAbi) -> u32 {
                     .zip(signature.results.iter())
                     .all(|(actual, expected)| val_type_matches(*expected, *actual))
         })
-        .unwrap_or_else(|| {
-            panic!(
-                "native callable ABI {} has no static WASM type {:?} -> {:?}",
-                abi.token(),
-                signature.params,
-                signature.results
-            )
-        }) as u32
+        .map(|idx| idx as u32)
+}
+
+fn exact_native_callable_type_idx(
+    types: &mut wasm_encoder::TypeSection,
+    next_type_idx: &mut u32,
+    dynamic_fixed_type_indices: &mut BTreeMap<NativeCallableAbi, u32>,
+    abi: NativeCallableAbi,
+) -> u32 {
+    if let Some(type_idx) = static_native_callable_type_idx_opt(abi) {
+        return type_idx;
+    }
+    if let Some(type_idx) = dynamic_fixed_type_indices.get(&abi) {
+        return *type_idx;
+    }
+    let signature = abi.wasm_signature();
+    let params = signature
+        .params
+        .iter()
+        .map(|value| wasm_val_type(value, abi))
+        .collect::<Vec<_>>();
+    let results = signature
+        .results
+        .iter()
+        .map(|value| wasm_val_type(value, abi))
+        .collect::<Vec<_>>();
+    let type_idx = *next_type_idx;
+    types.function(params, results);
+    *next_type_idx += 1;
+    dynamic_fixed_type_indices.insert(abi, type_idx);
+    type_idx
 }
 
 fn val_type_matches(expected: &str, actual: ValType) -> bool {
@@ -321,6 +359,19 @@ fn val_type_matches(expected: &str, actual: ValType) -> bool {
             | ("f32", ValType::F32)
             | ("f64", ValType::F64)
     )
+}
+
+fn wasm_val_type(value: &str, abi: NativeCallableAbi) -> ValType {
+    match value {
+        "i32" => ValType::I32,
+        "i64" => ValType::I64,
+        "f32" => ValType::F32,
+        "f64" => ValType::F64,
+        _ => panic!(
+            "native callable ABI {} declares unsupported WASM value type `{value}`",
+            abi.token()
+        ),
+    }
 }
 
 fn i64_params_to_i64_result_type_idx(

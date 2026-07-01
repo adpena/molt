@@ -13,6 +13,9 @@ pub(crate) use molt_codegen_abi::{
     TASK_KIND_GENERATOR,
 };
 
+pub(crate) const RUNTIME_IMPORT_MODULE: &str = "molt_runtime";
+pub(crate) const NATIVE_CALLABLE_IMPORT_MODULE: &str = "molt_native";
+
 // ---------------------------------------------------------------------------
 // WASM Exception Handling (WASM_OPTIMIZATION_PLAN.md Section 3.6)
 //

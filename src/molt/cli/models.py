@@ -137,6 +137,7 @@ class _ScopedLoweringInputs:
     known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]]
     native_callable_exports_by_module: dict[str, dict[str, dict[str, Any]]]
     native_python_exports_by_module: dict[str, tuple[str, ...]]
+    native_support_function_roots_by_module: dict[str, tuple[str, ...]]
     pgo_hot_function_names_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
 
@@ -153,6 +154,7 @@ class _ScopedLoweringInputView:
         default_factory=dict
     )
     native_python_exports: tuple[str, ...] = ()
+    native_support_function_roots: tuple[str, ...] = ()
     known_modules_payload: list[str] = field(default_factory=list)
     known_modules_set: frozenset[str] = field(default_factory=frozenset)
     direct_call_modules_payload: list[str] = field(default_factory=list)
@@ -162,6 +164,10 @@ class _ScopedLoweringInputView:
     )
     native_python_exports_payload: list[str] = field(default_factory=list)
     native_python_exports_set: frozenset[str] = field(default_factory=frozenset)
+    native_support_function_roots_payload: list[str] = field(default_factory=list)
+    native_support_function_roots_set: frozenset[str] = field(
+        default_factory=frozenset
+    )
     pgo_hot_function_names_payload: list[str] = field(default_factory=list)
     pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
 
@@ -205,6 +211,24 @@ class _ScopedLoweringInputView:
                 self,
                 "native_python_exports_set",
                 frozenset(self.native_python_exports),
+            )
+        if (
+            not self.native_support_function_roots_payload
+            and self.native_support_function_roots
+        ):
+            object.__setattr__(
+                self,
+                "native_support_function_roots_payload",
+                list(self.native_support_function_roots),
+            )
+        if (
+            not self.native_support_function_roots_set
+            and self.native_support_function_roots
+        ):
+            object.__setattr__(
+                self,
+                "native_support_function_roots_set",
+                frozenset(self.native_support_function_roots),
             )
         if not self.pgo_hot_function_names_payload and self.pgo_hot_function_names:
             object.__setattr__(
@@ -757,6 +781,7 @@ class _ExternalNativeCallableExport:
     binding: str
     abi: str
     symbol: str | None = None
+    provider_module: str | None = None
     effects: tuple[str, ...] = ()
     deterministic: bool = False
 
@@ -775,12 +800,14 @@ class _ExternalNativeCallableExport:
         }
         if self.symbol is not None:
             payload["symbol"] = self.symbol
+        if self.provider_module is not None:
+            payload["provider_module"] = self.provider_module
         return payload
 
 
 @dataclass(frozen=True)
 class _ExternalNativeModuleAttrPublishSpec:
-    extension_module: str
+    provider_module: str
     attr: str
 
 
@@ -821,6 +848,76 @@ class _ExternalPackageNativeArtifactPlan:
                 names.add(".".join(module_parts))
         return names
 
+    @staticmethod
+    def _support_python_module_names(
+        artifact: _ExternalPackageNativeArtifact,
+    ) -> set[str]:
+        names: set[str] = set()
+        for rel_path, _digest in artifact.support_file_sha256:
+            normalized = rel_path.replace("\\", "/")
+            if not normalized.endswith(".py"):
+                continue
+            parts = normalized.split("/")
+            if not parts:
+                continue
+            if parts[-1] == "__init__.py":
+                continue
+            module_parts = [*parts[:-1], parts[-1][:-3]]
+            if module_parts:
+                names.add(".".join(module_parts))
+        return names
+
+    @staticmethod
+    def _package_source_root(
+        package_dir: Path,
+        package: str,
+    ) -> Path:
+        package_source_root = package_dir.resolve()
+        package_parts = tuple(part for part in package.split(".") if part)
+        if (
+            package_parts
+            and len(package_source_root.parts) >= len(package_parts)
+            and tuple(package_source_root.parts[-len(package_parts) :])
+            == package_parts
+        ):
+            package_source_root = package_source_root.parents[
+                len(package_parts) - 1
+            ]
+        return package_source_root
+
+    def package_source_roots(self) -> tuple[Path, ...]:
+        roots = {
+            self._package_source_root(artifact.package_dir, artifact.package)
+            for artifact in self.artifacts
+        }
+        return tuple(sorted(roots))
+
+    def support_source_paths_by_module(self) -> dict[str, Path]:
+        sources: dict[str, Path] = {}
+        for artifact in self.artifacts:
+            package_source_root = self._package_source_root(
+                artifact.package_dir,
+                artifact.package,
+            )
+            for rel_path, _digest in artifact.support_file_sha256:
+                normalized = rel_path.replace("\\", "/")
+                if not normalized.endswith(".py"):
+                    continue
+                parts = normalized.split("/")
+                if not parts:
+                    continue
+                if parts[-1] == "__init__.py":
+                    continue
+                module_parts = [*parts[:-1], parts[-1][:-3]]
+                if module_parts:
+                    sources[".".join(module_parts)] = (
+                        package_source_root / Path(normalized)
+                    ).resolve()
+        return {module: sources[module] for module in sorted(sources)}
+
+    def support_source_module_names(self) -> frozenset[str]:
+        return frozenset(self.support_source_paths_by_module())
+
     def native_module_names(self) -> frozenset[str]:
         names: set[str] = set()
         for artifact in self.artifacts:
@@ -828,6 +925,9 @@ class _ExternalPackageNativeArtifactPlan:
             names.update(self._module_prefixes(artifact.module))
             support_init_modules = self._support_init_module_names(artifact)
             names.update(support_init_modules)
+            support_source_modules = self._support_python_module_names(artifact)
+            for module_name in support_source_modules:
+                names.update(self._module_prefixes(module_name))
             for exported_name in artifact.python_exports:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
@@ -841,6 +941,9 @@ class _ExternalPackageNativeArtifactPlan:
             for exported_name in exported_names:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
+            for export in artifact.callable_exports:
+                if export.provider_module is not None:
+                    names.update(self._module_prefixes(export.provider_module))
         return frozenset(names)
 
     def native_callable_export_names(self) -> frozenset[str]:
@@ -881,11 +984,14 @@ class _ExternalPackageNativeArtifactPlan:
             for export in artifact.callable_exports:
                 parts = export.qualified_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
-                if export.binding == "module_attr" and export.module != artifact.module:
+                provider_module = export.provider_module or artifact.module
+                if export.binding == "module_attr":
+                    names.update(self._module_prefixes(provider_module))
+                if export.binding == "module_attr" and export.module != provider_module:
                     names.add(export.module)
                     module_attr_exports.setdefault(export.module, set()).add(
                         _ExternalNativeModuleAttrPublishSpec(
-                            extension_module=artifact.module,
+                            provider_module=provider_module,
                             attr=export.name,
                         )
                     )
@@ -903,7 +1009,7 @@ class _ExternalPackageNativeArtifactPlan:
                 module=existing.module,
                 init_symbol=existing.init_symbol,
                 module_attr_exports=tuple(
-                    sorted(exports, key=lambda item: (item.extension_module, item.attr))
+                    sorted(exports, key=lambda item: (item.provider_module, item.attr))
                 ),
             )
         return tuple(
@@ -1096,11 +1202,16 @@ class _ImportAdmissionPolicy:
                 return package
         return None
 
+    def _native_artifact_support_source_module(self, module_name: str) -> bool:
+        return module_name in self.native_artifact_plan.support_source_module_names()
+
     def owns_source_closure_with_native_artifact_plan(
         self,
         module_name: str,
         path: Path,
     ) -> bool:
+        if self._native_artifact_support_source_module(module_name):
+            return False
         return (
             self._external_root_for_path(path) is not None
             and self._native_artifact_source_package(module_name) is not None
@@ -1114,6 +1225,8 @@ class _ImportAdmissionPolicy:
         from_entry_path: bool,
     ) -> bool:
         if self._external_root_for_path(path) is None:
+            return True
+        if self._native_artifact_support_source_module(module_name):
             return True
         if self._native_artifact_source_package(module_name) is not None:
             return False
@@ -1225,6 +1338,9 @@ class _ImportPlan:
     stdlib_allowlist_sorted: tuple[str, ...]
     module_graph_metadata: _ModuleGraphMetadata
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
+    native_support_function_roots_by_module: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
 
     def with_compile_modules(self, compile_modules: Collection[str]) -> "_ImportPlan":
         compile_set = frozenset(compile_modules)
@@ -1262,6 +1378,9 @@ class _ImportPlan:
             stdlib_allowlist_sorted=self.stdlib_allowlist_sorted,
             module_graph_metadata=self.module_graph_metadata,
             native_artifact_plan=self.native_artifact_plan,
+            native_support_function_roots_by_module=dict(
+                self.native_support_function_roots_by_module
+            ),
         )
 
     def closure_payload(self) -> dict[str, Any]:
@@ -1290,6 +1409,12 @@ class _ImportPlan:
                 ),
             },
             "external_native_artifacts": self.native_artifact_plan.digest_payload(),
+            "native_support_function_roots_by_module": {
+                module: list(roots)
+                for module, roots in sorted(
+                    self.native_support_function_roots_by_module.items()
+                )
+            },
         }
 
 

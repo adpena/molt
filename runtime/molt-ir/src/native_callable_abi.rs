@@ -14,7 +14,7 @@ pub const NATIVE_CALLABLE_ABIS: &[&str] = &[
 pub const NATIVE_CALLABLE_ABI_CHOICES: &str =
     "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1, molt.pyinit_module_v1";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NativeCallableAbi {
     ObjectCallV1,
     ObjectCallargsV1,
@@ -44,6 +44,7 @@ const PYINIT_MODULE_WASM_PARAMS: &[&str] = &[];
 const OBJECT_CALL_WASM_RESULTS: &[&str] = &["i64"];
 const FORWARD_F32_WASM_PARAMS: &[&str] = &["i32", "i64", "i32"];
 const FORWARD_F32_WASM_RESULTS: &[&str] = &["i32"];
+const PYINIT_MODULE_WASM_RESULTS: &[&str] = &["i32"];
 
 impl NativeCallableAbi {
     pub fn token(self) -> &'static str {
@@ -101,7 +102,7 @@ impl NativeCallableAbi {
             },
             Self::PyinitModuleV1 => NativeCallableWasmSignature {
                 params: PYINIT_MODULE_WASM_PARAMS,
-                results: OBJECT_CALL_WASM_RESULTS,
+                results: PYINIT_MODULE_WASM_RESULTS,
             },
         }
     }
@@ -176,6 +177,6 @@ mod tests {
             "molt.pyobject_ptr"
         );
         assert!(pyinit_module.wasm_signature().params.is_empty());
-        assert_eq!(pyinit_module.wasm_signature().results, ["i64"]);
+        assert_eq!(pyinit_module.wasm_signature().results, ["i32"]);
     }
 }

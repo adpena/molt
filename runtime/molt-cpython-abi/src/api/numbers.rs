@@ -528,6 +528,59 @@ pub unsafe extern "C" fn PyLong_AsVoidPtr(op: *mut PyObject) -> *mut c_void {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_AsNativeBytes(
+    op: *mut PyObject,
+    buffer: *mut c_void,
+    n_bytes: Py_ssize_t,
+    _flags: c_int,
+) -> Py_ssize_t {
+    let Some(value) = py_long_as_i64_checked(op) else {
+        return -1;
+    };
+    let bytes = value.to_le_bytes();
+    let required = std::mem::size_of::<i64>() as Py_ssize_t;
+    if !buffer.is_null() && n_bytes > 0 {
+        let count = (n_bytes as usize).min(bytes.len());
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), count);
+        }
+    }
+    required
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_FromNativeBytes(
+    buffer: *const c_void,
+    n_bytes: usize,
+    _flags: c_int,
+) -> *mut PyObject {
+    if buffer.is_null() {
+        return ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), n_bytes.min(8)) };
+    let sign_extend = bytes.last().is_some_and(|byte| (byte & 0x80) != 0);
+    let fill = if sign_extend { 0xff } else { 0x00 };
+    let mut raw = [fill; 8];
+    raw[..bytes.len()].copy_from_slice(bytes);
+    py_long_from_i64(i64::from_le_bytes(raw))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyLong_FromUnsignedNativeBytes(
+    buffer: *const c_void,
+    n_bytes: usize,
+    _flags: c_int,
+) -> *mut PyObject {
+    if buffer.is_null() {
+        return ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), n_bytes.min(8)) };
+    let mut raw = [0u8; 8];
+    raw[..bytes.len()].copy_from_slice(bytes);
+    py_long_from_u64(u64::from_le_bytes(raw))
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn _PyLong_AsInt(op: *mut PyObject) -> c_int {
     let value = py_long_as_i64(op);
     if value > c_int::MAX as i64 || value < c_int::MIN as i64 {

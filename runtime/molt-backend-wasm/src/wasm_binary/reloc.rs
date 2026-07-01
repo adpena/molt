@@ -1,4 +1,7 @@
-use crate::wasm_abi::{CALL_INDIRECT_IMPORTS, wasm_runtime_export_name};
+use crate::wasm_abi::{
+    CALL_INDIRECT_IMPORTS, NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE,
+    wasm_runtime_export_name,
+};
 use crate::wasm_data::{DataRelocSite, DataSegmentInfo};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -21,10 +24,34 @@ struct RelocEntry {
     addend: i32,
 }
 
+#[derive(Clone, Debug)]
+struct FunctionImport {
+    module: String,
+    name: String,
+}
+
 fn is_manifest_call_indirect_import_name(name: &str) -> bool {
     CALL_INDIRECT_IMPORTS
         .iter()
         .any(|spec| spec.import_name == name)
+}
+
+fn linker_symbol_name_for_function_import(import: &FunctionImport) -> String {
+    match import.module.as_str() {
+        RUNTIME_IMPORT_MODULE => wasm_runtime_export_name(&import.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing generated runtime export for import {}",
+                    import.name
+                )
+            })
+            .to_string(),
+        NATIVE_CALLABLE_IMPORT_MODULE => import.name.clone(),
+        module => panic!(
+            "unsupported WASM function import module `{module}` for import `{}`; relocatable output only supports `{RUNTIME_IMPORT_MODULE}` runtime ABI imports and `{NATIVE_CALLABLE_IMPORT_MODULE}` native callable object imports",
+            import.name
+        ),
+    }
 }
 
 fn encode_reloc_section(
@@ -59,7 +86,7 @@ pub(crate) fn add_reloc_sections(
     data_segments: &[DataSegmentInfo],
     data_relocs: &[DataRelocSite],
 ) -> Vec<u8> {
-    let mut func_imports: Vec<String> = Vec::new();
+    let mut func_imports: Vec<FunctionImport> = Vec::new();
     let mut func_exports: BTreeMap<u32, String> = BTreeMap::new();
     let mut func_import_count = 0u32;
     let mut defined_func_count = 0u32;
@@ -93,7 +120,10 @@ pub(crate) fn add_reloc_sections(
                 for import in reader.into_imports().flatten() {
                     match import.ty {
                         TypeRef::Func(_) => {
-                            func_imports.push(import.name.to_string());
+                            func_imports.push(FunctionImport {
+                                module: import.module.to_string(),
+                                name: import.name.to_string(),
+                            });
                             func_import_count += 1;
                         }
                         TypeRef::Table(_) => {
@@ -240,11 +270,9 @@ pub(crate) fn add_reloc_sections(
 
     let mut sym_tab = SymbolTable::new();
     let mut import_names: Vec<String> = Vec::new();
-    for (idx, name) in func_imports.iter().enumerate() {
+    for (idx, import) in func_imports.iter().enumerate() {
         let flags = SymbolTable::WASM_SYM_UNDEFINED | SymbolTable::WASM_SYM_EXPLICIT_NAME;
-        let symbol_name = wasm_runtime_export_name(name)
-            .unwrap_or_else(|| panic!("missing generated runtime export for import {name}"))
-            .to_string();
+        let symbol_name = linker_symbol_name_for_function_import(import);
         import_names.push(symbol_name);
         let name_ref = import_names.last().unwrap();
         sym_tab.function(flags, idx as u32, Some(name_ref));
@@ -412,7 +440,7 @@ pub(crate) fn add_reloc_sections(
 #[cfg(test)]
 mod tests {
     use super::{add_reloc_sections, is_manifest_call_indirect_import_name};
-    use crate::wasm_abi::TypeSectionExt;
+    use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE, TypeSectionExt};
     use crate::wasm_binary::strip_unused_imports;
     use crate::wasm_data::WasmDataSegments;
     use std::collections::BTreeSet;
@@ -434,6 +462,12 @@ mod tests {
             }
             shift += 7;
         }
+    }
+
+    fn bytes_contain_ascii(bytes: &[u8], needle: &str) -> bool {
+        bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
     }
 
     fn code_body_ranges(wasm: &[u8]) -> (usize, Vec<std::ops::Range<usize>>) {
@@ -497,13 +531,88 @@ mod tests {
     }
 
     #[test]
+    fn reloc_symbol_table_preserves_native_callable_import_symbols() {
+        let mut types = TypeSection::new();
+        types.function([], []);
+
+        let mut imports = ImportSection::new();
+        imports.import(
+            RUNTIME_IMPORT_MODULE,
+            "types_bootstrap",
+            EntityType::Function(0),
+        );
+        imports.import(
+            NATIVE_CALLABLE_IMPORT_MODULE,
+            "PyInit__nd_image",
+            EntityType::Function(0),
+        );
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+
+        let mut body = Function::new([]);
+        body.instruction(&Instruction::Call(0));
+        body.instruction(&Instruction::Call(1));
+        body.instruction(&Instruction::End);
+        let mut codes = CodeSection::new();
+        codes.function(&body);
+
+        let mut module = Module::new();
+        module.section(&types);
+        module.section(&imports);
+        module.section(&funcs);
+        module.section(&codes);
+
+        let relocated = add_reloc_sections(module.finish(), &[], &[]);
+        assert!(
+            bytes_contain_ascii(&relocated, "PyInit__nd_image"),
+            "native callable import symbol must be preserved for object-closure linking"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported WASM function import module")]
+    fn reloc_symbol_table_rejects_unknown_function_import_modules() {
+        let mut types = TypeSection::new();
+        types.function([], []);
+
+        let mut imports = ImportSection::new();
+        imports.import("env", "PyInit__nd_image", EntityType::Function(0));
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+
+        let mut body = Function::new([]);
+        body.instruction(&Instruction::Call(0));
+        body.instruction(&Instruction::End);
+        let mut codes = CodeSection::new();
+        codes.function(&body);
+
+        let mut module = Module::new();
+        module.section(&types);
+        module.section(&imports);
+        module.section(&funcs);
+        module.section(&codes);
+
+        let _ = add_reloc_sections(module.finish(), &[], &[]);
+    }
+
+    #[test]
     fn data_reloc_sites_follow_defined_body_ordinal_after_import_strip() {
         let mut types = TypeSection::new();
         types.function([], []);
 
         let mut imports = ImportSection::new();
-        imports.import("molt_runtime", "types_bootstrap", EntityType::Function(0));
-        imports.import("molt_runtime", "abc_bootstrap", EntityType::Function(0));
+        imports.import(
+            RUNTIME_IMPORT_MODULE,
+            "types_bootstrap",
+            EntityType::Function(0),
+        );
+        imports.import(
+            RUNTIME_IMPORT_MODULE,
+            "abc_bootstrap",
+            EntityType::Function(0),
+        );
 
         let mut funcs = FunctionSection::new();
         funcs.function(0);

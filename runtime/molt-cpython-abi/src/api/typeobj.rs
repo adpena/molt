@@ -1,6 +1,7 @@
 //! Type object API — PyType_Ready, PyType_GenericAlloc, Py_TYPE checks.
 
 use crate::abi_types::{Py_TPFLAGS_READY, Py_ssize_t, PyObject, PyType_Spec, PyTypeObject};
+use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -101,6 +102,40 @@ pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Modified(_tp: *mut PyTypeObject) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyType_Lookup(
+    tp: *mut PyTypeObject,
+    name: *mut PyObject,
+) -> *mut PyObject {
+    let _ = (tp, name);
+    ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDescr_IsData(_descr: *mut PyObject) -> c_int {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDescr_NewGetSet(
+    _type: *mut PyTypeObject,
+    _getset: *mut c_void,
+) -> *mut PyObject {
+    let obj = &raw mut crate::abi_types::Py_None;
+    unsafe { crate::api::refcount::Py_INCREF(obj) };
+    obj
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDescr_NewMember(
+    _type: *mut PyTypeObject,
+    _member: *mut c_void,
+) -> *mut PyObject {
+    let obj = &raw mut crate::abi_types::Py_None;
+    unsafe { crate::api::refcount::Py_INCREF(obj) };
+    obj
+}
 
 /// Py_TYPE(op) — return ob_type pointer.
 #[unsafe(no_mangle)]

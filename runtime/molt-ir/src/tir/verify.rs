@@ -198,13 +198,11 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             // no value) that are later consumed by type refinement. These
             // ops are structurally valid even without their value attribute.
             match opcode_tir_verify_attr_rule_table(op.opcode) {
-                TirVerifyAttrRule::CallCallee
-                    if !op.attrs.contains_key("callee")
-                        && !op.attrs.contains_key("s_value")
-                        && op.operands.is_empty() =>
-                {
+                TirVerifyAttrRule::CallCallee if !op_has_call_callee(op) => {
                     // Callee can be either an attribute or the first operand
-                    // (SimpleIR encodes it as `var`, which becomes an operand).
+                    // (SimpleIR encodes it as `var`, which becomes an
+                    // operand). Direct native symbols carry executable callee
+                    // identity in metadata and may be zero-argument calls.
                     errors.push(VerifyError::op(
                         *bid,
                         op_idx,
@@ -253,6 +251,24 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             }
         }
     }
+}
+
+fn op_has_call_callee(op: &super::ops::TirOp) -> bool {
+    if op.attrs.contains_key("callee")
+        || op.attrs.contains_key("s_value")
+        || !op.operands.is_empty()
+    {
+        return true;
+    }
+
+    matches!(
+        (
+            op.attrs.get("native_callable_binding"),
+            op.attrs.get("native_callable_symbol"),
+        ),
+        (Some(AttrValue::Str(binding)), Some(AttrValue::Str(symbol)))
+            if binding == "direct_symbol" && !symbol.is_empty()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +744,85 @@ mod tests {
             verify_function(&func).is_ok(),
             "valid add function should pass: {:?}",
             verify_function(&func).err()
+        );
+    }
+
+    #[test]
+    fn direct_symbol_native_callable_without_operands_verifies() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "native_callable_binding".into(),
+            AttrValue::Str("direct_symbol".into()),
+        );
+        attrs.insert(
+            "native_callable_symbol".into(),
+            AttrValue::Str("PyInit__native".into()),
+        );
+        attrs.insert(
+            "native_callable_export".into(),
+            AttrValue::Str("__molt_static_pyinit__.nativepkg._native".into()),
+        );
+        attrs.insert(
+            "native_callable_abi".into(),
+            AttrValue::Str("molt.pyinit_module_v1".into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        assert!(
+            verify_function(&func).is_ok(),
+            "direct-symbol native call should verify: {:?}",
+            verify_function(&func).err()
+        );
+    }
+
+    #[test]
+    fn module_attr_native_callable_without_operand_still_fails() {
+        let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "native_callable_binding".into(),
+            AttrValue::Str("module_attr".into()),
+        );
+        attrs.insert(
+            "native_callable_symbol".into(),
+            AttrValue::Str("scipy.ndimage.distance_transform_edt".into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let result = verify_function(&func);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.message.contains("has no callee")),
+            "expected missing callee error, got: {:?}",
+            errors
         );
     }
 

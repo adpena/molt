@@ -258,6 +258,9 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
         in content
     )
     assert "path_filestat_get(fd, _flags, pathPtr, pathLen, bufPtr)" in content
+    assert "const writeBytesToFileEntry = (entry, bytes) => {" in content
+    assert "writeBytesToFileEntry(entry, bytes);" in content
+    assert 'if (fdNum !== 1 && fdNum !== 2) {' in content
 
 
 def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> None:
@@ -400,6 +403,9 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);"
     ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
     assert content.index(
+        "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);"
+    ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
+    assert content.index(
         "const indirectFn = appInstance?.exports?.[indirectName];"
     ) < content.index("const tableFn = sharedTable.get(dispatchIdx);")
     assert content.index(
@@ -428,6 +434,16 @@ def test_static_browser_runners_reserved_runtime_callable_tables_track_generated
     for rel in ("wasm/run_wasm.js", "wasm/browser_host.js"):
         content = (root / rel).read_text(encoding="utf-8")
         assert _reserved_runtime_callable_js_entries(content) == expected
+
+
+def test_static_browser_host_fd_write_preserves_tmp_file_bytes() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    content = (root / "wasm/browser_host.js").read_text(encoding="utf-8")
+    assert "const writeBytesToFileEntry = (entry, bytes) => {" in content
+    assert "writeBytesToFileEntry(entry, bytes);" in content
+    assert "if (fdNum !== 1 && fdNum !== 2) {" in content
 
 
 def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> (
@@ -555,6 +571,43 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     )
     assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in browser_embed
     assert "normalizeValueForKind(value, callSignature.params[index] || null)" in browser_embed
+
+
+def test_static_browser_hosts_publish_positive_pid_surrogate() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    for rel in ("wasm/browser_embed.js", "wasm/browser_host.js"):
+        content = (root / rel).read_text(encoding="utf-8")
+        assert "molt_getpid_host: () => 1n" in content
+        assert "molt_getpid_host: stubZeroI64" not in content
+
+
+def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    browser_host = (root / "wasm/browser_host.js").read_text(encoding="utf-8")
+    assert "normalizeImportResult," in browser_host
+    assert "normalizeValueForKind," in browser_host
+    assert "const loadSplitRuntimeManifest = async (options, wasmUrl) => {" in browser_host
+    assert "split-runtime manifest missing abi.runtime_imports.names" in browser_host
+    assert "const runtimeImportAbi = options.runtimeImportAbi || {};" in browser_host
+    assert "const manifestNames = new Set(runtimeImportAbi.names || []);" in browser_host
+    assert "const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};" in browser_host
+    assert "const resultKinds = runtimeImportAbi.result_kinds || {};" in browser_host
+    assert "const runtimeImportFallbacks = options.runtimeImportFallbacks || {};" in browser_host
+    assert "app runtime import ${entry.name} missing from manifest" in browser_host
+    assert "app runtime import ${entry.name} missing manifest signature" in browser_host
+    assert "app runtime import ${entry.name} missing manifest result kind" in browser_host
+    assert "let callSignature = runtimeExportSignatures[entry.name] || signature;" in browser_host
+    assert "fn = resolveFallback(entry.name);" in browser_host
+    assert "normalizeValueForKind(value, callSignature.params[index] || null)" in browser_host
+    assert "return normalizeImportResult(fn(...callArgs), resultKind);" in browser_host
+    assert "runtimeImportAbi," in browser_host
+    assert "runtimeImportFallbacks," in browser_host
+    assert "entry.name === 'fast_list_append'" not in browser_host
+    assert "entry.name === 'dict_setitem'" not in browser_host
 
 
 def test_effective_split_worker_table_base_uses_backend_authority() -> None:
@@ -698,6 +751,8 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
         "molt_importlib_import_transaction",
         "molt_socket_drop",
         "molt_add",
+        "molt_bool_from_i32",
+        "molt_buffer_acquire",
         "molt_string_from_bytes",
         "string_from_bytes",
     }
@@ -710,6 +765,8 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
         "molt_importlib_import_transaction": "i64",
         "molt_socket_drop": "nil",
         "molt_add": "i64",
+        "molt_bool_from_i32": "i64",
+        "molt_buffer_acquire": "i32",
         "molt_string_from_bytes": "i32",
         "string_from_bytes": "i32",
     }
@@ -724,6 +781,8 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
         },
         "molt_socket_drop": {"params": ["i64"], "result": "nil"},
         "molt_add": {"params": ["i64", "i64"], "result": "i64"},
+        "molt_bool_from_i32": {"params": ["i32"], "result": "i64"},
+        "molt_buffer_acquire": {"params": ["i64", "i32"], "result": "i32"},
         "molt_string_from_bytes": {
             "params": ["i32", "i64", "i32"],
             "result": "i32",

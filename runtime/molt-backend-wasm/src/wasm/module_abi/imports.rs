@@ -3,7 +3,9 @@ use wasm_encoder::{EntityType, ImportSection};
 use super::runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{IMPORT_REGISTRY, RuntimeImportSpec, WasmRuntimeImport};
+use crate::wasm_abi::{
+    IMPORT_REGISTRY, RUNTIME_IMPORT_MODULE, RuntimeImportSpec, WasmRuntimeImport,
+};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
 
@@ -61,7 +63,7 @@ impl RuntimeImportRegistrar<'_> {
             return;
         }
         self.imports.import(
-            "molt_runtime",
+            RUNTIME_IMPORT_MODULE,
             name,
             EntityType::Function(import.type_idx()),
         );
