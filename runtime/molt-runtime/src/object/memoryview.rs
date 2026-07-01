@@ -5,10 +5,11 @@ use crate::libc_compat as libc;
 use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
     TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bigint_bits, bytes_data, bytes_len,
-    index_bigint_from_obj, is_truthy, memoryview_format_bits, memoryview_itemsize, memoryview_len,
-    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_released,
-    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_type_id,
-    raise_exception, string_bytes, string_len, string_obj_to_owned, to_f64,
+    index_bigint_from_obj, is_truthy, memoryview_base_bits, memoryview_data,
+    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_offset,
+    memoryview_readonly, memoryview_released, memoryview_shape, memoryview_stride,
+    memoryview_strides, obj_from_bits, object_type_id, raise_exception, string_bytes, string_len,
+    string_obj_to_owned, to_f64,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -174,22 +175,15 @@ impl TypedStridedStorage {
             if memoryview_released(ptr) {
                 return Err(TypedStridedStorageError::ReleasedMemoryView);
             }
-            let base_bits = memoryview_owner_bits(ptr);
-            let base = obj_from_bits(base_bits);
-            let base_ptr = base
-                .as_ptr()
-                .ok_or(TypedStridedStorageError::InvalidDescriptor)?;
-            let base_slice = bytes_like_slice_raw(base_ptr)
-                .ok_or(TypedStridedStorageError::InvalidDescriptor)?;
+            let base_bits = memoryview_base_bits(ptr);
+            let data = memoryview_data(ptr);
+            if data.is_null() {
+                return Err(TypedStridedStorageError::InvalidDescriptor);
+            }
             let offset = memoryview_offset(ptr);
             if offset < 0 {
                 return Err(TypedStridedStorageError::InvalidDescriptor);
             }
-            let offset_usize = offset as usize;
-            if offset_usize > base_slice.len() {
-                return Err(TypedStridedStorageError::InvalidDescriptor);
-            }
-            let data = base_slice.as_ptr().add(offset_usize) as *mut u8;
             let shape = memoryview_shape(ptr)
                 .ok_or(TypedStridedStorageError::InvalidDescriptor)?
                 .to_vec();
@@ -354,20 +348,12 @@ pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8
         if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
             return None;
         }
-        let owner_bits = memoryview_owner_bits(ptr);
-        let owner = obj_from_bits(owner_bits);
-        let owner_ptr = owner.as_ptr()?;
-        let base = bytes_like_slice_raw(owner_ptr)?;
-        let offset = memoryview_offset(ptr);
-        if offset < 0 {
+        let data = memoryview_data(ptr);
+        if data.is_null() {
             return None;
         }
-        let offset = offset as usize;
         let len = memoryview_len(ptr);
-        if offset > base.len() || offset + len > base.len() {
-            return None;
-        }
-        Some(&base[offset..offset + len])
+        Some(std::slice::from_raw_parts(data.cast_const(), len))
     }
 }
 
@@ -380,20 +366,12 @@ pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static
         if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
             return None;
         }
-        let owner_bits = memoryview_owner_bits(ptr);
-        let owner = obj_from_bits(owner_bits);
-        let owner_ptr = owner.as_ptr()?;
-        let base = bytes_like_slice_raw_mut(owner_ptr)?;
-        let offset = memoryview_offset(ptr);
-        if offset < 0 {
+        let data = memoryview_data(ptr);
+        if data.is_null() {
             return None;
         }
-        let offset = offset as usize;
         let len = memoryview_len(ptr);
-        if offset > base.len() || offset + len > base.len() {
-            return None;
-        }
-        Some(&mut base[offset..offset + len])
+        Some(std::slice::from_raw_parts_mut(data, len))
     }
 }
 
@@ -411,13 +389,10 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
             slice[..n].copy_from_slice(&data[..n]);
             return Ok(n);
         }
-        let owner_bits = memoryview_owner_bits(ptr);
-        let owner = obj_from_bits(owner_bits);
-        let owner_ptr = owner
-            .as_ptr()
-            .ok_or_else(|| "invalid memoryview owner".to_string())?;
-        let base =
-            bytes_like_slice_raw_mut(owner_ptr).ok_or_else(|| "unsupported buffer".to_string())?;
+        let base_ptr = memoryview_data(ptr);
+        if base_ptr.is_null() {
+            return Err("invalid memoryview data".to_string());
+        }
         let shape = memoryview_shape(ptr).ok_or_else(|| "invalid memoryview shape".to_string())?;
         let strides =
             memoryview_strides(ptr).ok_or_else(|| "invalid memoryview strides".to_string())?;
@@ -437,12 +412,8 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
             return Err("invalid memoryview offset".to_string());
         }
         if memoryview_is_c_contiguous(shape, strides, itemsize) {
-            let start = offset as usize;
-            let end = start.saturating_add(write_bytes);
-            if end > base.len() {
-                return Err("memoryview out of bounds".to_string());
-            }
-            base[start..end].copy_from_slice(&data[..write_bytes]);
+            let base = std::slice::from_raw_parts_mut(base_ptr, write_bytes);
+            base.copy_from_slice(&data[..write_bytes]);
             return Ok(write_bytes);
         }
         let total = memoryview_shape_product(shape)
@@ -457,7 +428,7 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
             if written >= write_bytes {
                 break;
             }
-            let mut pos = offset;
+            let mut pos = 0isize;
             for (idx, stride) in indices.iter().zip(strides.iter()) {
                 pos = pos
                     .checked_add(idx.saturating_mul(*stride))
@@ -466,14 +437,10 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
             if pos < 0 {
                 return Err("memoryview out of bounds".to_string());
             }
-            let start = pos as usize;
             let remaining = write_bytes - written;
             let copy_len = itemsize.min(remaining);
-            let end = start.saturating_add(copy_len);
-            if end > base.len() {
-                return Err("memoryview out of bounds".to_string());
-            }
-            base[start..end].copy_from_slice(&data[written..written + copy_len]);
+            let base = std::slice::from_raw_parts_mut(base_ptr.offset(pos), copy_len);
+            base.copy_from_slice(&data[written..written + copy_len]);
             written += copy_len;
             for dim in (0..indices.len()).rev() {
                 indices[dim] += 1;
@@ -492,17 +459,17 @@ pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
         if memoryview_released(ptr) {
             return None;
         }
-        let owner_bits = memoryview_owner_bits(ptr);
-        let owner = obj_from_bits(owner_bits);
-        let owner_ptr = owner.as_ptr()?;
-        let base = bytes_like_slice_raw(owner_ptr)?;
+        let base_ptr = memoryview_data(ptr);
+        if base_ptr.is_null() {
+            return None;
+        }
         let shape = memoryview_shape(ptr)?;
         let strides = memoryview_strides(ptr)?;
         if shape.len() != strides.len() {
             return None;
         }
         let nbytes = memoryview_nbytes_big(shape, memoryview_itemsize(ptr))?;
-        if nbytes < 0 || nbytes > base.len() as i128 {
+        if nbytes < 0 {
             return None;
         }
         let nbytes = nbytes as usize;
@@ -512,16 +479,8 @@ pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
         }
         let mut out = Vec::with_capacity(nbytes);
         if memoryview_is_c_contiguous(shape, strides, memoryview_itemsize(ptr)) {
-            let end = offset.checked_add(nbytes as isize)?;
-            if end < 0 {
-                return None;
-            }
-            let start = offset as usize;
-            let end = end as usize;
-            if end > base.len() {
-                return None;
-            }
-            out.extend_from_slice(&base[start..end]);
+            let base = std::slice::from_raw_parts(base_ptr.cast_const(), nbytes);
+            out.extend_from_slice(base);
             return Some(out);
         }
         let total = memoryview_shape_product(shape)?;
@@ -531,19 +490,13 @@ pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
         let total = total as usize;
         let mut indices = vec![0isize; shape.len()];
         for _ in 0..total {
-            let mut pos = offset;
+            let mut pos = 0isize;
             for (idx, stride) in indices.iter().zip(strides.iter()) {
                 pos = pos.checked_add(idx.saturating_mul(*stride))?;
             }
-            if pos < 0 {
-                return None;
-            }
-            let pos = pos as usize;
             let itemsize = memoryview_itemsize(ptr);
-            if pos + itemsize > base.len() {
-                return None;
-            }
-            out.extend_from_slice(&base[pos..pos + itemsize]);
+            let base = std::slice::from_raw_parts(base_ptr.offset(pos).cast_const(), itemsize);
+            out.extend_from_slice(base);
             for axis in (0..indices.len()).rev() {
                 indices[axis] += 1;
                 if indices[axis] < shape[axis] {
@@ -634,6 +587,19 @@ pub(crate) unsafe fn memoryview_read_scalar(
             }
         }
     }
+}
+
+pub(crate) unsafe fn memoryview_read_scalar_at(
+    _py: &PyToken<'_>,
+    data: *const u8,
+    offset: isize,
+    fmt: MemoryViewFormat,
+) -> Option<u64> {
+    if data.is_null() {
+        return None;
+    }
+    let item = unsafe { std::slice::from_raw_parts(data.offset(offset), fmt.itemsize) };
+    unsafe { memoryview_read_scalar(_py, item, 0, fmt) }
 }
 
 pub(crate) unsafe fn memoryview_write_scalar(
@@ -760,6 +726,20 @@ pub(crate) unsafe fn memoryview_write_scalar(
             }
         }
     }
+}
+
+pub(crate) unsafe fn memoryview_write_scalar_at(
+    _py: &PyToken<'_>,
+    data: *mut u8,
+    offset: isize,
+    fmt: MemoryViewFormat,
+    val_bits: u64,
+) -> Option<()> {
+    if data.is_null() {
+        return None;
+    }
+    let item = unsafe { std::slice::from_raw_parts_mut(data.offset(offset), fmt.itemsize) };
+    unsafe { memoryview_write_scalar(_py, item, 0, fmt, val_bits) }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
