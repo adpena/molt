@@ -99,11 +99,16 @@ def test_ci_push_path_is_cheap_only() -> None:
 
 def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     ci_text = _read(".github/workflows/ci.yml")
+    perf_text = _read(".github/workflows/perf-gate.yml")
 
     assert "PYTHONPATH=src python3 -m molt.llvm_toolchain" in ci_text
     assert "steps.llvmver.outputs.env_var" in ci_text
+    assert "PYTHONPATH=src python3 -m molt.llvm_toolchain" in perf_text
+    assert "steps.llvmver.outputs.env_var" in perf_text
     assert "grep -oE" not in ci_text
+    assert "grep -oE" not in perf_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text
+    assert "LLVM_SYS_${MAJOR}1_PREFIX" not in perf_text
 
 
 def test_pr_trust_labeler_is_advisory_not_authoritative() -> None:
@@ -516,6 +521,7 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "--repeat 5" in perf_text
     assert "--classify" in perf_text
     assert "--require-quiescent" in perf_text
+    assert "bench/scoreboard/logs_*/" in perf_text
     assert "--no-gate" not in perf_text
     assert "--allow-nonauthoritative" not in perf_text
     assert "tools/bench.py" not in perf_text

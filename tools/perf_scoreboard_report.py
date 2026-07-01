@@ -207,11 +207,13 @@ def print_summary(doc: dict) -> None:
         print(f"\nBACKEND ERRORS / NON-AUTHORITATIVE ({len(errs) + len(stale)}):")
         for c in errs:
             origin_rerun = "yes" if not authoritative else "no"
+            failure = _molt_failure_summary(c)
             print(
                 f"    {c.get('verdict'):<16} {c['benchmark']} [{c['backend']}/{c['profile']}]"
                 f"  stale?={'yes' if not authoritative else 'no'}  "
                 f"origin_rerun_needed?={origin_rerun}"
                 + (f"  ({c.get('note')})" if c.get("note") else "")
+                + (f"  failure={failure}" if failure else "")
             )
         for c in stale[:5]:
             print(
@@ -347,6 +349,18 @@ def _fastest_next_unlock(warm_reds: list[dict], cold_reds: list[dict]) -> str:
             f"— attack {worst.get('suspected_startup_component', '?')}"
         )
     return "no reds — protect the greens; widen the suite for the next class"
+
+
+def _molt_failure_summary(cell: dict) -> str | None:
+    status = cell.get("molt_failure_status")
+    detail = cell.get("molt_failure_detail")
+    message = cell.get("molt_failure_message")
+    parts = [str(value) for value in (status, detail) if value]
+    if message:
+        text = str(message).replace("\n", " ")
+        parts.append(text[:160] + ("..." if len(text) > 160 else ""))
+    return " | ".join(parts) if parts else None
+
 
 def _flatten_cells(doc: dict) -> list[dict]:
     return [dict(cell) for cell in flatten_cells(doc)]

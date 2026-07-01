@@ -255,6 +255,21 @@ _MEASURED_RUN_FACT_FIELDS = frozenset(
     }
 )
 
+_MOLT_FAILURE_VERDICTS = frozenset({VERDICT_BUILD_FAILED, VERDICT_RUN_ERROR})
+
+_MOLT_FAILURE_MIRROR_FIELDS = {
+    "molt_failure_phase": "phase",
+    "molt_failure_status": "status",
+    "molt_failure_detail": "detail",
+    "molt_failure_message": "message",
+    "molt_failure_returncode": "returncode",
+    "molt_failure_timed_out": "timed_out",
+    "molt_failure_elapsed_s": "elapsed_s",
+    "molt_failure_signal": "signal",
+    "molt_failure_guard_violation": "guard_violation",
+    "molt_failure_orphaned_process_groups": "orphaned_process_groups",
+}
+
 
 @dataclass(frozen=True)
 class PerfCell:
@@ -286,6 +301,16 @@ class PerfCell:
     reference_class: str | None
     codon_semantics: str | None
     attribution_confidence: float | None
+    molt_failure_phase: str | None
+    molt_failure_status: str | None
+    molt_failure_detail: str | None
+    molt_failure_message: str | None
+    molt_failure_returncode: int | None
+    molt_failure_timed_out: bool | None
+    molt_failure_elapsed_s: float | None
+    molt_failure_signal: dict[str, Any] | None
+    molt_failure_guard_violation: dict[str, Any] | None
+    molt_failure_orphaned_process_groups: list[int] | None
 
     @staticmethod
     def from_payload(payload: Mapping[str, Any]) -> "PerfCell":
@@ -316,6 +341,26 @@ class PerfCell:
             codon_semantics=_optional_str(payload.get("codon_semantics")),
             attribution_confidence=_optional_float(
                 payload.get("attribution_confidence")
+            ),
+            molt_failure_phase=_optional_str(payload.get("molt_failure_phase")),
+            molt_failure_status=_optional_str(payload.get("molt_failure_status")),
+            molt_failure_detail=_optional_str(payload.get("molt_failure_detail")),
+            molt_failure_message=_optional_str(payload.get("molt_failure_message")),
+            molt_failure_returncode=_optional_int(
+                payload.get("molt_failure_returncode")
+            ),
+            molt_failure_timed_out=_optional_bool(
+                payload.get("molt_failure_timed_out")
+            ),
+            molt_failure_elapsed_s=_optional_float(
+                payload.get("molt_failure_elapsed_s")
+            ),
+            molt_failure_signal=_optional_dict(payload.get("molt_failure_signal")),
+            molt_failure_guard_violation=_optional_dict(
+                payload.get("molt_failure_guard_violation")
+            ),
+            molt_failure_orphaned_process_groups=_optional_int_list(
+                payload.get("molt_failure_orphaned_process_groups")
             ),
         )
 
@@ -415,6 +460,8 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
             f"cell {cell.get('benchmark')} has fact_class without suspected_missing_fact"
         )
     verdict = str(cell.get("verdict"))
+    if verdict in _MOLT_FAILURE_VERDICTS:
+        problems.extend(_validate_molt_failure_cell(cell, verdict))
     if verdict in _MEASURED_RUN_VERDICTS:
         problems.extend(_validate_measured_run_cell(cell, verdict))
     if classification == CLASS_RED_STABLE:
@@ -624,6 +671,66 @@ def _validate_measured_run_cell(cell: Mapping[str, Any], verdict: str) -> list[s
     return problems
 
 
+def _validate_molt_failure_cell(
+    cell: Mapping[str, Any],
+    verdict: str,
+) -> list[str]:
+    problems: list[str] = []
+    benchmark = cell.get("benchmark")
+    payload = cell.get("molt_failure")
+    if not isinstance(payload, Mapping):
+        problems.append(
+            f"cell {benchmark} is {verdict} without a molt_failure payload"
+        )
+        return problems
+
+    for field in ("phase", "status"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            problems.append(
+                f"cell {benchmark} has invalid molt_failure.{field} {value!r}"
+            )
+
+    expected_phase = "build" if verdict == VERDICT_BUILD_FAILED else "run"
+    if payload.get("phase") != expected_phase:
+        problems.append(
+            f"cell {benchmark} is {verdict} with molt_failure.phase "
+            f"{payload.get('phase')!r}, expected {expected_phase!r}"
+        )
+
+    for flat_field, payload_field in _MOLT_FAILURE_MIRROR_FIELDS.items():
+        flat = cell.get(flat_field)
+        nested = payload.get(payload_field)
+        if flat != nested:
+            problems.append(
+                f"cell {benchmark} has {flat_field}={flat!r} but "
+                f"molt_failure.{payload_field}={nested!r}"
+            )
+
+    if not isinstance(cell.get("molt_failure_timed_out"), bool):
+        problems.append(
+            f"cell {benchmark} has non-bool molt_failure_timed_out "
+            f"{cell.get('molt_failure_timed_out')!r}"
+        )
+    returncode = cell.get("molt_failure_returncode")
+    if returncode is not None and not _is_int(returncode):
+        problems.append(
+            f"cell {benchmark} has invalid molt_failure_returncode {returncode!r}"
+        )
+    elapsed_s = cell.get("molt_failure_elapsed_s")
+    if elapsed_s is not None and not _is_number(elapsed_s):
+        problems.append(
+            f"cell {benchmark} has invalid molt_failure_elapsed_s {elapsed_s!r}"
+        )
+    groups = cell.get("molt_failure_orphaned_process_groups")
+    if not isinstance(groups, list) or not all(_is_int(value) for value in groups):
+        problems.append(
+            f"cell {benchmark} has invalid molt_failure_orphaned_process_groups "
+            f"{groups!r}"
+        )
+    return problems
+
+
 def _validate_red_stable_cell(cell: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
     benchmark = cell.get("benchmark")
@@ -647,6 +754,10 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _is_pointer_width(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value in {32, 64}
 
@@ -657,6 +768,30 @@ def _optional_float(value: Any) -> float | None:
     if _is_number(value):
         return float(value)
     raise ValueError(f"expected number or null, got {value!r}")
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if _is_int(value):
+        return value
+    raise ValueError(f"expected int or null, got {value!r}")
+
+
+def _optional_dict(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    raise ValueError(f"expected dict or null, got {value!r}")
+
+
+def _optional_int_list(value: Any) -> list[int] | None:
+    if value is None:
+        return None
+    if isinstance(value, list) and all(_is_int(item) for item in value):
+        return [int(item) for item in value]
+    raise ValueError(f"expected int list or null, got {value!r}")
 
 
 def _optional_bool(value: Any) -> bool | None:

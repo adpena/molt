@@ -78,6 +78,27 @@ jobs:
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
+      # Keep perf-gate backend setup on the same manifest-derived LLVM selector
+      # as the LLVM CI job; llvm-sys needs the exact LLVM_SYS_*_PREFIX value.
+      - name: Resolve required LLVM major version
+        if: matrix.backend == 'llvm'
+        id: llvmver
+        run: |
+          MAJOR=$(PYTHONPATH=src python3 -m molt.llvm_toolchain --github-output "$GITHUB_OUTPUT")
+          if [ -z "$MAJOR" ]; then echo "::error::could not resolve LLVM major"; exit 1; fi
+          echo "Required LLVM major: $MAJOR"
+
+      - name: Install LLVM toolchain
+        if: matrix.backend == 'llvm'
+        run: |
+          MAJOR="${{ steps.llvmver.outputs.major }}"
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh "$MAJOR"
+          sudo apt-get install -y "llvm-$MAJOR-dev" "libpolly-$MAJOR-dev" lld
+          echo "${{ steps.llvmver.outputs.env_var }}=$(llvm-config-$MAJOR --prefix)" >> "$GITHUB_ENV"
+          "llvm-config-$MAJOR" --version
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: perfscore-${{ matrix.backend }}
@@ -152,3 +173,4 @@ jobs:
           path: |
             bench/scoreboard/cpython_ci_${{ matrix.backend }}.json
             bench/scoreboard/plane_${{ matrix.backend }}/
+            bench/scoreboard/logs_*/
