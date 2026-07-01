@@ -831,15 +831,15 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     tmp_path: Path,
 ) -> None:
     expected_roots = [
-        tmp_path / "tmp/pact_numpy_multiarray_sealed_axiserror",
-        tmp_path / "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
+        tmp_path / "tmp/pact_numpy_multiarray_sealed_for_witness",
+        tmp_path / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
         tmp_path / "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
         tmp_path / "bench/friends/repos/numpy_off_the_shelf",
         tmp_path / "bench/friends/repos/scipy_off_the_shelf",
     ]
     stale_roots = [
-        tmp_path / "tmp/pact_numpy_multiarray_sealed_for_witness",
-        tmp_path / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
+        tmp_path / "tmp/pact_numpy_multiarray_sealed_axiserror",
+        tmp_path / "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
         tmp_path / "tmp/pact_scipy_ndimage_provider_sealed_helpers",
     ]
     for root in expected_roots:
