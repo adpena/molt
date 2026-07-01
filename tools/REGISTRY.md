@@ -72,6 +72,9 @@ this file is the human/agent-readable index of the whole tool surface.
   `uv run` because throwaway env creation is false work. Queue sessions are
   contention-key-scoped, so serialized lanes reuse Cargo/uv caches while
   independent keys stay isolated.
+  Pact witness lanes are named presets here: `pact-witness-acceptance` owns the
+  heavy Kernel A browser/WASM aperture, and `pact-witness-oracle` owns the
+  regenerated fixture/reference parity sanity check.
 - `tools/safe_run.py --rss-mb N --timeout S -- <binary>` — the ONLY safe way to run a
   raw molt binary (hard RSS+walltime caps; raw `./binary` can OOM the host).
 - `tests/molt_diff.py <files> --jobs 1` — the CPython differential (serial until the

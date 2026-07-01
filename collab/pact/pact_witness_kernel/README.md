@@ -45,6 +45,24 @@ python check_parity.py reference_outputs.npz   # sanity: all PASS
    to `candidate_outputs.npz`).
 3. `python check_parity.py candidate_outputs.npz` → **PASS** is the done-criterion.
 
+The Molt-side browser/WASM attempt is no longer a raw local command. Route it
+through the proof queue:
+
+```powershell
+uv run --active --project . --python 3.12 python tools/proof_queue.py status
+uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance
+```
+
+For the smallest queued oracle check, run:
+
+```powershell
+uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle
+```
+
+The oracle lane regenerates ignored `.npz` outputs in a temporary directory and
+proves the tracked `check_parity.py` gates without creating a second acceptance
+path.
+
 `field_solve` is deterministic (no RNG/time/I/O) and bit-identical across CPython re-runs. The two
 cross-implementation-fragile spots (sort tie-order, eigh sign) are **already canonicalized inside the
 kernel**, so WASM does not need to match LAPACK's sign or numpy's tie convention — only the ops in
