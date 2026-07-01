@@ -12,6 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
 from .paths import TABLE
 from .schema import *  # noqa: F403
 
+
 class OpKindTableError(RuntimeError):
     pass
 
@@ -1977,7 +1978,6 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             f"ast-only={sorted(ast_operator_names - seen_binary)}"
         )
 
-
     # -- [[frontend_effect_kind]] ------------------------------------------
     frontend_effect_rows = data.get("frontend_effect_kind", [])
     if not isinstance(frontend_effect_rows, list) or not frontend_effect_rows:
@@ -1986,7 +1986,9 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     for row in frontend_effect_rows:
         kind = row.get("kind")
         if not isinstance(kind, str) or not kind:
-            raise OpKindTableError(f"[[frontend_effect_kind]] row missing 'kind': {row}")
+            raise OpKindTableError(
+                f"[[frontend_effect_kind]] row missing 'kind': {row}"
+            )
         if kind in seen_effect:
             raise OpKindTableError(f"duplicate frontend_effect_kind: {kind}")
         seen_effect.add(kind)
@@ -2074,10 +2076,11 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 f"frontend primitive-nothrow invariant {kind}: unsafe opt-in"
             )
 
+
 __all__ = [
     name
     for name in globals()
-    if name in {'OpKindTableError', 'load_table', '_opcode_role_members'}
-    or name.startswith('_validate')
-    or name.startswith('_frontend')
+    if name in {"OpKindTableError", "load_table", "_opcode_role_members"}
+    or name.startswith("_validate")
+    or name.startswith("_frontend")
 ]

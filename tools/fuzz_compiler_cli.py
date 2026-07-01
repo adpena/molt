@@ -8,11 +8,16 @@ import time
 from pathlib import Path
 
 from tools.fuzz_compiler_compile_only import CompileOnlyFuzzer
-from tools.fuzz_compiler_driver import run_generate_only, run_reject_fuzzer, run_safe_fuzzer
+from tools.fuzz_compiler_driver import (
+    run_generate_only,
+    run_reject_fuzzer,
+    run_safe_fuzzer,
+)
 from tools.fuzz_compiler_execution import _build_env
 from tools.fuzz_compiler_reporting import _log
 from tools.fuzz_compiler_shrink import _shrink_program
 from tools.fuzz_compiler_types import FuzzSummary
+
 
 def _print_summary(summary: FuzzSummary, mode: str) -> None:
     _log("")

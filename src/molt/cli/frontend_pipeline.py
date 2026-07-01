@@ -359,8 +359,7 @@ def _prepare_frontend_lowering_config(
     known_func_kinds: dict[str, dict[str, str]],
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None,
     native_python_exports: Collection[str] | None = None,
-    native_support_function_roots_by_module: Mapping[str, Sequence[str]]
-    | None = None,
+    native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     pgo_hot_function_names: set[str],
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,

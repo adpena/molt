@@ -1426,7 +1426,9 @@ def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
         processes[0].returncode = -15
 
     monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(memory_guard, "terminate_watched_processes", recording_terminate)
+    monkeypatch.setattr(
+        memory_guard, "terminate_watched_processes", recording_terminate
+    )
 
     result = memory_guard.run_guarded(
         ["fake-python", "-c", "sleep"],
@@ -1492,7 +1494,9 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
         processes[0].returncode = -15
 
     monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(memory_guard, "terminate_watched_processes", recording_terminate)
+    monkeypatch.setattr(
+        memory_guard, "terminate_watched_processes", recording_terminate
+    )
 
     with pytest.raises(RuntimeError, match="sampler failed after custody"):
         memory_guard.run_guarded(
@@ -2973,11 +2977,14 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
     ]
     if os.name == "nt":
         monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
-        assert memory_guard.main(
-            main_argv,
-            hide_command_argv=True,
-            execve=fake_execve,
-        ) == 73
+        assert (
+            memory_guard.main(
+                main_argv,
+                hide_command_argv=True,
+                execve=fake_execve,
+            )
+            == 73
+        )
     else:
         with pytest.raises(SystemExit) as exc:
             memory_guard.main(
@@ -3083,11 +3090,14 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
     ]
     if os.name == "nt":
         monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
-        assert memory_guard.main(
-            main_argv,
-            hide_command_argv=True,
-            execve=fake_execve,
-        ) == 74
+        assert (
+            memory_guard.main(
+                main_argv,
+                hide_command_argv=True,
+                execve=fake_execve,
+            )
+            == 74
+        )
     else:
         with pytest.raises(SystemExit) as exc:
             memory_guard.main(

@@ -90,7 +90,9 @@ def _charmap_kinds(registry_text: str) -> tuple[str, ...]:
         if "=> CodecRuntimeClass::" not in line:
             continue
         if "=> CodecRuntimeClass::Charmap" in line:
-            variants = re.findall(r"EncodingKind::([A-Za-z0-9_]+)", "\n".join(arm_lines))
+            variants = re.findall(
+                r"EncodingKind::([A-Za-z0-9_]+)", "\n".join(arm_lines)
+            )
             if variants:
                 return tuple(variants)
         arm_lines.clear()
@@ -99,7 +101,9 @@ def _charmap_kinds(registry_text: str) -> tuple[str, ...]:
 
 def load_charmap_codecs() -> tuple[CharmapCodec, ...]:
     registry_text = REGISTRY.read_text(encoding="utf-8")
-    descriptors = {descriptor.kind: descriptor for descriptor in _descriptor_rows(registry_text)}
+    descriptors = {
+        descriptor.kind: descriptor for descriptor in _descriptor_rows(registry_text)
+    }
     codecs: list[CharmapCodec] = []
     for kind in _charmap_kinds(registry_text):
         try:
@@ -134,7 +138,9 @@ def _raw_decoding_table(module_name: str) -> str:
     try:
         table = ast.literal_eval(assignments["decoding_table"])
     except (KeyError, ValueError) as exc:
-        raise ValueError(f"{module_name}.py must expose a literal decoding_table") from exc
+        raise ValueError(
+            f"{module_name}.py must expose a literal decoding_table"
+        ) from exc
     if not isinstance(table, str) or len(table) != 256:
         raise ValueError(f"{module_name}.py must expose a 256-char decoding_table")
     return table
@@ -142,9 +148,7 @@ def _raw_decoding_table(module_name: str) -> str:
 
 def _decode_table(module_name: str) -> tuple[int, ...]:
     table = _raw_decoding_table(module_name)
-    non_ascii_identity = [
-        idx for idx, ch in enumerate(table[:0x80]) if ord(ch) != idx
-    ]
+    non_ascii_identity = [idx for idx, ch in enumerate(table[:0x80]) if ord(ch) != idx]
     if non_ascii_identity:
         formatted = ", ".join(f"0x{idx:02X}" for idx in non_ascii_identity[:8])
         raise ValueError(
@@ -196,12 +200,12 @@ def _tables(module_name: str) -> CharmapTables:
     ]
     if ambiguous_sentinels:
         formatted = ", ".join(f"U+{code:04X}" for code in ambiguous_sentinels)
-        raise ValueError(f"{module_name}.py maps non-ASCII codepoints to NUL: {formatted}")
+        raise ValueError(
+            f"{module_name}.py maps non-ASCII codepoints to NUL: {formatted}"
+        )
     high = tuple(encode_map.get(code, 0) for code in range(0x80, 0x100))
     extended = tuple(
-        (code << 8) | byte
-        for code, byte in sorted(encode_map.items())
-        if code > 0xFF
+        (code << 8) | byte for code, byte in sorted(encode_map.items()) if code > 0xFF
     )
     return CharmapTables(decode_table, high, extended)
 
@@ -271,7 +275,10 @@ def _static_aliases() -> dict[str, str]:
     for stmt in tree.body:
         if not isinstance(stmt, ast.Assign):
             continue
-        if any(isinstance(target, ast.Name) and target.id == "_STATIC_ALIASES" for target in stmt.targets):
+        if any(
+            isinstance(target, ast.Name) and target.id == "_STATIC_ALIASES"
+            for target in stmt.targets
+        ):
             aliases = ast.literal_eval(stmt.value)
             if not isinstance(aliases, dict):
                 raise ValueError("_STATIC_ALIASES must be a literal dict")
@@ -285,7 +292,9 @@ def _static_aliases() -> dict[str, str]:
 
 
 def _alias_entries() -> tuple[tuple[str, str], ...]:
-    module_to_kind = {descriptor.module: descriptor.kind for descriptor in CODEC_DESCRIPTORS}
+    module_to_kind = {
+        descriptor.module: descriptor.kind for descriptor in CODEC_DESCRIPTORS
+    }
     entries: dict[str, str] = {}
     for descriptor in CODEC_DESCRIPTORS:
         for spelling in (descriptor.canonical_label, descriptor.module):
@@ -493,7 +502,9 @@ def render() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true", help="fail if generated output is stale")
+    parser.add_argument(
+        "--check", action="store_true", help="fail if generated output is stale"
+    )
     args = parser.parse_args()
 
     outputs = (
@@ -505,7 +516,9 @@ def main() -> int:
             try:
                 current = path.read_text(encoding="utf-8")
             except FileNotFoundError:
-                print(f"missing generated file: {path.relative_to(ROOT)}", file=sys.stderr)
+                print(
+                    f"missing generated file: {path.relative_to(ROOT)}", file=sys.stderr
+                )
                 return 1
             if current != rendered:
                 print(

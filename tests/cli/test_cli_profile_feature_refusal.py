@@ -77,14 +77,18 @@ def test_full_profile_includes_stdlib_zoneinfo() -> None:
 
 
 def test_ast_module_requires_stdlib_ast_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _micro_features())
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
+        STDLIB_ROOT / "ast.py", _micro_features()
+    )
     assert "stdlib_ast" in gap
     # The gap names the concrete intrinsics that would be undefined at link.
     assert any(sym.startswith("molt_ast_") for sym in gap["stdlib_ast"])
 
 
 def test_ast_module_buildable_on_full_profile() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _full_features())
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
+        STDLIB_ROOT / "ast.py", _full_features()
+    )
     assert gap == {}
 
 
@@ -192,7 +196,9 @@ def test_tinygrad_package_buildable_on_full_profile() -> None:
 def test_ungated_ssl_abi_is_never_refused() -> None:
     # ssl keeps a deliberately always-linkable ABI (asyncio imports it eagerly
     # even on micro); importing it must NOT trigger a feature refusal.
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(STDLIB_ROOT / "ssl.py", _micro_features())
+    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
+        STDLIB_ROOT / "ssl.py", _micro_features()
+    )
     assert gap == {}
 
 

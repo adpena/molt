@@ -85,9 +85,13 @@ def main() -> int:
         print("perf-gate-wiring: FAIL -- the canonical perf gate is not wired to main:")
         for p in problems:
             print(f"  - {p}")
-        print("  (a gate that never fires certifies nothing -- proxy-measurement substitution.)")
+        print(
+            "  (a gate that never fires certifies nothing -- proxy-measurement substitution.)"
+        )
         return 1
-    print("perf-gate-wiring: OK -- canonical perf gate fires on main and runs the scoreboard.")
+    print(
+        "perf-gate-wiring: OK -- canonical perf gate fires on main and runs the scoreboard."
+    )
     return 0
 
 

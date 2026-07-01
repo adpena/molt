@@ -569,7 +569,9 @@ def _record_diff_result(record: dict[str, object]) -> None:
     # the suite-honesty ratchet can dimension a failure by backend exactly as it
     # dimensions native today. Strip the key from the aggregate line so the
     # existing single-row honesty schema is unchanged.
-    backend_rows = record.pop("backend_rows", None) if isinstance(record, dict) else None
+    backend_rows = (
+        record.pop("backend_rows", None) if isinstance(record, dict) else None
+    )
     # A raw_status of None means an exception escaped before any status was
     # assigned; record it explicitly as "error" so the honesty ratchet treats an
     # unexpected crash as a hard, visible outcome rather than a missing line.
@@ -3916,7 +3918,11 @@ def _run_native_backend(
                 "[WARN] Persistent backend daemon/cache failure detected; "
                 "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
             )
-    if molt_out is None and _is_timeout_error(molt_err) and _diff_retry_isolated_default():
+    if (
+        molt_out is None
+        and _is_timeout_error(molt_err)
+        and _diff_retry_isolated_default()
+    ):
         print(
             "[RETRY] "
             f"{file_path} build timeout; retrying with isolated target/build-state."
@@ -3974,9 +3980,7 @@ def _run_backend_for_diff(
             raise ValueError(f"unknown differential backend {backend!r}")
         avail = adapter.availability()
         if not avail.available:
-            print(
-                f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})"
-            )
+            print(f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})")
             return _UNCALIBRATED_SENTINEL
         diff_caps = _diff_capabilities(os.environ)
         result = adapter.build_and_run(

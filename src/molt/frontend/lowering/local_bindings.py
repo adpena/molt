@@ -605,9 +605,7 @@ class LocalBindingMixin(_MixinBase):
         # phis the current frame slot may be a block argument, so make the
         # boundary read the slot at the release point instead of retaining a
         # stale pre-loop SSA value.
-        boundary_value = MoltValue(
-            self.next_var(), type_hint=boundary_source.type_hint
-        )
+        boundary_value = MoltValue(self.next_var(), type_hint=boundary_source.type_hint)
         self.emit(
             MoltOp(
                 kind="LOAD_VAR",

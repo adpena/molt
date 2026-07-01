@@ -5,6 +5,7 @@ from .validate import (
     _frontend_raising_nothrow_on_primitives,
 )
 
+
 def _canonical_kinds_for_opcodes(data: dict, opcodes: set[str]) -> list[str]:
     out: set[str] = set()
     for row in data.get("kind", []):
@@ -106,12 +107,11 @@ def _render_py_binary_image_fact_sets(data: dict) -> str:
 # Python rendering (frontend canonical spellings)
 # ---------------------------------------------------------------------------
 
+
 def _render_py_frontend_effect_sets(data: dict) -> str:
     effects = _frontend_effect_class_map(data)
     out: list[str] = []
-    out.append(
-        "# Frontend pre-serialization optimizer effect classes. Mapper opcode\n"
-    )
+    out.append("# Frontend pre-serialization optimizer effect classes. Mapper opcode\n")
     out.append("# spellings derive from [[kind]] + [[opcode]], CFG/state facts\n")
     out.append("# derive from [[simpleir_control_kind]], and frontend-only\n")
     out.append("# overrides come from [[frontend_effect_kind]]. May-raise facts\n")
@@ -213,9 +213,7 @@ def render_py(data: dict) -> str:
     out.append(")\n\n")
 
     nothrow_on_primitives = _frontend_raising_nothrow_on_primitives(data)
-    out.append(
-        "# Raising kinds whose raise is disproved when all value operands are\n"
-    )
+    out.append("# Raising kinds whose raise is disproved when all value operands are\n")
     out.append("# primitive int/float/bool constants.\n")
     out.append(
         "FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS: frozenset[str] = frozenset(\n"
@@ -285,9 +283,9 @@ def render_py(data: dict) -> str:
 
     return "".join(out)
 
+
 __all__ = [
     name
     for name in globals()
-    if name.startswith('_') and not name.startswith('__')
-    or name == 'render_py'
+    if name.startswith("_") and not name.startswith("__") or name == "render_py"
 ]

@@ -95,9 +95,7 @@ def test_backend_daemon_command_match_requires_daemon_backend_and_socket(
     )
     spaced_backend_bin = tmp_path / "target with space" / "debug" / "molt-backend"
     spaced_socket_path = tmp_path / "socket dir" / "daemon.sock"
-    quoted_command = (
-        f'"{spaced_backend_bin}" --daemon --socket "{spaced_socket_path}"'
-    )
+    quoted_command = f'"{spaced_backend_bin}" --daemon --socket "{spaced_socket_path}"'
     assert custody.backend_daemon_command_matches_identity(
         quoted_command,
         backend_bin=spaced_backend_bin,
@@ -243,8 +241,12 @@ def test_backend_daemon_termination_keeps_identity_after_protective_fallback_ski
     sample = _daemon_sample(identity)
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == identity.pid)
     monkeypatch.setattr(custody, "_load_memory_guard_module", lambda: memory_guard)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {identity.pid: sample})
-    monkeypatch.setattr(memory_guard, "is_host_control_plane_process", lambda _sample: False)
+    monkeypatch.setattr(
+        memory_guard, "sample_processes", lambda: {identity.pid: sample}
+    )
+    monkeypatch.setattr(
+        memory_guard, "is_host_control_plane_process", lambda _sample: False
+    )
     monkeypatch.setattr(
         memory_guard,
         "terminate_verified_pid",

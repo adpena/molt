@@ -506,7 +506,9 @@ def _isolate_import_module_order(
     for module_name in runtime_roots:
         parts = module_name.split(".")
         import_roots.update(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
-    ordered = [module_name for module_name in module_order if module_name in import_roots]
+    ordered = [
+        module_name for module_name in module_order if module_name in import_roots
+    ]
     seen = set(ordered)
     for module_name in native_module_order:
         if module_name in seen:
@@ -1304,4 +1306,6 @@ def _prepare_backend_ir(
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
     if emit_ir_error is not None:
         return None, fail(emit_ir_error, json_output, command="build")
-    return _PreparedBackendIR(ir=ir, required_link_features=required_link_features), None
+    return _PreparedBackendIR(
+        ir=ir, required_link_features=required_link_features
+    ), None

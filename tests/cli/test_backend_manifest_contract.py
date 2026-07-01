@@ -209,9 +209,9 @@ def test_runtime_tk_native_feature_is_owned_by_leaf_crate() -> None:
 
     runtime_features = runtime_manifest["features"]
     tk_dependency = runtime_manifest["dependencies"]["molt-runtime-tk"]
-    native_target_deps = runtime_manifest["target"][
-        'cfg(not(target_arch = "wasm32"))'
-    ]["dependencies"]
+    native_target_deps = runtime_manifest["target"]['cfg(not(target_arch = "wasm32"))'][
+        "dependencies"
+    ]
 
     assert tk_dependency["default-features"] is False
     assert "libloading" not in runtime_manifest["dependencies"]

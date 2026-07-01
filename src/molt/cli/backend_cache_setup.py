@@ -111,6 +111,7 @@ def _build_cache_variant(
         parts.append(f"capability_config={capability_config_digest}")
     return ";".join(parts)
 
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,

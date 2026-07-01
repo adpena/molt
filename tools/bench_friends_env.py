@@ -7,6 +7,7 @@ from bench_friends_context import REPO_ROOT
 
 import harness_memory_guard
 
+
 def _emit_progress(message: str) -> None:
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     # Windows PowerShell surfaces native stderr as noisy error records even when
@@ -87,6 +88,7 @@ _PASSTHROUGH_ENV_PREFIX_NAMES = tuple(
     prefix.upper() for prefix in _PASSTHROUGH_ENV_PREFIXES
 )
 
+
 def _external_root() -> Path | None:
     configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if configured:
@@ -114,6 +116,7 @@ def _project_python() -> str:
         if candidate.exists():
             return str(candidate)
     return sys.executable
+
 
 _FILE_ENV_PATH_KEYS = {
     "CACHEDB",
@@ -182,6 +185,7 @@ def _materialize_output_env_paths(env: dict[str, str], *, output_root: Path) -> 
                 candidate_path.parent.mkdir(parents=True, exist_ok=True)
             else:
                 candidate_path.mkdir(parents=True, exist_ok=True)
+
 
 def _base_run_env() -> dict[str, str]:
     canonical_key_names = {

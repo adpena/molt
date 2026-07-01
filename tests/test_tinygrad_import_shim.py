@@ -121,14 +121,15 @@ def test_tinygrad_true_division_upcasts_integers_to_float() -> None:
     assert st.to_list() == pytest.approx([3.5, 1.75, 0.875])
 
     # mixed-width integer division also upcasts to float.
-    mixed = Tensor([1, 4, 10], dtype=dtypes.int64) / Tensor([2, 3, 4], dtype=dtypes.int32)
+    mixed = Tensor([1, 4, 10], dtype=dtypes.int64) / Tensor(
+        [2, 3, 4], dtype=dtypes.int32
+    )
     assert mixed.dtype is dtypes.float64
     assert mixed.to_list() == pytest.approx([0.5, 4.0 / 3.0, 2.5])
 
     # float division is unchanged and preserves float32 precision.
-    ff = (
-        Tensor([1.0, 4.0, 10.0], dtype=dtypes.float32)
-        / Tensor([2.0, 3.0, 4.0], dtype=dtypes.float32)
+    ff = Tensor([1.0, 4.0, 10.0], dtype=dtypes.float32) / Tensor(
+        [2.0, 3.0, 4.0], dtype=dtypes.float32
     )
     assert ff.dtype is dtypes.float32
     assert ff._buf.format_char == "f"
@@ -976,9 +977,7 @@ def test_tinygrad_nn_norm_layers_are_exposed_and_consistent() -> None:
     x = Tensor.arange(2 * 3 * 2 * 2).reshape(2, 3, 2, 2).float()
     assert _flatten_numeric(
         nn.InstanceNorm(3, affine=False)(x).tolist()
-    ) == pytest.approx(
-        _flatten_numeric(nn.GroupNorm(3, 3, affine=False)(x).tolist())
-    )
+    ) == pytest.approx(_flatten_numeric(nn.GroupNorm(3, 3, affine=False)(x).tolist()))
 
 
 def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -> None:
@@ -1033,8 +1032,10 @@ def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -
         )
 
         # conv2d accepts explicit 2N-tuple (left, right, top, bottom) padding.
-        explicit = Tensor(list(range(16))).reshape(1, 1, 4, 4).conv2d(
-            Tensor.ones(1, 1, 2, 2), padding=(1, 1, 2, 2)
+        explicit = (
+            Tensor(list(range(16)))
+            .reshape(1, 1, 4, 4)
+            .conv2d(Tensor.ones(1, 1, 2, 2), padding=(1, 1, 2, 2))
         )
         assert [list(explicit.shape)] == [[1, 1, 7, 5]]
 
@@ -1042,11 +1043,9 @@ def test_molt_tinygrad_stdlib_nn_contract_matches_supported_upstream_surface() -
         affine = nn.GroupNorm(2, 4)
         affine.weight = Tensor([1.0, 1.5, -1.0, 0.5])
         affine.bias = Tensor([0.0, 1.0, 2.0, -2.0])
-        affine_expected = (
-            y.reshape(1, 2, -1).layernorm(eps=affine.eps).reshape(y.shape)
-            * affine.weight.reshape(1, -1, 1, 1)
-            + affine.bias.reshape(1, -1, 1, 1)
-        )
+        affine_expected = y.reshape(1, 2, -1).layernorm(eps=affine.eps).reshape(
+            y.shape
+        ) * affine.weight.reshape(1, -1, 1, 1) + affine.bias.reshape(1, -1, 1, 1)
         assert _flatten_numeric(affine(y).tolist()) == pytest.approx(
             _flatten_numeric(affine_expected.tolist())
         )

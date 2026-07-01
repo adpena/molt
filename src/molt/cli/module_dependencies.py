@@ -38,19 +38,15 @@ def _module_dependencies_from_imports(
             if candidate == "molt" and module_name.startswith("molt."):
                 continue
             if (
-                (candidate in module_graph or candidate in known_module_set)
-                and candidate != module_name
-            ):
+                candidate in module_graph or candidate in known_module_set
+            ) and candidate != module_name:
                 deps.add(candidate)
             if candidate.startswith("molt.stdlib."):
                 stdlib_candidate = candidate[len("molt.stdlib.") :]
                 if (
-                    (
-                        stdlib_candidate in module_graph
-                        or stdlib_candidate in known_module_set
-                    )
-                    and stdlib_candidate != module_name
-                ):
+                    stdlib_candidate in module_graph
+                    or stdlib_candidate in known_module_set
+                ) and stdlib_candidate != module_name:
                     deps.add(stdlib_candidate)
     return deps
 
@@ -282,9 +278,7 @@ def _compute_reachable_modules(
     reachable: set[str] = set()
     queue: deque[str] = deque()
     module_name_set = set(module_names)
-    seed_safelist = (
-        _DEAD_MODULE_ELIMINATION_SAFELIST if safelist is None else safelist
-    )
+    seed_safelist = _DEAD_MODULE_ELIMINATION_SAFELIST if safelist is None else safelist
 
     def _seed(name: str) -> None:
         if name in reachable:

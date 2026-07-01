@@ -1678,11 +1678,24 @@ def test_nn_conv_transpose2d_layer_forwards_and_inits_weight_shape():
 
     seen = {}
 
-    def fake_ct(self, weight, bias=None, groups=1, stride=1, dilation=1,
-                padding=0, output_padding=0):
+    def fake_ct(
+        self,
+        weight,
+        bias=None,
+        groups=1,
+        stride=1,
+        dilation=1,
+        padding=0,
+        output_padding=0,
+    ):
         seen.update(
-            weight=weight, bias=bias, groups=groups, stride=stride,
-            dilation=dilation, padding=padding, output_padding=output_padding,
+            weight=weight,
+            bias=bias,
+            groups=groups,
+            stride=stride,
+            dilation=dilation,
+            padding=padding,
+            output_padding=output_padding,
         )
         return self
 
@@ -1744,9 +1757,7 @@ def test_nn_groupnorm_affine_false_is_pure_normalization():
 
     x = Tensor.arange(16).reshape(1, 4, 2, 2).float()
     norm = GroupNorm(2, 4, affine=False)
-    expected = (
-        x.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(*x.shape)
-    )
+    expected = x.reshape(1, 2, -1).layernorm(eps=norm.eps).reshape(*x.shape)
     assert _flat(norm(x).tolist()) == pytest.approx(_flat(expected.tolist()))
 
 

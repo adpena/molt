@@ -61,9 +61,5 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
     )
 
 
-
-
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

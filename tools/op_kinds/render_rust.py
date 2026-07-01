@@ -862,12 +862,10 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
         "Whether this SimpleIR kind requires the WASM stateful dispatch frame mode."
     ),
     "wasm_state_resume_after": (
-        "Whether this SimpleIR kind maps its state id to the following WASM "
-        "resume op."
+        "Whether this SimpleIR kind maps its state id to the following WASM resume op."
     ),
     "wasm_state_resume_at": (
-        "Whether this SimpleIR kind maps its label id to the current WASM "
-        "resume op."
+        "Whether this SimpleIR kind maps its label id to the current WASM resume op."
     ),
 }
 

@@ -59,8 +59,10 @@ def _shquote(arg: str) -> str:
 
     return shlex.quote(arg)
 
+
 def _terminate(proc: subprocess.Popen) -> None:
     harness_memory_guard.force_close_process_group(proc)
+
 
 def _parse_sample_heaviest(out_file: Path, *, top_n: int) -> list[dict]:
     """Parse ``/usr/bin/sample``'s output for the heaviest self-time symbols.
@@ -114,6 +116,7 @@ def _parse_sample_heaviest(out_file: Path, *, top_n: int) -> list[dict]:
             break
     return out
 
+
 def _is_launch_frame(symbol: str, lib: str | None) -> bool:
     """True iff a leaf frame is process launch / first-touch page-in, not work.
 
@@ -127,6 +130,7 @@ def _is_launch_frame(symbol: str, lib: str | None) -> bool:
         if sym == ls.lstrip("_") and (lib or "") == ll:
             return True
     return False
+
 
 def classify_launch_dominance(top_symbols: list[dict]) -> dict:
     """Compute the launch/page-in vs in-binary breakdown of a sample leaderboard.
@@ -162,6 +166,7 @@ def classify_launch_dominance(top_symbols: list[dict]) -> dict:
         "launch_dominates": launch_frac >= LAUNCH_DOMINANCE_REFUSAL_FRACTION,
     }
 
+
 def top_in_binary_frames(
     top_symbols: list[dict], *, binary_lib: str | None, top_n: int = 20
 ) -> list[dict]:
@@ -195,11 +200,13 @@ def top_in_binary_frames(
             break
     return out
 
+
 def _profiling_tmp_root() -> Path:
     """Temp root for looped profiling sources/binaries (created on demand)."""
     root = Path(tempfile.gettempdir()) / "perfscore_profiling"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
 
 MOLT_KEEP_SYMBOLS_ENV = "MOLT_KEEP_SYMBOLS"
 
@@ -215,6 +222,7 @@ _LAUNCH_FRAMES = (
     ("_dyld_start", "dyld"),
     ("__dyld_start", "dyld"),
 )
+
 
 def build_profiling_binary(
     script_path: Path,
@@ -306,6 +314,7 @@ def build_profiling_binary(
     )
     return binary, meta
 
+
 def _time_one_run(
     cmd: list[str], *, env: dict[str, str], rss_mb: int, timeout_s: float
 ) -> "RunOutcome":
@@ -322,6 +331,7 @@ def _time_one_run(
         timeout_s=timeout_s,
         label="hot-size",
     )
+
 
 def capture_hot_only_profile(
     binary_path: Path,
@@ -556,6 +566,7 @@ def capture_hot_only_profile(
         "note": note,
     }
 
+
 def run_hot_only_profiles(
     *,
     scripts: list[Path],
@@ -646,6 +657,7 @@ def run_hot_only_profiles(
                 flush=True,
             )
     return results
+
 
 def _emit_hot_only_board(
     hot_cells: list[dict],

@@ -425,4 +425,4 @@ _GVN_NUMBERING_ROLE_SETS = (
     "gvn_value_keyed_constant_opcodes",
 )
 
-__all__ = [name for name in globals() if name.startswith('_') and name.isupper()]
+__all__ = [name for name in globals() if name.startswith("_") and name.isupper()]

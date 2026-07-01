@@ -22,6 +22,7 @@ _MODULE_GRAPH_CORE_DEFINITIONS = (
     "def _prepare_entry_module_graph(",
 )
 
+
 def test_cli_module_graph_core_authority_is_single_home() -> None:
     for name in _MODULE_GRAPH_CORE_NAMES:
         assert getattr(cli, name) is getattr(module_graph, name)

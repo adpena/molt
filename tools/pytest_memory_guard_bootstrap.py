@@ -80,10 +80,7 @@ def _atomic_replace_with_retry(src: Path, dst: Path) -> None:
             _ATOMIC_REPLACE(src, dst)
             return
         except OSError as exc:
-            if (
-                attempt + 1 >= attempts
-                or not _is_retryable_atomic_replace_error(exc)
-            ):
+            if attempt + 1 >= attempts or not _is_retryable_atomic_replace_error(exc):
                 raise
             time.sleep(min(0.25, 0.01 * (attempt + 1)))
 
@@ -121,7 +118,9 @@ def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
             _flush_standard_streams()
             os._exit(130)
         except OSError as exc:
-            print(f"pytest memory guard bootstrap: spawn failed: {exc}", file=sys.stderr)
+            print(
+                f"pytest memory guard bootstrap: spawn failed: {exc}", file=sys.stderr
+            )
             _flush_standard_streams()
             os._exit(127)
         _flush_standard_streams()
@@ -461,7 +460,9 @@ def install_windows_pytest_custody_roots() -> bool:
     if not _is_windows_process_model():
         return False
     raw_temproot = os.environ.get("PYTEST_DEBUG_TEMPROOT")
-    temproot = Path(raw_temproot).expanduser() if raw_temproot else windows_pytest_temp_root()
+    temproot = (
+        Path(raw_temproot).expanduser() if raw_temproot else windows_pytest_temp_root()
+    )
     cache_dir = windows_pytest_cache_dir()
     _ensure_windows_readable_dir(temproot)
     _ensure_windows_readable_dir(_pytest_user_temp_root(temproot))

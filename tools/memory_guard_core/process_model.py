@@ -20,7 +20,7 @@ HOST_CONTROL_PLANE_TOKENS = (
     "\\app\\resources\\codex.exe",
     "codex.cmd",
     "codex --",
-    "codex.exe\" app-server",
+    'codex.exe" app-server',
     "codex app-server",
     "codex-app-server",
     "codex-linux-sandbox",
@@ -74,11 +74,14 @@ HOST_CONTROL_PLANE_EXECUTABLE_NAMES = frozenset(
         "node_repl.exe",
     }
 )
-HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES = HOST_CONTROL_PLANE_EXECUTABLE_NAMES | frozenset(
-    {
-        "claude.js",
-        "codex.js",
-    }
+HOST_CONTROL_PLANE_ARG_EXECUTABLE_NAMES = (
+    HOST_CONTROL_PLANE_EXECUTABLE_NAMES
+    | frozenset(
+        {
+            "claude.js",
+            "codex.js",
+        }
+    )
 )
 HOST_CONTROL_PLANE_LAUNCHER_NAMES = frozenset(
     {
@@ -413,7 +416,7 @@ def command_executable_name(command: str) -> str:
 
 def command_arg_executable_names(command: str) -> tuple[str, ...]:
     names: list[str] = []
-    for match in re.finditer(r'''(?:"([^"]+)"|'([^']+)'|(\S+))''', command.strip()):
+    for match in re.finditer(r"""(?:"([^"]+)"|'([^']+)'|(\S+))""", command.strip()):
         token = next(group for group in match.groups() if group is not None)
         normalized = token.replace("\\", "/").rstrip("/")
         name = normalized.rsplit("/", 1)[-1].casefold()
@@ -456,9 +459,7 @@ def host_control_plane_ancestor_pids(
     return {
         ancestor
         for ancestor in ancestors
-        if (
-            sample := samples.get(ancestor)
-        ) is not None
+        if (sample := samples.get(ancestor)) is not None
         and is_host_control_plane_process(sample)
     }
 
@@ -657,10 +658,9 @@ def root_pid_is_kill_eligible(
         owned_pids={root_pid} if root_owned else (),
     ):
         return False
-    return (
-        sample_pgid_or_pid(sample) not in protected_pgids
-        and not is_host_control_plane_process(sample)
-    )
+    return sample_pgid_or_pid(
+        sample
+    ) not in protected_pgids and not is_host_control_plane_process(sample)
 
 
 def filter_protected_watched_pids(
@@ -698,9 +698,13 @@ def watched_pids(
     tracker: ProcessTreeTracker | None = None,
     protected_pgids: set[int] | None = None,
 ) -> set[int]:
-    observed = tracker.update(samples) if tracker is not None else descendant_pids(
-        samples,
-        root_pid,
+    observed = (
+        tracker.update(samples)
+        if tracker is not None
+        else descendant_pids(
+            samples,
+            root_pid,
+        )
     )
     return filter_protected_watched_pids(
         samples,

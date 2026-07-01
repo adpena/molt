@@ -18,7 +18,10 @@ from molt.cli.backend_cache import (
 )
 from molt.cli.backend_execution import _backend_bin_path
 from molt.cli.cargo_profiles import _resolve_backend_cargo_profile_name
-from molt.cli.command_runtime import _load_cli_harness_memory_guard, _run_completed_command
+from molt.cli.command_runtime import (
+    _load_cli_harness_memory_guard,
+    _run_completed_command,
+)
 from molt.cli.external_native import _stage_external_package_native_artifacts_for_build
 from molt.cli.models import (
     BuildProfile,
@@ -65,6 +68,7 @@ def _link_fingerprint_path(
         extension="fingerprint",
     )
 
+
 def _run_native_link_command(
     *,
     link_cmd: Sequence[str],
@@ -91,6 +95,7 @@ def _run_native_link_command(
             stderr=result.stderr,
         )
     return result
+
 
 def _run_native_partial_link_command(
     *,
@@ -127,6 +132,7 @@ def _run_native_partial_link_command(
         json_output=json_output,
         link_timeout=link_timeout,
     )
+
 
 def _prepare_native_object_artifact(
     *,
@@ -206,6 +212,7 @@ def _prepare_native_object_artifact(
                 merged_output.unlink()
     return output_artifact, link_process, None
 
+
 def _retry_native_link_without_hint(
     *,
     link_cmd: Sequence[str],
@@ -229,6 +236,7 @@ def _retry_native_link_without_hint(
     )
     return retry_process, retry_cmd
 
+
 def _darwin_link_validation_failure(
     *,
     output_binary: Path,
@@ -243,6 +251,7 @@ def _darwin_link_validation_failure(
     if detail is None:
         return None
     return "Generated binary failed dyld import validation.\n" + detail + "\n"
+
 
 def _validate_darwin_link_output(
     *,
@@ -301,6 +310,7 @@ def _validate_darwin_link_output(
         stdout=link_process.stdout,
         stderr=failure_stderr,
     )
+
 
 def _prepare_native_link(
     *,
@@ -578,6 +588,7 @@ def _prepare_native_link(
         link_skipped=link_skipped,
         link_process=link_process,
     ), None
+
 
 def _link_fingerprint(
     *,

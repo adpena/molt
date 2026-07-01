@@ -22,9 +22,7 @@ _FRONTEND_WORKER_NAMES = (
     "_syntax_error_stub_ast",
 )
 
-_FRONTEND_WORKER_DEFINITIONS = tuple(
-    f"def {name}(" for name in _FRONTEND_WORKER_NAMES
-)
+_FRONTEND_WORKER_DEFINITIONS = tuple(f"def {name}(" for name in _FRONTEND_WORKER_NAMES)
 
 
 def test_cli_frontend_worker_authority_is_single_home() -> None:

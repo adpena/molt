@@ -150,9 +150,7 @@ class _ScopedLoweringInputView:
     pgo_hot_function_names: tuple[str, ...]
     type_facts: TypeFacts | None
     direct_call_modules: tuple[str, ...] = ()
-    native_callable_exports: dict[str, dict[str, Any]] = field(
-        default_factory=dict
-    )
+    native_callable_exports: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_python_exports: tuple[str, ...] = ()
     native_support_function_roots: tuple[str, ...] = ()
     known_modules_payload: list[str] = field(default_factory=list)
@@ -165,9 +163,7 @@ class _ScopedLoweringInputView:
     native_python_exports_payload: list[str] = field(default_factory=list)
     native_python_exports_set: frozenset[str] = field(default_factory=frozenset)
     native_support_function_roots_payload: list[str] = field(default_factory=list)
-    native_support_function_roots_set: frozenset[str] = field(
-        default_factory=frozenset
-    )
+    native_support_function_roots_set: frozenset[str] = field(default_factory=frozenset)
     pgo_hot_function_names_payload: list[str] = field(default_factory=list)
     pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
 
@@ -188,10 +184,7 @@ class _ScopedLoweringInputView:
                 "direct_call_modules_set",
                 frozenset(self.direct_call_modules),
             )
-        if (
-            not self.native_callable_exports_payload
-            and self.native_callable_exports
-        ):
+        if not self.native_callable_exports_payload and self.native_callable_exports:
             object.__setattr__(
                 self,
                 "native_callable_exports_payload",
@@ -350,6 +343,7 @@ class _ModuleLoweringExecutionView:
     metadata: _ModuleLoweringMetadataView
     scoped_inputs: _ScopedLoweringInputView
     scoped_known_classes: dict[str, Any]
+
 
 @dataclass(frozen=True)
 class _ParallelWorkerSubmission:
@@ -739,12 +733,8 @@ class _ExternalPackageNativeArtifact:
             "callable_exports": [
                 export.digest_payload() for export in self.callable_exports
             ],
-            "abi_symbols": [
-                symbol.digest_payload() for symbol in self.abi_symbols
-            ],
-            "c_api_symbols": [
-                symbol.digest_payload() for symbol in self.c_api_symbols
-            ],
+            "abi_symbols": [symbol.digest_payload() for symbol in self.abi_symbols],
+            "c_api_symbols": [symbol.digest_payload() for symbol in self.c_api_symbols],
         }
 
 
@@ -903,12 +893,9 @@ class _ExternalPackageNativeArtifactPlan:
         if (
             package_parts
             and len(package_source_root.parts) >= len(package_parts)
-            and tuple(package_source_root.parts[-len(package_parts) :])
-            == package_parts
+            and tuple(package_source_root.parts[-len(package_parts) :]) == package_parts
         ):
-            package_source_root = package_source_root.parents[
-                len(package_parts) - 1
-            ]
+            package_source_root = package_source_root.parents[len(package_parts) - 1]
         return package_source_root
 
     def package_source_roots(self) -> tuple[Path, ...]:
@@ -952,7 +939,9 @@ class _ExternalPackageNativeArtifactPlan:
                     or exported_name in support_init_modules
                 ):
                     names.add(exported_name)
-            exported_names = (export.qualified_name for export in artifact.callable_exports)
+            exported_names = (
+                export.qualified_name for export in artifact.callable_exports
+            )
             for exported_name in exported_names:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
@@ -984,9 +973,7 @@ class _ExternalPackageNativeArtifactPlan:
 
     def native_module_init_specs(self) -> tuple[_ExternalNativeModuleInitSpec, ...]:
         specs: dict[str, _ExternalNativeModuleInitSpec] = {}
-        module_attr_exports: dict[
-            str, set[_ExternalNativeModuleAttrPublishSpec]
-        ] = {}
+        module_attr_exports: dict[str, set[_ExternalNativeModuleAttrPublishSpec]] = {}
         for artifact in self.artifacts:
             names, _support_init_modules = self._artifact_base_module_names(artifact)
             for exported_name in artifact.python_exports:
@@ -1156,12 +1143,8 @@ class _StagedExternalPackageNativeArtifact:
             "callable_exports": [
                 export.digest_payload() for export in self.callable_exports
             ],
-            "abi_symbols": [
-                symbol.digest_payload() for symbol in self.abi_symbols
-            ],
-            "c_api_symbols": [
-                symbol.digest_payload() for symbol in self.c_api_symbols
-            ],
+            "abi_symbols": [symbol.digest_payload() for symbol in self.abi_symbols],
+            "c_api_symbols": [symbol.digest_payload() for symbol in self.c_api_symbols],
         }
 
 
@@ -1405,9 +1388,7 @@ class _ImportPlan:
             "runtime_support_modules": sorted(self.runtime_support_modules),
             "stdlib_support_modules": sorted(self.stdlib_support_modules),
             "package_parent_modules": sorted(self.package_parent_modules),
-            "runtime_import_dispatch_roots": sorted(
-                self.runtime_import_dispatch_roots
-            ),
+            "runtime_import_dispatch_roots": sorted(self.runtime_import_dispatch_roots),
             "stub_parents": sorted(self.stub_parents),
             "namespace_module_names": sorted(self.namespace_module_names),
             "spawn_enabled": self.spawn_enabled,
@@ -1532,6 +1513,7 @@ class _PreparedFrontendRunTicket:
     frontend_parallel_details: dict[str, Any]
     frontend_layer_execution_context: _FrontendLayerExecutionContext
     frontend_layer_runtime_hooks: _FrontendLayerRuntimeHooks
+
 
 @dataclass(frozen=True)
 class _PreparedBackendSetup:

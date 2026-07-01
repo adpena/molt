@@ -6,6 +6,7 @@ from pathlib import Path
 
 from molt.cli.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
 from molt.cli.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
+
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)
 _CYTHON_PREPROCESSOR_DIRECTIVE_RE = re.compile(
@@ -431,7 +432,9 @@ def _strip_cython_hash_comments(text: str) -> str:
         newline = line[len(body) :]
         stripped = body.lstrip()
         if stripped.startswith("#"):
-            lines.append(line if _CYTHON_PREPROCESSOR_DIRECTIVE_RE.match(body) else newline)
+            lines.append(
+                line if _CYTHON_PREPROCESSOR_DIRECTIVE_RE.match(body) else newline
+            )
             continue
         comment_start = cython_comment_start(body)
         if comment_start >= 0:
@@ -544,7 +547,9 @@ def _extract_file_local_c_api_symbols(
             if line.lstrip().startswith("static ") and "=" in line:
                 lhs = line.split("=", 1)[0]
                 if "(" not in lhs:
-                    tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)]
+                    tokens = [
+                        match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)
+                    ]
                     if tokens:
                         local.add(tokens[-1])
             signature_parts.append(line)
@@ -562,12 +567,17 @@ def _extract_file_local_c_api_symbols(
             if "=" in line:
                 lhs = line.split("=", 1)[0]
                 if "(" not in lhs:
-                    tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)]
+                    tokens = [
+                        match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)
+                    ]
                     if tokens:
                         local.add(tokens[-1])
             elif line.endswith(";") and "(" not in line:
                 statement = line[:-1]
-                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)]
+                tokens = [
+                    match.group("symbol")
+                    for match in _C_API_TOKEN_RE.finditer(statement)
+                ]
                 if tokens:
                     local.add(tokens[-1])
 
@@ -611,9 +621,7 @@ def _extract_project_defined_c_api_symbols(
             defined.add(define_match.group("symbol"))
     sanitized = _strip_preprocessor_macro_definitions(sanitized_with_macros)
     if include_declarations:
-        for declaration_match in _C_SIMPLE_FUNCTION_DECLARATION_RE.finditer(
-            sanitized
-        ):
+        for declaration_match in _C_SIMPLE_FUNCTION_DECLARATION_RE.finditer(sanitized):
             defined.add(declaration_match.group("symbol"))
     for raw_line in sanitized.splitlines():
         line = raw_line.strip()
@@ -660,9 +668,7 @@ def _extract_project_defined_c_api_symbols(
             typedef_parts.append(line)
             if ";" in line:
                 statement = " ".join(typedef_parts).split(";", 1)[0]
-                typedef_function_match = _C_TYPEDEF_FUNCTION_SYMBOL_RE.search(
-                    statement
-                )
+                typedef_function_match = _C_TYPEDEF_FUNCTION_SYMBOL_RE.search(statement)
                 if typedef_function_match is not None:
                     defined.add(typedef_function_match.group("symbol"))
                 else:
@@ -677,9 +683,7 @@ def _extract_project_defined_c_api_symbols(
             typedef_parts = [line]
             if ";" in line:
                 statement = line.split(";", 1)[0]
-                typedef_function_match = _C_TYPEDEF_FUNCTION_SYMBOL_RE.search(
-                    statement
-                )
+                typedef_function_match = _C_TYPEDEF_FUNCTION_SYMBOL_RE.search(statement)
                 if typedef_function_match is not None:
                     defined.add(typedef_function_match.group("symbol"))
                 else:
@@ -718,8 +722,7 @@ def _extract_project_defined_c_api_symbols(
                     "static const "
                 ):
                     tokens = [
-                        match.group("symbol")
-                        for match in _C_API_TOKEN_RE.finditer(lhs)
+                        match.group("symbol") for match in _C_API_TOKEN_RE.finditer(lhs)
                     ]
                     if tokens:
                         defined.add(tokens[-1])
@@ -730,7 +733,10 @@ def _extract_project_defined_c_api_symbols(
                 and not lowered.startswith(("extern ", "static ", "typedef ", "#"))
             ):
                 statement = line[:-1]
-                tokens = [match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)]
+                tokens = [
+                    match.group("symbol")
+                    for match in _C_API_TOKEN_RE.finditer(statement)
+                ]
                 if tokens:
                     defined.add(tokens[-1])
 
@@ -757,8 +763,7 @@ def _extract_project_defined_c_api_symbols(
         elif include_declarations and line.endswith(";") and "(" not in line:
             statement = line[:-1]
             tokens = [
-                match.group("symbol")
-                for match in _C_API_TOKEN_RE.finditer(statement)
+                match.group("symbol") for match in _C_API_TOKEN_RE.finditer(statement)
             ]
             if tokens:
                 defined.add(tokens[-1])
@@ -793,7 +798,9 @@ def _load_c_api_scan_surface(
         header_text = header_path.read_text()
     except OSError as exc:
         return None, header_path, str(exc)
-    runtime_tokens.update(_extract_c_api_tokens(header_text, strip_py_condition_blocks=False))
+    runtime_tokens.update(
+        _extract_c_api_tokens(header_text, strip_py_condition_blocks=False)
+    )
     for datetime_header in tuple(root / "datetime.h" for root in header_roots):
         if not datetime_header.exists():
             continue

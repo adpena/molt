@@ -81,11 +81,7 @@ def import_bound_names(stmt: ast.stmt) -> set[str]:
             if alias.name != "*"
         }
     if isinstance(stmt, ast.ImportFrom):
-        return {
-            alias.asname or alias.name
-            for alias in stmt.names
-            if alias.name != "*"
-        }
+        return {alias.asname or alias.name for alias in stmt.names if alias.name != "*"}
     return set()
 
 

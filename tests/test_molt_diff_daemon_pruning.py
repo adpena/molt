@@ -183,9 +183,7 @@ def test_molt_diff_orphan_worker_pruning_uses_verified_pid_custody(
         grace=0.75,
     )
 
-    assert calls == [
-        (sample.pid, module.memory_guard.process_identity(sample), 0.75)
-    ]
+    assert calls == [(sample.pid, module.memory_guard.process_identity(sample), 0.75)]
 
 
 def test_molt_diff_build_helper_pruning_preserves_codex_protected_group(
@@ -326,6 +324,7 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
             AssertionError("unverified daemon RSS must not authorize inspection/kill")
         ),
     )
+
     def fake_terminate(identity, **kwargs) -> bool:
         terminated.append(identity.pid)
         return True

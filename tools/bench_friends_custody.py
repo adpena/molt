@@ -4,6 +4,7 @@ from bench_friends_types import SourceCustody, SuiteAcquisition, SuiteSpec
 
 import harness_memory_guard
 
+
 def _run_git(
     args: list[str],
     *,

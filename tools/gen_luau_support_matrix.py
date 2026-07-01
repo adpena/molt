@@ -296,7 +296,9 @@ def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
 
         current_body.append(line)
         body_depth += _brace_delta(line)
-        body_started = body_started or bool(_strip_rust_strings_and_comments(line).strip())
+        body_started = body_started or bool(
+            _strip_rust_strings_and_comments(line).strip()
+        )
         if body_started and body_depth == 0:
             arms.append((current_ops, "\n".join(current_body)))
             current_ops = None
@@ -305,7 +307,9 @@ def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
     if current_ops is not None:
         arms.append((current_ops, "\n".join(current_body)))
     if pending_pattern:
-        raise ValueError(f"unterminated Luau emit_op match arm pattern: {pending_pattern!r}")
+        raise ValueError(
+            f"unterminated Luau emit_op match arm pattern: {pending_pattern!r}"
+        )
     return arms
 
 
@@ -424,9 +428,7 @@ def _render(rows: list[Row], source: Path) -> str:
 
 
 def build_output(source: Path) -> str:
-    text = "\n".join(
-        path.read_text(encoding="utf-8") for path in _source_files(source)
-    )
+    text = "\n".join(path.read_text(encoding="utf-8") for path in _source_files(source))
     return _render(collect_rows_from_text(text), source)
 
 

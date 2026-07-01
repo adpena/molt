@@ -17,9 +17,7 @@ def _write_varsint(value: int) -> bytes:
         byte = value & 0x7F
         value >>= 7
         sign_bit_set = bool(byte & 0x40)
-        more = not (
-            (value == 0 and not sign_bit_set) or (value == -1 and sign_bit_set)
-        )
+        more = not ((value == 0 and not sign_bit_set) or (value == -1 and sign_bit_set))
         if more:
             byte |= 0x80
         parts.append(byte)
@@ -73,7 +71,9 @@ def _element_payload(data: bytes) -> bytes:
     raise AssertionError("element section missing")
 
 
-def test_linked_table_cleanup_keeps_runtime_prefix_and_drops_app_active_segments() -> None:
+def test_linked_table_cleanup_keeps_runtime_prefix_and_drops_app_active_segments() -> (
+    None
+):
     runtime_prefix = _active_segment(1, [10, 11])
     relocated_app_segment = _active_segment(-6384, [12])
     positive_app_segment = _active_segment(256, [13])

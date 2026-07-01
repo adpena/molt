@@ -464,8 +464,7 @@ def _dispatch_entrypoint_command(
                     args.source_plan_build_root or source_plan_build_root
                 ),
                 source_plan_compile_commands=(
-                    args.source_plan_compile_commands
-                    or source_plan_compile_commands
+                    args.source_plan_compile_commands or source_plan_compile_commands
                 ),
                 abi_tier=args.abi_tier
                 or extension_cfg.get("abi_tier")

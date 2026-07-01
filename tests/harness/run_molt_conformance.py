@@ -311,7 +311,9 @@ def _stats_to_summary(
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "suite": suite,
-        "manifest_path": manifest_path.as_posix() if manifest_path is not None else None,
+        "manifest_path": manifest_path.as_posix()
+        if manifest_path is not None
+        else None,
         "corpus_root": corpus_root.as_posix(),
         "duration_s": duration_s,
         "total": (
