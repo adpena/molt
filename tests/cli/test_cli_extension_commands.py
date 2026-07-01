@@ -11,6 +11,7 @@ import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import commands as cli_commands
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
+from molt.cli.extension_manifest import _manifest_support_file_payloads
 from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 import pytest
@@ -19,6 +20,46 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_manifest_support_file_object_can_alias_build_source_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sealed"
+    source = (
+        tmp_path
+        / "upstream"
+        / "scipy"
+        / "_external"
+        / "packaging_version"
+        / "src"
+        / "version.py"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_text("class Version: pass\n", encoding="utf-8")
+    errors: list[str] = []
+
+    support_files = _manifest_support_file_payloads(
+        [
+            {
+                "path": "scipy/_external/packaging_version/version.py",
+                "source": str(source),
+            }
+        ],
+        field_name="support_files",
+        root=root,
+        errors=errors,
+    )
+
+    assert errors == []
+    assert [entry.rel_path for entry in support_files] == [
+        "scipy/_external/packaging_version/version.py"
+    ]
+    assert [entry.source_path for entry in support_files] == [source.resolve()]
+    assert support_files[0].digest_payload() == {
+        "path": "scipy/_external/packaging_version/version.py",
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
 
 
 def _install_extension_object_symbol_facts(
@@ -2533,6 +2574,19 @@ def test_extension_seal_publishes_provider_module_support_source(
         "    return _nd_image.euclidean_feature_transform(mask)\n",
         encoding="utf-8",
     )
+    stale_provider_source = artifact_dir / "_stale.py"
+    stale_provider_source.write_text(
+        "def stale_distance_transform(mask):\n"
+        "    return mask\n",
+        encoding="utf-8",
+    )
+    helper_source = tmp_path / "upstream_numpy" / "numpy" / "exceptions.py"
+    helper_source.parent.mkdir(parents=True)
+    helper_source.write_text(
+        "class AxisError(ValueError, IndexError):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
     source_path = source_dir / "nd_image.c"
     source_path.write_text(
         "\n".join(
@@ -2571,6 +2625,22 @@ def test_extension_seal_publishes_provider_module_support_source(
         "capabilities": ["module.extension.exec"],
         "extension": "scipy/ndimage/_nd_image.molt.wasm",
         "extension_sha256": extension_sha256,
+        "python_exports": ["scipy.ndimage.stale_distance_transform"],
+        "support_files": [
+            {
+                "path": "scipy/ndimage/_stale.py",
+                "sha256": hashlib.sha256(stale_provider_source.read_bytes()).hexdigest(),
+            }
+        ],
+        "callable_exports": [
+            {
+                "module": "scipy.ndimage",
+                "name": "stale_distance_transform",
+                "binding": "module_attr",
+                "provider_module": "scipy.ndimage._stale",
+                "abi": "molt.object_call_v1",
+            }
+        ],
         "sources": [str(source_path)],
         "provided_capsules": [],
         "object_closure": {
@@ -2621,6 +2691,10 @@ def test_extension_seal_publishes_provider_module_support_source(
 
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["python_exports"] == ["scipy.ndimage.distance_transform_edt"]
+    assert payload["data"]["callable_exports"] == [
+        "scipy.ndimage.distance_transform_edt"
+    ]
     assert payload["data"]["copied_support_files"] == [
         str(sealed_root / "scipy" / "ndimage" / "_morphology.py")
     ]
@@ -2635,6 +2709,7 @@ def test_extension_seal_publishes_provider_module_support_source(
             "sha256": hashlib.sha256(provider_source.read_bytes()).hexdigest(),
         }
     ]
+    assert sealed_manifest["python_exports"] == ["scipy.ndimage.distance_transform_edt"]
     assert sealed_manifest["callable_exports"] == [
         {
             "module": "scipy.ndimage",
@@ -2656,6 +2731,60 @@ def test_extension_seal_publishes_provider_module_support_source(
     assert plan.support_source_module_names() == frozenset(
         {"scipy.ndimage._morphology"}
     )
+
+    alias_root = tmp_path / "sealed_alias"
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(alias_root),
+        python_export=["scipy.ndimage.distance_transform_edt"],
+        callable_export_json=[
+            json.dumps(
+                {
+                    "module": "scipy.ndimage",
+                    "name": "distance_transform_edt",
+                    "binding": "module_attr",
+                    "provider_module": "scipy.ndimage._morphology",
+                    "abi": "molt.object_call_v1",
+                }
+            )
+        ],
+        support_file=[
+            str(provider_source),
+            json.dumps(
+                {
+                    "path": "numpy/exceptions.py",
+                    "source": str(helper_source),
+                }
+            ),
+        ],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    alias_payload = json.loads(capsys.readouterr().out)
+    assert alias_payload["data"]["copied_support_files"] == [
+        str(alias_root / "numpy" / "exceptions.py"),
+        str(alias_root / "scipy" / "ndimage" / "_morphology.py"),
+    ]
+    alias_manifest = json.loads(
+        (
+            alias_root
+            / "scipy"
+            / "ndimage"
+            / "_nd_image.molt.wasm.extension_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert alias_manifest["support_files"] == [
+        {
+            "path": "numpy/exceptions.py",
+            "sha256": hashlib.sha256(helper_source.read_bytes()).hexdigest(),
+        },
+        {
+            "path": "scipy/ndimage/_morphology.py",
+            "sha256": hashlib.sha256(provider_source.read_bytes()).hexdigest(),
+        },
+    ]
 
 
 def test_extension_audit_requires_static_link_artifact_custody(

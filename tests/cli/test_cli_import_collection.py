@@ -984,6 +984,141 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     assert "nativepkg.ndimage._ni_label" in import_plan.known_modules
 
 
+def test_materialize_import_plan_closes_cross_package_native_support_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    filters_path = external_root / "scipy" / "ndimage" / "_filters.py"
+    util_path = external_root / "scipy" / "_lib" / "_util.py"
+    exceptions_path = external_root / "numpy" / "exceptions.py"
+    filters_path.parent.mkdir(parents=True)
+    util_path.parent.mkdir(parents=True)
+    exceptions_path.parent.mkdir(parents=True)
+    filters_path.write_text(
+        "from scipy._lib._util import normalize_axis_index\n\n"
+        "def gaussian_filter(value):\n"
+        "    return normalize_axis_index(value, 3)\n",
+        encoding="utf-8",
+    )
+    util_path.write_text(
+        "from numpy.exceptions import AxisError\n\n"
+        "def normalize_axis_index(axis, ndim):\n"
+        "    if axis < 0:\n"
+        "        raise AxisError(axis)\n"
+        "    return axis\n",
+        encoding="utf-8",
+    )
+    exceptions_path.write_text(
+        "class AxisError(Exception):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    filters_sha = hashlib.sha256(filters_path.read_bytes()).hexdigest()
+    util_sha = hashlib.sha256(util_path.read_bytes()).hexdigest()
+    exceptions_sha = hashlib.sha256(exceptions_path.read_bytes()).hexdigest()
+    _write_external_native_artifact(
+        external_root,
+        package="numpy",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["numpy"],
+            "support_files": [
+                {
+                    "path": "numpy/exceptions.py",
+                    "sha256": exceptions_sha,
+                }
+            ],
+        },
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "support_files": [
+                {
+                    "path": "scipy/ndimage/_filters.py",
+                    "sha256": filters_sha,
+                },
+                {
+                    "path": "scipy/_lib/_util.py",
+                    "sha256": util_sha,
+                },
+            ],
+            "callable_exports": [
+                {
+                    "module": "scipy.ndimage",
+                    "name": "gaussian_filter",
+                    "binding": "module_attr",
+                    "provider_module": "scipy.ndimage._filters",
+                    "abi": "molt.object_callargs_v1",
+                }
+            ],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import numpy\nprint(numpy)\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "numpy scipy")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"scipy.ndimage.gaussian_filter"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert [
+        artifact.module for artifact in import_plan.native_artifact_plan.artifacts
+    ] == ["numpy._core._multiarray_umath", "scipy.ndimage._nd_image"]
+    assert "scipy.ndimage._filters" in import_plan.compile_modules
+    assert "scipy._lib._util" in import_plan.compile_modules
+    assert "numpy.exceptions" in import_plan.compile_modules
+    assert "numpy.exceptions" in import_plan.known_modules
+    assert "native_support_source" in module_reasons["scipy.ndimage._filters"]
+    assert "native_support_source" in module_reasons["scipy._lib._util"]
+    assert "native_support_source" in module_reasons["numpy.exceptions"]
+
+
 def test_materialize_import_plan_compiles_pruned_native_support_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3689,6 +3824,104 @@ def test_external_native_artifact_plan_publishes_support_source_module_attr(
         (publish.provider_module, publish.attr)
         for publish in ndimage_spec.module_attr_exports
     ] == [("nativepkg.ndimage._filters", "gaussian_filter")]
+
+
+def test_external_native_artifact_plan_shadows_later_duplicate_module_roots(
+    tmp_path: Path,
+) -> None:
+    staged_root = tmp_path / "staged"
+    source_root = tmp_path / "source"
+    support_path = staged_root / "nativepkg" / "ndimage" / "_filters.py"
+    support_path.parent.mkdir(parents=True)
+    support_path.write_text(
+        "def gaussian_filter(value):\n    return value\n",
+        encoding="utf-8",
+    )
+    support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
+    staged_artifact, _staged_manifest = _write_external_native_artifact(
+        staged_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "support_files": [
+                {
+                    "path": "nativepkg/ndimage/_filters.py",
+                    "sha256": support_sha,
+                }
+            ],
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "gaussian_filter",
+                    "binding": "module_attr",
+                    "provider_module": "nativepkg.ndimage._filters",
+                    "abi": "molt.object_callargs_v1",
+                }
+            ],
+        },
+    )
+    stale_source = source_root / "nativepkg" / "ndimage" / "src" / "nd_image.c"
+    stale_source.parent.mkdir(parents=True)
+    stale_source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "static PyMethodDef ndimage_methods[] = {",
+                '    {"min_or_max_filter", NULL, METH_VARARGS, ""},',
+                "    {NULL, NULL, 0, NULL},",
+                "};",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _write_external_native_artifact(
+        source_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "sources": [str(stale_source)],
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "gaussian_filter",
+                    "binding": "module_attr",
+                    "abi": "molt.object_callargs_v1",
+                }
+            ],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(staged_root, source_root),
+        admitted_packages={"nativepkg"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert [artifact.path for artifact in plan.artifacts] == [
+        staged_artifact.resolve()
+    ]
+    assert plan.native_callable_exports_by_qualified_name() == {
+        "nativepkg.ndimage.gaussian_filter": {
+            "module": "nativepkg.ndimage",
+            "name": "gaussian_filter",
+            "binding": "module_attr",
+            "abi": "molt.object_callargs_v1",
+            "provider_module": "nativepkg.ndimage._filters",
+            "effects": [],
+            "deterministic": False,
+        }
+    }
 
 
 def test_scoped_native_callable_exports_include_provider_module() -> None:

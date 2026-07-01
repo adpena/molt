@@ -159,7 +159,11 @@ def _callable_exports(
     callable_export_json: list[str] | None,
     errors: list[str],
 ) -> tuple[Any, ...]:
-    raw_exports = list(existing_manifest.get("callable_exports") or [])
+    raw_exports = (
+        []
+        if callable_export_json
+        else list(existing_manifest.get("callable_exports") or [])
+    )
     for index, item in enumerate(callable_export_json or []):
         try:
             payload = json.loads(item)
@@ -180,6 +184,43 @@ def _callable_exports(
     )
     errors.extend(export_errors)
     return tuple(exports)
+
+
+def _support_file_payloads(
+    support_file: list[Any] | str | None,
+    *,
+    errors: list[str],
+) -> list[Any]:
+    if support_file is None:
+        return []
+    raw_items: list[Any]
+    if isinstance(support_file, str):
+        raw_items = [support_file]
+    elif isinstance(support_file, list):
+        raw_items = list(support_file)
+    else:
+        errors.append("--support-file must be a string or list")
+        return []
+
+    payloads: list[Any] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, str):
+            payloads.append(item)
+            continue
+        stripped = item.strip()
+        if not stripped.startswith("{"):
+            payloads.append(item)
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            errors.append(f"--support-file[{index}] must be a path or JSON object: {exc}")
+            continue
+        if not isinstance(parsed, dict):
+            errors.append(f"--support-file[{index}] JSON must be an object")
+            continue
+        payloads.append(parsed)
+    return payloads
 
 
 def _validate_direct_symbol_exports(
@@ -340,12 +381,12 @@ def extension_seal(
     if not isinstance(expected_extension_sha, str) or not expected_extension_sha.strip():
         errors.append("extension seal requires existing extension_sha256 custody")
 
-    export_manifest = {
-        "python_exports": [
-            *(manifest.get("python_exports") or []),
-            *(python_export or []),
-        ]
-    }
+    raw_python_exports = (
+        list(python_export or [])
+        if python_export
+        else list(manifest.get("python_exports") or [])
+    )
+    export_manifest = {"python_exports": raw_python_exports}
     python_export_errors: list[str] = []
     python_exports = _manifest_dotted_name_tuple(
         export_manifest,
@@ -364,18 +405,14 @@ def extension_seal(
     support_sha_errors: list[str] = []
     manifest_support_files = manifest.get("support_files")
     raw_support_files: list[Any] = []
-    if manifest_support_files is not None:
+    if manifest_support_files is not None and not support_file:
         if isinstance(manifest_support_files, list):
             raw_support_files.extend(manifest_support_files)
         else:
             support_sha_errors.append("support_files must be a list when present")
-    if support_file is not None:
-        if isinstance(support_file, str):
-            raw_support_files.append(support_file)
-        elif isinstance(support_file, list):
-            raw_support_files.extend(support_file)
-        else:
-            support_sha_errors.append("--support-file must be a string or list")
+    raw_support_files.extend(
+        _support_file_payloads(support_file, errors=support_sha_errors)
+    )
     support_files = _manifest_support_file_payloads(
         raw_support_files,
         field_name="support_files",
