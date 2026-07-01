@@ -26,6 +26,7 @@ from perf_scoreboard_model import (  # noqa: E402
     BackendSpec,
     Cell,
     PhaseStats,
+    RunOutcome,
     _llvm_sys_prefix,
     _llvm_sys_prefix_env_var,
     _repeat_stability,

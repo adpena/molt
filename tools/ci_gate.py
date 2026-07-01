@@ -239,6 +239,14 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="rust-ffi-blocks",
+            tier=1,
+            cmd=[sys.executable, str(TOOLS / "check_rust_ffi_blocks.py")],
+            timeout=30,
+        )
+    )
+    checks.append(
+        Check(
             name="cargo-clippy",
             tier=1,
             cmd=["cargo", "clippy", "--", "-D", "warnings"],

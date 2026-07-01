@@ -4,7 +4,6 @@ from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli import build_pipeline as cli_build_pipeline
 
 
 def test_is_valid_static_library_artifact_checks_archive_magic(tmp_path: Path) -> None:

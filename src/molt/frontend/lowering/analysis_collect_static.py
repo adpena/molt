@@ -38,7 +38,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
     ) -> tuple[list[tuple[str, ast.expr, int]], dict[int, int]]:
         items: list[tuple[str, ast.expr, int]] = []
         id_map: dict[int, int] = {}
-        outer = self
 
         class Collector(ast.NodeVisitor):
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -87,7 +86,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
         counts: dict[str, int] = {}
         func_defs: set[str] = set()
         has_dynamic_bind = False
-        outer = self
 
         def record(name: str) -> None:
             counts[name] = counts.get(name, 0) + 1

@@ -1,14 +1,14 @@
 //! Bridge declarations for molt-runtime helper functions.
 //!
 //! These functions are `pub(crate)` in molt-runtime and cannot be called directly
-//! from this crate. We declare them as `extern "C"` here; matching `#[no_mangle]`
+//! from this crate. We declare them as `unsafe extern "C"` here; matching `#[no_mangle]`
 //! wrappers in `molt-runtime/src/builtins/compression_bridge.rs` provide the
 //! implementations at link time.
 //!
 //! Convention: all bridge functions use C-ABI-safe types only (u64, i64, bool,
 //! raw pointers, usize). No `&PyToken`, `&str`, `MoltObject`, or `Cow` in signatures.
 
-extern "C" {
+unsafe extern "C" {
     // -- Numbers / ints -------------------------------------------------------
     /// `int_bits_from_i64(_py, val) -> u64`
     pub fn molt_bridge_int_bits_from_i64(val: i64) -> u64;

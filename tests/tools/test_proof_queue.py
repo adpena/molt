@@ -415,6 +415,125 @@ def test_proof_queue_rejects_uv_run_without_active_project_python(
     assert "should-not-run" in log_text
 
 
+def test_proof_queue_rejects_raw_cargo_exec(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "raw-cargo",
+            "--reason",
+            "reject ad hoc cargo proof",
+            "--resource-family",
+            "rust",
+            "--contention-key",
+            "cargo:molt-runtime",
+            "--",
+            "cargo",
+            "test",
+            "-p",
+            "molt-runtime",
+            "--lib",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 2
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "refuses raw `cargo` commands" in log_text
+    assert "proof_queue.py cargo" in log_text
+
+
+def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    launched: dict[str, object] = {}
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args
+        launched["run_id"] = run_id
+        launched["timeout"] = timeout
+        return 4242, tmp_path / "runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "cargo",
+            "--id",
+            "runtime-focused-proof",
+            "--reason",
+            "prove runtime cargo lane",
+            "--scope",
+            "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+            "--note",
+            "canonical cargo proof lane smoke",
+            "--timeout",
+            "42",
+            "--detach",
+            "--",
+            "test",
+            "-p",
+            "molt-runtime",
+            "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error",
+            "--lib",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]["status"] == "queued"
+    assert rows[0]["resource_family"] == "rust"
+    assert rows[0]["contention_key"] == "cargo:molt-runtime"
+    assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
+    command = json.loads(rows[0]["command_json"])
+    assert command[:8] == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "python",
+    ]
+    assert command[8:14] == [
+        "tools/guarded_exec.py",
+        "--prefix",
+        "MOLT_TEST_SUITE",
+        "--",
+        "cargo",
+        "test",
+    ]
+    assert command[14:17] == [
+        "-p",
+        "molt-runtime",
+        "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error",
+    ]
+    assert command[-1] == "--lib"
+    assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
+
+
 def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"

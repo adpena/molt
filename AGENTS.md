@@ -101,15 +101,22 @@ is reconciled.
 - Expensive or contention-heavy work must go through `tools/proof_queue.py`:
   Cargo builds, WASM/browser proofs, benchmark lanes, conformance shards,
   stress tests, and anything likely to contend for build/runtime resources.
+- Cargo proof work must use the queue-native cargo lane:
+  `tools/proof_queue.py cargo ... -- <cargo-args>` via the active uv command.
+  Do not submit raw `cargo ...` through `exec`, TOML DSL, shell backgrounding,
+  or interactive sessions; the cargo lane owns uv, `guarded_exec`, contention
+  keys, timeouts, logs, and detached runners.
 - Before queueing, run:
   `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
 - Submit queued work with a clear `--reason`, `--resource-family`,
   `--contention-key`, `--scope`, and `--note` describing what changed or what is
-  being tested/explored and why. Prefer TOML DSL or `exec` over ad hoc
-  background processes. Cite queue run IDs/log/evidence paths as evidence.
+  being tested/explored and why. Prefer named lanes, the cargo lane, TOML DSL,
+  or `exec` over ad hoc background processes. Cite queue run IDs/log/evidence
+  paths as evidence.
 - For long-running work, use queue-owned detached launch (`tools/proof_queue.py
-  exec ... --detach` or `tools/proof_queue.py pact-witness-acceptance
-  --detach`). Do not hand-roll `Start-Process`, shell backgrounding, or
+  cargo ... --detach`, `tools/proof_queue.py exec ... --detach`, or
+  `tools/proof_queue.py pact-witness-acceptance --detach`). Do not hand-roll
+  `Start-Process`, shell backgrounding, or
   Codex-held interactive sessions for proof custody. Detached launch creates a
   queued row, starts `tools/proof_queue.py run --run-id RUN_ID`, and records a
   `*.runner.log`. WASM resource families preflight the checked-in Rust
