@@ -1359,26 +1359,14 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         if out_view.is_null() {
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
-        let mut export = BufferExport::default();
-        if unsafe { molt_buffer_export(obj_bits, &mut export as *mut BufferExport) } != 0 {
+        let mut export = MoltBufferView::default();
+        if unsafe { molt_buffer_export(obj_bits, &mut export as *mut MoltBufferView) } != 0 {
             return -1;
         }
         inc_ref_bits(_py, obj_bits);
-        export.owner = obj_bits;
         unsafe {
-            *out_view = MoltBufferView {
-                data: export.ptr,
-                len: export.len,
-                readonly: export.readonly,
-                ndim: export.ndim,
-                itemsize: export.itemsize,
-                offset: export.offset,
-                owner: obj_bits,
-                base: export.base,
-                shape: export.shape,
-                strides: export.strides,
-                format: export.format,
-            };
+            export.owner = obj_bits;
+            *out_view = export;
         }
         0
     })
