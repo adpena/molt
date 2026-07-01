@@ -161,6 +161,12 @@ def _run_external_tool(
     return result
 
 
+def _wasm_ld_signature_mismatch_warning(stderr: str | None) -> str | None:
+    if not stderr or "function signature mismatch:" not in stderr:
+        return None
+    return stderr.strip()
+
+
 def _default_runtime_path() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
@@ -1771,6 +1777,10 @@ def _run_wasm_ld(
             if err:
                 print(err, file=sys.stderr)
             return res.returncode
+        signature_mismatch = _wasm_ld_signature_mismatch_warning(res.stderr)
+        if signature_mismatch is not None:
+            print(signature_mismatch, file=sys.stderr)
+            return 1
         if not work_linked.exists():
             print(
                 "wasm-ld exited successfully but produced no linked output: "
@@ -1998,6 +2008,12 @@ def _run_wasm_ld(
                     if err:
                         print(err, file=sys.stderr)
                     return split_native_res.returncode
+                signature_mismatch = _wasm_ld_signature_mismatch_warning(
+                    split_native_res.stderr
+                )
+                if signature_mismatch is not None:
+                    print(signature_mismatch, file=sys.stderr)
+                    return 1
                 if not split_native_app_path.exists():
                     print(
                         "wasm-ld exited successfully but produced no split app "

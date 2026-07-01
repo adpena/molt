@@ -1227,6 +1227,42 @@ def test_run_wasm_ld_links_staged_native_objects(
     assert wasm_ld_inputs[output_index + 2] == str(native_object)
 
 
+def test_run_wasm_ld_rejects_signature_mismatch_warning(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_bytes = _build_minimal_module(b"")
+    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    runtime = tmp_path / "molt_runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            _write_wasm_ld_output(cmd, output_bytes)
+            return wasm_link.subprocess.CompletedProcess(
+                cmd,
+                0,
+                "",
+                "wasm-ld: warning: function signature mismatch: molt_guarded_class_def\n",
+            )
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+
+    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+
+    assert rc == 1
+    assert (
+        "function signature mismatch: molt_guarded_class_def" in capsys.readouterr().err
+    )
+
+
 def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     tmp_path: Path,
     monkeypatch,
