@@ -83,6 +83,28 @@ def _build_env() -> dict[str, str]:
     return env
 
 
+def _select_wasm_entry(build_dir: Path) -> Path:
+    app_wasm = build_dir / "app.wasm"
+    runtime_wasm = build_dir / "molt_runtime.wasm"
+    if app_wasm.is_file():
+        if not runtime_wasm.is_file():
+            raise SystemExit(f"missing split runtime artifact: {runtime_wasm}")
+        return app_wasm
+    output_wasm = build_dir / "output.wasm"
+    if not output_wasm.is_file():
+        raise SystemExit(f"missing build artifact: {output_wasm}")
+    return output_wasm
+
+
+def _wasm_run_env(wasm_entry: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    if wasm_entry.name == "app.wasm":
+        env["MOLT_WASM_DIRECT_LINK"] = "1"
+        env["MOLT_WASM_PREFER_LINKED"] = "0"
+        env["MOLT_RUNTIME_WASM"] = str(wasm_entry.with_name("molt_runtime.wasm"))
+    return env
+
+
 def _build_wasm(build_dir: Path) -> Path:
     env = _build_env()
     _run(
@@ -105,10 +127,7 @@ def _build_wasm(build_dir: Path) -> Path:
         cwd=ROOT,
         env=env,
     )
-    output_wasm = build_dir / "output.wasm"
-    if not output_wasm.is_file():
-        raise SystemExit(f"missing build artifact: {output_wasm}")
-    return output_wasm
+    return _select_wasm_entry(build_dir)
 
 
 def _run_candidate(output_wasm: Path, run_dir: Path) -> Path:
@@ -123,6 +142,7 @@ def _run_candidate(output_wasm: Path, run_dir: Path) -> Path:
     _run(
         [_node_bin(), str(ROOT / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=run_dir,
+        env=_wasm_run_env(output_wasm),
     )
     if not raw_output.is_file():
         raise SystemExit(
