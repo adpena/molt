@@ -27,6 +27,28 @@ impl Drop for CApiTestGuard {
     fn drop(&mut self) {}
 }
 
+fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
+    assert!(exception_pending(_py));
+    let exc_bits = molt_err_fetch();
+    assert!(!obj_from_bits(exc_bits).is_none());
+    let kind_bits = molt_exception_kind(exc_bits);
+    let class_bits = molt_exception_class(kind_bits);
+    let expected_bits = crate::builtins::exceptions::exception_type_bits_from_name(_py, expected);
+    assert!(
+        issubclass_bits(class_bits, expected_bits),
+        "expected pending exception to be {expected}"
+    );
+    dec_ref_bits(_py, class_bits);
+    dec_ref_bits(_py, kind_bits);
+    dec_ref_bits(_py, exc_bits);
+    assert!(!exception_pending(_py));
+}
+
+fn assert_none_with_exception_class(_py: &PyToken<'_>, bits: u64, expected: &str) {
+    assert!(obj_from_bits(bits).is_none());
+    assert_pending_exception_class(_py, expected);
+}
+
 struct CApiModuleCacheRestore {
     name_bits: u64,
     previous_bits: u64,
@@ -1575,6 +1597,98 @@ fn memoryview_release_closes_typed_storage_export_and_runtime_access() {
         assert!(exception_pending(_py));
         clear_exception(_py);
 
+        dec_ref_bits(_py, view_bits);
+        dec_ref_bits(_py, owner_bits);
+        dec_ref_bits(_py, format_bits);
+    });
+}
+
+#[test]
+fn memoryview_release_closes_byteslike_method_arguments() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"b");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let format_ptr = alloc_string(_py, b"B");
+        assert!(!format_ptr.is_null());
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+            _py,
+            owner_bits,
+            0,
+            1,
+            false,
+            format_bits,
+            vec![1],
+            vec![1],
+        );
+        assert!(!view_ptr.is_null());
+        let view_bits = MoltObject::from_ptr(view_ptr).bits();
+
+        let release_bits = crate::molt_memoryview_release(view_bits);
+        assert!(obj_from_bits(release_bits).is_none());
+        assert!(!exception_pending(_py));
+
+        let hay_ptr = alloc_bytes(_py, b"abc");
+        assert!(!hay_ptr.is_null());
+        let hay_bits = MoltObject::from_ptr(hay_ptr).bits();
+        let bytearray_ptr = alloc_bytearray(_py, b"abc");
+        assert!(!bytearray_ptr.is_null());
+        let bytearray_bits = MoltObject::from_ptr(bytearray_ptr).bits();
+        let repl_ptr = alloc_bytes(_py, b"x");
+        assert!(!repl_ptr.is_null());
+        let repl_bits = MoltObject::from_ptr(repl_ptr).bits();
+        let count_bits = MoltObject::from_int(-1).bits();
+
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytes_find(hay_bits, view_bits),
+            "ValueError",
+        );
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytes_startswith(hay_bits, view_bits),
+            "ValueError",
+        );
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytes_split(hay_bits, view_bits),
+            "ValueError",
+        );
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytes_replace(hay_bits, view_bits, repl_bits, count_bits),
+            "ValueError",
+        );
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytearray_find(bytearray_bits, view_bits),
+            "ValueError",
+        );
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytearray_replace(bytearray_bits, view_bits, repl_bits, count_bits),
+            "ValueError",
+        );
+
+        let sep_ptr = alloc_bytes(_py, b",");
+        assert!(!sep_ptr.is_null());
+        let sep_bits = MoltObject::from_ptr(sep_ptr).bits();
+        let list_ptr = alloc_list(_py, &[view_bits]);
+        assert!(!list_ptr.is_null());
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        assert_none_with_exception_class(
+            _py,
+            crate::molt_bytes_join(sep_bits, list_bits),
+            "TypeError",
+        );
+
+        dec_ref_bits(_py, list_bits);
+        dec_ref_bits(_py, sep_bits);
+        dec_ref_bits(_py, repl_bits);
+        dec_ref_bits(_py, bytearray_bits);
+        dec_ref_bits(_py, hay_bits);
         dec_ref_bits(_py, view_bits);
         dec_ref_bits(_py, owner_bits);
         dec_ref_bits(_py, format_bits);
