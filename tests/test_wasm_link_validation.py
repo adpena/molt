@@ -3481,7 +3481,7 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     assert list(name for name in exports if name == "molt_main") == ["molt_main"]
 
 
-def test_linked_table_cleanup_preserves_table_init_body() -> None:
+def test_neutralize_linked_table_init_replaces_body_with_noop() -> None:
     write_varuint = wasm_link._write_varuint
 
     sections: list[tuple[int, bytes]] = []
@@ -3506,16 +3506,6 @@ def test_linked_table_cleanup_preserves_table_init_body() -> None:
     export_payload.extend(write_varuint(1))
     sections.append((7, bytes(export_payload)))
 
-    element_payload = bytearray()
-    element_payload.extend(write_varuint(1))
-    element_payload.append(0x00)
-    element_payload.append(0x41)
-    element_payload.extend(write_varuint(256))
-    element_payload.append(0x0B)
-    element_payload.extend(write_varuint(1))
-    element_payload.extend(write_varuint(0))
-    sections.append((9, bytes(element_payload)))
-
     table_init_body = bytes([0x00, 0x41, 0x01, 0x1A, 0x0B])
     main_body = bytes([0x00, 0x10, 0x00, 0x0B])
     code_payload = bytearray()
@@ -3526,12 +3516,11 @@ def test_linked_table_cleanup_preserves_table_init_body() -> None:
     code_payload.extend(main_body)
     sections.append((10, bytes(code_payload)))
 
-    updated = wasm_link._drop_linked_app_active_table_elements(
+    updated = wasm_link._neutralize_linked_table_init(
         wasm_link._build_sections(sections)
     )
     assert updated is not None
 
-    assert all(section_id != 9 for section_id, _ in wasm_link._parse_sections(updated))
     code_section = next(
         payload
         for section_id, payload in wasm_link._parse_sections(updated)
@@ -3541,7 +3530,7 @@ def test_linked_table_cleanup_preserves_table_init_body() -> None:
     assert count == 2
     table_body_size, offset = wasm_link._read_varuint(code_section, offset)
     table_body = code_section[offset : offset + table_body_size]
-    assert table_body == table_init_body
+    assert table_body == bytes([0x00, 0x0B])
 
 
 def test_required_linked_table_min_respects_exported_table_refs() -> None:

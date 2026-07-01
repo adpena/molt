@@ -21,9 +21,7 @@ import ast
 from typing import (
     Any,
     Callable,
-    Collection,
     Literal,
-    Mapping,
     Protocol,
     Sequence,
     TYPE_CHECKING,
@@ -64,7 +62,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_modules: dict[str, str]
     imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
@@ -134,6 +131,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     mutated_classes: set[str]
     native_callable_exports: dict[str, dict[str, Any]]
     native_python_exports: set[str]
+    native_support_function_roots: set[str]
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parse_codec: Any
@@ -183,8 +181,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
-        native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
-        native_python_exports: Collection[str] | None = None,
+        native_callable_exports: dict[str, dict[str, Any]] | None = None,
+        native_python_exports: set[str] | None = None,
+        native_support_function_roots: set[str] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -1863,6 +1862,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target_module: str, attr_name: str
     ) -> dict[str, Any] | None: ...
 
+    def _native_support_function_roots(self) -> frozenset[str]: ...
+
     def _new_module_chunk_symbol(self) -> str: ...
 
     def _new_tracked_ops(
@@ -1978,6 +1979,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _prune_dead_labels_and_noop_jumps(
         self, ops: list[MoltOp]
     ) -> tuple[list[MoltOp], int, int]: ...
+
+    def _prune_native_support_module_functions(
+        self, node: ast.Module
+    ) -> ast.Module: ...
 
     def _prune_unreachable_cfg_regions(
         self, ops: list[MoltOp], *, cfg: CFGGraph, executable_blocks: set[int]
