@@ -243,9 +243,12 @@ def _wasm_runtime_feature_plan(
 ) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
     effective_profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
     required_features = sorted(required_link_features or ())
+    del builtin_features
     profile_features = [
         feature
-        for feature in sorted(builtin_features)
+        for feature in sorted(
+            profile_link_features(effective_profile, target_triple="wasm32-wasip1")
+        )
         if feature != "molt_gpu_primitives"
     ]
     resolved_module_set = frozenset(resolved_modules or ())

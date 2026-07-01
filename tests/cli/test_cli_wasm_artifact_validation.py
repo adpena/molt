@@ -321,6 +321,54 @@ def test_ensure_runtime_wasm_artifact_caches_exact_export_subset(
     }
 
 
+def test_ensure_runtime_wasm_artifact_cache_is_keyed_by_required_features(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_wasm=tmp_path / "molt_runtime.wasm",
+        runtime_wasm_ready=True,
+    )
+    runtime_state.runtime_wasm_ready_export_sets.add(None)
+    required_features_by_call: list[frozenset[str]] = []
+
+    def fake_ensure_runtime_wasm(runtime_wasm: Path, **kwargs: object) -> bool:
+        del runtime_wasm
+        required_features_by_call.append(frozenset(kwargs["required_link_features"]))
+        return True
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_ensure_runtime_wasm",
+        fake_ensure_runtime_wasm,
+        raising=True,
+    )
+    ensure_kwargs = {
+        "runtime_state": runtime_state,
+        "reloc": False,
+        "json_output": True,
+        "cargo_profile": "dev-fast",
+        "cargo_timeout": 5.0,
+        "project_root": tmp_path,
+        "simd_enabled": True,
+        "freestanding": False,
+        "required_exports": None,
+    }
+
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_link_features=frozenset({"stdlib_crypto"}),
+    )
+    assert RUNTIME_BUILD._ensure_runtime_wasm_artifact(
+        **ensure_kwargs,
+        required_link_features=frozenset({"stdlib_crypto"}),
+    )
+
+    assert required_features_by_call == [frozenset({"stdlib_crypto"})]
+    assert runtime_state.runtime_wasm_ready_feature_keys == {
+        (frozenset({"stdlib_crypto"}), None)
+    }
+
+
 def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -819,12 +867,12 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
     assert cmd_features <= fingerprint_features
     assert "no-default-features" in fingerprint_features
     assert {
-        "molt_gpu_primitives",
         "stdlib_crypto",
         "stdlib_compression",
         "stdlib_logging_ext",
         "builtin_contextvars",
     } <= cmd_features
+    assert "molt_gpu_primitives" not in cmd_features
     assert "stdlib_micro" in cmd_features
     assert "sqlite" not in cmd_features
     assert "sqlite" not in fingerprint_features
