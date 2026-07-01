@@ -1209,6 +1209,35 @@ def test_validate_linked_rejects_undeclared_ref_func_without_wasm_tools(
     assert structural_calls == []
 
 
+def test_validate_linked_rejects_out_of_bounds_ref_func_without_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    linked = tmp_path / "linked.wasm"
+    declared = wasm_link._declare_ref_func_elements(
+        _build_linked_ref_func_module(func_index=999)
+    )
+    assert declared is not None
+    linked.write_bytes(declared)
+    structural_calls: list[str] = []
+
+    def validate_structural(_data: bytes, *, description: str) -> bool:
+        structural_calls.append(description)
+        return True
+
+    monkeypatch.setattr(wasm_link, "_validate_wasm_structural", validate_structural)
+
+    assert not wasm_link._validate_linked(linked)
+    captured = capsys.readouterr()
+    assert (
+        "Linked wasm has out-of-bounds function reference index(es): 999 "
+        "(function count: 1)"
+        in captured.err
+    )
+    assert structural_calls == []
+
+
 def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> None:
     module = _build_exported_runtime_module_many(
         [

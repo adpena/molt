@@ -78,8 +78,7 @@ from wasm_link_format import (  # noqa: E402
     parse_table_ref_export_name as parse_table_ref_export_name,
     table_ref_export_name as table_ref_export_name,
     wasm_runtime_export_name as wasm_runtime_export_name,
-    _repair_out_of_bounds_func_refs as _repair_out_of_bounds_func_refs,
-    _safe_repair_out_of_bounds_func_refs as _safe_repair_out_of_bounds_func_refs,
+    _get_total_func_count as _get_total_func_count,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
     _skip_init_expr as _skip_init_expr,
     _validate_elements as _validate_elements,
@@ -1491,12 +1490,9 @@ def _materialize_callable_table_refs_and_ref_func_declarations(
         if updated is not None:
             current = updated
             changed = True
-        missing = _undeclared_ref_func_indices(current)
-        if missing:
-            raise ValueError(
-                f"{description} still has undeclared ref.func function index(es): "
-                f"{_format_index_preview(missing)}"
-            )
+        invariant_error = _ref_func_invariant_error(current, description=description)
+        if invariant_error is not None:
+            raise ValueError(invariant_error)
 
     return current, changed
 
@@ -1512,22 +1508,40 @@ def _format_index_preview(indices: list[int]) -> str:
     return f"{preview}, ... (+{len(indices) - 12} more)"
 
 
+def _ref_func_invariant_error(data: bytes, *, description: str) -> str | None:
+    referenced = _scan_code_ref_funcs(data)
+    declared = _collect_element_declared_funcs(data)
+    missing = sorted(referenced - declared)
+    if missing:
+        return (
+            f"{description} has undeclared ref.func function index(es): "
+            f"{_format_index_preview(missing)}"
+        )
+    total_funcs = _get_total_func_count(data)
+    out_of_bounds = sorted(
+        index for index in referenced | declared if index >= total_funcs
+    )
+    if out_of_bounds:
+        return (
+            f"{description} has out-of-bounds function reference index(es): "
+            f"{_format_index_preview(out_of_bounds)} "
+            f"(function count: {total_funcs})"
+        )
+    return None
+
+
 def _validate_ref_func_declarations(data: bytes, *, description: str) -> bool:
     try:
-        missing = _undeclared_ref_func_indices(data)
+        invariant_error = _ref_func_invariant_error(data, description=description)
     except ValueError as exc:
         print(
             f"Failed to inspect {description} ref.func declarations: {exc}",
             file=sys.stderr,
         )
         return False
-    if not missing:
+    if invariant_error is None:
         return True
-    print(
-        f"{description} has undeclared ref.func function index(es): "
-        f"{_format_index_preview(missing)}",
-        file=sys.stderr,
-    )
+    print(invariant_error, file=sys.stderr)
     return False
 
 
@@ -2308,14 +2322,6 @@ def _run_wasm_ld(
         if freestanding:
             if not _validate_freestanding(linked_bytes):
                 return 1
-        # Repair out-of-bounds function references that may have been
-        # introduced by post-link optimization passes (export stripping,
-        # dead-code elimination, wasm-opt).  This must run AFTER all
-        # element/code-rewriting passes and BEFORE the final validation.
-        repaired = _safe_repair_out_of_bounds_func_refs(linked_bytes)
-        if repaired is not None:
-            work_linked.write_bytes(repaired)
-            linked_bytes = repaired
         stripped_debug = _strip_debug_sections(linked_bytes)
         if stripped_debug is not None:
             work_linked.write_bytes(stripped_debug)
