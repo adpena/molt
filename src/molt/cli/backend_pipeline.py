@@ -8,6 +8,7 @@ from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
 from molt.cli import frontend_pipeline as _frontend_pipeline
+from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_execution import _write_backend_ir_lease
 from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
@@ -129,6 +130,16 @@ def _run_backend_pipeline(
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
     required_link_features = prepared_backend_ir.required_link_features
+    is_wasm_target = (
+        output_layout.is_wasm
+        or target in {"wasm", "wasm-freestanding"}
+        or (output_layout.target_triple or "").startswith("wasm32")
+    )
+    runtime_stdlib_profile = _runtime_features.runtime_stdlib_profile_for_required_features(
+        stdlib_profile,
+        required_link_features,
+        target_triple="wasm32-wasip1" if is_wasm_target else output_layout.target_triple,
+    )
     if prepared_build_preamble.diagnostics_enabled:
         record_binary_image_analysis(
             "backend_ir",
@@ -174,7 +185,7 @@ def _run_backend_pipeline(
             entry_module=resolved_build_entry.entry_module,
             module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
             target_python=prepared_build_config.target_python,
-            stdlib_profile=stdlib_profile,
+            stdlib_profile=runtime_stdlib_profile,
             native_artifact_plan=native_artifact_plan,
             resolved_modules=resolved_modules,
             capabilities_list=prepared_build_config.capabilities_list,
@@ -194,7 +205,7 @@ def _run_backend_pipeline(
             runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
             cargo_timeout=prepared_build_config.cargo_timeout,
             molt_root=prepared_build_roots.molt_root,
-            stdlib_profile=stdlib_profile,
+            stdlib_profile=runtime_stdlib_profile,
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             target_triple=output_layout.target_triple,
@@ -304,5 +315,5 @@ def _run_backend_pipeline(
         snapshot=snapshot,
         profile=profile,
         json_output=json_output,
-        stdlib_profile=stdlib_profile,
+        stdlib_profile=runtime_stdlib_profile,
     )

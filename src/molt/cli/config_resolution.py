@@ -10,8 +10,9 @@ STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
 
 # --- stdlib_profile: the single config authority (doctrine D5, §4.4) ----------
 #
-# `stdlib_profile` selects which runtime stdlib closure is compiled into the
-# binary: "micro" (core only, smallest binary) or "full" (all modules). It used
+# `stdlib_profile` is the user-facing runtime stdlib intent. The default
+# "auto" means "choose the smallest concrete runtime tier that satisfies the
+# reached-intrinsic feature set"; named tiers are explicit ceilings. This used
 # to be resolved at four independent sites that each carried their own literal
 # "micro" default (the build dispatcher, the `build()` API kwarg, the internal
 # batch-server normalizer, and the module-graph closure reader). Those defaults
@@ -27,12 +28,24 @@ STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
 # and the ONE precedence order. Every consumer routes through
 # `resolve_stdlib_profile` (resolution) or `MOLT_STDLIB_PROFILE_ENV` +
 # `DEFAULT_STDLIB_PROFILE` (the env transport read by the module-graph closure).
-# The resolved value is re-exported to `MOLT_STDLIB_PROFILE` before module-graph
-# construction, so the closure reader and the staticlib selector can never
-# observe different values.
+# The resolved intent is re-exported to `MOLT_STDLIB_PROFILE` before module-graph
+# construction. After backend IR reachability is known, `runtime_features`
+# resolves that intent to one concrete runtime tier for artifact selection.
 MOLT_STDLIB_PROFILE_ENV = "MOLT_STDLIB_PROFILE"
-STDLIB_PROFILE_CHOICES: tuple[str, ...] = ("micro", "full")
-DEFAULT_STDLIB_PROFILE = "micro"
+AUTO_STDLIB_PROFILE = "auto"
+RUNTIME_STDLIB_PROFILE_TIERS: tuple[str, ...] = (
+    "micro",
+    "edge",
+    "standard",
+    "server",
+    "full",
+)
+DEFAULT_RUNTIME_STDLIB_PROFILE = RUNTIME_STDLIB_PROFILE_TIERS[0]
+STDLIB_PROFILE_CHOICES: tuple[str, ...] = (
+    AUTO_STDLIB_PROFILE,
+    *RUNTIME_STDLIB_PROFILE_TIERS,
+)
+DEFAULT_STDLIB_PROFILE = AUTO_STDLIB_PROFILE
 
 
 def resolve_stdlib_profile(
@@ -50,7 +63,7 @@ def resolve_stdlib_profile(
     2. ``MOLT_STDLIB_PROFILE`` environment variable.
     3. ``[tool.molt.build].stdlib-profile`` / ``stdlib_profile`` toml config.
     4. The selected deploy-profile default (e.g. ``--profile wasi`` -> ``full``).
-    5. :data:`DEFAULT_STDLIB_PROFILE`.
+    5. :data:`DEFAULT_STDLIB_PROFILE` (``"auto"``).
 
     The env var deliberately outranks toml/deploy/default: it is the transport
     signal the in-process module-graph closure reads directly, so honoring it

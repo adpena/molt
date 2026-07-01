@@ -75,7 +75,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--portable` | Use baseline ISA (no host-specific CPU features). |
 | `--deterministic / --no-deterministic` | Require deterministic inputs (lockfiles). |
 | `--build-profile {dev,release}` | Build profile for backend/runtime. |
-| `--stdlib-profile {full,micro}` | Runtime stdlib profile (`micro` for smallest binary). |
+| `--stdlib-profile {auto,micro,edge,standard,server,full}` | Runtime stdlib intent. `auto` is the default and selects the smallest concrete tier whose Cargo feature ceiling covers the reached intrinsic set; named tiers are explicit ceilings. |
 | `--wasm-profile {auto,full,pure}` | WASM import profile (`auto` plans imports from observed IR). |
 | `--cache / --no-cache` | Enable/disable build cache. |
 | `--cache-dir DIR` | Override build cache directory. |
@@ -544,7 +544,7 @@ falls back to the host process version when a target is selected.
 | Variable | Description |
 |----------|-------------|
 | `MOLT_HASH_SEED` | Override the hash seed for deterministic builds. |
-| `MOLT_STDLIB_PROFILE` | Default stdlib profile (`full` or `micro`). |
+| `MOLT_STDLIB_PROFILE` | Default stdlib intent (`auto`, `micro`, `edge`, `standard`, `server`, or `full`). |
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
 | `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, WASM static-link artifact manifests must declare `python_exports` or `callable_exports`, required package-root imports such as `numpy` must be covered by matching `python_exports`, and package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
 | `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |

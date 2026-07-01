@@ -1,9 +1,11 @@
 """Pin the single config authority for ``stdlib_profile``.
 
-``stdlib_profile`` selects which runtime stdlib closure is compiled into the
-binary ("micro" core-only vs "full"). It used to be resolved at several
-independent sites that each carried their own literal ``"micro"`` default. Those
-defaults could desync: the module-graph closure readers read
+``stdlib_profile`` is the user-facing runtime stdlib intent. ``auto`` means the
+backend selects the smallest concrete runtime tier whose Cargo feature ceiling
+contains the reached intrinsic feature set; named tiers are explicit ceilings.
+It used to be resolved at several independent sites that each carried their own
+literal ``"micro"`` default. Those defaults could desync: the module-graph
+closure readers read
 ``MOLT_STDLIB_PROFILE`` to decide which modules enter the dependency closure,
 while the runtime-staticlib selector consumes the resolved value to decide which
 prebuilt archive to link. When the two disagree (env-only ``full`` pulling
@@ -22,12 +24,16 @@ These tests pin the consolidated state:
 
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 
 from molt.cli.config_resolution import (
+    AUTO_STDLIB_PROFILE,
+    DEFAULT_RUNTIME_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
     MOLT_STDLIB_PROFILE_ENV,
+    RUNTIME_STDLIB_PROFILE_TIERS,
     STDLIB_PROFILE_CHOICES,
     resolve_stdlib_profile,
 )
@@ -36,9 +42,13 @@ _CLI_DIR = Path(__file__).resolve().parents[2] / "src" / "molt" / "cli"
 
 
 def test_single_default_and_choices() -> None:
-    assert DEFAULT_STDLIB_PROFILE == "micro"
+    assert DEFAULT_STDLIB_PROFILE == AUTO_STDLIB_PROFILE
+    assert DEFAULT_RUNTIME_STDLIB_PROFILE == "micro"
     assert DEFAULT_STDLIB_PROFILE in STDLIB_PROFILE_CHOICES
-    assert set(STDLIB_PROFILE_CHOICES) == {"micro", "full"}
+    assert STDLIB_PROFILE_CHOICES == (
+        AUTO_STDLIB_PROFILE,
+        *RUNTIME_STDLIB_PROFILE_TIERS,
+    )
     assert MOLT_STDLIB_PROFILE_ENV == "MOLT_STDLIB_PROFILE"
 
 
@@ -124,12 +134,20 @@ def test_arg_env_default_agree_when_all_request_the_same_profile() -> None:
         assert by_flag == by_env == by_cfg == requested
 
 
-def test_closure_readers_and_staticlib_selector_share_one_default() -> None:
-    """The closure readers and the staticlib selector must fall back to the
-    SAME constant, so an absent env value can never make one half pick a
-    different profile than the other."""
+def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
+    """The graph reader receives user intent, while artifacts use concrete tiers."""
 
-    from molt.cli import module_graph, module_stdlib_policy, runtime_paths
+    from molt.cli import (
+        backend_cache_setup,
+        backend_compile,
+        backend_output_pipeline,
+        link_pipeline,
+        module_graph,
+        module_stdlib_policy,
+        runtime_build,
+        runtime_intrinsic_symbols,
+        runtime_paths,
+    )
 
     # Closure reader A: module_stdlib_policy core-module selection.
     assert (
@@ -138,15 +156,35 @@ def test_closure_readers_and_staticlib_selector_share_one_default() -> None:
             DEFAULT_STDLIB_PROFILE
         )
     )
-    # Staticlib selector: runtime_paths archive normalization.
-    assert (
-        runtime_paths._normalize_runtime_stdlib_profile(None)
-        == DEFAULT_STDLIB_PROFILE
-    )
-    # All three modules import the SAME constant object (one authority).
+    # Raw artifact helpers operate on concrete runtime tiers; absent a selected
+    # tier, their safe concrete fallback is micro, not the user-facing auto
+    # intent.
     assert module_stdlib_policy.DEFAULT_STDLIB_PROFILE is DEFAULT_STDLIB_PROFILE
     assert module_graph.DEFAULT_STDLIB_PROFILE is DEFAULT_STDLIB_PROFILE
-    assert runtime_paths.DEFAULT_STDLIB_PROFILE is DEFAULT_STDLIB_PROFILE
+    assert runtime_paths._normalize_runtime_stdlib_profile(None) == "micro"
+    assert (
+        module_stdlib_policy._core_stdlib_module_names_for_profile("auto")
+        == module_stdlib_policy._core_stdlib_module_names_for_profile("micro")
+    )
+    lower_artifact_functions = [
+        backend_cache_setup._build_cache_variant,
+        backend_cache_setup._prepare_backend_cache_setup,
+        backend_compile._prepare_backend_setup,
+        backend_compile._prepare_backend_runtime_context,
+        backend_output_pipeline._emit_backend_pipeline_outputs,
+        link_pipeline._prepare_native_link,
+        runtime_build._initialize_runtime_artifact_state,
+        runtime_build._maybe_start_native_runtime_lib_ready_async,
+        runtime_build._ensure_runtime_lib_ready,
+        runtime_build._ensure_native_runtime_lib_ready_before_link,
+        runtime_build._ensure_runtime_lib,
+        runtime_build._ensure_runtime_wasm_artifact,
+        runtime_build._ensure_runtime_wasm,
+        runtime_intrinsic_symbols._stage_runtime_intrinsic_symbols_for_native_codegen,
+    ]
+    for func in lower_artifact_functions:
+        default = inspect.signature(func).parameters["stdlib_profile"].default
+        assert default == DEFAULT_RUNTIME_STDLIB_PROFILE, func.__name__
 
 
 def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
@@ -189,8 +227,9 @@ def test_no_independent_micro_literal_default_in_cli() -> None:
     as a stdlib_profile default or env fallback. Every fallback must reference
     DEFAULT_STDLIB_PROFILE so the resolver stays the one authority.
 
-    ``config_resolution.py`` is the sole permitted home of the literal (it
-    defines the constant)."""
+    ``config_resolution.py`` owns user-facing defaults. ``runtime_paths.py`` is
+    allowed one concrete-artifact fallback because raw archive helpers cannot
+    name the user-facing ``auto`` intent."""
 
     # A kwarg default: ``stdlib_profile: ... = "micro"`` or
     # ``stdlib_profile="micro"`` — but NOT an equality comparison ``== "micro"``
@@ -213,8 +252,9 @@ def test_no_independent_micro_literal_default_in_cli() -> None:
         literal_env_get,
     )
     offenders: list[str] = []
+    allowed = {"config_resolution.py", "runtime_paths.py"}
     for path in sorted(_CLI_DIR.glob("*.py")):
-        if path.name == "config_resolution.py":
+        if path.name in allowed:
             continue
         text = path.read_text(encoding="utf-8")
         if any(p.search(text) for p in patterns):

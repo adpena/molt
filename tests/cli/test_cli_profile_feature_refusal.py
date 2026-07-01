@@ -539,6 +539,46 @@ def test_profile_link_features_matches_cargo_chain_for_every_ladder_tier() -> No
         )
 
 
+def test_auto_runtime_profile_selects_smallest_sufficient_ladder_tier() -> None:
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "auto",
+            frozenset(),
+            target_triple=None,
+        )
+        == "micro"
+    )
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "auto",
+            frozenset({"stdlib_regex"}),
+            target_triple=None,
+        )
+        == "edge"
+    )
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "micro",
+            frozenset({"stdlib_regex"}),
+            target_triple=None,
+        )
+        == "micro"
+    )
+
+
+def test_wasm_runtime_feature_plan_requires_concrete_runtime_tier() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="must be concrete"):
+        RUNTIME_FEATURES._wasm_runtime_feature_plan(
+            stdlib_profile="auto",
+            runtime_features=(),
+            builtin_features=(),
+            resolved_modules=frozenset(),
+            required_link_features=frozenset(),
+        )
+
+
 def test_profile_link_features_rejects_unknown_profile() -> None:
     # Fail loudly (not silently fall back) on a profile that has no ladder tier.
     import pytest
