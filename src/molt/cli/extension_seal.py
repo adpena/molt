@@ -21,6 +21,10 @@ from molt.cli.file_hashing import _sha256_file
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
+from molt.cli.source_extensions import (
+    source_extension_manifest_path,
+    source_extension_manifest_required_capsule_imports_by_source,
+)
 from molt.wasm_artifact import read_wasm_function_exports
 
 
@@ -299,6 +303,56 @@ def _canonicalize_object_closure_c_api_requirements(
         )
 
 
+def _string_set(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {item.strip() for item in value if isinstance(item, str) and item.strip()}
+
+
+def _canonicalize_object_closure_source_capsule_requirements(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+) -> list[str]:
+    by_source, errors = source_extension_manifest_required_capsule_imports_by_source(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    if errors:
+        return errors
+    assert by_source is not None
+    if not by_source:
+        return []
+    object_closure = manifest.get("object_closure")
+    if not isinstance(object_closure, dict):
+        return ["extension seal requires non-empty object_closure custody"]
+    required_capsules = _string_set(object_closure.get("required_capsules"))
+    for imports_by_capsule in by_source.values():
+        required_capsules.update(imports_by_capsule)
+    object_closure["required_capsules"] = sorted(required_capsules)
+
+    objects = object_closure.get("objects")
+    if not isinstance(objects, list):
+        return []
+    for item in objects:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        source_path = source_extension_manifest_path(
+            source,
+            manifest_path=manifest_path,
+        )
+        imports_by_capsule = by_source.get(source_path)
+        if not imports_by_capsule:
+            continue
+        item_capsules = _string_set(item.get("required_capsules"))
+        item_capsules.update(imports_by_capsule)
+        item["required_capsules"] = sorted(item_capsules)
+    return []
+
+
 def extension_seal(
     path: str,
     out_dir: str,
@@ -458,6 +512,19 @@ def extension_seal(
             command="extension-seal",
         )
 
+    sealed_manifest = dict(manifest)
+    _canonicalize_object_closure_c_api_requirements(sealed_manifest)
+    source_capsule_errors = _canonicalize_object_closure_source_capsule_requirements(
+        sealed_manifest,
+        manifest_path=manifest_path,
+    )
+    if source_capsule_errors:
+        return _fail(
+            "; ".join(source_capsule_errors),
+            json_output,
+            command="extension-seal",
+        )
+
     output_root = Path(out_dir).expanduser()
     if not output_root.is_absolute():
         output_root = (Path.cwd() / output_root).absolute()
@@ -480,8 +547,6 @@ def extension_seal(
             command="extension-seal",
         )
 
-    sealed_manifest = dict(manifest)
-    _canonicalize_object_closure_c_api_requirements(sealed_manifest)
     sealed_manifest["python_exports"] = list(python_exports)
     if support_files:
         sealed_manifest["support_files"] = [
