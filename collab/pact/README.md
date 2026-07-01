@@ -21,7 +21,7 @@ proof commands:
 
 ```powershell
 uv run --active --project . --python 3.12 python tools/proof_queue.py status
-uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance
+uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance --detach
 ```
 
 `pact-witness-acceptance` auto-admits conventional staged NumPy/SciPy
@@ -36,7 +36,7 @@ for an explicit power-user lane.
 The smallest current parity proof for the witness oracle is also queued:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle
+uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle --detach
 ```
 
 That oracle lane regenerates `lstar_sample.npz` and `reference_outputs.npz` in a
