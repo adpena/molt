@@ -282,6 +282,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "callable_arity": 5,
         "callable_result": None,
         "runtime_feature": None,
+        "symbol_path": "crate::molt_importlib_import_transaction",
     }
     assert all(
         entry["runtime_name"] != "molt_types_bootstrap" for entry in shared_callables
@@ -427,6 +428,12 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "VOID_RESERVED_RUNTIME_CALLABLE_INDICES" in rendered_runtime_rs
     for runtime_name in sorted(void_runtime_names):
         assert f"crate::{runtime_name} as *const" not in rendered_runtime_rs
+    for entry in data["reserved_runtime_callable"]:
+        runtime_name = entry["runtime_name"]
+        assert f"Some(crate::{runtime_name} as *const ())" not in rendered_runtime_rs
+        assert f"let _ = crate::{runtime_name} as *const ();" not in rendered_runtime_rs
+        assert f"Some({runtime_name} as *const ())" in rendered_runtime_rs
+        assert f"let _ = {runtime_name} as *const ();" in rendered_runtime_rs
     assert "fn_addr!(crate::" not in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs

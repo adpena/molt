@@ -1435,6 +1435,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "callable_arity": entry["callable_arity"],
             "callable_result": import_entry.get("callable_result"),
             "runtime_feature": import_entry.get("runtime_feature"),
+            "symbol_path": entry["runtime_name"],
         }
         if entry["index"] != shared_entry["index"]:
             raise ValueError("reserved runtime callable indices must be contiguous")
@@ -1457,6 +1458,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
                 "callable_arity": entry["callable_arity"],
                 "callable_result": entry.get("callable_result"),
                 "runtime_feature": entry.get("runtime_feature"),
+                "symbol_path": f"crate::{runtime_name}",
             }
         )
         seen_runtime_names.add(runtime_name)
@@ -1598,7 +1600,7 @@ def render_runtime_callables_rs(data: dict) -> str:
         if isinstance(runtime_feature, str):
             lines.append(f'        #[cfg(feature = "{runtime_feature}")]\n')
         lines.append(
-            f"        {entry['index']} => Some(crate::{entry['runtime_name']} as *const ()),\n"
+            f"        {entry['index']} => Some({entry['symbol_path']} as *const ()),\n"
         )
     lines.extend(
         [
@@ -1638,7 +1640,7 @@ def render_runtime_callables_rs(data: dict) -> str:
         runtime_feature = entry.get("runtime_feature")
         if isinstance(runtime_feature, str):
             lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
-        lines.append(f"    let _ = crate::{entry['runtime_name']} as *const ();\n")
+        lines.append(f"    let _ = {entry['symbol_path']} as *const ();\n")
     lines.extend(
         [
             "}\n",

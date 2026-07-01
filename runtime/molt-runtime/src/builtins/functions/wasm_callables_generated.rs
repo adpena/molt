@@ -287,28 +287,28 @@ pub(crate) fn runtime_callable_returns_void_from_target_ptr(fn_ptr: u64) -> bool
 #[rustfmt::skip]
 fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {
-        0 => Some(crate::molt_type_call as *const ()),
-        1 => Some(crate::molt_type_new as *const ()),
-        2 => Some(crate::molt_type_init as *const ()),
-        3 => Some(crate::molt_object_new_bound as *const ()),
-        4 => Some(crate::molt_object_init as *const ()),
-        5 => Some(crate::molt_object_init_subclass as *const ()),
-        6 => Some(crate::molt_exception_new_bound as *const ()),
-        7 => Some(crate::molt_exception_init as *const ()),
-        8 => Some(crate::molt_exceptiongroup_init as *const ()),
-        9 => Some(crate::molt_types_mappingproxy_new as *const ()),
-        10 => Some(crate::molt_types_mappingproxy_init as *const ()),
-        11 => Some(crate::molt_types_method_new as *const ()),
-        12 => Some(crate::molt_types_method_init as *const ()),
-        13 => Some(crate::molt_types_simplenamespace_init as *const ()),
-        14 => Some(crate::molt_types_capsule_new as *const ()),
-        15 => Some(crate::molt_types_cell_new as *const ()),
-        16 => Some(crate::molt_types_dynamic_class_attr_init as *const ()),
-        17 => Some(crate::molt_types_coroutine as *const ()),
-        18 => Some(crate::molt_types_get_original_bases as *const ()),
-        19 => Some(crate::molt_types_prepare_class as *const ()),
-        20 => Some(crate::molt_types_resolve_bases as *const ()),
-        21 => Some(crate::molt_types_new_class as *const ()),
+        0 => Some(molt_type_call as *const ()),
+        1 => Some(molt_type_new as *const ()),
+        2 => Some(molt_type_init as *const ()),
+        3 => Some(molt_object_new_bound as *const ()),
+        4 => Some(molt_object_init as *const ()),
+        5 => Some(molt_object_init_subclass as *const ()),
+        6 => Some(molt_exception_new_bound as *const ()),
+        7 => Some(molt_exception_init as *const ()),
+        8 => Some(molt_exceptiongroup_init as *const ()),
+        9 => Some(molt_types_mappingproxy_new as *const ()),
+        10 => Some(molt_types_mappingproxy_init as *const ()),
+        11 => Some(molt_types_method_new as *const ()),
+        12 => Some(molt_types_method_init as *const ()),
+        13 => Some(molt_types_simplenamespace_init as *const ()),
+        14 => Some(molt_types_capsule_new as *const ()),
+        15 => Some(molt_types_cell_new as *const ()),
+        16 => Some(molt_types_dynamic_class_attr_init as *const ()),
+        17 => Some(molt_types_coroutine as *const ()),
+        18 => Some(molt_types_get_original_bases as *const ()),
+        19 => Some(molt_types_prepare_class as *const ()),
+        20 => Some(molt_types_resolve_bases as *const ()),
+        21 => Some(molt_types_new_class as *const ()),
         22 => Some(crate::molt_importlib_import_transaction as *const ()),
         _ => None,
     }
@@ -374,27 +374,27 @@ pub(crate) fn reserved_wasm_runtime_callable_info(
 #[cfg(test)]
 #[rustfmt::skip]
 pub(crate) fn assert_reserved_runtime_symbols_resolve() {
-    let _ = crate::molt_type_call as *const ();
-    let _ = crate::molt_type_new as *const ();
-    let _ = crate::molt_type_init as *const ();
-    let _ = crate::molt_object_new_bound as *const ();
-    let _ = crate::molt_object_init as *const ();
-    let _ = crate::molt_object_init_subclass as *const ();
-    let _ = crate::molt_exception_new_bound as *const ();
-    let _ = crate::molt_exception_init as *const ();
-    let _ = crate::molt_exceptiongroup_init as *const ();
-    let _ = crate::molt_types_mappingproxy_new as *const ();
-    let _ = crate::molt_types_mappingproxy_init as *const ();
-    let _ = crate::molt_types_method_new as *const ();
-    let _ = crate::molt_types_method_init as *const ();
-    let _ = crate::molt_types_simplenamespace_init as *const ();
-    let _ = crate::molt_types_capsule_new as *const ();
-    let _ = crate::molt_types_cell_new as *const ();
-    let _ = crate::molt_types_dynamic_class_attr_init as *const ();
-    let _ = crate::molt_types_coroutine as *const ();
-    let _ = crate::molt_types_get_original_bases as *const ();
-    let _ = crate::molt_types_prepare_class as *const ();
-    let _ = crate::molt_types_resolve_bases as *const ();
-    let _ = crate::molt_types_new_class as *const ();
+    let _ = molt_type_call as *const ();
+    let _ = molt_type_new as *const ();
+    let _ = molt_type_init as *const ();
+    let _ = molt_object_new_bound as *const ();
+    let _ = molt_object_init as *const ();
+    let _ = molt_object_init_subclass as *const ();
+    let _ = molt_exception_new_bound as *const ();
+    let _ = molt_exception_init as *const ();
+    let _ = molt_exceptiongroup_init as *const ();
+    let _ = molt_types_mappingproxy_new as *const ();
+    let _ = molt_types_mappingproxy_init as *const ();
+    let _ = molt_types_method_new as *const ();
+    let _ = molt_types_method_init as *const ();
+    let _ = molt_types_simplenamespace_init as *const ();
+    let _ = molt_types_capsule_new as *const ();
+    let _ = molt_types_cell_new as *const ();
+    let _ = molt_types_dynamic_class_attr_init as *const ();
+    let _ = molt_types_coroutine as *const ();
+    let _ = molt_types_get_original_bases as *const ();
+    let _ = molt_types_prepare_class as *const ();
+    let _ = molt_types_resolve_bases as *const ();
+    let _ = molt_types_new_class as *const ();
     let _ = crate::molt_importlib_import_transaction as *const ();
 }
