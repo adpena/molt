@@ -5672,19 +5672,6 @@ const runDirectLink = async () => {
           );
         }
       }
-      if (typeof appIndirectFn === 'function') {
-        try {
-          return callWithWasmSignature(
-            appIndirectFn,
-            outputExportSignatures[`molt_call_indirect${arity}`] ||
-              callIndirectObjectSignature(name, { includeIndex: true }),
-            [rawIdx, ...args.slice(1)],
-          );
-        } catch (err) {
-          const detail = err && typeof err.message === 'string' ? err.message : String(err);
-          throw new Error(`${name} app export failed at idx=${idx}: ${detail}`);
-        }
-      }
       if (typeof appDirectFn === 'function') {
         const appDirectSignature = directName && outputExportSignatures[directName];
         try {
@@ -5736,6 +5723,19 @@ const runDirectLink = async () => {
         } catch (err) {
           const detail = err && typeof err.message === 'string' ? err.message : String(err);
           throw new Error(`${name} runtime direct export ${directName} failed at idx=${dispatchIdx}: ${detail}`);
+        }
+      }
+      if (typeof appIndirectFn === 'function') {
+        try {
+          return callWithWasmSignature(
+            appIndirectFn,
+            outputExportSignatures[`molt_call_indirect${arity}`] ||
+              callIndirectObjectSignature(name, { includeIndex: true }),
+            [rawIdx, ...args.slice(1)],
+          );
+        } catch (err) {
+          const detail = err && typeof err.message === 'string' ? err.message : String(err);
+          throw new Error(`${name} app export failed at idx=${idx}: ${detail}`);
         }
       }
       throw new Error(`${name} missing table entry at ${dispatchIdx}`);

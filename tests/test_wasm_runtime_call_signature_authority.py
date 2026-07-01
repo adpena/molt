@@ -44,6 +44,10 @@ def test_browser_embed_prefers_manifest_table_ref_signatures() -> None:
 def test_node_runner_prefers_export_signatures_for_call_indirect() -> None:
     source = _stripped_source("wasm/run_wasm.js")
 
+    app_indirect_index = source.index("if (typeof appIndirectFn === 'function')")
+    assert source.index("if (typeof appDirectFn === 'function')") < app_indirect_index
+    assert source.index("const runtimeDirectFn =") < app_indirect_index
+
     assert (
         "outputExportSignatures[`molt_call_indirect${arity}`] ||\n"
         "callIndirectObjectSignature(name, { includeIndex: true })"
