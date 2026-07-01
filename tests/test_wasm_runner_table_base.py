@@ -6,10 +6,16 @@ import shutil
 from pathlib import Path
 
 import pytest
+from molt._wasm_abi_generated import (
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLES,
+)
 from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 
 ROOT = Path(__file__).resolve().parents[1]
+LEGACY_WASM_TABLE_BASE = 256
+TEST_SHARED_WASM_TABLE_BASE = 4096
 
 
 def _wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
@@ -765,10 +771,18 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
 def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
     tmp_path: Path,
 ) -> None:
+    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
+    reserved_callable_index = 5
+    legacy_trampoline_idx = (
+        LEGACY_WASM_TABLE_BASE
+        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
+        + reserved_callable_count
+        + reserved_callable_index
+    )
     runtime_path = _wasm_from_wat(
         tmp_path,
         "molt_runtime_reserved_runtime_trampoline",
-        """
+        f"""
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
@@ -783,8 +797,8 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
             i32.const 128
             i64.const 35
             i64.store
-            ;; legacy table base 256 + reserved base 33 + trampoline half 22 + index 5.
-            i64.const 316
+            ;; legacy table base + reserved base + generated reserved count + index 5.
+            i64.const {legacy_trampoline_idx}
             i64.const 0
             i64.const 128
             i64.const 1
@@ -840,6 +854,97 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
     assert result.stdout == "ok"
 
 
+def test_direct_split_runner_keeps_reserved_trampoline_runtime_owned(
+    tmp_path: Path,
+) -> None:
+    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
+    app_trampoline_idx = (
+        TEST_SHARED_WASM_TABLE_BASE
+        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
+        + reserved_callable_count
+    )
+    runtime_path = _wasm_from_wat(
+        tmp_path,
+        "molt_runtime_reserved_trampoline_owns_reserved_slot",
+        f"""
+        (module
+          (import "env" "memory" (memory 1))
+          (import "env" "__indirect_function_table" (table 1 funcref))
+          (import "env" "molt_call_indirect3"
+            (func $call_indirect3 (param i64 i64 i64 i64) (result i64)))
+          (func (export "molt_set_wasm_table_base") (param i64))
+          (func (export "molt_type_call") (param i64) (result i64)
+            local.get 0
+            i64.const 44
+            i64.ne
+            if
+              unreachable
+            end
+            i64.const 77)
+          (func (export "molt_runtime_init") (result i64)
+            i32.const 128
+            i64.const 44
+            i64.store
+            ;; shared table base + reserved base + generated reserved count.
+            i64.const {app_trampoline_idx}
+            i64.const 0
+            i64.const 128
+            i64.const 1
+            call $call_indirect3)
+        )
+        """,
+    )
+    app_path = _wasm_from_wat(
+        tmp_path,
+        "split_app_reserved_trampoline_trap_stub",
+        f"""
+        (module
+          (import "env" "memory" (memory 1))
+          (import "env" "__indirect_function_table" (table 1 funcref))
+          (import "molt_runtime" "molt_runtime_init" (func $rt (result i64)))
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
+          (data (i32.const 64) "ok")
+          (func $anchor (result i64) i64.const 0)
+          (export "__molt_table_ref_4096" (func $anchor))
+          (func $app_trampoline (param i64 i64 i64) (result i64)
+            unreachable)
+          (export "__molt_table_ref_{app_trampoline_idx}" (func $app_trampoline))
+          (func (export "molt_table_init"))
+          (func (export "molt_main")
+            call $rt
+            i64.const 77
+            i64.ne
+            if
+              unreachable
+            end
+            i32.const 1
+            i32.const 16
+            i32.const 1
+            i32.const 32
+            call $fd_write
+            drop)
+        )
+        """,
+    )
+
+    result = _run_wasm_test_process(
+        ["node", "wasm/run_wasm.js", str(app_path)],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "MOLT_RUNTIME_WASM": str(runtime_path),
+            "MOLT_WASM_DIRECT_LINK": "1",
+            "NODE_NO_WARNINGS": "1",
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok"
+
+
 def test_direct_runner_always_initializes_table_before_export_refs() -> None:
     runner = (ROOT / "wasm" / "run_wasm.js").read_text(encoding="utf-8")
 
@@ -851,6 +956,7 @@ def test_direct_runner_always_initializes_table_before_export_refs() -> None:
     assert "MOLT_WASM_SKIP_TABLE_INIT" not in runner
     assert "molt_table_init();" in runner
     assert "installTableRefs(outputInstance, table, 'output');" in runner
+    assert "if (table.get(ref.index) !== null)" in runner
     assert runner.index("molt_table_init();") < runner.index(
         "installTableRefs(outputInstance, table, 'output');"
     )

@@ -48,6 +48,41 @@ pub(crate) fn reserved_wasm_runtime_callable_info(
 }
 
 #[cfg(target_arch = "wasm32")]
+pub(crate) fn reserved_wasm_runtime_callable_info_for_table_idx(
+    table_idx: u64,
+) -> Option<(u64, &'static str, &'static str, usize)> {
+    let base = crate::wasm_table_base();
+    let start = base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE;
+    let idx = table_idx.checked_sub(start)?;
+    if idx >= wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_COUNT {
+        return None;
+    }
+    wasm_callables::RESERVED_RUNTIME_CALLABLES
+        .iter()
+        .find(|entry| entry.index == idx)
+        .map(|entry| {
+            (
+                entry.index,
+                entry.runtime_name,
+                entry.import_name,
+                entry.arity,
+            )
+        })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn reserved_wasm_runtime_direct_callable_info_for_table_idx(
+    table_idx: u64,
+) -> Option<(u64, &'static str, &'static str, usize)> {
+    let info = reserved_wasm_runtime_callable_info_for_table_idx(table_idx)?;
+    let dispatch = wasm_callables::reserved_wasm_runtime_callable_dispatch_for_index(info.0)?;
+    if dispatch != wasm_callables::ReservedRuntimeCallableDispatch::Direct {
+        return None;
+    }
+    Some(info)
+}
+
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
     let base = crate::wasm_table_base();
     reserved_wasm_runtime_callable_info(fn_ptr).map(|(idx, _sym, _import, _arity)| {
@@ -138,11 +173,16 @@ unsafe fn init_runtime_callable_function_obj(
     trampoline_ptr: u64,
     native_direct_target: bool,
 ) {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
         unsafe {
             function_set_call_target_ptr(ptr, call_target);
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = fn_key;
+    #[cfg(target_arch = "wasm32")]
+    let _ = native_direct_target;
     #[cfg(not(target_arch = "wasm32"))]
     if native_direct_target && unsafe { function_call_target_ptr(ptr) }.is_null() && raw_fn_ptr != 0
     {

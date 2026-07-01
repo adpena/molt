@@ -314,6 +314,7 @@ impl WasmBackend {
         WasmCallableTablePlan {
             table_base,
             table_indices,
+            sentinel_func_idx,
             split_runtime_owned_slot_start,
             split_runtime_shared_abi_slot_end,
             func_to_table_idx,

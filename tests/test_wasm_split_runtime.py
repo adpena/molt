@@ -26,10 +26,6 @@ from pathlib import Path
 import pytest
 import urllib.error
 import urllib.request
-from molt._wasm_abi_generated import (
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
-)
 from molt.dx import cargo_target_dir_for_artifact_root, development_artifact_env
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
@@ -236,6 +232,10 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
     assert "molt_set_wasm_table_base(BigInt(4096))" in worker_js
     assert "molt_gpu_webgpu_dispatch_host() { return -38; }" in worker_js
+    assert "const planReservedRuntimeDispatch = ({" in worker_js
+    assert "appOwnsReservedTrampoline" not in worker_js
+    assert "dispatchReservedRuntimeCallable" in worker_js
+    assert "reservedDispatch.dispatchReservedRuntimeCallable" in worker_js
 
 
 def test_build_isolate_import_ops_initializes_code_slots() -> None:
@@ -567,27 +567,12 @@ def _collect_export_names(path: Path) -> list[str]:
     return sorted(wasm_artifact._collect_wasm_export_names(path))
 
 
-def _reserved_runtime_callable_indices() -> list[int]:
-    return [entry[0] for entry in WASM_RESERVED_RUNTIME_CALLABLES]
-
-
-def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
+def _minimum_wasm_table_ref_index(path: Path) -> int | None:
     export_names = _collect_export_names(path)
     ref_indices = wasm_artifact.wasm_table_ref_indices_from_names(export_names)
     if not ref_indices:
         return None
-
-    reserved_indices = _reserved_runtime_callable_indices()
-    reserved_count = len(reserved_indices)
-    ref_set = set(ref_indices)
-    shared_abi_prefix_len = WASM_RESERVED_RUNTIME_CALLABLE_BASE + reserved_count * 2
-
-    for ref_index in ref_indices:
-        expected = {ref_index + offset for offset in range(shared_abi_prefix_len)}
-        if expected.issubset(ref_set):
-            return ref_index
-
-    return None
+    return min(ref_indices)
 
 
 # ---------------------------------------------------------------------------
@@ -719,9 +704,9 @@ class TestSplitRuntimeArtifacts:
             "fallback authority"
         )
 
-        exported_base = _infer_wasm_table_base_from_reserved_refs(app_wasm)
-        if exported_base is not None:
-            assert exported_base == wasm_table_base
+        first_exported_ref = _minimum_wasm_table_ref_index(app_wasm)
+        if first_exported_ref is not None:
+            assert first_exported_ref >= wasm_table_base
 
         worker_content = worker_js.read_text()
         assert (

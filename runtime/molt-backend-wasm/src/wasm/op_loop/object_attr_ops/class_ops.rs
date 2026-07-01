@@ -90,8 +90,10 @@ pub(super) fn emit_class_object_op(
             let name = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::I32Const(spill_base as i32));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::I64Const(layout.nbases() as i64));
             func.instruction(&Instruction::I32Const(attrs_base as i32));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::I64Const(layout.nattrs() as i64));
             func.instruction(&Instruction::I64Const(layout.layout_size()));
             func.instruction(&Instruction::I64Const(layout.layout_version()));
@@ -295,6 +297,7 @@ pub(super) fn emit_class_object_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
             );
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_obj));
             emit_call(
                 func,

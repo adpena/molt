@@ -15,7 +15,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_closure_load(ctx: &mut LirLowerCtx, op
         op,
         LirRuntimeCall::ClosureLoad,
         &[
-            LirRuntimeArg::ResolvedPtr32(closure),
+            LirRuntimeArg::ResolvedPtrBits64(closure),
             LirRuntimeArg::I64Const(offset),
         ],
     );
@@ -31,7 +31,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_closure_store(ctx: &mut LirLowerCtx, o
         op,
         LirRuntimeCall::ClosureStore,
         &[
-            LirRuntimeArg::ResolvedPtr32(op.tir_op.operands[0]),
+            LirRuntimeArg::ResolvedPtrBits64(op.tir_op.operands[0]),
             LirRuntimeArg::I64Const(offset),
             LirRuntimeArg::BoxedOperand(op.tir_op.operands[1]),
         ],

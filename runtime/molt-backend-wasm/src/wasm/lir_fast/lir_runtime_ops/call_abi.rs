@@ -14,6 +14,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) enum LirRuntimeArg {
     DataPtrI32(Arc<[u8]>),
     I64Const(i64),
     ResolvedPtr32(ValueId),
+    ResolvedPtrBits64(ValueId),
 }
 
 impl LirRuntimeArg {
@@ -25,6 +26,11 @@ impl LirRuntimeArg {
             Self::ResolvedPtr32(value) => {
                 emit_get_boxed_for_repr(ctx, *value);
                 ctx.emit_runtime_call(LirRuntimeCall::HandleResolve);
+            }
+            Self::ResolvedPtrBits64(value) => {
+                emit_get_boxed_for_repr(ctx, *value);
+                ctx.emit_runtime_call(LirRuntimeCall::HandleResolve);
+                ctx.instructions.push(Instruction::I64ExtendI32U);
             }
         }
     }

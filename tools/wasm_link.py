@@ -90,7 +90,6 @@ from wasm_link_format import (  # noqa: E402
 from wasm_link_edit import (  # noqa: E402
     _add_symtab_alias as _add_symtab_alias,
     _append_table_ref_elements as _append_table_ref_elements,
-    _build_runtime_stub as _build_runtime_stub,
     _canonicalize_standard_section_order as _canonicalize_standard_section_order,
     _collect_output_export_symbol_map as _collect_output_export_symbol_map,
     _collect_output_wrapper_specs as _collect_output_wrapper_specs,
@@ -1564,6 +1563,7 @@ def _run_wasm_ld(
         return 1
     output_data = output.read_bytes()
     output_memory_min = _memory_import_min(output_data)
+    output_table_min = _table_import_min(output_data)
     required_native_direct_symbols = _required_native_direct_symbols(output_data)
     preserved_output_exports = _collect_preserved_output_export_names(output_data)
     export_symbol_map = _collect_output_export_symbol_map(output_data)
@@ -1601,25 +1601,25 @@ def _run_wasm_ld(
         runtime_exports=runtime_exports,
         temp_dir=temp_dir,
     )
-    stub_link_rewritten_path = rewritten_path
-    stub_link_native_inputs = native_link_inputs
+    linked_rewritten_path = rewritten_path
+    linked_native_inputs = native_link_inputs
     if split_runtime and native_objects:
-        # The validation link resolves Molt ABI imports against a generated
-        # runtime stub in the normal wasm-ld symbol namespace. The deployed
-        # split app keeps the same imports as ``molt_runtime`` ABI edges.
-        stub_rewrite = _rewrite_runtime_import_module_namespace(
+        # The published linked artifact resolves Molt ABI imports in the normal
+        # wasm-ld symbol namespace. The deployed split app keeps the same
+        # imports as ``molt_runtime`` ABI edges.
+        linked_rewrite = _rewrite_runtime_import_module_namespace(
             rewritten_path,
             source_module="molt_runtime",
             target_module="env",
             runtime_exports=runtime_exports,
             temp_dir=temp_dir,
-            filename="output_stub_link_imports.wasm",
+            filename="output_linked_runtime_imports.wasm",
         )
-        if stub_rewrite is None:
+        if linked_rewrite is None:
             return 1
-        stub_link_rewritten_path, stub_force_exports = stub_rewrite
-        force_exports.extend(stub_force_exports)
-        stub_link_native_inputs = tuple(native_objects)
+        linked_rewritten_path, linked_force_exports = linked_rewrite
+        force_exports.extend(linked_force_exports)
+        linked_native_inputs = tuple(native_objects)
     staged_outputs: list[Path] = []
     work_linked = artifact_publish.staged_output_path(linked)
     staged_outputs.append(work_linked)
@@ -1663,43 +1663,18 @@ def _run_wasm_ld(
                 )
                 return 1
 
-    if not split_runtime and not runtime.name.endswith("_reloc.wasm"):
+    if not runtime.name.endswith("_reloc.wasm"):
         reloc_candidate = runtime.with_name(
             runtime.name.replace(".wasm", "_reloc.wasm")
         )
         if reloc_candidate.exists():
             runtime = reloc_candidate
 
-    # When split_runtime is enabled, generate a stub runtime that has the
-    # same exported function signatures but trivial (unreachable) bodies.
-    # wasm-ld links against the stub so --gc-sections can eliminate dead
-    # code, producing a genuinely small app.wasm.
+    # The published linked artifact is a runnable Node/WASI artifact, even when
+    # the deployment output is split-runtime. Keep split app deforestation in
+    # split_native_app_cmd below; never link output_linked.wasm against an
+    # unreachable runtime stub.
     link_runtime_path = runtime
-    if split_runtime:
-        # The stub builder needs the non-relocatable runtime because it reads
-        # the standard WASM export section (section 7) to discover function
-        # signatures.  Relocatable modules store symbols in the linking custom
-        # section instead and have no export section.
-        stub_source = runtime
-        if stub_source.name.endswith("_reloc.wasm"):
-            non_reloc = stub_source.with_name(
-                stub_source.name.replace("_reloc.wasm", ".wasm")
-            )
-            if non_reloc.exists():
-                stub_source = non_reloc
-        try:
-            stub_data = _build_runtime_stub(stub_source.read_bytes())
-        except ValueError as exc:
-            print(f"Failed to build runtime stub: {exc}", file=sys.stderr)
-            return 1
-        stub_path = Path(temp_dir.name) / "molt_runtime_stub.wasm"
-        stub_path.write_bytes(stub_data)
-        link_runtime_path = stub_path
-        print(
-            f"Split-runtime: stub {len(stub_data):,} bytes "
-            f"(real runtime {runtime.stat().st_size:,} bytes)",
-            file=sys.stderr,
-        )
 
     cmd = [
         wasm_ld,
@@ -1742,16 +1717,17 @@ def _run_wasm_ld(
     cmd += [
         "-o",
         str(work_linked),
-        str(stub_link_rewritten_path),
+        str(linked_rewritten_path),
         str(link_runtime_path),
     ]
-    cmd.extend(str(native_object) for native_object in stub_link_native_inputs)
+    cmd.extend(str(native_object) for native_object in linked_native_inputs)
 
     split_native_app_path: Path | None = None
     split_native_app_cmd: list[str] | None = None
     if split_runtime and native_objects:
         split_native_app_path = Path(temp_dir.name) / "app_native_linked.wasm"
         split_app_global_base = _split_app_global_base(output_data)
+        split_app_table_base = output_table_min if output_table_min is not None else 1
         split_native_prefix = [
             f"--allow-undefined-file={split_native_allowlist}"
             if part.startswith("--allow-undefined-file=")
@@ -1764,6 +1740,7 @@ def _run_wasm_ld(
             *split_native_prefix,
             "--import-memory",
             f"--global-base={split_app_global_base}",
+            f"--table-base={split_app_table_base}",
             "-o",
             str(split_native_app_path),
             str(rewritten_path),
@@ -1883,7 +1860,6 @@ def _run_wasm_ld(
                 # Re-read after optimization since the file changed on disk
                 linked_bytes = work_linked.read_bytes()
 
-        output_table_min = _table_import_min(output.read_bytes())
         required_table_min = _required_linked_table_min(linked_bytes, output_table_min)
         if required_table_min is not None:
             try:

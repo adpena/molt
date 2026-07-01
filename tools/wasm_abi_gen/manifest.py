@@ -72,6 +72,10 @@ CONST_POLICY_LIR_FAST = {
     "lower",
     "materialize",
 }
+CALLABLE_DISPATCH_MODES = {
+    "direct",
+    "trampoline",
+}
 OP_LOOP_RUNTIME_SINKS = {
     "result_or_drop": "ResultOrDrop",
     "non_none_result_or_drop": "NonNoneResultOrDrop",
@@ -599,6 +603,7 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
         runtime_name = entry.get("runtime_name")
         import_name = entry.get("import_name")
         callable_arity = entry.get("callable_arity")
+        callable_dispatch = entry.get("callable_dispatch", "direct")
         if not isinstance(table_index, int) or table_index < 0:
             raise WasmAbiManifestError(
                 f"reserved_runtime_callable entry {idx} has invalid index"
@@ -629,6 +634,11 @@ def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
         if not isinstance(callable_arity, int) or callable_arity < 0:
             raise WasmAbiManifestError(
                 f"reserved runtime callable {runtime_name!r} has invalid callable_arity"
+            )
+        if callable_dispatch not in CALLABLE_DISPATCH_MODES:
+            raise WasmAbiManifestError(
+                f"reserved runtime callable {runtime_name!r} has invalid "
+                f"callable_dispatch {callable_dispatch!r}"
             )
     expected_reserved_indices = set(range(len(reserved_callables)))
     if seen_reserved_indices != expected_reserved_indices:
@@ -1107,6 +1117,7 @@ def validate_loaded_manifest(
         callable_arity = entry.get("callable_arity")
         callable_result = entry.get("callable_result", "i64")
         shared_runtime_callable = entry.get("shared_runtime_callable", False)
+        callable_dispatch = entry.get("callable_dispatch", "direct")
         if not isinstance(shared_runtime_callable, bool):
             raise WasmAbiManifestError(
                 f"import {name!r} has invalid shared_runtime_callable"
@@ -1140,6 +1151,15 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"import {name!r} cannot set shared_runtime_callable without callable_arity"
             )
+        if "callable_dispatch" in entry:
+            if callable_arity is None:
+                raise WasmAbiManifestError(
+                    f"import {name!r} cannot set callable_dispatch without callable_arity"
+                )
+            if callable_dispatch not in CALLABLE_DISPATCH_MODES:
+                raise WasmAbiManifestError(
+                    f"import {name!r} has invalid callable_dispatch {callable_dispatch!r}"
+                )
         poll_table_slot = entry.get("poll_table_slot")
         if poll_table_slot is not None:
             if not isinstance(poll_table_slot, int) or poll_table_slot <= 0:

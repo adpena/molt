@@ -4,12 +4,29 @@ use crate::abi_types::{PyModuleDef, PyObject};
 use crate::bridge::{GLOBAL_BRIDGE, read_bridge_header_bits};
 use crate::hooks;
 use molt_lang_obj_model::MoltObject;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_long};
 use std::ptr;
 
 const PY_MOD_CREATE: c_int = 1;
 const PY_MOD_EXEC: c_int = 2;
+
+fn set_module_system_error(message: impl AsRef<str>) {
+    let message = CString::new(message.as_ref())
+        .unwrap_or_else(|_| CString::new("module API error").expect("static string has no nul"));
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_SystemError,
+            message.as_ptr(),
+        );
+    }
+}
+
+fn set_module_system_error_if_clear(message: impl AsRef<str>) {
+    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        set_module_system_error(message);
+    }
+}
 
 /// Resolve a `*mut PyObject` produced by this bridge to its underlying Molt
 /// handle bits.
@@ -96,23 +113,23 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     if module.is_null() {
         return ptr::null_mut();
     }
-    // CPython returns module.__dict__ (a borrowed reference).  The bridge
-    // does not yet expose the module's underlying dict pointer through a
-    // hook; PyModule_AddObject below uses module_set_attr directly to store
-    // attributes on the module's __dict__, so callers that only use
-    // PyModule_AddObject / PyModule_AddStringConstant / PyModule_AddIntConstant
-    // never need to inspect the dict pointer.
-    //
-    // NOTE(c-extension-gap): Extensions that call PyDict_SetItemString on the
-    // result will currently set attributes on the module pointer, which the
-    // mapping bridge silently ignores.  Wire a dedicated `module_dict_bits`
-    // hook before claiming PyDict_SetItemString-on-module support.
-    module
+    let module_bits = bridge_pyobj_to_bits(module);
+    let h = hooks::hooks_or_stubs();
+    let dict_bits = unsafe { (h.module_get_dict)(module_bits) };
+    if dict_bits == 0 {
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(dict_bits) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyModule_GetState(_module: *mut PyObject) -> *mut std::ffi::c_void {
-    ptr::null_mut()
+pub unsafe extern "C" fn PyModule_GetState(module: *mut PyObject) -> *mut std::ffi::c_void {
+    if module.is_null() {
+        return ptr::null_mut();
+    }
+    let module_bits = bridge_pyobj_to_bits(module);
+    let h = hooks::hooks_or_stubs();
+    unsafe { (h.module_capi_get_state)(module_bits).cast() }
 }
 
 #[unsafe(no_mangle)]
@@ -120,17 +137,31 @@ pub unsafe extern "C" fn PyState_AddModule(module: *mut PyObject, def: *mut PyMo
     if module.is_null() || def.is_null() {
         return -1;
     }
-    0
+    let module_bits = bridge_pyobj_to_bits(module);
+    let h = hooks::hooks_or_stubs();
+    unsafe { (h.module_state_add)(module_bits, def as usize) }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyState_FindModule(_def: *mut PyModuleDef) -> *mut PyObject {
-    ptr::null_mut()
+pub unsafe extern "C" fn PyState_FindModule(def: *mut PyModuleDef) -> *mut PyObject {
+    if def.is_null() {
+        return ptr::null_mut();
+    }
+    let h = hooks::hooks_or_stubs();
+    let module_bits = unsafe { (h.module_state_find)(def as usize) };
+    if module_bits == 0 {
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(module_bits) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyState_RemoveModule(def: *mut PyModuleDef) -> c_int {
-    if def.is_null() { -1 } else { 0 }
+    if def.is_null() {
+        return -1;
+    }
+    let h = hooks::hooks_or_stubs();
+    unsafe { (h.module_state_remove)(def as usize) }
 }
 
 #[unsafe(no_mangle)]
@@ -216,20 +247,35 @@ pub unsafe extern "C" fn PyModuleDef_Init(def: *mut PyModuleDef) -> *mut PyObjec
     if def.is_null() {
         return ptr::null_mut();
     }
-    // Single-phase compatibility: call the m_init function if present.
     unsafe {
-        let init = (*def).m_base.m_init;
-        if let Some(f) = init {
-            f()
-        } else {
-            module_from_def_and_slots(def, 0)
-        }
+        (*def).m_base.ob_base.ob_refcnt = 1;
+        (*def).m_base.ob_base.ob_type = &raw mut crate::abi_types::PyModuleDef_Type;
+        def.cast()
     }
+}
+
+unsafe fn module_state_size(def: *mut PyModuleDef) -> u64 {
+    let raw = unsafe { (*def).m_size };
+    if raw <= 0 { 0 } else { raw as u64 }
+}
+
+unsafe fn register_module_capi(module: *mut PyObject, def: *mut PyModuleDef) -> c_int {
+    if module.is_null() || def.is_null() {
+        return -1;
+    }
+    let module_bits = bridge_pyobj_to_bits(module);
+    let h = hooks::hooks_or_stubs();
+    let rc = unsafe { (h.module_capi_register)(module_bits, def as usize, module_state_size(def)) };
+    if rc != 0 {
+        set_module_system_error_if_clear("module C-API metadata registration failed");
+    }
+    rc
 }
 
 unsafe fn module_from_def_and_slots(
     def: *mut PyModuleDef,
     module_api_version: c_int,
+    spec: *mut PyObject,
 ) -> *mut PyObject {
     let slots = unsafe { (*def).m_slots };
     if slots.is_null() {
@@ -237,12 +283,14 @@ unsafe fn module_from_def_and_slots(
     }
 
     let mut module = ptr::null_mut();
+    let mut module_capi_registered = false;
     let mut cursor = slots;
     unsafe {
         while (*cursor).slot != 0 {
             let slot = &*cursor;
             if slot.slot == PY_MOD_CREATE {
                 if slot.value.is_null() {
+                    set_module_system_error("Py_mod_create slot is NULL");
                     return ptr::null_mut();
                 }
                 type CreateFn = unsafe extern "C" fn(
@@ -250,8 +298,11 @@ unsafe fn module_from_def_and_slots(
                     def: *mut PyModuleDef,
                 ) -> *mut PyObject;
                 let create: CreateFn = std::mem::transmute(slot.value);
-                module = create(ptr::null_mut(), def);
+                module = create(spec, def);
                 if module.is_null() {
+                    set_module_system_error_if_clear(
+                        "Py_mod_create slot returned NULL without setting an exception",
+                    );
                     return ptr::null_mut();
                 }
                 break;
@@ -263,8 +314,14 @@ unsafe fn module_from_def_and_slots(
     if module.is_null() {
         module = unsafe { PyModule_Create2(def, module_api_version) };
         if module.is_null() {
+            set_module_system_error_if_clear("PyModule_Create2 failed during PyModuleDef_Init");
             return ptr::null_mut();
         }
+        module_capi_registered = true;
+    }
+    if !module_capi_registered && unsafe { register_module_capi(module, def) } != 0 {
+        unsafe { crate::api::refcount::Py_DECREF(module) };
+        return ptr::null_mut();
     }
 
     cursor = slots;
@@ -275,17 +332,22 @@ unsafe fn module_from_def_and_slots(
                 PY_MOD_CREATE => {}
                 PY_MOD_EXEC => {
                     if slot.value.is_null() {
+                        set_module_system_error("Py_mod_exec slot is NULL");
                         crate::api::refcount::Py_DECREF(module);
                         return ptr::null_mut();
                     }
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
                     if exec(module) != 0 {
+                        set_module_system_error_if_clear(
+                            "Py_mod_exec slot returned non-zero without setting an exception",
+                        );
                         crate::api::refcount::Py_DECREF(module);
                         return ptr::null_mut();
                     }
                 }
                 _ => {
+                    set_module_system_error(format!("unsupported PyModuleDef slot {}", slot.slot));
                     crate::api::refcount::Py_DECREF(module);
                     return ptr::null_mut();
                 }
@@ -295,6 +357,66 @@ unsafe fn module_from_def_and_slots(
     }
 
     module
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_FromDefAndSpec2(
+    def: *mut PyModuleDef,
+    spec: *mut PyObject,
+    module_api_version: c_int,
+) -> *mut PyObject {
+    if def.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { module_from_def_and_slots(def, module_api_version, spec) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_FromDefAndSpec(
+    def: *mut PyModuleDef,
+    spec: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { PyModule_FromDefAndSpec2(def, spec, 0) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyModuleDef) -> c_int {
+    if module.is_null() || def.is_null() {
+        return -1;
+    }
+    let slots = unsafe { (*def).m_slots };
+    if slots.is_null() {
+        return 0;
+    }
+    let mut cursor = slots;
+    unsafe {
+        while (*cursor).slot != 0 {
+            let slot = &*cursor;
+            match slot.slot {
+                PY_MOD_CREATE => {}
+                PY_MOD_EXEC => {
+                    if slot.value.is_null() {
+                        set_module_system_error("Py_mod_exec slot is NULL");
+                        return -1;
+                    }
+                    type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
+                    let exec: ExecFn = std::mem::transmute(slot.value);
+                    if exec(module) != 0 {
+                        set_module_system_error_if_clear(
+                            "Py_mod_exec slot returned non-zero without setting an exception",
+                        );
+                        return -1;
+                    }
+                }
+                _ => {
+                    set_module_system_error(format!("unsupported PyModuleDef slot {}", slot.slot));
+                    return -1;
+                }
+            }
+            cursor = cursor.add(1);
+        }
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -312,6 +434,10 @@ pub unsafe extern "C" fn PyModule_Create2(
     };
     let module = unsafe { PyModule_New(name) };
     if module.is_null() {
+        return ptr::null_mut();
+    }
+    if unsafe { register_module_capi(module, def) } != 0 {
+        unsafe { crate::api::refcount::Py_DECREF(module) };
         return ptr::null_mut();
     }
     // Iterate the NULL-terminated PyMethodDef array and register each method
@@ -336,6 +462,9 @@ pub unsafe extern "C" fn PyModule_Create2(
                 let Some(fn_ptr) = entry.ml_meth else {
                     let mod_name = CStr::from_ptr(name).to_string_lossy();
                     let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
+                    set_module_system_error(format!(
+                        "PyModule_Create2 for {mod_name:?}: method {meth_name_str:?} has a NULL function pointer"
+                    ));
                     eprintln!(
                         "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                          method {meth_name_str:?} has a NULL function pointer",
@@ -364,6 +493,9 @@ pub unsafe extern "C" fn PyModule_Create2(
                     if rc != 0 {
                         let mod_name = CStr::from_ptr(name).to_string_lossy();
                         let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
+                        set_module_system_error(format!(
+                            "PyModule_Create2 for {mod_name:?}: failed to register method {meth_name_str:?}"
+                        ));
                         eprintln!(
                             "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                              failed to register method {meth_name_str:?}",
@@ -374,6 +506,10 @@ pub unsafe extern "C" fn PyModule_Create2(
                 } else {
                     let mod_name = CStr::from_ptr(name).to_string_lossy();
                     let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
+                    set_module_system_error(format!(
+                        "PyModule_Create2 for {mod_name:?}: runtime rejected method {meth_name_str:?} (flags 0x{:x})",
+                        entry.ml_flags
+                    ));
                     eprintln!(
                         "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                          runtime rejected method {meth_name_str:?} (flags 0x{:x})",

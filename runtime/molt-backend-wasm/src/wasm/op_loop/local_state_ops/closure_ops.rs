@@ -27,7 +27,6 @@ pub(super) fn emit_closure_local_state_op(
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(tmp_ptr));
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             emit_call(
                 func,
@@ -53,7 +52,6 @@ pub(super) fn emit_closure_local_state_op(
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(tmp_ptr));
             func.instruction(&Instruction::LocalGet(tmp_ptr));
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(locals[&args[1]]));
             emit_call(

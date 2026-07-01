@@ -39,7 +39,6 @@ _CLI_REEXPORTED_WASM_BINARY_READER_NAMES = (
 
 _WASM_SIGNATURE_READER_NAMES = (
     "_wasm_export_function_signatures",
-    "infer_wasm_table_base_from_table_ref_exports",
     "is_wasm_table_ref_export_name",
     "parse_wasm_table_ref_export_name",
     "wasm_table_ref_export_name",

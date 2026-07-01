@@ -221,11 +221,7 @@
               } else if (flags === 6 || flags === 7 || flags === 5) {
                 offset += 1;
               }
-              if (
-                Number.isFinite(expr.value) &&
-                expr.value > 0 &&
-                (!Number.isFinite(exportedBase) || expr.value >= exportedBase)
-              ) {
+              if (Number.isFinite(expr.value) && expr.value > 0) {
                 activeTableBases.push(expr.value);
               }
             } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
@@ -287,9 +283,6 @@
         }
       }
       if (Number.isFinite(tableInitBase) && tableInitBase > 0) {
-        if (Number.isFinite(exportedBase) && exportedBase > 0 && tableInitBase < exportedBase) {
-          return exportedBase;
-        }
         return tableInitBase;
       }
       if (activeTableBases.length > 0) {
@@ -303,6 +296,31 @@
     } catch {
       return exportedBase;
     }
+  };
+
+  const wasmTableBaseFromManifest = (manifest) => {
+    const raw = manifest?.wasm_table_base;
+    if (raw === null || raw === undefined) {
+      return null;
+    }
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(`manifest.wasm_table_base must be a non-negative integer, got ${raw}`);
+    }
+    return value;
+  };
+
+  const resolveWasmTableBase = ({ manifest = null, extracted = null }) => {
+    const manifestBase = wasmTableBaseFromManifest(manifest);
+    if (manifestBase === null) {
+      return extracted;
+    }
+    if (extracted !== null && extracted !== undefined && extracted < manifestBase) {
+      throw new Error(
+        `manifest wasm_table_base ${manifestBase} is above binary table base ${extracted}`,
+      );
+    }
+    return manifestBase;
   };
 
   const decodeWasmValType = (byte) => {
@@ -691,6 +709,40 @@
     return spec ? { ...spec, trampoline } : null;
   };
 
+  const tableRefExportName = (idx) =>
+    Number.isInteger(idx) ? `__molt_table_ref_${idx}` : null;
+
+  const planReservedRuntimeDispatch = ({
+    dispatchIdx,
+    sharedTableBase,
+    reservedRuntimeCallableBase,
+    reservedRuntimeCallableCount = null,
+    reservedRuntimeCallables,
+  }) => {
+    const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(
+      dispatchIdx,
+      {
+        sharedTableBase,
+        reservedRuntimeCallableBase,
+        reservedRuntimeCallableCount,
+        reservedRuntimeCallables,
+      },
+    );
+    if (
+      reservedRuntimeCallable &&
+      !reservedRuntimeCallable.trampoline &&
+      reservedRuntimeCallable.dispatch === 'trampoline'
+    ) {
+      throw new Error(
+        `reserved runtime callable ${reservedRuntimeCallable.runtimeExport} at idx=${dispatchIdx} is trampoline-only`,
+      );
+    }
+    return {
+      reservedRuntimeCallable,
+      dispatchReservedRuntimeCallable: Boolean(reservedRuntimeCallable),
+    };
+  };
+
   const reservedRuntimeCallablesFromManifest = (manifest) => {
     const entries = manifest?.abi?.browser_embed?.reserved_runtime_callables;
     if (!Array.isArray(entries)) {
@@ -704,6 +756,7 @@
       const runtimeExport = entry.runtime_export;
       const importName = entry.import_name;
       const arity = Number(entry.arity);
+      const dispatch = entry.dispatch === undefined ? 'direct' : entry.dispatch;
       if (!Number.isInteger(index) || index < 0) {
         throw new Error(`reserved runtime callable manifest entry ${idx} has invalid index`);
       }
@@ -716,7 +769,10 @@
       if (!Number.isInteger(arity) || arity < 0) {
         throw new Error(`reserved runtime callable manifest entry ${idx} has invalid arity`);
       }
-      return { index, runtimeExport, importName, arity };
+      if (dispatch !== 'direct' && dispatch !== 'trampoline') {
+        throw new Error(`reserved runtime callable manifest entry ${idx} has invalid dispatch`);
+      }
+      return { index, runtimeExport, importName, arity, dispatch };
     });
   };
 
@@ -768,6 +824,7 @@
     entry,
     indirectName,
     args,
+    describeArgs = null,
   }) => {
     const fn = runtimeExports ? runtimeExports[entry.runtimeExport] : null;
     if (typeof fn !== 'function') {
@@ -787,6 +844,21 @@
         );
       }
       callArgs = readRuntimeCallargsVector(memory, args[1], args[2]);
+    }
+    if (
+      typeof process !== 'undefined' &&
+      process &&
+      process.env &&
+      process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1'
+    ) {
+      const printableArgs = callArgs.map((arg) => String(arg)).join(',');
+      const described =
+        typeof describeArgs === 'function' ? describeArgs(entry, callArgs) || '' : '';
+      console.error(
+        `[molt wasm] reserved-runtime ${indirectName} ${entry.runtimeExport}` +
+          ` trampoline=${entry.trampoline ? 'yes' : 'no'} argc=${callArgs.length}` +
+          ` args=[${printableArgs}]${described}`,
+      );
     }
     if (callArgs.length !== entry.arity) {
       throw new Error(
@@ -928,9 +1000,11 @@
     normalizeValueForKind,
     parseWasmExportFunctionSignatures,
     parseWasmImports,
+    planReservedRuntimeDispatch,
     remapLegacyRuntimeSharedTableIndex,
-    reservedRuntimeCallableForTableIndex,
+    resolveWasmTableBase,
     reservedRuntimeCallablesFromManifest,
+    tableRefExportName,
     runtimeImportByteSpanOutNames,
     runtimeImportObjectArrayArgNames,
   };

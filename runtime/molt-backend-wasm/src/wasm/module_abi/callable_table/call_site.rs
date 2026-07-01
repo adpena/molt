@@ -117,6 +117,7 @@ mod tests {
         let plan = WasmCallableTablePlan {
             table_base: 100,
             table_indices: Vec::new(),
+            sentinel_func_idx: u32::MAX,
             split_runtime_owned_slot_start: 0,
             split_runtime_shared_abi_slot_end: 0,
             func_to_table_idx: BTreeMap::from([("callee".to_string(), 7)]),
