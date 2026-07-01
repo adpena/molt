@@ -984,6 +984,103 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     assert "nativepkg.ndimage._ni_label" in import_plan.known_modules
 
 
+def test_materialize_import_plan_compiles_pruned_native_support_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    support_path = external_root / "nativepkg" / "ndimage" / "_filters.py"
+    support_path.parent.mkdir(parents=True)
+    support_path.write_text(
+        "import math\n"
+        "import re\n\n"
+        "def gaussian_filter(value):\n"
+        "    return math.floor(value)\n\n"
+        "def unused_regex_helper(value):\n"
+        "    return re.compile(str(value))\n",
+        encoding="utf-8",
+    )
+    support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "support_files": [
+                {
+                    "path": "nativepkg/ndimage/_filters.py",
+                    "sha256": support_sha,
+                }
+            ],
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "gaussian_filter",
+                    "binding": "module_attr",
+                    "provider_module": "nativepkg.ndimage._filters",
+                    "abi": "molt.object_callargs_v1",
+                }
+            ],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset(
+            {"nativepkg.ndimage.gaussian_filter"}
+        ),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    compiled_path = import_plan.module_graph["nativepkg.ndimage._filters"]
+    compiled_source = compiled_path.read_text(encoding="utf-8")
+    assert compiled_path != support_path.resolve()
+    assert compiled_path.name == "native_support_nativepkg_ndimage__filters.py"
+    assert "def gaussian_filter" in compiled_source
+    assert "import math" in compiled_source
+    assert "import re" not in compiled_source
+    assert "unused_regex_helper" not in compiled_source
+    assert "native_support_source" in module_reasons["nativepkg.ndimage._filters"]
+
+
 def test_materialize_import_plan_rejects_missing_native_support_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2684,6 +2781,28 @@ def test_external_package_parent_closure_cannot_backdoor_children(
     )
     assert "externalpkg.massive" not in prepared.module_graph
     assert "externalpkg.sub.massive" not in prepared.module_graph
+
+
+def test_native_artifact_source_package_denies_fallback_source_root(
+    tmp_path: Path,
+) -> None:
+    fallback_init = tmp_path / "upstream" / "scipy" / "_external" / "__init__.py"
+    fallback_init.parent.mkdir(parents=True)
+    fallback_init.write_text("import scipy._external.packaging_version.version\n")
+    policy = cli._ImportAdmissionPolicy(
+        native_artifact_source_packages=frozenset({"scipy"})
+    )
+
+    assert not policy.admits_import(
+        "scipy._external",
+        fallback_init,
+        from_entry_path=False,
+    )
+    assert not policy.admits_package_parent(
+        "scipy._external",
+        fallback_init,
+        existing_modules={"scipy._external.packaging_version.version"},
+    )
 
 
 def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(

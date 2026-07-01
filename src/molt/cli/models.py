@@ -1218,10 +1218,9 @@ class _ImportAdmissionPolicy:
     ) -> bool:
         if self._native_artifact_support_source_module(module_name):
             return False
-        return (
-            self._external_root_for_path(path) is not None
-            and self._native_artifact_source_package(module_name) is not None
-        )
+        if self._native_artifact_source_package(module_name) is not None:
+            return True
+        return False
 
     def admits_import(
         self,
@@ -1230,12 +1229,12 @@ class _ImportAdmissionPolicy:
         *,
         from_entry_path: bool,
     ) -> bool:
-        if self._external_root_for_path(path) is None:
-            return True
         if self._native_artifact_support_source_module(module_name):
             return True
         if self._native_artifact_source_package(module_name) is not None:
             return False
+        if self._external_root_for_path(path) is None:
+            return True
         if from_entry_path:
             return True
         return self._package_admitted(module_name)
@@ -1247,11 +1246,10 @@ class _ImportAdmissionPolicy:
         *,
         existing_modules: Collection[str],
     ) -> bool:
+        if self._native_artifact_source_package(module_name) is not None:
+            return False
         if self._external_root_for_path(path) is None:
             return True
-        if self._native_artifact_source_package(module_name) is not None:
-            prefix = module_name + "."
-            return any(name.startswith(prefix) for name in existing_modules)
         if self._package_admitted(module_name):
             return True
         prefix = module_name + "."
