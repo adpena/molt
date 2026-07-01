@@ -171,7 +171,7 @@ def _callable_exports(
             continue
         raw_exports.append(payload)
     if not raw_exports:
-        return []
+        return ()
     export_errors: list[str] = []
     exports = _manifest_callable_exports(
         {"callable_exports": raw_exports},
@@ -179,7 +179,7 @@ def _callable_exports(
         errors=export_errors,
     )
     errors.extend(export_errors)
-    return exports
+    return tuple(exports)
 
 
 def _validate_direct_symbol_exports(

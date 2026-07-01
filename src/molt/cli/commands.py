@@ -2795,6 +2795,19 @@ def extension_build(
         artifact_kind = (
             "wasm_relocatable_object" if wasm_static_link else "shared_library"
         )
+        build_payload: dict[str, Any] = {
+            "compiler": cc_cmd,
+            "compiler_target": runtime_target_triple or "native",
+            "wasi_sysroot": wasi_sysroot_path,
+            "runtime_linkage": runtime_linkage,
+            "artifact_kind": artifact_kind,
+            "include_dirs": [str(path) for path in abi_include_roots]
+            + [str(project_root)]
+            + [str(path) for path in include_paths],
+            "python_header": str(python_header),
+            "extra_compile_args": compile_args,
+            "extra_link_args": link_args,
+        }
         manifest_payload: dict[str, Any] = {
             "schema_version": 1,
             "name": str(project_name),
@@ -2820,31 +2833,19 @@ def extension_build(
             "wheel": wheel_name,
             "extension": extension_archive_path,
             "support_files": [entry.digest_payload() for entry in support_files],
-            "build": {
-                "compiler": cc_cmd,
-                "compiler_target": runtime_target_triple or "native",
-                "wasi_sysroot": wasi_sysroot_path,
-                "runtime_linkage": runtime_linkage,
-                "artifact_kind": artifact_kind,
-                "include_dirs": [str(path) for path in abi_include_roots]
-                + [str(project_root)]
-                + [str(path) for path in include_paths],
-                "python_header": str(python_header),
-                "extra_compile_args": compile_args,
-                "extra_link_args": link_args,
-            },
+            "build": build_payload,
         }
         if source_c_api_requirements is not None:
-            manifest_payload["build"]["source_c_api_scan"] = (
+            build_payload["source_c_api_scan"] = (
                 source_c_api_requirements.manifest_payload()
             )
         if loaded_source_plan is not None:
             manifest_payload["source_plan"] = loaded_source_plan.manifest_payload()
-            manifest_payload["build"]["source_plan_digest"] = loaded_source_plan.digest
-            manifest_payload["build"]["object_count"] = len(object_facts)
-            manifest_payload["build"]["linked_object_count"] = len(object_paths)
+            build_payload["source_plan_digest"] = loaded_source_plan.digest
+            build_payload["object_count"] = len(object_facts)
+            build_payload["linked_object_count"] = len(object_paths)
             assert source_plan_object_closure is not None
-            manifest_payload["build"]["object_closure_sha256"] = (
+            build_payload["object_closure_sha256"] = (
                 source_plan_object_closure.closure_sha256
             )
             assert source_c_api_requirements is not None
