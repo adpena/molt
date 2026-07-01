@@ -58,7 +58,6 @@ from tools.op_kinds import validate as _validate  # noqa: E402
 from tools.op_kinds.paths import (  # noqa: E402
     OUT_PY,
     OUT_RS,
-    RUSTFMT_TMP,
     TABLE,
     harness_memory_guard,
 )  # noqa: E402
@@ -72,7 +71,6 @@ OpKindTableError = _validate.OpKindTableError
 def _sync_facade_hooks() -> None:
     _validate.TABLE = TABLE
     _render_rust.ROOT = ROOT
-    _render_rust.RUSTFMT_TMP = RUSTFMT_TMP
     _render_rust.harness_memory_guard = harness_memory_guard
 
 def load_table(table_path: Path | None = None) -> dict:

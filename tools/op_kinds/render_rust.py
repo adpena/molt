@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import re
-import tempfile
 from pathlib import Path
 
 from tools import harness_memory_guard
 
-from .paths import ROOT, RUSTFMT_TMP
+from .paths import ROOT
 from .schema import *  # noqa: F403
 from .validate import _opcode_role_members
 from .render_rust_analysis import (
@@ -820,33 +819,19 @@ def _rustfmt_rust_source(source: str) -> str:
     The generated file is compiler-owned, so the formatter is part of the
     generator contract rather than an optional developer cleanup command.
     """
-    RUSTFMT_TMP.mkdir(parents=True, exist_ok=True)
-    path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            newline="\n",
-            suffix=".rs",
-            prefix="op_kinds_",
-            dir=RUSTFMT_TMP,
-            delete=False,
-        ) as tmp:
-            path = Path(tmp.name)
-            tmp.write(source)
-        result = harness_memory_guard.guarded_completed_process(
-            ["rustfmt", "--edition", "2024", str(path)],
-            prefix="MOLT_GENERATOR",
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=60.0,
-        )
-        result.check_returncode()
-        return path.read_text(encoding="utf-8")
-    finally:
-        if path is not None:
-            path.unlink(missing_ok=True)
+    result = harness_memory_guard.guarded_completed_process(
+        ["rustfmt", "--edition", "2024", "--emit", "stdout"],
+        prefix="MOLT_GENERATOR",
+        cwd=ROOT,
+        input=source,
+        capture_output=True,
+        text=True,
+        timeout=60.0,
+    )
+    result.check_returncode()
+    if not isinstance(result.stdout, str):
+        raise TypeError("rustfmt stdout must be text when text=True")
+    return result.stdout
 
 
 _SIMPLEIR_CONTROL_FN_DOCS = {
