@@ -63,18 +63,19 @@ pub(super) unsafe fn bind_builtin_call(
         if fn_ptr == fn_addr!(crate::object::ops_builtins::molt_print_builtin) {
             return bind_builtin_print(_py, args);
         }
-        if bind_kind == Some(BIND_KIND_TYPE_NEW_INIT)
-            || fn_ptr == fn_addr!(molt_type_new)
-            || fn_ptr == fn_addr!(molt_type_init)
-        {
+        if bind_kind == Some(BIND_KIND_TYPE_NEW_INIT) {
             if matches!(
                 std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
                 Some("1")
             ) {
+                // `__molt_bind_kind__` is the dispatch authority; the raw
+                // function pointer is only a diagnostic label.
                 let kind = if fn_ptr == fn_addr!(molt_type_new) {
                     "type.__new__"
-                } else {
+                } else if fn_ptr == fn_addr!(molt_type_init) {
                     "type.__init__"
+                } else {
+                    "type.__new__/__init__"
                 };
                 let self_bits = args.pos.first().copied().unwrap_or(0);
                 let mut meta_label = "<unknown>".to_string();
