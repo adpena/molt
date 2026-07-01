@@ -1,2 +1,3 @@
 runtime/molt-ir/src/tir/op_kinds_generated.rs text eol=lf
 src/molt/frontend/lowering/op_kinds_generated.py text eol=lf
+*.rs text eol=lf

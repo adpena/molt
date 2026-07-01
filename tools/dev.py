@@ -487,6 +487,14 @@ def main() -> None:
             env=env,
         ):
             _run_repo_cmd(lint_cmd, env, tty=use_tty)
+    elif cmd[0] in {"fmt", "format"}:
+        env = _canonical_env()
+        _require_project_python(env)
+        _run_dx_command("format", env, tty=use_tty)
+    elif cmd[0] in {"fmt-check", "format-check"}:
+        env = _canonical_env()
+        _require_project_python(env)
+        _run_dx_command("format-check", env, tty=use_tty)
     elif cmd[0] == "test":
         env = os.environ.copy()
         _apply_dev_trusted(env)
@@ -547,7 +555,7 @@ def main() -> None:
     else:
         print(
             "Usage: tools/dev.py "
-            "[env|install|clippy|security|compliance|backend|gates|bench|lint|test|setup|doctor|update|validate|clean-artifacts]"
+            "[env|install|clippy|security|compliance|backend|gates|bench|lint|fmt|fmt-check|test|setup|doctor|update|validate|clean-artifacts]"
         )
 
 

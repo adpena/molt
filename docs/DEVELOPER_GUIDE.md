@@ -605,7 +605,12 @@ uv run pre-commit run -a
 
 Default pre-commit hooks are check-only. Use explicit commands such as
 `uv run --python 3.12 ruff check --fix .`, `uv run --python 3.12 ruff format .`,
-or `cargo fmt` before staging when a check reports required formatting changes.
+or `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed --write`
+before staging when a check reports required formatting changes. `tools/dev.py
+fmt-check` and `tools/dev.py fmt` run the same repo-owned commands. Avoid raw
+workspace-wide `cargo fmt`: generated Rust is owned by its generator `--check`
+gate, and the repo Rust formatter rewrites selected human Rust source only when
+`rustfmt --emit stdout` differs from the current file content.
 
 ### Differential coverage reporting
 ```bash

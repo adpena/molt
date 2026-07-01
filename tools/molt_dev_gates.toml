@@ -29,6 +29,7 @@
 always = [
   "python3 tools/venv_exec.py python -m ruff check .",
   "python3 tools/venv_exec.py python -m ruff format --check .",
+  "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
 ]
 
 # --- Native (Cranelift) backend Rust -------------------------------------
@@ -358,14 +359,18 @@ gates = [
 # --- The dev tooling itself (self-gate: its own failure-mode tests) ------
 [[rule]]
 name = "dev-tooling"
-description = "tools/molt_dev.py or its config/tests: run the driver's own failure-mode tests."
+description = "dev drivers, Rust formatting custody, or their config/tests: run the failure-mode tests."
 globs = [
+  "tools/dev.py",
+  "tools/check_rustfmt.py",
   "tools/molt_dev.py",
   "tools/molt_dev_gates.toml",
+  "tests/tools/test_check_rustfmt.py",
   "tests/test_molt_dev.py",
 ]
 gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py",
 ]
 
 # --- CI workflow / pyproject lint wiring ---------------------------------
