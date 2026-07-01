@@ -74,7 +74,13 @@ every consumer needed to delete or unify the old lane.
   commands are rejected because they create throwaway environments and destroy
   proof latency. The queue derives `MOLT_SESSION_ID` from the contention key so
   serialized lanes reuse their Cargo/uv artifact caches while disjoint
-  contention keys remain isolated.
+  contention keys remain isolated. Long-running work must use queue-owned
+  detached launch (`tools/proof_queue.py exec ... --detach` or a named lane
+  with `--detach`), never hand-rolled shell backgrounding, PowerShell
+  `Start-Process`, or Codex-held interactive sessions. Detached launch starts
+  `tools/proof_queue.py run --run-id RUN_ID` for the exact queued row and
+  records `*.runner.log`; WASM resource families preflight the checked-in Rust
+  toolchain contract and required Rust targets before Cargo starts.
 - Pact Kernel A acceptance must use the named queue lane
   `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
   `python -m molt build ... field_solve.py` is build evidence, not acceptance;

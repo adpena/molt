@@ -3,7 +3,7 @@
 //! Each backend implements all three traits. The separation provides
 //! distinct ownership semantics (buffers vs programs vs execution state).
 
-use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 

@@ -74,6 +74,13 @@ is reconciled.
   `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
 - Submit queued work with a clear `--reason`, `--resource-family`,
   `--contention-key`, and `--scope`; cite queue run IDs/log paths as evidence.
+- For long-running work, use queue-owned detached launch (`tools/proof_queue.py
+  exec ... --detach` or `tools/proof_queue.py pact-witness-acceptance
+  --detach`). Do not hand-roll `Start-Process`, shell backgrounding, or
+  Codex-held interactive sessions for proof custody. Detached launch creates a
+  queued row, starts `tools/proof_queue.py run --run-id RUN_ID`, and records a
+  `*.runner.log`. WASM resource families preflight the checked-in Rust
+  toolchain contract and required Rust targets before Cargo starts.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.

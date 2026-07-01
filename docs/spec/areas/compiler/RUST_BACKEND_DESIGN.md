@@ -460,7 +460,7 @@ molt_output/
 [package]
 name = "molt-generated"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 # Conditional: only included when the transpiled code uses them

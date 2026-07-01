@@ -3,6 +3,7 @@ name = "molt-runtime-stringprep"
 version = "0.1.0"
 publish = false
 edition = "2024"
+rust-version = "1.96.1"
 license = "Apache-2.0"
 description = "RFC 3454 StringPrep intrinsics for the Molt runtime"
 

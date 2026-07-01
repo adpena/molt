@@ -8,7 +8,7 @@ use std::fmt::Write;
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
 use crate::render::indexing::{
-    render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype, IndexDialect,
+    IndexDialect, render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype,
 };
 use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 

@@ -1,7 +1,7 @@
 //! Tests for kernel compilation caching across all backends.
 
-use molt_gpu::device::cpu::CpuDevice;
 use molt_gpu::device::Compiler;
+use molt_gpu::device::cpu::CpuDevice;
 
 #[test]
 fn test_cpu_compile_cache_hit() {
@@ -48,8 +48,8 @@ fn test_cpu_compile_cache_empty_initial() {
 
 #[cfg(target_os = "macos")]
 mod metal_cache_tests {
-    use molt_gpu::device::metal::MetalDevice;
     use molt_gpu::device::Compiler;
+    use molt_gpu::device::metal::MetalDevice;
 
     #[test]
     fn test_metal_compile_cache_hit() {

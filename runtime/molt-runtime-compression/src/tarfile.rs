@@ -22,8 +22,8 @@ use crate::bridge::*;
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 // ── Tar block constants ────────────────────────────────────────────────────
 
@@ -298,16 +298,16 @@ fn decompress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())
 }
 
 fn compress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
-    use bzip2::write::BzEncoder;
     use bzip2::Compression;
+    use bzip2::write::BzEncoder;
     let mut enc = BzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())

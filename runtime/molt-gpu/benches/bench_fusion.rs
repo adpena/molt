@@ -393,8 +393,12 @@ fn main() {
 
     // Print results
     println!("## Fusion Benchmarks\n");
-    println!("| Composition | Unfused Kernels | Fused Kernels | Unfused Render (us) | Fused Render (us) | Speedup | Fusion Pass (us) |");
-    println!("|-------------|-----------------|---------------|--------------------:|------------------:|--------:|-----------------:|");
+    println!(
+        "| Composition | Unfused Kernels | Fused Kernels | Unfused Render (us) | Fused Render (us) | Speedup | Fusion Pass (us) |"
+    );
+    println!(
+        "|-------------|-----------------|---------------|--------------------:|------------------:|--------:|-----------------:|"
+    );
     for r in &results {
         let speedup = r.unfused_render_us / r.fused_render_us;
         println!(

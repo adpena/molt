@@ -554,7 +554,9 @@ def _ensure_runtime_wasm_artifact(
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
     )
-    requested_exports = None if required_exports is None else frozenset(required_exports)
+    requested_exports = (
+        None if required_exports is None else frozenset(required_exports)
+    )
     requested_features = frozenset(required_link_features)
     ready_export_sets = (
         runtime_state.runtime_reloc_wasm_ready_export_sets
@@ -1654,6 +1656,17 @@ def _ensure_runtime_wasm(
                 "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
                 file=sys.stderr,
             )
+        if wasm_toolchain.rust_target_libdir("wasm32-wasip1") is None:
+            if not json_output:
+                print(
+                    wasm_toolchain.rust_target_missing_message(
+                        "wasm32-wasip1",
+                        root=root,
+                        context="Runtime wasm build",
+                    ),
+                    file=sys.stderr,
+                )
+            return False
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         if cargo_rustflags:

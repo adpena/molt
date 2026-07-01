@@ -621,9 +621,19 @@ def test_cli_update_check_json() -> None:
     steps = data.get("steps")
     assert isinstance(steps, list)
     names = {entry.get("name") for entry in steps if isinstance(entry, dict)}
-    assert "rustup-update-stable" in names
-    assert "rustup-target-add-wasm32-unknown-unknown" in names
-    assert "rustup-target-add-wasm32-wasip1" in names
+    assert "rustup-install-pinned-toolchain" in names
+    assert "rustup-update-stable" not in names
+    assert "rustup-target-add-wasm32-unknown-unknown" not in names
+    assert "rustup-target-add-wasm32-wasip1" not in names
+    toolchain_step = next(
+        entry
+        for entry in steps
+        if entry.get("name") == "rustup-install-pinned-toolchain"
+    )
+    cmd = toolchain_step.get("cmd")
+    assert isinstance(cmd, list)
+    assert "--target" in cmd
+    assert "wasm32-wasip1" in cmd
     assert "cargo-update-root" in names
     assert "cargo-update-runtime" in names
     assert "cargo-update-fuzz" in names

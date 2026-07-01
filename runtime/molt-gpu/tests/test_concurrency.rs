@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::thread;
 
 use molt_gpu::device::arena::{Arena, ArenaConfig};
-use molt_gpu::device::cpu::interpret;
 use molt_gpu::device::cpu::CpuDevice;
+use molt_gpu::device::cpu::interpret;
 use molt_gpu::device::{Allocator, Compiler};
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;

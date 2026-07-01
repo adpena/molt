@@ -1539,6 +1539,68 @@ def test_runtime_wasm_json_build_failure_emits_cargo_detail(
     assert "wasi sysroot authority" in captured.err
 
 
+def test_runtime_wasm_missing_rust_target_fails_before_cargo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "missing-target"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD.wasm_toolchain,
+        "rust_target_libdir",
+        lambda target: None,
+        raising=True,
+    )
+
+    def fail_if_cargo_runs(**_kwargs: object) -> tuple[subprocess.CompletedProcess[str], Path]:
+        raise AssertionError("runtime WASM Cargo build should not run")
+
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_run_runtime_wasm_cargo_build",
+        fail_if_cargo_runs,
+        raising=True,
+    )
+
+    assert not RUNTIME_BUILD._ensure_runtime_wasm(
+        tmp_path / "wasm" / "molt_runtime.wasm",
+        reloc=False,
+        json_output=False,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+    )
+    captured = capsys.readouterr()
+    assert "Runtime wasm build requires Rust target wasm32-wasip1" in captured.err
+
+
 def test_wasi_sysroot_python_resolver_accepts_distro_target_include_layout(
     tmp_path: Path,
 ) -> None:

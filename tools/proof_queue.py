@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from typing import Sequence
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.cli import wasm_toolchain  # noqa: E402
 
 RUNNING = {"queued", "running"}
 NOTE_KIND_DESCRIPTIONS = {
@@ -46,6 +48,8 @@ EDGE_KIND_DESCRIPTIONS = {
 }
 EDGE_KINDS = frozenset(EDGE_KIND_DESCRIPTIONS)
 DEFAULT_EDGE_KIND = "depends_on"
+
+WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
 
 
 def _utc_now() -> str:
@@ -934,6 +938,56 @@ def _memory_guard_command(
     ]
 
 
+def _required_rust_targets_for_resource(
+    resource_family: str, *, repo_root: Path
+) -> tuple[str, ...]:
+    if resource_family in WASM_RESOURCE_FAMILIES:
+        return wasm_toolchain.rust_toolchain_contract(repo_root).required_wasm_targets
+    return ()
+
+
+def _ensure_run_toolchain_preflight(
+    *,
+    repo_root: Path,
+    resource_family: str,
+) -> list[str] | None:
+    warnings: list[str] = []
+    try:
+        required_targets = _required_rust_targets_for_resource(
+            resource_family, repo_root=repo_root
+        )
+    except wasm_toolchain.RustToolchainContractError as exc:
+        return [str(exc)]
+    for target in required_targets:
+        if not wasm_toolchain.ensure_rustup_target(target, warnings, root=repo_root):
+            if not warnings:
+                warnings.append(f"failed to ensure Rust target {target}")
+            return warnings
+    return None
+
+
+def _write_failed_run_log(
+    log_path: Path,
+    *,
+    run_id: str,
+    logical_id: str,
+    reason: str,
+    repo_root: Path,
+    command: list[str],
+    lines: Sequence[str],
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log:
+        print(f"proof_queue run_id={run_id}", file=log)
+        print(f"logical_id={logical_id}", file=log)
+        print(f"reason={reason}", file=log)
+        print(f"cwd={repo_root}", file=log)
+        print(f"command={shlex.join(command)}", file=log)
+        print("", file=log)
+        for line in lines:
+            print(line, file=log)
+
+
 def _command_basename(command: str) -> str:
     return Path(command).name.lower()
 
@@ -1023,7 +1077,9 @@ def _uv_active_python_command(
     return command
 
 
-def _first_existing_manifest_root(repo_root: Path, candidates: list[str]) -> Path | None:
+def _first_existing_manifest_root(
+    repo_root: Path, candidates: list[str]
+) -> Path | None:
     for candidate in candidates:
         root = repo_root / candidate
         if (root / "extension_manifest.json").is_file() or any(
@@ -1170,6 +1226,31 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
     if args.print_spec:
         print(json.dumps(runnable, indent=2, sort_keys=True))
         return 0
+    if getattr(args, "detach", False):
+        rc, run_id = _queue_one(
+            args,
+            logical_id=str(runnable["logical_id"]),
+            reason=str(runnable["reason"]),
+            command=list(runnable["command"]),
+            resource_family=str(runnable["resource_family"]),
+            contention_key=str(runnable["contention_key"]),
+            scopes=list(runnable["scopes"]),
+            env_overrides=dict(runnable["env_overrides"]),
+            initial_notes=initial_notes,
+            depends_on=getattr(args, "depends_on", []) or [],
+            edge_kind=getattr(args, "edge_kind", DEFAULT_EDGE_KIND),
+            edge_note=getattr(args, "edge_note", None),
+        )
+        if rc != 0 or run_id is None:
+            return rc
+        pid, runner_log = _launch_detached_runner(
+            args,
+            run_id=run_id,
+            timeout=float(runnable["timeout"]),
+        )
+        print(f"detached {run_id} runner_pid={pid}")
+        print(f"runner_log: {runner_log}")
+        return 0
     return _run_one(
         args,
         logical_id=str(runnable["logical_id"]),
@@ -1195,6 +1276,134 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
 
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
     return _run_named_spec(args, _pact_witness_oracle_spec(args.timeout))
+
+
+def _queue_one(
+    args: argparse.Namespace,
+    *,
+    logical_id: str,
+    reason: str,
+    command: list[str],
+    resource_family: str,
+    contention_key: str,
+    scopes: list[str],
+    env_overrides: dict[str, str],
+    initial_notes: list[str] | None = None,
+    depends_on: list[str] | None = None,
+    edge_kind: str = DEFAULT_EDGE_KIND,
+    edge_note: str | None = None,
+) -> tuple[int, str | None]:
+    if not command:
+        raise SystemExit("proof command is empty")
+    db = _db_path(args)
+    logs_root = _logs_root(args)
+    repo_root = _repo_root(args)
+    conn = _connect(db)
+    for parent_run_id in depends_on or []:
+        if not _run_exists(conn, parent_run_id):
+            raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
+    if edge_kind not in EDGE_KINDS:
+        allowed = ", ".join(sorted(EDGE_KINDS))
+        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
+    policy_error = _proof_command_policy_error(command)
+    if policy_error is not None:
+        print(policy_error, file=sys.stderr)
+        return 2, None
+    active = list(_active_for_key(conn, contention_key))
+    if active:
+        print(
+            f"contention key {contention_key!r} already has active run(s):",
+            file=sys.stderr,
+        )
+        for row in active:
+            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
+        return 2, None
+    run_id = f"{_compact_utc()}-{_slug(logical_id)}-{uuid.uuid4().hex[:16]}"
+    logs_root.mkdir(parents=True, exist_ok=True)
+    _insert_run(
+        conn,
+        run_id=run_id,
+        logical_id=logical_id,
+        reason=reason,
+        command=command,
+        cwd=repo_root,
+        resource_family=resource_family,
+        contention_key=contention_key,
+        scopes=scopes,
+        env_overrides=env_overrides,
+        log_path=logs_root / f"{run_id}.log",
+        summary_json=logs_root / f"{run_id}.memory_guard.json",
+    )
+    for parent_run_id in depends_on or []:
+        _insert_edge(
+            conn,
+            parent_run_id=parent_run_id,
+            child_run_id=run_id,
+            kind=edge_kind,
+            note=edge_note,
+        )
+    for note in initial_notes or []:
+        _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
+    if initial_notes or depends_on:
+        _write_marimo_notebook(args, conn, run_id)
+    print(f"queued {run_id}")
+    return 0, run_id
+
+
+def _global_arg_pairs(args: argparse.Namespace) -> list[str]:
+    pairs: list[str] = []
+    for attr, option in (
+        ("db", "--db"),
+        ("logs_root", "--logs-root"),
+        ("notebooks_root", "--notebooks-root"),
+        ("repo_root", "--repo-root"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            pairs.extend([option, str(value)])
+    return pairs
+
+
+def _launch_detached_runner(
+    args: argparse.Namespace, *, run_id: str, timeout: float
+) -> tuple[int, Path]:
+    logs_root = _logs_root(args)
+    logs_root.mkdir(parents=True, exist_ok=True)
+    runner_log = logs_root / f"{run_id}.runner.log"
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        *_global_arg_pairs(args),
+        "run",
+        "--run-id",
+        run_id,
+        "--limit",
+        "1",
+        "--timeout",
+        str(timeout),
+    ]
+    popen_kwargs: dict[str, object] = {
+        "cwd": _repo_root(args),
+        "stdin": subprocess.DEVNULL,
+        "text": True,
+    }
+    if os.name == "nt":
+        flags = 0
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        popen_kwargs["creationflags"] = flags
+    else:
+        popen_kwargs["start_new_session"] = True
+    with runner_log.open("w", encoding="utf-8") as log:
+        print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
+        print(f"command={shlex.join(command)}", file=log, flush=True)
+        proc = subprocess.Popen(
+            command,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            **popen_kwargs,
+        )
+    return proc.pid, runner_log
 
 
 def _run_one(
@@ -1289,16 +1498,49 @@ def _run_one(
             finished_at=now,
             elapsed_s=0.0,
         )
-        with log_path.open("w", encoding="utf-8") as log:
-            print(f"proof_queue run_id={run_id}", file=log)
-            print(f"logical_id={logical_id}", file=log)
-            print(f"reason={reason}", file=log)
-            print(f"cwd={repo_root}", file=log)
-            print(f"command={shlex.join(command)}", file=log)
-            print("", file=log)
-            print(policy_error, file=log)
+        _write_failed_run_log(
+            log_path,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            lines=[policy_error],
+        )
         print(f"rejected {run_id} rc=2")
         print(policy_error, file=sys.stderr)
+        print(f"log: {log_path}")
+        if _notes_for_run_ids(conn, [run_id]).get(run_id):
+            _write_marimo_notebook(args, conn, run_id)
+        return 2
+    preflight_errors = _ensure_run_toolchain_preflight(
+        repo_root=repo_root,
+        resource_family=resource_family,
+    )
+    if preflight_errors is not None:
+        now = _utc_now()
+        _update_run(
+            conn,
+            run_id,
+            status="failed",
+            returncode=2,
+            started_at=now,
+            finished_at=now,
+            elapsed_s=0.0,
+        )
+        lines = ["proof queue toolchain preflight failed:", *preflight_errors]
+        _write_failed_run_log(
+            log_path,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            lines=lines,
+        )
+        print(f"rejected {run_id} rc=2")
+        for line in lines:
+            print(line, file=sys.stderr)
         print(f"log: {log_path}")
         if _notes_for_run_ids(conn, [run_id]).get(run_id):
             _write_marimo_notebook(args, conn, run_id)
@@ -1380,13 +1622,39 @@ def _cmd_exec(args: argparse.Namespace) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     env_overrides = _env_overrides_from_pairs(args.env)
     initial_notes = getattr(args, "note", []) or []
+    contention_key = args.contention_key or f"{args.resource_family}:default"
+    if args.detach:
+        rc, run_id = _queue_one(
+            args,
+            logical_id=args.id,
+            reason=args.reason,
+            command=command,
+            resource_family=args.resource_family,
+            contention_key=contention_key,
+            scopes=args.scope,
+            env_overrides=env_overrides,
+            initial_notes=initial_notes,
+            depends_on=args.depends_on,
+            edge_kind=args.edge_kind,
+            edge_note=args.edge_note,
+        )
+        if rc != 0 or run_id is None:
+            return rc
+        pid, runner_log = _launch_detached_runner(
+            args,
+            run_id=run_id,
+            timeout=args.timeout,
+        )
+        print(f"detached {run_id} runner_pid={pid}")
+        print(f"runner_log: {runner_log}")
+        return 0
     return _run_one(
         args,
         logical_id=args.id,
         reason=args.reason,
         command=command,
         resource_family=args.resource_family,
-        contention_key=args.contention_key or f"{args.resource_family}:default",
+        contention_key=contention_key,
         scopes=args.scope,
         env_overrides=env_overrides,
         timeout=args.timeout,
@@ -1527,15 +1795,30 @@ def _cmd_submit(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
-    queued = list(
-        conn.execute("SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid")
-    )
+    if args.run_id:
+        selected = conn.execute(
+            "SELECT * FROM proof_runs WHERE run_id = ?",
+            (args.run_id,),
+        ).fetchone()
+        if selected is None:
+            raise SystemExit(f"unknown proof run {args.run_id!r}")
+        if selected["status"] != "queued":
+            raise SystemExit(
+                f"proof run {args.run_id!r} is {selected['status']}, not queued"
+            )
+        queued = [selected]
+    else:
+        queued = list(
+            conn.execute(
+                "SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid"
+            )
+        )
     rows = []
     for row in queued:
         state, blockers = _dependency_state(conn, row["run_id"])
         if state == "ready":
             rows.append(row)
-            if len(rows) >= args.limit:
+            if args.run_id or len(rows) >= args.limit:
                 break
             continue
         blocker_summary = ", ".join(
@@ -1831,6 +2114,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_dependency_args(exec_p)
     exec_p.add_argument("--timeout", type=float, default=1200.0)
+    exec_p.add_argument("--detach", action="store_true")
     exec_p.add_argument("--wait", action="store_true")
     exec_p.add_argument("--wait-timeout", type=float)
     exec_p.add_argument("command", nargs=argparse.REMAINDER)
@@ -1842,6 +2126,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run_p = sub.add_parser("run", help="run queued proof specs")
     run_p.add_argument("--limit", type=int, default=1)
+    run_p.add_argument("--run-id")
     run_p.add_argument("--timeout", type=float, default=1200.0)
     run_p.set_defaults(func=_cmd_run)
 
@@ -1920,6 +2205,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_dependency_args(pact_accept_p)
     pact_accept_p.add_argument("--timeout", type=float)
+    pact_accept_p.add_argument("--detach", action="store_true")
     pact_accept_p.add_argument("--print-spec", action="store_true")
     pact_accept_p.set_defaults(func=_cmd_pact_witness_acceptance)
 
@@ -1938,6 +2224,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_dependency_args(pact_oracle_p)
     pact_oracle_p.add_argument("--timeout", type=float)
+    pact_oracle_p.add_argument("--detach", action="store_true")
     pact_oracle_p.add_argument("--print-spec", action="store_true")
     pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)
     return parser

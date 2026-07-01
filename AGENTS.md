@@ -107,6 +107,13 @@ is reconciled.
   `--contention-key`, `--scope`, and `--note` describing what changed or what is
   being tested/explored and why. Prefer TOML DSL or `exec` over ad hoc
   background processes. Cite queue run IDs/log/evidence paths as evidence.
+- For long-running work, use queue-owned detached launch (`tools/proof_queue.py
+  exec ... --detach` or `tools/proof_queue.py pact-witness-acceptance
+  --detach`). Do not hand-roll `Start-Process`, shell backgrounding, or
+  Codex-held interactive sessions for proof custody. Detached launch creates a
+  queued row, starts `tools/proof_queue.py run --run-id RUN_ID`, and records a
+  `*.runner.log`. WASM resource families preflight the checked-in Rust
+  toolchain contract and required Rust targets before Cargo starts.
 - Queue rows record a git snapshot, append-only notes, append-only acyclic proof
   DAG edges, memory-guard summaries, and deterministic marimo notebook
   projections under `logs/proof_queue/notebooks/`. Append observations with

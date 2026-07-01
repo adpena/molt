@@ -2,7 +2,8 @@
 name = "molt-passes"
 version = "0.1.0"
 publish = false
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 license = "Apache-2.0"
 
 # Pass/fact/orchestration layer. This crate depends only on the immutable IR

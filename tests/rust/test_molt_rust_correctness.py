@@ -188,7 +188,7 @@ def _compile_and_run_rust(
                 rs_path,
                 "-o",
                 bin_path,
-                "--edition=2021",
+                "--edition=2024",
                 *[flag for lint in allow_lints for flag in ("-A", lint)],
             ],
             capture_output=True,
