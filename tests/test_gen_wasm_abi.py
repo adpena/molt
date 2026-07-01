@@ -16,6 +16,7 @@ if str(WASM_ABI_GEN_ROOT) not in sys.path:
     sys.path.insert(0, str(WASM_ABI_GEN_ROOT))
 
 from wasm_abi_gen import manifest  # noqa: E402
+from wasm_abi_gen.paths import OUT_RUNTIME_CALLABLES_RS  # noqa: E402
 
 _GEN_CACHE: object | None = None
 _MANIFEST_CACHE: dict | None = None
@@ -41,6 +42,23 @@ def _load_gen_wasm_abi():
     _install_gen_cache(module)
     _GEN_CACHE = module
     return module
+
+
+def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
+    input_files = {path.resolve() for path in manifest.generator_input_files()}
+    assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
+    assert not any(
+        path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
+    )
+
+    runtime_exports = manifest.generator_runtime_export_signature_rows()
+    assert runtime_exports == tuple(sorted(runtime_exports))
+    assert any(
+        name == "molt_importlib_import_transaction"
+        and params == ("i64", "i64", "i64", "i64", "i64")
+        and result == "i64"
+        for name, params, result in runtime_exports
+    )
 
 
 def _install_gen_cache(gen) -> None:
@@ -401,7 +419,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     rendered_runtime = gen.render_runtime_callables_rs(data)
     assert "molt_importlib_import_transaction" in rendered_runtime
     assert "molt_cpython_abi_cext_call_trampoline" in rendered_runtime
-    assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_runtime
     assert "molt_types_bootstrap" not in rendered_runtime
     assert (
         f'({len(reserved_callables)}, "molt_importlib_import_transaction", '
@@ -512,7 +529,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     rendered_py = gen.render_py(data)
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "use super::import_tokens::WasmRuntimeImport;" in rendered_rs
-    assert "import: WasmRuntimeImport::ImportlibImportTransaction" in rendered_rs
+    assert "import: None" in rendered_rs
+    assert "import: Some(WasmRuntimeImport::ImportlibImportTransaction)" in rendered_rs
+    assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_rs
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
     assert (
         '"molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction)'
@@ -535,6 +554,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "def wasm_runtime_callable_result" in rendered_py
     assert "RuntimeCallableResult::Void" in rendered_rs
     assert "ReservedRuntimeCallableSpec" in rendered_rs
+    assert (
+        "RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult"
+        in rendered_rs
+    )
     assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs

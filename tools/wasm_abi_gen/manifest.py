@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -15,6 +16,7 @@ from wasm_abi_gen.paths import (
     INTRINSIC_CATEGORIES,
     INTRINSICS_MANIFEST,
     MANIFEST,
+    OUT_RUNTIME_CALLABLES_RS,
     RUNTIME_ROOT,
 )
 
@@ -159,7 +161,8 @@ def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
     return sorted(imports)
 
 
-def _intrinsic_signature_rows() -> list[tuple[str, int, str]]:
+@lru_cache(maxsize=1)
+def _intrinsic_signature_rows() -> tuple[tuple[str, int, str], ...]:
     tree = ast.parse(INTRINSICS_MANIFEST.read_text(encoding="utf-8"))
     rows: list[tuple[str, int, str]] = []
     for node in tree.body:
@@ -174,7 +177,7 @@ def _intrinsic_signature_rows() -> list[tuple[str, int, str]]:
             + (1 if args.kwarg is not None else 0)
         )
         rows.append((node.name, arity, "i64"))
-    return rows
+    return tuple(rows)
 
 
 def _static_type_index_by_signature(
@@ -204,7 +207,8 @@ def _intrinsic_manifest_names() -> set[str]:
     return {name for name, _, _ in _intrinsic_signature_rows()}
 
 
-def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
+@lru_cache(maxsize=1)
+def _load_runtime_feature_gates_from_categories() -> tuple[tuple[str, str], ...]:
     raw = INTRINSIC_CATEGORIES.read_bytes()
     data = tomllib.loads(raw.decode())
     gates: list[tuple[str, str]] = []
@@ -223,7 +227,7 @@ def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
                     "intrinsic categories feature prefixes must be non-empty strings"
                 )
             gates.append((f"molt_{prefix}", feature))
-    return gates
+    return tuple(gates)
 
 
 def _runtime_feature_gate_for_symbol(
@@ -271,13 +275,22 @@ def _annotate_runtime_callable_features(
             entry["runtime_feature"] = feature
 
 
-def _runtime_rust_files() -> list[Path]:
+@lru_cache(maxsize=1)
+def _runtime_rust_files() -> tuple[Path, ...]:
     roots = [
         child
         for child in RUNTIME_ROOT.iterdir()
         if child.is_dir() and child.name.startswith("molt-runtime")
     ]
-    return sorted(path for root in roots for path in root.rglob("*.rs"))
+    generator_owned_outputs = {OUT_RUNTIME_CALLABLES_RS.resolve()}
+    return tuple(
+        sorted(
+            path
+            for root in roots
+            for path in root.rglob("*.rs")
+            if path.resolve() not in generator_owned_outputs
+        )
+    )
 
 
 def _read_runtime_rust_source(path: Path) -> str | None:
@@ -290,6 +303,7 @@ def _read_runtime_rust_source(path: Path) -> str | None:
         return None
 
 
+@lru_cache(maxsize=1)
 def _rust_type_aliases() -> dict[str, str]:
     aliases: dict[str, str] = {}
     alias_re = re.compile(r"(?:pub\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);")
@@ -384,6 +398,7 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
     return typ
 
 
+@lru_cache(maxsize=1)
 def _rust_export_signatures() -> dict[str, set[tuple[tuple[str, ...], str]]]:
     aliases = _rust_type_aliases()
     fn_re = re.compile(
@@ -1928,4 +1943,27 @@ def load_manifest(path: Path = MANIFEST) -> dict:
     return validate_loaded_manifest(
         tomllib.loads(path.read_text(encoding="utf-8")),
         reject_manual_runtime_features=True,
+    )
+
+
+def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
+    """Return direct file inputs that can affect generated WASM ABI output.
+
+    Runtime Rust sources are parsed into normalized export-signature rows below
+    instead of being raw cache-key inputs. Ordinary implementation edits must
+    not invalidate generated ABI output when the extern ABI surface is unchanged.
+    """
+    return (
+        path,
+        INTRINSICS_MANIFEST,
+        INTRINSIC_CATEGORIES,
+    )
+
+
+def generator_runtime_export_signature_rows() -> tuple[tuple[str, tuple[str, ...], str], ...]:
+    """Return the normalized runtime extern ABI surface used by the generator."""
+    return tuple(
+        (name, params, result)
+        for name, signatures in sorted(_rust_export_signatures().items())
+        for params, result in sorted(signatures)
     )

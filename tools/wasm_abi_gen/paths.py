@@ -35,6 +35,7 @@ INTRINSIC_CATEGORIES = ROOT / "runtime/molt-runtime/src/intrinsics/categories.to
 RUNTIME_ROOT = ROOT / "runtime"
 OUT_TABLE_LAYOUT_INC = ROOT / "runtime/wasm_table_layout.inc"
 OUT_ALLOWED_IMPORTS = ROOT / "tools/wasm_allowed_imports.txt"
+WASM_ABI_GEN_CACHE = ROOT / "tmp/wasm_abi_gen_cache"
 REMOVED_GENERATED_FILES = (
     ROOT / "runtime/wasm_poll_callables.inc",
     ROOT / "runtime/wasm_runtime_callables.inc",

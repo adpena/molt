@@ -55,6 +55,24 @@ uv run --active --project . --python 3.12 ...
 Non-active `uv run` is rejected because it creates throwaway environments and
 destroys proof latency.
 
+## Latency Discipline
+
+Treat avoidable proof latency as a bug. Before spending a heavy slot, ask
+whether the command is proving the changed invariant or merely paying for a cold
+cache, a broad selector, or a stale generated file.
+
+- Prefer exact test selectors for new invariants. A substring selector that
+  misses the newly added test is false evidence; cite the precise test name or
+  the precise queue run that covered it.
+- Prefer a warmed canonical target/cache when it is already part of the DX
+  authority and safe for the lane. If overriding `CARGO_TARGET_DIR` or another
+  cache knob, record the reason in `--note`.
+- For generators, use their timing mode when available and record the number.
+  A generator check that rewrites identical files or reruns formatters on every
+  output is a structural DX defect, not background noise.
+- If a proof lane is already active, monitor it instead of stacking another
+  Cargo/WASM proof unless the new command is independent and cheap.
+
 ## TOML DSL
 
 For multi-run submissions, use a TOML file. `note` accepts one string and

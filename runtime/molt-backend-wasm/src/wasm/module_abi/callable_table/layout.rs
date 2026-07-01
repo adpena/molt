@@ -7,7 +7,8 @@ use super::runtime_callables::WasmRuntimeCallableTablePlan;
 use super::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
-    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, wasm_runtime_import,
+    RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
+    ReservedRuntimeCallableDispatch, wasm_runtime_import,
 };
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
@@ -99,14 +100,38 @@ impl WasmBackend {
             + runtime_callable_plan.compact_builtin_trampoline_count();
         let user_trampoline_table_start = user_func_table_start + ir.functions.len() as u32;
 
+        let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS
+            .iter()
+            .filter(|spec| {
+                spec.import.is_some() && builtin_trampoline_specs.contains_key(spec.runtime_name)
+            })
+            .count() as u32;
+
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
             let runtime_name = spec.runtime_name.to_string();
+            let import_idx = spec
+                .import
+                .map(|import| self.import_ids[import])
+                .unwrap_or(sentinel_func_idx);
+            let reachable_as_builtin = builtin_trampoline_specs.contains_key(spec.runtime_name);
+            let reachable_as_direct = direct_import_call_specs.contains_key(spec.runtime_name);
+            let direct_target_idx = if spec.dispatch == ReservedRuntimeCallableDispatch::Direct
+                && (reachable_as_builtin || reachable_as_direct)
+                && spec.import.is_some()
+            {
+                if import_idx == u32::MAX {
+                    panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
+                }
+                import_idx
+            } else {
+                sentinel_func_idx
+            };
             func_to_table_idx.insert(
                 runtime_name.clone(),
                 reserved_runtime_callable_table_start + spec.index,
             );
-            func_to_index.insert(runtime_name, sentinel_func_idx);
-            table_indices.push(sentinel_func_idx);
+            func_to_index.insert(runtime_name, direct_target_idx);
+            table_indices.push(direct_target_idx);
         }
 
         let mut compact_builtin_entries: Vec<u32> = Vec::new();
@@ -146,19 +171,50 @@ impl WasmBackend {
         let compact_builtin_trampoline_count =
             runtime_callable_plan.compact_builtin_trampoline_count();
         let builtin_trampoline_start = user_func_start + user_func_count;
-        let compact_builtin_trampoline_func_start = builtin_trampoline_start;
+        let reserved_runtime_trampoline_func_start = builtin_trampoline_start;
+        let compact_builtin_trampoline_func_start =
+            reserved_runtime_trampoline_func_start + reserved_runtime_trampoline_count;
         let user_trampoline_start =
             compact_builtin_trampoline_func_start + compact_builtin_trampoline_count;
 
         let mut func_to_trampoline_idx = BTreeMap::new();
         let mut trampoline_entries = Vec::new();
+        let mut reserved_runtime_trampoline_func_offset = 0u32;
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
             let runtime_name = spec.runtime_name.to_string();
-            func_to_trampoline_idx.insert(
-                runtime_name,
-                reserved_runtime_trampoline_table_start + spec.index,
-            );
-            table_indices.push(sentinel_func_idx);
+            let trampoline_table_idx = reserved_runtime_trampoline_table_start + spec.index;
+            func_to_trampoline_idx.insert(runtime_name.clone(), trampoline_table_idx);
+            if let Some(import) = spec.import
+                && let Some(arity) = builtin_trampoline_specs.get(spec.runtime_name)
+            {
+                let import_idx = self.import_ids[import];
+                if import_idx == u32::MAX {
+                    panic!("reserved runtime callable unexpectedly stripped for {runtime_name}");
+                }
+                let expected_func_index = reserved_runtime_trampoline_func_start
+                    + reserved_runtime_trampoline_func_offset;
+                reserved_runtime_trampoline_func_offset += 1;
+                push_trampoline_entry(
+                    &mut table_indices,
+                    &mut trampoline_entries,
+                    WasmCallableTrampolineEntry {
+                        name: runtime_name,
+                        expected_func_index,
+                        target_func_index: import_idx,
+                        table_index: table_base + trampoline_table_idx,
+                        spec: TrampolineSpec {
+                            arity: *arity,
+                            has_closure: false,
+                            kind: TrampolineKind::Plain,
+                            closure_size: 0,
+                            target_has_ret: true,
+                        },
+                        multi_return_count: None,
+                    },
+                );
+            } else {
+                table_indices.push(sentinel_func_idx);
+            }
         }
         for target_index in &compact_builtin_entries {
             table_indices.push(*target_index);
