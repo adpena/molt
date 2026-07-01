@@ -11,8 +11,10 @@ notebook for collaborative inspection.
 Use the queue for Cargo builds, WASM/browser proofs, benchmark lanes,
 conformance shards, stress tests, and any command likely to contend for shared
 build/runtime resources. Direct commands are still appropriate for cheap source
-inspection, formatting, static checks, narrow unit tests, and queue/bootstrap
-repair.
+inspection, changed-file formatting, static checks, narrow unit tests, and
+queue/bootstrap repair. For Rust, use `tools/dev.py fmt-check` or
+`tools/check_rustfmt.py --changed`; write mode compares `rustfmt --emit stdout`
+before touching files and keeps generated Rust under generator custody.
 
 Before queueing, always inspect live custody:
 
