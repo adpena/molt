@@ -55,6 +55,256 @@
     return { min: minRes.value, max, offset };
   };
 
+  const readVarInt32 = (view, offset) => {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+    let pos = offset;
+    while (true) {
+      if (pos >= view.length) {
+        throw new Error('Unexpected EOF while reading varint');
+      }
+      byte = view[pos++];
+      result |= (byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) {
+        break;
+      }
+    }
+    if (shift < 32 && (byte & 0x40) !== 0) {
+      result |= ~0 << shift;
+    }
+    return { value: result | 0, offset: pos };
+  };
+
+  const skipImportDesc = (view, offset, kind) => {
+    let pos = offset;
+    if (kind === 0) {
+      return readVarUint(view, pos).offset;
+    }
+    if (kind === 1) {
+      if (pos >= view.length) throw new Error('Unexpected EOF in table import');
+      pos += 1;
+      return readLimits(view, pos).offset;
+    }
+    if (kind === 2) {
+      return readLimits(view, pos).offset;
+    }
+    if (kind === 3) {
+      if (pos + 2 > view.length) throw new Error('Unexpected EOF in global import');
+      return pos + 2;
+    }
+    if (kind === 4) {
+      if (pos >= view.length) throw new Error('Unexpected EOF in tag import');
+      pos = readVarUint(view, pos).offset;
+      return readVarUint(view, pos).offset;
+    }
+    throw new Error(`Unknown import kind ${kind}`);
+  };
+
+  const readConstExprI32 = (view, offset) => {
+    if (offset >= view.length) {
+      throw new Error('Unexpected EOF while reading const expr');
+    }
+    let pos = offset;
+    const opcode = view[pos++];
+    let value = null;
+    if (opcode === 0x41) {
+      const res = readVarInt32(view, pos);
+      value = res.value;
+      pos = res.offset;
+    } else if (opcode === 0x23 || opcode === 0xd2) {
+      pos = readVarUint(view, pos).offset;
+    } else if (opcode === 0xd0) {
+      if (pos >= view.length) {
+        throw new Error('Unexpected EOF while reading ref.null expr');
+      }
+      pos += 1;
+    } else {
+      throw new Error(`Unsupported const expr opcode ${opcode}`);
+    }
+    if (pos >= view.length || view[pos] !== 0x0b) {
+      throw new Error('Malformed const expr');
+    }
+    return { value, offset: pos + 1 };
+  };
+
+  const skipVec = (view, offset, skipItem) => {
+    let count;
+    ({ value: count, offset } = readVarUint(view, offset));
+    for (let idx = 0; idx < count; idx += 1) {
+      offset = skipItem(view, offset);
+    }
+    return offset;
+  };
+
+  const inferWasmTableBaseFromExports = (buffer) => {
+    try {
+      const mod = new WebAssembly.Module(buffer);
+      const refs = WebAssembly.Module.exports(mod)
+        .map((entry) => entry.name)
+        .filter((name) => name.startsWith('__molt_table_ref_'))
+        .map((name) => Number.parseInt(name.slice('__molt_table_ref_'.length), 10))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      return refs.length > 0 ? Math.min(...refs) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const extractWasmTableBase = (buffer) => {
+    if (!buffer) return null;
+    const exportedBase = inferWasmTableBaseFromExports(buffer);
+    try {
+      const bytes = new Uint8Array(buffer);
+      if (bytes.length < 8) {
+        return null;
+      }
+      let offset = 8;
+      let importFuncCount = 0;
+      let tableInitFuncIndex = null;
+      let codeBodies = null;
+      const activeTableBases = [];
+      while (offset < bytes.length) {
+        const sectionId = bytes[offset++];
+        const sizeRes = readVarUint(bytes, offset);
+        const sectionSize = sizeRes.value;
+        offset = sizeRes.offset;
+        const sectionEnd = offset + sectionSize;
+        if (sectionEnd > bytes.length) {
+          return null;
+        }
+        if (sectionId === 2) {
+          let count;
+          ({ value: count, offset } = readVarUint(bytes, offset));
+          for (let idx = 0; idx < count; idx += 1) {
+            ({ offset } = readString(bytes, offset));
+            ({ offset } = readString(bytes, offset));
+            const kind = bytes[offset++];
+            if (kind === 0) {
+              importFuncCount += 1;
+            }
+            offset = skipImportDesc(bytes, offset, kind);
+          }
+        } else if (sectionId === 7) {
+          let count;
+          ({ value: count, offset } = readVarUint(bytes, offset));
+          for (let idx = 0; idx < count; idx += 1) {
+            let name;
+            ({ value: name, offset } = readString(bytes, offset));
+            if (offset >= bytes.length) {
+              return null;
+            }
+            const kind = bytes[offset++];
+            let index;
+            ({ value: index, offset } = readVarUint(bytes, offset));
+            if (kind === 0 && name === 'molt_table_init') {
+              tableInitFuncIndex = index;
+            }
+          }
+        } else if (sectionId === 9) {
+          let count;
+          ({ value: count, offset } = readVarUint(bytes, offset));
+          for (let idx = 0; idx < count; idx += 1) {
+            let flags;
+            ({ value: flags, offset } = readVarUint(bytes, offset));
+            const usesExpressions = (flags & 0x04) !== 0;
+            const isActive = flags === 0 || flags === 2 || flags === 4 || flags === 6;
+            if (flags === 2 || flags === 6) {
+              ({ offset } = readVarUint(bytes, offset));
+            }
+            if (isActive) {
+              const expr = readConstExprI32(bytes, offset);
+              offset = expr.offset;
+              if (flags === 2 || flags === 3) {
+                offset += 1;
+              } else if (flags === 6 || flags === 7 || flags === 5) {
+                offset += 1;
+              }
+              if (
+                Number.isFinite(expr.value) &&
+                expr.value > 0 &&
+                (!Number.isFinite(exportedBase) || expr.value >= exportedBase)
+              ) {
+                activeTableBases.push(expr.value);
+              }
+            } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
+              offset += 1;
+            } else {
+              throw new Error(`Unsupported element segment flags ${flags}`);
+            }
+            offset = skipVec(
+              bytes,
+              offset,
+              usesExpressions
+                ? (view, pos) => readConstExprI32(view, pos).offset
+                : (view, pos) => readVarUint(view, pos).offset,
+            );
+          }
+        } else if (sectionId === 10) {
+          let count;
+          ({ value: count, offset } = readVarUint(bytes, offset));
+          const bodies = new Array(count);
+          for (let idx = 0; idx < count; idx += 1) {
+            let bodySize;
+            ({ value: bodySize, offset } = readVarUint(bytes, offset));
+            const bodyStart = offset;
+            const bodyEnd = bodyStart + bodySize;
+            if (bodyEnd > bytes.length) {
+              return null;
+            }
+            bodies[idx] = [bodyStart, bodyEnd];
+            offset = bodyEnd;
+          }
+          codeBodies = bodies;
+        } else {
+          offset = sectionEnd;
+        }
+        if (offset !== sectionEnd && sectionId !== 10) {
+          offset = sectionEnd;
+        }
+      }
+
+      let tableInitBase = null;
+      if (tableInitFuncIndex !== null && codeBodies) {
+        const definedIndex = tableInitFuncIndex - importFuncCount;
+        if (definedIndex >= 0 && definedIndex < codeBodies.length) {
+          const [bodyStart, bodyEnd] = codeBodies[definedIndex];
+          let pos = bodyStart;
+          let localDeclCount;
+          ({ value: localDeclCount, offset: pos } = readVarUint(bytes, pos));
+          for (let idx = 0; idx < localDeclCount; idx += 1) {
+            ({ offset: pos } = readVarUint(bytes, pos));
+            if (pos >= bodyEnd) {
+              break;
+            }
+            pos += 1;
+          }
+          if (pos < bodyEnd && bytes[pos] === 0x41) {
+            pos += 1;
+            tableInitBase = readVarInt32(bytes, pos).value;
+          }
+        }
+      }
+      if (Number.isFinite(tableInitBase) && tableInitBase > 0) {
+        if (Number.isFinite(exportedBase) && exportedBase > 0 && tableInitBase < exportedBase) {
+          return exportedBase;
+        }
+        return tableInitBase;
+      }
+      if (activeTableBases.length > 0) {
+        const appActiveTableBases = activeTableBases.filter((base) => base > 1);
+        if (appActiveTableBases.length > 0) {
+          return Math.min(...appActiveTableBases);
+        }
+        return Math.min(...activeTableBases);
+      }
+      return exportedBase;
+    } catch {
+      return exportedBase;
+    }
+  };
+
   const decodeWasmValType = (byte) => {
     switch (byte) {
       case 0x7f:
@@ -87,6 +337,104 @@
       count -= 1;
     }
     return { values: out, offset };
+  };
+
+  const parseWasmExportFunctionSignatures = (buffer) => {
+    if (!buffer) {
+      return {};
+    }
+    const bytes = new Uint8Array(buffer);
+    if (bytes.length < 8) {
+      return {};
+    }
+    let offset = 8;
+    const types = [];
+    const funcTypeIndices = [];
+    let importedFuncCount = 0;
+    const exportFuncIndices = new Map();
+
+    while (offset < bytes.length) {
+      const sectionId = bytes[offset++];
+      const sizeRes = readVarUint(bytes, offset);
+      const sectionSize = sizeRes.value;
+      offset = sizeRes.offset;
+      const sectionEnd = offset + sectionSize;
+      if (sectionEnd > bytes.length) {
+        throw new Error('Malformed wasm section bounds');
+      }
+      if (sectionId === 1) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let idx = 0; idx < count; idx += 1) {
+          if (offset >= bytes.length || bytes[offset++] !== 0x60) {
+            throw new Error('Unsupported wasm type form');
+          }
+          const params = readWasmValTypeVec(bytes, offset);
+          offset = params.offset;
+          const results = readWasmValTypeVec(bytes, offset);
+          offset = results.offset;
+          types.push({
+            params: params.values,
+            result: results.values.length ? results.values[0] : null,
+          });
+        }
+      } else if (sectionId === 2) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let idx = 0; idx < count; idx += 1) {
+          ({ offset } = readString(bytes, offset));
+          ({ offset } = readString(bytes, offset));
+          if (offset >= bytes.length) {
+            throw new Error('Unexpected EOF in import kind');
+          }
+          const kind = bytes[offset++];
+          if (kind === 0) {
+            importedFuncCount += 1;
+          }
+          offset = skipImportDesc(bytes, offset, kind);
+        }
+      } else if (sectionId === 3) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let idx = 0; idx < count; idx += 1) {
+          let typeIdx;
+          ({ value: typeIdx, offset } = readVarUint(bytes, offset));
+          funcTypeIndices.push(typeIdx);
+        }
+      } else if (sectionId === 7) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let idx = 0; idx < count; idx += 1) {
+          let name;
+          ({ value: name, offset } = readString(bytes, offset));
+          if (offset >= bytes.length) {
+            throw new Error('Unexpected EOF in export kind');
+          }
+          const kind = bytes[offset++];
+          let index;
+          ({ value: index, offset } = readVarUint(bytes, offset));
+          if (kind === 0) {
+            exportFuncIndices.set(name, index);
+          }
+        }
+      } else {
+        offset = sectionEnd;
+      }
+    }
+
+    const signatures = {};
+    for (const [name, index] of exportFuncIndices.entries()) {
+      if (index < importedFuncCount) {
+        continue;
+      }
+      const definedIndex = index - importedFuncCount;
+      const typeIndex = funcTypeIndices[definedIndex];
+      const sig = types[typeIndex];
+      if (sig) {
+        signatures[name] = sig;
+      }
+    }
+    return signatures;
   };
 
   const importSelectorMatches = (module, name, selector) => {
@@ -544,10 +892,12 @@
     callRuntimeByteSpanOutImport,
     callRuntimeObjectArrayArgImport,
     callWithWasmSignature,
+    extractWasmTableBase,
     installWasmTagImports,
     normalizeI64BridgeValue,
     normalizeImportResult,
     normalizeValueForKind,
+    parseWasmExportFunctionSignatures,
     parseWasmImports,
     remapLegacyRuntimeSharedTableIndex,
     reservedRuntimeCallableForTableIndex,
