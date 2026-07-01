@@ -6,10 +6,11 @@
 
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{MoltBufferView, RuntimeHooks};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 // ─── Test hook implementations ───────────────────────────────────────────────
 //
@@ -26,8 +27,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
 static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_CALLED: AtomicU64 = AtomicU64::new(0);
+static MODULE_EXEC_STATE_BYTE: AtomicU64 = AtomicU64::new(0);
+static FAKE_MODULE_EXEC_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
+static FAKE_MODULE_STATE: LazyLock<Mutex<FakeModuleState>> =
+    LazyLock::new(|| Mutex::new(FakeModuleState::default()));
+
+#[derive(Default)]
+struct FakeModuleState {
+    dict_by_module: HashMap<u64, u64>,
+    capi_by_module: HashMap<u64, FakeModuleCapi>,
+    by_def: HashMap<usize, u64>,
+}
+
+#[derive(Default)]
+struct FakeModuleCapi {
+    state: Option<Box<[u8]>>,
+}
 
 fn next_fake_handle() -> u64 {
     // NaN-boxed pointers are 50-bit aligned to ≥2-byte boundaries; bumping
@@ -172,7 +189,23 @@ unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
 unsafe extern "C" fn fake_inc_ref(_bits: u64) {}
 unsafe extern "C" fn fake_dec_ref(_bits: u64) {}
 unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
-    next_fake_handle()
+    let module_bits = next_fake_handle();
+    let dict_bits = next_fake_handle();
+    FAKE_MODULE_STATE
+        .lock()
+        .unwrap()
+        .dict_by_module
+        .insert(module_bits, dict_bits);
+    module_bits
+}
+unsafe extern "C" fn fake_module_get_dict(module_bits: u64) -> u64 {
+    FAKE_MODULE_STATE
+        .lock()
+        .unwrap()
+        .dict_by_module
+        .get(&module_bits)
+        .copied()
+        .unwrap_or(0)
 }
 unsafe extern "C" fn fake_module_set_attr(
     _m: u64,
@@ -187,6 +220,73 @@ unsafe extern "C" fn fake_module_set_attr(
         }
     }
     0
+}
+unsafe extern "C" fn fake_module_capi_register(
+    module_bits: u64,
+    _module_def_ptr: usize,
+    module_state_size: u64,
+) -> std::os::raw::c_int {
+    let Ok(size) = usize::try_from(module_state_size) else {
+        return -1;
+    };
+    let state = if size == 0 {
+        None
+    } else {
+        Some(vec![0; size].into_boxed_slice())
+    };
+    let mut guard = FAKE_MODULE_STATE.lock().unwrap();
+    if guard.capi_by_module.contains_key(&module_bits) {
+        return -1;
+    }
+    guard
+        .capi_by_module
+        .insert(module_bits, FakeModuleCapi { state });
+    0
+}
+unsafe extern "C" fn fake_module_capi_get_state(module_bits: u64) -> *mut u8 {
+    FAKE_MODULE_STATE
+        .lock()
+        .unwrap()
+        .capi_by_module
+        .get_mut(&module_bits)
+        .and_then(|entry| entry.state.as_mut())
+        .map_or(ptr::null_mut(), |state| state.as_mut_ptr())
+}
+unsafe extern "C" fn fake_module_state_add(
+    module_bits: u64,
+    module_def_ptr: usize,
+) -> std::os::raw::c_int {
+    if module_def_ptr == 0 {
+        return -1;
+    }
+    FAKE_MODULE_STATE
+        .lock()
+        .unwrap()
+        .by_def
+        .insert(module_def_ptr, module_bits);
+    0
+}
+unsafe extern "C" fn fake_module_state_find(module_def_ptr: usize) -> u64 {
+    FAKE_MODULE_STATE
+        .lock()
+        .unwrap()
+        .by_def
+        .get(&module_def_ptr)
+        .copied()
+        .unwrap_or(0)
+}
+unsafe extern "C" fn fake_module_state_remove(module_def_ptr: usize) -> std::os::raw::c_int {
+    if FAKE_MODULE_STATE
+        .lock()
+        .unwrap()
+        .by_def
+        .remove(&module_def_ptr)
+        .is_some()
+    {
+        0
+    } else {
+        -1
+    }
 }
 unsafe extern "C" fn fake_register_c_function(
     _meth: u64,
@@ -237,7 +337,13 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     inc_ref: fake_inc_ref,
     dec_ref: fake_dec_ref,
     alloc_module: fake_alloc_module,
+    module_get_dict: fake_module_get_dict,
     module_set_attr: fake_module_set_attr,
+    module_capi_register: fake_module_capi_register,
+    module_capi_get_state: fake_module_capi_get_state,
+    module_state_add: fake_module_state_add,
+    module_state_find: fake_module_state_find,
+    module_state_remove: fake_module_state_remove,
     register_c_function: fake_register_c_function,
 };
 
@@ -517,7 +623,7 @@ fn test_moduledef_init_null_returns_null() {
 }
 
 #[test]
-fn test_moduledef_init_without_init_returns_bridge_module() {
+fn test_moduledef_init_returns_definition_pointer() {
     init();
     let mut def = PyModuleDef {
         m_base: PyModuleDef_Base {
@@ -539,15 +645,14 @@ fn test_moduledef_init_without_init_returns_bridge_module() {
         m_free: ptr::null_mut(),
     };
 
-    let module = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
+    let out = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
 
-    assert!(!module.is_null());
-    assert_ne!(module.cast::<PyModuleDef>(), &mut def as *mut PyModuleDef);
-    assert_ne!(
-        unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(module) },
-        0
-    );
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+    assert_eq!(out.cast::<PyModuleDef>(), &mut def as *mut PyModuleDef);
+    assert_eq!(unsafe { (*out).ob_refcnt }, 1);
+    assert!(std::ptr::eq(
+        unsafe { (*out).ob_type },
+        &raw mut PyModuleDef_Type
+    ));
 }
 
 unsafe extern "C" fn fake_module_exec(module: *mut PyObject) -> std::os::raw::c_int {
@@ -558,8 +663,33 @@ unsafe extern "C" fn fake_module_exec(module: *mut PyObject) -> std::os::raw::c_
     0
 }
 
+unsafe extern "C" fn fake_module_exec_failure(module: *mut PyObject) -> std::os::raw::c_int {
+    if module.is_null() {
+        return -1;
+    }
+    MODULE_EXEC_CALLED.fetch_add(1, Ordering::Relaxed);
+    -1
+}
+
+unsafe extern "C" fn fake_module_exec_mutates_state(module: *mut PyObject) -> std::os::raw::c_int {
+    if module.is_null() {
+        return -1;
+    }
+    let state = unsafe { molt_cpython_abi::api::modules::PyModule_GetState(module) };
+    if state.is_null() {
+        return -1;
+    }
+    unsafe {
+        *(state as *mut u8) = 77;
+    }
+    MODULE_EXEC_CALLED.fetch_add(1, Ordering::Relaxed);
+    MODULE_EXEC_STATE_BYTE.store(77, Ordering::Relaxed);
+    0
+}
+
 #[test]
-fn test_moduledef_init_runs_py_mod_exec_slot() {
+fn test_module_from_def_and_spec_runs_py_mod_exec_slot() {
+    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
     init();
     MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
     let mut slots = [
@@ -592,11 +722,109 @@ fn test_moduledef_init_runs_py_mod_exec_slot() {
         m_free: ptr::null_mut(),
     };
 
-    let module = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
+    let module = unsafe {
+        molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(&mut def, ptr::null_mut(), 0)
+    };
 
     assert!(!module.is_null());
     assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+}
+
+#[test]
+fn test_module_from_def_and_spec_registers_capi_state_once_before_exec() {
+    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
+    init();
+    MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
+    MODULE_EXEC_STATE_BYTE.store(0, Ordering::Relaxed);
+    let mut slots = [
+        PyModuleDef_Slot {
+            slot: 2,
+            value: fake_module_exec_mutates_state as *mut c_void,
+        },
+        PyModuleDef_Slot {
+            slot: 0,
+            value: ptr::null_mut(),
+        },
+    ];
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"moduledef_state_exec_module".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: 4,
+        m_methods: ptr::null_mut(),
+        m_slots: slots.as_mut_ptr(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+
+    let module = unsafe {
+        molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(&mut def, ptr::null_mut(), 0)
+    };
+
+    assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
+    assert_eq!(MODULE_EXEC_STATE_BYTE.load(Ordering::Relaxed), 77);
+    let state = unsafe { molt_cpython_abi::api::modules::PyModule_GetState(module) };
+    assert!(!state.is_null());
+    assert_eq!(unsafe { *(state as *mut u8) }, 77);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+}
+
+#[test]
+fn test_module_from_def_and_spec_exec_failure_sets_error_message() {
+    let _guard = FAKE_MODULE_EXEC_LOCK.lock().unwrap();
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
+    let mut slots = [
+        PyModuleDef_Slot {
+            slot: 2,
+            value: fake_module_exec_failure as *mut c_void,
+        },
+        PyModuleDef_Slot {
+            slot: 0,
+            value: ptr::null_mut(),
+        },
+    ];
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"moduledef_exec_failure_module".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: -1,
+        m_methods: ptr::null_mut(),
+        m_slots: slots.as_mut_ptr(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+
+    let module = unsafe {
+        molt_cpython_abi::api::modules::PyModule_FromDefAndSpec2(&mut def, ptr::null_mut(), 0)
+    };
+
+    assert!(module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
+    let message = molt_cpython_abi::api::errors::take_current_error_message()
+        .expect("exec failure must enter CPython ABI error state");
+    assert!(message.contains("Py_mod_exec slot returned non-zero"));
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +862,60 @@ fn test_module_create2_with_valid_def() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(!m.is_null());
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
+}
+
+#[test]
+fn test_module_create2_registers_capi_state_and_pystate_registry_roundtrip() {
+    init();
+    let def = Box::leak(Box::new(PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"statefulmod".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: 16,
+        m_methods: ptr::null_mut(),
+        m_slots: ptr::null_mut(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    }));
+
+    let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(def, 1013) };
+    assert!(!m.is_null());
+
+    let state = unsafe { molt_cpython_abi::api::modules::PyModule_GetState(m) };
+    assert!(!state.is_null());
+    unsafe {
+        assert_eq!(*(state as *mut u8).add(0), 0);
+        *(state as *mut u8).add(0) = 42;
+        assert_eq!(
+            *(molt_cpython_abi::api::modules::PyModule_GetState(m) as *mut u8),
+            42
+        );
+    }
+
+    assert!(unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) }.is_null());
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyState_AddModule(m, def) },
+        0
+    );
+    let found = unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) };
+    assert!(!found.is_null());
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(found) };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyState_RemoveModule(def) },
+        0
+    );
+    assert!(unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) }.is_null());
+
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
 }
 
@@ -706,6 +988,9 @@ fn test_module_create2_fails_closed_when_c_function_registration_fails() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(m.is_null());
+    let message = molt_cpython_abi::api::errors::take_current_error_message()
+        .expect("method registration failure must enter CPython ABI error state");
+    assert!(message.contains("runtime rejected method"));
 }
 
 #[test]
@@ -746,4 +1031,7 @@ fn test_module_create2_fails_closed_when_c_function_attr_publication_fails() {
     };
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(m.is_null());
+    let message = molt_cpython_abi::api::errors::take_current_error_message()
+        .expect("method publication failure must enter CPython ABI error state");
+    assert!(message.contains("failed to register method"));
 }

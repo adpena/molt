@@ -3,9 +3,11 @@ use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS, STATIC_TYPE_COUNT,
-    WasmRuntimeImport, wasm_runtime_export_name, wasm_runtime_import,
+    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS,
+    RESERVED_RUNTIME_CALLABLE_COUNT, STATIC_TYPE_COUNT, WasmRuntimeImport,
+    wasm_runtime_export_name, wasm_runtime_import,
 };
+use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
 use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
     wasm_scalar_truthiness_fast_path_for_name,
@@ -1283,6 +1285,73 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
                 "unassigned poll-table slot {slot} must point at the generated sentinel"
             );
         }
+    }
+}
+
+#[test]
+fn reloc_table_ref_exports_do_not_publish_reserved_runtime_sentinels() {
+    let func = wasm_test_function(
+        "reserved_table_ref_export_filter",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: true,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("reloc table-ref module must be structurally valid WASM");
+
+    let exports = wasm_function_exports(&wasm);
+    let table_ref_slots: Vec<u32> = exports
+        .iter()
+        .filter_map(|name| {
+            name.strip_prefix("__molt_table_ref_")
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .map(|table_index| {
+                    table_index
+                        .checked_sub(RELOC_TABLE_BASE_DEFAULT)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "table-ref export {table_index} is below reloc table base {RELOC_TABLE_BASE_DEFAULT}"
+                            )
+                        })
+                })
+        })
+        .collect();
+    assert!(
+        !table_ref_slots.is_empty(),
+        "reloc output must still export concrete app table refs"
+    );
+
+    let poll_table_prefix = POLL_TABLE_IMPORTS
+        .iter()
+        .map(|spec| spec.table_slot)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let reserved_callable_start = poll_table_prefix;
+    let reserved_trampoline_start = reserved_callable_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+    let reserved_trampoline_end = reserved_trampoline_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+
+    for slot in table_ref_slots {
+        let in_reserved_callable = slot >= reserved_callable_start
+            && slot < reserved_callable_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+        let in_reserved_trampoline =
+            slot >= reserved_trampoline_start && slot < reserved_trampoline_end;
+        assert!(
+            !in_reserved_callable && !in_reserved_trampoline,
+            "reserved runtime callable/trampoline slot {slot} must stay runtime-owned, not exported as an app table ref"
+        );
     }
 }
 

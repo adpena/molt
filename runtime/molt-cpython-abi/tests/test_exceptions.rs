@@ -50,6 +50,23 @@ fn test_set_string_and_occurred() {
 }
 
 #[test]
+fn test_take_current_error_message_consumes_exception() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+
+    let exc = &raw mut PyExc_ValueError;
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(exc, c"pyinit failed".as_ptr());
+    }
+
+    assert_eq!(
+        molt_cpython_abi::api::errors::take_current_error_message().as_deref(),
+        Some("pyinit failed")
+    );
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+}
+
+#[test]
 fn test_set_string_with_null_message() {
     init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -170,6 +187,32 @@ fn test_format_sets_exception_returns_null() {
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
     assert!(!occurred.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_fetch_consumes_current_error_message() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+
+    let exc = &raw mut PyExc_ValueError;
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(exc, c"fetch me".as_ptr());
+    }
+
+    let mut exc_type = ptr::null_mut();
+    let mut exc_value = ptr::null_mut();
+    let mut exc_tb = ptr::null_mut();
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Fetch(&mut exc_type, &mut exc_value, &mut exc_tb);
+    }
+
+    assert!(!exc_type.is_null());
+    assert!(exc_value.is_null());
+    assert!(exc_tb.is_null());
+    assert_eq!(
+        molt_cpython_abi::api::errors::take_current_error_message(),
+        None
+    );
 }
 
 #[test]

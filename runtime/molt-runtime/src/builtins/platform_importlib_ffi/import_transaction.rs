@@ -1070,6 +1070,64 @@ pub(super) fn importlib_transaction_resolved_name(
     }
 }
 
+fn importlib_transaction_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_IMPORT_TRANSACTION")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
+
+fn importlib_transaction_fromlist_trace_display(_py: &PyToken<'_>, fromlist_bits: u64) -> String {
+    let obj = obj_from_bits(fromlist_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return if obj.is_none() {
+            "None".to_string()
+        } else {
+            format!("<{} bits=0x{fromlist_bits:x}>", type_name(_py, obj))
+        };
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
+        return format!("<{} bits=0x{fromlist_bits:x}>", type_name(_py, obj));
+    }
+
+    let mut items = Vec::new();
+    for &item_bits in unsafe { seq_vec_ref(ptr) } {
+        let item_obj = obj_from_bits(item_bits);
+        if let Some(text) = string_obj_to_owned(item_obj) {
+            items.push(format!("{text:?}"));
+        } else {
+            items.push(format!(
+                "<{} bits=0x{item_bits:x}>",
+                type_name(_py, item_obj)
+            ));
+        }
+    }
+    format!("[{}]", items.join(", "))
+}
+
+fn trace_importlib_transaction(
+    _py: &PyToken<'_>,
+    name: &str,
+    resolved: &str,
+    globals_bits: u64,
+    fromlist_bits: u64,
+    level: i64,
+) {
+    if !importlib_transaction_trace_enabled() {
+        return;
+    }
+    let fromlist = importlib_transaction_fromlist_trace_display(_py, fromlist_bits);
+    eprintln!(
+        "[molt import_transaction] name={name:?} level={level} resolved={resolved:?} fromlist={fromlist} globals_bits=0x{globals_bits:x} fromlist_bits=0x{fromlist_bits:x}"
+    );
+}
+
 pub(super) fn importlib_transaction_return_value(
     _py: &PyToken<'_>,
     resolved: &str,
@@ -1318,6 +1376,7 @@ pub extern "C" fn molt_importlib_import_transaction(
             Ok(value) => value,
             Err(err) => return err,
         };
+        trace_importlib_transaction(_py, &name, &resolved, globals_bits, fromlist_bits, level);
         let modules_bits = match importlib_runtime_modules_bits(_py) {
             Ok(bits) => bits,
             Err(err) => return err,

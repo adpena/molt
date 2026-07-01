@@ -71,6 +71,11 @@ is reconciled.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.
+- Do not try to interrupt running tool sessions by sending Ctrl-C/control bytes
+  through interactive agent input; the Windows unified exec backend may reject
+  that and crash Codex. Use bounded command timeouts, pytest deselection,
+  proof-queue custody, or exact live-proved Molt-owned PID cleanup with an
+  incident record.
 - Verification proves the changed invariant. Broad suites and benchmarks are
   for explicit compatibility, performance, release, or handoff claims.
 

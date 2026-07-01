@@ -390,12 +390,163 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
 /// **Violation consequence:** Arity mismatch or invalid fn_ptr causes stack
 /// corruption, segfault, or silent data corruption. There is no runtime guard;
 /// correctness depends entirely on the compiler backend.
+#[cfg(target_arch = "wasm32")]
+#[inline(always)]
+unsafe fn molt_guarded_call_dispatch_wasm(
+    call_target: *const (),
+    args_ptr: *const u64,
+    n: usize,
+) -> Option<u64> {
+    let func_idx = call_target as usize as u64;
+    unsafe {
+        Some(match n {
+            0 => molt_call_indirect0(func_idx) as u64,
+            1 => molt_call_indirect1(func_idx, *args_ptr) as u64,
+            2 => molt_call_indirect2(func_idx, *args_ptr, *args_ptr.add(1)) as u64,
+            3 => {
+                molt_call_indirect3(func_idx, *args_ptr, *args_ptr.add(1), *args_ptr.add(2)) as u64
+            }
+            4 => molt_call_indirect4(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+            ) as u64,
+            5 => molt_call_indirect5(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+            ) as u64,
+            6 => molt_call_indirect6(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+            ) as u64,
+            7 => molt_call_indirect7(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+            ) as u64,
+            8 => molt_call_indirect8(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+                *args_ptr.add(7),
+            ) as u64,
+            9 => molt_call_indirect9(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+                *args_ptr.add(7),
+                *args_ptr.add(8),
+            ) as u64,
+            10 => molt_call_indirect10(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+                *args_ptr.add(7),
+                *args_ptr.add(8),
+                *args_ptr.add(9),
+            ) as u64,
+            11 => molt_call_indirect11(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+                *args_ptr.add(7),
+                *args_ptr.add(8),
+                *args_ptr.add(9),
+                *args_ptr.add(10),
+            ) as u64,
+            12 => molt_call_indirect12(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+                *args_ptr.add(7),
+                *args_ptr.add(8),
+                *args_ptr.add(9),
+                *args_ptr.add(10),
+                *args_ptr.add(11),
+            ) as u64,
+            13 => molt_call_indirect13(
+                func_idx,
+                *args_ptr,
+                *args_ptr.add(1),
+                *args_ptr.add(2),
+                *args_ptr.add(3),
+                *args_ptr.add(4),
+                *args_ptr.add(5),
+                *args_ptr.add(6),
+                *args_ptr.add(7),
+                *args_ptr.add(8),
+                *args_ptr.add(9),
+                *args_ptr.add(10),
+                *args_ptr.add(11),
+                *args_ptr.add(12),
+            ) as u64,
+            _ => return None,
+        })
+    }
+}
+
 #[inline(never)]
 unsafe fn molt_guarded_call_dispatch(
     call_target: *const (),
     args_ptr: *const u64,
     n: usize,
 ) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(result) = unsafe { molt_guarded_call_dispatch_wasm(call_target, args_ptr, n) } {
+            return result;
+        }
+        return crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "WASM indirect function call arity exceeds manifest call_indirect max",
+            )
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         match n {
             0 => {
@@ -814,7 +965,11 @@ pub extern "C" fn molt_call_func_dispatch(
         // --- Step 3: Check for closure ---
         // Closures need the full callargs path for env capture setup.
         let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
-        let has_trampoline = unsafe { function_trampoline_ptr(func_ptr) } != 0;
+        let trampoline_ptr = unsafe { function_trampoline_ptr(func_ptr) };
+        let has_trampoline = trampoline_ptr != 0;
+        let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
+        let func_arity = unsafe { function_arity(func_ptr) } as usize;
+        let eff_nargs = effective_args.len();
         if has_closure {
             return molt_call_func_via_callargs(effective_func, effective_args);
         }
@@ -825,26 +980,34 @@ pub extern "C" fn molt_call_func_dispatch(
             return molt_call_func_via_callargs(effective_func, effective_args);
         }
         if has_trampoline {
-            let result = unsafe {
-                crate::call::function::call_function_obj_trampoline(
-                    _py,
-                    effective_func,
-                    effective_args,
-                )
-            };
-            return unsafe {
-                crate::call::function::protect_borrowed_args_aliased_return(
-                    _py,
-                    result,
-                    effective_args,
-                )
-            };
+            let variadic_trampoline =
+                unsafe { crate::call::function::function_has_variadic_trampoline(func_ptr) };
+            let force_trampoline = func_arity != eff_nargs
+                || variadic_trampoline
+                || crate::call::function::fixed_arity_call_requires_trampoline(
+                    fn_ptr_val,
+                    trampoline_ptr,
+                    false,
+                );
+            if force_trampoline {
+                let result = unsafe {
+                    crate::call::function::call_function_obj_trampoline(
+                        _py,
+                        effective_func,
+                        effective_args,
+                    )
+                };
+                return unsafe {
+                    crate::call::function::protect_borrowed_args_aliased_return(
+                        _py,
+                        result,
+                        effective_args,
+                    )
+                };
+            }
         }
 
         // --- Step 4: Direct call fast path ---
-        let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
-        let func_arity = unsafe { function_arity(func_ptr) } as usize;
-        let eff_nargs = effective_args.len();
         let trace_dispatch = trace_call_dispatch_enabled();
         if trace_dispatch {
             let name = unsafe {
@@ -1127,6 +1290,16 @@ unsafe fn direct_call_target_for_function(func_ptr: *mut u8, fn_ptr: u64) -> Opt
     if !target.is_null() {
         return Some(target);
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let tramp_ptr = unsafe { function_trampoline_ptr(func_ptr) };
+        let call_target = crate::call::function::fixed_arity_call_target_ptr(fn_ptr, tramp_ptr);
+        if u32::try_from(call_target).is_ok() {
+            return Some(call_target as usize as *const ());
+        }
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     runtime_callable_target_ptr(fn_ptr)
 }
 
@@ -1157,6 +1330,11 @@ fn missing_direct_call_target(_py: &crate::concurrency::PyToken<'_>, fn_ptr: u64
 
 #[inline(always)]
 unsafe fn direct_call_0(call_target: *const ()) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { molt_call_indirect0(call_target as usize as u64) as u64 };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         let f: extern "C" fn() -> u64 = std::mem::transmute(call_target);
         f()
@@ -1172,6 +1350,11 @@ unsafe fn direct_call_0(call_target: *const ()) -> u64 {
 #[allow(dead_code)]
 #[inline(always)]
 unsafe fn direct_call_1(call_target: *const (), a0: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { molt_call_indirect1(call_target as usize as u64, a0) as u64 };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         let f: extern "C" fn(u64) -> u64 = std::mem::transmute(call_target);
         f(a0)
@@ -1187,6 +1370,11 @@ unsafe fn direct_call_1(call_target: *const (), a0: u64) -> u64 {
 #[allow(dead_code)]
 #[inline(always)]
 unsafe fn direct_call_2(call_target: *const (), a0: u64, a1: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { molt_call_indirect2(call_target as usize as u64, a0, a1) as u64 };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(call_target);
         f(a0, a1)
@@ -1202,6 +1390,11 @@ unsafe fn direct_call_2(call_target: *const (), a0: u64, a1: u64) -> u64 {
 #[allow(dead_code)]
 #[inline(always)]
 unsafe fn direct_call_3(call_target: *const (), a0: u64, a1: u64, a2: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return unsafe { molt_call_indirect3(call_target as usize as u64, a0, a1, a2) as u64 };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(call_target);
         f(a0, a1, a2)

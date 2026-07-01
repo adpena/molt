@@ -43,12 +43,24 @@ fn select_wasm_fixed_arity_call_target(direct_target: u64, tramp_ptr: u64) -> u6
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[inline]
-fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
+pub(crate) fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
         let direct_target = wasm_direct_call_table_idx(fn_ptr);
         let normalized_tramp =
             crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
+        if crate::builtins::functions::reserved_wasm_runtime_callable_info_for_table_idx(
+            direct_target,
+        )
+        .is_some()
+            && crate::builtins::functions::reserved_wasm_runtime_direct_callable_info_for_table_idx(
+                direct_target,
+            )
+            .is_none()
+            && normalized_tramp != 0
+        {
+            return normalized_tramp;
+        }
         select_wasm_fixed_arity_call_target(direct_target, normalized_tramp)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -63,16 +75,45 @@ fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
 fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
+        let direct_target = wasm_direct_call_table_idx(fn_ptr);
+        if crate::builtins::functions::reserved_wasm_runtime_direct_callable_info_for_table_idx(
+            direct_target,
+        )
+        .is_some()
+        {
+            return direct_target;
+        }
         let normalized_tramp =
             crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
         if normalized_tramp != 0 {
             return normalized_tramp;
         }
-        wasm_direct_call_table_idx(fn_ptr)
+        direct_target
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         if tramp_ptr != 0 { tramp_ptr } else { fn_ptr }
+    }
+}
+
+#[inline]
+pub(crate) fn fixed_arity_call_requires_trampoline(
+    fn_ptr: u64,
+    tramp_ptr: u64,
+    task_trampoline_needed: bool,
+) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let direct_target = wasm_direct_call_table_idx(fn_ptr);
+        should_force_trampoline_for_fixed_arity_call(
+            direct_target,
+            tramp_ptr,
+            task_trampoline_needed,
+        )
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        should_force_trampoline_for_fixed_arity_call(fn_ptr, tramp_ptr, task_trampoline_needed)
     }
 }
 
@@ -89,9 +130,18 @@ fn can_use_fixed_arity_wasm_trampoline(fn_ptr: u64, tramp_ptr: u64) -> bool {
 unsafe fn normalized_function_trampoline_ptr(func_ptr: *mut u8, fn_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, unsafe {
-            function_trampoline_ptr(func_ptr)
-        })
+        let normalized_tramp =
+            crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, unsafe {
+                function_trampoline_ptr(func_ptr)
+            });
+        if normalized_tramp != 0 {
+            return normalized_tramp;
+        }
+        let direct_target = wasm_direct_call_table_idx(fn_ptr);
+        if direct_target != 0 {
+            return direct_target;
+        }
+        u64::MAX
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -124,7 +174,6 @@ unsafe fn function_runtime_call_target_ptr(func_ptr: *mut u8, fn_ptr: u64) -> Op
     Some(runtime_target)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn missing_function_call_target(_py: &PyToken<'_>, context: &str, fn_ptr: u64) -> u64 {
     let msg = format!("{context}: function call target 0x{fn_ptr:x} is not initialized");
     raise_exception::<_>(_py, "RuntimeError", &msg)
@@ -171,8 +220,24 @@ fn should_force_trampoline_for_fixed_arity_call(
     tramp_ptr: u64,
     task_trampoline_needed: bool,
 ) -> bool {
-    let _ = direct_target;
-    task_trampoline_needed || tramp_ptr != 0
+    if task_trampoline_needed || tramp_ptr == 0 {
+        return task_trampoline_needed;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if crate::builtins::functions::reserved_wasm_runtime_direct_callable_info_for_table_idx(
+            direct_target,
+        )
+        .is_some()
+        {
+            return false;
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = direct_target;
+    }
+    true
 }
 
 fn trace_call_vec_enabled() -> bool {
@@ -293,10 +358,9 @@ unsafe fn maybe_call_function_obj_trampoline(
             fn_ptr,
             function_trampoline_ptr(func_ptr),
         );
-        let direct_target = wasm_direct_call_table_idx(fn_ptr);
         let reserved_info = crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
-        let force_trampoline = should_force_trampoline_for_fixed_arity_call(
-            direct_target,
+        let force_trampoline = fixed_arity_call_requires_trampoline(
+            fn_ptr,
             tramp_ptr,
             function_needs_task_trampoline(_py, func_bits),
         );
@@ -512,7 +576,7 @@ unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
 }
 
 #[inline]
-unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool {
+pub(crate) unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool {
     unsafe { ((*header_from_obj_ptr(func_ptr)).flags & HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE) != 0 }
 }
 

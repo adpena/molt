@@ -234,6 +234,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     )
     assert imports["importlib_import_transaction"]["callable_arity"] == 5
     assert imports["importlib_import_transaction"]["shared_runtime_callable"] is True
+    assert imports["importlib_import_transaction"]["callable_dispatch"] == "trampoline"
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
     assert imports["types_bootstrap"]["callable_arity"] == 0
     assert imports["types_bootstrap"].get("shared_runtime_callable") is None
@@ -281,6 +282,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "import_name": "importlib_import_transaction",
         "callable_arity": 5,
         "callable_result": None,
+        "callable_dispatch": "trampoline",
         "runtime_feature": None,
         "symbol_path": "crate::molt_importlib_import_transaction",
     }
@@ -290,7 +292,13 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
 
     rendered_runtime = gen.render_runtime_callables_rs(data)
     assert "molt_importlib_import_transaction" in rendered_runtime
+    assert "ReservedRuntimeCallableDispatch::Trampoline" in rendered_runtime
     assert "molt_types_bootstrap" not in rendered_runtime
+    assert (
+        f'({len(reserved_callables)}, "molt_importlib_import_transaction", '
+        '"importlib_import_transaction", 5, "trampoline")'
+        in gen.render_py(data)
+    )
 
     broken_marker = copy.deepcopy(data)
     broken_marker["import"][0]["shared_runtime_callable"] = "yes"
@@ -298,6 +306,13 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         manifest.WasmAbiManifestError, match="invalid shared_runtime_callable"
     ):
         manifest.validate_loaded_manifest(broken_marker)
+
+    broken_dispatch = copy.deepcopy(data)
+    broken_dispatch["import"][0]["callable_dispatch"] = "sideways"
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="invalid callable_dispatch"
+    ):
+        manifest.validate_loaded_manifest(broken_dispatch)
 
     broken_missing_arity = copy.deepcopy(data)
     broken_missing_arity["import"][0]["shared_runtime_callable"] = True

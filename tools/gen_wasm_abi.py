@@ -139,6 +139,10 @@ def _rust_option_str(value: str | None) -> str:
     return "None" if value is None else f'Some("{value}")'
 
 
+def _rust_callable_dispatch(value: str | None) -> str:
+    return "Trampoline" if value == "trampoline" else "Direct"
+
+
 def _render_rs_mod() -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
@@ -1340,11 +1344,17 @@ def _render_rs_runtime_callables(data: dict) -> str:
     lines.extend(
         [
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum ReservedRuntimeCallableDispatch {\n",
+            "    Direct,\n",
+            "    Trampoline,\n",
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct ReservedRuntimeCallableSpec {\n",
             "    pub(crate) index: u32,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) import_name: &'static str,\n",
             "    pub(crate) arity: usize,\n",
+            "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
             "}\n\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
         ]
@@ -1357,6 +1367,8 @@ def _render_rs_runtime_callables(data: dict) -> str:
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f'        import_name: "{entry["import_name"]}",\n',
                 f"        arity: {entry['callable_arity']},\n",
+                "        dispatch: ReservedRuntimeCallableDispatch::"
+                f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
                 "    },\n",
             ]
         )
@@ -1434,6 +1446,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "import_name": entry["import_name"],
             "callable_arity": entry["callable_arity"],
             "callable_result": import_entry.get("callable_result"),
+            "callable_dispatch": entry.get("callable_dispatch", "direct"),
             "runtime_feature": import_entry.get("runtime_feature"),
             "symbol_path": entry["runtime_name"],
         }
@@ -1457,6 +1470,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
                 "import_name": import_name,
                 "callable_arity": entry["callable_arity"],
                 "callable_result": entry.get("callable_result"),
+                "callable_dispatch": entry.get("callable_dispatch", "direct"),
                 "runtime_feature": entry.get("runtime_feature"),
                 "symbol_path": f"crate::{runtime_name}",
             }
@@ -1495,12 +1509,18 @@ def render_runtime_callables_rs(data: dict) -> str:
             "#[cfg(target_arch = \"wasm32\")]\n",
             "pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =\n",
             "    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;\n\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum ReservedRuntimeCallableDispatch {\n",
+            "    Direct,\n",
+            "    Trampoline,\n",
+            "}\n\n",
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct ReservedRuntimeCallableInfo {\n",
             "    pub(crate) index: u64,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) import_name: &'static str,\n",
             "    pub(crate) arity: usize,\n",
+            "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
             "}\n\n",
             "#[rustfmt::skip]\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
@@ -1517,6 +1537,8 @@ def render_runtime_callables_rs(data: dict) -> str:
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f'        import_name: "{entry["import_name"]}",\n',
                 f"        arity: {entry['callable_arity']},\n",
+                "        dispatch: ReservedRuntimeCallableDispatch::"
+                f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
                 "    },\n",
             ]
         )
@@ -1630,6 +1652,15 @@ def render_runtime_callables_rs(data: dict) -> str:
             "        .iter()\n",
             "        .find(|entry| entry.index == idx)\n",
             "        .map(|entry| (entry.index, entry.runtime_name, entry.import_name, entry.arity))\n",
+            "}\n\n",
+            "#[cfg(target_arch = \"wasm32\")]\n",
+            "pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(\n",
+            "    index: u64,\n",
+            ") -> Option<ReservedRuntimeCallableDispatch> {\n",
+            "    RESERVED_RUNTIME_CALLABLES\n",
+            "        .iter()\n",
+            "        .find(|entry| entry.index == index)\n",
+            "        .map(|entry| entry.dispatch)\n",
             "}\n\n",
             "#[cfg(test)]\n",
             "#[rustfmt::skip]\n",
@@ -1747,11 +1778,16 @@ def render_py(data: dict) -> str:
             f'{entry["callable_arity"]}, "{result}"),\n'
         )
     lines.append(")\n\n")
-    lines.append("WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n")
+    lines.append(
+        "WASM_RESERVED_RUNTIME_CALLABLES: "
+        "tuple[tuple[int, str, str, int, str], ...] = (\n"
+    )
     for entry in reserved_callables:
         lines.append(
             f'    ({entry["index"]}, "{entry["runtime_name"]}", '
-            f'"{entry["import_name"]}", {entry["callable_arity"]}),\n'
+            f'"{entry["import_name"]}", {entry["callable_arity"]}, '
+            f'"{entry.get("callable_dispatch", "direct")}")'
+            ",\n"
         )
     lines.append(")\n\n")
     lines.append(
@@ -1770,7 +1806,7 @@ def render_py(data: dict) -> str:
             "}\n\n",
             "WASM_RESERVED_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
             "    runtime_name: arity\n",
-            "    for _index, runtime_name, _import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES\n",
+            "    for _index, runtime_name, _import_name, arity, _dispatch in WASM_RESERVED_RUNTIME_CALLABLES\n",
             "}\n\n",
             "WASM_RUNTIME_CALLABLE_ARITY_BY_RUNTIME: dict[str, int] = {\n",
             "    **{\n",

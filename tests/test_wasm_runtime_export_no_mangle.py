@@ -48,7 +48,7 @@ def _required_export_symbols() -> set[str]:
 
     required: set[str] = set(WASM_RUNTIME_HOST_EXPORTS)
     required |= {f"molt_{name}" for name in WASM_IMPORT_REGISTRY}
-    # WASM_RESERVED_RUNTIME_CALLABLES entries are (index, runtime_name, import_name, arity).
+    # WASM_RESERVED_RUNTIME_CALLABLES entries include runtime export names.
     required |= {entry[1] for entry in WASM_RESERVED_RUNTIME_CALLABLES}
     return required
 

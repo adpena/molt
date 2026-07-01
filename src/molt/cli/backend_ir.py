@@ -501,17 +501,24 @@ def _isolate_import_module_order(
 ) -> list[str]:
     if not runtime_import_dispatch_roots:
         return []
+    runtime_roots = frozenset(runtime_import_dispatch_roots)
     import_roots: set[str] = set()
-    for module_name in runtime_import_dispatch_roots:
+    for module_name in runtime_roots:
         parts = module_name.split(".")
         import_roots.update(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
     ordered = [module_name for module_name in module_order if module_name in import_roots]
     seen = set(ordered)
-    ordered.extend(
-        module_name
-        for module_name in native_module_order
-        if module_name in import_roots and module_name not in seen
-    )
+    for module_name in native_module_order:
+        if module_name in seen:
+            continue
+        if module_name in import_roots or any(
+            root == module_name
+            or root.startswith(f"{module_name}.")
+            or module_name.startswith(f"{root}.")
+            for root in runtime_roots
+        ):
+            ordered.append(module_name)
+            seen.add(module_name)
     return ordered
 
 

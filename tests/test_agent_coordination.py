@@ -594,3 +594,86 @@ def test_codex_crash_reports_default_prompt_manifest_pressure(
             "prompt_count": 4,
         }
     ]
+
+
+def test_codex_crash_classifies_project_doc_budget_pressure(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "logs" / "agents" / "codex_crash" / "projectdoc.json"
+
+    rc = agent_coordination.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "codex-crash",
+            "--out",
+            str(report),
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+            "--runtime-cache-root",
+            str(tmp_path / "runtime-cache"),
+            "--crash-text",
+            "projectdoc exceeds remaining budget",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["privacy"]["records_raw_crash_text"] is False
+    assert payload["parsed"]["markers"] == ["projectdoc_exceeds_remaining_budget"]
+    assert {item["id"] for item in payload["classification"]} == {
+        "projectdoc_remaining_budget_exhausted"
+    }
+    assert any(
+        "tests/test_agent_contract_budget.py" in action
+        for action in payload["next_actions"]
+    )
+
+
+def test_codex_crash_classifies_unsupported_exec_interrupt(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "logs" / "agents" / "codex_crash" / "interrupt.json"
+    crash_error = {
+        "timestamp": "2026-07-01T17:04:26.840097Z",
+        "level": "ERROR",
+        "fields": {
+            "error": (
+                "write_stdin failed: Unified exec process failed: "
+                "process interrupt is not supported by this process backend"
+            )
+        },
+        "target": "codex_core::tools::router",
+    }
+
+    rc = agent_coordination.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "codex-crash",
+            "--out",
+            str(report),
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+            "--runtime-cache-root",
+            str(tmp_path / "runtime-cache"),
+            "--crash-text",
+            (
+                "Codex crashed with the following error:\n"
+                "  (code=3221225786, signal=null).\n"
+                f"Most recent error: {json.dumps(crash_error)}"
+            ),
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["parsed"]["most_recent_error"]["error"] == (
+        crash_error["fields"]["error"]
+    )
+    assert "exec_backend_interrupt_unsupported" in payload["parsed"]["markers"]
+    assert {item["id"] for item in payload["classification"]} == {
+        "windows_status_control_c_exit",
+        "exec_backend_interrupt_unsupported",
+    }
+    assert any("proof_queue prune-stale" in action for action in payload["next_actions"])

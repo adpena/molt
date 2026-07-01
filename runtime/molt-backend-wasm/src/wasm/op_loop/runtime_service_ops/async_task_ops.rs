@@ -64,7 +64,6 @@ pub(super) fn emit_async_task_runtime_op(
         "state_yield" => {
             let args = op.args.as_ref().unwrap();
             func.instruction(&Instruction::LocalGet(0));
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             emit_call(
                 func,

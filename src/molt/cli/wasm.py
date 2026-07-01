@@ -97,22 +97,36 @@ def _export_wasm_table_refs(path: Path) -> None:
 def _effective_split_worker_table_base(
     *,
     wasm_table_base: int | None,
-    runtime_table_min: int | None,
     app_table_ref_signatures: Mapping[str, Mapping[str, object]],
+    app_wasm: Path | None = None,
 ) -> int | None:
-    _ = runtime_table_min
     if wasm_table_base is None:
         return None
-    first_exported_slot = _wasm_artifact.infer_wasm_table_base_from_table_ref_exports(
+    exported_slots = _wasm_artifact.wasm_table_ref_indices_from_names(
         app_table_ref_signatures,
     )
-    inferred = first_exported_slot
-    if inferred is not None and inferred != wasm_table_base:
+    below_base = [slot for slot in exported_slots if slot < wasm_table_base]
+    if below_base:
+        first_exported_slot = min(exported_slots)
         raise ValueError(
             "backend wasm_table_base "
-            f"{wasm_table_base} disagrees with table-ref export base {inferred} "
-            f"(first exported slot {first_exported_slot})"
+            f"{wasm_table_base} is above exported table-ref slot "
+            f"{below_base[0]} (first exported slot {first_exported_slot})"
         )
+    if app_wasm is not None:
+        active_slots = sorted(
+            _wasm_artifact._collect_wasm_active_table_function_slots(
+                app_wasm.read_bytes()
+            )
+        )
+        active_below_base = [slot for slot in active_slots if slot < wasm_table_base]
+        if active_below_base:
+            first_active_slot = active_slots[0]
+            raise ValueError(
+                "backend wasm_table_base "
+                f"{wasm_table_base} is above active app table slot "
+                f"{active_below_base[0]} (first active slot {first_active_slot})"
+            )
     return wasm_table_base
 
 
@@ -193,8 +207,9 @@ def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
             "runtime_export": runtime_name,
             "import_name": import_name,
             "arity": arity,
+            "dispatch": dispatch,
         }
-        for index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+        for index, runtime_name, import_name, arity, dispatch in WASM_RESERVED_RUNTIME_CALLABLES
     ]
 
 
@@ -969,6 +984,9 @@ export default {
         table.grow(maxIndex + 1 - table.length);
       }
       for (const ref of refs) {
+        if (table.get(ref.index) !== null) {
+          continue;
+        }
         table.set(ref.index, ref.fn);
       }
     };
@@ -1023,6 +1041,25 @@ export default {
       }
       const spec = reservedRuntimeCallables.find((entry) => entry.index === offset);
       return spec ? { ...spec, trampoline } : null;
+    };
+
+    const planReservedRuntimeDispatch = ({
+      dispatchIdx,
+    }) => {
+      const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);
+      if (
+        reservedRuntimeCallable &&
+        !reservedRuntimeCallable.trampoline &&
+        reservedRuntimeCallable.dispatch === 'trampoline'
+      ) {
+        throw new Error(
+          `reserved runtime callable ${reservedRuntimeCallable.runtimeExport} at idx=${dispatchIdx} is trampoline-only`,
+        );
+      }
+      return {
+        reservedRuntimeCallable,
+        dispatchReservedRuntimeCallable: Boolean(reservedRuntimeCallable),
+      };
     };
 
     const readRuntimeCallargsVector = (ptr, len) => {
@@ -1269,8 +1306,11 @@ export default {
         const idx = Number(fnIndex);
         const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
         const directName = tableRefExportName(dispatchIdx);
-        const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);
-        if (reservedRuntimeCallable) {
+        const reservedDispatch = planReservedRuntimeDispatch({
+          dispatchIdx,
+        });
+        const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
+        if (reservedDispatch.dispatchReservedRuntimeCallable) {
           try {
             return callReservedRuntimeCallable(
               reservedRuntimeCallable,
@@ -1280,6 +1320,19 @@ export default {
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
+          }
+        }
+        const appDirectFn = appInstance?.exports?.[directName];
+        if (typeof appDirectFn === "function") {
+          try {
+            return callWithSignature(
+              appDirectFn,
+              appTableRefSignatures[directName] || callIndirectObjectSignature(indirectName),
+              args,
+            );
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            throw new Error(`${indirectName} app direct export ${directName} failed at idx=${idx}: ${detail}; fnLen=${appDirectFn.length}; argsLen=${args.length}`);
           }
         }
         const indirectFn = appInstance?.exports?.[indirectName];

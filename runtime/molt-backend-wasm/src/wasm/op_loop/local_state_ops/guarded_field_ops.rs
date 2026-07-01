@@ -38,6 +38,7 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::LocalSet(tmp_ptr));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             emit_call(
@@ -93,11 +94,11 @@ pub(super) fn emit_guarded_field_local_state_op(
 
             func.instruction(&Instruction::Else);
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(
                 func,
@@ -132,6 +133,7 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::LocalSet(tmp_ptr));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             emit_call(
@@ -171,6 +173,7 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::If(BlockType::Empty));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(
@@ -208,12 +211,12 @@ pub(super) fn emit_guarded_field_local_state_op(
 
             func.instruction(&Instruction::Else);
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(val));
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(
                 func,
@@ -251,6 +254,7 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::LocalSet(tmp_ptr));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             emit_call(
@@ -273,6 +277,7 @@ pub(super) fn emit_guarded_field_local_state_op(
             func.instruction(&Instruction::If(BlockType::Empty));
 
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(val));
             emit_call(
@@ -310,12 +315,12 @@ pub(super) fn emit_guarded_field_local_state_op(
 
             func.instruction(&Instruction::Else);
             func.instruction(&Instruction::LocalGet(tmp_ptr));
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             func.instruction(&Instruction::LocalGet(val));
             backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(bytes.len() as i64));
             emit_call(
                 func,

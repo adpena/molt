@@ -102,6 +102,10 @@ is reconciled.
 - If a queue row stalls, inspect the queue log and memory-guard summary. Use
   `tools/proof_queue.py prune-stale` for stale rows; do not kill broad process
   families.
+- Do not try to interrupt running tool sessions by sending Ctrl-C/control bytes
+  through `write_stdin`; the Windows unified exec backend may reject that and
+  crash Codex. Use bounded command timeouts, pytest deselection, proof-queue
+  custody, or exact live-proved Molt-owned PID cleanup with an incident record.
 - Direct commands are acceptable for cheap formatting, static checks, narrow
   source inspection, and queue/bootstrap repair.
 - Keep proof scoped to the claim. Broad regrtest, conformance, benchmark, and

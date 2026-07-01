@@ -22,6 +22,7 @@ pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
 pub(super) struct WasmCallableTablePlan {
     table_base: u32,
     table_indices: Vec<u32>,
+    sentinel_func_idx: u32,
     split_runtime_owned_slot_start: usize,
     split_runtime_shared_abi_slot_end: usize,
     func_to_table_idx: BTreeMap<String, u32>,
@@ -65,7 +66,9 @@ impl WasmCallableTablePlan {
             .iter()
             .copied()
             .enumerate()
-            .filter(|(slot, _func_index)| self.runtime_initializes_slot(*slot))
+            .filter(|(slot, func_index)| {
+                *func_index != self.sentinel_func_idx && self.runtime_initializes_slot(*slot)
+            })
     }
 
     fn runtime_initializes_slot(&self, slot: usize) -> bool {
@@ -393,6 +396,7 @@ mod tests {
         WasmCallableTablePlan {
             table_base: 0,
             table_indices: Vec::new(),
+            sentinel_func_idx: u32::MAX,
             split_runtime_owned_slot_start: 0,
             split_runtime_shared_abi_slot_end: 0,
             func_to_table_idx,

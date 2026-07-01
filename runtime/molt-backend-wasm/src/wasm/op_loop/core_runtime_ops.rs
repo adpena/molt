@@ -213,6 +213,7 @@ pub(super) fn emit_core_runtime_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
             );
+            func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalGet(class_bits));
             func.instruction(&Instruction::LocalGet(expected));
             emit_call(

@@ -133,6 +133,8 @@ pub struct RuntimeHooks {
     /// Allocate a new Molt module object whose `__name__` is the UTF-8 string
     /// in `name_data[..name_len]`.  Returns module handle bits, 0 on failure.
     pub alloc_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
+    /// Return the runtime-owned module dict handle for a Molt module object.
+    pub module_get_dict: unsafe extern "C" fn(module_bits: u64) -> u64,
     /// Set `module_bits.__dict__[name_data[..name_len]] = value_bits`.
     /// `module_bits` must be a Molt module handle.  Returns 0 on success, -1 on failure.
     pub module_set_attr: unsafe extern "C" fn(
@@ -141,6 +143,22 @@ pub struct RuntimeHooks {
         name_len: usize,
         value_bits: u64,
     ) -> std::os::raw::c_int,
+    /// Register C-API module metadata and allocate per-module state when
+    /// `module_state_size` is non-zero.
+    pub module_capi_register: unsafe extern "C" fn(
+        module_bits: u64,
+        module_def_ptr: usize,
+        module_state_size: u64,
+    ) -> std::os::raw::c_int,
+    /// Return the runtime-owned C-API module state pointer for a module.
+    pub module_capi_get_state: unsafe extern "C" fn(module_bits: u64) -> *mut u8,
+    /// Add `def -> module` to the process module-state registry.
+    pub module_state_add:
+        unsafe extern "C" fn(module_bits: u64, module_def_ptr: usize) -> std::os::raw::c_int,
+    /// Find the module handle registered for a module definition pointer.
+    pub module_state_find: unsafe extern "C" fn(module_def_ptr: usize) -> u64,
+    /// Remove a module definition pointer from the module-state registry.
+    pub module_state_remove: unsafe extern "C" fn(module_def_ptr: usize) -> std::os::raw::c_int,
     /// Register a `PyCFunction`-style C function pointer (`meth_addr`) as a
     /// callable Molt function.  `flags` follows CPython's `METH_*` bitmask.
     /// `name_data[..name_len]` is the function's `__name__`.  Returns the bits
@@ -323,12 +341,37 @@ unsafe extern "C" fn stub_dec_ref(_bits: u64) {}
 unsafe extern "C" fn stub_alloc_module(_data: *const u8, _len: usize) -> u64 {
     0
 }
+unsafe extern "C" fn stub_module_get_dict(_module_bits: u64) -> u64 {
+    0
+}
 unsafe extern "C" fn stub_module_set_attr(
     _m: u64,
     _data: *const u8,
     _len: usize,
     _v: u64,
 ) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_module_capi_register(
+    _module_bits: u64,
+    _module_def_ptr: usize,
+    _module_state_size: u64,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_module_capi_get_state(_module_bits: u64) -> *mut u8 {
+    std::ptr::null_mut()
+}
+unsafe extern "C" fn stub_module_state_add(
+    _module_bits: u64,
+    _module_def_ptr: usize,
+) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_module_state_find(_module_def_ptr: usize) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_module_state_remove(_module_def_ptr: usize) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_register_c_function(
@@ -375,7 +418,13 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     inc_ref: stub_inc_ref,
     dec_ref: stub_dec_ref,
     alloc_module: stub_alloc_module,
+    module_get_dict: stub_module_get_dict,
     module_set_attr: stub_module_set_attr,
+    module_capi_register: stub_module_capi_register,
+    module_capi_get_state: stub_module_capi_get_state,
+    module_state_add: stub_module_state_add,
+    module_state_find: stub_module_state_find,
+    module_state_remove: stub_module_state_remove,
     register_c_function: stub_register_c_function,
 };
 

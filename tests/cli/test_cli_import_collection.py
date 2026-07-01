@@ -2096,8 +2096,9 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     ]
     assert "nativepkg" in import_const_names
     assert "nativepkg.ndimage" in import_const_names
-    assert "nativepkg.ndimage._nd_image" not in import_const_names
+    assert "nativepkg.ndimage._nd_image" in import_const_names
     assert public_init in import_call_targets
+    assert extension_init in import_call_targets
 
     extension_ops = functions[extension_init]
     invoke_ops = [op for op in extension_ops if op.get("kind") == "invoke_ffi"]
@@ -16700,6 +16701,198 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     native_callables = manifest["abi"]["browser_embed"]["native_callables"]
     assert native_callables["module"] == "molt_native"
     assert native_callables["symbols"] == {}
+
+
+def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    linked_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    app_wasm = output_wasm.parent / "app.wasm"
+    app_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    cached_runtime_wasm = output_wasm.parent / "molt_runtime.wasm"
+    cached_runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    _write_split_runtime_vfs_support(tmp_path)
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    package_init = package_dir / "__init__.py"
+    package_init.write_text("VALUE = 1\n", encoding="utf-8")
+    artifact_path = package_dir / "_ndimage.molt.wasm"
+    artifact_bytes = b"\0asm\x01\0\0\0native"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest_path = package_dir / "extension_manifest.json"
+    manifest_bytes = b'{"runtime_linkage":"static_link"}\n'
+    manifest_path.write_bytes(manifest_bytes)
+    native_artifact_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg._ndimage",
+                package_dir=package_dir,
+                path=artifact_path,
+                manifest_path=manifest_path,
+                extension_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                capabilities=(),
+                abi_tag="molt_abi1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                support_file_sha256=(
+                    (
+                        "nativepkg/__init__.py",
+                        hashlib.sha256(package_init.read_bytes()).hexdigest(),
+                    ),
+                ),
+            ),
+        )
+    )
+    link_calls: list[list[str]] = []
+
+    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    monkeypatch.setattr(
+        cli_non_native_output, "_artifact_needs_rebuild", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        cli_non_native_output, "_is_reusable_wasm_artifact", lambda _path: True
+    )
+
+    def collect_import_names(path: Path, module_name: str) -> set[str]:
+        if module_name == "molt_runtime":
+            return {"alloc"}
+        if (
+            module_name == "molt_native"
+            and path.name == "app.wasm"
+            and not link_calls
+        ):
+            return {"PyInit__nd_image"}
+        return set()
+
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_collect_wasm_module_import_names",
+        collect_import_names,
+    )
+    monkeypatch.setattr(
+        cli_non_native_output, "_wasm_import_minima", lambda _path: (1, 1)
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_runtime_import_result_kinds_from_manifest",
+        lambda _names: {},
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_runtime_import_signatures_from_manifest",
+        lambda _names: {},
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_wasm_export_function_signatures",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_effective_split_worker_table_base",
+        lambda **kwargs: 8192,
+    )
+    monkeypatch.setattr(
+        cli_non_native_output, "_generate_split_worker_js", lambda **kwargs: "// worker"
+    )
+
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda required=None: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_cargo_profile="dev-fast",
+        molt_root=tmp_path,
+        split_runtime=True,
+        precompile=False,
+        native_artifact_plan=native_artifact_plan,
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert len(link_calls) == 1
+    link_cmd = link_calls[0]
+    assert "--split-runtime" in link_cmd
+    assert "--native-object" in link_cmd
+
+
+def test_split_runtime_static_native_reuse_rejects_hidden_active_table_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import molt.wasm_artifact as wasm_artifact
+
+    def wasm_vec(items: list[bytes]) -> bytes:
+        return wasm_artifact._write_wasm_varuint(len(items)) + b"".join(items)
+
+    type_payload = wasm_vec([b"\x60\x00\x00"])
+    function_payload = wasm_vec([wasm_artifact._write_wasm_varuint(0)])
+    table_payload = wasm_vec(
+        [b"\x70\x00" + wasm_artifact._write_wasm_varuint(1025)]
+    )
+    element_payload = wasm_vec(
+        [
+            b"\x00\x41"
+            + wasm_artifact._write_wasm_varuint(1024)
+            + b"\x0b\x00"
+            + wasm_artifact._write_wasm_varuint(1)
+            + wasm_artifact._write_wasm_varuint(0)
+        ]
+    )
+    code_body = b"\x00\x0b"
+    code_payload = wasm_vec(
+        [wasm_artifact._write_wasm_varuint(len(code_body)) + code_body]
+    )
+    app_wasm = tmp_path / "app.wasm"
+    app_wasm.write_bytes(
+        wasm_artifact._build_wasm_sections(
+            [
+                (1, type_payload),
+                (3, function_payload),
+                (4, table_payload),
+                (9, element_payload),
+                (10, code_payload),
+            ]
+        )
+    )
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    monkeypatch.setattr(
+        cli_non_native_output, "_is_reusable_wasm_artifact", lambda _path: True
+    )
+    monkeypatch.setattr(
+        cli_non_native_output, "_artifact_imports_module", lambda *_args: False
+    )
+
+    assert not cli_non_native_output._is_reusable_split_runtime_artifacts(
+        app_wasm,
+        runtime_wasm,
+        static_native_inputs=True,
+        wasm_table_base=4096,
+    )
 
 
 def test_prepare_non_native_build_result_links_cpython_abi_provider(
