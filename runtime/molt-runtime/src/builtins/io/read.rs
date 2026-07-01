@@ -1148,7 +1148,7 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             let msg = format!("{name}() unsupported for text files");
             return raise_exception::<_>(_py, "OSError", &msg);
         }
-        let mut export = BufferExport::default();
+        let mut export = MoltBufferView::default();
         if molt_buffer_export(buffer_bits, &mut export) != 0 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -1168,7 +1168,7 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         if len == 0 {
             return MoltObject::from_int(0).bits();
         }
-        let buf = std::slice::from_raw_parts_mut(export.ptr, len);
+        let buf = std::slice::from_raw_parts_mut(export.data, len);
         let backend_state = Arc::clone(&handle.state);
         let mut guard = backend_state.backend.lock().unwrap();
         let Some(backend) = guard.as_mut() else {

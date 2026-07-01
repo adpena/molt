@@ -13,7 +13,7 @@ use molt_cpython_abi::abi_types::{
     METH_CLASS, METH_COEXIST, METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O,
     METH_STATIC, METH_VARARGS, MoltTypeTag, Py_ssize_t, PyCFunction, PyCFunctionFast,
     PyCFunctionFastWithKeywords, PyCFunctionWithKeywords, PyModule_Type, PyModuleDef,
-    PyModuleDef_Type, PyObject,
+    PyModuleDef_Type, PyObject, PyTypeObject,
 };
 use molt_cpython_abi::{MoltBufferView as AbiMoltBufferView, RuntimeHooks};
 use molt_obj_model::MoltObject;
@@ -41,6 +41,14 @@ use crate::object::{
 };
 
 // ─── Hook implementations ─────────────────────────────────────────────────
+
+fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferView {
+    unsafe { std::mem::transmute::<crate::MoltBufferView, AbiMoltBufferView>(view) }
+}
+
+fn runtime_buffer_view_from_abi(view: AbiMoltBufferView) -> crate::MoltBufferView {
+    unsafe { std::mem::transmute::<AbiMoltBufferView, crate::MoltBufferView>(view) }
+}
 
 unsafe extern "C" fn hook_alloc_str(data: *const u8, len: usize) -> u64 {
     if data.is_null() {
@@ -365,37 +373,13 @@ unsafe extern "C" fn hook_buffer_acquire(bits: u64, out_view: *mut AbiMoltBuffer
     if out_view.is_null() {
         return -1;
     }
-    let mut view = crate::c_api::MoltBufferView {
-        data: std::ptr::null_mut(),
-        len: 0,
-        readonly: 1,
-        ndim: 1,
-        itemsize: 1,
-        offset: 0,
-        owner: 0,
-        base: 0,
-        shape: [0; crate::MOLT_BUFFER_MAX_NDIM],
-        strides: [0; crate::MOLT_BUFFER_MAX_NDIM],
-        format: [0; crate::MOLT_BUFFER_FORMAT_CAP],
-    };
+    let mut view = crate::MoltBufferView::default();
     let rc = unsafe { crate::c_api::molt_buffer_acquire(bits, &mut view as *mut _) };
     if rc != 0 {
         return rc;
     }
     unsafe {
-        *out_view = AbiMoltBufferView {
-            data: view.data,
-            len: view.len,
-            readonly: view.readonly,
-            ndim: view.ndim,
-            itemsize: view.itemsize,
-            offset: view.offset,
-            owner: view.owner,
-            base: view.base,
-            shape: view.shape,
-            strides: view.strides,
-            format: view.format,
-        };
+        *out_view = abi_buffer_view_from_runtime(view);
     }
     0
 }
@@ -404,21 +388,7 @@ unsafe extern "C" fn hook_buffer_release(view: *mut AbiMoltBufferView) -> i32 {
     if view.is_null() {
         return -1;
     }
-    let mut runtime_view = unsafe {
-        crate::c_api::MoltBufferView {
-            data: (*view).data,
-            len: (*view).len,
-            readonly: (*view).readonly,
-            ndim: (*view).ndim,
-            itemsize: (*view).itemsize,
-            offset: (*view).offset,
-            owner: (*view).owner,
-            base: (*view).base,
-            shape: (*view).shape,
-            strides: (*view).strides,
-            format: (*view).format,
-        }
-    };
+    let mut runtime_view = unsafe { runtime_buffer_view_from_abi(*view) };
     let rc = unsafe { crate::c_api::molt_buffer_release(&mut runtime_view as *mut _) };
     unsafe {
         *view = AbiMoltBufferView::default();
@@ -739,17 +709,34 @@ unsafe fn static_pyinit_registered_bridge_module_bits(
     Ok(Some(module_bits))
 }
 
+unsafe fn static_pyinit_type_matches(
+    result_pyobj: *mut PyObject,
+    canonical: *mut PyTypeObject,
+    type_name: &[u8],
+) -> bool {
+    if result_pyobj.is_null() {
+        return false;
+    }
+    let actual = unsafe { (*result_pyobj).ob_type };
+    if actual.is_null() {
+        return false;
+    }
+    if std::ptr::eq(actual, canonical) {
+        return true;
+    }
+    let actual_name = unsafe { (*actual).tp_name };
+    if actual_name.is_null() {
+        return false;
+    }
+    unsafe { CStr::from_ptr(actual_name).to_bytes() == type_name }
+}
+
 unsafe fn static_pyinit_is_module_def(result_pyobj: *mut PyObject) -> bool {
-    !result_pyobj.is_null()
-        && std::ptr::eq(
-            unsafe { (*result_pyobj).ob_type },
-            &raw mut PyModuleDef_Type,
-        )
+    unsafe { static_pyinit_type_matches(result_pyobj, &raw mut PyModuleDef_Type, b"moduledef") }
 }
 
 unsafe fn static_pyinit_is_bridge_module_object(result_pyobj: *mut PyObject) -> bool {
-    !result_pyobj.is_null()
-        && std::ptr::eq(unsafe { (*result_pyobj).ob_type }, &raw mut PyModule_Type)
+    unsafe { static_pyinit_type_matches(result_pyobj, &raw mut PyModule_Type, b"module") }
 }
 
 unsafe fn static_module_spec_for_def_name(name_bytes: &[u8]) -> Option<*mut PyObject> {
@@ -1190,7 +1177,42 @@ pub fn register_cpython_hooks() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use molt_cpython_abi::abi_types::{PyExc_RuntimeError, PyModuleDef_Base, PyObject};
+    use molt_cpython_abi::abi_types::{
+        PyExc_RuntimeError, PyModuleDef_Base, PyObject, PyTypeObject,
+    };
+
+    #[test]
+    fn cpython_abi_buffer_view_layout_matches_runtime_descriptor() {
+        macro_rules! assert_field {
+            ($field:ident) => {
+                assert_eq!(
+                    std::mem::offset_of!(AbiMoltBufferView, $field),
+                    std::mem::offset_of!(crate::MoltBufferView, $field),
+                    concat!("MoltBufferView field offset drift: ", stringify!($field)),
+                );
+            };
+        }
+
+        assert_eq!(
+            std::mem::size_of::<AbiMoltBufferView>(),
+            std::mem::size_of::<crate::MoltBufferView>()
+        );
+        assert_eq!(
+            std::mem::align_of::<AbiMoltBufferView>(),
+            std::mem::align_of::<crate::MoltBufferView>()
+        );
+        assert_field!(data);
+        assert_field!(len);
+        assert_field!(readonly);
+        assert_field!(ndim);
+        assert_field!(itemsize);
+        assert_field!(offset);
+        assert_field!(owner);
+        assert_field!(base);
+        assert_field!(shape);
+        assert_field!(strides);
+        assert_field!(format);
+    }
 
     #[test]
     fn pyinit_module_to_bits_accepts_static_module_def_pointer() {
@@ -1220,6 +1242,40 @@ mod tests {
         let module_ptr = MoltObject::from_bits(bits)
             .as_ptr()
             .expect("PyModuleDef pointer must convert to a Molt module");
+
+        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+    }
+
+    #[test]
+    fn pyinit_module_to_bits_accepts_split_wasm_moduledef_type_clone() {
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut app_moduledef_type: PyTypeObject = unsafe { std::mem::zeroed() };
+        app_moduledef_type.tp_name = c"moduledef".as_ptr();
+        let mut def = PyModuleDef {
+            m_base: PyModuleDef_Base {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &mut app_moduledef_type,
+                },
+                m_init: None,
+                m_index: 0,
+                m_copy: std::ptr::null_mut(),
+            },
+            m_name: c"split_wasm_static_def_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: std::ptr::null_mut(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits =
+            molt_cpython_abi_pyinit_module_to_bits((&mut def as *mut PyModuleDef) as usize as u64);
+        let module_ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("split-WASM PyModuleDef type clone must convert to a Molt module");
 
         assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
     }

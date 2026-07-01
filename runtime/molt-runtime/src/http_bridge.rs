@@ -454,7 +454,7 @@ pub extern "C" fn __molt_http_molt_object_setattr(obj_bits: u64, name_bits: u64,
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_molt_buffer_export(
     buffer_bits: u64,
-    export: *mut crate::BufferExport,
+    export: *mut crate::MoltBufferView,
 ) -> i32 {
     unsafe { crate::molt_buffer_export(buffer_bits, export) }
 }

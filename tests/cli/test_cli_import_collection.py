@@ -642,7 +642,7 @@ def test_literal_importlib_import_module_uses_public_import_module_intrinsic() -
     )
 
 
-def test_relative_from_import_syntax_leaves_package_context_to_transaction() -> None:
+def test_relative_from_import_syntax_is_canonicalized_before_transaction() -> None:
     ops = _frontend_main_ops_for_import_source(
         "from .helper import ping\n",
         module_name="pkg.main",
@@ -653,7 +653,8 @@ def test_relative_from_import_syntax_leaves_package_context_to_transaction() -> 
 
     assert all(op.get("kind") != "module_import" for op in ops)
     calls = _frontend_import_transaction_calls(ops)
-    assert ("helper", ("ping",), 1, False) in calls
+    assert ("pkg.helper", ("ping",), 0, False) in calls
+    assert ("helper", ("ping",), 1, False) not in calls
 
 
 def test_import_transaction_implementation_modules_use_bootstrap_imports() -> None:

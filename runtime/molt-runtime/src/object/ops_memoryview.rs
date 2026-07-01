@@ -582,74 +582,10 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
     })
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BufferExport {
-    pub ptr: *mut u8,
-    pub len: u64,
-    pub readonly: u32,
-    pub ndim: u32,
-    pub itemsize: u64,
-    pub offset: isize,
-    pub owner: u64,
-    pub base: u64,
-    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
-    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
-    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
-}
-
-impl Default for BufferExport {
-    fn default() -> Self {
-        let mut format = [0; MOLT_BUFFER_FORMAT_CAP];
-        format[0] = b'B';
-        Self {
-            ptr: std::ptr::null_mut(),
-            len: 0,
-            readonly: 1,
-            ndim: 1,
-            itemsize: 1,
-            offset: 0,
-            owner: 0,
-            base: 0,
-            shape: [0; MOLT_BUFFER_MAX_NDIM],
-            strides: [0; MOLT_BUFFER_MAX_NDIM],
-            format,
-        }
-    }
-}
-
-impl BufferExport {
-    fn from_typed_storage(storage: &TypedStridedStorage) -> Option<Self> {
-        if storage.shape.len() != storage.strides.len()
-            || storage.shape.len() > MOLT_BUFFER_MAX_NDIM
-        {
-            return None;
-        }
-        let mut out = Self {
-            ptr: storage.data,
-            len: u64::try_from(storage.len).ok()?,
-            readonly: if storage.readonly { 1 } else { 0 },
-            ndim: storage.shape.len() as u32,
-            itemsize: u64::try_from(storage.itemsize).ok()?,
-            offset: storage.offset,
-            base: storage.base_bits,
-            format: storage.format,
-            ..Self::default()
-        };
-        for (slot, value) in out.shape.iter_mut().zip(storage.shape.iter().copied()) {
-            *slot = value;
-        }
-        for (slot, value) in out.strides.iter_mut().zip(storage.strides.iter().copied()) {
-            *slot = value;
-        }
-        Some(out)
-    }
-}
-
 /// # Safety
 /// Caller must ensure `out_ptr` is valid and writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferExport) -> i32 {
+pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut MoltBufferView) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             if out_ptr.is_null() {
@@ -663,7 +599,7 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferE
                 }
                 Err(_) => return 1,
             };
-            let Some(export) = BufferExport::from_typed_storage(&storage) else {
+            let Some(export) = MoltBufferView::from_typed_storage(&storage) else {
                 return 1;
             };
             *out_ptr = export;

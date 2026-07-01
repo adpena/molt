@@ -19,6 +19,40 @@ pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
 pub(crate) const RELEASED_MEMORYVIEW_ERROR: &str =
     "operation forbidden on released memoryview object";
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MoltBufferView {
+    pub data: *mut u8,
+    pub len: u64,
+    pub readonly: u32,
+    pub ndim: u32,
+    pub itemsize: u64,
+    pub offset: isize,
+    pub owner: u64,
+    pub base: u64,
+    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
+    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
+}
+
+impl Default for MoltBufferView {
+    fn default() -> Self {
+        Self {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: default_buffer_format(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TypedStridedStorageError {
     NotBuffer,
@@ -202,6 +236,34 @@ impl TypedStridedStorage {
             )
             .ok_or(TypedStridedStorageError::InvalidDescriptor)
         }
+    }
+}
+
+impl MoltBufferView {
+    pub(crate) fn from_typed_storage(storage: &TypedStridedStorage) -> Option<Self> {
+        if storage.shape.len() != storage.strides.len()
+            || storage.shape.len() > MOLT_BUFFER_MAX_NDIM
+        {
+            return None;
+        }
+        let mut out = Self {
+            data: storage.data,
+            len: u64::try_from(storage.len).ok()?,
+            readonly: if storage.readonly { 1 } else { 0 },
+            ndim: storage.shape.len() as u32,
+            itemsize: u64::try_from(storage.itemsize).ok()?,
+            offset: storage.offset,
+            base: storage.base_bits,
+            format: storage.format,
+            ..Self::default()
+        };
+        for (slot, value) in out.shape.iter_mut().zip(storage.shape.iter().copied()) {
+            *slot = value;
+        }
+        for (slot, value) in out.strides.iter_mut().zip(storage.strides.iter().copied()) {
+            *slot = value;
+        }
+        Some(out)
     }
 }
 

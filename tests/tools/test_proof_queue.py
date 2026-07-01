@@ -15,6 +15,12 @@ def _rows(db: Path) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM proof_runs ORDER BY rowid"))
 
 
+def _notes(db: Path) -> list[sqlite3.Row]:
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    return list(conn.execute("SELECT * FROM proof_notes ORDER BY note_id"))
+
+
 def test_proof_queue_session_id_is_contention_key_scoped() -> None:
     assert proof_queue._proof_session_id(
         "wasm", "wasm-build"
@@ -27,6 +33,7 @@ def test_proof_queue_session_id_is_contention_key_scoped() -> None:
 def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
 
     rc = proof_queue.main(
         [
@@ -34,6 +41,8 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
             str(db),
             "--logs-root",
             str(logs),
+            "--notebooks-root",
+            str(notebooks),
             "--repo-root",
             str(proof_queue.ROOT),
             "exec",
@@ -47,6 +56,8 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
             "python:queue-smoke",
             "--env",
             "PROOF_QUEUE_TEST=queue-ok",
+            "--note",
+            "changed queue smoke to verify note capture",
             "--timeout",
             "30",
             "--",
@@ -62,6 +73,15 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert rows[0]["status"] == "passed"
     assert rows[0]["returncode"] == 0
     assert "queue-ok" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    notes = _notes(db)
+    assert [note["body"] for note in notes] == [
+        "changed queue smoke to verify note capture"
+    ]
+    notebook = notebooks / f"{rows[0]['run_id']}.py"
+    notebook_text = notebook.read_text(encoding="utf-8")
+    assert "import marimo" in notebook_text
+    assert '"status": "passed"' in notebook_text
+    assert "changed queue smoke to verify note capture" in notebook_text
 
 
 def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> None:
@@ -258,6 +278,181 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
     assert len(rows) == 1
     assert rows[0]["status"] == "passed"
     assert "queued-ok" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+
+
+def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    dsl = tmp_path / "proof.toml"
+    dsl.write_text(
+        "\n".join(
+            [
+                "[[proof]]",
+                'id = "queued-notebook-proof"',
+                'reason = "capture proof intent"',
+                'resource_family = "python"',
+                'contention_key = "python:queued-notebook"',
+                'note = "changed typed-buffer descriptor authority"',
+                'notes = ["testing queue-owned lab notebook projection"]',
+                f'command = [{sys.executable!r}, "-c", "print(\'queued\')"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "submit",
+                str(dsl),
+            ]
+        )
+        == 0
+    )
+
+    rows = _rows(db)
+    notes = _notes(db)
+    assert len(rows) == 1
+    assert [note["kind"] for note in notes] == ["submission", "submission"]
+    assert [note["body"] for note in notes] == [
+        "changed typed-buffer descriptor authority",
+        "testing queue-owned lab notebook projection",
+    ]
+    notebook = notebooks / f"{rows[0]['run_id']}.py"
+    notebook_text = notebook.read_text(encoding="utf-8")
+    assert "import marimo" in notebook_text
+    assert "changed typed-buffer descriptor authority" in notebook_text
+    assert '"git": {' in notebook_text
+
+
+def test_proof_queue_appends_notes_and_exports_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    notebooks = tmp_path / "notebooks"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="noted-run",
+        logical_id="noted",
+        reason="prove append-only notes",
+        command=[sys.executable, "-c", "print('noted')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:noted",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=tmp_path / "noted.log",
+        summary_json=tmp_path / "noted.memory_guard.json",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "note",
+                "noted-run",
+                "--kind",
+                "observation",
+                "--author",
+                "codex",
+                "--note",
+                "R18 is still running, so this note preserves observation context",
+            ]
+        )
+        == 0
+    )
+
+    notes = _notes(db)
+    assert len(notes) == 1
+    assert notes[0]["kind"] == "observation"
+    assert notes[0]["author"] == "codex"
+    notebook_text = (notebooks / "noted-run.py").read_text(encoding="utf-8")
+    assert "abc123" in notebook_text
+    assert "R18 is still running" in notebook_text
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "noted-run",
+            ]
+        )
+        == 0
+    )
+    payload = capsys.readouterr().out
+    assert '"notes": [' in payload
+    assert '"head": "abc123"' in payload
+    assert "R18 is still running" in payload
+
+
+def test_proof_queue_notes_are_database_append_only(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="append-only-run",
+        logical_id="append-only",
+        reason="prove immutable notes table",
+        command=[sys.executable, "-c", "print('append-only')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:append-only",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=tmp_path / "append-only.log",
+        summary_json=tmp_path / "append-only.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="append-only-run",
+        author="codex",
+        kind="observation",
+        body="first observation",
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("UPDATE proof_notes SET body = 'rewritten'")
+
+    with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        conn.execute("DELETE FROM proof_notes")
+
+    assert [note["body"] for note in _notes(db)] == ["first observation"]
 
 
 def test_proof_queue_submit_rejects_uv_run_without_active_project_python(
