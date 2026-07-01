@@ -124,6 +124,11 @@ touching code, docs, tests, benchmarks, or roadmap state.
   proof latency. The queue derives `MOLT_SESSION_ID` from the contention key so
   serialized lanes reuse their Cargo/uv artifact caches while disjoint
   contention keys remain isolated.
+- Pact Kernel A acceptance must use the named queue lane
+  `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
+  `python -m molt build ... field_solve.py` is build evidence, not acceptance;
+  current acceptance is `tools/pact_witness_acceptance.py` producing
+  `candidate_outputs.npz` and passing `check_parity.py`.
 - Treat `write_stdin` as stdin input only, not process control. Never send
   Ctrl-C (`\u0003`), SIGINT-like bytes, ESC/control sequences, or other
   interrupt payloads through it to stop a command. On Windows Codex Desktop this

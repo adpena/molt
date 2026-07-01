@@ -201,6 +201,7 @@ def _manifest_support_file_payloads(
     for index, item in enumerate(value):
         label = f"{field_name}[{index}]"
         expected_sha: str | None = None
+        raw_source: str | None = None
         if isinstance(item, str):
             raw_path = item
         elif isinstance(item, Mapping):
@@ -209,6 +210,12 @@ def _manifest_support_file_payloads(
                 errors.append(f"{label}.path must be a non-empty path string")
                 continue
             raw_path = raw_path_value
+            raw_source_value = item.get("source")
+            if raw_source_value is not None:
+                if not isinstance(raw_source_value, str) or not raw_source_value.strip():
+                    errors.append(f"{label}.source must be a non-empty path string")
+                    continue
+                raw_source = raw_source_value
             raw_sha = item.get("sha256")
             if raw_sha is not None:
                 if not isinstance(raw_sha, str) or not re.fullmatch(
@@ -224,16 +231,33 @@ def _manifest_support_file_payloads(
         if not raw_path.strip():
             errors.append(f"{label} must be a non-empty path")
             continue
-        source_path = Path(raw_path.strip()).expanduser()
+        source_path = Path((raw_source or raw_path).strip()).expanduser()
         if not source_path.is_absolute():
             source_path = (root / source_path).resolve()
         else:
             source_path = source_path.resolve()
-        try:
-            rel_path = source_path.relative_to(root).as_posix()
-        except ValueError:
-            errors.append(f"{label} escapes support-file root {root}: {source_path}")
-            continue
+        if raw_source is not None:
+            rel_candidate = Path(raw_path.strip().replace("\\", "/"))
+            if rel_candidate.is_absolute() or ".." in rel_candidate.parts:
+                errors.append(
+                    f"{label}.path must be a relative support-file destination"
+                )
+                continue
+            rel_path = rel_candidate.as_posix()
+        else:
+            try:
+                rel_path = source_path.relative_to(root).as_posix()
+            except ValueError:
+                errors.append(f"{label} escapes support-file root {root}: {source_path}")
+                continue
+        if raw_source is None:
+            try:
+                source_path.relative_to(root)
+            except ValueError:
+                errors.append(
+                    f"{label} escapes support-file root {root}: {source_path}"
+                )
+                continue
         if not source_path.is_file():
             errors.append(f"{label} does not exist: {source_path}")
             continue

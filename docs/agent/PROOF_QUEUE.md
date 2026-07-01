@@ -84,6 +84,39 @@ Submit with:
 uv run --active --project . --python 3.12 python tools\proof_queue.py submit proof.toml
 ```
 
+## Named Pact Witness Lanes
+
+Use the named lane for Pact Kernel A acceptance. Do not queue ad hoc `molt
+build` commands for this contract:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance
+```
+
+`pact-witness-acceptance` renders to `tools/pact_witness_acceptance.py`. That
+script owns the full acceptance sequence: build `field_solve.py`, run the WASM
+artifact from an isolated fixture directory, write
+`tmp/pact_witness_acceptance_queue/run/candidate_outputs.npz`, then run
+`check_parity.py` against the checked Pact reference. A row whose command is
+only `python -m molt build ... field_solve.py` is historical build evidence, not
+Pact acceptance, and must be rerun through the named current spec after it exits.
+
+Before spending the heavy slot, inspect the rendered lane:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --print-spec
+```
+
+Root selection is priority ordered, not directory-discovery ordered. The default
+selector should prefer the canonical sealed witness roots
+`tmp/pact_numpy_multiarray_sealed_axiserror` and
+`tmp/pact_scipy_ndimage_provider_sealed_support_closure`, followed by required
+native sidecars and source roots. Older recovery roots may remain under `tmp/` as
+fallback evidence, but they must not shadow the canonical roots. A staged root
+may publish either a root `extension_manifest.json` or artifact-specific
+`*.extension_manifest.json` sidecars; both forms are admitted by the queue
+selector before the build path does deeper package-native validation.
+
 ## Append-Only Notes
 
 Proof notes are append-only at the SQLite layer. Do not edit or delete notes.

@@ -1023,7 +1023,77 @@ def _uv_active_python_command(
     return command
 
 
-def _pact_witness_acceptance_spec(timeout: float | None = None) -> dict[str, object]:
+def _first_existing_manifest_root(repo_root: Path, candidates: list[str]) -> Path | None:
+    for candidate in candidates:
+        root = repo_root / candidate
+        if (root / "extension_manifest.json").is_file() or any(
+            root.glob("**/*.extension_manifest.json")
+        ):
+            return root
+    return None
+
+
+def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
+    repo_root = Path(repo_root)
+    selected: list[Path] = []
+    artifact_groups = [
+        [
+            "tmp/pact_numpy_multiarray_sealed_axiserror",
+            "tmp/pact_numpy_multiarray_sealed_for_witness",
+            "tmp/worktrees/pact-collab/tmp/pact_numpy_multiarray_molt_ext_wasm_cpython_abi",
+        ],
+        [
+            "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
+            "tmp/pact_scipy_ndimage_sealed_for_witness_next",
+            "tmp/pact_scipy_ndimage_sealed_for_witness",
+            "tmp/pact_scipy_ndimage_provider_sealed_helpers",
+            "tmp/pact_scipy_ndimage_provider_sealed",
+        ],
+    ]
+    artifact_roots = [
+        _first_existing_manifest_root(repo_root, candidates)
+        for candidates in artifact_groups
+    ]
+    artifact_roots.extend(
+        root
+        for root in [
+            _first_existing_manifest_root(
+                repo_root,
+                ["tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi"],
+            ),
+            _first_existing_manifest_root(
+                repo_root,
+                ["tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi"],
+            ),
+        ]
+        if root is not None
+    )
+    source_roots = [
+        repo_root / "bench/friends/repos/numpy_off_the_shelf",
+        repo_root / "bench/friends/repos/scipy_off_the_shelf",
+    ]
+    for root in [*artifact_roots, *source_roots]:
+        if root is None or not root.exists():
+            continue
+        resolved = root.resolve()
+        if resolved not in selected:
+            selected.append(resolved)
+    return selected
+
+
+def _pact_witness_env_overrides(repo_root: Path = ROOT) -> dict[str, str]:
+    roots = _pact_witness_native_roots(repo_root)
+    if not roots:
+        return {}
+    return {
+        "MOLT_MODULE_ROOTS": os.pathsep.join(str(root) for root in roots),
+        "MOLT_EXTERNAL_STATIC_PACKAGES": "numpy scipy",
+    }
+
+
+def _pact_witness_acceptance_spec(
+    timeout: float | None = None, repo_root: Path = ROOT
+) -> dict[str, object]:
     return {
         "logical_id": "pact-witness-acceptance",
         "reason": (
@@ -1031,17 +1101,7 @@ def _pact_witness_acceptance_spec(timeout: float | None = None) -> dict[str, obj
             "through queue custody."
         ),
         "command": _uv_active_python_command(
-            "-m",
-            "molt",
-            "build",
-            "collab/pact/pact_witness_kernel/field_solve.py",
-            "--target",
-            "wasm",
-            "--profile",
-            "browser",
-            "--wasm-profile",
-            "auto",
-            "--split-runtime",
+            "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
         ),
@@ -1053,8 +1113,22 @@ def _pact_witness_acceptance_spec(timeout: float | None = None) -> dict[str, obj
             "wasm/browser_embed.js",
             "wasm/browser_host.js",
             "wasm/run_wasm.js",
+            "tools/pact_witness_acceptance.py",
+            "tmp/pact_numpy_multiarray_sealed_axiserror",
+            "tmp/pact_numpy_multiarray_sealed_for_witness",
+            "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
+            "tmp/pact_scipy_ndimage_sealed_for_witness_next",
+            "tmp/pact_scipy_ndimage_sealed_for_witness",
+            "tmp/pact_scipy_ndimage_provider_sealed_helpers",
+            "tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi",
         ],
-        "env_overrides": {},
+        "env_overrides": _pact_witness_env_overrides(repo_root),
+        "notes": [
+            "Named Pact acceptance auto-admits conventional manifest-led "
+            "NumPy/SciPy staging roots when present, builds field_solve.py, "
+            "runs the WASM artifact to produce candidate_outputs.npz, and "
+            "executes check_parity.py; --env can override for power-user lanes."
+        ],
         "timeout": timeout if timeout is not None else 1800.0,
     }
 
@@ -1114,7 +1188,9 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
 
 
 def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
-    return _run_named_spec(args, _pact_witness_acceptance_spec(args.timeout))
+    return _run_named_spec(
+        args, _pact_witness_acceptance_spec(args.timeout, _repo_root(args))
+    )
 
 
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
