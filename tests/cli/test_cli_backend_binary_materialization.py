@@ -65,3 +65,54 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_from_newer_cargo_o
     assert backend_bin.read_text(encoding="utf-8") == cargo_output.read_text(
         encoding="utf-8"
     )
+
+
+def test_ensure_backend_binary_returns_cargo_failure_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "target" / "release-fast" / "molt-backend"
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+
+    def fake_run_cargo(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            cmd,
+            101,
+            "",
+            "error: duplicate symbol: PyMemoryView_FromMemory\nnote: backend link failed",
+        )
+
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_backend_fingerprint",
+        lambda *args, **kwargs: dict(fingerprint),
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_cargo_with_sccache_retry",
+        fake_run_cargo,
+    )
+
+    result = cli_backend_binary._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="release-fast",
+        project_root=tmp_path,
+        backend_features=("native-backend",),
+    )
+
+    assert not result
+    assert result.phase == "backend_cargo_build"
+    assert result.returncode == 101
+    assert result.command[:4] == (
+        "cargo",
+        "build",
+        "--package",
+        "molt-backend",
+    )
+    assert "Backend cargo build failed (exit 101)" in result.message
+    assert "duplicate symbol: PyMemoryView_FromMemory" in result.message
