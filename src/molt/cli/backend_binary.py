@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -43,6 +44,67 @@ from molt.cli.setup_readiness import (
     _llvm_backend_unavailable_message,
 )
 from molt.llvm_toolchain import LlvmToolchainConfigError, required_llvm_backend_pin
+
+
+@dataclass(frozen=True)
+class _BackendBinaryEnsureResult:
+    ok: bool
+    detail: str | None = None
+    returncode: int | None = None
+    phase: str | None = None
+    command: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+    @property
+    def message(self) -> str:
+        return self.detail or "Backend build failed"
+
+
+def _backend_ensure_success() -> _BackendBinaryEnsureResult:
+    return _BackendBinaryEnsureResult(ok=True)
+
+
+def _backend_ensure_failure(
+    phase: str,
+    detail: str,
+    *,
+    returncode: int | None = None,
+    command: list[str] | tuple[str, ...] = (),
+) -> _BackendBinaryEnsureResult:
+    return _BackendBinaryEnsureResult(
+        ok=False,
+        detail=detail,
+        returncode=returncode,
+        phase=phase,
+        command=tuple(command),
+    )
+
+
+def _process_text_tail(value: str | bytes | None, *, limit: int = 4000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = value
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return f"... <truncated to last {limit} chars>\n{text[-limit:]}"
+
+
+def _completed_process_failure_detail(
+    label: str,
+    process: subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes],
+) -> str:
+    rc = process.returncode
+    body = _process_text_tail(process.stderr) or _process_text_tail(process.stdout)
+    detail = f"{label} failed (exit {rc})"
+    if body:
+        detail = f"{detail}:\n{body}"
+    return detail
 
 
 def _backend_fingerprint_path(
@@ -117,11 +179,11 @@ def _ensure_backend_binary(
     cargo_profile: str,
     project_root: Path,
     backend_features: tuple[str, ...],
-) -> bool:
+) -> _BackendBinaryEnsureResult:
     # MOLT_SKIP_RUNTIME_REBUILD=1 also skips the backend fingerprint check.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if backend_bin.exists():
-            return True
+            return _backend_ensure_success()
     rustflags = os.environ.get("RUSTFLAGS", "")
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
@@ -249,7 +311,7 @@ def _ensure_backend_binary(
             _refresh_feature_tagged_backend_alias(_quick_target)
             _probe_ok, _probe_detail = _probe_backend_binary_support(_quick_target)
             if _probe_ok:
-                return True
+                return _backend_ensure_success()
         canonical_target_root = _canonical_target_root(project_root)
         canonical_backend_bin = (
             canonical_target_root / _cargo_profile_dir(cargo_profile) / backend_bin.name
@@ -271,7 +333,7 @@ def _ensure_backend_binary(
             _probe_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
-                return True
+                return _backend_ensure_success()
         # Cargo always writes the executable as `molt-backend`; Molt keeps
         # feature-specific aliases beside it so native/wasm/rust lanes cannot
         # poison each other.  When CI or a developer prebuilds the correct
@@ -302,7 +364,7 @@ def _ensure_backend_binary(
                                     "Warning: failed to write backend fingerprint metadata.",
                                     file=sys.stderr,
                                 )
-                    return True
+                    return _backend_ensure_success()
         # Fast path: if the backend binary exists and is newer than every
         # source file that contributes to the fingerprint, skip the expensive
         # cargo build and just update the stored fingerprint.  This handles
@@ -316,15 +378,13 @@ def _ensure_backend_binary(
             if _probe_ok:
                 assert fingerprint is not None
                 _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                return True
+                return _backend_ensure_success()
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
         if "llvm" in backend_features:
             llvm_message = _llvm_backend_unavailable_message(project_root)
             if llvm_message is not None:
-                if not json_output:
-                    print(llvm_message, file=sys.stderr)
-                return False
+                return _backend_ensure_failure("backend_toolchain", llvm_message)
         # Cache entries include backend/tooling/runtime identity in their keys.
         # A backend rebuild therefore invalidates by selecting new keys, not by
         # deleting shared immutable cache artifacts that concurrent sessions may
@@ -370,29 +430,34 @@ def _ensure_backend_binary(
                 label="Backend build",
             )
         except subprocess.TimeoutExpired:
-            if not json_output:
-                timeout_note = (
-                    f"Backend build timed out after {cargo_timeout:.1f}s."
-                    if cargo_timeout is not None
-                    else "Backend build timed out."
-                )
-                print(timeout_note, file=sys.stderr)
-            return False
+            timeout_note = (
+                f"Backend build timed out after {cargo_timeout:.1f}s."
+                if cargo_timeout is not None
+                else "Backend build timed out."
+            )
+            return _backend_ensure_failure(
+                "backend_cargo_build",
+                timeout_note,
+                command=cmd,
+            )
         if build.returncode != 0:
-            if not json_output:
-                err = build.stderr.strip() or build.stdout.strip()
-                if err:
-                    print(err, file=sys.stderr)
-            return False
+            return _backend_ensure_failure(
+                "backend_cargo_build",
+                _completed_process_failure_detail("Backend cargo build", build),
+                returncode=build.returncode,
+                command=cmd,
+            )
         # Cargo always produces target/<profile>/molt-backend regardless of
         # features.  When the requested feature set is non-default, copy
         # the freshly-built binary to the feature-tagged path so that
         # concurrent or sequential builds with different feature sets
         # (native vs wasm vs rust) do not overwrite each other.
         if not _materialize_rebuilt_backend_binary():
-            if not json_output:
-                print("Backend binary missing after rebuild.", file=sys.stderr)
-            return False
+            return _backend_ensure_failure(
+                "backend_artifact",
+                "Backend binary missing after rebuild.",
+                command=cmd,
+            )
         # -- Post-build feature probe (defense-in-depth) -----------------
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
@@ -418,24 +483,36 @@ def _ensure_backend_binary(
                     label="Backend rebuild (feature fix)",
                 )
             except subprocess.TimeoutExpired:
-                if not json_output:
-                    print("Backend rebuild timed out.", file=sys.stderr)
-                return False
+                return _backend_ensure_failure(
+                    "backend_feature_rebuild",
+                    "Backend rebuild timed out.",
+                    command=cmd,
+                )
             if rebuild.returncode != 0:
-                if not json_output:
-                    err = rebuild.stderr.strip() or rebuild.stdout.strip()
-                    if err:
-                        print(err, file=sys.stderr)
-                return False
+                return _backend_ensure_failure(
+                    "backend_feature_rebuild",
+                    _completed_process_failure_detail(
+                        "Backend feature rebuild", rebuild
+                    ),
+                    returncode=rebuild.returncode,
+                    command=cmd,
+                )
             if not _materialize_rebuilt_backend_binary():
-                if not json_output:
-                    print("Backend binary missing after rebuild.", file=sys.stderr)
-                return False
+                return _backend_ensure_failure(
+                    "backend_artifact",
+                    "Backend binary missing after rebuild.",
+                    command=cmd,
+                )
             _reprobe_ok, _reprobe_detail = _probe_backend_binary_support(_probe_target)
             if not _reprobe_ok:
-                if not json_output and _reprobe_detail:
-                    print(_reprobe_detail, file=sys.stderr)
-                return False
+                detail = "Backend feature probe failed after rebuild."
+                if _reprobe_detail:
+                    detail = f"{detail}\n{_reprobe_detail}"
+                return _backend_ensure_failure(
+                    "backend_feature_probe",
+                    detail,
+                    command=cmd,
+                )
         # -- End post-build feature probe --------------------------------
         if fingerprint is not None:
             try:
@@ -447,7 +524,7 @@ def _ensure_backend_binary(
                         "Warning: failed to write backend fingerprint metadata.",
                         file=sys.stderr,
                     )
-    return True
+    return _backend_ensure_success()
 
 
 def _artifact_newer_than_sources(
