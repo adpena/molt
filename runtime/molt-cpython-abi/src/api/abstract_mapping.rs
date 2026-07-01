@@ -117,6 +117,32 @@ pub unsafe extern "C" fn PyMapping_GetItemString(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMapping_GetOptionalItem(
+    o: *mut PyObject,
+    key: *mut PyObject,
+    result: *mut *mut PyObject,
+) -> c_int {
+    if result.is_null() {
+        return -1;
+    }
+    unsafe {
+        *result = ptr::null_mut();
+    }
+    if o.is_null() || key.is_null() {
+        return -1;
+    }
+    let value = unsafe { crate::api::mapping::PyDict_GetItem(o, key) };
+    if value.is_null() {
+        return 0;
+    }
+    unsafe {
+        crate::api::refcount::Py_INCREF(value);
+        *result = value;
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMapping_SetItemString(
     o: *mut PyObject,
     key: *const c_char,

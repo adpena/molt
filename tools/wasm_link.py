@@ -696,6 +696,80 @@ def _restore_public_output_exports(
     return restored
 
 
+_TRAP_FUNC_BODY = bytes([0x00, 0x00, 0x0B])
+
+
+def _required_native_direct_symbols(output_data: bytes) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                name
+                for module, name, kind, _desc in _collect_imports(output_data)
+                if module == "molt_native" and kind == 0
+            }
+        )
+    )
+
+
+def _function_body_payloads_by_index(data: bytes) -> dict[int, bytes]:
+    sections = _parse_sections(data)
+    import_count = _count_func_imports(sections)
+    for section_id, payload in sections:
+        if section_id != 10:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        bodies: dict[int, bytes] = {}
+        for local_index in range(count):
+            body_size, body_start = _read_varuint(payload, offset)
+            body_end = body_start + body_size
+            if body_end > len(payload):
+                raise ValueError("Unexpected EOF while reading function body")
+            bodies[import_count + local_index] = payload[body_start:body_end]
+            offset = body_end
+        return bodies
+    return {}
+
+
+def _validate_required_native_direct_symbols(
+    linked_data: bytes,
+    required_symbols: Sequence[str],
+    *,
+    description: str,
+) -> str | None:
+    if not required_symbols:
+        return None
+    exports = _collect_function_exports(linked_data)
+    bodies = _function_body_payloads_by_index(linked_data)
+    missing: list[str] = []
+    unresolved: list[str] = []
+    trap_stubs: list[str] = []
+    for symbol in required_symbols:
+        func_index = exports.get(symbol)
+        if func_index is None:
+            missing.append(symbol)
+            continue
+        body = bodies.get(func_index)
+        if body is None:
+            unresolved.append(symbol)
+            continue
+        if body == _TRAP_FUNC_BODY:
+            trap_stubs.append(symbol)
+    if missing or unresolved or trap_stubs:
+        parts: list[str] = []
+        if missing:
+            parts.append("missing export(s): " + ", ".join(missing))
+        if unresolved:
+            parts.append("exported unresolved import(s): " + ", ".join(unresolved))
+        if trap_stubs:
+            parts.append("trap stub(s): " + ", ".join(trap_stubs))
+        return (
+            f"{description} did not link required native direct symbol(s): "
+            + "; ".join(parts)
+        )
+    return None
+
+
 def _compose_wasm_ld_allowlist(
     *,
     base_allowlist: Path,
@@ -1484,6 +1558,7 @@ def _run_wasm_ld(
         return 1
     output_data = output.read_bytes()
     output_memory_min = _memory_import_min(output_data)
+    required_native_direct_symbols = _required_native_direct_symbols(output_data)
     preserved_output_exports = _collect_preserved_output_export_names(output_data)
     export_symbol_map = _collect_output_export_symbol_map(output_data)
     user_export_symbol_names = [
@@ -1653,6 +1728,9 @@ def _run_wasm_ld(
         _ESSENTIAL_EXPORTS - {"__indirect_function_table", "memory", "molt_main"}
     ):
         cmd.append(f"--export-if-defined={sym}")
+    for sym in required_native_direct_symbols:
+        cmd.append(f"--undefined={sym}")
+        cmd.append(f"--export-if-defined={sym}")
     for sym in user_export_symbol_names:
         cmd.append(f"--export={sym}")
     cmd += [
@@ -1737,6 +1815,28 @@ def _run_wasm_ld(
         if restored_linked_bytes != linked_bytes:
             work_linked.write_bytes(restored_linked_bytes)
             linked_bytes = restored_linked_bytes
+        try:
+            native_link_error = _validate_required_native_direct_symbols(
+                linked_bytes,
+                required_native_direct_symbols,
+                description="Wasm native link",
+            )
+        except ValueError as exc:
+            print(f"Failed to inspect native direct symbols: {exc}", file=sys.stderr)
+            return 1
+        if native_link_error is not None:
+            print(native_link_error, file=sys.stderr)
+            return 1
+
+        if not split_runtime:
+            try:
+                updated = _neutralize_linked_table_init(linked_bytes)
+            except ValueError as exc:
+                print(f"Failed to neutralize linked table init: {exc}", file=sys.stderr)
+                return 1
+            if updated is not None:
+                work_linked.write_bytes(updated)
+                linked_bytes = updated
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
@@ -1934,6 +2034,21 @@ def _run_wasm_ld(
                 if restored_rewritten_data != rewritten_data:
                     split_native_app_path.write_bytes(restored_rewritten_data)
                     rewritten_data = restored_rewritten_data
+                try:
+                    native_link_error = _validate_required_native_direct_symbols(
+                        rewritten_data,
+                        required_native_direct_symbols,
+                        description="Split-runtime native app link",
+                    )
+                except ValueError as exc:
+                    print(
+                        f"Failed to inspect split-runtime native direct symbols: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if native_link_error is not None:
+                    print(native_link_error, file=sys.stderr)
+                    return 1
             else:
                 # For split-runtime without external native objects, the app
                 # artifact must remain unlinked while preserving the runtime ABI

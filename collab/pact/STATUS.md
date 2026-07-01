@@ -47,10 +47,40 @@ The live evidence says the current tree cannot yet produce
   graph discovery: the stale staged NumPy artifact fails
   `molt extension audit --require-python-export numpy` even though its
   standalone `.molt.wasm` bytes, `static_link` loader metadata, SHA-256, and
-  object-closure sidecar custody are present. The friend-tree SciPy
-  `_nd_image.molt.wasm` sidecar passes required
-  `scipy.ndimage.distance_transform_edt` python+callable export custody plus
-  standalone artifact/hash/object-closure custody.
+  object-closure sidecar custody are present. The stale friend-tree SciPy
+  `_nd_image.molt.wasm` sidecar now fails admission before graph/backend work:
+  its `callable_exports` publish high-level `scipy.ndimage` wrapper functions
+  such as `distance_transform_edt`, `gaussian_filter`, `label`,
+  `maximum_filter`, and `minimum_filter` as if they were `_nd_image`
+  `PyMethodDef` methods. They are not. A `module_attr` callable export must now
+  be backed either by the extension module's admitted `PyMethodDef` source or
+  by an explicit `provider_module` whose upstream `.py` support source is
+  checksummed in `support_files`.
+- The corrected SciPy shape is provider-source plus reachable native artifacts:
+  `distance_transform_edt` is provided by `scipy.ndimage._morphology`,
+  gaussian/min/max filters by `scipy.ndimage._filters`, and `label` by
+  `scipy.ndimage._measurements`. Those wrappers import `_nd_image`,
+  `_ni_label`, `_rank_filter_1d`, `_ni_support`, `_ni_docstrings`, and narrow
+  SciPy/NumPy helpers. The local friend tree currently contains only
+  `_nd_image.molt.wasm`; `_ni_label` and `_rank_filter_1d` source exists
+  upstream but no generated/static-link artifacts or build-plan custody are
+  present yet.
+- The current recovery moved the next failure from late WASM execution into
+  import/link authority. Reachable provider support source is now sliced once
+  for graph discovery and frontend lowering, decorator/doc-only support imports
+  are stripped from executable closure, stdlib helper imports join the runtime
+  import-dispatch roots, and missing native-package child imports fail closed
+  during import-plan materialization. The live Pact build stopped in 4.7s with
+  `scipy.ndimage._ni_label` reported as lacking source or artifact custody,
+  instead of building a candidate that traps later with `ImportError`. That
+  failure now consults sealed-artifact sidecar provenance and points at the
+  upstream source candidate:
+  `bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\src\_ni_label.pyx`.
+  With a target-specific WASI sysroot configured, the source-extension lane now
+  builds `_ni_label` into a wasm32 static-link artifact without cloning or
+  rewriting SciPy semantics: `object_count=1`, `linked_object_count=1`,
+  `warnings=[]`, and `errors=[]`. This retires the first missing native child
+  artifact; it does not yet prove the full `field_solve.py` candidate output.
 - An earlier package-admission probe timed out after 300s in the live WASM build
   path.
 - A graph-only probe took 100.4s before backend work, found 186 modules, zero
@@ -64,10 +94,10 @@ The live evidence says the current tree cannot yet produce
   `PyArray_*`, and `PyUFunc_handlefperr` symbols; it does not yet prove
   compile/link/import/runtime execution.
 - The latest source-extension build probe reaches toolchain custody before any
-  NumPy object compilation. This host has LLVM `clang` and `wasm-ld`, but no
-  configured WASI sysroot and no `zig`; `MOLT_WASM_CC=clang` now fails fast on
-  the source-extension compiler probe for `<errno.h>` instead of launching a
-  many-file package build.
+  broad NumPy object compilation. LLVM `clang`, `wasm-ld`, and a target-specific
+  WASI sysroot are enough to compile the focused `_ni_label` artifact; broad
+  NumPy/SciPy package execution still needs the remaining reachable native
+  artifact, ndarray/storage, and C/API primitive closure.
 
 That means the next real structural unit is upstream package-native closure:
 NumPy/SciPy source admission, native artifact staging, C/API symbol closure,
@@ -138,9 +168,16 @@ Green in this recovery:
 - `uv run pytest tests\cli\test_cli_extension_commands.py -q -k "extension_audit_requires_manifest_python_export or extension_audit_reports_required_callable_exports_json or extension_audit_requires_checksums_when_requested"`
 - `uv run pytest tests\cli\test_cli_extension_commands.py -q -k "extension_audit_requires_static_link_artifact_custody or extension_audit_rejects_static_link_artifact_hash_mismatch"`
 - `uv run pytest tests\cli\test_cli_import_collection.py -q -k "native_callable_module_attr or native_callable_callargs_export or native_callable_manifest_is_import_driven or external_native_artifact_plan_selects_module_attr"`
+- `uv run pytest tests\cli\test_cli_import_collection.py::test_external_native_artifact_plan_selects_module_attr_callable_exports tests\cli\test_cli_import_collection.py::test_external_native_artifact_plan_rejects_fake_module_attr_export tests\cli\test_cli_import_collection.py::test_external_native_artifact_plan_publishes_support_source_module_attr tests\cli\test_cli_import_collection.py::test_materialize_import_plan_adds_reachable_native_support_source_closure tests\cli\test_cli_extension_commands.py::test_extension_seal_rejects_fake_module_attr_callable_export -q`
+- `uv run pytest tests\cli\test_cli_extension_commands.py::test_extension_seal_publishes_package_root_export_for_existing_static_artifact -q`
+- `uv run pytest tests\cli\test_cli_import_collection.py::test_materialize_import_plan_adds_reachable_native_support_source_closure tests\cli\test_cli_import_collection.py::test_materialize_import_plan_rejects_missing_native_support_artifact tests\cli\test_cli_import_collection.py::test_native_support_source_stdlib_imports_join_compile_closure tests\cli\test_cli_import_collection.py::test_native_support_provider_prunes_unreachable_functions tests\cli\test_cli_import_collection.py::test_native_support_function_roots_cross_imported_helpers -q`
+- `uv run ruff check src\molt\compiler_analysis\native_support_slice.py src\molt\cli\module_graph.py src\molt\cli\frontend_pipeline.py src\molt\cli\wrapper_build.py src\molt\frontend\visitors\statement_scope.py tests\cli\test_cli_import_collection.py`
+- `MOLT_MODULE_ROOTS=tmp\pact_numpy_multiarray_sealed_axiserror;tmp\pact_scipy_ndimage_provider_sealed_helpers MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy" uv run python -m molt build collab\pact\pact_witness_kernel\field_solve.py --target wasm --profile browser --wasm-profile auto --split-runtime --out-dir tmp\pact_build_probe_missing_native_custody` fails closed in 5.9s with `scipy.ndimage._ni_label` missing source/artifact custody and the upstream source candidate `bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\src\_ni_label.pyx`. Evidence: `tmp\pact_build_probe_missing_native_custody.log` and `tmp\memory_guard\active\pact_missing_native_custody_build.json`.
+- `WASI_SYSROOT=E:\molt-target\toolchains\wasi-sysroot-33.0+m uv run python -m molt extension build --project bench\friends\repos\scipy_off_the_shelf --out-dir tmp\pact_scipy_ni_label_molt_ext_wasm_cpython_abi --module scipy.ndimage._ni_label --target wasm --abi-tier cpython-abi --source-plan tmp\pact_scipy_ni_label_source_plan.json --source-plan-target _ni_label --source-plan-source-root bench\friends\repos\scipy_off_the_shelf --source-plan-build-root bench\friends\repos\scipy_off_the_shelf\build --source-plan-compile-commands tmp\pact_scipy_ni_label_compile_commands.json --capabilities core --python-export scipy.ndimage._ni_label --no-deterministic --json` passes and emits `scipy\ndimage\_ni_label.molt.wasm`, `object_count=1`, `linked_object_count=1`, `warnings=[]`, `errors=[]`. Evidence: `tmp\pact_scipy_ni_label_extension_build.log` and `tmp\memory_guard\active\pact_scipy_ni_label_extension_build.json`.
+- `uv run python -c "from pathlib import Path; from molt.cli.external_native import _resolve_external_package_native_artifact_plan; root=Path('tmp/pact_scipy_ndimage_sealed_for_witness').resolve(); plan, errors=_resolve_external_package_native_artifact_plan(external_module_roots=(root,), admitted_packages={'scipy'}, required_modules={'scipy.ndimage.distance_transform_edt'}); print(plan is not None); print('\\n'.join(errors[:8]))"` fails fast with the new SciPy `_nd_image` module-attribute custody diagnostic for the stale high-level wrapper exports.
 - `uv run python -m molt extension audit --path tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi --require-python-export numpy --json` fails fast with `missing_python_exports=["numpy"]` and the rebuild hint `molt extension build --python-export numpy`.
 - `uv run python -m molt extension audit --path tmp\worktrees\pact-collab\tmp\pact_numpy_multiarray_molt_ext_wasm_cpython_abi --require-loader-kind libmolt_source --require-runtime-linkage static_link --require-artifact-kind wasm_relocatable_object --require-artifact-file --require-object-closure --require-checksum --json` passes standalone static-link artifact/hash/object-closure custody for the staged NumPy bytes, but still does not grant `numpy` import ownership.
-- `uv run python -m molt extension audit --path bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\_nd_image.molt.wasm.extension_manifest.json --require-loader-kind libmolt_source --require-runtime-linkage static_link --require-artifact-kind wasm_relocatable_object --require-artifact-file --require-object-closure --require-checksum --require-python-export scipy.ndimage.distance_transform_edt --require-callable-export scipy.ndimage.distance_transform_edt --json` passes export custody and static-link artifact/hash/object-closure custody for the witness EDT callable.
+- `uv run python -m molt extension audit --path bench\friends\repos\scipy_off_the_shelf\scipy\ndimage\_nd_image.molt.wasm.extension_manifest.json --require-loader-kind libmolt_source --require-runtime-linkage static_link --require-artifact-kind wasm_relocatable_object --require-artifact-file --require-object-closure --require-checksum --json` can still prove standalone static-link artifact/hash/object-closure custody for `_nd_image`, but it no longer proves high-level witness callable custody.
   The audited NumPy sidecar reports 130 closure objects, 583 runtime symbols,
   438 undefined symbols, and 56 defined symbols. The audited SciPy `_nd_image`
   sidecar reports 41 runtime symbols and 58 undefined symbols, but no closure
@@ -179,7 +216,10 @@ as `sort`, `argmax`, `percentile`, `where`, `lexsort`, `gradient`, `clip`,
 object/symbol/storage closure needed to make those calls real in WASM without
 host-CPython fallback and without Molt-owned NumPy/SciPy Python semantics. The
 next executable primitive is reachable upstream extension custody: make the
-NumPy/SciPy artifact publisher emit precise `python_exports` and
-`callable_exports`, stage only the native objects/symbols reachable from that
-operation closure, scan their C/API gaps, bucket the gaps into shared
-primitives, and link/fail closed before the browser parity lane runs.
+NumPy/SciPy artifact publisher emit precise `python_exports`,
+`provider_module`-backed `module_attr` callable exports, checksummed support
+Python sources, and static-link artifacts for the wrapper-reachable native
+extensions (`_nd_image`, `_ni_label`, `_rank_filter_1d`, then NumPy providers).
+Stage only the native objects/symbols reachable from that operation closure,
+scan their C/API gaps, bucket the gaps into shared primitives, and link/fail
+closed before the browser parity lane runs.

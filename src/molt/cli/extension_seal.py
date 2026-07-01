@@ -8,9 +8,14 @@ from typing import Any
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
 from molt.cli.c_api_symbols import is_c_api_external_requirement
 from molt.cli.extension_manifest import (
+    ExtensionSupportFile,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
+    _manifest_support_file_payloads,
     _validate_extension_manifest,
+)
+from molt.cli.external_native import (
+    _validate_module_attr_callable_export_custody,
 )
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.output import emit_json as _emit_json
@@ -97,77 +102,63 @@ def _copy_package_init_chain(
     return copied
 
 
-def _copy_manifest_support_files(
+def _source_package_root_for_manifest(
     *,
     manifest: Mapping[str, Any],
     manifest_path: Path,
+    package: str,
+) -> Path:
+    source_package_root = manifest_path.parent
+    package_index = None
+    for index, part in enumerate(manifest_path.parent.parts):
+        if part == package:
+            package_index = index
+            break
+    if package_index is not None:
+        return Path(*manifest_path.parent.parts[:package_index])
+    package_parts = tuple(part for part in package.split(".") if part)
+    raw_sources = manifest.get("sources")
+    if isinstance(raw_sources, list):
+        for raw_source in raw_sources:
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                continue
+            source_path = Path(raw_source).expanduser()
+            if not source_path.is_absolute():
+                source_path = (manifest_path.parent / source_path).resolve()
+            else:
+                source_path = source_path.resolve()
+            parts = source_path.parts
+            for index in range(0, len(parts) - len(package_parts) + 1):
+                if tuple(parts[index : index + len(package_parts)]) == package_parts:
+                    return Path(*parts[:index])
+    return source_package_root
+
+
+def _copy_support_files(
+    support_files: tuple[ExtensionSupportFile, ...],
+    *,
     output_root: Path,
 ) -> tuple[list[Path], list[str]]:
     copied: list[Path] = []
     errors: list[str] = []
-    support_files = manifest.get("support_files")
-    if support_files is None:
-        return copied, errors
-    if not isinstance(support_files, list):
-        return copied, ["support_files must be a list when present"]
-    for index, raw_entry in enumerate(support_files):
-        if not isinstance(raw_entry, Mapping):
-            errors.append(f"support_files[{index}] must be an object")
+    for support_file in support_files:
+        dest = output_root / Path(support_file.rel_path)
+        try:
+            _atomic_copy_file(support_file.source_path, dest)
+        except OSError as exc:
+            errors.append(f"support file copy failed for {support_file.rel_path}: {exc}")
             continue
-        raw_path = raw_entry.get("path")
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            errors.append(f"support_files[{index}].path must be non-empty")
-            continue
-        rel_path = Path(raw_path.strip())
-        if rel_path.is_absolute() or ".." in rel_path.parts:
-            errors.append(
-                f"support_files[{index}].path must be relative to the artifact root"
-            )
-            continue
-        source_candidates = [
-            (manifest_path.parent / rel_path).resolve(),
-        ]
-        package_index = None
-        for part_index, part in enumerate(manifest_path.parent.parts):
-            if rel_path.parts and part == rel_path.parts[0]:
-                package_index = part_index
-                break
-        if package_index is not None:
-            source_candidates.append(
-                Path(*manifest_path.parent.parts[:package_index])
-                .joinpath(rel_path)
-                .resolve()
-            )
-        source = next(
-            (
-                candidate
-                for candidate in source_candidates
-                if candidate.exists() and candidate.is_file()
-            ),
-            source_candidates[0],
-        )
-        if not source.exists() or not source.is_file():
-            errors.append(f"support file not found: {source}")
-            continue
-        expected_sha = raw_entry.get("sha256")
-        if isinstance(expected_sha, str) and expected_sha.strip():
-            actual_sha = _sha256_file(source)
-            if actual_sha != expected_sha.strip():
-                errors.append(f"support file sha256 mismatch: {source}")
-                continue
-        dest = output_root / rel_path
-        _atomic_copy_file(source, dest)
         copied.append(dest)
     return copied, errors
 
 
-def _callable_export_payloads(
+def _callable_exports(
     *,
     package: str,
     existing_manifest: Mapping[str, Any],
     callable_export_json: list[str] | None,
     errors: list[str],
-) -> list[dict[str, Any]]:
+) -> tuple[Any, ...]:
     raw_exports = list(existing_manifest.get("callable_exports") or [])
     for index, item in enumerate(callable_export_json or []):
         try:
@@ -188,7 +179,7 @@ def _callable_export_payloads(
         errors=export_errors,
     )
     errors.extend(export_errors)
-    return [export.digest_payload() for export in exports]
+    return exports
 
 
 def _validate_direct_symbol_exports(
@@ -268,6 +259,7 @@ def extension_seal(
     out_dir: str,
     python_export: list[str] | None = None,
     callable_export_json: list[str] | None = None,
+    support_file: list[Any] | None = None,
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
@@ -302,6 +294,12 @@ def extension_seal(
         )
     assert artifact_path is not None
     package = module_parts[0]
+    module_name = ".".join(module_parts)
+    source_package_root = _source_package_root_for_manifest(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        package=package,
+    )
     validation = _validate_extension_manifest(
         manifest,
         manifest_dir=manifest_path.parent,
@@ -356,11 +354,47 @@ def extension_seal(
         errors=python_export_errors,
     )
     errors.extend(python_export_errors)
-    callable_exports = _callable_export_payloads(
+    callable_export_specs = _callable_exports(
         package=package,
         existing_manifest=manifest,
         callable_export_json=callable_export_json,
         errors=errors,
+    )
+    callable_exports = [export.digest_payload() for export in callable_export_specs]
+    support_sha_errors: list[str] = []
+    manifest_support_files = manifest.get("support_files")
+    raw_support_files: list[Any] = []
+    if manifest_support_files is not None:
+        if isinstance(manifest_support_files, list):
+            raw_support_files.extend(manifest_support_files)
+        else:
+            support_sha_errors.append("support_files must be a list when present")
+    if support_file is not None:
+        if isinstance(support_file, str):
+            raw_support_files.append(support_file)
+        elif isinstance(support_file, list):
+            raw_support_files.extend(support_file)
+        else:
+            support_sha_errors.append("--support-file must be a string or list")
+    support_files = _manifest_support_file_payloads(
+        raw_support_files,
+        field_name="support_files",
+        root=source_package_root,
+        errors=support_sha_errors,
+    )
+    support_file_sha256 = tuple(
+        (entry.rel_path, entry.sha256) for entry in support_files
+    )
+    errors.extend(support_sha_errors)
+    errors.extend(
+        _validate_module_attr_callable_export_custody(
+            package=package,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            module_name=module_name,
+            callable_exports=callable_export_specs,
+            support_file_sha256=support_file_sha256,
+        )
     )
     errors.extend(
         _validate_direct_symbol_exports(
@@ -383,14 +417,6 @@ def extension_seal(
     output_root = Path(out_dir).expanduser()
     if not output_root.is_absolute():
         output_root = (Path.cwd() / output_root).absolute()
-    source_package_root = manifest_path.parent
-    package_index = None
-    for index, part in enumerate(manifest_path.parent.parts):
-        if part == package:
-            package_index = index
-            break
-    if package_index is not None:
-        source_package_root = Path(*manifest_path.parent.parts[:package_index])
     dest_artifact_rel = Path(*module_parts[:-1], artifact_path.name)
     dest_artifact_path = output_root / dest_artifact_rel
     _atomic_copy_file(artifact_path, dest_artifact_path)
@@ -399,9 +425,8 @@ def extension_seal(
         source_package_root=source_package_root,
         output_root=output_root,
     )
-    copied_support_files, support_errors = _copy_manifest_support_files(
-        manifest=manifest,
-        manifest_path=manifest_path,
+    copied_support_files, support_errors = _copy_support_files(
+        support_files,
         output_root=output_root,
     )
     if support_errors:
@@ -414,6 +439,12 @@ def extension_seal(
     sealed_manifest = dict(manifest)
     _canonicalize_object_closure_c_api_requirements(sealed_manifest)
     sealed_manifest["python_exports"] = list(python_exports)
+    if support_files:
+        sealed_manifest["support_files"] = [
+            entry.digest_payload() for entry in support_files
+        ]
+    else:
+        sealed_manifest.pop("support_files", None)
     if callable_exports:
         sealed_manifest["callable_exports"] = callable_exports
     elif "callable_exports" in sealed_manifest:

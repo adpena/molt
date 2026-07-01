@@ -21,3 +21,8 @@ pub unsafe extern "C" fn PySys_GetObject(name: *const c_char) -> *mut PyObject {
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Py_GetVersion() -> *const c_char {
+    c"3.12.0 (Molt runtime)".as_ptr()
+}

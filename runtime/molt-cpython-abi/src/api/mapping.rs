@@ -249,6 +249,40 @@ pub unsafe extern "C" fn PyDict_SetDefault(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_SetDefaultRef(
+    op: *mut PyObject,
+    key: *mut PyObject,
+    default_value: *mut PyObject,
+    result: *mut *mut PyObject,
+) -> c_int {
+    if result.is_null() {
+        return -1;
+    }
+    unsafe {
+        *result = ptr::null_mut();
+    }
+    if op.is_null() || key.is_null() || default_value.is_null() {
+        return -1;
+    }
+    let existing = unsafe { PyDict_GetItem(op, key) };
+    if !existing.is_null() {
+        unsafe {
+            crate::api::refcount::Py_INCREF(existing);
+            *result = existing;
+        }
+        return 1;
+    }
+    if unsafe { PyDict_SetItem(op, key, default_value) } != 0 {
+        return -1;
+    }
+    unsafe {
+        crate::api::refcount::Py_INCREF(default_value);
+        *result = default_value;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -> c_int {
     if op.is_null() || key.is_null() {
         return -1;

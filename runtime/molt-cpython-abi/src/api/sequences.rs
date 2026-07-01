@@ -428,6 +428,19 @@ pub unsafe extern "C" fn PyList_GetSlice(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyList_SetSlice(
+    op: *mut PyObject,
+    _ilow: Py_ssize_t,
+    _ihigh: Py_ssize_t,
+    _itemlist: *mut PyObject,
+) -> c_int {
+    if op.is_null() {
+        return -1;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_Sort(op: *mut PyObject) -> c_int {
     // Sorting requires a comparison hook not yet available.
     let _ = op;

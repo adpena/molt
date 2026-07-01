@@ -6,6 +6,7 @@
 
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::{MoltBufferView, RuntimeHooks};
+use std::ffi::c_void;
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
 static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
+static MODULE_EXEC_CALLED: AtomicU64 = AtomicU64::new(0);
 static FAKE_BUFFER_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 
@@ -174,18 +176,31 @@ unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
 }
 unsafe extern "C" fn fake_module_set_attr(
     _m: u64,
-    _data: *const u8,
-    _len: usize,
+    data: *const u8,
+    len: usize,
     _v: u64,
 ) -> std::os::raw::c_int {
+    if !data.is_null() {
+        let name = unsafe { std::slice::from_raw_parts(data, len) };
+        if name == b"reject_attr" {
+            return -1;
+        }
+    }
     0
 }
 unsafe extern "C" fn fake_register_c_function(
     _meth: u64,
     _flags: std::os::raw::c_int,
-    _data: *const u8,
-    _len: usize,
+    _self_bits: u64,
+    data: *const u8,
+    len: usize,
 ) -> u64 {
+    if !data.is_null() {
+        let name = unsafe { std::slice::from_raw_parts(data, len) };
+        if name == b"reject" {
+            return 0;
+        }
+    }
     next_fake_handle()
 }
 
@@ -437,6 +452,89 @@ fn test_moduledef_init_null_returns_null() {
     assert!(result.is_null());
 }
 
+#[test]
+fn test_moduledef_init_without_init_returns_bridge_module() {
+    init();
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"moduledef_init_module".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: -1,
+        m_methods: ptr::null_mut(),
+        m_slots: ptr::null_mut(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+
+    let module = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
+
+    assert!(!module.is_null());
+    assert_ne!(module.cast::<PyModuleDef>(), &mut def as *mut PyModuleDef);
+    assert_ne!(
+        unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(module) },
+        0
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+}
+
+unsafe extern "C" fn fake_module_exec(module: *mut PyObject) -> std::os::raw::c_int {
+    if module.is_null() {
+        return -1;
+    }
+    MODULE_EXEC_CALLED.fetch_add(1, Ordering::Relaxed);
+    0
+}
+
+#[test]
+fn test_moduledef_init_runs_py_mod_exec_slot() {
+    init();
+    MODULE_EXEC_CALLED.store(0, Ordering::Relaxed);
+    let mut slots = [
+        PyModuleDef_Slot {
+            slot: 2,
+            value: fake_module_exec as *mut c_void,
+        },
+        PyModuleDef_Slot {
+            slot: 0,
+            value: ptr::null_mut(),
+        },
+    ];
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"moduledef_exec_module".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: -1,
+        m_methods: ptr::null_mut(),
+        m_slots: slots.as_mut_ptr(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+
+    let module = unsafe { molt_cpython_abi::api::modules::PyModuleDef_Init(&mut def) };
+
+    assert!(!module.is_null());
+    assert_eq!(MODULE_EXEC_CALLED.load(Ordering::Relaxed), 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+}
+
 // ---------------------------------------------------------------------------
 // PyModule_Create2
 // ---------------------------------------------------------------------------
@@ -500,4 +598,88 @@ fn test_module_create2_null_name_uses_unnamed() {
     let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
     assert!(!m.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
+}
+
+unsafe extern "C" fn fake_c_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
+    ptr::null_mut()
+}
+
+#[test]
+fn test_module_create2_fails_closed_when_c_function_registration_fails() {
+    init();
+    let mut methods = [
+        PyMethodDef {
+            ml_name: c"reject".as_ptr(),
+            ml_meth: Some(fake_c_method),
+            ml_flags: METH_VARARGS,
+            ml_doc: ptr::null(),
+        },
+        PyMethodDef {
+            ml_name: ptr::null(),
+            ml_meth: None,
+            ml_flags: 0,
+            ml_doc: ptr::null(),
+        },
+    ];
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"rejectmod".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: -1,
+        m_methods: methods.as_mut_ptr(),
+        m_slots: ptr::null_mut(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+    let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
+    assert!(m.is_null());
+}
+
+#[test]
+fn test_module_create2_fails_closed_when_c_function_attr_publication_fails() {
+    init();
+    let mut methods = [
+        PyMethodDef {
+            ml_name: c"reject_attr".as_ptr(),
+            ml_meth: Some(fake_c_method),
+            ml_flags: METH_VARARGS,
+            ml_doc: ptr::null(),
+        },
+        PyMethodDef {
+            ml_name: ptr::null(),
+            ml_meth: None,
+            ml_flags: 0,
+            ml_doc: ptr::null(),
+        },
+    ];
+    let mut def = PyModuleDef {
+        m_base: PyModuleDef_Base {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: ptr::null_mut(),
+            },
+            m_init: None,
+            m_index: 0,
+            m_copy: ptr::null_mut(),
+        },
+        m_name: c"rejectattrmod".as_ptr(),
+        m_doc: ptr::null(),
+        m_size: -1,
+        m_methods: methods.as_mut_ptr(),
+        m_slots: ptr::null_mut(),
+        m_traverse: ptr::null_mut(),
+        m_clear: ptr::null_mut(),
+        m_free: ptr::null_mut(),
+    };
+    let m = unsafe { molt_cpython_abi::api::modules::PyModule_Create2(&mut def, 1013) };
+    assert!(m.is_null());
 }

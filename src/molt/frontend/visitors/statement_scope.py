@@ -11,6 +11,7 @@ import ast
 
 from typing import TYPE_CHECKING
 
+from molt.compiler_analysis import native_support_slice as _native_support_slice
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
@@ -27,7 +28,45 @@ else:
 
 
 class StatementScopeVisitorMixin(_MixinBase):
+    def _native_support_function_roots(self) -> frozenset[str]:
+        roots: set[str] = {
+            name
+            for name in getattr(self, "native_support_function_roots", set())
+            if isinstance(name, str) and name
+        }
+        for qualified_name, spec in self.native_callable_exports.items():
+            provider_module = spec.get("provider_module")
+            if provider_module != self.module_name:
+                continue
+            name = spec.get("name")
+            if not isinstance(name, str) or not name:
+                name = qualified_name.rsplit(".", 1)[-1]
+            if name:
+                roots.add(name)
+        return frozenset(roots)
+
+    def _prune_native_support_module_functions(self, node: ast.Module) -> ast.Module:
+        roots = self._native_support_function_roots()
+        if not roots:
+            return node
+        pruned, _reachable, missing = _native_support_slice.prune_native_support_module(
+            node, roots
+        )
+        if missing:
+            raise self.compat.unsupported(
+                node,
+                "native support callable export missing provider function",
+                impact="high",
+                alternative=(
+                    "declare provider_module only for upstream support source "
+                    "modules that define the exported callable"
+                ),
+                detail=(f"{self.module_name} does not define: {', '.join(missing)}"),
+            )
+        return pruned
+
     def visit_Module(self, node: ast.Module) -> None:
+        node = self._prune_native_support_module_functions(node)
         defer = self._module_can_defer_attrs(node)
         if self.module_chunking:
             defer = False

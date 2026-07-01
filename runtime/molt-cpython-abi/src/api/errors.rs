@@ -219,6 +219,16 @@ pub unsafe extern "C" fn PyException_SetTraceback(exc: *mut PyObject, tb: *mut P
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_GetTraceback(exc: *mut PyObject) -> *mut PyObject {
+    if exc.is_null() {
+        return ptr::null_mut();
+    }
+    let traceback = unsafe { (*exc.cast::<PyBaseExceptionObject>()).traceback };
+    unsafe { crate::api::refcount::Py_XINCREF(traceback) };
+    traceback
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyException_SetContext(exc: *mut PyObject, context: *mut PyObject) {
     if exc.is_null() {
         unsafe { crate::api::refcount::Py_XDECREF(context) };

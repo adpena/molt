@@ -43,6 +43,17 @@ _LIBMOLT_SOURCE_RUNTIME_LINKAGES = frozenset({"host_resolved", "static_link"})
 _LIBMOLT_SOURCE_ARTIFACT_KINDS = frozenset(
     {"shared_library", "wasm_relocatable_object", "static_archive"}
 )
+_EXTENSION_SUPPORT_FILE_SUFFIXES = (".molt.wasm", ".o", ".a", ".py")
+
+
+@dataclass(frozen=True)
+class ExtensionSupportFile:
+    rel_path: str
+    sha256: str
+    source_path: Path
+
+    def digest_payload(self) -> dict[str, str]:
+        return {"path": self.rel_path, "sha256": self.sha256}
 
 
 @dataclass(frozen=True)
@@ -172,6 +183,90 @@ def _manifest_dotted_name_tuple(
     return tuple(sorted(out))
 
 
+def _manifest_support_file_payloads(
+    value: Any,
+    *,
+    field_name: str,
+    root: Path,
+    errors: list[str],
+) -> tuple[ExtensionSupportFile, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        errors.append(f"{field_name} must be a list of paths or support-file objects")
+        return ()
+    root = root.resolve()
+    out: list[ExtensionSupportFile] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        label = f"{field_name}[{index}]"
+        expected_sha: str | None = None
+        if isinstance(item, str):
+            raw_path = item
+        elif isinstance(item, Mapping):
+            raw_path_value = item.get("path")
+            if not isinstance(raw_path_value, str):
+                errors.append(f"{label}.path must be a non-empty path string")
+                continue
+            raw_path = raw_path_value
+            raw_sha = item.get("sha256")
+            if raw_sha is not None:
+                if not isinstance(raw_sha, str) or not re.fullmatch(
+                    r"[0-9a-fA-F]{64}",
+                    raw_sha.strip(),
+                ):
+                    errors.append(f"{label}.sha256 must be a SHA-256 hex digest")
+                    continue
+                expected_sha = raw_sha.strip().lower()
+        else:
+            errors.append(f"{label} must be a path string or support-file object")
+            continue
+        if not raw_path.strip():
+            errors.append(f"{label} must be a non-empty path")
+            continue
+        source_path = Path(raw_path.strip()).expanduser()
+        if not source_path.is_absolute():
+            source_path = (root / source_path).resolve()
+        else:
+            source_path = source_path.resolve()
+        try:
+            rel_path = source_path.relative_to(root).as_posix()
+        except ValueError:
+            errors.append(f"{label} escapes support-file root {root}: {source_path}")
+            continue
+        if not source_path.is_file():
+            errors.append(f"{label} does not exist: {source_path}")
+            continue
+        if not (
+            source_path.name.endswith(".molt.wasm")
+            or source_path.suffix in _EXTENSION_SUPPORT_FILE_SUFFIXES
+        ):
+            errors.append(
+                f"{label} must name a support artifact (.molt.wasm, .o, or .a) "
+                "or checksummed upstream Python source (.py)"
+            )
+            continue
+        if rel_path in seen:
+            errors.append(f"{label} duplicates support file {rel_path!r}")
+            continue
+        actual_sha = _sha256_file(source_path).lower()
+        if expected_sha is not None and expected_sha != actual_sha:
+            errors.append(
+                f"{label}.sha256 mismatch for {rel_path}: expected "
+                f"{expected_sha}, got {actual_sha}"
+            )
+            continue
+        seen.add(rel_path)
+        out.append(
+            ExtensionSupportFile(
+                rel_path=rel_path,
+                sha256=actual_sha,
+                source_path=source_path,
+            )
+        )
+    return tuple(sorted(out, key=lambda entry: entry.rel_path))
+
+
 def _manifest_callable_exports(
     manifest: Mapping[str, Any],
     *,
@@ -198,6 +293,7 @@ def _manifest_callable_exports(
         binding = raw_export.get("binding")
         abi = raw_export.get("abi")
         symbol = raw_export.get("symbol")
+        provider_module = raw_export.get("provider_module")
         deterministic = raw_export.get("deterministic", False)
         effects_raw = raw_export.get("effects", [])
 
@@ -262,6 +358,38 @@ def _manifest_callable_exports(
             )
             continue
 
+        normalized_provider_module: str | None = None
+        if provider_module is not None:
+            if binding != "module_attr":
+                errors.append(
+                    f"extension_manifest.json {label}.provider_module is only valid "
+                    "for module_attr binding"
+                )
+                continue
+            if not isinstance(provider_module, str) or not provider_module.strip():
+                errors.append(
+                    f"extension_manifest.json {label}.provider_module must be a "
+                    "non-empty dotted name when present"
+                )
+                continue
+            normalized_provider_module = provider_module.strip()
+            if _PYTHON_DOTTED_NAME_RE.fullmatch(normalized_provider_module) is None:
+                errors.append(
+                    f"extension_manifest.json {label}.provider_module has invalid "
+                    f"dotted name {normalized_provider_module!r}"
+                )
+                continue
+            if (
+                normalized_provider_module != package
+                and not normalized_provider_module.startswith(package + ".")
+            ):
+                errors.append(
+                    f"extension_manifest.json {label}.provider_module "
+                    f"{normalized_provider_module!r} escapes admitted package "
+                    f"{package!r}"
+                )
+                continue
+
         normalized_effects: list[str] = []
         if isinstance(effects_raw, list):
             normalized_effects = [
@@ -289,6 +417,7 @@ def _manifest_callable_exports(
             name=name,
             binding=binding,
             symbol=normalized_symbol,
+            provider_module=normalized_provider_module,
             abi=normalized_abi,
             effects=tuple(sorted(set(normalized_effects))),
             deterministic=deterministic,

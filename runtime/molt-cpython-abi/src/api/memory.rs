@@ -151,6 +151,34 @@ pub unsafe extern "C" fn PyObject_GC_Track(_op: *mut c_void) {}
 pub unsafe extern "C" fn PyObject_GC_UnTrack(_op: *mut c_void) {}
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_GC_IsFinalized(_op: *mut PyObject) -> c_int {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallFinalizerFromDealloc(op: *mut PyObject) -> c_int {
+    if op.is_null() {
+        return 0;
+    }
+    let typeobj = unsafe { (*op).ob_type };
+    if typeobj.is_null() {
+        return 0;
+    }
+    if let Some(finalize) = unsafe { (*typeobj).tp_finalize } {
+        unsafe { finalize(op) };
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyGC_Disable() -> c_int {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyGC_Enable() {}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn Py_FatalError(message: *const c_char) -> ! {
     if !message.is_null() {
         let rendered = unsafe { std::ffi::CStr::from_ptr(message) }.to_string_lossy();

@@ -507,6 +507,10 @@ pub(crate) const HEADER_FLAG_CLASS_HAS_FINALIZER: u32 = 1 << 22;
 /// header-flag test.
 pub(crate) const HEADER_FLAG_FUNC_REQUIRES_BINDER: u32 = 1 << 23;
 
+/// `TYPE_ID_FUNCTION` metadata bit: this function object is a C-extension
+/// trampoline whose C ABI convention owns arity validation.
+pub(crate) const HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE: u32 = 1 << 26;
+
 /// Lifetime-boundary bit: this object has had at least one `weakref` registered
 /// against it, so its `dec_ref_ptr` zero-transition must enter the finalize +
 /// weakref-clear revival window (open a revival ref, run any weakref callbacks

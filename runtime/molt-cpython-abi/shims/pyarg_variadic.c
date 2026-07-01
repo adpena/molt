@@ -47,6 +47,7 @@ extern PyObject *PyObject_Str(PyObject *op);
 extern PyObject *PyBytes_FromStringAndSize(const char *s, Py_ssize_t size);
 extern int PyErr_WarnEx(PyObject *category, const char *message, Py_ssize_t stack_level);
 extern void PyErr_SetString(PyObject *exc_type, const char *message);
+extern void PyErr_WriteUnraisable(PyObject *obj);
 extern void Py_INCREF(PyObject *op);
 extern void Py_DECREF(PyObject *op);
 extern PyObject Py_None;
@@ -706,6 +707,25 @@ PyObject *PyErr_Format(PyObject *type, const char *format, ...) {
     PyObject *result = PyErr_FormatV(type, format, ap);
     va_end(ap);
     return result;
+}
+
+void PyErr_FormatUnraisable(const char *format, ...) {
+    if (format != NULL) {
+        va_list ap;
+        va_start(ap, format);
+        vfprintf(stderr, format, ap);
+        fputc('\n', stderr);
+        va_end(ap);
+    }
+    PyErr_WriteUnraisable(NULL);
+}
+
+void PySys_WriteStderr(const char *format, ...) {
+    if (format == NULL) return;
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stderr, format, ap);
+    va_end(ap);
 }
 
 int PyOS_vsnprintf(char *str, size_t size, const char *format, va_list va) {

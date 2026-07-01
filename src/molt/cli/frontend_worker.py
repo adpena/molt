@@ -168,6 +168,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     native_python_exports = set(
         cast(list[str], payload.get("native_python_exports", []))
     )
+    native_support_function_roots = set(
+        cast(list[str], payload.get("native_support_function_roots", []))
+    )
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
@@ -221,6 +224,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
+        native_support_function_roots=native_support_function_roots,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -354,6 +358,9 @@ def _module_frontend_generator(
         known_func_kinds=scoped_inputs.known_func_kinds,
         native_callable_exports=scoped_inputs.native_callable_exports,
         native_python_exports=set(scoped_inputs.native_python_exports_set),
+        native_support_function_roots=set(
+            scoped_inputs.native_support_function_roots_set
+        ),
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, optimization_profile),

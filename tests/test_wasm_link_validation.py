@@ -538,6 +538,59 @@ def _build_runtime_import_module(
     return wasm_link._build_sections(sections)
 
 
+def _build_native_direct_import_module(import_name: str) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7F)
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(1))
+    import_payload.extend(wasm_link._write_string("molt_native"))
+    import_payload.extend(wasm_link._write_string(import_name))
+    import_payload.append(0x00)
+    import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
+def _build_exported_function_module(
+    export_name: str, *, trap_body: bool = False
+) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7F)
+    sections.append((1, bytes(type_payload)))
+
+    sections.append((3, write_varuint(1) + write_varuint(0)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string(export_name))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    body = bytes([0x00, 0x00, 0x0B]) if trap_body else bytes([0x00, 0x41, 0x01, 0x0B])
+    code_payload = write_varuint(1) + write_varuint(len(body)) + body
+    sections.append((10, code_payload))
+
+    return wasm_link._build_sections(sections)
+
+
 def _build_runtime_import_data_module(
     import_names: list[str], *, memory_min: int, data_offset: int
 ) -> bytes:
@@ -1356,6 +1409,83 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     app_wasm = (split_dir / "app.wasm").read_bytes()
     assert wasm_link._memory_import_min(app_wasm) == 37
     assert _defined_memory_min(app_wasm) is None
+
+
+def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    symbol = "PyInit__demo"
+    runtime_bytes = _build_exported_runtime_module_many(["molt_main"])
+    output_bytes = _build_native_direct_import_module(symbol)
+    linked_bytes = _build_exported_function_module(symbol)
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    split_dir = tmp_path / "split"
+    native_object = tmp_path / "external_static_packages" / "_demo.molt.wasm"
+    link_calls: list[list[str]] = []
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    native_object.parent.mkdir()
+    native_object.write_bytes(b"\x00asm\x01\x00\x00\x00native-object")
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if cmd and cmd[0] == "wasm-ld":
+            link_calls.append(list(cmd))
+        _write_wasm_ld_output(cmd, linked_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", lambda *_a: True)
+    monkeypatch.setattr(
+        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
+    )
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
+    )
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=split_dir,
+        native_objects=(native_object,),
+    )
+
+    assert rc == 0
+    assert len(link_calls) == 2
+    for cmd in link_calls:
+        assert f"--undefined={symbol}" in cmd
+        assert f"--export-if-defined={symbol}" in cmd
+
+
+def test_native_direct_symbol_validation_rejects_trap_stub() -> None:
+    error = wasm_link._validate_required_native_direct_symbols(
+        _build_exported_function_module("PyInit__demo", trap_body=True),
+        ("PyInit__demo",),
+        description="Split-runtime native app link",
+    )
+
+    assert error is not None
+    assert "trap stub(s): PyInit__demo" in error
 
 
 def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(

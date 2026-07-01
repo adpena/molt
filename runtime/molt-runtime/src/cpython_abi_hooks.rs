@@ -6,7 +6,14 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use molt_cpython_abi::abi_types::MoltTypeTag;
+use std::ffi::CStr;
+use std::ptr;
+
+use molt_cpython_abi::abi_types::{
+    METH_CLASS, METH_COEXIST, METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O,
+    METH_STATIC, METH_VARARGS, MoltTypeTag, Py_ssize_t, PyCFunction, PyCFunctionFast,
+    PyCFunctionFastWithKeywords, PyCFunctionWithKeywords, PyModuleDef, PyObject,
+};
 use molt_cpython_abi::{MoltBufferView as AbiMoltBufferView, RuntimeHooks};
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
@@ -28,8 +35,8 @@ use crate::object::type_ids::{
     TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 use crate::object::{
-    MoltHeader, bytes_data, bytes_len, dec_ref_bits, inc_ref_bits, object_type_id, string_bytes,
-    string_len,
+    HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, MoltHeader, bytes_data, bytes_len, dec_ref_bits,
+    header_from_obj_ptr, inc_ref_bits, object_type_id, string_bytes, string_len,
 };
 
 // ─── Hook implementations ─────────────────────────────────────────────────
@@ -564,23 +571,70 @@ unsafe extern "C" fn hook_module_set_attr(
 // every C function shares a single trampoline that decodes the registry id
 // and forks on the calling convention.
 //
-// PARTIAL: only METH_NOARGS is implemented today.  METH_VARARGS, METH_O,
-// METH_KEYWORDS, and METH_FASTCALL require Molt-side support for variadic
-// callable types and are tracked separately.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CExtDispatchKind {
+    NoArgs,
+    OneObject,
+    VarArgs,
+    VarArgsKeywords,
+    FastCall,
+    FastCallKeywords,
+}
 
-const METH_VARARGS: i32 = 0x0001;
-const METH_KEYWORDS: i32 = 0x0002;
-const METH_NOARGS: i32 = 0x0004;
-const METH_O: i32 = 0x0008;
-const METH_CLASS: i32 = 0x0010;
-const METH_STATIC: i32 = 0x0020;
-const METH_COEXIST: i32 = 0x0040;
-const METH_FASTCALL: i32 = 0x0080;
+impl CExtDispatchKind {
+    fn from_flags(flags: i32) -> Option<Self> {
+        let conv_flags = flags & !(METH_CLASS | METH_STATIC | METH_COEXIST);
+        if conv_flags & METH_METHOD != 0 {
+            return None;
+        }
+        let fastcall = conv_flags & METH_FASTCALL != 0;
+        let keywords = conv_flags & METH_KEYWORDS != 0;
+        let varargs = conv_flags & METH_VARARGS != 0;
+        if fastcall {
+            let allowed = METH_FASTCALL | METH_KEYWORDS;
+            if conv_flags & !allowed != 0 {
+                return None;
+            }
+            return Some(if keywords {
+                Self::FastCallKeywords
+            } else {
+                Self::FastCall
+            });
+        }
+        if keywords {
+            let allowed = METH_VARARGS | METH_KEYWORDS;
+            if conv_flags & !allowed != 0 || !varargs {
+                return None;
+            }
+            return Some(Self::VarArgsKeywords);
+        }
+        match conv_flags {
+            METH_NOARGS => Some(Self::NoArgs),
+            METH_O => Some(Self::OneObject),
+            METH_VARARGS => Some(Self::VarArgs),
+            _ => None,
+        }
+    }
+
+    fn arity(self) -> u64 {
+        match self {
+            Self::NoArgs => 0,
+            Self::OneObject => 1,
+            Self::VarArgs | Self::VarArgsKeywords | Self::FastCall | Self::FastCallKeywords => 0,
+        }
+    }
+
+    fn is_variadic(self) -> bool {
+        !matches!(self, Self::NoArgs | Self::OneObject)
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CExtCallable {
     meth_addr: usize,
     flags: i32,
+    self_bits: u64,
+    dispatch_kind: CExtDispatchKind,
 }
 
 // SAFETY: meth_addr is a `*const ()` we transmute back to the original
@@ -602,6 +656,67 @@ pub extern "C" fn molt_cpython_abi_prepare_static_extension() -> u64 {
     MoltObject::from_bool(true).bits()
 }
 
+unsafe fn static_module_def_to_bits(def: *mut PyModuleDef) -> Option<u64> {
+    if def.is_null() {
+        return None;
+    }
+    let name = unsafe { (*def).m_name };
+    if name.is_null() {
+        return None;
+    }
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    if name_bytes.is_empty() {
+        return None;
+    }
+    let module_bits = unsafe { hook_alloc_module(name_bytes.as_ptr(), name_bytes.len()) };
+    let module_ptr = MoltObject::from_bits(module_bits).as_ptr()?;
+    if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
+        return None;
+    }
+    if !unsafe { register_static_module_methods(def, module_bits) } {
+        return None;
+    }
+    Some(module_bits)
+}
+
+unsafe fn register_static_module_methods(def: *mut PyModuleDef, module_bits: u64) -> bool {
+    let mut cursor = unsafe { (*def).m_methods };
+    if cursor.is_null() {
+        return true;
+    }
+    unsafe {
+        while !(*cursor).ml_name.is_null() {
+            let entry = &*cursor;
+            let Some(method) = entry.ml_meth else {
+                return false;
+            };
+            let name_bytes = CStr::from_ptr(entry.ml_name).to_bytes();
+            let func_bits = hook_register_c_function(
+                method as *const () as usize as u64,
+                entry.ml_flags,
+                module_bits,
+                name_bytes.as_ptr(),
+                name_bytes.len(),
+            );
+            if func_bits == 0 {
+                return false;
+            }
+            let rc = hook_module_set_attr(
+                module_bits,
+                name_bytes.as_ptr(),
+                name_bytes.len(),
+                func_bits,
+            );
+            hook_dec_ref(func_bits);
+            if rc != 0 {
+                return false;
+            }
+            cursor = cursor.add(1);
+        }
+    }
+    true
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u64 {
     with_gil(|_py| {
@@ -617,15 +732,11 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
                 result_pyobj as *mut molt_cpython_abi::abi_types::PyObject,
             )
         };
-        let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() else {
-            return crate::raise_exception::<u64>(
-                &_py,
-                "ImportError",
-                "static extension PyInit returned an invalid module handle",
-            );
-        };
-        unsafe {
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
+        if let Some(module_ptr) = MoltObject::from_bits(module_bits).as_ptr() {
+            unsafe {
+                if object_type_id(module_ptr) == TYPE_ID_MODULE {
+                    return module_bits;
+                }
                 return crate::raise_exception::<u64>(
                     &_py,
                     "ImportError",
@@ -633,8 +744,44 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
                 );
             }
         }
-        module_bits
+        if let Some(module_bits) =
+            unsafe { static_module_def_to_bits(result_pyobj as *mut PyModuleDef) }
+        {
+            return module_bits;
+        }
+        crate::raise_exception::<u64>(
+            &_py,
+            "ImportError",
+            "static extension PyInit returned an invalid module handle",
+        )
     })
+}
+
+unsafe fn cext_pyobject_from_bits(bits: u64) -> *mut PyObject {
+    if bits == 0 {
+        return ptr::null_mut();
+    }
+    unsafe {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .handle_to_pyobj(bits)
+    }
+}
+
+unsafe fn cext_tuple_for_args(args: &[u64]) -> Option<(u64, *mut PyObject)> {
+    let tuple_bits = unsafe { hook_alloc_tuple(args.len()) };
+    if tuple_bits == 0 {
+        return None;
+    }
+    for (index, &arg_bits) in args.iter().enumerate() {
+        unsafe { hook_tuple_set(tuple_bits, index, arg_bits) };
+    }
+    let tuple_obj = unsafe { cext_pyobject_from_bits(tuple_bits) };
+    if tuple_obj.is_null() {
+        unsafe { hook_dec_ref(tuple_bits) };
+        return None;
+    }
+    Some((tuple_bits, tuple_obj))
 }
 
 /// Trampoline invoked by Molt's call dispatch for every registered C
@@ -670,72 +817,162 @@ extern "C" fn cext_call_trampoline(closure_bits: u64, args_ptr: u64, args_len: u
     };
 
     let n = args_len as usize;
-    if entry.flags & METH_NOARGS != 0 {
-        if n != 0 {
-            return with_gil(|_py| {
-                crate::raise_exception::<i64>(
-                    &_py,
-                    "TypeError",
-                    "METH_NOARGS C extension function takes no arguments",
-                )
-            }) as i64;
-        }
-        // Reconstruct the C function pointer.  The C function takes
-        // PyObject* arguments and returns a PyObject*; the bridge encodes
-        // these as raw 64-bit values so we use a plain `extern "C"` u64
-        // signature here.
-        type CFunc = unsafe extern "C" fn(self_obj: u64, args_obj: u64) -> u64;
-        // SAFETY: meth_addr was produced by `register_c_function` from a
-        // PyCFunction provided by the loaded extension; the library is
-        // pinned for the process lifetime, so the function pointer is valid.
-        let f: CFunc =
-            unsafe { std::mem::transmute::<*const (), CFunc>(entry.meth_addr as *const ()) };
-        let result_pyobj = unsafe { f(MoltObject::none().bits(), MoltObject::none().bits()) };
-        if result_pyobj == 0 {
-            // CPython convention: NULL return signals an exception.  The
-            // bridge's PyErr_* state has already been recorded; surface it
-            // as the Molt exception sentinel.
-            return MoltObject::none().bits() as i64;
-        }
-        // The PyObject* points into the bridge's allocator; recover the Molt
-        // handle bits stored in the trailing slot of the bridge header.
-        let result_bits =
-            unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(result_pyobj as *mut _) };
-        return result_bits as i64;
+    let args = if n == 0 {
+        &[][..]
+    } else if args_ptr == 0 {
+        return with_gil(|_py| {
+            crate::raise_exception::<i64>(
+                &_py,
+                "SystemError",
+                "C extension trampoline received null args pointer",
+            )
+        }) as i64;
+    } else {
+        unsafe { std::slice::from_raw_parts(args_ptr as *const u64, n) }
+    };
+
+    let mut temp_pyobjects: Vec<*mut PyObject> = Vec::new();
+    let mut temp_tuple_bits: Option<u64> = None;
+    let self_obj = unsafe { cext_pyobject_from_bits(entry.self_bits) };
+    if !self_obj.is_null() {
+        temp_pyobjects.push(self_obj);
     }
 
-    // Any other calling convention is not yet wired through the trampoline.
-    let _ = args_ptr;
-    with_gil(|_py| {
-        let msg = format!(
-            "molt: C extension calling convention 0x{:x} not yet supported (only METH_NOARGS)",
-            entry.flags
-        );
-        crate::raise_exception::<i64>(&_py, "NotImplementedError", &msg)
-    }) as i64
+    let result_pyobj = unsafe {
+        match entry.dispatch_kind {
+            CExtDispatchKind::NoArgs => {
+                if !args.is_empty() {
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "TypeError",
+                            "METH_NOARGS C extension function takes no arguments",
+                        )
+                    }) as i64;
+                }
+                let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
+                f(self_obj, ptr::null_mut())
+            }
+            CExtDispatchKind::OneObject => {
+                if args.len() != 1 {
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "TypeError",
+                            "METH_O C extension function takes exactly one argument",
+                        )
+                    }) as i64;
+                }
+                let arg = cext_pyobject_from_bits(args[0]);
+                temp_pyobjects.push(arg);
+                let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
+                f(self_obj, arg)
+            }
+            CExtDispatchKind::VarArgs => {
+                let Some((tuple_bits, tuple_obj)) = cext_tuple_for_args(args) else {
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "MemoryError",
+                            "failed to allocate C extension args tuple",
+                        )
+                    }) as i64;
+                };
+                temp_tuple_bits = Some(tuple_bits);
+                temp_pyobjects.push(tuple_obj);
+                let f: PyCFunction = std::mem::transmute(entry.meth_addr as *const ());
+                f(self_obj, tuple_obj)
+            }
+            CExtDispatchKind::VarArgsKeywords => {
+                let Some((tuple_bits, tuple_obj)) = cext_tuple_for_args(args) else {
+                    return with_gil(|_py| {
+                        crate::raise_exception::<i64>(
+                            &_py,
+                            "MemoryError",
+                            "failed to allocate C extension args tuple",
+                        )
+                    }) as i64;
+                };
+                temp_tuple_bits = Some(tuple_bits);
+                temp_pyobjects.push(tuple_obj);
+                let f: PyCFunctionWithKeywords = std::mem::transmute(entry.meth_addr as *const ());
+                f(self_obj, tuple_obj, ptr::null_mut())
+            }
+            CExtDispatchKind::FastCall => {
+                let mut fast_args = Vec::with_capacity(args.len());
+                for &arg_bits in args {
+                    let arg = cext_pyobject_from_bits(arg_bits);
+                    temp_pyobjects.push(arg);
+                    fast_args.push(arg);
+                }
+                let fast_ptr = if fast_args.is_empty() {
+                    ptr::null_mut()
+                } else {
+                    fast_args.as_mut_ptr()
+                };
+                let f: PyCFunctionFast = std::mem::transmute(entry.meth_addr as *const ());
+                f(self_obj, fast_ptr, fast_args.len() as Py_ssize_t)
+            }
+            CExtDispatchKind::FastCallKeywords => {
+                let mut fast_args = Vec::with_capacity(args.len());
+                for &arg_bits in args {
+                    let arg = cext_pyobject_from_bits(arg_bits);
+                    temp_pyobjects.push(arg);
+                    fast_args.push(arg);
+                }
+                let fast_ptr = if fast_args.is_empty() {
+                    ptr::null_mut()
+                } else {
+                    fast_args.as_mut_ptr()
+                };
+                let f: PyCFunctionFastWithKeywords =
+                    std::mem::transmute(entry.meth_addr as *const ());
+                f(
+                    self_obj,
+                    fast_ptr,
+                    fast_args.len() as Py_ssize_t,
+                    ptr::null_mut(),
+                )
+            }
+        }
+    };
+
+    let result_bits = if result_pyobj.is_null() {
+        None
+    } else {
+        Some(unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(result_pyobj) })
+    };
+    for temp in temp_pyobjects {
+        unsafe { molt_cpython_abi::api::refcount::Py_XDECREF(temp) };
+    }
+    if let Some(tuple_bits) = temp_tuple_bits {
+        unsafe { hook_dec_ref(tuple_bits) };
+    }
+    match result_bits {
+        Some(bits) => bits as i64,
+        None => with_gil(|_py| {
+            let msg = format!(
+                "C extension function returned NULL for convention flags 0x{:x}",
+                entry.flags
+            );
+            crate::raise_exception::<i64>(&_py, "RuntimeError", &msg)
+        }) as i64,
+    }
 }
 
 unsafe extern "C" fn hook_register_c_function(
     meth_addr: u64,
     flags: std::os::raw::c_int,
+    self_bits: u64,
     name_data: *const u8,
     name_len: usize,
 ) -> u64 {
     if meth_addr == 0 || name_data.is_null() {
         return 0;
     }
-    // Strip the convention-modifier bits (METH_CLASS / METH_STATIC /
-    // METH_COEXIST) from the dispatch flags before deciding on a calling
-    // convention.  Module-level functions never carry these.
-    let conv_flags = flags & !(METH_CLASS | METH_STATIC | METH_COEXIST);
-    if conv_flags & METH_NOARGS == 0 {
-        // PARTIAL: explicit gap surfaced to the caller.  Returning 0 causes
-        // PyModule_Create2 to log the unsupported convention and skip the
-        // method registration so the load does not silently succeed with a
-        // half-initialised module.
-        let _ = (METH_VARARGS, METH_KEYWORDS, METH_O, METH_FASTCALL);
+    let Some(dispatch_kind) = CExtDispatchKind::from_flags(flags) else {
         return 0;
-    }
+    };
     let name_bytes = unsafe { std::slice::from_raw_parts(name_data, name_len) };
     with_gil(|_py| {
         // Reserve a registry slot for this C function.
@@ -747,20 +984,21 @@ unsafe extern "C" fn hook_register_c_function(
             guard.push(CExtCallable {
                 meth_addr: meth_addr as usize,
                 flags,
+                self_bits,
+                dispatch_kind,
             });
             id
         };
         let closure_bits = MoltObject::from_int(id as i64).bits();
-        // Allocate a Molt function object.  arity=0 because every call site
-        // for METH_NOARGS passes zero arguments.  fn_ptr is unused on the
-        // trampoline path but must be non-zero so Molt's dispatcher does not
-        // try the runtime-callable shortcut.
+        // Allocate a Molt function object. fn_ptr is unused on the trampoline
+        // path but must be non-zero so Molt's dispatcher does not try the
+        // runtime-callable shortcut.
         //
         // We use the trampoline address itself as the fn_ptr placeholder.
         // It is never invoked directly because trampoline_ptr is set, and
         // Molt's call_func_dispatch consults trampoline_ptr first.
         let fn_ptr_value = cext_call_trampoline as *const () as usize as u64;
-        let func_ptr = alloc_function_obj(&_py, fn_ptr_value, 0);
+        let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
         if func_ptr.is_null() {
             return 0;
         }
@@ -770,6 +1008,9 @@ unsafe extern "C" fn hook_register_c_function(
                 func_ptr,
                 cext_call_trampoline as *const () as usize as u64,
             );
+            if dispatch_kind.is_variadic() {
+                (*header_from_obj_ptr(func_ptr)).flags |= HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE;
+            }
 
             // Stash __name__ on the function dict so repr() and tracebacks
             // report the C extension's actual function name.
@@ -848,5 +1089,45 @@ pub fn register_cpython_hooks() {
         register_c_function: hook_register_c_function,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
-    unsafe { molt_cpython_abi::set_runtime_hooks(hooks) };
+    unsafe {
+        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use molt_cpython_abi::abi_types::{PyModuleDef_Base, PyObject};
+
+    #[test]
+    fn pyinit_module_to_bits_accepts_static_module_def_pointer() {
+        let _ = molt_cpython_abi_prepare_static_extension();
+        let mut def = PyModuleDef {
+            m_base: PyModuleDef_Base {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: std::ptr::null_mut(),
+                },
+                m_init: None,
+                m_index: 0,
+                m_copy: std::ptr::null_mut(),
+            },
+            m_name: c"static_def_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: std::ptr::null_mut(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits =
+            molt_cpython_abi_pyinit_module_to_bits((&mut def as *mut PyModuleDef) as usize as u64);
+        let module_ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("PyModuleDef pointer must convert to a Molt module");
+
+        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+    }
 }

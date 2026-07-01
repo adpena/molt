@@ -284,6 +284,11 @@ def extension_scan(
         for symbol in required_sorted
         if symbol_status(symbol) == "project_generated"
     )
+    project_generated_used_sorted = sorted(
+        symbol
+        for symbol in required_sorted
+        if symbol_status(symbol) == "project_generated"
+    )
     supported_used_sorted = sorted(
         runtime_backed_used_sorted
         + source_compile_only_used_sorted

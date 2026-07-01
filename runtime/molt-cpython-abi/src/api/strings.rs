@@ -348,6 +348,45 @@ pub unsafe extern "C" fn PyUnicode_FromStringAndSize(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_New(size: Py_ssize_t, _maxchar: u32) -> *mut PyObject {
+    if size < 0 {
+        return ptr::null_mut();
+    }
+    let bytes = vec![b' '; size as usize];
+    unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), size) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_DecodeLatin1(
+    s: *const c_char,
+    size: Py_ssize_t,
+    _errors: *const c_char,
+) -> *mut PyObject {
+    if s.is_null() || size < 0 {
+        return ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(s.cast::<u8>(), size as usize) };
+    let text: String = bytes.iter().map(|byte| char::from(*byte)).collect();
+    unsafe { PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject {
+    let Some(ch) = char::from_u32(ordinal as u32) else {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_ValueError,
+                c"ordinal not in range".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    };
+    let mut bytes = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut bytes);
+    unsafe { PyUnicode_FromStringAndSize(encoded.as_ptr().cast(), encoded.len() as Py_ssize_t) }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_AsUTF8(op: *mut PyObject) -> *const c_char {
     if op.is_null() {
         return ptr::null();
@@ -787,6 +826,41 @@ pub unsafe extern "C" fn PyUnicode_Contains(
         }
     }
     0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FindChar(
+    unicode: *mut PyObject,
+    ch: u32,
+    start: Py_ssize_t,
+    end: Py_ssize_t,
+    direction: c_int,
+) -> Py_ssize_t {
+    let Some(bytes) = (unsafe { unicode_bytes(unicode) }) else {
+        return -2;
+    };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return -1;
+    };
+    let Some(target) = char::from_u32(ch) else {
+        return -1;
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let (lo, hi) = unicode_range(chars.len(), start, end);
+    if direction >= 0 {
+        for (offset, candidate) in chars[lo..hi].iter().enumerate() {
+            if *candidate == target {
+                return (lo + offset) as Py_ssize_t;
+            }
+        }
+    } else {
+        for index in (lo..hi).rev() {
+            if chars[index] == target {
+                return index as Py_ssize_t;
+            }
+        }
+    }
+    -1
 }
 
 #[unsafe(no_mangle)]

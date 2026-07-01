@@ -3,8 +3,8 @@ use super::{WasmBackend, WasmCompileOptions, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
-    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS, WasmRuntimeImport,
-    wasm_runtime_export_name, wasm_runtime_import,
+    CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, POLL_TABLE_IMPORTS, STATIC_TYPE_COUNT,
+    WasmRuntimeImport, wasm_runtime_export_name, wasm_runtime_import,
 };
 use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
@@ -335,6 +335,58 @@ fn native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol()
             "forward_f32 invoke_ffi must not fall back to invoke_ffi_ic; calls={call_indices:?}"
         );
     }
+}
+
+#[test]
+fn native_callable_pyinit_imports_wasm32_pointer_and_extends_to_value_lane() {
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(wasm_native_callable_ir_with_args(
+        "molt.pyinit_module_v1",
+        vec![],
+    ));
+
+    wasmparser::Validator::new().validate_all(&wasm).expect(
+        "PyInit native callable dispatch must extend wasm32 PyObject* into the i64 value lane",
+    );
+
+    let native_symbol = "molt_nativepkg_ndimage_distance_transform_edt";
+    let import_modules = wasm_function_import_modules(&wasm);
+    assert_eq!(
+        import_modules.get(native_symbol).map(String::as_str),
+        Some("molt_native"),
+        "PyInit native callable symbols must be imported through the native callable namespace"
+    );
+
+    let import_type_indices = wasm_function_import_type_indices(&wasm);
+    let native_type_index = *import_type_indices.get(native_symbol).unwrap_or_else(|| {
+        panic!("{native_symbol} type index missing; imports={import_type_indices:?}")
+    });
+    assert_eq!(
+        native_type_index, STATIC_TYPE_COUNT,
+        "PyInit must use the wasm32 CPython ABI signature () -> i32, not Molt's boxed () -> i64 lane"
+    );
+    let type_signatures = wasm_type_section_value_signatures(&wasm);
+    assert_eq!(
+        type_signatures
+            .get(native_type_index as usize)
+            .unwrap_or_else(|| panic!("missing type signature for index {native_type_index}")),
+        &(Vec::<String>::new(), vec!["I32".to_string()])
+    );
+
+    let import_indices = wasm_function_import_indices(&wasm);
+    let native_import_index = *import_indices
+        .get(native_symbol)
+        .unwrap_or_else(|| panic!("{native_symbol} import missing; imports={import_indices:?}"));
+    let call_indices = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(
+        call_indices.contains(&native_import_index),
+        "PyInit invoke_ffi must become a direct WASM call to {native_symbol}; calls={call_indices:?}"
+    );
 }
 
 #[test]
@@ -1081,6 +1133,33 @@ fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
                 for sub_type in rec_group.into_types() {
                     if let CompositeInnerType::Func(f) = &sub_type.composite_type.inner {
                         sigs.push((f.params().len(), f.results().len()));
+                    }
+                }
+            }
+        }
+    }
+    sigs
+}
+
+fn wasm_type_section_value_signatures(wasm: &[u8]) -> Vec<(Vec<String>, Vec<String>)> {
+    use wasmparser::CompositeInnerType;
+    let mut sigs = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::TypeSection(reader)) = payload {
+            for rec_group in reader.into_iter() {
+                let rec_group = rec_group.expect("valid rec group");
+                for sub_type in rec_group.into_types() {
+                    if let CompositeInnerType::Func(f) = &sub_type.composite_type.inner {
+                        sigs.push((
+                            f.params()
+                                .iter()
+                                .map(|value| format!("{value:?}"))
+                                .collect(),
+                            f.results()
+                                .iter()
+                                .map(|value| format!("{value:?}"))
+                                .collect(),
+                        ));
                     }
                 }
             }
