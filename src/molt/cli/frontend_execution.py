@@ -113,8 +113,11 @@ def _lower_entry_module_as_main(
         stdlib_allowlist=set(lowering_context.stdlib_allowlist),
         known_func_defaults=lowering_context.known_func_defaults,
         known_func_kinds=lowering_context.known_func_kinds,
-        native_callable_exports=lowering_context.native_callable_exports,
-        native_python_exports=lowering_context.native_python_exports,
+        native_callable_exports={
+            name: dict(export)
+            for name, export in lowering_context.native_callable_exports.items()
+        },
+        native_python_exports=set(lowering_context.native_python_exports),
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, lowering_context.optimization_profile),

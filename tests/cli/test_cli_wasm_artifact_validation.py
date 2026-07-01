@@ -13,6 +13,7 @@ import pytest
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli import entrypoint_dispatch, entrypoint_parser
 from tests.cli.process_guard import run_cli_test_process
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
@@ -84,6 +85,69 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     assert calls == [(False, "dev-fast", 1200.0, "micro", tmp_path)]
     payload = json.loads(capsys.readouterr().out)
     assert payload["artifacts"]["shared"] == str(runtime_root / "molt_runtime.wasm")
+
+
+def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_prebuild_runtime_wasm(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        entrypoint_dispatch._runtime_build,
+        "_prebuild_runtime_wasm",
+        fake_prebuild_runtime_wasm,
+        raising=True,
+    )
+
+    parser = entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(
+        [
+            "internal-runtime-wasm-build",
+            "--build-profile",
+            "dev",
+            "--kind",
+            "shared",
+            "--cargo-timeout",
+            "1200",
+            "--json",
+        ]
+    )
+
+    assert (
+        entrypoint_dispatch._dispatch_entrypoint_command(
+            args,
+            build_fn=lambda **_: 0,
+            config_root=tmp_path,
+            config={},
+            build_cfg={},
+            run_cfg={},
+            compare_cfg={},
+            test_cfg={},
+            diff_cfg={},
+            extension_cfg={},
+            publish_cfg={},
+            cfg_capabilities=None,
+        )
+        == 0
+    )
+    assert calls == [
+        {
+            "project_root": tmp_path,
+            "kind": "shared",
+            "json_output": True,
+            "build_profile": "dev",
+            "cargo_timeout": 1200.0,
+            "simd_enabled": True,
+            "freestanding": False,
+            "stdlib_profile": None,
+            "verbose": False,
+        }
+    ]
 
 
 def test_is_valid_wasm_binary_accepts_structural_empty_module(
