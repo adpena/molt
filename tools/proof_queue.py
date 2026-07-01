@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -50,6 +51,22 @@ EDGE_KINDS = frozenset(EDGE_KIND_DESCRIPTIONS)
 DEFAULT_EDGE_KIND = "depends_on"
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
+DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
+STATIC_PYMOD_EXEC_RE = re.compile(
+    r"ImportError:\s+"
+    r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r": static-link PyModuleDef Py_mod_exec slot returned non-zero"
+    r"(?P<detail>[^\r\n]*)"
+)
+UNDEFINED_SYMBOL_RE = re.compile(
+    r"(?:wasm-ld: error: .*?undefined symbol:|undefined symbol:)\s+"
+    r"(?P<symbol>[A-Za-z_][A-Za-z0-9_@.$]*)"
+)
+UNSUPPORTED_DIRECT_CALL_RE = re.compile(
+    r"(?is)(?:unsupported|not supported|not linkable).*?"
+    r"(?:direct call|direct-call).*?"
+    r"(?P<symbol>[A-Za-z_][A-Za-z0-9_.]*)"
+)
 
 
 def _utc_now() -> str:
@@ -99,6 +116,16 @@ def _last_nonempty_log_line(path: Path) -> str | None:
         if stripped:
             return _shorten(stripped)
     return None
+
+
+def _read_log_tail(path: Path, *, limit: int = DIAGNOSTIC_LOG_TAIL_BYTES) -> str:
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - limit))
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _active_log_status(row: sqlite3.Row) -> list[str]:
@@ -648,7 +675,7 @@ def _run_payload_with_notes(
     run_ids = [str(item["run_id"]) for item in payload]
     notes = _notes_for_run_ids(conn, run_ids)
     edges = _edges_for_run_ids(conn, run_ids)
-    for item in payload:
+    for row, item in zip(rows, payload, strict=True):
         run_notes = notes.get(str(item["run_id"]), [])
         run_edges = edges.get(str(item["run_id"]), {"parents": [], "children": []})
         item["notes"] = run_notes
@@ -659,6 +686,7 @@ def _run_payload_with_notes(
             "parent_kind_counts": _edge_kind_counts(run_edges["parents"]),
             "child_kind_counts": _edge_kind_counts(run_edges["children"]),
         }
+        item["diagnostics"] = _run_diagnostics(row)
     return payload
 
 
@@ -811,6 +839,188 @@ def _row_to_payload(row: sqlite3.Row) -> dict[str, object]:
         "finished_at": row["finished_at"],
         "elapsed_s": row["elapsed_s"],
     }
+
+
+def _diagnostic(
+    *,
+    signal_id: str,
+    severity: str,
+    summary: str,
+    evidence: str,
+    next_action: str,
+    scopes: Sequence[str] = (),
+) -> dict[str, object]:
+    return {
+        "signal_id": signal_id,
+        "severity": severity,
+        "summary": summary,
+        "evidence": _shorten(evidence, 320),
+        "next_action": next_action,
+        "scopes": list(scopes),
+    }
+
+
+def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
+    log_tail = _read_log_tail(Path(row["log_path"]))
+    diagnostics: list[dict[str, object]] = []
+    if not log_tail and row["status"] not in {"passed", "queued", "running"}:
+        return [
+            _diagnostic(
+                signal_id="proof-log-missing",
+                severity="infra",
+                summary="The proof row is terminal but its queue log is missing.",
+                evidence=f"log_path={row['log_path']}",
+                next_action=(
+                    "Treat this as incomplete evidence; inspect the queue DB and "
+                    "rerun through the same queue lane after preserving the row id."
+                ),
+            )
+        ]
+
+    if (
+        "proof queue refuses raw `cargo` commands" in log_tail
+        or "proof queue refuses `uv run` commands" in log_tail
+    ):
+        diagnostics.append(
+            _diagnostic(
+                signal_id="queue-policy-rejection",
+                severity="operator",
+                summary="The queue rejected a noncanonical command before proof execution.",
+                evidence=_last_nonempty_log_line(Path(row["log_path"])) or "",
+                next_action=(
+                    "Resubmit through the queue-native cargo lane or the active "
+                    "uv contract; this row is DX policy evidence, not product proof."
+                ),
+                scopes=("tools/proof_queue.py", "docs/agent/PROOF_QUEUE.md"),
+            )
+        )
+
+    match = STATIC_PYMOD_EXEC_RE.search(log_tail)
+    if match is not None:
+        module = match.group("module")
+        detail = match.group("detail").strip(" ;")
+        if detail:
+            next_action = (
+                "Fix the pending Python/C-API error surfaced by module exec, then "
+                "rerun the same queue lane as a rerun edge."
+            )
+        else:
+            next_action = (
+                "Do not rerun the heavy lane until the module-exec primitive "
+                "changes. Inspect the extension's Py_mod_exec body and route the "
+                "missing C-API/ABI primitive through shared runtime authority."
+            )
+        diagnostics.append(
+            _diagnostic(
+                signal_id="static-pymodexec-nonzero",
+                severity="error",
+                summary=(
+                    f"Static-linked extension module {module} reached Py_mod_exec "
+                    "and returned non-zero."
+                ),
+                evidence=match.group(0),
+                next_action=next_action,
+                scopes=(
+                    "runtime/molt-cpython-abi/",
+                    "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+                    "src/molt/cli/external_native.py",
+                ),
+            )
+        )
+
+    match = UNDEFINED_SYMBOL_RE.search(log_tail)
+    if match is not None:
+        symbol = match.group("symbol")
+        diagnostics.append(
+            _diagnostic(
+                signal_id="native-undefined-symbol",
+                severity="error",
+                summary=f"Native/WASM link failed on unresolved symbol {symbol}.",
+                evidence=match.group(0),
+                next_action=(
+                    "Add the symbol to the shared ABI/object-closure authority or "
+                    "make package admission fail closed before link; do not patch "
+                    "a package-local shim."
+                ),
+                scopes=(
+                    "runtime/molt-cpython-abi/",
+                    "src/molt/cli/external_native.py",
+                    "tools/proof_queue.py",
+                ),
+            )
+        )
+
+    match = UNSUPPORTED_DIRECT_CALL_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="unsupported-direct-call",
+                severity="error",
+                summary="The compiler reached an unsupported direct-call boundary.",
+                evidence=match.group(0),
+                next_action=(
+                    "Move the callable into package/import/native symbol closure "
+                    "authority or fail closed at admission with this exact callable."
+                ),
+                scopes=("src/molt/cli/", "runtime/molt-backend-wasm/src/"),
+            )
+        )
+
+    if "candidate_outputs.npz" in log_tail and any(
+        token in log_tail.lower() for token in ("not found", "no such file", "missing")
+    ):
+        diagnostics.append(
+            _diagnostic(
+                signal_id="pact-candidate-output-missing",
+                severity="error",
+                summary="Pact acceptance did not produce candidate_outputs.npz.",
+                evidence="candidate_outputs.npz was referenced with a missing-file signal",
+                next_action=(
+                    "Treat this as failed acceptance, not parity evidence. Use the "
+                    "named pact-witness-acceptance lane after the structural fix."
+                ),
+                scopes=("tools/pact_witness_acceptance.py", "collab/pact/"),
+            )
+        )
+
+    if row["status"] == "failed" and not diagnostics:
+        last = _last_nonempty_log_line(Path(row["log_path"])) or ""
+        diagnostics.append(
+            _diagnostic(
+                signal_id="unclassified-failed-proof",
+                severity="unknown",
+                summary="The proof failed without a recognized queue diagnostic.",
+                evidence=last,
+                next_action=(
+                    "Inspect the log tail once, then add a deterministic diagnosis "
+                    "rule before this failure pattern becomes tribal knowledge."
+                ),
+                scopes=("tools/proof_queue.py",),
+            )
+        )
+    return diagnostics
+
+
+def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | None:
+    if not diagnostics:
+        return None
+    first = diagnostics[0]
+    return (
+        f"{first['signal_id']} [{first['severity']}]: {_shorten(str(first['summary']))}"
+    )
+
+
+def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]]) -> str:
+    if diagnostics:
+        first = diagnostics[0]
+        return (
+            f"diagnosis: {row['run_id']} {row['status']} rc={row['returncode']} "
+            f"{first['signal_id']}: {first['summary']} next: {first['next_action']}"
+        )
+    return (
+        f"diagnosis: {row['run_id']} {row['status']} rc={row['returncode']} "
+        "has no queue diagnostic signals."
+    )
 
 
 def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
@@ -1980,6 +2190,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
         )
         if dag_summary:
             print(dag_summary)
+        diagnostic_summary = _format_diagnostic_summary(_run_diagnostics(row))
+        if diagnostic_summary:
+            print(f"  diagnosis={diagnostic_summary}")
         for line in _active_log_status(row):
             print(line)
     print("recent:")
@@ -1999,6 +2212,9 @@ def _cmd_status(args: argparse.Namespace) -> int:
         )
         if dag_summary:
             print(dag_summary)
+        diagnostic_summary = _format_diagnostic_summary(_run_diagnostics(row))
+        if diagnostic_summary:
+            print(f"  diagnosis={diagnostic_summary}")
     return 0
 
 
@@ -2056,6 +2272,74 @@ def _cmd_evidence(args: argparse.Namespace) -> int:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
     else:
         print(text)
+    return 0
+
+
+def _diagnose_row(conn: sqlite3.Connection, args: argparse.Namespace) -> sqlite3.Row:
+    conn.row_factory = sqlite3.Row
+    if args.run_id:
+        row = conn.execute(
+            "SELECT * FROM proof_runs WHERE run_id = ?",
+            (args.run_id,),
+        ).fetchone()
+    elif args.logical_id:
+        row = conn.execute(
+            """
+            SELECT * FROM proof_runs
+            WHERE logical_id = ?
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (args.logical_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM proof_runs ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        selector = args.run_id or args.logical_id or "latest proof run"
+        raise SystemExit(f"unknown proof run selector {selector!r}")
+    return row
+
+
+def _cmd_diagnose(args: argparse.Namespace) -> int:
+    conn = _connect(_db_path(args))
+    row = _diagnose_row(conn, args)
+    diagnostics = _run_diagnostics(row)
+    payload = _row_to_payload(row)
+    payload["diagnostics"] = diagnostics
+    if args.output:
+        Path(args.output).write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        rc = "?" if row["returncode"] is None else row["returncode"]
+        print(
+            f"diagnosis {row['run_id']} status={row['status']} rc={rc} "
+            f"log={row['log_path']}"
+        )
+        if not diagnostics:
+            print("- no diagnostic signals")
+        for item in diagnostics:
+            print(f"- {item['signal_id']} [{item['severity']}] {item['summary']}")
+            if item["evidence"]:
+                print(f"  evidence: {item['evidence']}")
+            print(f"  next: {item['next_action']}")
+    if args.append_note:
+        note_id = _insert_note(
+            conn,
+            run_id=row["run_id"],
+            body=_diagnosis_note_body(row, diagnostics),
+            kind=args.kind,
+            author=args.author,
+        )
+        print(f"noted {row['run_id']} note_id={note_id}")
+        if not args.no_notebook:
+            path = _write_marimo_notebook(args, conn, row["run_id"])
+            print(f"notebook: {path}")
     return 0
 
 
@@ -2128,6 +2412,9 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
         "\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py note "
         '<run-id> --kind observation --note "what happened, what it means, and the next bounded action"'
+        "\n"
+        "uv run --active --project . --python 3.12 python tools/proof_queue.py diagnose "
+        "<run-id> --append-note"
         "\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py link "
         '<child-run-id> --parent <parent-run-id> --kind derives_from --note "why this edge exists"'
@@ -2269,6 +2556,32 @@ def _build_parser() -> argparse.ArgumentParser:
     evidence_p.add_argument("--limit", type=int, default=20)
     evidence_p.add_argument("--output")
     evidence_p.set_defaults(func=_cmd_evidence)
+
+    diagnose_p = sub.add_parser(
+        "diagnose",
+        help="classify a proof run failure from recorded queue facts and log tail",
+    )
+    diagnose_p.add_argument("run_id", nargs="?")
+    diagnose_p.add_argument(
+        "--logical-id",
+        help="diagnose the latest run with this logical id when run_id is omitted",
+    )
+    diagnose_p.add_argument("--json", action="store_true")
+    diagnose_p.add_argument("--output")
+    diagnose_p.add_argument(
+        "--append-note",
+        action="store_true",
+        help="append the deterministic diagnosis as an immutable proof note",
+    )
+    diagnose_p.add_argument(
+        "--kind",
+        default="finding",
+        choices=sorted(NOTE_KINDS),
+        help="note kind used with --append-note",
+    )
+    diagnose_p.add_argument("--author")
+    diagnose_p.add_argument("--no-notebook", action="store_true")
+    diagnose_p.set_defaults(func=_cmd_diagnose)
 
     note_p = sub.add_parser("note", help="append an immutable note to a proof run")
     note_p.add_argument("run_id")

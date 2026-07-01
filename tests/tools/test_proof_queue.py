@@ -841,6 +841,88 @@ def test_proof_queue_appends_notes_and_exports_evidence(
     assert "R18 is still running" in payload
 
 
+def test_proof_queue_diagnoses_failed_static_module_exec(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    notebooks = tmp_path / "notebooks"
+    log_path = tmp_path / "failed.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="failed-run",
+        logical_id="pact-witness-acceptance",
+        reason="prove deterministic diagnosis",
+        command=[sys.executable, "-c", "print('fail')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm:pact-witness",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "failed.memory_guard.json",
+    )
+    log_path.write_text(
+        "Error: Unhandled Molt exception: ImportError: "
+        "_nd_image: static-link PyModuleDef Py_mod_exec slot returned non-zero\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "failed-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "static-pymodexec-nonzero"
+    assert "_nd_image" in diagnostics[0]["summary"]
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "failed-run",
+                "--append-note",
+                "--author",
+                "codex",
+            ]
+        )
+        == 0
+    )
+    diagnosis_text = capsys.readouterr().out
+    assert "static-pymodexec-nonzero" in diagnosis_text
+    notes = _notes(db)
+    assert notes[-1]["kind"] == "finding"
+    assert "static-pymodexec-nonzero" in notes[-1]["body"]
+    assert (notebooks / "failed-run.py").exists()
+
+
 def test_proof_queue_links_runs_and_exports_dag_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
