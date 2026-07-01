@@ -39,9 +39,7 @@ def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
     assert RUNTIME_FEATURES._runtime_cargo_features("aarch64-apple-darwin") == (
         "molt_tk_native",
     )
-    assert RUNTIME_FEATURES._runtime_cargo_features("wasm32-wasip1") == (
-        "molt_gpu_primitives",
-    )
+    assert RUNTIME_FEATURES._runtime_cargo_features("wasm32-wasip1") == ()
 
 
 def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
@@ -74,9 +72,7 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
         "molt_gpu_cuda",
         "molt_gpu_hip",
     )
-    assert RUNTIME_FEATURES._runtime_cargo_features("wasm32-wasip1") == (
-        "molt_gpu_primitives",
-    )
+    assert RUNTIME_FEATURES._runtime_cargo_features("wasm32-wasip1") == ()
 
 
 def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
@@ -101,6 +97,46 @@ def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
     assert "stdlib_net" not in json_features
     assert "stdlib_serial" not in json_features
     assert "molt_gpu_primitives" not in json_features
+
+
+def test_wasm_runtime_feature_plan_requires_gpu_authority() -> None:
+    builtin_features = RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+        "micro",
+        target_triple="wasm32-wasip1",
+    )
+
+    _no_defaults, cargo_features, fingerprint_features = (
+        RUNTIME_FEATURES._wasm_runtime_feature_plan(
+            stdlib_profile="micro",
+            runtime_features=(),
+            builtin_features=builtin_features,
+            resolved_modules=frozenset(),
+        )
+    )
+
+    assert "molt_gpu_primitives" not in cargo_features
+    assert "molt_gpu_primitives" not in fingerprint_features
+
+    _no_defaults, required_cargo, _required_fingerprint = (
+        RUNTIME_FEATURES._wasm_runtime_feature_plan(
+            stdlib_profile="micro",
+            runtime_features=(),
+            builtin_features=builtin_features,
+            resolved_modules=frozenset(),
+            required_link_features={"molt_gpu_primitives"},
+        )
+    )
+    _no_defaults, resolved_cargo, _resolved_fingerprint = (
+        RUNTIME_FEATURES._wasm_runtime_feature_plan(
+            stdlib_profile="micro",
+            runtime_features=(),
+            builtin_features=builtin_features,
+            resolved_modules={"tinygrad.tensor"},
+        )
+    )
+
+    assert "molt_gpu_primitives" in required_cargo
+    assert "molt_gpu_primitives" in resolved_cargo
 
 
 def test_runtime_source_paths_include_runtime_leaf_crates() -> None:

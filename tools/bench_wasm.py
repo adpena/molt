@@ -521,13 +521,20 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
 
 def _runtime_wasm_feature_args() -> list[str]:
     profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro").strip() or "micro"
-    base_features = list(_runtime_cargo_features("wasm32-wasip1"))
-    profile_features = sorted(
-        _runtime_builtin_features_for_profile(
-            profile,
-            target_triple="wasm32-wasip1",
-        )
+    gpu_raw = os.environ.get("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "").strip().lower()
+    base_features = list(_runtime_cargo_features("wasm32-wasip1")) + (
+        ["molt_gpu_primitives"] if gpu_raw in {"1", "true", "yes", "on"} else []
     )
+    profile_features = [
+        feature
+        for feature in sorted(
+            _runtime_builtin_features_for_profile(
+                profile,
+                target_triple="wasm32-wasip1",
+            )
+        )
+        if feature != "molt_gpu_primitives"
+    ]
     if profile == "micro":
         features = _dedupe_preserve_order(
             base_features + profile_features + ["stdlib_micro"]
