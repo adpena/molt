@@ -6,7 +6,10 @@ import queue
 import pytest
 
 from tools import batch_compile_client
-from tools.batch_compile_client import BatchCompileServerClient
+from tools.batch_compile_client import (
+    BatchCompileProtocolError,
+    BatchCompileServerClient,
+)
 
 
 class _FakeProc:
@@ -22,6 +25,7 @@ def _bare_client() -> BatchCompileServerClient:
     client = BatchCompileServerClient.__new__(BatchCompileServerClient)
     client._proc = _FakeProc()
     client._next_id = 1
+    client._poisoned = False
     client._response_queue = queue.Queue()
     return client
 
@@ -30,7 +34,31 @@ def test_batch_compile_client_rejects_response_id_mismatch(monkeypatch) -> None:
     client = _bare_client()
     monkeypatch.setattr(client, "_readline", lambda timeout: '{"id": 2, "ok": true}')
 
-    with pytest.raises(RuntimeError, match="response id mismatch"):
+    with pytest.raises(BatchCompileProtocolError) as exc_info:
+        client.request("ping", timeout=1.0)
+    message = str(exc_info.value)
+    assert "batch compile response id mismatch" in message
+    assert "expected id 1" in message
+    assert "got id 2" in message
+    assert "op 'ping'" in message
+    assert '{"id": 2, "ok": true}' in message
+    assert client._poisoned is True
+
+
+def test_batch_compile_client_requires_restart_after_response_timeout(
+    monkeypatch,
+) -> None:
+    client = _bare_client()
+
+    def _timeout(timeout):
+        del timeout
+        raise TimeoutError("batch compile server response timed out")
+
+    monkeypatch.setattr(client, "_readline", _timeout)
+
+    with pytest.raises(TimeoutError, match="response timed out"):
+        client.request("ping", timeout=1.0)
+    with pytest.raises(RuntimeError, match="restart required"):
         client.request("ping", timeout=1.0)
 
 
