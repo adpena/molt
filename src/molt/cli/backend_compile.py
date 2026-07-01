@@ -443,15 +443,16 @@ def _prepare_backend_dispatch(
         backend_env["MOLT_WASM_LINK"] = "1"
 
     backend_bin = _backend_bin_path(molt_root, backend_cargo_profile, backend_features)
-    if not _backend_binary._ensure_backend_binary(
+    backend_ensure_result = _backend_binary._ensure_backend_binary(
         backend_bin,
         cargo_timeout=cargo_timeout,
         json_output=json_output,
         cargo_profile=backend_cargo_profile,
         project_root=molt_root,
         backend_features=backend_features,
-    ):
-        return None, _fail("Backend build failed", json_output, command="build")
+    )
+    if not backend_ensure_result:
+        return None, _fail(backend_ensure_result.message, json_output, command="build")
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
 
