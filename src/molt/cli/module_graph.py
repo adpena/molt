@@ -885,6 +885,22 @@ def _format_missing_native_support_artifact_imports(
     )
 
 
+def _runtime_import_parent_modules(
+    roots: Collection[str],
+    *,
+    known_modules: Collection[str],
+) -> frozenset[str]:
+    known = set(known_modules)
+    parents: set[str] = set()
+    for root in roots:
+        parts = root.split(".")
+        for idx in range(1, len(parts)):
+            parent = ".".join(parts[:idx])
+            if parent in known:
+                parents.add(parent)
+    return frozenset(parents)
+
+
 def _materialize_import_plan(
     *,
     prepared_module_graph: _PreparedEntryModuleGraph,
@@ -995,8 +1011,15 @@ def _materialize_import_plan(
     package_parent_modules = _modules_with_any_reason(
         module_graph, module_reasons, _PACKAGE_PARENT_REASONS
     )
-    runtime_import_dispatch_roots = frozenset(
+    explicit_runtime_import_dispatch_roots = (
         prepared_module_graph.runtime_import_dispatch_roots | support_explicit_imports
+    )
+    runtime_import_dispatch_roots = frozenset(
+        explicit_runtime_import_dispatch_roots
+        | _runtime_import_parent_modules(
+            explicit_runtime_import_dispatch_roots,
+            known_modules=known_modules,
+        )
     )
     return _ImportPlan(
         image_scope=prepared_module_graph.image_scope,
