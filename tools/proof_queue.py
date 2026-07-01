@@ -1038,14 +1038,14 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
     selected: list[Path] = []
     artifact_groups = [
         [
-            "tmp/pact_numpy_multiarray_sealed_axiserror",
             "tmp/pact_numpy_multiarray_sealed_for_witness",
+            "tmp/pact_numpy_multiarray_sealed_axiserror",
             "tmp/worktrees/pact-collab/tmp/pact_numpy_multiarray_molt_ext_wasm_cpython_abi",
         ],
         [
-            "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
             "tmp/pact_scipy_ndimage_sealed_for_witness_next",
             "tmp/pact_scipy_ndimage_sealed_for_witness",
+            "tmp/pact_scipy_ndimage_provider_sealed_support_closure",
             "tmp/pact_scipy_ndimage_provider_sealed_helpers",
             "tmp/pact_scipy_ndimage_provider_sealed",
         ],
