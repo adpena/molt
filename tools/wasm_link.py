@@ -1215,6 +1215,48 @@ def _validate_freestanding(data: bytes) -> bool:
     return True
 
 
+def _validate_wasm_structural(data: bytes, *, description: str) -> bool:
+    """Run the canonical wasm structural validator when available."""
+    exe = shutil.which("wasm-tools")
+    if exe is None:
+        return True
+    try:
+        validate_data = _strip_debug_sections(data) or data
+    except ValueError as exc:
+        print(
+            f"{description} debug-section stripping warning: {exc}; "
+            "validating original bytes",
+            file=sys.stderr,
+        )
+        validate_data = data
+    with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
+        f.write(validate_data)
+        f.flush()
+        tmp_path = f.name
+    try:
+        result = _run_external_tool(
+            [exe, "validate", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            print(
+                f"{description} failed structural validation: "
+                f"{result.stderr.strip()[:500]}",
+                file=sys.stderr,
+            )
+            return False
+    except Exception as exc:
+        print(f"wasm-tools validate warning: {exc}", file=sys.stderr)
+    finally:
+        try:
+            Path(tmp_path).unlink()
+        except OSError:
+            pass
+    return True
+
+
 def _validate_linked(linked: Path) -> bool:
     data = linked.read_bytes()
     try:
@@ -1289,41 +1331,9 @@ def _validate_linked(linked: Path) -> bool:
     if not ok:
         print(f"Linked wasm element validation failed: {err}", file=sys.stderr)
         return False
-    # Run wasm-tools validate for full structural validation (type-index
-    # consistency, local-index bounds, etc.).  This catches wasm-ld
-    # type-remapping bugs that simpler checks miss.
-    exe = shutil.which("wasm-tools")
-    if exe is not None:
-        validate_data = _strip_debug_sections(data) or data
-        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
-            f.write(validate_data)
-            f.flush()
-            tmp_path = f.name
-        try:
-            result = _run_external_tool(
-                [exe, "validate", tmp_path],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if result.returncode != 0:
-                print(
-                    f"Linked wasm failed structural validation: "
-                    f"{result.stderr.strip()[:500]}",
-                    file=sys.stderr,
-                )
-                return False
-        except Exception as exc:
-            print(
-                f"wasm-tools validate warning: {exc}",
-                file=sys.stderr,
-            )
-        finally:
-            try:
-                Path(tmp_path).unlink()
-            except OSError:
-                pass
-    return True
+    if not _validate_ref_func_declarations(data, description="Linked wasm"):
+        return False
+    return _validate_wasm_structural(data, description="Linked wasm")
 
 
 def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
@@ -1344,6 +1354,12 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
             f"Split-runtime shared runtime output is not a wasm binary: {rt_wasm}",
             file=sys.stderr,
         )
+        return False
+    if not _validate_ref_func_declarations(app_data, description="Split-runtime app"):
+        return False
+    if not _validate_ref_func_declarations(
+        rt_data, description="Split-runtime shared runtime"
+    ):
         return False
     try:
         app_imports = _collect_module_imports(app_data, "molt_runtime")
@@ -1376,6 +1392,12 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
             f"{', '.join(missing)}",
             file=sys.stderr,
         )
+        return False
+    if not _validate_wasm_structural(app_data, description="Split-runtime app"):
+        return False
+    if not _validate_wasm_structural(
+        rt_data, description="Split-runtime shared runtime"
+    ):
         return False
     return True
 
@@ -1425,6 +1447,88 @@ _LEVEL_PASSES: dict[str, list[str]] = {
     "Oz": _OZ_PASSES,
     "O3": _O3_PASSES,
 }
+
+
+def _append_table_refs_enabled() -> bool:
+    raw = os.environ.get("MOLT_WASM_LINK_APPEND_TABLE_REFS")
+    return raw is None or raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _output_table_ref_indices(output_data: bytes | None) -> set[int]:
+    if output_data is None:
+        return set()
+    return {
+        ref_index
+        for name in _collect_function_exports(output_data)
+        if (ref_index := parse_table_ref_export_name(name)) is not None
+    }
+
+
+def _materialize_callable_table_refs_and_ref_func_declarations(
+    data: bytes,
+    *,
+    split_runtime: bool,
+    output_data: bytes | None,
+    description: str,
+) -> tuple[bytes, bool]:
+    """Materialize callable-table declarations for executable output."""
+    changed = False
+    current = data
+    if _append_table_refs_enabled():
+        updated = _append_table_ref_elements(
+            current,
+            allowed_table_indices=(
+                None if split_runtime else _output_table_ref_indices(output_data)
+            ),
+        )
+        if updated is not None:
+            current = updated
+            changed = True
+
+    referenced_ref_funcs = _scan_code_ref_funcs(current)
+    if referenced_ref_funcs:
+        updated = _declare_ref_func_elements(current)
+        if updated is not None:
+            current = updated
+            changed = True
+        missing = _undeclared_ref_func_indices(current)
+        if missing:
+            raise ValueError(
+                f"{description} still has undeclared ref.func function index(es): "
+                f"{_format_index_preview(missing)}"
+            )
+
+    return current, changed
+
+
+def _undeclared_ref_func_indices(data: bytes) -> list[int]:
+    return sorted(_scan_code_ref_funcs(data) - _collect_element_declared_funcs(data))
+
+
+def _format_index_preview(indices: list[int]) -> str:
+    preview = ", ".join(str(index) for index in indices[:12])
+    if len(indices) <= 12:
+        return preview
+    return f"{preview}, ... (+{len(indices) - 12} more)"
+
+
+def _validate_ref_func_declarations(data: bytes, *, description: str) -> bool:
+    try:
+        missing = _undeclared_ref_func_indices(data)
+    except ValueError as exc:
+        print(
+            f"Failed to inspect {description} ref.func declarations: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    if not missing:
+        return True
+    print(
+        f"{description} has undeclared ref.func function index(es): "
+        f"{_format_index_preview(missing)}",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _run_wasm_opt_via_optimize(
@@ -1879,46 +1983,21 @@ def _run_wasm_ld(
             if updated is not None:
                 work_linked.write_bytes(updated)
                 linked_bytes = updated
-        append_table_refs_raw = os.environ.get("MOLT_WASM_LINK_APPEND_TABLE_REFS")
-        append_table_refs = (
-            True
-            if append_table_refs_raw is None
-            else append_table_refs_raw.strip().lower()
-            not in {"0", "false", "no", "off"}
-        )
-        if append_table_refs:
-            try:
-                allowed_table_indices = None
-                if not split_runtime:
-                    allowed_table_indices = {
-                        ref_index
-                        for name in _collect_function_exports(output.read_bytes())
-                        if (ref_index := parse_table_ref_export_name(name)) is not None
-                    }
-                updated = _append_table_ref_elements(
-                    linked_bytes,
-                    allowed_table_indices=allowed_table_indices,
-                )
-            except ValueError as exc:
-                print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
-                return 1
-            if updated is not None:
-                work_linked.write_bytes(updated)
-                linked_bytes = updated
         try:
-            referenced_ref_funcs = _scan_code_ref_funcs(linked_bytes)
+            updated, materialized = (
+                _materialize_callable_table_refs_and_ref_func_declarations(
+                    linked_bytes,
+                    split_runtime=split_runtime,
+                    output_data=output_data,
+                    description="linked wasm",
+                )
+            )
         except ValueError as exc:
-            print(f"Failed to inspect ref.func instructions: {exc}", file=sys.stderr)
+            print(f"Failed to materialize linked callable table refs: {exc}", file=sys.stderr)
             return 1
-        if referenced_ref_funcs:
-            try:
-                updated = _declare_ref_func_elements(linked_bytes)
-            except ValueError as exc:
-                print(f"Failed to declare ref.func elements: {exc}", file=sys.stderr)
-                return 1
-            if updated is not None:
-                work_linked.write_bytes(updated)
-                linked_bytes = updated
+        if materialized:
+            work_linked.write_bytes(updated)
+            linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
         except ValueError as exc:
@@ -2046,6 +2125,22 @@ def _run_wasm_ld(
                 # ABI. The correct artifact is the rewritten, still-unlinked
                 # module.
                 rewritten_data = rewritten_path.read_bytes()
+            try:
+                rewritten_data, _materialized = (
+                    _materialize_callable_table_refs_and_ref_func_declarations(
+                        rewritten_data,
+                        split_runtime=True,
+                        output_data=output_data,
+                        description="split-runtime app wasm",
+                    )
+                )
+            except ValueError as exc:
+                print(
+                    "Failed to materialize split-runtime app callable table refs: "
+                    f"{exc}",
+                    file=sys.stderr,
+                )
+                return 1
             optimized_app = _optimize_split_app_module(
                 rewritten_data,
                 reference_data=output_data,
@@ -2063,6 +2158,22 @@ def _run_wasm_ld(
                     return 1
                 if updated is not None:
                     optimized_app = updated
+            try:
+                optimized_app, _materialized = (
+                    _materialize_callable_table_refs_and_ref_func_declarations(
+                        optimized_app,
+                        split_runtime=True,
+                        output_data=output_data,
+                        description="optimized split-runtime app wasm",
+                    )
+                )
+            except ValueError as exc:
+                print(
+                    "Failed to materialize optimized split-runtime app callable "
+                    f"table refs: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
             if native_objects:
                 native_imports = _collect_module_imports(optimized_app, "molt_native")
                 if native_imports:
