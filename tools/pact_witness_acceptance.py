@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -40,11 +42,37 @@ def _assert_owned_tmp(path: Path) -> Path:
     return resolved
 
 
-def _prepare_clean_dir(path: Path) -> None:
-    owned = _assert_owned_tmp(path)
-    if owned.exists():
-        shutil.rmtree(owned)
+def _safe_attempt_slug(raw: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z_.-]+", "_", raw.strip()).strip("._-")
+    return cleaned or "manual"
+
+
+def _attempt_slug() -> str:
+    run_id = os.environ.get("MOLT_PROOF_QUEUE_RUN_ID", "").strip()
+    if run_id:
+        return _safe_attempt_slug(run_id)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    return _safe_attempt_slug(f"manual-{stamp}-{os.getpid()}")
+
+
+def _prepare_attempt_dirs(out_dir: Path) -> tuple[Path, Path]:
+    owned = _assert_owned_tmp(out_dir)
     owned.mkdir(parents=True, exist_ok=True)
+    attempts_root = owned / "runs"
+    attempts_root.mkdir(parents=True, exist_ok=True)
+    base = _attempt_slug()
+    attempt_dir = attempts_root / base
+    counter = 2
+    while attempt_dir.exists():
+        attempt_dir = attempts_root / f"{base}-{counter}"
+        counter += 1
+    attempt_dir.mkdir(parents=True)
+    build_dir = attempt_dir / "build"
+    run_dir = attempt_dir / "run"
+    build_dir.mkdir()
+    run_dir.mkdir()
+    (owned / "latest_attempt.txt").write_text(str(attempt_dir) + "\n", encoding="utf-8")
+    return build_dir, run_dir
 
 
 def _build_env() -> dict[str, str]:
@@ -133,11 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    out_dir = _assert_owned_tmp(args.out_dir)
-    build_dir = out_dir / "build"
-    run_dir = out_dir / "run"
-    _prepare_clean_dir(build_dir)
-    _prepare_clean_dir(run_dir)
+    build_dir, run_dir = _prepare_attempt_dirs(args.out_dir)
 
     output_wasm = _build_wasm(build_dir)
     candidate = _run_candidate(output_wasm, run_dir)
