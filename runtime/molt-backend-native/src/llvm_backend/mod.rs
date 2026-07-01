@@ -243,10 +243,17 @@ impl<'ctx> LlvmBackend<'ctx> {
                 cpu.to_str().unwrap(),
                 features.to_str().unwrap(),
                 llvm_opt,
-                RelocMode::Default,
+                Self::reloc_mode(),
                 CodeModel::Default,
             )
             .expect("Failed to create target machine")
+    }
+
+    /// Molt LLVM objects are linked into the same runtime/shared-image path as
+    /// native backend outputs, so object generation must be position independent
+    /// at the target-machine authority instead of relying on linker flags.
+    fn reloc_mode() -> inkwell::targets::RelocMode {
+        inkwell::targets::RelocMode::PIC
     }
 
     /// Emit LLVM bitcode to a file (used for LTO pipelines).
@@ -307,6 +314,11 @@ mod tests {
     fn test_create_target_machine_all_levels() {
         let ctx = Context::create();
         let backend = LlvmBackend::new(&ctx, "tm_test");
+        assert_eq!(
+            LlvmBackend::reloc_mode(),
+            inkwell::targets::RelocMode::PIC,
+            "LLVM object emission must stay PIC-compatible for the shared runtime link path"
+        );
         // Simply ensure no panic at any opt level.
         let _tm_none = backend.create_target_machine(&MoltOptLevel::None);
         let _tm_speed = backend.create_target_machine(&MoltOptLevel::Speed);
