@@ -2599,6 +2599,78 @@ def test_python_header_parse_tuple_and_keywords_smoke(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for Python.h compatibility smoke test")
+    source = tmp_path / "python_h_buffer_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <stdint.h>",
+                "",
+                "static int fillinfo_descriptor(char *data) {",
+                "    Py_buffer view;",
+                "    if (PyBuffer_FillInfo(&view, NULL, data, 4, 1, PyBUF_SIMPLE) != 0) {",
+                "        return -1;",
+                "    }",
+                "    if (view.buf != (void *)data || view.len != 4 || view.itemsize != 1) {",
+                "        return -2;",
+                "    }",
+                "    if (view.readonly != 1 || view.ndim != 1 || view.internal != NULL) {",
+                "        return -3;",
+                "    }",
+                "    if (view._molt_view.data != (uint8_t *)data || view._molt_view.len != 4) {",
+                "        return -4;",
+                "    }",
+                "    if (view._molt_view.shape[0] != 4 || view._molt_view.strides[0] != 1) {",
+                "        return -5;",
+                "    }",
+                "    PyBuffer_Release(&view);",
+                "    if (view.buf != NULL || view._molt_view.data != NULL) {",
+                "        return -6;",
+                "    }",
+                "    return 0;",
+                "}",
+                "",
+                "static int getbuffer_descriptor(PyObject *obj) {",
+                "    Py_buffer view;",
+                "    int rc = PyObject_GetBuffer(obj, &view, PyBUF_FORMAT | PyBUF_STRIDES);",
+                "    if (rc == 0) {",
+                "        PyBuffer_Release(&view);",
+                "    }",
+                "    return rc;",
+                "}",
+                "",
+                "int main(void) {",
+                "    char data[4] = {0, 1, 2, 3};",
+                "    (void)getbuffer_descriptor;",
+                "    (void)PyObject_CheckBuffer(NULL);",
+                "    return fillinfo_descriptor(data);",
+                "}",
+                "",
+            ]
+        )
+    )
+    result = run_cli_test_process(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{ROOT / 'include'}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
     clang = shutil.which("clang")
     if clang is None:
