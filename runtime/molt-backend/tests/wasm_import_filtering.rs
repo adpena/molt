@@ -8,9 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
-use molt_backend_wasm::test_util::{
-    reserved_runtime_callable_import_names, reserved_runtime_callable_table_ref_exports,
-};
+use molt_backend_wasm::test_util::reserved_runtime_callable_import_names;
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
 fn op(kind: &str) -> OpIR {
@@ -331,27 +329,18 @@ fn auto_hello_world_includes_used_structural_imports() {
 }
 
 #[test]
-fn auto_reloc_exports_reserved_runtime_callable_table_refs_without_imports() {
+fn auto_reloc_omits_reserved_runtime_callable_imports() {
     let options = WasmCompileOptions {
         wasm_profile: WasmProfile::Auto,
         reloc_enabled: true,
         ..WasmCompileOptions::default()
     };
-    let table_base = options.table_base;
     let wasm = compile_with_options(empty_main_ir(), options);
     let names = import_names(&wasm);
     for name in reserved_runtime_callable_import_names() {
         assert!(
             !names.contains(name),
             "{name} is a reserved runtime table slot, not an app import; imports={names:?}"
-        );
-    }
-
-    let exports = function_export_names(&wasm);
-    for name in reserved_runtime_callable_table_ref_exports(table_base) {
-        assert!(
-            exports.contains(&name),
-            "{name} should be exported as a reserved runtime table ref; exports={exports:?}"
         );
     }
 }

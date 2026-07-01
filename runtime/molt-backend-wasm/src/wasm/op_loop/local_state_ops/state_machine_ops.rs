@@ -31,7 +31,6 @@ pub(super) fn emit_state_machine_local_state_op(
             func.instruction(&Instruction::I64ExtendI32U);
             func.instruction(&Instruction::LocalSet(self_ptr));
             func.instruction(&Instruction::LocalGet(self_ptr));
-            func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::I64Const(op.value.unwrap()));
             emit_call(
                 func,
@@ -47,7 +46,6 @@ pub(super) fn emit_state_machine_local_state_op(
             func.instruction(&Instruction::LocalSet(out));
             if let Some(slot) = slot_bits {
                 func.instruction(&Instruction::LocalGet(self_ptr));
-                func.instruction(&Instruction::I32WrapI64);
                 func.instruction(&Instruction::LocalGet(slot));
                 func.instruction(&Instruction::I64Const(INT_MASK as i64));
                 func.instruction(&Instruction::I64And);

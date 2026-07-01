@@ -15541,11 +15541,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReservedRuntimeCallableDispatch {
+    Direct,
+    Trampoline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReservedRuntimeCallableSpec {
     pub(crate) index: u32,
     pub(crate) runtime_name: &'static str,
     pub(crate) import_name: &'static str,
     pub(crate) arity: usize,
+    pub(crate) dispatch: ReservedRuntimeCallableDispatch,
 }
 
 pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[
@@ -15554,138 +15561,161 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
         runtime_name: "molt_type_call",
         import_name: "type_call",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 1,
         runtime_name: "molt_type_new",
         import_name: "type_new",
         arity: 5,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 2,
         runtime_name: "molt_type_init",
         import_name: "type_init",
         arity: 5,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 3,
         runtime_name: "molt_object_new_bound",
         import_name: "object_new_bound",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 4,
         runtime_name: "molt_object_init",
         import_name: "object_init",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 5,
         runtime_name: "molt_object_init_subclass",
         import_name: "object_init_subclass",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 6,
         runtime_name: "molt_exception_new_bound",
         import_name: "exception_new_bound",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 7,
         runtime_name: "molt_exception_init",
         import_name: "exception_init",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 8,
         runtime_name: "molt_exceptiongroup_init",
         import_name: "exceptiongroup_init",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 9,
         runtime_name: "molt_types_mappingproxy_new",
         import_name: "types_mappingproxy_new",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 10,
         runtime_name: "molt_types_mappingproxy_init",
         import_name: "types_mappingproxy_init",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 11,
         runtime_name: "molt_types_method_new",
         import_name: "types_method_new",
         arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 12,
         runtime_name: "molt_types_method_init",
         import_name: "types_method_init",
         arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 13,
         runtime_name: "molt_types_simplenamespace_init",
         import_name: "types_simplenamespace_init",
         arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 14,
         runtime_name: "molt_types_capsule_new",
         import_name: "types_capsule_new",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 15,
         runtime_name: "molt_types_cell_new",
         import_name: "types_cell_new",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 16,
         runtime_name: "molt_types_dynamic_class_attr_init",
         import_name: "types_dynamic_class_attr_init",
         arity: 3,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 17,
         runtime_name: "molt_types_coroutine",
         import_name: "types_coroutine",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 18,
         runtime_name: "molt_types_get_original_bases",
         import_name: "types_get_original_bases",
         arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 19,
         runtime_name: "molt_types_prepare_class",
         import_name: "types_prepare_class",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 20,
         runtime_name: "molt_types_resolve_bases",
         import_name: "types_resolve_bases",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 21,
         runtime_name: "molt_types_new_class",
         import_name: "types_new_class",
         arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableSpec {
         index: 22,
         runtime_name: "molt_importlib_import_transaction",
         import_name: "importlib_import_transaction",
         arity: 5,
+        dispatch: ReservedRuntimeCallableDispatch::Trampoline,
     },
 ];
 

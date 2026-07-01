@@ -639,8 +639,15 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
             "runtime_export": runtime_name,
             "import_name": import_name,
             "arity": arity,
+            "dispatch": dispatch,
         }
-        for index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+        for (
+            index,
+            runtime_name,
+            import_name,
+            arity,
+            dispatch,
+        ) in WASM_RESERVED_RUNTIME_CALLABLES
     ]
     assert "fast_list_append" in browser_abi["runtime_import_fallbacks"]
     runtime_imports = manifest["abi"]["runtime_imports"]

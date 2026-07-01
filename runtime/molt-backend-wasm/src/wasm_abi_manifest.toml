@@ -467,11 +467,11 @@ type = 1
 
 [[import]]
 name = "obj_get_state"
-type = 14
+type = 2
 
 [[import]]
 name = "obj_set_state"
-type = 39
+type = 6
 
 [[import]]
 name = "resource_on_allocate"
@@ -735,7 +735,7 @@ type = 3
 
 [[import]]
 name = "object_field_get_ptr"
-type = 16
+type = 3
 
 [[import]]
 name = "object_field_init"
@@ -743,7 +743,7 @@ type = 5
 
 [[import]]
 name = "object_field_init_ptr"
-type = 17
+type = 5
 
 [[import]]
 name = "object_field_set"
@@ -751,7 +751,7 @@ type = 5
 
 [[import]]
 name = "object_field_set_ptr"
-type = 17
+type = 5
 
 [[import]]
 name = "object_new"
@@ -767,7 +767,7 @@ type = 3
 
 [[import]]
 name = "object_set_class"
-type = 16
+type = 3
 
 [[import]]
 name = "property_new"
@@ -797,11 +797,11 @@ type = 3
 
 [[import]]
 name = "closure_load"
-type = 16
+type = 3
 
 [[import]]
 name = "closure_store"
-type = 17
+type = 5
 
 [[import]]
 name = "fn_ptr_code_set"
@@ -1097,7 +1097,7 @@ type = 1
 
 [[import]]
 name = "guard_layout_ptr"
-type = 17
+type = 5
 
 [[import]]
 name = "guard_type"
@@ -1105,19 +1105,19 @@ type = 3
 
 [[import]]
 name = "guarded_field_get_ptr"
-type = 21
+type = 9
 
 [[import]]
 name = "guarded_field_init_ptr"
-type = 22
+type = 10
 
 [[import]]
 name = "guarded_field_set_ptr"
-type = 22
+type = 10
 
 [[import]]
 name = "guarded_class_def"
-type = 40
+type = 28
 
 [[import]]
 name = "abs_builtin"
@@ -2995,6 +2995,7 @@ type = 12
 runtime_name = "molt_importlib_import_transaction"
 callable_arity = 5
 shared_runtime_callable = true
+callable_dispatch = "trampoline"
 
 [[import]]
 name = "importlib_import_optional"

@@ -16,9 +16,11 @@ const {
   installWasmTagImports,
   parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
+  planReservedRuntimeDispatch,
   remapLegacyRuntimeSharedTableIndex,
-  reservedRuntimeCallableForTableIndex,
   reservedRuntimeCallablesFromManifest,
+  resolveWasmTableBase,
+  tableRefExportName,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
 } = require('./loader_bridge.js');
@@ -110,7 +112,7 @@ const reservedRuntimeCallables = [
   { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
   { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
   { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
-  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5 },
+  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 let activeReservedRuntimeCallables = reservedRuntimeCallables;
 let activeReservedRuntimeCallableCount = RESERVED_RUNTIME_CALLABLE_COUNT;
@@ -216,13 +218,12 @@ const resolveSiblingManifestPath = (candidatePath) => {
   return path.join(path.dirname(candidatePath), 'manifest.json');
 };
 
-const loadReservedRuntimeCallablesFromSiblingManifest = (candidatePath) => {
+const loadSiblingManifest = (candidatePath) => {
   const manifestPath = resolveSiblingManifestPath(candidatePath);
   if (!manifestPath || !fs.existsSync(manifestPath)) {
     return null;
   }
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  return reservedRuntimeCallablesFromManifest(manifest);
+  return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 };
 
 const resolveWasmPaths = ({
@@ -273,8 +274,9 @@ const initWasmAssets = () => {
   const resolved = resolveWasmPaths();
   wasmPath = resolved.wasmPath;
   wasmBuffer = fs.readFileSync(wasmPath);
+  const siblingManifest = loadSiblingManifest(wasmPath);
   const manifestReservedRuntimeCallables =
-    loadReservedRuntimeCallablesFromSiblingManifest(wasmPath);
+    reservedRuntimeCallablesFromManifest(siblingManifest);
   activeReservedRuntimeCallables =
     manifestReservedRuntimeCallables || reservedRuntimeCallables;
   activeReservedRuntimeCallableCount = activeReservedRuntimeCallables.length;
@@ -301,7 +303,10 @@ const initWasmAssets = () => {
     useLinkedProbe && linkedBuffer
       ? linkedBuffer
       : wasmBuffer;
-  detectedWasmTableBase = extractWasmTableBase(tableBaseProbe);
+  detectedWasmTableBase = resolveWasmTableBase({
+    manifest: siblingManifest,
+    extracted: extractWasmTableBase(tableBaseProbe),
+  });
   runtimePath = resolved.runtimePath;
   runtimeBuffer = null;
   if (runtimePath && fs.existsSync(runtimePath)) {
@@ -4978,11 +4983,20 @@ const installTableRefs = (instance, table, label) => {
   if (maxIndex >= table.length) {
     table.grow(maxIndex + 1 - table.length);
   }
+  let installed = 0;
+  let preserved = 0;
   for (const ref of refs) {
+    if (table.get(ref.index) !== null) {
+      preserved += 1;
+      continue;
+    }
     table.set(ref.index, ref.fn);
+    installed += 1;
   }
   if (traceRun) {
-    console.error(`[molt wasm] installed ${refs.length} ${label} table refs`);
+    console.error(
+      `[molt wasm] installed ${installed} ${label} table refs; preserved=${preserved}`
+    );
   }
 };
 
@@ -5246,7 +5260,7 @@ const runDirectLink = async () => {
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallableCount,
       });
-      const directName = Number.isInteger(dispatchIdx) ? `__molt_table_ref_${dispatchIdx}` : null;
+      const directName = tableRefExportName(dispatchIdx);
       const appIndirectFn =
         arity !== null && outputInstance && outputInstance.exports
           ? outputInstance.exports[`molt_call_indirect${arity}`]
@@ -5255,13 +5269,15 @@ const runDirectLink = async () => {
         directName && outputInstance && outputInstance.exports
           ? outputInstance.exports[directName]
           : null;
-      const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
+      const reservedDispatch = planReservedRuntimeDispatch({
+        dispatchIdx,
         sharedTableBase: detectedWasmTableBase,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallableCount,
         reservedRuntimeCallables: activeReservedRuntimeCallables,
       });
-      if (reservedRuntimeCallable) {
+      const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
+      if (reservedDispatch.dispatchReservedRuntimeCallable) {
         try {
           return callReservedRuntimeCallable({
             runtimeExports: runtimeInstance && runtimeInstance.exports ? runtimeInstance.exports : null,
@@ -5269,9 +5285,24 @@ const runDirectLink = async () => {
             entry: reservedRuntimeCallable,
             indirectName: name,
             args: args.slice(1),
+            describeArgs: (entry, callArgs) => {
+              if (entry.runtimeExport !== 'molt_importlib_import_transaction') {
+                return '';
+              }
+              const moduleName = readRuntimeStringBits(runtimeInstance, callArgs[0]);
+              const level = callArgs.length > 4 ? String(callArgs[4]) : 'unknown';
+              return moduleName === null
+                ? ` import_name=<unreadable> import_level=${level}`
+                : ` import_name=${JSON.stringify(moduleName)} import_level=${level}`;
+            },
           });
         } catch (err) {
           const detail = err && typeof err.message === 'string' ? err.message : String(err);
+          if (callIndirectDebug && err && typeof err.stack === 'string') {
+            console.error(
+              `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
+            );
+          }
           throw new Error(
             `${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`,
           );
@@ -5650,7 +5681,9 @@ const runMain = async () => {
     ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
   const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
   const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
-  const useLinked = forceLinked || !directLinkRequested;
+  const autoDirectSplitRuntime =
+    inputHasRuntimeImports && !linkedBuffer && !forceLinked && Boolean(runtimeBuffer);
+  const useLinked = forceLinked || (!directLinkRequested && !autoDirectSplitRuntime);
   if (useLinked && inputHasRuntimeImports && !linkedBuffer) {
     throw new Error(
       'Linked wasm required for Molt runtime outputs. Rebuild with --linked or set MOLT_WASM_LINK=1 to emit output_linked.wasm.'

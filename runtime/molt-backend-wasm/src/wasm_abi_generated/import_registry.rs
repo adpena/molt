@@ -237,12 +237,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjGetState,
         name: "obj_get_state",
-        type_idx: 14,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjSetState,
         name: "obj_set_state",
-        type_idx: 39,
+        type_idx: 6,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ResourceOnAllocate,
@@ -532,7 +532,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldGetPtr,
         name: "object_field_get_ptr",
-        type_idx: 16,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldInit,
@@ -542,7 +542,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldInitPtr,
         name: "object_field_init_ptr",
-        type_idx: 17,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldSet,
@@ -552,7 +552,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectFieldSetPtr,
         name: "object_field_set_ptr",
-        type_idx: 17,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectNew,
@@ -572,7 +572,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ObjectSetClass,
         name: "object_set_class",
-        type_idx: 16,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PropertyNew,
@@ -607,12 +607,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClosureLoad,
         name: "closure_load",
-        type_idx: 16,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ClosureStore,
         name: "closure_store",
-        type_idx: 17,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FnPtrCodeSet,
@@ -892,7 +892,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardLayoutPtr,
         name: "guard_layout_ptr",
-        type_idx: 17,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardType,
@@ -902,22 +902,22 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedFieldGetPtr,
         name: "guarded_field_get_ptr",
-        type_idx: 21,
+        type_idx: 9,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedFieldInitPtr,
         name: "guarded_field_init_ptr",
-        type_idx: 22,
+        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedFieldSetPtr,
         name: "guarded_field_set_ptr",
-        type_idx: 22,
+        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedClassDef,
         name: "guarded_class_def",
-        type_idx: 40,
+        type_idx: 28,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AbsBuiltin,

@@ -1,5 +1,8 @@
 import json
 import re
+import shutil
+import subprocess
+from pathlib import Path
 
 from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLES,
@@ -19,8 +22,15 @@ def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
             "runtime_export": runtime_name,
             "import_name": import_name,
             "arity": arity,
+            "dispatch": dispatch,
         }
-        for index, runtime_name, import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+        for (
+            index,
+            runtime_name,
+            import_name,
+            arity,
+            dispatch,
+        ) in WASM_RESERVED_RUNTIME_CALLABLES
     ]
 
 
@@ -33,7 +43,12 @@ def _reserved_runtime_callable_js_entries(content: str) -> list[dict[str, object
     assert match is not None
     entries = []
     for item in re.finditer(
-        r"\{\s*index:\s*(?P<index>\d+),\s*runtimeExport:\s*'(?P<runtime>[^']+)',\s*arity:\s*(?P<arity>\d+)\s*\}",
+        (
+            r"\{\s*index:\s*(?P<index>\d+),\s*"
+            r"runtimeExport:\s*'(?P<runtime>[^']+)',\s*"
+            r"arity:\s*(?P<arity>\d+)"
+            r"(?:,\s*dispatch:\s*'(?P<dispatch>[^']+)')?\s*\}"
+        ),
         match.group("body"),
     ):
         entries.append(
@@ -41,6 +56,7 @@ def _reserved_runtime_callable_js_entries(content: str) -> list[dict[str, object
                 "index": int(item.group("index")),
                 "runtime_export": item.group("runtime"),
                 "arity": int(item.group("arity")),
+                "dispatch": item.group("dispatch") or "direct",
             }
         )
     return entries
@@ -300,6 +316,7 @@ def test_generate_split_worker_installs_manifest_table_refs_before_main_wrapper(
         "const ensureTableCapacityForExportedRefs = (instance, table) => {" in content
     )
     assert "installTableRefs(rtInstance, sharedTable);" in content
+    assert "if (table.get(ref.index) !== null)" in content
     assert "ensureTableCapacityForExportedRefs(appInstance, sharedTable);" in content
     assert (
         "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();"
@@ -345,6 +362,7 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
 
     assert 'const callIndirectImportNames = ["molt_call_indirect0"' in content
     assert "const reservedRuntimeCallables = [" in content
+    assert "appOwnsReservedTrampoline" not in content
     assert (
         '"runtime_export":"molt_object_init_subclass"'
         in content.replace(" ", "")
@@ -354,13 +372,21 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     assert "const idx = Number(fnIndex);" in content
     assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
     assert "const directName = tableRefExportName(dispatchIdx);" in content
-    assert "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);" in content
+    assert "const reservedDispatch = planReservedRuntimeDispatch({" in content
+    assert "const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;" in content
     assert (
         "return callReservedRuntimeCallable("
         in content
     )
     assert f"/^{WASM_TABLE_REF_EXPORT_PREFIX}" not in content
     assert "const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {" in content
+    assert "const appDirectFn = appInstance?.exports?.[directName];" in content
+    assert 'if (typeof appDirectFn === "function") {' in content
+    assert (
+        "appTableRefSignatures[directName] || callIndirectObjectSignature(indirectName)"
+        in content
+    )
+    assert "app direct export ${directName} failed at idx=${idx}" in content
     assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
     assert (
         "callIndirectObjectSignature(indirectName, { includeIndex: true })"
@@ -400,10 +426,13 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         not in content
     )
     assert content.index(
-        "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);"
+        "const reservedDispatch = planReservedRuntimeDispatch({"
+    ) < content.index("const appDirectFn = appInstance?.exports?.[directName];")
+    assert content.index(
+        "const reservedDispatch = planReservedRuntimeDispatch({"
     ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
     assert content.index(
-        "const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);"
+        "const appDirectFn = appInstance?.exports?.[directName];"
     ) < content.index("const indirectFn = appInstance?.exports?.[indirectName];")
     assert content.index(
         "const indirectFn = appInstance?.exports?.[indirectName];"
@@ -428,12 +457,81 @@ def test_static_browser_runners_reserved_runtime_callable_tables_track_generated
 
     root = Path(__file__).resolve().parents[1]
     expected = [
-        {"index": index, "runtime_export": runtime_name, "arity": arity}
-        for index, runtime_name, _import_name, arity in WASM_RESERVED_RUNTIME_CALLABLES
+        {
+            "index": index,
+            "runtime_export": runtime_name,
+            "arity": arity,
+            "dispatch": dispatch,
+        }
+        for (
+            index,
+            runtime_name,
+            _import_name,
+            arity,
+            dispatch,
+        ) in WASM_RESERVED_RUNTIME_CALLABLES
     ]
     for rel in ("wasm/run_wasm.js", "wasm/browser_host.js"):
         content = (root / rel).read_text(encoding="utf-8")
         assert _reserved_runtime_callable_js_entries(content) == expected
+
+
+def test_loader_bridge_enforces_manifest_reserved_callable_dispatch(tmp_path) -> None:
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node is required for loader bridge dispatch test")
+
+    root = Path(__file__).resolve().parents[1]
+    script = tmp_path / "check_reserved_dispatch.js"
+    script.write_text(
+        f"""
+const bridge = require({str(root / "wasm" / "loader_bridge.js")!r});
+const manifest = {{
+  abi: {{
+    browser_embed: {{
+      reserved_runtime_callables: [{{
+        index: 0,
+        runtime_export: 'molt_importlib_import_transaction',
+        import_name: 'molt_importlib_import_transaction',
+        arity: 5,
+        dispatch: 'trampoline',
+      }}],
+    }},
+  }},
+}};
+const entries = bridge.reservedRuntimeCallablesFromManifest(manifest);
+if (entries[0].dispatch !== 'trampoline') {{
+  throw new Error(`unexpected dispatch ${{entries[0].dispatch}}`);
+}}
+const base = {{
+  sharedTableBase: 100,
+  reservedRuntimeCallableBase: 33,
+  reservedRuntimeCallableCount: 1,
+  reservedRuntimeCallables: entries,
+}};
+try {{
+  bridge.planReservedRuntimeDispatch({{ ...base, dispatchIdx: 133 }});
+  throw new Error('direct slot unexpectedly accepted');
+}} catch (err) {{
+  if (!String(err.message || err).includes('trampoline-only')) throw err;
+}}
+const plan = bridge.planReservedRuntimeDispatch({{ ...base, dispatchIdx: 134 }});
+if (!plan.dispatchReservedRuntimeCallable || !plan.reservedRuntimeCallable.trampoline) {{
+  throw new Error('trampoline slot was not routed through reserved callable');
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        ["node", str(script)],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
 
 
 def test_static_browser_host_fd_write_preserves_tmp_file_bytes() -> None:
@@ -660,7 +758,6 @@ def test_effective_split_worker_table_base_uses_backend_authority() -> None:
     assert (
         _effective_split_worker_table_base(
             wasm_table_base=4096,
-            runtime_table_min=315,
             app_table_ref_signatures={
                 _table_ref_export_name(4096): {
                     "params": ["i64"],
@@ -679,7 +776,6 @@ def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
     assert (
         _effective_split_worker_table_base(
             wasm_table_base=None,
-            runtime_table_min=315,
             app_table_ref_signatures={
                 _table_ref_export_name(4130): {"params": ["i64"], "result": "i64"},
             },
@@ -688,18 +784,35 @@ def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
     )
 
 
-def test_effective_split_worker_table_base_rejects_export_mismatch() -> None:
+def test_effective_split_worker_table_base_rejects_export_below_backend_base() -> None:
     import pytest
 
     from molt.cli import _effective_split_worker_table_base
 
-    with pytest.raises(ValueError, match="disagrees"):
+    with pytest.raises(ValueError, match="above exported table-ref slot"):
         _effective_split_worker_table_base(
             wasm_table_base=4096,
-            runtime_table_min=315,
             app_table_ref_signatures={
-                _table_ref_export_name(4130): {"params": ["i64"], "result": "i64"},
+                _table_ref_export_name(4095): {"params": ["i64"], "result": "i64"},
             },
+        )
+
+
+def test_effective_split_worker_table_base_rejects_active_slot_below_backend_base(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    from molt.cli import _effective_split_worker_table_base
+
+    app_wasm = tmp_path / "app.wasm"
+    app_wasm.write_bytes(_active_table_fixture_wasm(base_slot=1024))
+
+    with pytest.raises(ValueError, match="above active app table slot"):
+        _effective_split_worker_table_base(
+            wasm_table_base=4096,
+            app_table_ref_signatures={},
+            app_wasm=app_wasm,
         )
 
 
@@ -739,6 +852,41 @@ def _wasm_function_export(name: str, function_index: int) -> bytes:
         wasm_artifact._write_wasm_string(name)
         + b"\x00"
         + wasm_artifact._write_wasm_varuint(function_index)
+    )
+
+
+def _active_table_fixture_wasm(*, base_slot: int) -> bytes:
+    import molt.wasm_artifact as wasm_artifact
+
+    type_payload = _wasm_vec([_wasm_function_type([], [])])
+    function_payload = _wasm_vec([wasm_artifact._write_wasm_varuint(0)])
+    table_payload = _wasm_vec(
+        [
+            b"\x70\x00"
+            + wasm_artifact._write_wasm_varuint(max(base_slot + 1, 1))
+        ]
+    )
+    element_payload = _wasm_vec(
+        [
+            b"\x00\x41"
+            + wasm_artifact._write_wasm_varuint(base_slot)
+            + b"\x0b\x00"
+            + wasm_artifact._write_wasm_varuint(1)
+            + wasm_artifact._write_wasm_varuint(0)
+        ]
+    )
+    code_body = b"\x00\x0b"
+    code_payload = _wasm_vec(
+        [wasm_artifact._write_wasm_varuint(len(code_body)) + code_body]
+    )
+    return wasm_artifact._build_wasm_sections(
+        [
+            (1, type_payload),
+            (3, function_payload),
+            (4, table_payload),
+            (9, element_payload),
+            (10, code_payload),
+        ]
     )
 
 

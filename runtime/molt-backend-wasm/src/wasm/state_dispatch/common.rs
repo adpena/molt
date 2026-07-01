@@ -94,7 +94,6 @@ pub(super) fn emit_stateful_resume_prelude(
     func.instruction(&Instruction::LocalSet(self_local));
 
     func.instruction(&Instruction::LocalGet(self_ptr_local));
-    func.instruction(&Instruction::I32WrapI64);
     emit_call(
         func,
         op_emitter.reloc_enabled,
@@ -288,7 +287,6 @@ pub(super) fn emit_obj_set_state_arg(func: &mut Function, locals: NonLinearDispa
     func.instruction(&Instruction::LocalGet(
         locals.self_ptr_local.expect("stateful self ptr missing"),
     ));
-    func.instruction(&Instruction::I32WrapI64);
 }
 
 pub(super) fn emit_pending_state_value(

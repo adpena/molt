@@ -29,7 +29,8 @@ pub type PyVectorcallFunc =
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
 pub type PyDescrGetFunc =
     unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
-pub type PyDescrSetFunc = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int;
+pub type PyDescrSetFunc =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int;
 
 /// Opaque reference-counted object header.
 ///
@@ -600,6 +601,9 @@ pub static mut PyBool_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 pub static mut PyModule_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
+pub static mut PyModuleDef_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyCFunction_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
@@ -672,6 +676,7 @@ pub unsafe fn init_static_types() {
         set_name!(PySet_Type, b"set\0");
         set_name!(PyBool_Type, b"bool\0");
         set_name!(PyModule_Type, b"module\0");
+        set_name!(PyModuleDef_Type, b"moduledef\0");
         set_name!(PyCFunction_Type, b"builtin_function_or_method\0");
         set_name!(PyMethod_Type, b"method\0");
         set_name!(PyMethodDescr_Type, b"method_descriptor\0");

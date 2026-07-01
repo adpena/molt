@@ -902,6 +902,13 @@ def parse_codex_crash_text(text: str) -> dict[str, Any]:
         code = int(code_match.group(1))
         signal = code_match.group(2).strip()
 
+    lowercase_text = text.lower()
+    markers: list[str] = []
+    if "projectdoc exceeds remaining budget" in lowercase_text:
+        markers.append("projectdoc_exceeds_remaining_budget")
+    if "process interrupt is not supported by this process backend" in lowercase_text:
+        markers.append("exec_backend_interrupt_unsupported")
+
     most_recent_error = _extract_json_object_after_marker(text, "Most recent error:")
     fields = most_recent_error.get("fields", {}) if most_recent_error else {}
     if not isinstance(fields, dict):
@@ -926,9 +933,11 @@ def parse_codex_crash_text(text: str) -> dict[str, Any]:
             "level": most_recent_error.get("level") if most_recent_error else None,
             "target": most_recent_error.get("target") if most_recent_error else None,
             "message": fields.get("message"),
+            "error": fields.get("error"),
             "path": fields.get("path"),
         },
         "warning_paths": warning_paths,
+        "markers": markers,
     }
 
 
@@ -938,6 +947,9 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
     most_recent = parsed.get("most_recent_error") or {}
     target = str(most_recent.get("target") or "")
     message = str(most_recent.get("message") or "")
+    error = str(most_recent.get("error") or "")
+    diagnostic_text = f"{message}\n{error}"
+    markers = set(parsed.get("markers") or [])
 
     if code == CODEX_WINDOWS_CONTROL_C_EXIT:
         classifications.append(
@@ -952,7 +964,7 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                 ),
             }
         )
-    if target == "codex_core::responses_retry" or "stream disconnected" in message:
+    if target == "codex_core::responses_retry" or "stream disconnected" in diagnostic_text:
         classifications.append(
             {
                 "id": "responses_retry_stream_disconnected",
@@ -964,7 +976,7 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                 ),
             }
         )
-    if "interface.defaultPrompt" in message or "maximum of 3 prompts" in message:
+    if "interface.defaultPrompt" in diagnostic_text or "maximum of 3 prompts" in diagnostic_text:
         classifications.append(
             {
                 "id": "plugin_default_prompt_manifest_warning",
@@ -976,7 +988,7 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                 ),
             }
         )
-    if "state db discrepancy" in message or "read_repair_rollout_path" in message:
+    if "state db discrepancy" in diagnostic_text or "read_repair_rollout_path" in diagnostic_text:
         classifications.append(
             {
                 "id": "rollout_state_repair_symptom",
@@ -985,6 +997,33 @@ def classify_codex_crash(parsed: dict[str, Any]) -> list[dict[str, str]]:
                     "State DB repair text near a crash is a resume symptom; "
                     "verify repo state and active commands before touching "
                     "Codex SQLite or rollout files."
+                ),
+            }
+        )
+    if "exec_backend_interrupt_unsupported" in markers:
+        classifications.append(
+            {
+                "id": "exec_backend_interrupt_unsupported",
+                "severity": "control_plane_interruption",
+                "summary": (
+                    "Codex attempted to interrupt a unified exec process, but "
+                    "this backend does not support process interrupts. Avoid "
+                    "Ctrl-C/write_stdin interruption as a recovery mechanism; "
+                    "use bounded commands, proof-queue stale cleanup, and "
+                    "Molt-owned process custody instead."
+                ),
+            }
+        )
+    if "projectdoc_exceeds_remaining_budget" in markers:
+        classifications.append(
+            {
+                "id": "projectdoc_remaining_budget_exhausted",
+                "severity": "instruction_budget_pressure",
+                "summary": (
+                    "Project instructions exceeded the remaining context budget; "
+                    "keep root/global agent guidance compact, preserve full "
+                    "guides outside the auto-loaded path, and verify the "
+                    "project-doc budget guard before resuming a large thread."
                 ),
             }
         )
@@ -1089,6 +1128,14 @@ def codex_crash_next_actions(classifications: Sequence[dict[str, str]]) -> list[
     if "rollout_state_repair_symptom" in action_ids:
         actions.append(
             "Copy bounded nearby Codex logs into logs/ or tmp/ if state-repair evidence is needed; do not mutate SQLite state in-place."
+        )
+    if "projectdoc_remaining_budget_exhausted" in action_ids:
+        actions.append(
+            "Verify root/global instruction files stay compact and run tests/test_agent_contract_budget.py before resuming a large thread; move long guidance into referenced docs, not auto-loaded project instructions."
+        )
+    if "exec_backend_interrupt_unsupported" in action_ids:
+        actions.append(
+            "Do not retry Ctrl-C/write_stdin interruption. Let the command finish or inspect queue/guard logs, then use proof_queue prune-stale or custody-aware Molt cleanup from a fresh command only for live-proved Molt-owned children."
         )
     return actions
 

@@ -592,7 +592,11 @@ def _build_exported_function_module(
 
 
 def _build_runtime_import_data_module(
-    import_names: list[str], *, memory_min: int, data_offset: int
+    import_names: list[str],
+    *,
+    memory_min: int,
+    data_offset: int,
+    table_min: int | None = None,
 ) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -606,7 +610,9 @@ def _build_runtime_import_data_module(
     sections.append((1, bytes(type_payload)))
 
     import_payload = bytearray()
-    import_payload.extend(write_varuint(len(import_names) + 1))
+    import_payload.extend(
+        write_varuint(len(import_names) + 1 + (1 if table_min is not None else 0))
+    )
     for name in import_names:
         import_payload.extend(wasm_link._write_string("molt_runtime"))
         import_payload.extend(wasm_link._write_string(name))
@@ -617,6 +623,13 @@ def _build_runtime_import_data_module(
     import_payload.append(0x02)
     import_payload.append(0x00)
     import_payload.extend(write_varuint(memory_min))
+    if table_min is not None:
+        import_payload.extend(wasm_link._write_string("env"))
+        import_payload.extend(wasm_link._write_string("__indirect_function_table"))
+        import_payload.append(0x01)
+        import_payload.append(0x70)
+        import_payload.extend(write_varuint(0))
+        import_payload.extend(write_varuint(table_min))
     sections.append((2, bytes(import_payload)))
 
     data_payload = bytearray()
@@ -938,29 +951,6 @@ def test_tree_shake_runtime_preserves_required_function_exports() -> None:
     shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
     exports = wasm_link._collect_function_exports(shaken)
     assert "molt_exception_pending" in exports
-
-
-def test_build_runtime_stub_publishes_exported_functions_as_link_symbols() -> None:
-    module = _build_exported_runtime_module_many(["molt_err_pending", "molt_none"])
-
-    stub = wasm_link._build_runtime_stub(module)
-
-    symbols = {
-        name: (flags, index)
-        for flags, index, name, _ in wasm_link._collect_linking_function_symbols(stub)
-    }
-    assert symbols["molt_err_pending"] == (
-        wasm_link.FLAG_BINDING_GLOBAL
-        | wasm_link.FLAG_EXPLICIT_NAME
-        | wasm_link.FLAG_EXPORTED,
-        0,
-    )
-    assert symbols["molt_none"] == (
-        wasm_link.FLAG_BINDING_GLOBAL
-        | wasm_link.FLAG_EXPLICIT_NAME
-        | wasm_link.FLAG_EXPORTED,
-        1,
-    )
 
 
 def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() -> None:
@@ -1365,8 +1355,9 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
 ) -> None:
     runtime_bytes = _module_with_linking_symbols([])
     app_data_offset = 2 * 65536
+    app_table_base = 4096
     output_bytes = _build_runtime_import_data_module(
-        [], memory_min=37, data_offset=app_data_offset
+        [], memory_min=37, data_offset=app_data_offset, table_min=app_table_base
     )
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
@@ -1403,7 +1394,6 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
     monkeypatch.setattr(
@@ -1434,13 +1424,15 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     monolithic_cmd, split_app_cmd = link_calls
     assert str(native_object) in monolithic_cmd
     assert str(native_object) in split_app_cmd
+    assert str(runtime) in monolithic_cmd
     assert str(runtime) not in split_app_cmd
     assert "--stack-first" in monolithic_cmd
     assert "--import-memory" in split_app_cmd
     assert "--no-stack-first" in split_app_cmd
     assert "--stack-first" not in split_app_cmd
     assert f"--global-base={app_data_offset}" in split_app_cmd
-    assert any("molt_runtime_stub" in part for part in monolithic_cmd)
+    assert f"--table-base={app_table_base}" in split_app_cmd
+    assert not any("molt_runtime_stub" in part for part in monolithic_cmd)
     assert not any("molt_runtime_stub" in part for part in split_app_cmd)
     app_wasm = (split_dir / "app.wasm").read_bytes()
     assert wasm_link._memory_import_min(app_wasm) == 37
@@ -1488,7 +1480,6 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
     monkeypatch.setattr(
@@ -1524,7 +1515,7 @@ def test_native_direct_symbol_validation_rejects_trap_stub() -> None:
     assert "trap stub(s): PyInit__demo" in error
 
 
-def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
+def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1536,7 +1527,7 @@ def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
     split_dir = tmp_path / "split"
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.molt.wasm"
     link_calls: list[list[str]] = []
-    stub_app_imports: list[list[tuple[str, str]]] = []
+    linked_app_imports: list[list[tuple[str, str]]] = []
     deployed_native_imports: list[list[tuple[str, str]]] = []
     allowlists: list[set[str]] = []
 
@@ -1558,8 +1549,10 @@ def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
             link_calls.append(list(cmd))
             for part in cmd:
                 path = Path(part)
-                if path.name == "output_stub_link_imports.wasm":
-                    stub_app_imports.append(_function_import_pairs(path.read_bytes()))
+                if path.name == "output_linked_runtime_imports.wasm":
+                    linked_app_imports.append(
+                        _function_import_pairs(path.read_bytes())
+                    )
                 if path.name.startswith("native_runtime_imports_"):
                     deployed_native_imports.append(
                         _function_import_pairs(path.read_bytes())
@@ -1583,7 +1576,6 @@ def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
     monkeypatch.setattr(
@@ -1612,6 +1604,7 @@ def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
     monolithic_cmd, split_app_cmd = link_calls
     assert str(native_object) in monolithic_cmd
     assert str(compiler_rt_provider) in monolithic_cmd
+    assert str(runtime) in monolithic_cmd
     assert str(native_object) not in split_app_cmd
     assert str(compiler_rt_provider) in split_app_cmd
     assert "--import-memory" not in monolithic_cmd
@@ -1621,15 +1614,17 @@ def test_run_wasm_ld_split_runtime_uses_stub_and_deploy_import_namespaces(
     assert "--stack-first" not in split_app_cmd
     assert "--global-base=67108864" in split_app_cmd
     assert any(
-        Path(part).name == "output_stub_link_imports.wasm" for part in monolithic_cmd
+        Path(part).name == "output_linked_runtime_imports.wasm"
+        for part in monolithic_cmd
     )
+    assert not any("molt_runtime_stub" in part for part in monolithic_cmd)
     assert not any(
         Path(part).name.startswith("native_runtime_imports_") for part in monolithic_cmd
     )
     assert any(
         Path(part).name.startswith("native_runtime_imports_") for part in split_app_cmd
     )
-    assert stub_app_imports == [[("env", "molt_err_pending")]]
+    assert linked_app_imports == [[("env", "molt_err_pending")]]
     assert deployed_native_imports == [
         [
             ("molt_runtime", "molt_err_pending"),
@@ -2948,7 +2943,6 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
     monkeypatch.setattr(
@@ -3078,7 +3072,6 @@ def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
     )
     monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
     monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
-    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
     monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
     monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
     monkeypatch.setattr(

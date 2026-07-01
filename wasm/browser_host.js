@@ -80,7 +80,7 @@ const reservedRuntimeCallables = [
   { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
   { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
   { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
-  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5 },
+  { index: 22, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 let browserVfsModulePromise = null;
 const loadBrowserVfsModule = () => {
@@ -129,9 +129,11 @@ const {
   normalizeImportResult,
   normalizeValueForKind,
   parseWasmImports,
+  planReservedRuntimeDispatch,
   remapLegacyRuntimeSharedTableIndex,
-  reservedRuntimeCallableForTableIndex,
   reservedRuntimeCallablesFromManifest,
+  resolveWasmTableBase,
+  tableRefExportName,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
 } = globalThis.MoltWasmLoaderBridge;
@@ -189,6 +191,9 @@ const installTableRefs = (instance, table) => {
     table.grow(maxIndex + 1 - table.length);
   }
   for (const ref of refs) {
+    if (table.get(ref.index) !== null) {
+      continue;
+    }
     table.set(ref.index, ref.fn);
   }
 };
@@ -3958,7 +3963,10 @@ export const loadMoltWasm = async (options = {}) => {
   }
   const outputImports = parseWasmImports(wasmBytes);
   const runtimeImports = parseWasmImports(runtimeBytes);
-  const detectedWasmTableBase = extractWasmTableBase(wasmBytes);
+  const detectedWasmTableBase = resolveWasmTableBase({
+    manifest: splitManifest,
+    extracted: extractWasmTableBase(wasmBytes),
+  });
   state.wasmTableBase = detectedWasmTableBase;
   if (!outputImports.table || !runtimeImports.table || !runtimeImports.memory) {
     throw new Error('Direct-link wasm requires split-runtime shared table plus runtime memory imports');
@@ -3985,12 +3993,20 @@ export const loadMoltWasm = async (options = {}) => {
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
       });
-      const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
+      const directName = tableRefExportName(dispatchIdx);
+      const appDirectFn = outputInstance?.exports?.[directName];
+      const directSignature =
+        appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+      const fn = table ? table.get(dispatchIdx) : null;
+      const reservedDispatch = planReservedRuntimeDispatch({
+        dispatchIdx,
         sharedTableBase: detectedWasmTableBase,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+        reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
         reservedRuntimeCallables: activeReservedRuntimeCallables,
       });
-      if (reservedRuntimeCallable) {
+      const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
+      if (reservedDispatch.dispatchReservedRuntimeCallable) {
         try {
           return callReservedRuntimeCallable({
             runtimeExports: state.runtimeInstance?.exports,
@@ -4001,22 +4017,32 @@ export const loadMoltWasm = async (options = {}) => {
           });
         } catch (err) {
           const detail = err && typeof err.message === 'string' ? err.message : String(err);
+          if (traceCallIndirect && err && typeof err.stack === 'string') {
+            console.error(
+              `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
+            );
+          }
           throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
         }
       }
-      const directName = `__molt_table_ref_${dispatchIdx}`;
-      const directSignature =
-        appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
-      const fn = table ? table.get(dispatchIdx) : null;
       if (traceCallIndirect) {
         console.error(
           `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
         );
       }
       if (typeof fn !== 'function') {
-        throw new Error(`${name} missing table entry at ${dispatchIdx}`);
+        if (typeof appDirectFn !== 'function') {
+          throw new Error(`${name} missing table entry at ${dispatchIdx}`);
+        }
       }
       const appIndirectFn = outputInstance?.exports?.[name];
+      if (typeof appDirectFn === 'function') {
+        return callWithWasmSignature(
+          appDirectFn,
+          appTableRefSignatures[directName] || callIndirectObjectSignature(name),
+          args.slice(1),
+        );
+      }
       if (!directSignature && typeof appIndirectFn === 'function') {
         return callWithWasmSignature(
           appIndirectFn,

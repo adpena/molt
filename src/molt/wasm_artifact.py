@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import Iterable, Literal, Sequence
 
 from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
 
@@ -903,19 +903,6 @@ def wasm_table_ref_export_signatures(
     return _wasm_export_function_signatures(
         path, export_name_prefix=WASM_TABLE_REF_EXPORT_PREFIX
     )
-
-
-def infer_wasm_table_base_from_table_ref_exports(
-    export_signatures: Mapping[str, Mapping[str, object]],
-) -> int | None:
-    slots = [
-        slot
-        for name in export_signatures
-        if (slot := parse_wasm_table_ref_export_name(name)) is not None and slot > 0
-    ]
-    if not slots:
-        return None
-    return min(slots)
 
 
 def wasm_table_ref_indices_from_names(names: Iterable[str]) -> list[int]:

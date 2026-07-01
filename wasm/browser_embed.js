@@ -10,7 +10,6 @@ const TAG_INT = 0x0001000000000000n;
 const TAG_MASK = 0x0007000000000000n;
 const INT_MASK = (1n << 47n) - 1n;
 const TYPE_TAG_BYTES = 6;
-const TABLE_REF_EXPORT_PREFIX = '__molt_table_ref_';
 const NATIVE_CALLABLE_IMPORT_MODULE = 'molt_native';
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
@@ -26,8 +25,9 @@ const {
   normalizeImportResult,
   normalizeValueForKind,
   parseWasmImports: parseMoltWasmImports,
+  planReservedRuntimeDispatch,
   remapLegacyRuntimeSharedTableIndex,
-  reservedRuntimeCallableForTableIndex,
+  tableRefExportName,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
 } = globalThis.MoltWasmLoaderBridge;
@@ -235,11 +235,18 @@ const browserAbiFromManifest = (manifest) => {
         'manifest.abi.browser_embed.reserved_runtime_callables entry arity must be non-negative',
       );
     }
+    const dispatch = entry.dispatch === undefined ? 'direct' : entry.dispatch;
+    if (dispatch !== 'direct' && dispatch !== 'trampoline') {
+      throw new Error(
+        'manifest.abi.browser_embed.reserved_runtime_callables entry dispatch must be direct or trampoline',
+      );
+    }
     reservedRuntimeCallables.push({
       index,
       runtimeExport: entry.runtime_export,
       importName: entry.import_name,
       arity,
+      dispatch,
     });
   }
   return {
@@ -728,6 +735,9 @@ const installTableRefs = (instance, table) => {
     table.grow(maxIndex + 1 - table.length);
   }
   for (const ref of refs) {
+    if (table.get(ref.index) !== null) {
+      continue;
+    }
     table.set(ref.index, ref.fn);
   }
 };
@@ -776,8 +786,6 @@ const ensureTableCapacityForExportedRefs = (instance, table) => {
     table.grow(maxIndex + 1 - table.length);
   }
 };
-
-const tableRefExportName = (index) => `${TABLE_REF_EXPORT_PREFIX}${index}`;
 
 const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, options = {}) => {
   const imports = {};
@@ -994,12 +1002,19 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
     const idx = Number(fnIndex);
     const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
     const directName = tableRefExportName(dispatchIdx);
-    const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx, {
+    const appDirectFn = state.appInstance?.exports?.[directName];
+    const directSignature =
+      appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+    const tableFn = state.table ? state.table.get(dispatchIdx) : null;
+    const reservedDispatch = planReservedRuntimeDispatch({
+      dispatchIdx,
       sharedTableBase,
       reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
+      reservedRuntimeCallableCount: browserAbi.reservedRuntimeCallables.length,
       reservedRuntimeCallables: browserAbi.reservedRuntimeCallables,
     });
-    if (reservedRuntimeCallable) {
+    const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
+    if (reservedDispatch.dispatchReservedRuntimeCallable) {
       try {
         return callReservedRuntimeCallable({
           runtimeExports: state.runtimeInstance?.exports,
@@ -1010,12 +1025,29 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
         });
       } catch (err) {
         const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        if (logFn && err && typeof err.stack === 'string') {
+          logFn(
+            `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
+          );
+        }
         throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
       }
     }
-    const directSignature =
-      appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
-    const tableFn = state.table ? state.table.get(dispatchIdx) : null;
+    if (typeof appDirectFn === 'function') {
+      try {
+        return callWithSignature(
+          appDirectFn,
+          appTableRefSignatures[directName] || callIndirectObjectSignature(name),
+          args,
+        );
+      } catch (err) {
+        const detail = err && typeof err.message === 'string' ? err.message : String(err);
+        throw new Error(
+          `${name} app direct export ${directName} failed at idx=${idx}: ${detail}; ` +
+            `fnLen=${appDirectFn.length}; argsLen=${args.length}`,
+        );
+      }
+    }
     if (typeof tableFn === 'function' && directSignature) {
       try {
         return callWithSignature(tableFn, directSignature, args);

@@ -6,11 +6,11 @@
 //! to reasonable defaults.
 
 use crate::abi_types::{
-    _PyErr_StackItem, METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O,
-    METH_VARARGS, Py_False, Py_None, Py_True, Py_ssize_t, PyCFunction, PyCFunctionFast,
+    _PyErr_StackItem, METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O, METH_VARARGS,
+    Py_False, Py_None, Py_True, Py_ssize_t, PyCFunction, PyCFunctionFast,
     PyCFunctionFastWithKeywords, PyCFunctionObject, PyCFunctionWithKeywords, PyCodeObject,
-    PyFrameObject, PyGenericAliasObject, PyInterpreterState, PyMethodDef, PyMethodObject,
-    PyMutex, PyObject, PyThreadState, PyTypeObject,
+    PyFrameObject, PyGenericAliasObject, PyInterpreterState, PyMethodDef, PyMethodObject, PyMutex,
+    PyObject, PyThreadState, PyTypeObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;

@@ -228,6 +228,46 @@ def _replace_directory_tree_from_source(
                 _remove_file_or_tree(backup_path)
 
 
+def _artifact_imports_module(path: Path, module_name: str) -> bool:
+    try:
+        return bool(_collect_wasm_module_import_names(path, module_name))
+    except (OSError, ValueError):
+        return True
+
+
+def _is_reusable_static_native_link_artifact(path: Path) -> bool:
+    return _is_reusable_wasm_artifact(path) and not _artifact_imports_module(
+        path, "molt_native"
+    )
+
+
+def _is_reusable_split_runtime_artifacts(
+    app_wasm: Path,
+    runtime_wasm: Path,
+    *,
+    static_native_inputs: bool,
+    wasm_table_base: int | None = None,
+) -> bool:
+    if not _is_reusable_wasm_artifact(app_wasm):
+        return False
+    if not _is_reusable_wasm_artifact(runtime_wasm):
+        return False
+    if static_native_inputs:
+        if _artifact_imports_module(app_wasm, "molt_native"):
+            return False
+        if wasm_table_base is None:
+            return False
+        try:
+            _effective_split_worker_table_base(
+                wasm_table_base=wasm_table_base,
+                app_table_ref_signatures=wasm_table_ref_export_signatures(app_wasm),
+                app_wasm=app_wasm,
+            )
+        except (OSError, ValueError):
+            return False
+    return True
+
+
 def _generate_snapshot_header(
     *,
     output_wasm: Path,
@@ -700,13 +740,20 @@ def _prepare_non_native_build_result(
                 link_fingerprint,
                 stored_link_fingerprint,
             )
+            if link_skipped and wasm_static_link_native_inputs:
+                link_skipped = _is_reusable_static_native_link_artifact(
+                    resolved_linked_output
+                )
             if link_skipped and _split_runtime:
                 split_dir = output_wasm.parent
                 app_wasm = split_dir / "app.wasm"
                 rt_wasm = split_dir / "molt_runtime.wasm"
-                link_skipped = _is_reusable_wasm_artifact(
-                    app_wasm
-                ) and _is_reusable_wasm_artifact(rt_wasm)
+                link_skipped = _is_reusable_split_runtime_artifacts(
+                    app_wasm,
+                    rt_wasm,
+                    static_native_inputs=bool(wasm_static_link_native_inputs),
+                    wasm_table_base=wasm_table_base,
+                )
             if link_skipped:
                 link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
             else:
@@ -927,8 +974,8 @@ def _prepare_non_native_build_result(
             try:
                 effective_wasm_table_base = _effective_split_worker_table_base(
                     wasm_table_base=wasm_table_base,
-                    runtime_table_min=rt_table_min,
                     app_table_ref_signatures=app_table_ref_signatures,
+                    app_wasm=app_wasm,
                 )
             except ValueError as exc:
                 return None, _fail(

@@ -419,14 +419,10 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     )
     assert build.returncode == 0, build.stderr
 
-    run_env = os.environ.copy()
-    run_env["MOLT_WASM_DIRECT_LINK"] = "1"
-    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
-    run_env["MOLT_RUNTIME_WASM"] = str(tmp_path / "molt_runtime.wasm")
     result = wasm_runner._run_wasm_test_process(
         [node_bin, "wasm/run_wasm.js", str(tmp_path / "app.wasm")],
         cwd=root,
-        env=run_env,
+        env=os.environ.copy(),
         capture_output=True,
         text=True,
         timeout=20,

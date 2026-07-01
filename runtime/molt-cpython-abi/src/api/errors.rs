@@ -18,6 +18,10 @@ thread_local! {
     static CURRENT_EXC: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
 }
 
+pub fn take_current_error_message() -> Option<String> {
+    CURRENT_EXC.with(|c| c.borrow_mut().take().map(|(_type_bits, msg)| msg))
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *const c_char) {
     let msg = if message.is_null() {
@@ -58,12 +62,9 @@ pub unsafe extern "C" fn PyErr_Clear() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_Print() {
-    CURRENT_EXC.with(|c| {
-        if let Some((_, ref msg)) = *c.borrow() {
-            eprintln!("[molt-cpython-abi] PyErr_Print: {msg}");
-        }
-    });
-    unsafe { PyErr_Clear() };
+    if let Some(msg) = take_current_error_message() {
+        eprintln!("[molt-cpython-abi] PyErr_Print: {msg}");
+    }
 }
 
 /// Set a ValueError with formatted message.
@@ -135,28 +136,26 @@ pub unsafe extern "C" fn PyErr_Fetch(
     p_value: *mut *mut PyObject,
     p_tb: *mut *mut PyObject,
 ) {
-    CURRENT_EXC.with(|c| {
-        let exc = c.borrow_mut().take();
-        if let Some((_type_bits, _msg)) = exc {
-            if !p_type.is_null() {
-                // Return a non-null sentinel for the type.
-                unsafe { *p_type = &raw mut crate::abi_types::Py_None };
-            }
-            if !p_value.is_null() {
-                unsafe { *p_value = ptr::null_mut() };
-            }
-        } else {
-            if !p_type.is_null() {
-                unsafe { *p_type = ptr::null_mut() };
-            }
-            if !p_value.is_null() {
-                unsafe { *p_value = ptr::null_mut() };
-            }
+    let exc = take_current_error_message();
+    if exc.is_some() {
+        if !p_type.is_null() {
+            // Return a non-null sentinel for the type.
+            unsafe { *p_type = &raw mut crate::abi_types::Py_None };
         }
-        if !p_tb.is_null() {
-            unsafe { *p_tb = ptr::null_mut() };
+        if !p_value.is_null() {
+            unsafe { *p_value = ptr::null_mut() };
         }
-    });
+    } else {
+        if !p_type.is_null() {
+            unsafe { *p_type = ptr::null_mut() };
+        }
+        if !p_value.is_null() {
+            unsafe { *p_value = ptr::null_mut() };
+        }
+    }
+    if !p_tb.is_null() {
+        unsafe { *p_tb = ptr::null_mut() };
+    }
 }
 
 #[unsafe(no_mangle)]
