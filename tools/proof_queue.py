@@ -232,6 +232,31 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
     summary = _read_json_object(Path(row["summary_json"]))
     child = summary.get("child_process")
     if not isinstance(child, dict):
+        if summary.get("status") == "running" and summary.get("returncode") is None:
+            evidence = (
+                f"summary_json={row['summary_json']} summary_status=running "
+                f"child_process=null returncode=null "
+                f"last_log_age={_format_duration(log_age_s)}"
+            )
+            recorded_at = summary.get("recorded_at")
+            if isinstance(recorded_at, str) and recorded_at.strip():
+                evidence += f" recorded_at={recorded_at.strip()}"
+            return _diagnostic(
+                signal_id="running-proof-launch-summary-stale",
+                severity="infra",
+                summary=(
+                    "Running proof row still has only the guard launch summary "
+                    "after its log went stale."
+                ),
+                evidence=evidence,
+                next_action=(
+                    "Treat the row as custody-incomplete evidence. Inspect the "
+                    "log and guard summary, then use `prune-stale` or rerun "
+                    "through the same queue lane; do not interrupt via Codex stdin."
+                ),
+                scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
         return None
     child_pid = child.get("pid")
     if not isinstance(child_pid, int) or child_pid <= 0:
