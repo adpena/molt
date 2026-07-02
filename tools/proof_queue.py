@@ -136,6 +136,7 @@ MEMORY_GUARD_TIMEOUT_RE = re.compile(
 )
 AUDIT_ERROR_DIAGNOSTICS = frozenset(
     {
+        "memory-guard-summary-incomplete",
         "memory-guard-timeout",
         "proof-log-missing",
         "queue-preexecution-failure",
@@ -353,6 +354,48 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
             "Treat the row as custody-incomplete evidence. Inspect the log and "
             "memory-guard summary, then use `prune-stale` or rerun through the "
             "same queue lane; do not interrupt via Codex stdin."
+        ),
+        scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+        artifacts=(str(row["summary_json"]), str(row["log_path"])),
+    )
+
+
+def _finished_incomplete_memory_guard_diagnostic(
+    row: sqlite3.Row,
+) -> dict[str, object] | None:
+    if row["status"] in RUNNING:
+        return None
+    summary = _read_json_object(Path(row["summary_json"]))
+    summary_status = summary.get("status")
+    if summary_status not in {"running", "child_running"}:
+        return None
+    if summary.get("returncode") is not None:
+        return None
+    evidence = (
+        f"summary_json={row['summary_json']} row_status={row['status']} "
+        f"row_returncode={row['returncode']} summary_status={summary_status} "
+        "summary_returncode=null"
+    )
+    child = summary.get("child_process")
+    if isinstance(child, dict):
+        child_pid = child.get("pid")
+        if isinstance(child_pid, int) and child_pid > 0:
+            evidence += f" child_pid={child_pid}"
+    recorded_at = summary.get("recorded_at")
+    if isinstance(recorded_at, str) and recorded_at.strip():
+        evidence += f" recorded_at={recorded_at.strip()}"
+    return _diagnostic(
+        signal_id="memory-guard-summary-incomplete",
+        severity="infra",
+        summary=(
+            "Terminal proof row has only a non-final memory-guard running summary."
+        ),
+        evidence=evidence,
+        next_action=(
+            "Treat this row as queue-custody incomplete evidence, not product "
+            "proof. Inspect the queue log and summary once, then rerun through "
+            "the same queue lane or fix memory_guard final-summary lifecycle if "
+            "the pattern repeats."
         ),
         scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
         artifacts=(str(row["summary_json"]), str(row["log_path"])),
@@ -1649,6 +1692,10 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 ),
             )
         )
+
+    incomplete_memory_guard = _finished_incomplete_memory_guard_diagnostic(row)
+    if incomplete_memory_guard is not None and not diagnostics:
+        diagnostics.append(incomplete_memory_guard)
 
     if row["status"] == "failed" and not diagnostics:
         last = _last_nonempty_log_line(Path(row["log_path"])) or ""
@@ -3807,11 +3854,21 @@ def _cmd_audit(args: argparse.Namespace) -> int:
                     f"- showing 5 of {len(frontier_failures)} frontier failures; "
                     "use --json or --output for the complete payload"
                 )
-        if not payload["issues"]:
-            print("- no queue health issues")
+        raw_issues = list(payload["issues"])
+        if args.errors_only:
+            issues_source = [
+                issue for issue in raw_issues if str(issue["severity"]) == "error"
+            ]
+        else:
+            issues_source = raw_issues
+        if not issues_source:
+            if args.errors_only:
+                print("- no error queue health issues")
+            else:
+                print("- no queue health issues")
         max_issues = max(0, int(args.max_issues))
         issues = (
-            payload["issues"] if max_issues == 0 else payload["issues"][:max_issues]
+            issues_source if max_issues == 0 else issues_source[:max_issues]
         )
         for issue in issues:
             run = f" run={issue['run_id']}" if issue.get("run_id") else ""
@@ -3821,10 +3878,18 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             if issue["evidence"]:
                 print(f"  evidence: {issue['evidence']}")
             print(f"  next: {issue['next_action']}")
-        hidden = len(payload["issues"]) - len(issues)
+        if args.errors_only:
+            hidden_warnings = len(raw_issues) - len(issues_source)
+            if hidden_warnings > 0:
+                print(
+                    f"- hidden {hidden_warnings} warning issue(s) due to "
+                    "--errors-only; use full audit, --json, or --output for "
+                    "the complete payload"
+                )
+        hidden = len(issues_source) - len(issues)
         if hidden > 0:
             print(
-                f"- showing {len(issues)} of {len(payload['issues'])} issues; "
+                f"- showing {len(issues)} of {len(issues_source)} issues; "
                 "use --max-issues 0, --json, or --output for the complete payload"
             )
 
@@ -4180,6 +4245,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         help="maximum human issue rows to print; use 0 for all",
+    )
+    audit_p.add_argument(
+        "--errors-only",
+        action="store_true",
+        help="hide warning issue rows from human output without changing JSON/output payloads or exit status",
     )
     audit_p.add_argument("--stale-log-seconds", type=float, default=900.0)
     audit_p.add_argument("--no-notebook-check", action="store_true")
