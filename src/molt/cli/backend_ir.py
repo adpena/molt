@@ -695,7 +695,37 @@ def _build_static_native_module_init_ops(
         {"kind": "const_str", "s_value": spec.module, "out": module_name_var},
     ]
     module_var: str
-    if spec.is_extension:
+    if spec.is_alias:
+        provider_init = SimpleTIRGenerator.module_init_symbol(spec.alias_of)
+        provider_init_var = f"v{next_var}"
+        next_var += 1
+        provider_name_var = f"v{next_var}"
+        next_var += 1
+        module_var = f"v{next_var}"
+        next_var += 1
+        ops.extend(
+            [
+                {
+                    "kind": "call",
+                    "s_value": provider_init,
+                    "args": [],
+                    "out": provider_init_var,
+                    "value": register_global_code_id(provider_init),
+                },
+                {"kind": "check_exception", "value": 1},
+                {
+                    "kind": "const_str",
+                    "s_value": spec.alias_of,
+                    "out": provider_name_var,
+                },
+                {
+                    "kind": "module_cache_get",
+                    "args": [provider_name_var],
+                    "out": module_var,
+                },
+            ]
+        )
+    elif spec.is_extension:
         prepare_var = f"v{next_var}"
         next_var += 1
         pyobj_var = f"v{next_var}"
@@ -747,13 +777,14 @@ def _build_static_native_module_init_ops(
             "out": cache_set_var,
         }
     )
-    next_var = _append_static_native_module_metadata_ops(
-        ops,
-        module_var=module_var,
-        module_name=spec.module,
-        is_extension=spec.is_extension,
-        next_var=next_var,
-    )
+    if not spec.is_alias:
+        next_var = _append_static_native_module_metadata_ops(
+            ops,
+            module_var=module_var,
+            module_name=spec.module,
+            is_extension=spec.is_extension,
+            next_var=next_var,
+        )
     next_var = _append_static_native_parent_binding_ops(
         ops,
         module_var=module_var,
@@ -768,7 +799,7 @@ def _build_static_native_module_init_ops(
         next_var=next_var,
     )
     ops.append({"kind": "ret_void"})
-    if spec.is_extension or spec.module_attr_exports:
+    if spec.is_extension or spec.is_alias or spec.module_attr_exports:
         ops.extend(({"kind": "label", "value": 1}, {"kind": "ret_void"}))
     return ops
 
@@ -1146,6 +1177,8 @@ def _prepare_backend_ir(
         register_global_code_id=register_global_code_id,
     )
     native_module_order = [spec.module for spec in native_module_init_specs]
+    native_runtime_import_dispatch_roots = set(runtime_import_dispatch_roots)
+    native_runtime_import_dispatch_roots.update(native_module_order)
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
@@ -1258,7 +1291,7 @@ def _prepare_backend_ir(
         code_slot_count=len(global_code_ids),
         module_order=_isolate_import_module_order(
             module_order,
-            runtime_import_dispatch_roots,
+            native_runtime_import_dispatch_roots,
             native_module_order=native_module_order,
         ),
         register_global_code_id=register_global_code_id,
