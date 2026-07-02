@@ -118,7 +118,7 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_STDLIB_CACHE_KEY",
     "MOLT_STDLIB_CACHE_MANIFEST",
     "MOLT_STDLIB_MODULE_SYMBOLS",
-    "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
+    "MOLT_RUNTIME_CALLABLE_SYMBOLS",
     "MOLT_DEBUG_DROP",
     "MOLT_DEBUG_LOWER_FUNC",
     "MOLT_TIR_DUMP",
@@ -1007,7 +1007,7 @@ mod tests {
             "MOLT_STDLIB_CACHE_KEY",
             "MOLT_STDLIB_CACHE_MANIFEST",
             "MOLT_STDLIB_MODULE_SYMBOLS",
-            "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS",
             "MOLT_ENTRY_MODULE",
         ];
         let prior_env: Vec<_> = tracked_env
@@ -1021,7 +1021,7 @@ mod tests {
             std::env::remove_var("MOLT_STDLIB_CACHE_KEY");
             std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST");
             std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS");
-            std::env::remove_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS");
+            std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS");
             std::env::remove_var("MOLT_ENTRY_MODULE");
         }
 
@@ -1436,8 +1436,8 @@ mod tests {
                 },
                 module_context_path: module_context_path.clone(),
                 target_triple: None,
-                emit_app_intrinsic_resolver: false,
-                app_intrinsic_manifest: None,
+                emit_app_callable_resolver: false,
+                app_callable_manifest: None,
                 external_function_names: std::collections::BTreeSet::new(),
             },
         )
@@ -2325,7 +2325,7 @@ mod tests {
             NativeApplicationObjectOptions {
                 target_triple: None,
                 stdlib_split_enabled: false,
-                app_intrinsic_manifest: None,
+                app_callable_manifest: None,
                 log_prefix: "MOLT_BACKEND(test)",
             },
         )
@@ -2423,7 +2423,7 @@ mod tests {
             NativeApplicationObjectOptions {
                 target_triple: None,
                 stdlib_split_enabled: false,
-                app_intrinsic_manifest: None,
+                app_callable_manifest: None,
                 log_prefix: "MOLT_BACKEND(test)",
             },
         )
@@ -2744,7 +2744,7 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
         let output = tmp_dir.join("out.o");
         let stdlib = tmp_dir.join("stdlib.o");
-        let runtime_symbols = tmp_dir.join("runtime_intrinsic_symbols.txt");
+        let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
         std::fs::write(&runtime_symbols, "molt_main\n").expect("write runtime symbols");
 
         let env_keys = [
@@ -2753,7 +2753,7 @@ mod tests {
             "MOLT_STDLIB_CACHE_KEY",
             "MOLT_STDLIB_CACHE_MANIFEST",
             "MOLT_STDLIB_MODULE_SYMBOLS",
-            "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS",
         ];
         let prior_env: Vec<(&str, Option<String>)> = env_keys
             .iter()
@@ -2766,7 +2766,7 @@ mod tests {
             std::env::set_var("MOLT_STDLIB_CACHE_KEY", "daemon-empty-key");
             std::env::set_var("MOLT_STDLIB_CACHE_MANIFEST", "daemon-empty-manifest");
             std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
-            std::env::set_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS", &runtime_symbols);
+            std::env::set_var("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols);
         }
 
         let job = DaemonJobRequest {
@@ -2988,18 +2988,18 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
         let output = tmp_dir.join("out.o");
         let stdlib = tmp_dir.join("stdlib.o");
-        // The main application object emits the per-app intrinsic resolver, which
-        // requires the linked runtime staticlib's `molt_*` intrinsic-symbol set
-        // (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`). Production always extracts and
+        // The main application object emits the per-app callable resolver, which
+        // requires the linked runtime staticlib's `molt_*` callable-symbol set
+        // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
         // exposes this before native codegen; replicate that precondition through
         // the daemon's env-passthrough so this test exercises the real resolver
         // path instead of hitting the fail-closed guard. These IR functions take
-        // no intrinsic addresses (no `const_str` ops), so the resolved manifest is
+        // no callable addresses (no candidate ops), so the resolved manifest is
         // empty regardless; the file just satisfies the required-symbol-set
         // contract with the symbols this object actually references.
-        let runtime_symbols = tmp_dir.join("runtime_intrinsic_symbols.txt");
+        let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
         std::fs::write(&runtime_symbols, "molt_init_sys\nmolt_main\n")
-            .expect("write runtime intrinsic symbol set");
+            .expect("write runtime callable symbol set");
         let request = serde_json::json!({
             "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "config_digest": "daemon-test",
@@ -3008,7 +3008,7 @@ mod tests {
                 "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
                 "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
-                "MOLT_RUNTIME_INTRINSIC_SYMBOLS": runtime_symbols.to_string_lossy(),
+                "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
             },
             "jobs": [{
                 "id": "job0",
@@ -3148,7 +3148,7 @@ mod tests {
         // The daemon env-passthrough mutated the process environment; clear the
         // resolver symbol-set var so it does not leak into sibling tests that
         // share `ENV_TEST_MUTEX`.
-        unsafe { std::env::remove_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS") };
+        unsafe { std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS") };
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -3327,21 +3327,21 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
         let output = tmp_dir.join("out.o");
         let stdlib = tmp_dir.join("stdlib.o");
-        // The main application object emits the per-app intrinsic resolver, which
-        // requires the linked runtime staticlib's `molt_*` intrinsic-symbol set
-        // (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`). Production always extracts and
+        // The main application object emits the per-app callable resolver, which
+        // requires the linked runtime staticlib's `molt_*` callable-symbol set
+        // (`MOLT_RUNTIME_CALLABLE_SYMBOLS`). Production always extracts and
         // exposes this before native codegen; replicate that precondition through
         // the daemon's env-passthrough so this test exercises the real resolver
         // path instead of hitting the fail-closed guard. These IR functions take
-        // no intrinsic addresses (no `const_str` ops), so the resolved manifest is
+        // no callable addresses (no candidate ops), so the resolved manifest is
         // empty regardless; the file just satisfies the required-symbol-set
         // contract with the symbols this object actually references.
-        let runtime_symbols = tmp_dir.join("runtime_intrinsic_symbols.txt");
+        let runtime_symbols = tmp_dir.join("runtime_callable_symbols.txt");
         std::fs::write(
             &runtime_symbols,
             "molt_init_sys\nmolt_init_demo\nmolt_main\nmolt_host_init\n",
         )
-        .expect("write runtime intrinsic symbol set");
+        .expect("write runtime callable symbol set");
         let request = serde_json::json!({
             "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "config_digest": "daemon-test",
@@ -3350,7 +3350,7 @@ mod tests {
                 "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
                 "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
-                "MOLT_RUNTIME_INTRINSIC_SYMBOLS": runtime_symbols.to_string_lossy(),
+                "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
                 "MOLT_BACKEND_BATCH_SIZE": "1",
             },
             "jobs": [{
@@ -3442,7 +3442,7 @@ mod tests {
         // The daemon env-passthrough mutated the process environment; clear the
         // resolver symbol-set var so it does not leak into sibling tests that
         // share `ENV_TEST_MUTEX`.
-        unsafe { std::env::remove_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS") };
+        unsafe { std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS") };
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 

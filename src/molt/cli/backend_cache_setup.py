@@ -53,7 +53,7 @@ def _build_cache_variant(
     partition_mode: bool = False,
     backend_binary_identity: str = "",
     external_static_packages_digest: str = "",
-    runtime_intrinsic_symbols_digest: str = "",
+    runtime_callable_symbols_digest: str = "",
     capability_config_digest: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
@@ -81,11 +81,11 @@ def _build_cache_variant(
     this when source mtimes are reset by git/worktree ops or when two
     same-source builds produce different binaries.
 
-    ``runtime_intrinsic_symbols_digest`` MUST be part of native binary cache
-    identity because the app object embeds the per-app intrinsic resolver. The
+    ``runtime_callable_symbols_digest`` MUST be part of native binary cache
+    identity because the app object embeds the per-app callable resolver. The
     resolver's relocation set is computed against the linked runtime staticlib's
     exact `molt_*` symbol authority; a stale app object emitted against a
-    different set can either miss required intrinsics or reference absent ones.
+    different set can either miss required callables or reference absent ones.
     """
     parts = [
         f"profile={profile}",
@@ -105,8 +105,8 @@ def _build_cache_variant(
         parts.append(f"backend_bin={backend_binary_identity}")
     if external_static_packages_digest:
         parts.append(f"external_static_packages={external_static_packages_digest}")
-    if runtime_intrinsic_symbols_digest:
-        parts.append(f"runtime_intrinsics={runtime_intrinsic_symbols_digest}")
+    if runtime_callable_symbols_digest:
+        parts.append(f"runtime_callables={runtime_callable_symbols_digest}")
     if capability_config_digest:
         parts.append(f"capability_config={capability_config_digest}")
     return ";".join(parts)
@@ -135,7 +135,7 @@ def _prepare_backend_cache_setup(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    runtime_intrinsic_symbols_digest: str = "",
+    runtime_callable_symbols_digest: str = "",
     capabilities_list: Sequence[str] | None = None,
     capability_profiles: Sequence[str] | None = None,
     manifest_env_vars: Mapping[str, str] | None = None,
@@ -180,7 +180,7 @@ def _prepare_backend_cache_setup(
         stdlib_profile=stdlib_profile,
         backend_binary_identity=backend_binary_identity,
         external_static_packages_digest=native_artifact_plan.digest(),
-        runtime_intrinsic_symbols_digest=runtime_intrinsic_symbols_digest,
+        runtime_callable_symbols_digest=runtime_callable_symbols_digest,
         capability_config_digest=capability_config_digest,
     )
     if not cache_enabled:

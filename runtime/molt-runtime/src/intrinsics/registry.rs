@@ -1,12 +1,8 @@
 use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue};
-// `resolve_symbol` (which address-takes every intrinsic via `resolve_core_symbol`)
-// is referenced on wasm32 (table-based eager registration / lookup) and in any
-// `cfg(test)` build (unit tests resolve intrinsics directly, without a
-// compiler-emitted per-app resolver, and test binaries are never dead-stripped).
-// In non-test native builds it is intentionally unreferenced so the linker
-// dead-strips it and all unused intrinsics; the per-app resolver handles
-// native resolution there.
-#[cfg(any(target_arch = "wasm32", test))]
+// `resolve_symbol` address-takes every intrinsic via `resolve_core_symbol`, so
+// production artifacts must keep it unreachable. Unit tests are the only direct
+// resolver users; shipped native and wasm artifacts install a per-app resolver.
+#[cfg(test)]
 use crate::intrinsics::generated::resolve_symbol;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
@@ -31,66 +27,73 @@ static INTRINSIC_MANIFEST_LEN: AtomicU32 = AtomicU32::new(0);
 /// multi-threaded targets.
 static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
 
-/// Per-app intrinsic resolver function pointer.
+/// Per-app runtime-callable resolver function pointer.
 ///
-/// On native, the backend emits a per-app Cranelift function
-/// `molt_app_resolve_intrinsic(name_ptr, name_len) -> u64` into the user object
-/// covering exactly the intrinsics the app reaches by name. The main stub
-/// registers it here (via `molt_set_app_intrinsic_resolver`) BEFORE
-/// `molt_runtime_init`. When set, the runtime resolves intrinsic symbols through
-/// it instead of the staticlib's `resolve_symbol`, which keeps
-/// `resolve_symbol`/`resolve_core_symbol` native-unreachable so the linker
-/// dead-strips every unused intrinsic.
-static APP_INTRINSIC_RESOLVER: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+/// Backends emit a per-app function/table resolver
+/// `molt_app_resolve_callable(name_ptr, name_len) -> u64` into the user object
+/// covering exactly the runtime callables the app reaches by name. The app
+/// bootstrap registers it here (via `molt_set_app_callable_resolver`) before
+/// runtime initialization. Intrinsic resolution and dynamic builtin-function
+/// materialization both consume this one executable authority, which keeps
+/// monolithic generated resolvers native-unreachable so the linker dead-strips
+/// every unused intrinsic and builtin callable.
+static APP_CALLABLE_RESOLVER: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
-/// One-shot guard for `APP_INTRINSIC_RESOLVER`, mirroring `MANIFEST_SET`.
-static APP_RESOLVER_SET: AtomicBool = AtomicBool::new(false);
+/// One-shot guard for `APP_CALLABLE_RESOLVER`, mirroring `MANIFEST_SET`.
+static APP_CALLABLE_RESOLVER_SET: AtomicBool = AtomicBool::new(false);
 
-/// Register the per-app intrinsic resolver. One-shot: only the first call (the
-/// compiler-generated main stub, run before `molt_runtime_init`) takes effect.
+/// Register the per-app runtime-callable resolver. One-shot: only the first
+/// call (the compiler-generated main stub, run before `molt_runtime_init`)
+/// takes effect.
 ///
-/// `fn_ptr` is the address of `molt_app_resolve_intrinsic`, an
-/// `extern "C" fn(*const u8, usize) -> u64` that returns the intrinsic function
-/// pointer for `name[..len]` or 0 when the app does not reference that intrinsic.
+/// `fn_ptr` is the address of the backend-emitted app resolver, an
+/// `extern "C" fn(*const u8, usize) -> u64` that returns the function
+/// pointer/table index for `name[..len]` or 0 when the app does not reference
+/// that callable.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_set_app_intrinsic_resolver(fn_ptr: u64) -> u64 {
-    if APP_RESOLVER_SET
+pub extern "C" fn molt_set_app_callable_resolver(fn_ptr: u64) -> u64 {
+    if APP_CALLABLE_RESOLVER_SET
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         return 0; // another caller already registered the resolver
     }
-    APP_INTRINSIC_RESOLVER.store(fn_ptr as usize as *mut u8, Ordering::Release);
+    APP_CALLABLE_RESOLVER.store(fn_ptr as usize as *mut u8, Ordering::Release);
     0
+}
+
+pub(crate) fn try_app_resolve_runtime_callable(symbol: &str) -> Option<u64> {
+    let resolver_ptr = APP_CALLABLE_RESOLVER.load(Ordering::Acquire);
+    if resolver_ptr.is_null() {
+        return None;
+    }
+    let name_bytes = symbol.as_bytes();
+    let fn_ptr: u64 = unsafe {
+        let resolver: extern "C" fn(*const u8, usize) -> u64 =
+            core::mem::transmute(resolver_ptr as usize);
+        resolver(name_bytes.as_ptr(), name_bytes.len())
+    };
+    if fn_ptr == 0 { None } else { Some(fn_ptr) }
 }
 
 /// Resolve `symbol` to an intrinsic function pointer.
 ///
-/// When the per-app resolver is registered (native), delegate to it. Otherwise:
-/// on wasm32 fall back to the staticlib `resolve_symbol` table (WASM links every
-/// referenced intrinsic and never registers an app resolver); on native return
-/// `None` because the app resolver must be registered before any resolution and
-/// `resolve_symbol` is intentionally left native-unreachable for dead-stripping.
+/// When the per-app resolver is registered, delegate to it. Otherwise return
+/// `None` in production builds so the full generated resolver stays
+/// dead-strippable. Unit tests resolve through `resolve_symbol` because they do
+/// not emit a per-app resolver and are never final dead-stripped artifacts.
 pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
-    let resolver_ptr = APP_INTRINSIC_RESOLVER.load(Ordering::Acquire);
-    if !resolver_ptr.is_null() {
-        let name_bytes = symbol.as_bytes();
-        let fn_ptr: u64 = unsafe {
-            let resolver: extern "C" fn(*const u8, usize) -> u64 =
-                core::mem::transmute(resolver_ptr as usize);
-            resolver(name_bytes.as_ptr(), name_bytes.len())
-        };
-        return if fn_ptr == 0 { None } else { Some(fn_ptr) };
+    if let Some(fn_ptr) = try_app_resolve_runtime_callable(symbol) {
+        return Some(fn_ptr);
     }
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(test)]
     {
-        // WASM links every referenced intrinsic and resolves through the
-        // staticlib table; `cfg(test)` builds resolve directly (no per-app
-        // resolver is emitted for unit tests, and the test binary is not
-        // dead-stripped, so `resolve_symbol` is reachable).
+        // Unit tests validate the generated intrinsic registry directly. They
+        // do not emit a per-app resolver and are not final dead-stripped
+        // production artifacts, so `resolve_symbol` may remain reachable here.
         resolve_symbol(symbol)
     }
-    #[cfg(not(any(target_arch = "wasm32", test)))]
+    #[cfg(not(test))]
     {
         // Non-test native: the app resolver must be registered before any
         // resolution. `resolve_symbol` is intentionally not referenced here so it
@@ -201,8 +204,9 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         }
 
         // On WASM with a manifest, eagerly register only the referenced
-        // intrinsics.  The manifest already filters to only the functions the
-        // compiled module uses, so this is safe and enables dead stripping.
+        // intrinsics through the app resolver. The manifest already filters
+        // to only the functions the compiled module uses, and the resolver
+        // address-takes only those symbols.
         // On native, skip eager registration — the lazy resolver handles it.
         #[cfg(target_arch = "wasm32")]
         {
@@ -212,7 +216,7 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
                     if !m.contains(spec.name) {
                         continue;
                     }
-                    let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
+                    let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
                         continue;
                     };
                     let Some(func_bits) =
@@ -722,8 +726,8 @@ pub(crate) fn reset_for_testing() {
     MANIFEST_SET.store(false, Ordering::SeqCst);
     INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
     INTRINSIC_MANIFEST_LEN.store(0, Ordering::SeqCst);
-    APP_RESOLVER_SET.store(false, Ordering::SeqCst);
-    APP_INTRINSIC_RESOLVER.store(core::ptr::null_mut(), Ordering::SeqCst);
+    APP_CALLABLE_RESOLVER_SET.store(false, Ordering::SeqCst);
+    APP_CALLABLE_RESOLVER.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
 // Expose internals for testing.
@@ -737,11 +741,11 @@ pub(crate) fn test_manifest_ptr() -> &'static AtomicPtr<u8> {
 }
 #[cfg(test)]
 pub(crate) fn test_app_resolver_set() -> &'static AtomicBool {
-    &APP_RESOLVER_SET
+    &APP_CALLABLE_RESOLVER_SET
 }
 #[cfg(test)]
 pub(crate) fn test_app_resolver_ptr() -> &'static AtomicPtr<u8> {
-    &APP_INTRINSIC_RESOLVER
+    &APP_CALLABLE_RESOLVER
 }
 
 /// Runtime implementation of require_intrinsic(name, namespace=None) -> function.
@@ -1084,7 +1088,7 @@ mod tests {
 
     /// A fake per-app resolver that returns a sentinel address for one known
     /// name and 0 (not found) for everything else, matching the ABI of the
-    /// backend-emitted `molt_app_resolve_intrinsic`.
+    /// backend-emitted app callable resolver.
     extern "C" fn fake_app_resolver(name_ptr: *const u8, name_len: usize) -> u64 {
         let bytes = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
         if bytes == b"molt_known_intrinsic" {
@@ -1110,7 +1114,7 @@ mod tests {
         test_app_resolver_set().store(false, Ordering::SeqCst);
         test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
 
-        let ret = molt_set_app_intrinsic_resolver(fake_app_resolver as *const () as usize as u64);
+        let ret = molt_set_app_callable_resolver(fake_app_resolver as *const () as usize as u64);
         assert_eq!(ret, 0, "first registration should return 0 (success)");
 
         assert_eq!(
@@ -1144,25 +1148,25 @@ mod tests {
         test_app_resolver_set().store(false, Ordering::SeqCst);
         test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
 
-        let first = molt_set_app_intrinsic_resolver(0x1000);
+        let first = molt_set_app_callable_resolver(0x1000);
         assert_eq!(first, 0, "first registration should return 0 (success)");
         assert!(
             test_app_resolver_set().load(Ordering::SeqCst),
-            "APP_RESOLVER_SET should be true after first registration"
+            "APP_CALLABLE_RESOLVER_SET should be true after first registration"
         );
         assert_eq!(
             test_app_resolver_ptr().load(Ordering::SeqCst) as usize,
             0x1000,
-            "APP_INTRINSIC_RESOLVER should be 0x1000 after first registration"
+            "APP_CALLABLE_RESOLVER should be 0x1000 after first registration"
         );
 
         // Second registration must be silently ignored.
-        let second = molt_set_app_intrinsic_resolver(0x2000);
+        let second = molt_set_app_callable_resolver(0x2000);
         assert_eq!(second, 0, "second registration should also return 0");
         assert_eq!(
             test_app_resolver_ptr().load(Ordering::SeqCst) as usize,
             0x1000,
-            "APP_INTRINSIC_RESOLVER must still be 0x1000, NOT 0x2000"
+            "APP_CALLABLE_RESOLVER must still be 0x1000, NOT 0x2000"
         );
 
         // Clean up.

@@ -584,10 +584,10 @@ from molt.cli.runtime_build import (
     _initialize_runtime_artifact_state,
     _maybe_start_native_runtime_lib_ready_async,
 )
-from molt.cli.runtime_intrinsic_symbols import (
-    _runtime_intrinsic_symbols_digest,
-    _runtime_intrinsic_symbols_file,
-    _stage_runtime_intrinsic_symbols_for_native_codegen,
+from molt.cli.runtime_callable_symbols import (
+    _runtime_callable_symbols_digest,
+    _runtime_callable_symbols_file,
+    _stage_runtime_callable_symbols_for_native_codegen,
 )
 from molt.cli.setup_readiness import (
     _build_toolchain_report,

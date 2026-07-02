@@ -190,15 +190,15 @@ extern long molt_chan_try_recv(void* chan);
 extern long molt_chan_send_blocking(void* chan, long val);
 extern long molt_chan_recv_blocking(void* chan);
 extern void molt_print_obj(unsigned long long val);
-/* Per-app intrinsic resolver: the backend emits molt_app_resolve_intrinsic into
- * the user object covering only the intrinsics this app reaches by name. The
- * runtime resolves intrinsics through it instead of the staticlib's
- * resolve_symbol, which keeps resolve_symbol/resolve_core_symbol native-
- * unreachable so the linker dead-strips every unused intrinsic. This MUST be
- * registered before molt_runtime_init() so the resolver is in place before any
- * intrinsic lookup runs. */
-extern unsigned long long molt_app_resolve_intrinsic(const char* name, unsigned long long len);
-extern unsigned long long molt_set_app_intrinsic_resolver(unsigned long long fn_ptr);
+/* Per-app callable resolver: the backend emits molt_app_resolve_callable into
+ * the user object for the native app-callable manifest, and WASM emits the
+ * analogous callable table resolver for intrinsics plus reachable builtin
+ * callables. The runtime resolves name-based callable materialization through
+ * this app-owned hook instead of monolithic generated resolvers, keeping unused
+ * callables dead-strippable. This MUST be registered before molt_runtime_init()
+ * so the resolver is in place before any lookup runs. */
+extern unsigned long long molt_app_resolve_callable(const char* name, unsigned long long len);
+extern unsigned long long molt_set_app_callable_resolver(unsigned long long fn_ptr);
 /* MOLT_TRUSTED_SNIPPET */
 /* MOLT_CAPABILITIES_SNIPPET */
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
@@ -226,7 +226,7 @@ int wmain(int argc, wchar_t** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
-    molt_set_app_intrinsic_resolver((unsigned long long)(void*)molt_app_resolve_intrinsic);
+    molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
@@ -238,7 +238,7 @@ int main(int argc, char** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
-    molt_set_app_intrinsic_resolver((unsigned long long)(void*)molt_app_resolve_intrinsic);
+    molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv(argc, (const char**)argv);

@@ -8,11 +8,12 @@ pub(crate) use capabilities::*;
 #[allow(unused_imports)]
 pub(crate) use generated::{INTRINSICS, resolve_symbol};
 pub(crate) use registry::install_into_builtins;
-// Per-app intrinsic resolver entry point. On native this delegates to the
-// app-emitted `molt_app_resolve_intrinsic` (registered before runtime init),
-// keeping `resolve_symbol`/`resolve_core_symbol` native-unreachable so the
-// linker dead-strips every unused intrinsic. On wasm it falls back to the
-// staticlib `resolve_symbol` table.
+// Per-app runtime-callable resolver entry point. Production WASM apps register
+// a resolver emitted into the app object before runtime init. That resolver
+// covers manifest-reachable intrinsic symbols and reachable builtin runtime
+// callables, keeping monolithic generated resolvers native-unreachable so the
+// linker dead-strips every unused callable. Unit tests keep `resolve_symbol`
+// reachable because they validate the generated intrinsic registry directly.
 //
 // The cross-module consumer of this re-export is the wasm32-only reverse
 // fn_ptr -> name trace in `call::function`; native callers live inside the

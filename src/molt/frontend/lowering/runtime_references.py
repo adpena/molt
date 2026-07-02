@@ -98,16 +98,14 @@ class RuntimeReferenceMixin(_MixinBase):
         )
 
     def _emit_optional_intrinsic_lookup_value(self, runtime_name: str) -> MoltValue:
-        loader = self._emit_runtime_function("molt_load_intrinsic_runtime", 2)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[runtime_name], result=name_val))
         namespace_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=namespace_val))
-        res = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(kind="CALL_FUNC", args=[loader, name_val, namespace_val], result=res)
+        return self._emit_runtime_call(
+            "molt_load_intrinsic_runtime",
+            [name_val, namespace_val],
         )
-        return res
 
     def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue:
         func_val = MoltValue(self.next_var(), type_hint="function")
@@ -119,6 +117,17 @@ class RuntimeReferenceMixin(_MixinBase):
             )
         )
         return func_val
+
+    def _emit_runtime_call(
+        self,
+        runtime_name: str,
+        args: Sequence[MoltValue],
+        *,
+        type_hint: str = "Any",
+    ) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint=type_hint)
+        self.emit(MoltOp(kind="CALL", args=[runtime_name, *args], result=res))
+        return res
 
     def _emit_runtime_function_with_none_defaults(
         self, runtime_name: str, arity: int, *, default_count: int

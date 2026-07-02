@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, Sequence
+from typing import Iterable, Literal, Mapping, Sequence
 
 from molt._wasm_abi_generated import WASM_TABLE_REF_EXPORT_PREFIX
 
@@ -799,6 +799,58 @@ def parse_wasm_exports(
     if kind is None:
         return exports
     return [export for export in exports if export.kind == kind]
+
+
+def rename_wasm_export_names(
+    data: bytes, rename_map: Mapping[str, str]
+) -> bytes | None:
+    if not rename_map:
+        return None
+    sections = _parse_wasm_sections(data)
+    modified = False
+    rewritten_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 7:
+            rewritten_sections.append((section_id, payload))
+            continue
+        cursor = 0
+        count, cursor = _read_wasm_varuint(payload, cursor)
+        exports: list[WasmExport] = []
+        for _ in range(count):
+            name, cursor = _read_wasm_string(payload, cursor)
+            if cursor >= len(payload):
+                raise ValueError("Unexpected EOF while reading export")
+            kind = payload[cursor]
+            cursor += 1
+            index, cursor = _read_wasm_varuint(payload, cursor)
+            renamed = rename_map.get(name, name)
+            if renamed != name:
+                modified = True
+            exports.append(WasmExport(renamed, kind, index))
+        deduped: list[WasmExport] = []
+        seen_exports: dict[str, tuple[int, int]] = {}
+        for export in exports:
+            identity = (export.kind, export.index)
+            existing = seen_exports.get(export.name)
+            if existing is not None:
+                if existing != identity:
+                    raise ValueError(
+                        "WASM export rename collision for "
+                        f"{export.name!r}: {existing!r} vs {identity!r}"
+                    )
+                modified = True
+                continue
+            seen_exports[export.name] = identity
+            deduped.append(export)
+        rebuilt = bytearray(_write_wasm_varuint(len(deduped)))
+        for export in deduped:
+            rebuilt.extend(_write_wasm_string(export.name))
+            rebuilt.append(export.kind)
+            rebuilt.extend(_write_wasm_varuint(export.index))
+        rewritten_sections.append((section_id, bytes(rebuilt)))
+    if not modified:
+        return None
+    return _build_wasm_sections(rewritten_sections)
 
 
 def read_wasm_exports(

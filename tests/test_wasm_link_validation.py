@@ -2161,6 +2161,52 @@ def test_rewrite_native_runtime_imports_routes_canonical_cpython_abi_symbols(
         ]
 
 
+def test_rewrite_native_runtime_imports_split_runtime_uses_public_cpython_abi_exports(
+    tmp_path: Path,
+) -> None:
+    native = tmp_path / "ndimage.molt.wasm"
+    native.write_bytes(
+        _build_env_function_import_module(
+            [
+                "PyType_Ready",
+                "Py_DECREF",
+                "molt_cpython_abi_date_from_date",
+                "malloc",
+            ]
+        )
+    )
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            {
+                "molt_PyType_Ready",
+                "molt_Py_DECREF",
+                "molt_cpython_abi_date_from_date",
+            },
+            temp_dir,
+            split_runtime=True,
+        )
+
+        assert force_exports == []
+        assert len(rewritten_paths) == 1
+        assert rewritten_paths[0] != native
+        assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
+            ("molt_runtime", "molt_PyType_Ready"),
+            ("molt_runtime", "molt_Py_DECREF"),
+            ("molt_runtime", "molt_cpython_abi_date_from_date"),
+            ("env", "malloc"),
+        ]
+        assert _function_import_pairs(native.read_bytes()) == [
+            ("env", "PyType_Ready"),
+            ("env", "Py_DECREF"),
+            ("env", "molt_cpython_abi_date_from_date"),
+            ("env", "malloc"),
+        ]
+
+
 def test_rewrite_native_runtime_imports_rejects_non_manifest_raw_c_api_symbol(
     tmp_path: Path,
 ) -> None:
@@ -2217,6 +2263,13 @@ def test_split_runtime_validation_uses_generated_runtime_export_names(
     assert not wasm_link._validate_split_runtime_outputs(app, runtime)
 
     app.write_bytes(_build_runtime_import_module(["socket_drop"], memory_min=1))
+    assert wasm_link._validate_split_runtime_outputs(app, runtime)
+
+    app.write_bytes(_build_runtime_import_module(["PyType_Ready"], memory_min=1))
+    runtime.write_bytes(_build_exported_runtime_module("PyType_Ready"))
+    assert not wasm_link._validate_split_runtime_outputs(app, runtime)
+
+    runtime.write_bytes(_build_exported_runtime_module("molt_PyType_Ready"))
     assert wasm_link._validate_split_runtime_outputs(app, runtime)
 
 

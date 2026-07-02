@@ -19,15 +19,16 @@ from molt.cli.output import fail as _fail
 from molt.cli.runtime_build import _ensure_native_runtime_lib_ready_before_link
 
 
-def _runtime_intrinsic_symbols_file(
+def _runtime_callable_symbols_file(
     runtime_lib: Path,
 ) -> tuple[Path | None, str | None]:
-    """Materialize the `molt_*` intrinsic symbols defined by a runtime staticlib.
+    """Materialize the `molt_*` callable symbols defined by a runtime staticlib.
 
-    The per-app intrinsic resolver takes the address of every intrinsic the app
-    reaches by name. Those addresses are resolved against this staticlib at link
-    time, so the resolver must only reference intrinsics the staticlib actually
-    defines; the native ``micro`` and ``full`` profiles intentionally differ.
+    The per-app callable resolver takes the address of every runtime callable
+    the app reaches by name. Those addresses are resolved against this staticlib
+    at link time, so the resolver must only reference callables the staticlib
+    actually defines; the native ``micro`` and ``full`` profiles intentionally
+    differ.
 
     Extraction accepts the first ``nm`` candidate that exits cleanly and yields a
     non-empty ``molt_*`` text-symbol set. That lets LLVM ``nm`` win when a system
@@ -38,7 +39,7 @@ def _runtime_intrinsic_symbols_file(
     except OSError as exc:
         return None, f"runtime staticlib unreadable: {runtime_lib} ({exc})"
     cache_path = runtime_lib.with_name(
-        f"{runtime_lib.name}.intrinsic_symbols.{stat.st_size}.{int(stat.st_mtime)}.txt"
+        f"{runtime_lib.name}.callable_symbols.{stat.st_size}.{int(stat.st_mtime)}.txt"
     )
     if cache_path.exists():
         return cache_path, None
@@ -91,7 +92,7 @@ def _runtime_intrinsic_symbols_file(
     return cache_path, None
 
 
-def _runtime_intrinsic_symbols_digest(symbols_file: Path | None) -> str:
+def _runtime_callable_symbols_digest(symbols_file: Path | None) -> str:
     if symbols_file is None:
         return ""
     try:
@@ -108,7 +109,7 @@ def _runtime_intrinsic_symbols_digest(symbols_file: Path | None) -> str:
         return ""
     payload = json.dumps(
         {
-            "schema": "runtime-intrinsic-symbols-v1",
+            "schema": "runtime-callable-symbols-v1",
             "symbols": symbols,
         },
         sort_keys=True,
@@ -117,7 +118,7 @@ def _runtime_intrinsic_symbols_digest(symbols_file: Path | None) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _stage_runtime_intrinsic_symbols_for_native_codegen(
+def _stage_runtime_callable_symbols_for_native_codegen(
     runtime_state: _RuntimeArtifactState,
     *,
     target_triple: str | None,
@@ -130,7 +131,7 @@ def _stage_runtime_intrinsic_symbols_for_native_codegen(
     is_wasm_freestanding: bool = False,
 ) -> tuple[str, _CliFailure | None]:
     runtime_lib = runtime_state.runtime_lib
-    os.environ.pop("MOLT_RUNTIME_INTRINSIC_SYMBOLS", None)
+    os.environ.pop("MOLT_RUNTIME_CALLABLE_SYMBOLS", None)
     if runtime_lib is None or is_wasm_freestanding:
         return "", None
     runtime_ready = _ensure_native_runtime_lib_ready_before_link(
@@ -148,15 +149,15 @@ def _stage_runtime_intrinsic_symbols_for_native_codegen(
     if not runtime_ready or not runtime_lib.exists():
         return "", _fail(
             "native runtime staticlib build failed or produced no artifact "
-            f"({runtime_lib}); cannot stage the intrinsic-symbol set native "
+            f"({runtime_lib}); cannot stage the callable-symbol set native "
             "codegen requires. See the cargo output above for the build error.",
             json_output,
             command="build",
         )
-    symbols_file, symbols_failure = _runtime_intrinsic_symbols_file(runtime_lib)
+    symbols_file, symbols_failure = _runtime_callable_symbols_file(runtime_lib)
     if symbols_file is None:
         return "", _fail(
-            "failed to extract the runtime staticlib's molt_* intrinsic "
+            "failed to extract the runtime staticlib's molt_* callable "
             f"symbols from {runtime_lib}: {symbols_failure}. Native codegen "
             "requires this set (the per-app resolver must not reference "
             "symbols the linker cannot satisfy). Remediation: install an "
@@ -166,14 +167,14 @@ def _stage_runtime_intrinsic_symbols_for_native_codegen(
             json_output,
             command="build",
         )
-    digest = _runtime_intrinsic_symbols_digest(symbols_file)
+    digest = _runtime_callable_symbols_digest(symbols_file)
     if not digest:
         return "", _fail(
-            "failed to digest the runtime staticlib intrinsic-symbol set "
+            "failed to digest the runtime staticlib callable-symbol set "
             f"from {symbols_file}; native backend cache identity requires "
             "the exact resolver symbol authority.",
             json_output,
             command="build",
         )
-    os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
+    os.environ["MOLT_RUNTIME_CALLABLE_SYMBOLS"] = str(symbols_file)
     return digest, None

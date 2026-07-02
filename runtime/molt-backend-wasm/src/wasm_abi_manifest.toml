@@ -897,6 +897,11 @@ runtime_name = "molt_load_intrinsic_runtime"
 callable_arity = 2
 
 [[import]]
+name = "set_app_callable_resolver"
+type = 2
+runtime_name = "molt_set_app_callable_resolver"
+
+[[import]]
 name = "runtime_active_runtime"
 type = 0
 runtime_name = "molt_runtime_active_runtime"

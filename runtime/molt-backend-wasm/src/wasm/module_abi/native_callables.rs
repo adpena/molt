@@ -6,7 +6,7 @@ use crate::native_callable_abi::{
     NATIVE_CALLABLE_ABI_CHOICES, NativeCallableAbi, parse_native_callable_abi,
 };
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, STATIC_FUNC_TYPES, TypeSectionExt};
+use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, TypeSectionExt, static_func_type_idx};
 use crate::{OpIR, SimpleIR};
 
 pub(super) struct WasmNativeCallableImportEmission {
@@ -302,23 +302,17 @@ fn static_native_callable_type_idx(abi: NativeCallableAbi) -> u32 {
 
 fn static_native_callable_type_idx_opt(abi: NativeCallableAbi) -> Option<u32> {
     let signature = abi.wasm_signature();
-    STATIC_FUNC_TYPES
+    let params = signature
+        .params
         .iter()
-        .position(|spec| {
-            spec.params.len() == signature.params.len()
-                && spec.results.len() == signature.results.len()
-                && spec
-                    .params
-                    .iter()
-                    .zip(signature.params.iter())
-                    .all(|(actual, expected)| val_type_matches(*expected, *actual))
-                && spec
-                    .results
-                    .iter()
-                    .zip(signature.results.iter())
-                    .all(|(actual, expected)| val_type_matches(*expected, *actual))
-        })
-        .map(|idx| idx as u32)
+        .map(|value| wasm_val_type(value, abi))
+        .collect::<Vec<_>>();
+    let results = signature
+        .results
+        .iter()
+        .map(|value| wasm_val_type(value, abi))
+        .collect::<Vec<_>>();
+    static_func_type_idx(&params, &results)
 }
 
 fn exact_native_callable_type_idx(
@@ -397,13 +391,6 @@ fn i64_params_to_i64_result_type_idx(
 }
 
 fn static_boxed_object_call_type_idx(arity: usize) -> Option<u32> {
-    STATIC_FUNC_TYPES
-        .iter()
-        .position(|spec| {
-            spec.params.len() == arity
-                && spec.params.iter().all(|ty| *ty == ValType::I64)
-                && spec.results.len() == 1
-                && spec.results[0] == ValType::I64
-        })
-        .map(|idx| idx as u32)
+    let params = vec![ValType::I64; arity];
+    static_func_type_idx(&params, &[ValType::I64])
 }

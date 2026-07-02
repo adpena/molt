@@ -234,7 +234,6 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
             else:
                 runtime_name = BUILTIN_FUNC_SPECS[func_id].runtime
-                callee = self._emit_runtime_function(runtime_name, 3)
                 arg_vals: list[MoltValue] = []
                 for expr in node.args:
                     arg_val = self.visit(expr)
@@ -248,12 +247,9 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 key_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_val))
                 default_val = self._emit_missing_value()
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC",
-                        args=[callee, args_tuple, key_val, default_val],
-                        result=res,
-                    )
+                res = self._emit_runtime_call(
+                    runtime_name,
+                    [args_tuple, key_val, default_val],
                 )
             return res
         if func_id == "sorted":

@@ -358,7 +358,7 @@ fn preserved_runtime_call_rejects_name_only_symbol_drift() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     backend
-        .runtime_intrinsic_symbols
+        .runtime_callable_symbols
         .insert("molt_unclassified_runtime_symbol".to_string());
 
     let err = lower_preserved_kind_ir(&backend, "unclassified_runtime_symbol", 2, true, None)
@@ -1585,7 +1585,7 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
         ("spawn", 1, "molt_spawn"),
     ];
     for &(_, _, sym) in cases {
-        backend.runtime_intrinsic_symbols.insert(sym.to_string());
+        backend.runtime_callable_symbols.insert(sym.to_string());
     }
     for &(kind, nops, sym) in cases {
         let ir = lower_preserved_kind_ir(&backend, kind, nops, false, None).unwrap_or_else(|e| {
@@ -1630,7 +1630,7 @@ fn lower_preserved_void_runtime_result_shape_fails_loud() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     backend
-        .runtime_intrinsic_symbols
+        .runtime_callable_symbols
         .insert("molt_spawn".to_string());
     let err = lower_preserved_kind_ir(&backend, "spawn", 1, true, None)
         .expect_err("void preserved runtime ops must not bind a boxed result");
@@ -1812,7 +1812,7 @@ fn lower_preserved_list_pop_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     backend
-        .runtime_intrinsic_symbols
+        .runtime_callable_symbols
         .insert("molt_list_pop".to_string());
     let ir = lower_preserved_kind_ir(&backend, "list_pop", 2, true, None)
         .expect("list_pop must lower through the boxed runtime call");

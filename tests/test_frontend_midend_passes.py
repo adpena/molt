@@ -47,6 +47,21 @@ def _module_attr_reads_named(ops: list[dict], name: str) -> list[dict]:
     ]
 
 
+def _module_global_reads_named(ops: list[dict], name: str) -> list[dict]:
+    const_strings = {
+        op["out"]: op["s_value"]
+        for op in ops
+        if op.get("kind") == "const_str" and "out" in op
+    }
+    return [
+        op
+        for op in ops
+        if op.get("kind") == "module_get_global"
+        and len(op.get("args") or []) >= 2
+        and const_strings.get(op["args"][1]) == name
+    ]
+
+
 def test_bound_local_serializes_for_all_absorbing_container_constructors() -> None:
     constructors = {
         "LIST_NEW": "list_new",
@@ -1735,6 +1750,66 @@ for i in range(3):
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
     assert _module_attr_reads_named(ops, "Point") == []
+
+
+def test_module_control_flow_name_reads_use_load_global_semantics() -> None:
+    source = """
+try:
+    __NUMPY_SETUP__
+except NameError:
+    __NUMPY_SETUP__ = False
+
+if __NUMPY_SETUP__:
+    state = "setup"
+else:
+    state = "runtime"
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert _module_global_reads_named(ops, "__NUMPY_SETUP__")
+    assert _module_attr_reads_named(ops, "__NUMPY_SETUP__") == []
+
+
+def test_module_control_flow_named_calls_use_load_global_semantics() -> None:
+    source = """
+flag = False
+if flag:
+    len = 7
+
+value = len(globals())
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert _module_global_reads_named(ops, "len")
+    assert _module_attr_reads_named(ops, "len") == []
+    assert [op for op in ops if op.get("kind") == "len"] == []
+
+
+def test_module_control_flow_class_calls_use_load_global_semantics() -> None:
+    source = """
+flag = False
+if flag:
+    class C:
+        pass
+
+try:
+    C()
+except NameError:
+    marker = 1
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert _module_global_reads_named(ops, "C")
+    assert _module_attr_reads_named(ops, "C") == []
 
 
 def test_static_class_allocation_carries_result_class_type() -> None:

@@ -1,11 +1,9 @@
-//! WASM export anchors for the CPython ABI C variadic shim family.
+//! WASM export anchors for the CPython ABI surface.
 //!
-//! The symbols listed here are implemented by `molt-cpython-abi`'s
-//! `shims/pyarg_variadic.c`.  Source-recompiled native extensions import them
-//! from the split runtime, so the runtime must retain the C shim archive even
-//! when no Rust code calls the functions directly.  Keep this as an anchor over
-//! the shared ABI implementation rather than reimplementing variadic CPython
-//! behavior in Rust.
+//! Source-recompiled native extensions import raw CPython C-API symbols from
+//! the split runtime. The implementation remains owned by `molt-cpython-abi`
+//! and its C shim archive; this module only keeps the exact requested symbols
+//! reachable so the WASM linker can publish them when the build asks for them.
 
 #![allow(dead_code, improper_ctypes)]
 
@@ -69,8 +67,20 @@ static MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS: [unsafe extern "C" fn(); 24] = 
     PySys_WriteStderr,
 ];
 
+mod requested_exports {
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/molt_cpython_abi_requested_exports.rs"
+    ));
+}
+
+#[used]
+static MOLT_CPYTHON_ABI_WASM_EXPORT_ANCHOR_COUNT: extern "C" fn() -> usize =
+    molt_cpython_abi_wasm_export_anchor_count;
+
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_cpython_abi_variadic_export_anchor_count() -> usize {
+pub extern "C" fn molt_cpython_abi_wasm_export_anchor_count() -> usize {
     core::hint::black_box(MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS.as_ptr());
     MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS.len()
+        + requested_exports::requested_export_anchor_count()
 }

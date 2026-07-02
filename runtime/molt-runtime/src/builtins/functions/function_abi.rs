@@ -5,6 +5,7 @@
 
 use super::wasm_callables_generated as wasm_callables;
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 #[derive(Copy, Clone)]
 struct NativeCallableTarget(*const ());
@@ -305,6 +306,292 @@ fn molt_func_new_builtin_raw_impl(
     bits
 }
 
+pub(crate) fn python_builtin_function_bits(
+    _py: &crate::PyToken<'_>,
+    python_name: &str,
+) -> Option<u64> {
+    let info = wasm_callables::python_builtin_function_info(python_name)?;
+    let slots = python_builtin_function_slots(_py);
+    let slot = slots.get(info.index)?;
+    let cached_bits = slot.load(AtomicOrdering::Acquire);
+    if cached_bits != 0 {
+        inc_ref_bits(_py, cached_bits);
+        return Some(cached_bits);
+    }
+    let bits = alloc_python_builtin_function_bits(_py, info)?;
+    match slot.compare_exchange(0, bits, AtomicOrdering::AcqRel, AtomicOrdering::Acquire) {
+        Ok(_) => {
+            inc_ref_bits(_py, bits);
+            Some(bits)
+        }
+        Err(existing_bits) => {
+            dec_ref_bits(_py, bits);
+            if existing_bits == 0 {
+                return None;
+            }
+            inc_ref_bits(_py, existing_bits);
+            Some(existing_bits)
+        }
+    }
+}
+
+pub(crate) fn python_builtin_functions_clear_runtime_state(
+    _py: &crate::PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) {
+    if let Some(slots) = state.python_builtin_function_slots.get() {
+        let slot_refs: Vec<&AtomicU64> = slots.iter().collect();
+        crate::state::cache::clear_atomic_slots(_py, &slot_refs);
+    }
+}
+
+fn python_builtin_function_slots(_py: &crate::PyToken<'_>) -> &'static [AtomicU64] {
+    crate::runtime_state(_py)
+        .python_builtin_function_slots
+        .get_or_init(|| {
+            (0..wasm_callables::PYTHON_BUILTIN_FUNCTION_COUNT)
+                .map(|_| AtomicU64::new(0))
+                .collect()
+        })
+        .as_slice()
+}
+
+fn alloc_python_builtin_function_bits(
+    _py: &crate::PyToken<'_>,
+    info: wasm_callables::PythonBuiltinFunctionInfo,
+) -> Option<u64> {
+    let fn_ptr = python_builtin_function_target(info.runtime_name)?;
+    let ptr = alloc_runtime_function_obj(_py, fn_ptr, info.arity);
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+        object_set_class_bits(_py, ptr, builtin_bits);
+        inc_ref_bits(_py, builtin_bits);
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    if !init_python_builtin_function_metadata(_py, bits, info) {
+        dec_ref_bits(_py, bits);
+        return None;
+    }
+    Some(bits)
+}
+
+fn python_builtin_function_target(runtime_name: &str) -> Option<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::intrinsics::registry::try_app_resolve_runtime_callable(runtime_name)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let raw_ptr = wasm_callables::python_builtin_function_target_ptr(runtime_name)?;
+        Some(runtime_fn_addr(runtime_name, raw_ptr))
+    }
+}
+
+fn init_python_builtin_function_metadata(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+    info: wasm_callables::PythonBuiltinFunctionInfo,
+) -> bool {
+    let Some(metadata_bits) = alloc_python_builtin_metadata_tuple_bits(_py, info) else {
+        return false;
+    };
+    let bind_kind_bits = info
+        .bind_kind
+        .map(|kind| MoltObject::from_int(kind).bits())
+        .unwrap_or_else(|| MoltObject::none().bits());
+    let result = molt_function_init_metadata_packed(
+        func_bits,
+        metadata_bits,
+        MoltObject::none().bits(),
+        bind_kind_bits,
+    );
+    dec_ref_bits(_py, metadata_bits);
+    obj_from_bits(result).is_none() && !exception_pending(_py)
+}
+
+struct OwnedMetadataBits<'a, 'py> {
+    py: &'a crate::PyToken<'py>,
+    bits: Vec<u64>,
+}
+
+impl<'a, 'py> OwnedMetadataBits<'a, 'py> {
+    fn new(py: &'a crate::PyToken<'py>) -> Self {
+        Self {
+            py,
+            bits: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, bits: u64) {
+        self.bits.push(bits);
+    }
+}
+
+impl Drop for OwnedMetadataBits<'_, '_> {
+    fn drop(&mut self) {
+        for bits in self.bits.drain(..) {
+            dec_ref_bits(self.py, bits);
+        }
+    }
+}
+
+fn alloc_python_builtin_metadata_tuple_bits(
+    _py: &crate::PyToken<'_>,
+    info: wasm_callables::PythonBuiltinFunctionInfo,
+) -> Option<u64> {
+    let mut owned = OwnedMetadataBits::new(_py);
+
+    let name_bits = alloc_owned_static_str_bits(_py, info.python_name, &mut owned)?;
+    let qualname_bits = alloc_owned_static_str_bits(_py, info.python_name, &mut owned)?;
+    let module_bits = alloc_owned_static_str_bits(_py, "builtins", &mut owned)?;
+    let arg_names_bits = alloc_static_str_tuple_bits(
+        _py,
+        info.posonly_params
+            .iter()
+            .chain(info.pos_or_kw_params.iter())
+            .copied(),
+        &mut owned,
+    )?;
+    let posonly_bits = MoltObject::from_int(info.posonly_params.len() as i64).bits();
+    let kwonly_bits =
+        alloc_static_str_tuple_bits(_py, info.kwonly_params.iter().copied(), &mut owned)?;
+    let vararg_bits = alloc_optional_static_str_bits(_py, info.vararg, &mut owned)?;
+    let varkw_bits = alloc_optional_static_str_bits(_py, info.varkw, &mut owned)?;
+    let defaults_bits = alloc_generated_defaults_tuple_bits(_py, info.defaults, &mut owned)?;
+    let kwdefaults_bits = alloc_generated_kwdefaults_dict_bits(_py, info.kw_defaults, &mut owned)?;
+    let doc_bits = MoltObject::none().bits();
+    let metadata_ptr = alloc_tuple(
+        _py,
+        &[
+            name_bits,
+            qualname_bits,
+            module_bits,
+            arg_names_bits,
+            posonly_bits,
+            kwonly_bits,
+            vararg_bits,
+            varkw_bits,
+            defaults_bits,
+            kwdefaults_bits,
+            doc_bits,
+        ],
+    );
+    if metadata_ptr.is_null() {
+        None
+    } else {
+        Some(MoltObject::from_ptr(metadata_ptr).bits())
+    }
+}
+
+fn alloc_owned_static_str_bits(
+    _py: &crate::PyToken<'_>,
+    value: &str,
+    owned: &mut OwnedMetadataBits<'_, '_>,
+) -> Option<u64> {
+    let ptr = alloc_string(_py, value.as_bytes());
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    owned.push(bits);
+    Some(bits)
+}
+
+fn alloc_optional_static_str_bits(
+    _py: &crate::PyToken<'_>,
+    value: Option<&'static str>,
+    owned: &mut OwnedMetadataBits<'_, '_>,
+) -> Option<u64> {
+    match value {
+        Some(value) => alloc_owned_static_str_bits(_py, value, owned),
+        None => Some(MoltObject::none().bits()),
+    }
+}
+
+fn alloc_static_str_tuple_bits<'a>(
+    _py: &crate::PyToken<'_>,
+    values: impl Iterator<Item = &'a str>,
+    owned: &mut OwnedMetadataBits<'_, '_>,
+) -> Option<u64> {
+    let mut elems: Vec<u64> = Vec::new();
+    for value in values {
+        elems.push(alloc_owned_static_str_bits(_py, value, owned)?);
+    }
+    let ptr = alloc_tuple(_py, &elems);
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    owned.push(bits);
+    Some(bits)
+}
+
+fn generated_default_value_bits(
+    _py: &crate::PyToken<'_>,
+    value: wasm_callables::GeneratedBuiltinDefaultValue,
+    owned: &mut OwnedMetadataBits<'_, '_>,
+) -> Option<u64> {
+    match value {
+        wasm_callables::GeneratedBuiltinDefaultValue::Missing => Some(missing_bits(_py)),
+        wasm_callables::GeneratedBuiltinDefaultValue::None => Some(MoltObject::none().bits()),
+        wasm_callables::GeneratedBuiltinDefaultValue::Bool(value) => {
+            Some(MoltObject::from_bool(value).bits())
+        }
+        wasm_callables::GeneratedBuiltinDefaultValue::Int(value) => {
+            Some(MoltObject::from_int(value).bits())
+        }
+        wasm_callables::GeneratedBuiltinDefaultValue::Str(value) => {
+            alloc_owned_static_str_bits(_py, value, owned)
+        }
+    }
+}
+
+fn alloc_generated_defaults_tuple_bits(
+    _py: &crate::PyToken<'_>,
+    defaults: &[wasm_callables::GeneratedBuiltinDefaultValue],
+    owned: &mut OwnedMetadataBits<'_, '_>,
+) -> Option<u64> {
+    if defaults.is_empty() {
+        return Some(MoltObject::none().bits());
+    }
+    let mut elems: Vec<u64> = Vec::with_capacity(defaults.len());
+    for value in defaults {
+        elems.push(generated_default_value_bits(_py, *value, owned)?);
+    }
+    let ptr = alloc_tuple(_py, &elems);
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    owned.push(bits);
+    Some(bits)
+}
+
+fn alloc_generated_kwdefaults_dict_bits(
+    _py: &crate::PyToken<'_>,
+    defaults: &[(&'static str, wasm_callables::GeneratedBuiltinDefaultValue)],
+    owned: &mut OwnedMetadataBits<'_, '_>,
+) -> Option<u64> {
+    if defaults.is_empty() {
+        return Some(MoltObject::none().bits());
+    }
+    let mut pairs: Vec<u64> = Vec::with_capacity(defaults.len() * 2);
+    for (name, value) in defaults {
+        pairs.push(alloc_owned_static_str_bits(_py, name, owned)?);
+        pairs.push(generated_default_value_bits(_py, *value, owned)?);
+    }
+    let ptr = alloc_dict_with_pairs(_py, &pairs);
+    if ptr.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    owned.push(bits);
+    Some(bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new_builtin_named(
     name_bits: u64,
@@ -317,14 +604,21 @@ pub extern "C" fn molt_func_new_builtin_named(
             std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
             Some("1")
         );
-        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
-            && let Some(func_bits) =
-                crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false)
-        {
-            if trace {
-                eprintln!("molt builtin_func named: resolved {}", name);
+        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) {
+            if let Some(func_bits) = python_builtin_function_bits(_py, &name) {
+                if trace {
+                    eprintln!("molt builtin_func named: resolved python builtin {}", name);
+                }
+                return func_bits;
             }
-            return func_bits;
+            if let Some(func_bits) =
+                crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false)
+            {
+                if trace {
+                    eprintln!("molt builtin_func named: resolved intrinsic {}", name);
+                }
+                return func_bits;
+            }
         }
         if trace {
             let name = string_obj_to_owned(obj_from_bits(name_bits))

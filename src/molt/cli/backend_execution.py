@@ -251,7 +251,7 @@ def _backend_binary_identity(backend_bin: Path) -> str:
 
     This mirrors the established staleness convention the codebase already uses
     for the per-function TIR cache (``backend_cache_dir_for`` salts its namespace
-    with the executable path + mtime) and the intrinsic-symbol sidecar
+    with the executable path + mtime) and the callable-symbol sidecar
     (size + mtime): the identity is the resolved path plus ``(mtime_ns, size)``.
     We intentionally use a stat-based stamp rather than a content hash -- hashing
     the multi-hundred-MB binary on every build would dominate cold-start cost,
@@ -1241,14 +1241,14 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough["MOLT_STDLIB_CACHE_MANIFEST"] = stdlib_object_manifest
     if stdlib_module_symbols_json:
         env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
-    # Per-app intrinsic resolver validation set: the file of intrinsic symbols the
+    # Per-app callable resolver validation set: the file of callable symbols the
     # linked runtime staticlib defines. Set in the ambient env once the runtime
-    # lib is ready (see `_stage_runtime_intrinsic_symbols_for_native_codegen`);
-    # forward it so the daemon's resolver never references an intrinsic absent
+    # lib is ready (see `_stage_runtime_callable_symbols_for_native_codegen`);
+    # forward it so the daemon's resolver never references a callable absent
     # from the staticlib.
-    runtime_intrinsic_symbols = os.environ.get("MOLT_RUNTIME_INTRINSIC_SYMBOLS")
-    if runtime_intrinsic_symbols:
-        env_passthrough["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = runtime_intrinsic_symbols
+    runtime_callable_symbols = os.environ.get("MOLT_RUNTIME_CALLABLE_SYMBOLS")
+    if runtime_callable_symbols:
+        env_passthrough["MOLT_RUNTIME_CALLABLE_SYMBOLS"] = runtime_callable_symbols
     if env_passthrough:
         payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)

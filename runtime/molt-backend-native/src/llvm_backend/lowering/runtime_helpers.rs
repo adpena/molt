@@ -30,7 +30,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             if op.operands.len() != arity || !op.results.is_empty() {
                 return false;
             }
-            if !self.backend.runtime_intrinsic_symbols.contains(symbol) {
+            if !self.backend.runtime_callable_symbols.contains(symbol) {
                 return false;
             }
             let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
@@ -47,7 +47,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
 
         let symbol = format!("molt_{kind}");
-        if !self.backend.runtime_intrinsic_symbols.contains(&symbol) {
+        if !self.backend.runtime_callable_symbols.contains(&symbol) {
             return false;
         }
         let Some(return_abi) = runtime_import_return_abi(&symbol, op.operands.len()) else {

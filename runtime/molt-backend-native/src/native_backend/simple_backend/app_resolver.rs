@@ -1,46 +1,46 @@
 use super::*;
 use crate::app_resolver_abi::{
     APP_RESOLVER_NAMES_SYMBOL, APP_RESOLVER_RECORD_BYTES, APP_RESOLVER_SYMBOL,
-    APP_RESOLVER_TABLE_SYMBOL, dump_intrinsic_manifest,
+    APP_RESOLVER_TABLE_SYMBOL, dump_app_callable_manifest,
 };
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
-    /// Emit the per-app intrinsic resolver `molt_app_resolve_intrinsic` into the
-    /// user object as a compact, relocated **data table** plus a small O(log n)
-    /// binary-search lookup, rather than a giant O(n) linear-scan function.
+    /// Emit the per-app callable resolver `molt_app_resolve_callable` into the
+    /// user object as a compact, relocated data table plus a small O(log n)
+    /// binary-search lookup.
     ///
     /// Layout (all `Local`, so the linker dead-strips them when the resolver
     /// itself is unreferenced  e.g. WASM builds  and keeps only this object's
     /// table otherwise):
     ///
-    /// * `molt_app_intrinsic_names`: the manifest names, sorted by unsigned-byte
+    /// * `molt_app_callable_names`: the manifest names, sorted by unsigned-byte
     ///   lexicographic order and concatenated (no separators).
-    /// * `molt_app_intrinsic_table`: N fixed-size 16-byte records, sorted to
+    /// * `molt_app_callable_table`: N fixed-size 16-byte records, sorted to
     ///   match the names blob: `[name_off: u32][name_len: u32][func_ptr: u64]`.
     ///   Each `func_ptr` slot carries a single pointer relocation
     ///   (`ARM64_RELOC_UNSIGNED` / `R_X86_64_64` / `R_AARCH64_ABS64` /
-    ///   `IMAGE_REL_AMD64_ADDR64`) to the intrinsic, emitted via
+    ///   `IMAGE_REL_AMD64_ADDR64`) to the callable, emitted via
     ///   `DataDescription::write_function_addr`. This is the portable, scalable
     ///   relocation form  the linker applies thousands of these without the
     ///   21-bit ADRP / branch-range pressure of thousands of `func_addr`
     ///   instructions packed into one oversized function (the failure mode that
     ///   corrupted the Mach-O header).
     ///
-    /// The intrinsic `FuncId`s are declared `Import` (reusing any declaration a
+    /// The callable `FuncId`s are declared `Import` (reusing any declaration a
     /// direct call already created), so the linker resolves the pointer relocs
-    /// against the runtime staticlib. Only manifest intrinsics are referenced, so
-    /// `-dead_strip` / `--gc-sections` still removes every unused intrinsic once
-    /// `resolve_symbol` / `resolve_core_symbol` are native-unreachable.
+    /// against the runtime staticlib. Only manifest callables are referenced, so
+    /// `-dead_strip` / `--gc-sections` still removes every unused callable once
+    /// monolithic fallback resolvers are native-unreachable.
     ///
     /// ABI: `extern "C" fn(name_ptr: i64, name_len: i64) -> i64`. Returns the
-    /// intrinsic function pointer as a `u64`, or 0 when the name is not in the
+    /// callable function pointer as a `u64`, or 0 when the name is not in the
     /// manifest.
     pub(in crate::native_backend::simple_backend) fn emit_app_resolver_function(
         &mut self,
         manifest_names: &BTreeSet<String>,
     ) {
-        dump_intrinsic_manifest(manifest_names);
+        dump_app_callable_manifest(manifest_names);
 
         // Declare the exported resolver: (i64 name_ptr, i64 name_len) -> i64.
         let mut sig = self.module.make_signature();
@@ -52,7 +52,7 @@ impl SimpleBackend {
             .declare_function(APP_RESOLVER_SYMBOL, Linkage::Export, &sig)
             .unwrap_or_else(|e| panic!("failed to declare {APP_RESOLVER_SYMBOL}: {e:?}"));
 
-        // Pre-resolve a FuncId for every manifest intrinsic, reusing any
+        // Pre-resolve a FuncId for every manifest callable, reusing any
         // declaration created by a direct call (so we never re-declare with a
         // conflicting signature). The signature only matters when the name was
         // not already declared; the address is taken via a pointer relocation and
@@ -73,7 +73,7 @@ impl SimpleBackend {
                 self.module
                     .declare_function(name, Linkage::Import, &canonical_sig)
                     .unwrap_or_else(|e| {
-                        panic!("app resolver: failed to declare intrinsic '{name}': {e:?}")
+                        panic!("app resolver: failed to declare callable '{name}': {e:?}")
                     })
             };
             entries.push((name.as_str(), func_id));
@@ -92,7 +92,7 @@ impl SimpleBackend {
             let bytes = name.as_bytes();
             assert!(
                 off <= u32::MAX as usize && bytes.len() <= u32::MAX as usize,
-                "app resolver: intrinsic name table exceeds u32 addressing"
+                "app resolver: callable name table exceeds u32 addressing"
             );
             names_blob.extend_from_slice(bytes);
             name_spans.push((off as u32, bytes.len() as u32));

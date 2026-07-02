@@ -2,13 +2,14 @@ use std::collections::BTreeSet;
 
 use wasm_encoder::{EntityType, ExportKind, MemoryType};
 
+use super::runtime_surface::effective_manifest_intrinsic_names;
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::GPU_INTRINSIC_MANIFEST_NAMES;
 use crate::wasm_data::DataSegmentRef;
 
 pub(super) struct WasmModuleHostSurface {
     pub(super) manifest_segment: DataSegmentRef,
     pub(super) manifest_len: usize,
+    pub(super) intrinsic_manifest_names: BTreeSet<String>,
     pub(super) call_func_spill_offset: u32,
     pub(super) class_def_spill_offset: u32,
     pub(super) const_str_scratch_segment: DataSegmentRef,
@@ -38,15 +39,11 @@ impl WasmBackend {
     pub(super) fn prepare_module_host_surface(
         &mut self,
         reloc_enabled: bool,
-        mut manifest_intrinsic_names: BTreeSet<String>,
+        manifest_intrinsic_names: BTreeSet<String>,
         max_call_arity: usize,
         max_class_def_words: usize,
     ) -> WasmModuleHostSurface {
-        manifest_intrinsic_names.extend(
-            GPU_INTRINSIC_MANIFEST_NAMES
-                .iter()
-                .map(|name| (*name).to_string()),
-        );
+        let manifest_intrinsic_names = effective_manifest_intrinsic_names(manifest_intrinsic_names);
         let manifest_bytes: Vec<u8> = {
             let mut buf = Vec::new();
             for (i, name) in manifest_intrinsic_names.iter().enumerate() {
@@ -79,6 +76,7 @@ impl WasmBackend {
         WasmModuleHostSurface {
             manifest_segment,
             manifest_len,
+            intrinsic_manifest_names: manifest_intrinsic_names,
             call_func_spill_offset: spill_segment.offset,
             class_def_spill_offset: class_def_segment.offset,
             const_str_scratch_segment,

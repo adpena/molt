@@ -17,7 +17,7 @@ impl SimpleBackend {
         assert_requested_llvm_backend_available(use_llvm);
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
         let emit_resolver_here = prepared.emit_resolver_here;
-        let app_intrinsic_manifest = prepared.app_intrinsic_manifest;
+        let app_callable_manifest = prepared.app_callable_manifest;
         let pre_split_task_kinds = prepared.pre_split_task_kinds;
         let pre_split_task_closure_sizes = prepared.pre_split_task_closure_sizes;
         //  LLVM backend dispatch
@@ -201,18 +201,17 @@ impl SimpleBackend {
                     .unwrap_or_else(|err| panic!("{err}"));
             }
 
-            //  Per-app intrinsic resolver
+            //  Per-app callable resolver
             // The LLVM-compiled application object must carry
-            // `molt_app_resolve_intrinsic` (referenced by the CLI's main stub and
+            // `molt_app_resolve_callable` (referenced by the CLI's main stub and
             // registered with the runtime before `molt_runtime_init`) exactly
-            // like the Cranelift object. Emitted into the LLVM module here, after
-            // every function is lowered, so the manifest intrinsics already exist
-            // as declarations whose addresses the resolver table takes. Gated on
-            // `emit_resolver_here` so batch/stdlib-cache LLVM objects (which set
-            // `emit_app_intrinsic_resolver = false`) never emit a duplicate
-            // `_molt_app_resolve_intrinsic` symbol.
+            // like the Cranelift object. Emitted into the LLVM module here,
+            // after every function is lowered, so the callable manifest already
+            // names declarations whose addresses the resolver table takes. Gated
+            // on `emit_resolver_here` so batch/stdlib-cache LLVM objects never
+            // emit a duplicate `_molt_app_resolve_callable` symbol.
             if emit_resolver_here {
-                llvm.emit_app_resolver_function(&app_intrinsic_manifest);
+                llvm.emit_app_resolver_function(&app_callable_manifest);
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when
@@ -473,23 +472,23 @@ impl SimpleBackend {
                 }
             }
         }
-        //  Per-app intrinsic resolver
-        // Emit `molt_app_resolve_intrinsic` AFTER the main flush so every
-        // intrinsic FuncId created by a direct call already exists in the module
-        // (reused via `get_name`); only manifest intrinsics are address-taken
+        //  Per-app callable resolver
+        // Emit `molt_app_resolve_callable` AFTER the main flush so every runtime
+        // callable FuncId created by a direct call already exists in the module
+        // (reused via `get_name`); only manifest callables are address-taken
         // here. The main stub registers this resolver before `molt_runtime_init`,
-        // so the runtime resolves intrinsics through it instead of the
-        // staticlib's `resolve_symbol`, keeping `resolve_symbol`/
-        // `resolve_core_symbol` native-unreachable for dead-stripping.
+        // so the runtime resolves dynamic callables through it instead of
+        // monolithic staticlib resolvers, keeping wide resolver exports
+        // native-unreachable for dead-stripping.
         //
         // Emit it ONCE per final binary, into the designated main application
-        // object (`emit_app_intrinsic_resolver`). Stdlib-cache batch objects and
+        // object (`emit_app_callable_resolver`). Stdlib-cache batch objects and
         // all-but-one program batch set this `false`, so there is no duplicate
-        // `_molt_app_resolve_intrinsic` symbol at link. The threaded manifest
-        // covers every name-resolved intrinsic across all objects, including
+        // `_molt_app_resolve_callable` symbol at link. The threaded manifest
+        // covers every name-resolved callable across all objects, including
         // stdlib wrappers compiled into the separate stdlib cache object.
         if emit_resolver_here {
-            self.emit_app_resolver_function(&app_intrinsic_manifest);
+            self.emit_app_resolver_function(&app_callable_manifest);
         }
         //  Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site

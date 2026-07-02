@@ -143,7 +143,7 @@ class FunctionVisitorMixin(_MixinBase):
             self.module_global_mutations.update(new_globals)
             # Evict cached locals for names declared `global` in this
             # function so that subsequent module-level reads go through
-            # module_get_attr and see the mutation.
+            # module_get_global and see the mutation.
             for gname in new_globals:
                 self.locals.pop(gname, None)
         is_generator = function_contains_yield(node)

@@ -7,6 +7,7 @@ use crate::builtins::attributes::attributes_clear_runtime_state;
 use crate::builtins::concurrent::concurrent_clear_runtime_state;
 use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::copy_mod::copy_memo_clear_state;
+use crate::builtins::functions::python_builtin_functions_clear_runtime_state;
 use crate::builtins::functools::functools_clear_runtime_state;
 use crate::builtins::io::io_clear_runtime_state;
 use crate::builtins::modules::modules_clear_runtime_state;
@@ -143,6 +144,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     functools_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_operator_runtime_state");
     operator_clear_runtime_state(_py, state);
+    trace_shutdown("process_exit_clear_python_builtin_function_cache");
+    python_builtin_functions_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_attributes_runtime_state");
     attributes_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_types_runtime_state");
@@ -256,6 +259,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_method_cache(_py, state);
     trace_shutdown("clear_runtime_static_names");
     clear_runtime_static_names(_py, state);
+    trace_shutdown("clear_python_builtin_function_cache");
+    python_builtin_functions_clear_runtime_state(_py, state);
     trace_shutdown("clear_call_bind_ic_cache");
     clear_call_bind_ic_cache();
     trace_shutdown("clear_method_ic_cache");

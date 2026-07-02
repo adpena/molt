@@ -47,6 +47,7 @@ from wasm_link_format import (
     _write_string,
     _write_varuint,
 )
+from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 
 
 _STANDARD_SECTION_ORDER = {
@@ -63,6 +64,8 @@ _STANDARD_SECTION_ORDER = {
     10: 11,  # code
     11: 12,  # data
 }
+
+_CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
 
 def _append_table_ref_elements(
@@ -850,11 +853,16 @@ def _neutralize_linked_table_init(data: bytes) -> bytes | None:
 
 
 def _runtime_import_rewrite_target(
-    name: str, runtime_exports: set[str]
+    name: str, runtime_exports: set[str], *, split_runtime: bool = False
 ) -> tuple[str | None, bool]:
     primitive_class = WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
-    if primitive_class == "molt_cpython_abi_link_import":
-        return name, name not in runtime_exports
+    if primitive_class == _CPYTHON_ABI_LINK_IMPORT_CLASS:
+        export_name = (
+            wasm_split_runtime_export_name_for_import(name) if split_runtime else name
+        )
+        if export_name is None:
+            return None, False
+        return export_name, export_name not in runtime_exports
     if name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS:
         return None, False
     export_name = wasm_runtime_export_name(name)
@@ -873,6 +881,7 @@ def _rewrite_runtime_imports_in_module(
     source_module: str,
     target_module: str,
     runtime_exports: set[str],
+    split_runtime: bool = False,
 ) -> tuple[bytes | None, list[str]]:
     sections = _parse_sections(data)
     force_exports: list[str] = []
@@ -901,7 +910,7 @@ def _rewrite_runtime_imports_in_module(
             new_name = name
             if module == source_module and kind == 0:
                 target_name, force_export = _runtime_import_rewrite_target(
-                    name, runtime_exports
+                    name, runtime_exports, split_runtime=split_runtime
                 )
                 if target_name is not None:
                     new_module = target_module
@@ -926,6 +935,8 @@ def _rewrite_native_runtime_imports(
     native_objects: tuple[Path, ...],
     runtime_exports: set[str],
     temp_dir: tempfile.TemporaryDirectory,
+    *,
+    split_runtime: bool = False,
 ) -> tuple[tuple[Path, ...], list[str]]:
     """Rewrite native-object Molt ABI imports from ``env`` to ``molt_runtime``.
 
@@ -945,6 +956,7 @@ def _rewrite_native_runtime_imports(
                 source_module="env",
                 target_module="molt_runtime",
                 runtime_exports=runtime_exports,
+                split_runtime=split_runtime,
             )
         except ValueError:
             rewritten_paths.append(native_object)
