@@ -591,6 +591,75 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
     assert str(summary_path) in out
 
 
+def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    log_path.write_text(
+        "proof_queue run_id=active-run\n"
+        " done\n",
+        encoding="utf-8",
+    )
+    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "child_process": None,
+                "returncode": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == 99_001)
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="prove prune follows stale diagnosis",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm-build",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        guard_pid=99_001,
+        started_at=proof_queue._utc_now(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "stale active-run" in out
+    assert "pruned=1" in out
+    assert _rows(db)[0]["status"] == "stale"
+
+
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
