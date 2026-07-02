@@ -61,6 +61,12 @@ DEFAULT_EDGE_KIND = "depends_on"
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
+STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
+    {
+        "running-proof-child-missing",
+        "running-proof-launch-summary-stale",
+    }
+)
 STATIC_PYMOD_EXEC_RE = re.compile(
     r"ImportError:\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
@@ -1532,6 +1538,13 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
     return diagnostics
+
+
+def _has_stale_running_diagnostic(row: sqlite3.Row) -> bool:
+    return any(
+        diagnostic.get("signal_id") in STALE_RUNNING_DIAGNOSTIC_IDS
+        for diagnostic in _run_diagnostics(row)
+    )
 
 
 def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | None:
@@ -3103,8 +3116,11 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
     )
     pruned = 0
     for row in rows:
+        if row["status"] == "queued":
+            continue
         pid = row["guard_pid"]
-        if row["status"] == "queued" or (pid is not None and _pid_alive(int(pid))):
+        guard_alive = pid is not None and _pid_alive(int(pid))
+        if guard_alive and not _has_stale_running_diagnostic(row):
             continue
         _update_run(
             conn,
