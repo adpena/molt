@@ -76,11 +76,20 @@ impl WasmBackend {
 
         let table_import_wrappers =
             poll_table.emit_import_wrappers(self, reloc_enabled, user_type_map);
-        let mut table_indices = poll_table.initial_table_indices(
-            &table_import_wrappers,
-            &self.import_ids,
-            sentinel_func_idx,
-        );
+        // Slot-addressed table construction: every region writes its entries at
+        // the arithmetic slot the rest of the pipeline (resolver metadata,
+        // trampoline maps, manifest, host) uses. Positional pushes are banned —
+        // a push-order/arithmetic mismatch silently rebinds callable slots
+        // (observed as the app-callable-resolver executing the wrong runtime
+        // function). Double writes and unwritten slots fail the build loudly.
+        let mut slots = WasmCallableTableSlots::new(table_len);
+        for (slot, func_index) in poll_table
+            .initial_table_indices(&table_import_wrappers, &self.import_ids, sentinel_func_idx)
+            .into_iter()
+            .enumerate()
+        {
+            slots.set(slot as u32, func_index, "poll table prefix");
+        }
         let mut func_to_table_idx = BTreeMap::new();
         let mut func_to_index = BTreeMap::new();
         func_to_index.insert(
@@ -142,10 +151,13 @@ impl WasmBackend {
                 reserved_runtime_callable_table_start + spec.index,
             );
             func_to_index.insert(runtime_name, direct_target_idx);
-            table_indices.push(direct_target_idx);
+            slots.set(
+                reserved_runtime_callable_table_start + spec.index,
+                direct_target_idx,
+                spec.runtime_name,
+            );
         }
 
-        let mut compact_builtin_entries: Vec<u32> = Vec::new();
         let mut compact_slot = 0u32;
         for callable in runtime_callable_plan.compact_builtin_runtime_callables() {
             let runtime_key = callable.runtime_name.clone();
@@ -153,7 +165,7 @@ impl WasmBackend {
             func_to_table_idx.insert(runtime_key.clone(), idx);
             let target_index = if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key)
             {
-                func_to_index.insert(runtime_key, *wrapper_idx);
+                func_to_index.insert(runtime_key.clone(), *wrapper_idx);
                 *wrapper_idx
             } else {
                 let import_idx = self
@@ -166,10 +178,10 @@ impl WasmBackend {
                 } else {
                     import_idx
                 };
-                func_to_index.insert(runtime_key, safe);
+                func_to_index.insert(runtime_key.clone(), safe);
                 safe
             };
-            compact_builtin_entries.push(target_index);
+            slots.set(idx, target_index, &runtime_key);
             compact_slot += 1;
         }
         debug_assert_eq!(
@@ -214,7 +226,8 @@ impl WasmBackend {
                     + reserved_runtime_trampoline_func_offset;
                 reserved_runtime_trampoline_func_offset += 1;
                 push_trampoline_entry(
-                    &mut table_indices,
+                    &mut slots,
+                    trampoline_table_idx,
                     &mut trampoline_entries,
                     WasmCallableTrampolineEntry {
                         name: runtime_name,
@@ -232,17 +245,14 @@ impl WasmBackend {
                     },
                 );
             } else {
-                table_indices.push(sentinel_func_idx);
+                slots.set(trampoline_table_idx, sentinel_func_idx, spec.runtime_name);
             }
-        }
-        for target_index in &compact_builtin_entries {
-            table_indices.push(*target_index);
         }
         let mut app_callable_resolver = None;
         if let Some(resolver_func_index) = app_callable_resolver_func_index {
             let resolver_slot = app_callable_resolver_table_start;
             let resolver_table_index = table_base + resolver_slot;
-            table_indices.push(resolver_func_index);
+            slots.set(resolver_slot, resolver_func_index, "app callable resolver");
             let mut entries = Vec::new();
             for (idx, runtime_name) in app_callable_resolver_names.iter().enumerate() {
                 let import = runtime_callable_import(runtime_name).unwrap_or_else(|| {
@@ -253,7 +263,7 @@ impl WasmBackend {
                     panic!("app callable resolver import unexpectedly stripped for {runtime_name}");
                 }
                 let table_slot = app_callable_resolver_table_start + 1 + idx as u32;
-                table_indices.push(import_idx);
+                slots.set(table_slot, import_idx, runtime_name);
                 entries.push(super::WasmAppCallableResolverEntry {
                     name: runtime_name.clone(),
                     table_index: table_base + table_slot,
@@ -291,7 +301,8 @@ impl WasmBackend {
                 .get(name)
                 .unwrap_or_else(|| panic!("builtin trampoline table slot missing for {name}"));
             push_trampoline_entry(
-                &mut table_indices,
+                &mut slots,
+                idx,
                 &mut trampoline_entries,
                 WasmCallableTrampolineEntry {
                     name: name.clone(),
@@ -313,7 +324,7 @@ impl WasmBackend {
             let idx = user_func_table_start + i as u32;
             func_to_table_idx.insert(func_ir.name.clone(), idx);
             func_to_index.insert(func_ir.name.clone(), user_func_start + i as u32);
-            table_indices.push(user_func_start + i as u32);
+            slots.set(idx, user_func_start + i as u32, &func_ir.name);
         }
         for (i, func_ir) in ir.functions.iter().enumerate() {
             let idx = user_trampoline_table_start + i as u32;
@@ -358,7 +369,8 @@ impl WasmBackend {
                 None
             };
             push_trampoline_entry(
-                &mut table_indices,
+                &mut slots,
+                idx,
                 &mut trampoline_entries,
                 WasmCallableTrampolineEntry {
                     name: func_ir.name.clone(),
@@ -376,6 +388,8 @@ impl WasmBackend {
                 },
             );
         }
+
+        let table_indices = slots.finish();
 
         if let Ok(raw_slot) = std::env::var("MOLT_DEBUG_WASM_TABLE_SLOT")
             && let Ok(target_slot) = raw_slot.parse::<u32>()
@@ -430,12 +444,67 @@ impl WasmBackend {
 }
 
 fn push_trampoline_entry(
-    table_indices: &mut Vec<u32>,
+    slots: &mut WasmCallableTableSlots,
+    trampoline_slot: u32,
     trampoline_entries: &mut Vec<WasmCallableTrampolineEntry>,
     entry: WasmCallableTrampolineEntry,
 ) {
-    table_indices.push(entry.expected_func_index);
+    slots.set(trampoline_slot, entry.expected_func_index, &entry.name);
     trampoline_entries.push(entry);
+}
+
+/// Slot-addressed callable-table builder.
+///
+/// The callable-table layout has exactly one authority: the arithmetic slot
+/// numbers consumed by the resolver metadata, trampoline maps, host manifest,
+/// and `molt_table_init`/`__molt_table_ref_*` publication. Every region writes
+/// its entries at those slots; the element/table content can therefore never
+/// drift from the published numbering. Writing a slot twice, writing outside
+/// the table, or leaving a slot unwritten is a layout bug and fails the build
+/// loudly.
+struct WasmCallableTableSlots {
+    slots: Vec<Option<u32>>,
+}
+
+impl WasmCallableTableSlots {
+    fn new(table_len: u32) -> Self {
+        Self {
+            slots: vec![None; table_len as usize],
+        }
+    }
+
+    fn set(&mut self, slot: u32, func_index: u32, owner: &str) {
+        let len = self.slots.len();
+        let cell = self.slots.get_mut(slot as usize).unwrap_or_else(|| {
+            panic!(
+                "wasm callable table slot {slot} for {owner} is outside the \
+                 planned table length {len}"
+            )
+        });
+        if let Some(existing) = cell {
+            panic!(
+                "wasm callable table slot {slot} written twice: {owner} \
+                 (function index {func_index}) collides with function index \
+                 {existing}; slot regions must tile the table exactly once"
+            );
+        }
+        *cell = Some(func_index);
+    }
+
+    fn finish(self) -> Vec<u32> {
+        self.slots
+            .into_iter()
+            .enumerate()
+            .map(|(slot, cell)| {
+                cell.unwrap_or_else(|| {
+                    panic!(
+                        "wasm callable table slot {slot} was never written; \
+                         slot regions must tile the table exactly once"
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 fn app_callable_resolver_names(
@@ -450,6 +519,44 @@ fn app_callable_resolver_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callable_table_slots_are_write_order_independent() {
+        // Regression shape: the app-callable-resolver region used to be
+        // pushed positionally BEFORE the compact-builtin trampolines while
+        // the arithmetic layout places it after them, shifting every
+        // resolver slot by the trampoline count. Slot-addressed writes make
+        // source order irrelevant.
+        let mut slots = WasmCallableTableSlots::new(4);
+        slots.set(2, 200, "resolver");
+        slots.set(3, 300, "resolver entry");
+        slots.set(0, 100, "compact trampoline 0");
+        slots.set(1, 101, "compact trampoline 1");
+        assert_eq!(slots.finish(), vec![100, 101, 200, 300]);
+    }
+
+    #[test]
+    #[should_panic(expected = "written twice")]
+    fn callable_table_slots_reject_double_writes() {
+        let mut slots = WasmCallableTableSlots::new(2);
+        slots.set(1, 7, "first owner");
+        slots.set(1, 8, "second owner");
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the planned table length")]
+    fn callable_table_slots_reject_out_of_range_writes() {
+        let mut slots = WasmCallableTableSlots::new(2);
+        slots.set(2, 7, "overflow owner");
+    }
+
+    #[test]
+    #[should_panic(expected = "never written")]
+    fn callable_table_slots_reject_unwritten_slots() {
+        let mut slots = WasmCallableTableSlots::new(2);
+        slots.set(0, 7, "only slot");
+        let _ = slots.finish();
+    }
 
     #[test]
     fn app_callable_resolver_names_include_intrinsics_and_builtins() {
