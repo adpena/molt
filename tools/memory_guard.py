@@ -22,6 +22,30 @@ DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
 DEFAULT_FAST_START_DURATION_SEC = 2.0
 DEFAULT_TERMINATION_WAIT_SEC = 2.0
 DEFAULT_INCIDENT_SUMMARY_KEEP = 32
+# When one full process-table sample costs more than the configured poll
+# interval (Windows full-table snapshots under build load), polling
+# back-to-back pins a core on guard bookkeeping and steals wall time from the
+# guarded workload. Pacing bounds the sampling duty cycle at
+# 1 / (1 + factor) of loop wall time while never waiting less than the
+# configured poll interval, so cheap samplers (POSIX ps, test fakes) keep the
+# exact configured cadence.
+SAMPLE_COST_PACING_FACTOR = 2.0
+
+
+def paced_poll_interval(poll_interval: float, last_sample_cost_s: float) -> float:
+    """Return the next guard poll wait, paced by the last sampling cost.
+
+    Single authority for every guard/sentinel polling loop. The configured
+    ``poll_interval`` is always the floor, so behavior is identical whenever
+    sampling is at least as fast as the configured cadence; only genuinely
+    expensive samplers stretch the wait, bounding guard sampling overhead to
+    at most ``1 / (1 + SAMPLE_COST_PACING_FACTOR)`` of loop wall time.
+    """
+    if last_sample_cost_s <= 0.0:
+        return poll_interval
+    return max(poll_interval, SAMPLE_COST_PACING_FACTOR * last_sample_cost_s)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -701,6 +725,9 @@ def run_guarded(
     text: bool = True,
     encoding: str = "utf-8",
     errors: str = "replace",
+    running_summary_json: str | None = None,
+    running_summary_environ: Mapping[str, str] | None = None,
+    running_summary_max_global_rss_kb: int | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -836,6 +863,31 @@ def run_guarded(
             command=tuple(launch.command),
             started_at=_utc_timestamp(),
         )
+        if running_summary_json is not None:
+            try:
+                _write_running_summary_json(
+                    running_summary_json,
+                    command=command,
+                    cwd=cwd,
+                    environ=(
+                        running_summary_environ
+                        if running_summary_environ is not None
+                        else child_env
+                    ),
+                    max_rss_kb=max_rss_kb,
+                    max_total_rss_kb=max_total_rss_kb,
+                    max_global_rss_kb=running_summary_max_global_rss_kb,
+                    child_rlimit_kb=child_rlimit_kb,
+                    timeout_s=timeout,
+                    poll_interval_s=poll_interval,
+                    child_process=child_process,
+                )
+            except OSError as exc:
+                print(
+                    f"memory_guard: failed to refresh running summary JSON: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         _update_active_guard_marker(
             guard_marker,
             guard_token,
@@ -918,8 +970,12 @@ def run_guarded(
                 )
             )
 
+        last_sample_cost_s = 0.0
+
         def sample_tracked_tree() -> tuple[Mapping[int, ProcessSample], set[int]]:
-            nonlocal guard_interrupted, remembered_samples, remembered_watched
+            nonlocal guard_interrupted, last_sample_cost_s
+            nonlocal remembered_samples, remembered_watched
+            sample_started = time.monotonic()
             try:
                 samples = sampler()
             except KeyboardInterrupt:
@@ -931,6 +987,7 @@ def run_guarded(
             except Exception:
                 terminate_after_sampling_failure(reason="sampler_failure")
                 raise
+            last_sample_cost_s = time.monotonic() - sample_started
             watched = tracker.update(samples)
             remembered_samples = samples
             remembered_watched = set(watched)
@@ -1093,10 +1150,11 @@ def run_guarded(
             if os.name != "posix" and proc.poll() is not None:
                 break
             elapsed = time.monotonic() - start
+            paced_interval = paced_poll_interval(poll_interval, last_sample_cost_s)
             wait_timeout = (
-                min(poll_interval, DEFAULT_FAST_START_POLL_INTERVAL_SEC)
+                min(paced_interval, DEFAULT_FAST_START_POLL_INTERVAL_SEC)
                 if elapsed < DEFAULT_FAST_START_DURATION_SEC
-                else poll_interval
+                else paced_interval
             )
             if timeout is not None:
                 remaining = timeout - elapsed
@@ -1871,10 +1929,12 @@ def _write_running_summary_json(
     child_rlimit_kb: int | None,
     timeout_s: float | None,
     poll_interval_s: float,
+    child_process: GuardedChildProcess | None = None,
 ) -> None:
     summary_path = Path(path)
     if summary_path.parent:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
+    child_payload = guarded_child_process_payload(child_process)
     payload = {
         "command": list(command),
         "returncode": None,
@@ -1895,20 +1955,21 @@ def _write_running_summary_json(
         "peak_total": None,
         "timed_out": False,
         "orphaned_process_groups": [],
-        "child_process": None,
+        "child_process": child_payload,
         "termination_reports": [],
         "cargo_incremental_quarantine": None,
         "limit_at_violation": None,
         "exit_signal": None,
         "guard_signal": None,
         "incident": {
-            "reason": "guard_started",
+            "reason": "child_running" if child_payload is not None else "guard_started",
             "cleanup": "pending",
             "recorded_at": _utc_timestamp(),
             "next_action": (
                 "If this file remains in running status, the guard parent was "
                 "terminated before it could write the final summary; use the "
-                "repro block and host/control-plane samples below."
+                "child_process identity, repro block, and host/control-plane "
+                "samples below."
             ),
         },
         "repro": repro_context_payload(
@@ -1922,7 +1983,7 @@ def _write_running_summary_json(
             timeout_s=timeout_s,
             poll_interval_s=poll_interval_s,
             summary_json=path,
-            incident_pid=None,
+            incident_pid=None if child_process is None else child_process.pid,
         ),
     }
     summary_path.write_text(
@@ -2178,6 +2239,9 @@ def main(
         adaptive_budget_provider=adaptive_budget_provider,
         dynamic_process_rss=dynamic_process_rss,
         dynamic_total_rss=dynamic_total_rss,
+        running_summary_json=args.summary_json,
+        running_summary_environ=current_env,
+        running_summary_max_global_rss_kb=max_global_rss_kb,
     )
     incident = _incident_payload(result)
     repro_payload: dict[str, object] | None = None

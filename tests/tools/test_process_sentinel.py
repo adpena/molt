@@ -274,6 +274,52 @@ def test_process_groups_match_repo_scoped_cached_binary() -> None:
     assert groups[0].pgid == 10
 
 
+def test_molt_command_classification_cache_is_keyed_by_token_authority() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    module._cached_molt_command_classification.cache_clear()
+    command = "/repo/molt/target/dev-fast/custom-worker --owned"
+
+    assert not module._cached_molt_command_classification(
+        command,
+        root,
+        False,
+        (),
+        (),
+        (),
+        (),
+        ("molt-backend",),
+    )
+    assert module._cached_molt_command_classification(
+        command,
+        root,
+        False,
+        (),
+        (),
+        (),
+        (),
+        ("custom-worker",),
+    )
+    assert module._cached_molt_command_classification.cache_info().hits == 0
+
+
+def test_is_molt_process_reuses_command_classification_cache() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    module._cached_molt_command_classification.cache_clear()
+    sample = module.memory_guard.ProcessSample(
+        pid=10,
+        ppid=1,
+        pgid=10,
+        rss_kb=100,
+        command="/repo/molt/target/dev-fast/molt-backend --owned",
+    )
+
+    assert module.is_molt_process(sample, root=root, self_pid=9999)
+    assert module.is_molt_process(sample, root=root, self_pid=9999)
+    assert module._cached_molt_command_classification.cache_info().hits == 1
+
+
 def test_process_groups_match_canonical_artifact_roots() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
@@ -2280,3 +2326,129 @@ def test_main_rejects_implausible_global_cap_without_margin(capsys) -> None:
 
     assert rc == 2
     assert "max global RSS must stay below 4096 GB" in capsys.readouterr().err
+
+
+def test_normalized_repo_tokens_cached_matches_uncached(tmp_path: Path) -> None:
+    module = _load_process_sentinel()
+    module._normalized_repo_tokens.cache_clear()
+    for root in (tmp_path, WINDOWS_ROOT, Path("/repo/molt")):
+        fresh = module._normalized_repo_tokens.__wrapped__(root)
+        assert module._normalized_repo_tokens(root) == fresh
+        assert module._normalized_repo_tokens(root) == fresh
+    assert module._normalized_repo_tokens.cache_info().hits >= 3
+
+
+def test_molt_command_classification_cache_matches_uncached() -> None:
+    module = _load_process_sentinel()
+    module._cached_molt_command_classification.cache_clear()
+    commands = (
+        _windows_backend_command(),
+        _codex_launched_molt_build_command(),
+        "git diff -- runtime/molt-backend/src/lib.rs",
+        r"C:\Windows\System32\notepad.exe",
+        "C:/repo/molt/.venv/Scripts/python.exe -m molt build app.py",
+        "/bin/zsh -c cd /repo/molt && cargo build -p molt-backend",
+    )
+    for windows_model in (True, False):
+        for root in (WINDOWS_ROOT, Path("/repo/molt")):
+            for command in commands:
+                args = (
+                    command,
+                    root,
+                    windows_model,
+                    module.INSPECTION_COMMAND_TOKENS,
+                    module.REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS,
+                    module.REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
+                    module.REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
+                    module.MOLT_PROCESS_TOKENS,
+                )
+                fresh = module._cached_molt_command_classification.__wrapped__(*args)
+                assert module._cached_molt_command_classification(*args) == fresh
+                # Second call exercises the cache-hit path.
+                assert module._cached_molt_command_classification(*args) == fresh
+
+
+def test_is_molt_process_verdicts_are_immune_to_pid_reuse(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    molt = module.memory_guard.ProcessSample(
+        pid=500,
+        ppid=1,
+        pgid=None,
+        rss_kb=1000,
+        command=_windows_backend_command(),
+        started_at_ns=111,
+    )
+    assert module.is_molt_process(molt, root=WINDOWS_ROOT, self_pid=9999)
+    # The same PID is later reused by an unrelated non-Molt process: the
+    # classification cache is keyed only on command text and classification
+    # authorities, never on PID, so the stale Molt verdict cannot resurface.
+    reused_pid = module.memory_guard.ProcessSample(
+        pid=500,
+        ppid=1,
+        pgid=None,
+        rss_kb=1000,
+        command=r"C:\Windows\System32\notepad.exe",
+        started_at_ns=222,
+    )
+    assert not module.is_molt_process(reused_pid, root=WINDOWS_ROOT, self_pid=9999)
+    assert module.is_molt_process(molt, root=WINDOWS_ROOT, self_pid=9999)
+
+
+def test_is_molt_process_self_pid_exclusion_is_not_cached(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    sample = module.memory_guard.ProcessSample(
+        pid=500,
+        ppid=1,
+        pgid=None,
+        rss_kb=1000,
+        command=_windows_backend_command(),
+    )
+    assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=500)
+    assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+    assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=500)
+
+
+def test_is_molt_process_cache_keys_on_process_model(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    upper_command = _windows_backend_command().upper()
+    sample = module.memory_guard.ProcessSample(
+        pid=500,
+        ppid=1,
+        pgid=None,
+        rss_kb=1000,
+        command=upper_command,
+    )
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+    # POSIX matching is case-sensitive; the cached Windows verdict must not
+    # leak across a process-model change.
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+    assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+
+
+def test_is_molt_process_cache_keys_on_token_authorities(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    sample = module.memory_guard.ProcessSample(
+        pid=501,
+        ppid=1,
+        pgid=None,
+        rss_kb=1000,
+        command="C:/repo/molt/xyz/custom-molt-lane-token --run",
+    )
+    assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            module,
+            "MOLT_PROCESS_TOKENS",
+            (*module.MOLT_PROCESS_TOKENS, "custom-molt-lane-token"),
+        )
+        assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+    assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
