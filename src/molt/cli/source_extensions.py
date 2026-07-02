@@ -1178,6 +1178,113 @@ def source_extension_manifest_path(raw_path: str, *, manifest_path: Path) -> Pat
     return source_path.resolve()
 
 
+def _manifest_source_plan_root(manifest: Mapping[str, Any]) -> Path | None:
+    source_plan = manifest.get("source_plan")
+    if not isinstance(source_plan, Mapping):
+        return None
+    source_root = source_plan.get("source_root")
+    if not isinstance(source_root, str) or not source_root.strip():
+        return None
+    return Path(source_root).expanduser()
+
+
+def _source_extension_relocation_roots(
+    source_root: Path,
+    *,
+    manifest_path: Path,
+) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    if source_root.exists():
+        candidates.append(source_root)
+    search_bases = [manifest_path.parent, *manifest_path.parents, Path.cwd()]
+    for base in search_bases:
+        candidates.append(base / source_root.name)
+    parts = source_root.parts
+    if "bench" in parts:
+        suffix = Path(*parts[parts.index("bench") :])
+        for base in search_bases:
+            candidates.append(base / suffix)
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(resolved)
+    return tuple(unique)
+
+
+def _source_extension_hash_matches(path: Path, expected_sha256: str | None) -> bool:
+    if not expected_sha256:
+        return True
+    return _sha256_file(path) == expected_sha256
+
+
+def source_extension_manifest_source_path(
+    raw_path: str,
+    *,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    expected_sha256: str | None = None,
+) -> tuple[Path | None, list[str]]:
+    source_path = source_extension_manifest_path(raw_path, manifest_path=manifest_path)
+    if source_path.is_file():
+        if not _source_extension_hash_matches(source_path, expected_sha256):
+            return None, [
+                f"extension_manifest.json source checksum mismatch: {source_path}"
+            ]
+        return source_path, []
+
+    source_root = _manifest_source_plan_root(manifest)
+    raw_source_path = Path(raw_path).expanduser()
+    if source_root is None:
+        return None, []
+    try:
+        relative_source = raw_source_path.relative_to(source_root)
+    except ValueError:
+        return None, []
+    mismatched_candidates: list[Path] = []
+    for root in _source_extension_relocation_roots(
+        source_root,
+        manifest_path=manifest_path,
+    ):
+        candidate = (root / relative_source).resolve()
+        if not candidate.is_file():
+            continue
+        if not _source_extension_hash_matches(candidate, expected_sha256):
+            mismatched_candidates.append(candidate)
+            continue
+        return candidate, []
+    if mismatched_candidates:
+        return None, [
+            "extension_manifest.json relocated source checksum mismatch: "
+            + ", ".join(str(path) for path in mismatched_candidates[:3])
+        ]
+    return None, []
+
+
+def _source_extension_object_source_sha256(
+    objects: Any,
+) -> dict[str, str]:
+    if not isinstance(objects, list):
+        return {}
+    by_source: dict[str, str] = {}
+    for item in objects:
+        if not isinstance(item, Mapping):
+            continue
+        source = item.get("source")
+        source_sha256 = item.get("source_sha256")
+        if (
+            isinstance(source, str)
+            and source.strip()
+            and isinstance(source_sha256, str)
+            and source_sha256.strip()
+        ):
+            by_source[source] = source_sha256.strip()
+    return by_source
+
+
 def _source_extension_manifest_source_paths(
     manifest: Mapping[str, Any],
     *,
@@ -1185,6 +1292,11 @@ def _source_extension_manifest_source_paths(
 ) -> tuple[tuple[Path, ...] | None, list[str]]:
     errors: list[str] = []
     paths: list[Path] = []
+    object_closure = manifest.get("object_closure")
+    objects = (
+        object_closure.get("objects") if isinstance(object_closure, Mapping) else None
+    )
+    source_sha256_by_raw = _source_extension_object_source_sha256(objects)
     raw_sources = manifest.get("sources")
     if raw_sources is not None:
         if not isinstance(raw_sources, list):
@@ -1196,21 +1308,22 @@ def _source_extension_manifest_source_paths(
                         "extension_manifest.json sources must be a list of paths"
                     )
                     continue
-                source_path = source_extension_manifest_path(
+                source_path, source_errors = source_extension_manifest_source_path(
                     raw_source,
+                    manifest=manifest,
                     manifest_path=manifest_path,
+                    expected_sha256=source_sha256_by_raw.get(raw_source),
                 )
-                if not source_path.is_file():
+                errors.extend(source_errors)
+                if source_path is None:
                     errors.append(
                         f"extension_manifest.json sources[{index}] does not exist: "
-                        f"{source_path}"
+                        f"{source_extension_manifest_path(raw_source, manifest_path=manifest_path)}"
                     )
                     continue
                 paths.append(source_path)
 
-    object_closure = manifest.get("object_closure")
     if isinstance(object_closure, Mapping):
-        objects = object_closure.get("objects")
         if objects is not None:
             if not isinstance(objects, list):
                 errors.append(
@@ -1221,15 +1334,23 @@ def _source_extension_manifest_source_paths(
                     continue
                 source = item.get("source")
                 if isinstance(source, str) and source.strip():
-                    source_path = source_extension_manifest_path(
+                    source_sha256 = item.get("source_sha256")
+                    source_path, source_errors = source_extension_manifest_source_path(
                         source,
+                        manifest=manifest,
                         manifest_path=manifest_path,
+                        expected_sha256=(
+                            source_sha256.strip()
+                            if isinstance(source_sha256, str) and source_sha256.strip()
+                            else None
+                        ),
                     )
-                    if not source_path.is_file():
+                    errors.extend(source_errors)
+                    if source_path is None:
                         errors.append(
                             "extension_manifest.json "
                             f"object_closure.objects[{index}].source does not exist: "
-                            f"{source_path}"
+                            f"{source_extension_manifest_path(source, manifest_path=manifest_path)}"
                         )
                         continue
                     paths.append(source_path)
