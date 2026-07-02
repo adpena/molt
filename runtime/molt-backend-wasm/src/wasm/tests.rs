@@ -1502,6 +1502,73 @@ fn runtime_import_aliases_follow_manifest_runtime_names() {
 }
 
 #[test]
+fn unreachable_runtime_callables_are_not_imported() {
+    let func = wasm_test_function(
+        "no_runtime_callable_roots",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("tree-shaken runtime callable module must be valid WASM");
+
+    let imports = wasm_function_import_names(&wasm);
+    assert!(
+        !imports.iter().any(|name| name == "abs_builtin"),
+        "unreached builtin runtime callable import leaked into module: {imports:?}"
+    );
+    assert!(
+        !imports.iter().any(|name| name == "gpu_tensor_from_buffer"),
+        "unreached GPU intrinsic callable import leaked into module: {imports:?}"
+    );
+}
+
+#[test]
+fn reachable_builtin_runtime_callable_is_imported() {
+    let mut abs_builtin = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    abs_builtin.s_value = Some("molt_abs_builtin".to_string());
+    abs_builtin.value = Some(1);
+    let func = wasm_test_function(
+        "reachable_builtin_callable",
+        vec![],
+        None,
+        vec![abs_builtin, wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("reachable runtime callable module must be valid WASM");
+
+    let imports = wasm_function_import_names(&wasm);
+    assert!(
+        imports.iter().any(|name| name == "abs_builtin"),
+        "reached builtin runtime callable import missing from module: {imports:?}"
+    );
+}
+
+#[test]
 fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
     let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
     import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());

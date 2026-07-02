@@ -1932,36 +1932,6 @@ def validate_loaded_manifest(
         rust_exports,
     )
 
-    gpu_intrinsic_manifest_names = data.get("gpu_intrinsic_manifest_name", [])
-    if (
-        not isinstance(gpu_intrinsic_manifest_names, list)
-        or not gpu_intrinsic_manifest_names
-    ):
-        raise WasmAbiManifestError(
-            "manifest must define gpu_intrinsic_manifest_name entries"
-        )
-    seen_gpu_intrinsic_manifest_names: set[str] = set()
-    host_export_set = set(host_exports)
-    for idx, entry in enumerate(gpu_intrinsic_manifest_names):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"gpu_intrinsic_manifest_name entry {idx} must be a table"
-            )
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.startswith("molt_gpu_"):
-            raise WasmAbiManifestError(
-                f"gpu_intrinsic_manifest_name entry {idx} has invalid name"
-            )
-        if name in seen_gpu_intrinsic_manifest_names:
-            raise WasmAbiManifestError(
-                f"duplicate GPU intrinsic manifest name {name!r}"
-            )
-        if name not in host_export_set:
-            raise WasmAbiManifestError(
-                f"GPU intrinsic manifest name {name!r} must also be a runtime host export"
-            )
-        seen_gpu_intrinsic_manifest_names.add(name)
-
     fallback_entries = data.get("runtime_import_fallback", [])
     if not isinstance(fallback_entries, list):
         raise WasmAbiManifestError("runtime_import_fallback must be a list of tables")

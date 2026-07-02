@@ -6774,57 +6774,6 @@ host_exports = [
   "molt_type_tag_of_bits",
 ]
 
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_broadcast_binary_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_linear_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_linear_split_last_dim_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_matmul_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_permute_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_repeat_axis_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_rms_norm_last_axis_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_rope_apply_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_softmax_last_axis_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_squared_relu_gate_interleaved_contiguous"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_tensor_from_buffer"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_tensor_from_parts"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_tensor__tensor_concat_first_dim"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_tensor__tensor_scatter_rows"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_tensor__tensor_take_rows"
-
-[[gpu_intrinsic_manifest_name]]
-name = "molt_gpu_tensor__zeros"
-
 [[runtime_import_fallback]]
 import = "fast_list_append"
 strategy = "call_bind_ic"
