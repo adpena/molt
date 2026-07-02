@@ -1611,6 +1611,78 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     assert "VALUE = _child.VALUE" in init_source
 
 
+def test_materialize_import_plan_does_not_compile_package_init_support_without_runtime_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    package_init = external_root / "nativepkg" / "__init__.py"
+    package_init.parent.mkdir(parents=True)
+    package_init.write_text(
+        "def platform_probe():\n"
+        "    return polyval([1, 2], [3])\n",
+        encoding="utf-8",
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["nativepkg.dynamic"],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    assert "nativepkg" not in (
+        policy.native_artifact_plan.support_source_paths_by_module()
+    )
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.dynamic"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert "nativepkg" not in import_plan.compile_modules
+    assert "nativepkg" not in import_plan.module_graph
+
+
 def test_materialize_import_plan_rejects_missing_native_support_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
