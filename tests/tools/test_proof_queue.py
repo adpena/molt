@@ -1340,6 +1340,61 @@ def test_proof_queue_diagnoses_runtime_wasm_missing_required_exports(
     assert "wasm_runtime_shared_export_link_args" in diagnostics[0]["next_action"]
 
 
+def test_proof_queue_diagnoses_runtime_export_authority_unknown_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "failed.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="failed-run",
+        logical_id="pact-witness-acceptance",
+        reason="prove export authority unknown-name diagnosis",
+        command=[sys.executable, "-c", "print('fail')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm:pact-witness",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "failed.memory_guard.json",
+    )
+    log_path.write_text(
+        "ValueError: unknown WASM runtime import/export name: PyObject_Init\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "failed-run", status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "failed-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert (
+        diagnostics[0]["signal_id"] == "wasm-runtime-export-authority-unknown-name"
+    )
+    assert "PyObject_Init" in diagnostics[0]["summary"]
+    assert "generated WASM ABI link authority" in diagnostics[0]["next_action"]
+
+
 def test_proof_queue_diagnoses_failed_static_module_exec(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

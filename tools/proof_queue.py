@@ -68,6 +68,10 @@ RUNTIME_WASM_MISSING_EXPORTS_RE = re.compile(
     r"Runtime wasm (?:build produced artifact|artifact) missing required "
     r"exports[:;]?\s*(?P<symbols>[^\r\n]*)"
 )
+RUNTIME_EXPORT_AUTHORITY_UNKNOWN_NAME_RE = re.compile(
+    r"ValueError: unknown WASM runtime import/export name: "
+    r"(?P<symbol>[A-Za-z_][A-Za-z0-9_@.$]*)"
+)
 UNSUPPORTED_DIRECT_CALL_RE = re.compile(
     r"(?is)(?:unsupported|not supported|not linkable).*?"
     r"(?:direct call|direct-call).*?"
@@ -1098,6 +1102,32 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "src/molt/cli/external_native.py",
                 ),
                 artifacts=artifacts,
+            )
+        )
+
+    match = RUNTIME_EXPORT_AUTHORITY_UNKNOWN_NAME_RE.search(log_tail)
+    if match is not None:
+        symbol = match.group("symbol")
+        diagnostics.append(
+            _diagnostic(
+                signal_id="wasm-runtime-export-authority-unknown-name",
+                severity="error",
+                summary=(
+                    "A required runtime export obligation is not declared by "
+                    f"the generated WASM link authority: {symbol}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Declare the symbol through the generated WASM ABI link "
+                    "authority (wasm_abi_manifest/gen_wasm_abi CPython ABI "
+                    "surface), not by relaxing the export-name validator or "
+                    "hand-editing generated files."
+                ),
+                scopes=(
+                    "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+                    "tools/gen_wasm_abi.py",
+                    "src/molt/_wasm_runtime_exports.py",
+                ),
             )
         )
 
