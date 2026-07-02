@@ -3989,6 +3989,247 @@ def test_append_table_ref_elements_filters_to_allowed_output_refs() -> None:
     assert table_offset == 9
 
 
+def _build_import_targeted_table_ref_module() -> bytes:
+    """Reloc-shaped output object: one runtime function import, one defined
+    function, table-ref exports targeting each, and a linking symbol table
+    mirroring what the Rust reloc lane emits (undefined import symbol +
+    defined function symbol)."""
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(1))
+    import_payload.extend(wasm_link._write_string("molt_runtime"))
+    import_payload.extend(wasm_link._write_string("socket_drop"))
+    import_payload.append(0x00)
+    import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    sections.append((3, wasm_link._write_varuint(1) + wasm_link._write_varuint(0)))
+
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(16))
+    sections.append((4, bytes(table_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(2))
+    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(3)))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))  # import-targeted slot
+    export_payload.extend(wasm_link._write_string(wasm_link.table_ref_export_name(9)))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(1))  # defined-targeted slot
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    symtab = bytearray()
+    symtab.extend(write_varuint(2))
+    # Undefined import symbol (name comes from the import entry).
+    symtab.append(wasm_link.SYMBOL_KIND_FUNCTION)
+    symtab.extend(write_varuint(wasm_link.FLAG_UNDEFINED))
+    symtab.extend(write_varuint(0))
+    # Defined function symbol.
+    symtab.append(wasm_link.SYMBOL_KIND_FUNCTION)
+    symtab.extend(write_varuint(0))
+    symtab.extend(write_varuint(1))
+    symtab.extend(wasm_link._write_string("__molt_output_export_1"))
+    linking_payload = bytearray()
+    linking_payload.extend(write_varuint(2))  # linking section version
+    linking_payload.append(wasm_link.SYMTAB_SUBSECTION_ID)
+    linking_payload.extend(write_varuint(len(symtab)))
+    linking_payload.extend(symtab)
+    custom_payload = wasm_link._write_string("linking") + bytes(linking_payload)
+    sections.append((0, custom_payload))
+
+    return wasm_link._build_sections(sections)
+
+
+def _single_active_element_entries(data: bytes) -> list[tuple[int, list[int]]]:
+    element_section = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(data)
+        if section_id == 9
+    )
+    count, offset = wasm_link._read_varuint(element_section, 0)
+    entries: list[tuple[int, list[int]]] = []
+    for _ in range(count):
+        assert element_section[offset] == 0x00
+        offset += 1
+        assert element_section[offset] == 0x41
+        table_offset, offset = wasm_link._read_varuint(element_section, offset + 1)
+        assert element_section[offset] == 0x0B
+        offset += 1
+        func_count, offset = wasm_link._read_varuint(element_section, offset)
+        funcs = []
+        for _ in range(func_count):
+            func_idx, offset = wasm_link._read_varuint(element_section, offset)
+            funcs.append(func_idx)
+        entries.append((table_offset, funcs))
+    return entries
+
+
+def test_inject_table_ref_export_symbols_skips_import_targeted_refs(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.wasm"
+    output.write_bytes(_build_import_targeted_table_ref_module())
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+        injected = wasm_link._inject_table_ref_export_symbols(output, temp_dir)
+        assert injected != output
+        data = injected.read_bytes()
+
+    symbols = wasm_link._collect_linking_function_symbols(data)
+    names = {name for _flags, _index, name, _ in symbols}
+    assert wasm_link.table_ref_export_name(9) in names
+    assert wasm_link.table_ref_export_name(3) not in names
+
+    # Every function symbol must satisfy the LLVM object invariant that
+    # wasm-ld enforces as "invalid function symbol index".
+    import_count = wasm_link._count_func_imports(wasm_link._parse_sections(data))
+    total_funcs = wasm_link._get_total_func_count(data)
+    for flags, index, name, _ in symbols:
+        assert index < total_funcs, name
+        defined = (flags & wasm_link.FLAG_UNDEFINED) == 0
+        assert defined == (index >= import_count), (name, flags, index)
+
+
+def test_append_linking_function_symbols_fails_closed_on_flag_index_mismatch() -> None:
+    module = _build_import_targeted_table_ref_module()
+    defined_flags = (
+        wasm_link.FLAG_BINDING_GLOBAL
+        | wasm_link.FLAG_EXPLICIT_NAME
+        | wasm_link.FLAG_EXPORTED
+        | wasm_link.FLAG_NO_STRIP
+    )
+
+    with pytest.raises(ValueError, match="cannot alias an imported function"):
+        wasm_link._append_linking_function_symbols(
+            module, [("bogus_defined_at_import", 0, defined_flags)]
+        )
+
+    with pytest.raises(ValueError, match="flagged undefined but references"):
+        wasm_link._append_linking_function_symbols(
+            module,
+            [
+                (
+                    "bogus_undefined_at_defined",
+                    1,
+                    wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                )
+            ],
+        )
+
+    with pytest.raises(ValueError, match="outside the module function index space"):
+        wasm_link._append_linking_function_symbols(
+            module, [("bogus_out_of_range", 7, defined_flags)]
+        )
+
+
+def test_materialize_import_targeted_table_refs_resolves_linked_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
+    output_data = _build_import_targeted_table_ref_module()
+    assert wasm_link.wasm_runtime_export_name("socket_drop") == "molt_socket_drop"
+
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+    sections.append((3, write_varuint(1) + write_varuint(0)))
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(16))
+    sections.append((4, bytes(table_payload)))
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("molt_socket_drop"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+    linked = wasm_link._build_sections(sections)
+
+    updated, changed = wasm_link._materialize_import_targeted_table_refs(
+        linked,
+        output_data=output_data,
+        description="test linked wasm",
+    )
+
+    assert changed
+    ok, err = wasm_link._validate_elements(updated)
+    assert ok, err
+    # Only the import-targeted slot is installed by this pass; the
+    # defined-targeted slot keeps its surviving __molt_table_ref_* symbol.
+    assert _single_active_element_entries(updated) == [(3, [0])]
+
+
+def test_materialize_import_targeted_table_refs_resolves_surviving_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
+    output_data = _build_import_targeted_table_ref_module()
+    # Split app module after the import rewrite: the runtime import survives
+    # under its generated export name.
+    app = _build_runtime_import_module(["molt_socket_drop"])
+
+    updated, changed = wasm_link._materialize_import_targeted_table_refs(
+        app,
+        output_data=output_data,
+        description="test split app wasm",
+    )
+
+    assert changed
+    assert _single_active_element_entries(updated) == [(3, [0])]
+
+
+def test_materialize_import_targeted_table_refs_fails_closed_when_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_LINK_APPEND_TABLE_REFS", raising=False)
+    output_data = _build_import_targeted_table_ref_module()
+    unrelated = _build_runtime_import_module(["molt_alloc"])
+
+    with pytest.raises(
+        ValueError,
+        match=r"__molt_table_ref_3 -> molt_runtime::socket_drop",
+    ):
+        wasm_link._materialize_import_targeted_table_refs(
+            unrelated,
+            output_data=output_data,
+            description="test split app wasm",
+        )
+
+
 def test_strip_internal_exports_keeps_table_ref_exports() -> None:
     write_varuint = wasm_link._write_varuint
 

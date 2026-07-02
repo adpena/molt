@@ -86,6 +86,7 @@ from wasm_link_format import (  # noqa: E402
     is_call_indirect_import_name as is_call_indirect_import_name,
     parse_table_ref_export_name as parse_table_ref_export_name,
     table_ref_export_name as table_ref_export_name,
+    wasm_runtime_export_name as wasm_runtime_export_name,
     _get_total_func_count as _get_total_func_count,
     parse_wasm_module_facts as parse_wasm_module_facts,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
@@ -97,8 +98,10 @@ from wasm_link_format import (  # noqa: E402
 )
 from wasm_link_edit import (  # noqa: E402
     _add_symtab_alias as _add_symtab_alias,
+    _append_active_table_slot_elements as _append_active_table_slot_elements,
     _append_table_ref_elements as _append_table_ref_elements,
     _canonicalize_standard_section_order as _canonicalize_standard_section_order,
+    _collect_import_targeted_table_refs as _collect_import_targeted_table_refs,
     _collect_output_export_symbol_map as _collect_output_export_symbol_map,
     _collect_output_wrapper_specs as _collect_output_wrapper_specs,
     _collect_preserved_output_export_names as _collect_preserved_output_export_names,
@@ -113,6 +116,7 @@ from wasm_link_edit import (  # noqa: E402
     _neutralize_linked_table_init as _neutralize_linked_table_init,
     _rename_export_names as _rename_export_names,
     _required_linked_table_min as _required_linked_table_min,
+    _resolve_import_targeted_table_refs as _resolve_import_targeted_table_refs,
     _restore_output_export_aliases as _restore_output_export_aliases,
     _rewrite_native_runtime_imports as _rewrite_native_runtime_imports,
     _rewrite_memory_min as _rewrite_memory_min,
@@ -1482,6 +1486,37 @@ def _output_table_ref_indices(output_data: bytes | None) -> set[int]:
     }
 
 
+def _materialize_import_targeted_table_refs(
+    data: bytes,
+    *,
+    output_data: bytes | None,
+    description: str,
+) -> tuple[bytes, bool]:
+    """Install callable-table slots whose backend target was a function import.
+
+    The reloc output object publishes ``__molt_table_ref_<slot>`` exports for
+    runtime-initialized callable-table slots. Slots targeting runtime ABI
+    imports cannot carry defined linker symbols through wasm-ld (the object
+    format has no defined alias of an import), so no ``__molt_table_ref_*``
+    name survives the link for them. Re-resolve those targets against the
+    current module — the runtime's defined export in a fully linked module,
+    the surviving import in a split app module — and install them as active
+    element segments. Must run before export stripping / dead-code passes so
+    the resolved targets stay rooted. Fails closed when a published slot
+    cannot be resolved.
+    """
+    if output_data is None or not _append_table_refs_enabled():
+        return data, False
+    refs = _collect_import_targeted_table_refs(output_data)
+    if not refs:
+        return data, False
+    resolved = _resolve_import_targeted_table_refs(data, refs, description=description)
+    updated = _append_active_table_slot_elements(data, resolved)
+    if updated is None:
+        return data, False
+    return updated, True
+
+
 def _materialize_callable_table_refs_and_ref_func_declarations(
     data: bytes,
     *,
@@ -2009,6 +2044,25 @@ def _run_wasm_ld(
                 work_linked.write_bytes(updated)
                 linked_bytes = updated
 
+        # Import-targeted callable-table slots must be re-resolved while the
+        # linked module still carries the full --export-all surface; the
+        # post-link optimizer below strips those export names and stubs
+        # functions that are not yet rooted by element segments.
+        try:
+            linked_bytes, materialized = _materialize_import_targeted_table_refs(
+                linked_bytes,
+                output_data=output_data,
+                description="linked wasm",
+            )
+        except ValueError as exc:
+            print(
+                f"Failed to materialize import-targeted callable table refs: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if materialized:
+            work_linked.write_bytes(linked_bytes)
+
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
         # Pass the original user module as reference_data so the type-index
@@ -2208,6 +2262,19 @@ def _run_wasm_ld(
                 # ABI. The correct artifact is the rewritten, still-unlinked
                 # module.
                 rewritten_data = rewritten_path.read_bytes()
+            try:
+                rewritten_data, _materialized = _materialize_import_targeted_table_refs(
+                    rewritten_data,
+                    output_data=output_data,
+                    description="split-runtime app wasm",
+                )
+            except ValueError as exc:
+                print(
+                    "Failed to materialize split-runtime app import-targeted "
+                    f"callable table refs: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
             try:
                 rewritten_data, _materialized = (
                     _materialize_callable_table_refs_and_ref_func_declarations(

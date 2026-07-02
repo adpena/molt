@@ -466,17 +466,69 @@ def _encode_function_symbol_entry(*, flags: int, index: int, name: str) -> bytes
     return bytes(entry)
 
 
+def _require_encodable_function_symbol(
+    *,
+    name: str,
+    index: int,
+    flags: int,
+    func_import_count: int,
+    total_func_count: int,
+) -> None:
+    """Fail closed on function symbols the object format cannot express.
+
+    LLVM's WASM object reader rejects a symbol table where a function
+    symbol's defined/undefined flag disagrees with its index range
+    (``invalid function symbol index``): a symbol without
+    ``WASM_SYM_UNDEFINED`` must reference a defined function
+    (``index >= func_import_count``) and an undefined symbol must
+    reference a function import. Catch that here, at the stage that
+    writes the symbol, instead of at wasm-ld.
+    """
+    if index >= total_func_count:
+        raise ValueError(
+            f"function symbol {name!r} references function index {index} "
+            f"outside the module function index space "
+            f"(total functions: {total_func_count})"
+        )
+    defined = (flags & FLAG_UNDEFINED) == 0
+    if defined and index < func_import_count:
+        raise ValueError(
+            f"function symbol {name!r} is flagged defined but references "
+            f"function import index {index} (function imports: "
+            f"{func_import_count}); a defined symbol cannot alias an "
+            "imported function"
+        )
+    if not defined and index >= func_import_count:
+        raise ValueError(
+            f"function symbol {name!r} is flagged undefined but references "
+            f"defined function index {index} (function imports: "
+            f"{func_import_count})"
+        )
+
+
 def _append_linking_function_symbols(
     data: bytes, entries: list[tuple[str, int, int]]
 ) -> bytes | None:
     if not entries:
         return None
     existing_names = {name for _, _, name, _ in _collect_linking_function_symbols(data)}
-    pending = [
-        _encode_function_symbol_entry(flags=flags, index=index, name=name)
-        for name, index, flags in entries
-        if name not in existing_names
-    ]
+    sections = _parse_sections(data)
+    func_import_count = _count_func_imports(sections)
+    total_func_count = _get_total_func_count(data)
+    pending = []
+    for name, index, flags in entries:
+        if name in existing_names:
+            continue
+        _require_encodable_function_symbol(
+            name=name,
+            index=index,
+            flags=flags,
+            func_import_count=func_import_count,
+            total_func_count=total_func_count,
+        )
+        pending.append(
+            _encode_function_symbol_entry(flags=flags, index=index, name=name)
+        )
     if not pending:
         return None
 
