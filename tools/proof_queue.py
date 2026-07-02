@@ -69,6 +69,17 @@ UNSUPPORTED_DIRECT_CALL_RE = re.compile(
     r"(?P<symbol>[A-Za-z_][A-Za-z0-9_.]*)"
 )
 DIAGNOSTIC_JSON_RE = re.compile(r"diagnostic_json=(?P<path>\S+)")
+NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
+    r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
+)
+NATIVE_SUPPORT_CUSTODY_RE = re.compile(
+    r"reachable native support source imports native package modules without source "
+    r"or artifact custody:\s+(?P<detail>[^\r\n]+)"
+)
+STDLIB_PROFILE_REFUSAL_RE = re.compile(
+    r"Profile '(?P<profile>[^']+)' excludes the '(?P<feature>[^']+)' "
+    r"runtime feature"
+)
 RUST_COMPILER_ERROR_RE = re.compile(
     r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
 )
@@ -1096,6 +1107,76 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "named pact-witness-acceptance lane after the structural fix."
                 ),
                 scopes=("tools/pact_witness_acceptance.py", "collab/pact/"),
+            )
+        )
+
+    match = NATIVE_ARTIFACT_CUSTODY_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="external-native-artifact-custody",
+                severity="error",
+                summary=(
+                    "External native package admission failed because a declared "
+                    "callable export is not backed by a native method, direct "
+                    "symbol, or sealed provider module."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Fix package-native object closure or provider-module custody; "
+                    "do not rerun the heavy lane until the manifest/source authority "
+                    "can prove the callable without a facade."
+                ),
+                scopes=(
+                    "src/molt/cli/external_native.py",
+                    "src/molt/cli/source_extensions.py",
+                ),
+            )
+        )
+
+    match = NATIVE_SUPPORT_CUSTODY_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="external-native-support-custody",
+                severity="error",
+                summary=(
+                    "Reachable native package support modules lack source or "
+                    "artifact custody."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Publish reachable source-recompiled artifacts or sealed "
+                    "source-plan custody for these support modules; package "
+                    "visibility alone is not execution authority."
+                ),
+                scopes=(
+                    "src/molt/cli/external_native.py",
+                    "src/molt/cli/source_extensions.py",
+                ),
+            )
+        )
+
+    match = STDLIB_PROFILE_REFUSAL_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="stdlib-profile-refusal",
+                severity="error",
+                summary=(
+                    f"Runtime feature {match.group('feature')} is reachable but "
+                    f"excluded by profile {match.group('profile')}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Move the reached feature requirement through canonical "
+                    "reachability/profile selection instead of broadening a profile "
+                    "or hiding the missing feature in the proof command."
+                ),
+                scopes=(
+                    "src/molt/cli/runtime_features.py",
+                    "src/molt/cli/module_stdlib_policy.py",
+                ),
             )
         )
 
@@ -2869,7 +2950,11 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                         next_action=str(item["next_action"]),
                     )
                 )
-            elif signal_id in {"queue-infra-warning", "memory-guard-orphan-cleanup"}:
+            elif signal_id in {
+                "queue-infra-warning",
+                "memory-guard-orphan-cleanup",
+                "queue-policy-rejection",
+            }:
                 issues.append(
                     _audit_issue(
                         signal_id=f"audit-{signal_id}",
@@ -3014,9 +3099,27 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             f"classified_failed={payload['classified_failed_runs']} "
             f"issues={len(payload['issues'])}"
         )
+        diagnostics = payload["diagnostic_counts"]
+        if diagnostics:
+            print(
+                "diagnostics: "
+                + ", ".join(f"{key}={diagnostics[key]}" for key in sorted(diagnostics))
+            )
+        if payload["issue_counts"]:
+            print(
+                "issue_severity: "
+                + ", ".join(
+                    f"{key}={payload['issue_counts'][key]}"
+                    for key in sorted(payload["issue_counts"])
+                )
+            )
         if not payload["issues"]:
             print("- no queue health issues")
-        for issue in payload["issues"]:
+        max_issues = max(0, int(args.max_issues))
+        issues = (
+            payload["issues"] if max_issues == 0 else payload["issues"][:max_issues]
+        )
+        for issue in issues:
             run = f" run={issue['run_id']}" if issue.get("run_id") else ""
             print(
                 f"- {issue['severity']} {issue['signal_id']}{run}: {issue['summary']}"
@@ -3024,6 +3127,12 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             if issue["evidence"]:
                 print(f"  evidence: {issue['evidence']}")
             print(f"  next: {issue['next_action']}")
+        hidden = len(payload["issues"]) - len(issues)
+        if hidden > 0:
+            print(
+                f"- showing {len(issues)} of {len(payload['issues'])} issues; "
+                "use --max-issues 0, --json, or --output for the complete payload"
+            )
 
     error_count = int(payload["issue_counts"].get("error", 0))
     warning_count = int(payload["issue_counts"].get("warning", 0))
@@ -3348,6 +3457,12 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_p.add_argument("--strict", action="store_true")
     audit_p.add_argument("--json", action="store_true")
     audit_p.add_argument("--output")
+    audit_p.add_argument(
+        "--max-issues",
+        type=int,
+        default=20,
+        help="maximum human issue rows to print; use 0 for all",
+    )
     audit_p.add_argument("--stale-log-seconds", type=float, default=900.0)
     audit_p.add_argument("--no-notebook-check", action="store_true")
     audit_p.set_defaults(func=_cmd_audit)
