@@ -929,7 +929,9 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 'resource_family = "python"',
                 'contention_key = "python:parent-child"',
                 'depends_on = ["parent-proof"]',
-                'edge_kind = "derives_from"',
+                # depends_on is the only scheduling edge kind; lineage kinds
+                # (derives_from etc.) record provenance without gating.
+                'edge_kind = "depends_on"',
                 'edge_note = "Child narrows the parent proof result."',
                 f'command = [{sys.executable!r}, "-c", "print(\'child\')"]',
                 "",
@@ -969,7 +971,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     assert len(edges) == 1
     assert edges[0]["parent_run_id"] == parent["run_id"]
     assert edges[0]["child_run_id"] == child["run_id"]
-    assert edges[0]["kind"] == "derives_from"
+    assert edges[0]["kind"] == "depends_on"
     assert edges[0]["note"] == "Child narrows the parent proof result."
 
     assert (
@@ -1021,7 +1023,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     assert child["status"] == "passed"
     notebook_text = (notebooks / f"{child['run_id']}.py").read_text(encoding="utf-8")
     assert '"parent_kind_counts": {' in notebook_text
-    assert '"derives_from": 1' in notebook_text
+    assert '"depends_on": 1' in notebook_text
 
 
 def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt(
@@ -1063,7 +1065,7 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
         conn,
         parent_run_id="failed-parent",
         child_run_id="blocked-child",
-        kind="reruns",
+        kind="depends_on",
         note="child waits on failed parent",
     )
 
@@ -1129,6 +1131,62 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     assert "proof-log-missing" in output
     assert "run=failed-parent" in output
     assert "run=blocked-child" not in output
+
+
+def test_proof_queue_lineage_edges_do_not_gate_execution(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id, status in (("failed-parent", "failed"), ("rerun-child", "queued")):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove lineage edges never gate",
+            command=[sys.executable, "-c", "print('rerun')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._update_run(conn, run_id, status=status)
+    # A rerun's parent is failed or stale by definition: lineage kinds
+    # preserve provenance and must never gate scheduling (PROOF_QUEUE.md:
+    # "depends_on is the scheduling edge; the others preserve lineage").
+    for kind in ("reruns", "supersedes", "compares", "derives_from"):
+        proof_queue._insert_edge(
+            conn,
+            parent_run_id="failed-parent",
+            child_run_id="rerun-child",
+            kind=kind,
+            note=f"lineage edge {kind}",
+        )
+
+    state, blockers = proof_queue._dependency_state(conn, "rerun-child")
+
+    assert state == "ready"
+    assert blockers == []
+
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="failed-parent",
+        child_run_id="rerun-child",
+        kind="depends_on",
+        note="scheduling edge still gates",
+    )
+    state, blockers = proof_queue._dependency_state(conn, "rerun-child")
+    assert state == "blocked"
+    assert [row["kind"] for row in blockers] == ["depends_on"]
 
 
 def test_proof_queue_appends_notes_and_exports_evidence(
