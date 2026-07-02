@@ -213,6 +213,62 @@ def test_proof_queue_rejects_invalid_memory_guard_poll_override() -> None:
         )
 
 
+def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 4242, tmp_path / "runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "bad-poll",
+            "--reason",
+            "reject invalid poll interval",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:bad-poll",
+            "--env",
+            "MOLT_MEMORY_GUARD_POLL_SEC=not-a-number",
+            "--note",
+            "synthetic violation: invalid poll interval must fail before detached runner launch",
+            "--timeout",
+            "30",
+            "--detach",
+            "--",
+            sys.executable,
+            "-c",
+            "print('must-not-run')",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 2
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    assert launched == []
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "proof queue refuses invalid environment override" in log_text
+    assert "MOLT_MEMORY_GUARD_POLL_SEC" in log_text
+
+
 def test_proof_queue_evidence_accepts_positional_run_id(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -3237,6 +3293,46 @@ def test_proof_queue_submit_rejects_uv_run_without_active_project_python(
                 str(dsl),
             ]
         )
+
+
+def test_proof_queue_submit_rejects_invalid_memory_guard_poll_env(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    dsl = tmp_path / "proof.toml"
+    dsl.write_text(
+        "\n".join(
+            [
+                "[[proof]]",
+                'id = "bad-poll-dsl"',
+                'reason = "reject invalid poll interval from DSL"',
+                'resource_family = "python"',
+                'contention_key = "python:bad-poll-dsl"',
+                'env = { MOLT_MEMORY_GUARD_POLL_SEC = "0" }',
+                "command = [",
+                '  "uv", "run", "--active", "--project", ".",',
+                '  "--python", "3.12", "python", "-c", "print(1)",',
+                "]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="bad-poll-dsl.*MOLT_MEMORY_GUARD_POLL_SEC"):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "submit",
+                str(dsl),
+            ]
+        )
+    assert _rows(db) == []
 
 
 def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:

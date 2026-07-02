@@ -138,7 +138,9 @@ cache, a broad selector, or a stale generated file.
 - Queue-owned proof runs default `MOLT_MEMORY_GUARD_POLL_SEC` to `2.0` for
   local iteration and pass that value through to `memory_guard.py`; set an
   explicit queue `--env MOLT_MEMORY_GUARD_POLL_SEC=...` override only when a
-  proof genuinely needs a tighter poll.
+  proof genuinely needs a tighter poll. The queue validates that override as a
+  positive finite number at submission time; inherited shell environment is not
+  proof-row authority.
 - Submit long or compile-heavy proof rows with `--detach`, then keep working or
   end the arc. Do not spend a turn tailing a queued log.
 - For generators, use their timing mode when available and record the number.
