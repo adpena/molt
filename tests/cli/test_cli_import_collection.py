@@ -5442,12 +5442,44 @@ def test_external_native_artifact_plan_does_not_expand_package_root_to_children(
         required_modules={"scipy.ndimage"},
     )
 
-    assert root_errors == []
-    assert root_plan is not None
-    assert root_plan.artifacts == ()
+    # A bare package-root import is never owned by child artifact modules:
+    # instead of expanding the root to every child artifact, the plan fails
+    # closed toward explicit python_exports package-root custody.
+    assert root_plan is None
+    assert len(root_errors) == 1
+    assert "has no manifest-symbol owner" in root_errors[0]
+    assert "scipy.ndimage._nd_image" in root_errors[0]
     assert child_errors == []
     assert child_plan is not None
     assert [artifact.module for artifact in child_plan.artifacts] == [
+        "scipy.ndimage._nd_image"
+    ]
+
+    owned_root = tmp_path / "site_owned"
+    _write_external_native_artifact(
+        owned_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["scipy", "scipy.ndimage"],
+        },
+    )
+    owned_plan, owned_errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(owned_root,),
+        admitted_packages={"scipy"},
+        required_modules={"scipy"},
+    )
+
+    # The artifact that publishes the package root in python_exports is the
+    # package-root import custody owner and is admitted without expansion.
+    assert owned_errors == []
+    assert owned_plan is not None
+    assert [artifact.module for artifact in owned_plan.artifacts] == [
         "scipy.ndimage._nd_image"
     ]
 
