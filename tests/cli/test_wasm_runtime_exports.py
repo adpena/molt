@@ -196,9 +196,19 @@ def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> No
     assert " -C link-arg=--export-if-defined=PyArray_NDIM" not in flags
 
 
-def test_wasm_runtime_export_link_args_reject_non_manifest_raw_c_api_symbol() -> None:
+def test_wasm_runtime_export_link_args_accepts_generated_raw_c_api_symbols() -> None:
+    # Raw CPython C-API names are admitted through generated external-native
+    # link authority derived from the shipped CPython ABI exports.
+    flags = wasm_runtime_export_link_args({"PyModuleDef_Init", "PyObject_Init"})
+    assert " -C link-arg=--export-if-defined=PyModuleDef_Init" in flags
+    assert " -C link-arg=--export-if-defined=PyObject_Init" in flags
+
+
+def test_wasm_runtime_export_link_args_rejects_non_runtime_c_api_symbols() -> None:
     with pytest.raises(ValueError, match="unknown WASM runtime import/export name"):
-        wasm_runtime_export_link_args({"PyModuleDef_Init"})
+        wasm_runtime_export_link_args({"PyArray_NDIM"})
+    with pytest.raises(ValueError, match="unknown WASM runtime import/export name"):
+        wasm_runtime_export_link_args({"_Pyx_PyObject_Call"})
 
 
 def test_wasm_runtime_shared_export_link_args_adds_required_cpython_abi_symbols() -> (

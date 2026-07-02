@@ -154,9 +154,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
         proof_queue.main([*base_args, "evidence", "not-a-run-id"])
 
     with pytest.raises(SystemExit, match="positional and --run-id disagree"):
-        proof_queue.main(
-            [*base_args, "evidence", run_id, "--run-id", "not-a-run-id"]
-        )
+        proof_queue.main([*base_args, "evidence", run_id, "--run-id", "not-a-run-id"])
 
 
 def test_proof_queue_projection_failure_is_nonfatal_observability(
@@ -1388,9 +1386,7 @@ def test_proof_queue_diagnoses_runtime_export_authority_unknown_name(
     )
     evidence = json.loads(capsys.readouterr().out)
     diagnostics = evidence[0]["diagnostics"]
-    assert (
-        diagnostics[0]["signal_id"] == "wasm-runtime-export-authority-unknown-name"
-    )
+    assert diagnostics[0]["signal_id"] == "wasm-runtime-export-authority-unknown-name"
     assert "PyObject_Init" in diagnostics[0]["summary"]
     assert "generated WASM ABI link authority" in diagnostics[0]["next_action"]
 

@@ -25,6 +25,7 @@ from wasm_abi_gen.manifest import (
     WASM_VAL_TYPES,
     WasmAbiManifestError,
     _call_indirect_imports,
+    generator_cpython_abi_link_import_names,
     generator_input_files,
     generator_runtime_export_signature_rows,
     load_manifest,
@@ -254,6 +255,17 @@ def _render_cache_key(rustfmt_version: str) -> str:
                     "runtime_export": name,
                     "params": list(params),
                     "result": result,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        digest.update(b"\n")
+    for name in generator_cpython_abi_link_import_names():
+        digest.update(
+            json.dumps(
+                {
+                    "cpython_abi_link_import": name,
                 },
                 sort_keys=True,
                 separators=(",", ":"),

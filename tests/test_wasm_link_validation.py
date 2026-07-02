@@ -2165,21 +2165,21 @@ def test_rewrite_native_runtime_imports_rejects_non_manifest_raw_c_api_symbol(
     tmp_path: Path,
 ) -> None:
     native = tmp_path / "ndimage.molt.wasm"
-    native.write_bytes(_build_env_function_import_module(["PyModuleDef_Init"]))
+    native.write_bytes(_build_env_function_import_module(["PyArray_NDIM"]))
 
     with tempfile.TemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
             (native,),
-            {"PyModuleDef_Init"},
+            {"PyArray_NDIM"},
             temp_dir,
         )
 
         assert force_exports == []
         assert rewritten_paths == (native,)
         assert _function_import_pairs(native.read_bytes()) == [
-            ("env", "PyModuleDef_Init"),
+            ("env", "PyArray_NDIM"),
         ]
 
 
