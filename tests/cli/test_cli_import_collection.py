@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import io
 import importlib
+import re
 import importlib.util
 import json
 import os
@@ -31,6 +32,7 @@ from molt.cli import non_native_output as cli_non_native_output
 import pytest
 from molt.cli import build_diagnostics as cli_build_diagnostics
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import config_resolution as cli_config_resolution
 from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
 from molt import c_api_symbols as cli_c_api_symbols
@@ -46,6 +48,7 @@ from molt.cli import module_import_scanner as cli_module_import_scanner
 from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
+from molt.cli import runtime_features as cli_runtime_features
 from molt.cli import source_extensions as cli_source_extensions
 from molt.cli import typecheck as cli_typecheck
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
@@ -1360,14 +1363,14 @@ def test_source_extension_manifest_runtime_python_imports_uses_object_closure_so
     stale_top_level_source = tmp_path / "stale.c"
     closure_source.write_text(
         "static int exec(PyObject *module) {\n"
-        "    PyImport_ImportModule(\"math\");\n"
+        '    PyImport_ImportModule("math");\n'
         "    return 0;\n"
         "}\n",
         encoding="utf-8",
     )
     stale_top_level_source.write_text(
         "static int exec(PyObject *module) {\n"
-        "    PyImport_ImportModule(\"json\");\n"
+        '    PyImport_ImportModule("json");\n'
         "    return 0;\n"
         "}\n",
         encoding="utf-8",
@@ -1406,9 +1409,9 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     provider_source = tmp_path / "provider.c"
     provider_source.write_text(
         "static int module_exec(PyObject *module) {\n"
-        "    IMPORT_GLOBAL(\"math\", \"floor\", floor_obj);\n"
-        "    PyImport_ImportModule(\"nativepkg._internal\");\n"
-        "    important(\"not_a_module\");\n"
+        '    IMPORT_GLOBAL("math", "floor", floor_obj);\n'
+        '    PyImport_ImportModule("nativepkg._internal");\n'
+        '    important("not_a_module");\n'
         "    return 0;\n"
         "}\n",
         encoding="utf-8",
@@ -1424,8 +1427,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
         encoding="utf-8",
     )
     exceptions_path.write_text(
-        "class AxisError(Exception):\n"
-        "    pass\n",
+        "class AxisError(Exception):\n    pass\n",
         encoding="utf-8",
     )
     capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
@@ -1530,7 +1532,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     source_path = tmp_path / "native_exec.c"
     source_path.write_text(
         "static int exec(PyObject *module) {\n"
-        "    PyImport_ImportModule(\"nativepkg\");\n"
+        '    PyImport_ImportModule("nativepkg");\n'
         "    return 0;\n"
         "}\n",
         encoding="utf-8",
@@ -1539,8 +1541,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     child_path = external_root / "nativepkg" / "_child.py"
     package_init.parent.mkdir(parents=True)
     package_init.write_text(
-        "from nativepkg import _child\n"
-        "VALUE = _child.VALUE\n",
+        "from nativepkg import _child\nVALUE = _child.VALUE\n",
         encoding="utf-8",
     )
     child_path.write_text("VALUE = 42\n", encoding="utf-8")
@@ -1619,8 +1620,7 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     package_init = external_root / "nativepkg" / "__init__.py"
     package_init.parent.mkdir(parents=True)
     package_init.write_text(
-        "def platform_probe():\n"
-        "    return polyval([1, 2], [3])\n",
+        "def platform_probe():\n    return polyval([1, 2], [3])\n",
         encoding="utf-8",
     )
     _write_external_native_artifact(
@@ -7606,9 +7606,7 @@ def test_frontend_native_callable_module_attr_rejects_memory_abi() -> None:
         "abi": "molt.forward_f32_v1",
     }
 
-    with pytest.raises(
-        CompatibilityError, match="uses module_attr direct-symbol ABI"
-    ):
+    with pytest.raises(CompatibilityError, match="uses module_attr direct-symbol ABI"):
         _frontend_main_ops_for_import_source(
             "from scipy.ndimage import distance_transform_edt\n"
             "mask = 1\n"
@@ -14999,7 +14997,7 @@ def test_merge_module_graph_with_reason_tracks_sources(tmp_path: Path) -> None:
         "__main__": tmp_path / "main.py",
         "multiprocessing.spawn": tmp_path / "spawn.py",
     }
-    cli._merge_module_graph_with_reason(
+    cli_build_inputs._merge_module_graph_with_reason(
         module_graph,
         additions,
         reasons,
@@ -15520,6 +15518,7 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
         "entry_module": None,
         "enable_phi": True,
         "known_modules": ["worker_module"],
+        "direct_call_modules": ["worker_module"],
         "known_classes": {},
         "stdlib_allowlist": [],
         "known_func_defaults": {},
@@ -17449,6 +17448,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
     stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
     verification_calls: list[tuple[frozenset[str], str]] = []
 
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
@@ -17459,8 +17459,11 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
             "rustflags": cast(str, kwargs["rustflags"]),
         },
     )
+    # The reuse decision authority is _runtime_artifact_fingerprint_matches
+    # (runtime_fingerprints), which reads the stored fingerprint and consults
+    # _artifact_needs_rebuild through its own module namespace.
     monkeypatch.setattr(
-        cli_link_pipeline,
+        RUNTIME_FINGERPRINTS,
         "_artifact_needs_rebuild",
         lambda artifact, fingerprint, stored_fingerprint: (
             verification_calls.append(
@@ -17471,6 +17474,11 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
             )
             or False
         ),
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
+        "_read_runtime_fingerprint",
+        lambda path: stored_fingerprint,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: stored_fingerprint
@@ -17514,10 +17522,18 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
 
     assert len(verification_calls) >= 2
     assert all(call == verification_calls[0] for call in verification_calls)
-    assert {"stdlib_serial", "stdlib_micro", "no-default-features"} <= (
-        verification_calls[0][0]
+    verified_features = verification_calls[0][0]
+    assert {"stdlib_micro", "no-default-features"} <= verified_features
+    # The micro fingerprint carries exactly the Cargo-ladder-derived micro
+    # surface; user imports (json/ssl) must not leak profile features in.
+    assert (
+        cli_runtime_features.profile_link_features(
+            "micro", target_triple="wasm32-wasip1"
+        )
+        <= verified_features
     )
-    assert "stdlib_net" not in verification_calls[0][0]
+    assert "stdlib_serial" not in verified_features
+    assert "stdlib_net" not in verified_features
 
 
 def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerprint(
@@ -17601,6 +17617,19 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     assert sidecar.read_text(encoding="utf-8").strip() == cli._sha256_file(runtime_wasm)
 
 
+def _expand_rustflags_response_files(rustflags: str) -> str:
+    """Splice wasm link-arg @response-file contents back into the flag string.
+
+    The runtime build routes link args through response files, so assertions
+    on export/import link flags must look through the `link-arg=@path`
+    indirection to the file contents the linker actually reads.
+    """
+    expanded = [rustflags]
+    for match in re.finditer(r"link-arg=@(\S+)", rustflags):
+        expanded.append(Path(match.group(1)).read_text(encoding="utf-8"))
+    return "\n".join(expanded)
+
+
 def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -17662,7 +17691,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
         required_exports=None,
     )
 
-    rustflags = captured_env["RUSTFLAGS"]
+    rustflags = _expand_rustflags_response_files(captured_env["RUSTFLAGS"])
     assert "--import-memory" not in rustflags
     assert "--import-table" not in rustflags
     assert "--export-if-defined=molt_gpu_matmul_contiguous" in rustflags
@@ -17681,11 +17710,19 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
     stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
 
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"}
     )
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: False
+        RUNTIME_FINGERPRINTS,
+        "_artifact_needs_rebuild",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
+        "_read_runtime_fingerprint",
+        lambda path: stored_fingerprint,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: stored_fingerprint
@@ -17700,11 +17737,6 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
         RUNTIME_BUILD, "_runtime_wasm_exports_satisfy", lambda path, required: True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
-    monkeypatch.setattr(
-        cli,
-        "_resolve_built_runtime_wasm_artifact",
-        lambda target_root, profile_dir: runtime_wasm,
-    )
 
     assert RUNTIME_BUILD._ensure_runtime_wasm(
         runtime_wasm,
@@ -18066,12 +18098,12 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_result_kinds_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_signatures_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -18223,12 +18255,12 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_result_kinds_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_signatures_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -18797,12 +18829,12 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_result_kinds_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_signatures_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -18880,12 +18912,12 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_result_kinds_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
         "_runtime_import_signatures_from_manifest",
-        lambda _names: {},
+        lambda _names, *, runtime_export_signatures=None: {},
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -19139,14 +19171,22 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
         "artifact_sha256": cli._sha256_file(runtime),
     }
 
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setattr(
         RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: stored_fingerprint
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
+        "_read_runtime_fingerprint",
+        lambda path: stored_fingerprint,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"}
     )
     monkeypatch.setattr(
-        cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: False
+        RUNTIME_FINGERPRINTS,
+        "_artifact_needs_rebuild",
+        lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_is_valid_runtime_wasm_artifact", lambda path: True
@@ -19155,9 +19195,6 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
-    monkeypatch.setattr(
-        cli, "_resolve_built_runtime_wasm_artifact", lambda *args: current_src
-    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_wasm_exports_satisfy",
@@ -19225,7 +19262,14 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
         ),
     )
     monkeypatch.setattr(
-        cli_link_pipeline,
+        RUNTIME_FINGERPRINTS,
+        "_read_runtime_fingerprint",
+        lambda path: (
+            stored_fingerprint if "runtime_fingerprints" in os.fspath(path) else None
+        ),
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
         "_artifact_needs_rebuild",
         lambda artifact, current, stored: (
             stored is None
@@ -19307,6 +19351,13 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
+        "_read_runtime_fingerprint",
+        lambda path: (
+            stored_fingerprint if "runtime_fingerprints" in os.fspath(path) else None
+        ),
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
         "_read_runtime_fingerprint",
         lambda path: (
             stored_fingerprint if "runtime_fingerprints" in os.fspath(path) else None
@@ -20425,7 +20476,7 @@ def test_build_cli_defaults_to_auto_wasm_profile(
     assert seen_profiles == ["auto"]
 
 
-def test_build_cli_defaults_to_micro_stdlib_profile(
+def test_build_cli_defaults_to_auto_stdlib_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -20443,7 +20494,9 @@ def test_build_cli_defaults_to_micro_stdlib_profile(
     monkeypatch.setattr(sys, "argv", ["molt", "build", str(entry)])
 
     assert cli.main() == 0
-    assert seen_profiles == ["micro"]
+    # The CLI hands the unresolved "auto" intent to the build; the build
+    # pipeline resolves it to a runtime tier from the import graph.
+    assert seen_profiles == [cli_config_resolution.AUTO_STDLIB_PROFILE]
 
 
 def test_build_cli_keeps_deploy_stdlib_profile_default(

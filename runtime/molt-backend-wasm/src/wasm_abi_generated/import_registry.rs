@@ -212,17 +212,17 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaNew,
         name: "arena_new",
-        type_idx: 0,
+        type_idx: 52,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaAllocObject,
         name: "arena_alloc_object",
-        type_idx: 3,
+        type_idx: 16,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ArenaFree,
         name: "arena_free",
-        type_idx: 1,
+        type_idx: 15,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DecRefObj,
@@ -247,12 +247,12 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ResourceOnAllocate,
         name: "resource_on_allocate",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ResourceOnFree,
         name: "resource_on_free",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ModuleCacheGet,
@@ -332,7 +332,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionEnterHandler,
         name: "exception_enter_handler",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionClass,
@@ -372,7 +372,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionResolveCaptured,
         name: "exception_resolve_captured",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionMessage,
@@ -877,17 +877,17 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrUpper,
         name: "fast_str_upper",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrLower,
         name: "fast_str_lower",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FastStrStrip,
         name: "fast_str_strip",
-        type_idx: 1,
+        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardLayoutPtr,
@@ -1167,6 +1167,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::IsGenerator,
         name: "is_generator",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::IsNativeAwaitable,
+        name: "is_native_awaitable",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -1598,6 +1603,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::DictUpdateKwstar,
         name: "dict_update_kwstar",
         type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::DictUpdateMissing,
+        name: "dict_update_missing",
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DictValues,
@@ -15213,6 +15223,7 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_pending" => Some(WasmRuntimeImport::Pending),
         "is_callable" => Some(WasmRuntimeImport::IsCallable),
         "is_generator" => Some(WasmRuntimeImport::IsGenerator),
+        "is_native_awaitable" => Some(WasmRuntimeImport::IsNativeAwaitable),
         "is_truthy" => Some(WasmRuntimeImport::IsTruthy),
         "is_truthy_bool" => Some(WasmRuntimeImport::IsTruthyBool),
         "is_truthy_bool_nogil" => Some(WasmRuntimeImport::IsTruthyBoolNogil),
@@ -15325,6 +15336,7 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "dict_str_int_inc" => Some(WasmRuntimeImport::DictStrIntInc),
         "dict_update" => Some(WasmRuntimeImport::DictUpdate),
         "dict_update_kwstar" => Some(WasmRuntimeImport::DictUpdateKwstar),
+        "dict_update_missing" => Some(WasmRuntimeImport::DictUpdateMissing),
         "dict_values" => Some(WasmRuntimeImport::DictValues),
         "enumerate" => Some(WasmRuntimeImport::Enumerate),
         "enumerate_builtin" => Some(WasmRuntimeImport::EnumerateBuiltin),

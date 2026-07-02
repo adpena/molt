@@ -238,7 +238,10 @@ _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
     {
         "stdlib_tk",
         "stdlib_net",
-        "stdlib_ast",
+        # stdlib_ast is wasm-supported (pure-Rust rustpython-parser) and is
+        # genuinely reached by source-recompiled numpy's buffer-protocol
+        # dtype parsing, so it stays in the wasm ceiling; size-sensitive
+        # lanes trim it through profile selection, not a hard exclusion.
         "stdlib_unicode_names",
         "sqlite",
     }

@@ -420,9 +420,10 @@ def _ensure_runtime_lib(
             )
             cmd.extend(["--features", ",".join(concrete_features)])
         else:
-            # For WASM targets, exclude stdlib_ast (rustpython-parser, ~2MB) and
-            # stdlib_unicode_names (unicode_names2, ~1MB) - not useful on WASM
-            # and they inflate the binary well past the 3MB Cloudflare free tier.
+            # For WASM targets, exclude stdlib_unicode_names (unicode_names2,
+            # ~1MB) - not useful on WASM and it inflates the binary past the
+            # 3MB Cloudflare free tier. stdlib_ast stays in: it matches the
+            # wasm feature ceiling and source-recompiled numpy reaches it.
             is_wasm = target_triple and "wasm" in target_triple
             if is_wasm:
                 cmd.append("--no-default-features")
@@ -431,6 +432,7 @@ def _ensure_runtime_lib(
                     "stdlib_compression",
                     "stdlib_serialization",
                     "stdlib_archive",
+                    "stdlib_ast",
                     "stdlib_fs_extra",
                     "builtin_set",
                     "builtin_complex",

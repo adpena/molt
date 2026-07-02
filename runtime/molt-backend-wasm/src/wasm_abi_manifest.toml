@@ -57,6 +57,7 @@ static_type = [
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i32"], results = ["i32"] },
+  { params = [], results = ["i32"] },
 ]
 
 non_runtime_callable_intrinsic = [
@@ -453,15 +454,15 @@ type = 3
 
 [[import]]
 name = "arena_new"
-type = 0
+type = 52
 
 [[import]]
 name = "arena_alloc_object"
-type = 3
+type = 16
 
 [[import]]
 name = "arena_free"
-type = 1
+type = 15
 
 [[import]]
 name = "dec_ref_obj"
@@ -481,11 +482,11 @@ type = 6
 
 [[import]]
 name = "resource_on_allocate"
-type = 1
+type = 2
 
 [[import]]
 name = "resource_on_free"
-type = 1
+type = 2
 
 [[import]]
 name = "module_cache_get"
@@ -559,7 +560,7 @@ callable_arity = 0
 
 [[import]]
 name = "exception_enter_handler"
-type = 1
+type = 2
 runtime_name = "molt_exception_enter_handler"
 callable_arity = 1
 
@@ -597,7 +598,7 @@ type = 3
 
 [[import]]
 name = "exception_resolve_captured"
-type = 1
+type = 2
 
 [[import]]
 name = "exception_message"
@@ -1091,15 +1092,15 @@ type = 3
 
 [[import]]
 name = "fast_str_upper"
-type = 1
+type = 2
 
 [[import]]
 name = "fast_str_lower"
-type = 1
+type = 2
 
 [[import]]
 name = "fast_str_strip"
-type = 1
+type = 2
 
 [[import]]
 name = "guard_layout_ptr"
@@ -1331,6 +1332,10 @@ type = 2
 
 [[import]]
 name = "is_generator"
+type = 2
+
+[[import]]
+name = "is_native_awaitable"
 type = 2
 
 [[import]]
@@ -1711,6 +1716,10 @@ type = 3
 [[import]]
 name = "dict_update_kwstar"
 type = 3
+
+[[import]]
+name = "dict_update_missing"
+type = 5
 
 [[import]]
 name = "dict_values"
@@ -6167,6 +6176,7 @@ kinds = [
   "cancel_token_is_cancelled",
   "cancel_token_set_current",
   "is_generator",
+  "is_native_awaitable",
   "is_callable",
   "iter",
   "aiter",
@@ -6250,7 +6260,9 @@ kinds = [
   "dict_get",
   "dict_inc",
   "dict_str_int_inc",
+  "dict_set",
   "dict_setdefault",
+  "dict_update_missing",
   "callargs_push_kw",
   "enumerate",
 ]

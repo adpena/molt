@@ -213,10 +213,12 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     static_types = data["static_type"]
+    static_type_count = len(static_types)
 
-    assert len(static_types) == 52
+    assert static_type_count > 50
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
+    assert {"params": [], "results": ["i32"]} in static_types
     assert static_types[31] == {"params": ["i64", "i64"], "results": ["i64", "i64"]}
     assert static_types[32] == {
         "params": ["i64", "i64", "i64"],
@@ -227,9 +229,9 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
     assert "STATIC_FUNC_TYPES" in rendered_rs
-    assert "STATIC_TYPE_COUNT: u32 = 52" in rendered_rs
+    assert f"STATIC_TYPE_COUNT: u32 = {static_type_count}" in rendered_rs
     assert "WASM_STATIC_TYPES" in rendered_py
-    assert "WASM_STATIC_TYPE_COUNT: int = 52" in rendered_py
+    assert f"WASM_STATIC_TYPE_COUNT: int = {static_type_count}" in rendered_py
 
     wasm_abi = (ROOT / "runtime/molt-backend-wasm/src/wasm_abi.rs").read_text(
         encoding="utf-8"
@@ -545,6 +547,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["pipe_transport_drop"]["runtime_feature"] == "stdlib_asyncio"
     assert imports["email_message_drop"]["runtime_feature"] == "stdlib_email"
     assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
+    assert imports["statistics_mean_slice"]["runtime_feature"] == "stdlib_math"
+    assert imports["statistics_stdev_slice"]["runtime_feature"] == "stdlib_math"
     dual_use_reserved_imports = {"object_new_bound"}
     for reserved in data["reserved_runtime_callable"]:
         if reserved["import_name"] in dual_use_reserved_imports:

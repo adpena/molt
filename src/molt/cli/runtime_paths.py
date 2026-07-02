@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from molt.cli.config_resolution import (
@@ -207,10 +208,18 @@ def _runtime_wasm_artifact_path_cached(
 
 
 def _runtime_wasm_artifact_path(project_root: Path, artifact_name: str) -> Path:
+    return _runtime_wasm_artifact_path_from_env(project_root, artifact_name, os.environ)
+
+
+def _runtime_wasm_artifact_path_from_env(
+    project_root: Path,
+    artifact_name: str,
+    env: Mapping[str, str],
+) -> Path:
     return _runtime_wasm_artifact_path_cached(
         os.fspath(project_root),
         artifact_name,
-        os.environ.get("MOLT_WASM_RUNTIME_DIR"),
-        os.environ.get("MOLT_EXT_ROOT"),
+        env.get("MOLT_WASM_RUNTIME_DIR"),
+        env.get("MOLT_EXT_ROOT"),
         os.fspath(Path.cwd()),
     )
