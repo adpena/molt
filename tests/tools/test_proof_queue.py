@@ -99,6 +99,66 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert '"submission": 1' in notebook_text
 
 
+def test_proof_queue_evidence_accepts_positional_run_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    base_args = [
+        "--db",
+        str(db),
+        "--logs-root",
+        str(logs),
+        "--notebooks-root",
+        str(notebooks),
+        "--repo-root",
+        str(proof_queue.ROOT),
+    ]
+    assert (
+        proof_queue.main(
+            [
+                *base_args,
+                "exec",
+                "--id",
+                "evidence-smoke",
+                "--reason",
+                "prove evidence run id selectors",
+                "--resource-family",
+                "python",
+                "--contention-key",
+                "python:evidence-smoke",
+                "--timeout",
+                "30",
+                "--",
+                sys.executable,
+                "-c",
+                "print('ok')",
+            ]
+        )
+        == 0
+    )
+    run_id = _rows(db)[0]["run_id"]
+
+    capsys.readouterr()
+    assert proof_queue.main([*base_args, "evidence", run_id]) == 0
+    positional_payload = json.loads(capsys.readouterr().out)
+    assert [item["run_id"] for item in positional_payload] == [run_id]
+
+    assert proof_queue.main([*base_args, "evidence", "--run-id", run_id]) == 0
+    flag_payload = json.loads(capsys.readouterr().out)
+    assert [item["run_id"] for item in flag_payload] == [run_id]
+
+    with pytest.raises(SystemExit, match="unknown proof run id"):
+        proof_queue.main([*base_args, "evidence", "not-a-run-id"])
+
+    with pytest.raises(SystemExit, match="positional and --run-id disagree"):
+        proof_queue.main(
+            [*base_args, "evidence", run_id, "--run-id", "not-a-run-id"]
+        )
+
+
 def test_proof_queue_projection_failure_is_nonfatal_observability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

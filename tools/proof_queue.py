@@ -2906,12 +2906,17 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
 
 
 def _cmd_evidence(args: argparse.Namespace) -> int:
+    run_id = args.run_id or args.run_id_option
+    if args.run_id and args.run_id_option and args.run_id != args.run_id_option:
+        raise SystemExit("pass one proof run id: positional and --run-id disagree")
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
-    if args.run_id:
+    if run_id:
         rows = list(
-            conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (args.run_id,))
+            conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (run_id,))
         )
+        if not rows:
+            raise SystemExit(f"unknown proof run id {run_id!r}")
     else:
         rows = list(
             conn.execute(
@@ -3611,7 +3616,16 @@ def _build_parser() -> argparse.ArgumentParser:
     evidence_p = sub.add_parser(
         "evidence", help="export machine-readable proof evidence"
     )
-    evidence_p.add_argument("--run-id")
+    evidence_p.add_argument(
+        "run_id",
+        nargs="?",
+        help="proof run id to export (positional, mirrors diagnose)",
+    )
+    evidence_p.add_argument(
+        "--run-id",
+        dest="run_id_option",
+        help="proof run id to export",
+    )
     evidence_p.add_argument("--limit", type=int, default=20)
     evidence_p.add_argument("--output")
     evidence_p.set_defaults(func=_cmd_evidence)
