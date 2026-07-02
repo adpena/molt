@@ -1712,6 +1712,101 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     assert "VALUE = _child.VALUE" in init_source
 
 
+def test_entry_native_package_import_compiles_package_init_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    package_init = external_root / "nativepkg" / "__init__.py"
+    core_init = external_root / "nativepkg" / "_core" / "__init__.py"
+    expired_path = external_root / "nativepkg" / "_expired_attrs_2_0.py"
+    globals_path = external_root / "nativepkg" / "_globals.py"
+    docstrings_path = external_root / "nativepkg" / "_docstrings.py"
+    core_init.parent.mkdir(parents=True)
+    package_init.write_text(
+        "from ._expired_attrs_2_0 import __expired_attributes__\n"
+        "from ._globals import _NoValue\n"
+        "from . import _core\n"
+        "VALUE = (_NoValue, _core.CORE_VALUE, __expired_attributes__)\n",
+        encoding="utf-8",
+    )
+    core_init.write_text("CORE_VALUE = 42\n", encoding="utf-8")
+    expired_path.write_text(
+        "__expired_attributes__ = {'old': 'new'}\n", encoding="utf-8"
+    )
+    globals_path.write_text("_NoValue = object()\n", encoding="utf-8")
+    docstrings_path.write_text(
+        "DOC = 'not imported by module init'\n", encoding="utf-8"
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["nativepkg"],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text(
+        "import nativepkg\nprint(nativepkg.VALUE)\n", encoding="utf-8"
+    )
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact = policy.native_artifact_plan.artifacts[0]
+    assert artifact.runtime_python_import_modules == (
+        "nativepkg",
+        "nativepkg._core",
+        "nativepkg._expired_attrs_2_0",
+        "nativepkg._globals",
+    )
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert "nativepkg" in import_plan.compile_modules
+    assert "nativepkg._core" in import_plan.compile_modules
+    assert "nativepkg._expired_attrs_2_0" in import_plan.compile_modules
+    assert "nativepkg._globals" in import_plan.compile_modules
+    assert "nativepkg._docstrings" not in import_plan.compile_modules
+    assert "entry_closure" in module_reasons["nativepkg"]
+    assert "entry_closure" in module_reasons["nativepkg._core"]
+    assert "entry_closure" in module_reasons["nativepkg._expired_attrs_2_0"]
+    assert "entry_closure" in module_reasons["nativepkg._globals"]
+
+
 def test_materialize_import_plan_does_not_compile_package_init_support_without_runtime_import(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
