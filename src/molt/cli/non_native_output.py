@@ -50,7 +50,10 @@ from molt.cli.wasm import (
     _split_runtime_browser_abi_from_manifest,
 )
 from molt.cli import wasm_toolchain
-from molt.native_callable_abi import native_callable_browser_signature
+from molt.native_callable_abi import (
+    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+    native_callable_browser_signature,
+)
 from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
@@ -342,6 +345,36 @@ def _browser_native_callable_manifest(
             "app imports native callable symbol(s) without staged native "
             f"artifact custody: {missing}"
         )
+
+    def add_symbol(
+        symbol: str,
+        *,
+        abi: str,
+        export_payload: dict[str, Any],
+    ) -> None:
+        if symbol not in required:
+            return
+        existing = symbols.get(symbol)
+        if existing is None:
+            symbols[symbol] = {
+                "abi": abi,
+                "binding": "direct_symbol",
+                "signature": native_callable_browser_signature(abi),
+                "exports": [export_payload],
+            }
+            return
+        if existing.get("abi") != abi:
+            raise ValueError(
+                f"native symbol {symbol!r} has conflicting callable "
+                f"ABIs {existing.get('abi')!r} and {abi!r}"
+            )
+        existing_exports = existing.setdefault("exports", [])
+        if not isinstance(existing_exports, list):
+            raise ValueError(
+                f"native symbol {symbol!r} manifest exports were corrupted"
+            )
+        existing_exports.append(export_payload)
+
     for artifact in native_artifact_plan.artifacts:
         artifact_payload = {
             "package": artifact.package,
@@ -349,6 +382,21 @@ def _browser_native_callable_manifest(
             "manifest_sha256": artifact.manifest_sha256,
             "extension_sha256": artifact.extension_sha256,
         }
+        if artifact.init_symbol:
+            add_symbol(
+                artifact.init_symbol,
+                abi=NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+                export_payload={
+                    "qualified_name": artifact.module,
+                    "module": artifact.module,
+                    "name": artifact.module.rsplit(".", 1)[-1],
+                    "binding": "direct_symbol",
+                    "abi": NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+                    "symbol": artifact.init_symbol,
+                    "kind": "extension_init",
+                    "artifact": artifact_payload,
+                },
+            )
         for export in artifact.callable_exports:
             if export.binding != "direct_symbol":
                 continue
@@ -361,26 +409,7 @@ def _browser_native_callable_manifest(
             export_payload = export.digest_payload()
             export_payload["qualified_name"] = export.qualified_name
             export_payload["artifact"] = artifact_payload
-            existing = symbols.get(export.symbol)
-            if existing is None:
-                symbols[export.symbol] = {
-                    "abi": export.abi,
-                    "binding": "direct_symbol",
-                    "signature": native_callable_browser_signature(export.abi),
-                    "exports": [export_payload],
-                }
-                continue
-            if existing.get("abi") != export.abi:
-                raise ValueError(
-                    f"native symbol {export.symbol!r} has conflicting callable "
-                    f"ABIs {existing.get('abi')!r} and {export.abi!r}"
-                )
-            existing_exports = existing.setdefault("exports", [])
-            if not isinstance(existing_exports, list):
-                raise ValueError(
-                    f"native symbol {export.symbol!r} manifest exports were corrupted"
-                )
-            existing_exports.append(export_payload)
+            add_symbol(export.symbol, abi=export.abi, export_payload=export_payload)
     missing_required = sorted(required - symbols.keys())
     if missing_required:
         missing = ", ".join(missing_required)

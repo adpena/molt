@@ -18908,6 +18908,7 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
     native_callable_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
     object_call_symbol = "molt_nativepkg_ndimage_label"
     object_callargs_symbol = "molt_nativepkg_ndimage_gaussian_filter"
+    pyinit_symbol = "PyInit__ndimage"
     package_dir = tmp_path / "site" / "nativepkg"
     package_dir.mkdir(parents=True)
     artifact_path = package_dir / "_ndimage.molt.wasm"
@@ -18932,6 +18933,7 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
                 platform_tag="wasm32_wasip1",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
+                init_symbol=pyinit_symbol,
                 callable_exports=(
                     _ExternalNativeCallableExport(
                         module="nativepkg.ndimage",
@@ -18978,6 +18980,10 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
         native_artifact_plan,
         required_symbols={object_callargs_symbol},
     )
+    pyinit_manifest = cli_non_native_output._browser_native_callable_manifest(
+        native_artifact_plan,
+        required_symbols={pyinit_symbol},
+    )
 
     assert empty_manifest == {"module": "molt_native", "symbols": {}}
     symbol_payload = required_manifest["symbols"][native_callable_symbol]
@@ -19005,6 +19011,14 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
     assert callargs_payload["exports"][0]["qualified_name"] == (
         "nativepkg.ndimage.gaussian_filter"
     )
+    pyinit_payload = pyinit_manifest["symbols"][pyinit_symbol]
+    assert pyinit_payload["abi"] == "molt.pyinit_module_v1"
+    assert pyinit_payload["signature"] == {
+        "params": [],
+        "result": "molt.pyobject_ptr",
+    }
+    assert pyinit_payload["exports"][0]["kind"] == "extension_init"
+    assert pyinit_payload["exports"][0]["qualified_name"] == "nativepkg._ndimage"
 
 
 def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_import(
