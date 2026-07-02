@@ -117,7 +117,13 @@ PYTHON_EXCEPTION_RE = re.compile(
     r"(?m)^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>.+)$"
 )
 PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
+PYTEST_ERROR_RE = re.compile(
+    r"(?m)^ERROR\s+(?P<nodeid>\S+)(?:\s+-\s+(?P<detail>[^\r\n]+))?"
+)
 PYTEST_ASSERTION_RE = re.compile(r"(?m)^E\s+(?P<error>AssertionError[^\r\n]*)")
+PYTEST_EXCEPTION_LINE_RE = re.compile(
+    r"(?m)^E\s+(?P<error>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):[^\r\n]*)"
+)
 MEMORY_GUARD_ORPHANED_RE = re.compile(
     r"memory_guard: orphaned child processes detected after command exit; "
     r"(?P<detail>[^\r\n]+)"
@@ -1466,6 +1472,28 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "src/molt/cli/runtime_features.py",
                     "src/molt/cli/module_stdlib_policy.py",
                 ),
+            )
+        )
+
+    match = PYTEST_ERROR_RE.search(log_tail)
+    if match is not None:
+        exception_line = PYTEST_EXCEPTION_LINE_RE.search(log_tail)
+        detail = (
+            exception_line.group("error")
+            if exception_line is not None
+            else (match.group("detail") or match.group(0))
+        )
+        diagnostics.append(
+            _diagnostic(
+                signal_id="pytest-error",
+                severity="error",
+                summary=f"Pytest proof errored while running {match.group('nodeid')}.",
+                evidence=detail,
+                next_action=(
+                    "Fix the collection/import/setup error before interpreting "
+                    "the proof lane; this row did not reach the protected assertion."
+                ),
+                scopes=("tests/", "tools/proof_queue.py"),
             )
         )
 
