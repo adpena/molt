@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 import molt.wasm_artifact as _wasm_artifact
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_LEGACY_TABLE_BASE,
     WASM_RUNTIME_IMPORT_FALLBACK_SPECS,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
@@ -17,14 +18,18 @@ from molt._wasm_abi_generated import (
     wasm_import_signature,
     wasm_runtime_callable_result,
     wasm_runtime_callable_spec,
+    wasm_runtime_export_name,
     wasm_runtime_import_name,
 )
+
+_CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
 __all__ = (
     "_effective_split_worker_table_base",
     "_export_wasm_table_refs",
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
+    "_runtime_export_name_for_import_from_manifest",
     "_runtime_import_fallbacks_from_manifest",
     "_runtime_import_result_kinds_from_manifest",
     "_runtime_import_signatures_from_manifest",
@@ -132,33 +137,51 @@ def _effective_split_worker_table_base(
 
 def _runtime_import_signatures_from_manifest(
     import_names: Iterable[str],
+    *,
+    runtime_export_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, dict[str, object]]:
     signatures: dict[str, dict[str, object]] = {}
     for import_name in sorted(set(import_names)):
         signature = _runtime_import_signature_from_manifest(import_name)
-        if signature is None:
+        if signature is not None:
+            params, results = signature
+            signatures[import_name] = {
+                "params": list(params),
+                "result": "nil" if not results else ", ".join(results),
+            }
+            continue
+        export_signature = _runtime_export_signature_for_cpython_abi_link_import(
+            import_name,
+            runtime_export_signatures,
+        )
+        if export_signature is None:
             raise ValueError(
                 f"runtime import {import_name!r} missing from WASM ABI manifest"
             )
-        params, results = signature
-        signatures[import_name] = {
-            "params": list(params),
-            "result": "nil" if not results else ", ".join(results),
-        }
+        signatures[import_name] = export_signature
     return signatures
 
 
 def _runtime_import_result_kinds_from_manifest(
     import_names: Iterable[str],
+    *,
+    runtime_export_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, str]:
     result_kinds: dict[str, str] = {}
     for import_name in sorted(set(import_names)):
         result_kind = _runtime_import_result_kind_from_manifest(import_name)
-        if result_kind is None:
+        if result_kind is not None:
+            result_kinds[import_name] = result_kind
+            continue
+        export_signature = _runtime_export_signature_for_cpython_abi_link_import(
+            import_name,
+            runtime_export_signatures,
+        )
+        if export_signature is None:
             raise ValueError(
                 f"runtime import {import_name!r} missing from WASM ABI manifest"
             )
-        result_kinds[import_name] = result_kind
+        result_kinds[import_name] = str(export_signature["result"])
     return result_kinds
 
 
@@ -176,6 +199,46 @@ def _runtime_import_signature_from_manifest(
         results: tuple[str, ...] = () if result == "void" else ("i64",)
         return (params, results)
     return None
+
+
+def _is_cpython_abi_link_import(import_name: str) -> bool:
+    return (
+        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(import_name)
+        == _CPYTHON_ABI_LINK_IMPORT_CLASS
+    )
+
+
+def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | None:
+    export_name = wasm_runtime_export_name(import_name)
+    if export_name is not None:
+        return export_name
+    if _is_cpython_abi_link_import(import_name):
+        return import_name
+    return None
+
+
+def _runtime_export_signature_for_cpython_abi_link_import(
+    import_name: str,
+    runtime_export_signatures: Mapping[str, Mapping[str, object]] | None,
+) -> dict[str, object] | None:
+    if runtime_export_signatures is None or not _is_cpython_abi_link_import(import_name):
+        return None
+    signature = runtime_export_signatures.get(import_name)
+    if signature is None:
+        return None
+    params = signature.get("params")
+    result = signature.get("result")
+    if not isinstance(params, list) or not all(
+        isinstance(param, str) for param in params
+    ):
+        raise ValueError(
+            f"runtime export signature for {import_name!r} has invalid params"
+        )
+    if not isinstance(result, str):
+        raise ValueError(
+            f"runtime export signature for {import_name!r} has invalid result"
+        )
+    return {"params": list(params), "result": result}
 
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
@@ -244,10 +307,12 @@ def _generate_split_worker_js(
     """
     runtime_import_names = tuple(runtime_import_names or ())
     runtime_import_result_kinds = _runtime_import_result_kinds_from_manifest(
-        runtime_import_names
+        runtime_import_names,
+        runtime_export_signatures=runtime_export_signatures,
     )
     runtime_import_signatures = _runtime_import_signatures_from_manifest(
-        runtime_import_names
+        runtime_import_names,
+        runtime_export_signatures=runtime_export_signatures,
     )
     runtime_import_result_kinds_json = json.dumps(
         runtime_import_result_kinds, sort_keys=True

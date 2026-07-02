@@ -43,6 +43,7 @@ from molt.cli.wasm import (
     _effective_split_worker_table_base,
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
+    _runtime_export_name_for_import_from_manifest,
     _runtime_import_result_kinds_from_manifest,
     _runtime_import_signatures_from_manifest,
     _split_runtime_browser_abi_from_manifest,
@@ -169,12 +170,11 @@ def _write_external_static_packages_bundle(
 def _runtime_export_signatures_for_imports(
     runtime_wasm: Path, import_names: set[str]
 ) -> dict[str, dict[str, object]]:
-    import_to_export = {
-        import_name: import_name
-        if import_name.startswith("molt_")
-        else f"molt_{import_name}"
-        for import_name in import_names
-    }
+    import_to_export = {}
+    for import_name in import_names:
+        export_name = _runtime_export_name_for_import_from_manifest(import_name)
+        if export_name is not None:
+            import_to_export[import_name] = export_name
     export_signatures = _wasm_export_function_signatures(
         runtime_wasm,
         export_names=import_to_export.values(),
@@ -937,14 +937,18 @@ def _prepare_non_native_build_result(
             app_native_callable_import_names = _collect_wasm_module_import_names(
                 app_wasm, "molt_native"
             )
-            app_runtime_import_result_kinds = (
-                _runtime_import_result_kinds_from_manifest(app_runtime_import_names)
-            )
-            app_runtime_import_signatures = _runtime_import_signatures_from_manifest(
-                app_runtime_import_names
-            )
             app_runtime_export_signatures = _runtime_export_signatures_for_imports(
                 rt_wasm, app_runtime_import_names
+            )
+            app_runtime_import_result_kinds = (
+                _runtime_import_result_kinds_from_manifest(
+                    app_runtime_import_names,
+                    runtime_export_signatures=app_runtime_export_signatures,
+                )
+            )
+            app_runtime_import_signatures = _runtime_import_signatures_from_manifest(
+                app_runtime_import_names,
+                runtime_export_signatures=app_runtime_export_signatures,
             )
             shared_memory_initial_pages = max(
                 app_memory_min or 0,
