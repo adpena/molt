@@ -1884,8 +1884,13 @@ def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
     def failing_sampler() -> Mapping[int, memory_guard.ProcessSample]:
         raise RuntimeError("sampler unavailable")
 
-    def fake_terminate(root_pid: int, **kwargs: object) -> None:
+    report = _guard_termination_report(reason="tracked_orphan_cleanup")
+
+    def fake_terminate(
+        root_pid: int, **kwargs: object
+    ) -> memory_guard.GuardTerminationReport:
         calls.append({"root_pid": root_pid, **kwargs})
+        return report
 
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
 
@@ -1899,6 +1904,7 @@ def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
         )
 
     assert calls and calls[0]["watched"] == {200}
+    assert calls[0]["reason"] == "tracked_orphan_cleanup"
 
 
 def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
