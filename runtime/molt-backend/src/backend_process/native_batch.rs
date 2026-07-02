@@ -98,6 +98,10 @@ pub(crate) struct NativeApplicationObjectOptions<'a> {
     pub(crate) stdlib_split_enabled: bool,
     pub(crate) app_callable_manifest: Option<std::collections::BTreeSet<String>>,
     pub(crate) log_prefix: &'a str,
+    /// Per-build module registry (import bedrock, design doc 69): its init
+    /// symbols are dead-function-elimination roots and the main application
+    /// object emits its blob (`molt_module_registry_blob`).
+    pub(crate) module_registry: Option<molt_backend::ModuleRegistryIR>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -122,6 +126,10 @@ pub(crate) struct NativeBatchObjectJob {
     pub(crate) emit_app_callable_resolver: bool,
     pub(crate) app_callable_manifest: Option<std::collections::BTreeSet<String>>,
     pub(crate) external_function_names: std::collections::BTreeSet<String>,
+    /// Carried by the batch that emits the app callable resolver (the main
+    /// application object): that batch also emits the module registry blob.
+    #[serde(default)]
+    pub(crate) module_registry: Option<molt_backend::ModuleRegistryIR>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -256,6 +264,7 @@ pub(crate) fn compile_native_batch_object_job(
     backend.emit_app_callable_resolver = job.emit_app_callable_resolver;
     backend.app_callable_manifest = job.app_callable_manifest;
     backend.external_function_names = job.external_function_names;
+    backend.module_registry = job.module_registry;
     backend.set_module_context(metadata.module_context);
     let output = backend.compile(job.ir);
     write_output_path(output_path, &output.bytes)
@@ -463,7 +472,15 @@ pub(crate) fn compile_native_application_object_to_path(
     // authority for both direct backend runs and daemon requests.
     molt_backend::inject_runtime_exit(&mut ir);
     if !options.stdlib_split_enabled {
-        molt_backend::eliminate_dead_functions(&mut ir);
+        // Import bedrock: registry init symbols are DFE roots — init bodies
+        // are reachable only through the registry blob's MODULE_INIT_TABLE
+        // relocations (invariant I5).
+        let module_registry_roots: std::collections::BTreeSet<String> = options
+            .module_registry
+            .as_ref()
+            .map(|registry| registry.init_symbols.iter().cloned().collect())
+            .unwrap_or_default();
+        molt_backend::eliminate_dead_functions_with_roots(&mut ir, &module_registry_roots);
         molt_backend::eliminate_dead_imports(&mut ir);
         molt_backend::eliminate_dead_ops(&mut ir);
     }
@@ -482,6 +499,7 @@ pub(crate) fn compile_native_application_object_to_path(
             backend.skip_shared_stdlib_partition = true;
         }
         backend.app_callable_manifest = options.app_callable_manifest.take();
+        backend.module_registry = options.module_registry.take();
         let obj_output = backend.compile(ir);
         write_output_path(output_path, &obj_output.bytes)?;
         eprintln!(
@@ -556,6 +574,15 @@ pub(crate) fn compile_native_application_object_to_path(
                         None
                     },
                     external_function_names,
+                    // The resolver-emitting batch is the main application
+                    // object; it also owns the module registry blob.  Init
+                    // functions in sibling batches resolve through Import
+                    // relocations at link.
+                    module_registry: if batch_idx == 0 {
+                        options.module_registry.take()
+                    } else {
+                        None
+                    },
                 },
             )?;
             batch_specs.push(NativeBatchJobSpec {

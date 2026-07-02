@@ -2764,21 +2764,26 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
 
     assert error is None
     assert prepared is not None
-    import_ops = next(
-        func["ops"]
-        for func in prepared.ir["functions"]
-        if func["name"] == "molt_isolate_import"
+    # Import bedrock (design doc 69 PR1): the native lane has no
+    # molt_isolate_import string_eq chain; runtime import dispatch membership
+    # is the registry's MODULE_INIT_TABLE column, bounded by the same
+    # dispatch-roots authority the chain used.
+    assert all(
+        func["name"] != "molt_isolate_import" for func in prepared.ir["functions"]
     )
-    const_names = [
-        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
-    ]
-    call_targets = [op.get("s_value") for op in import_ops if op.get("kind") == "call"]
-    assert "gc" in const_names
-    assert cli.SimpleTIRGenerator.module_init_symbol("gc") in call_targets
-    assert "importlib.machinery" not in const_names
+    registry = prepared.module_registry
+    assert registry is not None
+    gc_row = registry.row_of("gc")
+    assert gc_row is not None
+    assert gc_row.init_symbol == cli.SimpleTIRGenerator.module_init_symbol("gc")
+    machinery_row = registry.row_of("importlib.machinery")
+    assert machinery_row is not None
+    assert machinery_row.init_symbol == "", (
+        "modules outside the runtime dispatch roots own no init lane"
+    )
     assert (
         cli.SimpleTIRGenerator.module_init_symbol("importlib.machinery")
-        not in call_targets
+        not in prepared.ir["module_registry"]["init_symbols"]
     )
 
 
@@ -2855,25 +2860,30 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
 
     assert error is None
     assert prepared is not None
-    import_ops = next(
-        func["ops"]
-        for func in prepared.ir["functions"]
-        if func["name"] == "molt_isolate_import"
+    # Import bedrock (design doc 69 PR1): runtime-support-closure membership
+    # is registry init-lane membership; the string_eq chain is gone.
+    assert all(
+        func["name"] != "molt_isolate_import" for func in prepared.ir["functions"]
     )
-    const_names = [
-        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
-    ]
-    call_targets = [op.get("s_value") for op in import_ops if op.get("kind") == "call"]
+    registry = prepared.module_registry
+    assert registry is not None
+    init_symbols = set(prepared.ir["module_registry"]["init_symbols"])
     for module_name in (
         "gc",
         "importlib",
         "importlib.machinery",
         "importlib._bootstrap",
     ):
-        assert module_name in const_names
-        assert cli.SimpleTIRGenerator.module_init_symbol(module_name) in call_targets
-    assert "json" not in const_names
-    assert cli.SimpleTIRGenerator.module_init_symbol("json") not in call_targets
+        row = registry.row_of(module_name)
+        assert row is not None
+        assert row.init_symbol == cli.SimpleTIRGenerator.module_init_symbol(
+            module_name
+        )
+        assert row.init_symbol in init_symbols
+    json_row = registry.row_of("json")
+    assert json_row is not None
+    assert json_row.init_symbol == ""
+    assert cli.SimpleTIRGenerator.module_init_symbol("json") not in init_symbols
 
 
 def test_backend_ir_isolate_import_initializes_static_native_artifacts(

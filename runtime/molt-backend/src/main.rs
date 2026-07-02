@@ -419,7 +419,7 @@ fn main() -> io::Result<()> {
     // Read and parse IR.  Drop the raw buffer immediately after
     // deserialization to avoid holding two copies in memory simultaneously.
     let stdin_request_limit_bytes = stdin_request_limit_bytes();
-    let mut ir: SimpleIR = {
+    let document: molt_backend::BackendIrDocument = {
         if ir_format == "msgpack" {
             // msgpack binary format — deserialize directly via serde
             if let Some(ir_path) = ir_file_path {
@@ -427,7 +427,7 @@ fn main() -> io::Result<()> {
                     io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
                 })?;
                 let reader = io::BufReader::new(file);
-                match rmp_serde::from_read(reader) {
+                match rmp_serde::from_read::<_, molt_backend::BackendIrDocument>(reader) {
                     Ok(ir) => ir,
                     Err(err) => {
                         eprintln!("invalid msgpack IR: {err}");
@@ -444,7 +444,7 @@ fn main() -> io::Result<()> {
                     "backend stdin request",
                 );
                 let reader = io::BufReader::with_capacity(1 << 20, bounded);
-                match rmp_serde::from_read::<_, SimpleIR>(reader) {
+                match rmp_serde::from_read::<_, molt_backend::BackendIrDocument>(reader) {
                     Ok(ir) => ir,
                     Err(err) => {
                         eprintln!("invalid msgpack IR: {err}");
@@ -466,7 +466,7 @@ fn main() -> io::Result<()> {
                         io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
                     })?;
                     let reader = io::BufReader::new(file);
-                    match ciborium::de::from_reader(reader) {
+                    match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(reader) {
                         Ok(ir) => ir,
                         Err(err) => {
                             eprintln!("invalid CBOR IR: {err}");
@@ -479,7 +479,8 @@ fn main() -> io::Result<()> {
                         stdin_request_limit_bytes,
                         "backend stdin request",
                     )?;
-                    match ciborium::de::from_reader::<SimpleIR, _>(&buf[..]) {
+                    match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(&buf[..])
+                    {
                         Ok(ir) => {
                             drop(buf);
                             ir
@@ -498,7 +499,7 @@ fn main() -> io::Result<()> {
                     io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
                 })?;
                 let reader = io::BufReader::new(file);
-                match SimpleIR::from_ndjson_reader(reader) {
+                match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
                     Ok(ir) => ir,
                     Err(err) => {
                         eprintln!("invalid NDJSON IR: {err}");
@@ -513,7 +514,7 @@ fn main() -> io::Result<()> {
                     "backend stdin request",
                 );
                 let reader = io::BufReader::new(bounded);
-                match SimpleIR::from_ndjson_reader(reader) {
+                match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
                     Ok(ir) => ir,
                     Err(err) => {
                         eprintln!("invalid NDJSON IR: {err}");
@@ -527,7 +528,7 @@ fn main() -> io::Result<()> {
                 io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
             })?;
             let reader = io::BufReader::with_capacity(1 << 20, file);
-            match serde_json::from_reader::<_, SimpleIR>(reader) {
+            match serde_json::from_reader::<_, molt_backend::BackendIrDocument>(reader) {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("invalid IR JSON: {err}");
@@ -547,7 +548,7 @@ fn main() -> io::Result<()> {
                     format!("backend stdin request is not UTF-8: {err}"),
                 )
             })?;
-            let result = serde_json::from_str::<SimpleIR>(&buffer);
+            let result = serde_json::from_str::<molt_backend::BackendIrDocument>(&buffer);
             drop(buffer);
             match result {
                 Ok(ir) => ir,
@@ -558,6 +559,18 @@ fn main() -> io::Result<()> {
             }
         }
     };
+    let molt_backend::BackendIrDocument {
+        mut ir,
+        module_registry,
+    } = document;
+    // The registry projection belongs to the native application-object lane;
+    // other lanes must not silently drop it.
+    if module_registry.is_some() && (is_wasm || is_luau || is_rust) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "module_registry is a native-lane IR section; wasm/luau/rust lanes do not consume it",
+        ));
+    }
 
     rewrite_annotate_stubs(&mut ir);
 
@@ -743,6 +756,7 @@ fn main() -> io::Result<()> {
                     entry_module: &entry_module,
                     explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
                     log_prefix: "MOLT_BACKEND",
+                    module_registry,
                 },
             )?;
 
@@ -1049,40 +1063,43 @@ mod tests {
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
             probe_cache_only: false,
-            ir: Some(SimpleIR {
-                functions: vec![
-                    FunctionIR {
-                        name: "molt_main".to_string(),
-                        params: vec![],
-                        ops: vec![
-                            OpIR {
-                                kind: "call".to_string(),
-                                s_value: Some("helper".to_string()),
-                                value: Some(0),
-                                ..OpIR::default()
-                            },
-                            OpIR {
+            ir: Some(molt_backend::BackendIrDocument {
+                module_registry: None,
+                ir: SimpleIR {
+                    functions: vec![
+                        FunctionIR {
+                            name: "molt_main".to_string(),
+                            params: vec![],
+                            ops: vec![
+                                OpIR {
+                                    kind: "call".to_string(),
+                                    s_value: Some("helper".to_string()),
+                                    value: Some(0),
+                                    ..OpIR::default()
+                                },
+                                OpIR {
+                                    kind: "ret_void".to_string(),
+                                    ..OpIR::default()
+                                },
+                            ],
+                            param_types: None,
+                            source_file: None,
+                            is_extern: false,
+                        },
+                        FunctionIR {
+                            name: "helper".to_string(),
+                            params: vec![],
+                            ops: vec![OpIR {
                                 kind: "ret_void".to_string(),
                                 ..OpIR::default()
-                            },
-                        ],
-                        param_types: None,
-                        source_file: None,
-                        is_extern: false,
-                    },
-                    FunctionIR {
-                        name: "helper".to_string(),
-                        params: vec![],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
-                        param_types: None,
-                        source_file: None,
-                        is_extern: false,
-                    },
-                ],
-                profile: None,
+                            }],
+                            param_types: None,
+                            source_file: None,
+                            is_extern: false,
+                        },
+                    ],
+                    profile: None,
+                },
             }),
             ir_path: None,
         };
@@ -1439,6 +1456,7 @@ mod tests {
                 emit_app_callable_resolver: false,
                 app_callable_manifest: None,
                 external_function_names: std::collections::BTreeSet::new(),
+                module_registry: None,
             },
         )
         .expect("write source job");
@@ -2327,6 +2345,7 @@ mod tests {
                 stdlib_split_enabled: false,
                 app_callable_manifest: None,
                 log_prefix: "MOLT_BACKEND(test)",
+                module_registry: None,
             },
         )
         .expect_err("forced linker failure should propagate");
@@ -2425,6 +2444,7 @@ mod tests {
                 stdlib_split_enabled: false,
                 app_callable_manifest: None,
                 log_prefix: "MOLT_BACKEND(test)",
+                module_registry: None,
             },
         )
         .expect_err("op budget must force relocatable batching");
@@ -2632,8 +2652,12 @@ mod tests {
         };
 
         let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
-        let (user_remaining, stdlib_funcs) =
-            prune_and_partition_native_stdlib(&mut ir, "app", Some(&stdlib_modules));
+        let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+            &mut ir,
+            "app",
+            Some(&stdlib_modules),
+            &std::collections::BTreeSet::new(),
+        );
         let user_names: Vec<_> = user_remaining
             .iter()
             .map(|func| func.name.as_str())
@@ -2687,8 +2711,12 @@ mod tests {
         };
 
         let stdlib_modules = std::collections::BTreeSet::new();
-        let (user_remaining, stdlib_funcs) =
-            prune_and_partition_native_stdlib(&mut ir, "__main__", Some(&stdlib_modules));
+        let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+            &mut ir,
+            "__main__",
+            Some(&stdlib_modules),
+            &std::collections::BTreeSet::new(),
+        );
         let user_names: Vec<_> = user_remaining
             .iter()
             .map(|func| func.name.as_str())
@@ -2783,56 +2811,59 @@ mod tests {
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
             probe_cache_only: false,
-            ir: Some(SimpleIR {
-                functions: vec![
-                    FunctionIR {
-                        name: "molt_main".to_string(),
-                        params: vec![],
-                        ops: vec![OpIR {
-                            kind: "call".to_string(),
-                            s_value: Some("demo__module".to_string()),
-                            value: Some(0),
-                            ..OpIR::default()
-                        }],
-                        param_types: None,
-                        source_file: None,
-                        is_extern: false,
-                    },
-                    FunctionIR {
-                        name: "demo__module".to_string(),
-                        params: vec![],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
-                        param_types: None,
-                        source_file: None,
-                        is_extern: false,
-                    },
-                    FunctionIR {
-                        name: "molt_isolate_bootstrap".to_string(),
-                        params: vec![],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
-                        param_types: None,
-                        source_file: None,
-                        is_extern: false,
-                    },
-                    FunctionIR {
-                        name: "molt_isolate_import".to_string(),
-                        params: vec!["p0".to_string()],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
-                        param_types: None,
-                        source_file: None,
-                        is_extern: false,
-                    },
-                ],
-                profile: None,
+            ir: Some(molt_backend::BackendIrDocument {
+                module_registry: None,
+                ir: SimpleIR {
+                    functions: vec![
+                        FunctionIR {
+                            name: "molt_main".to_string(),
+                            params: vec![],
+                            ops: vec![OpIR {
+                                kind: "call".to_string(),
+                                s_value: Some("demo__module".to_string()),
+                                value: Some(0),
+                                ..OpIR::default()
+                            }],
+                            param_types: None,
+                            source_file: None,
+                            is_extern: false,
+                        },
+                        FunctionIR {
+                            name: "demo__module".to_string(),
+                            params: vec![],
+                            ops: vec![OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            }],
+                            param_types: None,
+                            source_file: None,
+                            is_extern: false,
+                        },
+                        FunctionIR {
+                            name: "molt_isolate_bootstrap".to_string(),
+                            params: vec![],
+                            ops: vec![OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            }],
+                            param_types: None,
+                            source_file: None,
+                            is_extern: false,
+                        },
+                        FunctionIR {
+                            name: "molt_isolate_import".to_string(),
+                            params: vec!["p0".to_string()],
+                            ops: vec![OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            }],
+                            param_types: None,
+                            source_file: None,
+                            is_extern: false,
+                        },
+                    ],
+                    profile: None,
+                },
             }),
             ir_path: None,
         };
@@ -3118,8 +3149,12 @@ mod tests {
             profile: None,
         };
         let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
-        let (user_remaining, stdlib_funcs) =
-            prune_and_partition_native_stdlib(&mut partition_ir, "demo", Some(&stdlib_modules));
+        let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(
+            &mut partition_ir,
+            "demo",
+            Some(&stdlib_modules),
+            &std::collections::BTreeSet::new(),
+        );
         let user_names: Vec<_> = user_remaining
             .iter()
             .map(|func| func.name.as_str())

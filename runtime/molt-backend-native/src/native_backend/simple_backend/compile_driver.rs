@@ -213,6 +213,13 @@ impl SimpleBackend {
             if emit_resolver_here {
                 llvm.emit_app_resolver_function(&app_callable_manifest);
             }
+            //  Module registry blob (import bedrock)
+            // Same single-object custody as the resolver: the main application
+            // object carries the exported registry blob whose init-pointer
+            // column is the MODULE_INIT_TABLE.
+            if emit_resolver_here && let Some(registry) = self.module_registry.as_ref() {
+                llvm.emit_module_registry_blob(registry);
+            }
 
             // Dump LLVM IR under the repo-local debug artifact root when
             // MOLT_LLVM_DUMP_IR=1.
@@ -489,6 +496,15 @@ impl SimpleBackend {
         // stdlib wrappers compiled into the separate stdlib cache object.
         if emit_resolver_here {
             self.emit_app_resolver_function(&app_callable_manifest);
+        }
+        //  Module registry blob (import bedrock, design doc 69)
+        // Emitted AFTER the main flush so every init function defined in this
+        // object already owns a FuncId (reused via `get_name`), and with the
+        // same exactly-one-object custody as the app callable resolver: the
+        // main stub references `molt_module_registry_blob` and installs it
+        // with the runtime before `molt_runtime_init`.
+        if emit_resolver_here && let Some(registry) = self.module_registry.take() {
+            self.emit_module_registry_blob(&registry);
         }
         //  Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site

@@ -3518,11 +3518,7 @@ def test_native_package_init_try_guard_uses_nameerror_lookup(tmp_path: Path) -> 
     # past the handler and abort the import.
     run = _build_and_run_with_env(
         tmp_path,
-        (
-            "import guardpkg\n"
-            "print(guardpkg.__NUMPY_SETUP__)\n"
-            "print(guardpkg.state)\n"
-        ),
+        ("import guardpkg\nprint(guardpkg.__NUMPY_SETUP__)\nprint(guardpkg.state)\n"),
         "package_init_try_guard_nameerror",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-init-guard",
         cache_dir=ROOT / ".molt_cache-package-init-guard",
@@ -4010,3 +4006,77 @@ def test_native_direct_call_alias_returns_are_owned_across_fast_paths(
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["1", "3", "2", "3"]
+
+
+def test_native_import_bedrock_packages_cycle_and_dynamic_import(
+    tmp_path: Path,
+) -> None:
+    # Import bedrock (design doc 69, PR1) acceptance: one compiled program
+    # exercising the module registry end to end — package parent-first init
+    # with parent-attribute binding, a circular import observing the partial
+    # module published before body execution (publish-before-exec, I6), and a
+    # dynamic-name `__import__` whose string resolves through the registry
+    # into `molt_module_ensure` cold-init (the deleted string_eq chain's
+    # replacement).  The `if False:` import admits `dynmod` to the closure
+    # without executing, so the dynamic import is the FIRST init.
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import pkg.sub\n"
+            "import cyc_a\n"
+            "if False:\n"
+            "    import dynmod\n"
+            "print(pkg.sub.VALUE)\n"
+            "print(pkg.sub.BASE_VIA_PARENT)\n"
+            "print(cyc_a.combined())\n"
+            "mod = __import__('dyn' + 'mod')\n"
+            "print(mod.NAME)\n"
+        ),
+        "import_bedrock_packages_cycle_dynamic",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-import-bedrock",
+        cache_dir=ROOT / ".molt_cache-import-bedrock",
+        backend="cranelift",
+        extra_files={
+            "pkg/__init__.py": "BASE = 5\n",
+            "pkg/sub.py": ("import pkg\nVALUE = 42\nBASE_VIA_PARENT = pkg.BASE\n"),
+            "cyc_a.py": (
+                "import cyc_b\nA = 1\ndef combined():\n    return A + cyc_b.B\n"
+            ),
+            "cyc_b.py": (
+                "import cyc_a\n"  # sees the partially initialized cyc_a
+                "B = 2\n"
+            ),
+            "dynmod.py": "NAME = 'dynmod-ok'\n",
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "42",
+        "5",
+        "3",
+        "dynmod-ok",
+    ]
+
+
+def test_native_import_bedrock_sys_modules_identity(tmp_path: Path) -> None:
+    # sys.modules must observe the same module object ensure published
+    # (PR1 store-coherence bridge; PR2 makes sys.modules the table view).
+    # NOTE: on hosts where the pre-existing native indirect-call binding
+    # defect breaks `import sys` (tracked as its own P0), this fails for
+    # that reason, not an import-custody one — hence the separate test.
+    run = _build_and_run_with_env(
+        tmp_path,
+        ("import pkg.sub\nimport sys\nprint(sys.modules['pkg.sub'] is pkg.sub)\n"),
+        "import_bedrock_sys_modules_identity",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-import-bedrock-sys",
+        cache_dir=ROOT / ".molt_cache-import-bedrock",
+        backend="cranelift",
+        extra_files={
+            "pkg/__init__.py": "BASE = 5\n",
+            "pkg/sub.py": "import pkg\nVALUE = 42\n",
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["True"]

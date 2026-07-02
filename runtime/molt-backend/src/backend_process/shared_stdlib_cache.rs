@@ -96,6 +96,9 @@ pub(crate) fn compile_stdlib_cache_object(
                     emit_app_callable_resolver: false,
                     app_callable_manifest: None,
                     external_function_names,
+                    // Stdlib cache objects never own the registry blob; the
+                    // main application object emits it.
+                    module_registry: None,
                 },
             )?;
             stdlib_batch_specs.push(NativeBatchJobSpec {
@@ -178,9 +181,13 @@ pub(crate) fn prune_and_partition_native_stdlib(
     ir: &mut SimpleIR,
     entry_module: &str,
     stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
+    module_registry_roots: &std::collections::BTreeSet<String>,
 ) -> (Vec<molt_backend::FunctionIR>, Vec<molt_backend::FunctionIR>) {
     molt_backend::inject_runtime_exit(ir);
-    molt_backend::eliminate_dead_functions(ir);
+    // Import bedrock: init bodies are reachable only through the registry
+    // blob's MODULE_INIT_TABLE relocations, so the registry's init symbols
+    // are dead-function-elimination roots here (invariant I5).
+    molt_backend::eliminate_dead_functions_with_roots(ir, module_registry_roots);
     molt_backend::eliminate_dead_imports(ir);
     molt_backend::eliminate_dead_ops(ir);
     let user_func_set: std::collections::BTreeSet<String> = ir
@@ -688,6 +695,10 @@ pub(crate) struct NativeStdlibCachePrepare<'a> {
     pub(crate) entry_module: &'a str,
     pub(crate) explicit_stdlib_module_symbols: Option<&'a std::collections::BTreeSet<String>>,
     pub(crate) log_prefix: &'a str,
+    /// Per-build module registry (import bedrock).  Its init symbols root the
+    /// stdlib-partition dead-function elimination and it is forwarded to the
+    /// application-object compile for blob emission.
+    pub(crate) module_registry: Option<molt_backend::ModuleRegistryIR>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -698,12 +709,18 @@ pub(crate) fn prepare_native_application_object<'a>(
     let app_callable_manifest = request
         .stdlib_obj_path
         .map(|_| molt_backend::compute_app_callable_manifest_checked(&ir.functions));
+    let module_registry_roots: std::collections::BTreeSet<String> = request
+        .module_registry
+        .as_ref()
+        .map(|registry| registry.init_symbols.iter().cloned().collect())
+        .unwrap_or_default();
 
     if let Some(stdlib_path_str) = request.stdlib_obj_path {
         let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
             ir,
             request.entry_module,
             request.explicit_stdlib_module_symbols,
+            &module_registry_roots,
         );
         let stdlib_path = Path::new(stdlib_path_str);
         ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|err| {
@@ -838,5 +855,6 @@ pub(crate) fn prepare_native_application_object<'a>(
         stdlib_split_enabled: request.stdlib_obj_path.is_some(),
         app_callable_manifest,
         log_prefix: request.log_prefix,
+        module_registry: request.module_registry,
     })
 }

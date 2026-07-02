@@ -466,8 +466,9 @@ pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdl
     ir: &mut SimpleIR,
     entry_module: &str,
     stdlib_module_symbols: Option<&BTreeSet<String>>,
+    module_registry_roots: &BTreeSet<String>,
 ) -> (Vec<FunctionIR>, Vec<FunctionIR>) {
-    eliminate_dead_functions(ir);
+    eliminate_dead_functions_with_roots(ir, module_registry_roots);
     let user_func_set: BTreeSet<String> = ir
         .functions
         .iter()
@@ -533,6 +534,7 @@ pub(in crate::native_backend::simple_backend) fn shared_stdlib_external_symbols(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_partition(
     ir: &mut SimpleIR,
+    module_registry_roots: &BTreeSet<String>,
 ) {
     let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
         return;
@@ -550,6 +552,7 @@ pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_parti
         ir,
         &entry_module,
         explicit_stdlib_module_symbols.as_ref(),
+        module_registry_roots,
     );
     let mut retained = std::mem::take(&mut user_remaining);
     for mut func in std::mem::take(&mut stdlib_funcs) {

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from molt.cli import backend_compile as _backend_compile
 from molt.cli import backend_ir as _backend_ir
+from molt.cli.atomic_io import _atomic_write_json
 from molt.cli import backend_output_pipeline as _backend_output_pipeline
 from molt.cli import factgraph as _factgraph
 from molt.cli import frontend_pipeline as _frontend_pipeline
@@ -130,6 +131,16 @@ def _run_backend_pipeline(
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
     required_link_features = prepared_backend_ir.required_link_features
+    if prepared_backend_ir.module_registry is not None and artifacts_root is not None:
+        # Diagnostics projection of the per-build ModuleRegistry (import
+        # bedrock, design doc 69 §3).  Same generator run, same digest as the
+        # blob embedded in the native object; checked by
+        # `tools/gen_module_registry.py --check` (gate G1).
+        _atomic_write_json(
+            Path(artifacts_root) / "module_registry.json",
+            prepared_backend_ir.module_registry.registry_json_payload(),
+            indent=2,
+        )
     is_wasm_target = (
         output_layout.is_wasm
         or target in {"wasm", "wasm-freestanding"}

@@ -37,13 +37,11 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
-#[cfg(any(test, fuzzing))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    // Test/fuzz fallback only. Production binaries must provide the
-    // app-owned symbol emitted by the compiler or by the embedding host.
-    molt_obj_model::MoltObject::none().bits()
-}
+// NOTE: the former `molt_isolate_import` test fallback is deleted with the
+// native string_eq dispatch chain (import bedrock, design doc 69 PR1): the
+// native runtime resolves module identity through the installed module
+// registry (`builtins::module_table`) and no longer references an app-owned
+// isolate-import symbol. wasm32 keeps its env import until PR3.
 
 mod async_rt;
 #[cfg(any(

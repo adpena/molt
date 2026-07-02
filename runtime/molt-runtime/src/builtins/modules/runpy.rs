@@ -20,7 +20,9 @@ unsafe fn runpy_import_module_bits(_py: &PyToken<'_>, name: &str) -> Result<u64,
                 return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let module_bits = molt_isolate_import(name_bits);
+            // Import bedrock: registry resolve → molt_module_ensure (the old
+            // app-owned molt_isolate_import chain is deleted on native).
+            let module_bits = crate::builtins::module_table::isolate_import_dispatch(_py, name);
             let name_text =
                 string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| name.to_string());
             let mut canonical_bits: Option<u64> = None;

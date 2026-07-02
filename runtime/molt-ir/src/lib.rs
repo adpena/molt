@@ -21,7 +21,10 @@ pub mod runtime_callable_symbols;
 pub mod stdlib_module_symbols;
 pub mod tir;
 
-pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
+pub use crate::ir::{
+    BackendIrDocument, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR,
+    validate_simple_ir,
+};
 pub use crate::repr::Repr;
 
 /// The implicit FIRST parameter name the frontend prepends to every closure's

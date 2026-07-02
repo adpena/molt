@@ -24,13 +24,21 @@ impl SimpleBackend {
         compile_start: &std::time::Instant,
     ) -> NativeProgramPipeline {
         apply_profile_order(ir);
+        // Import bedrock: module init bodies are reachable only through the
+        // registry blob's MODULE_INIT_TABLE relocations (no call edges), so
+        // the registry's init symbols are dead-function-elimination roots.
+        let module_registry_roots: std::collections::BTreeSet<String> = self
+            .module_registry
+            .as_ref()
+            .map(|registry| registry.init_symbols.iter().cloned().collect())
+            .unwrap_or_default();
         // Whole-program reachability is the first backend custody boundary for
         // app objects. The frontend/stdlib transport may carry the full
         // importable stdlib graph, but TIR optimization and codegen must only
         // see functions reachable from declared roots. A second DFE after the
         // module inliner below catches functions made unreachable by inlining.
         if !self.skip_ir_passes {
-            eliminate_dead_functions(ir);
+            eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         // Pre-TIR IR passes (parallel). Each pass operates on a single
         // FunctionIR with no shared mutable state, so all passes can run in
@@ -113,7 +121,7 @@ impl SimpleBackend {
         // Dead function elimination after inlining reduces both object size and
         // downstream linker work.
         if !self.skip_ir_passes {
-            eliminate_dead_functions(ir);
+            eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
         split_megafunctions(ir);
         rewrite_annotate_stubs(ir);
@@ -132,7 +140,7 @@ impl SimpleBackend {
             self.app_callable_manifest.take().unwrap_or_default()
         };
         if !self.skip_shared_stdlib_partition {
-            externalize_shared_stdlib_partition(ir);
+            externalize_shared_stdlib_partition(ir, &module_registry_roots);
         }
         if timing {
             let passes_elapsed = compile_start.elapsed();

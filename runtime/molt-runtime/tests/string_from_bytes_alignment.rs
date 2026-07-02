@@ -10,11 +10,6 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_: u64) -> u64 {
-    MoltObject::none().bits()
-}
-
 fn init_runtime() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {

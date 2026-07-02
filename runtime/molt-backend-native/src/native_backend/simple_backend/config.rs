@@ -253,6 +253,7 @@ impl SimpleBackend {
             emit_app_callable_resolver: true,
             app_callable_manifest: None,
             external_function_names: std::collections::BTreeSet::new(),
+            module_registry: None,
             module_context: None,
             data_pool: BTreeMap::new(),
             next_data_id: 0,
