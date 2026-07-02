@@ -108,6 +108,7 @@ Kernel B `witness_forward.levelset_argmax` against
 | `006_precise_contract_full_witness_pipeline.md` | exact kernels, gates, and vision |
 | `007_molt_response_numpy_scipy_c_api_greenup_and_witness_kernel_plan.md` | ABI/package-native plan notes |
 | `008_addendum_v2_witness_decoder_20260629.md` | decode-chain, contest-runtime contracts, and runtime-rs sister-backend notes |
+| `009_theta_prime_capstone_sync_forward_kernels_and_vision_20260701.md` | θ′ capstone sync: 4 new built decode-chain kernels, the 7-kernel forward map (WebGPU speed-lane), reaffirmed contracts, and the P3/P4 visionary horizon (differentiable-WebGPU training + production deployment substrate). P0 stays Kernel A. |
 | `pact_witness_kernel/` | runnable bundle, fixture oracle, and parity script |
 
 ## The Two Asks That Unblock The Rest
