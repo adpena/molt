@@ -22,7 +22,7 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
-    source_extension_manifest_path,
+    source_extension_manifest_source_path,
     source_extension_manifest_required_capsule_imports_by_source,
 )
 from molt.wasm_artifact import read_wasm_function_exports
@@ -340,10 +340,21 @@ def _canonicalize_object_closure_source_capsule_requirements(
         source = item.get("source")
         if not isinstance(source, str) or not source.strip():
             continue
-        source_path = source_extension_manifest_path(
+        source_sha256 = item.get("source_sha256")
+        source_path, source_errors = source_extension_manifest_source_path(
             source,
+            manifest=manifest,
             manifest_path=manifest_path,
+            expected_sha256=(
+                source_sha256.strip()
+                if isinstance(source_sha256, str) and source_sha256.strip()
+                else None
+            ),
         )
+        if source_errors:
+            return source_errors
+        if source_path is None:
+            continue
         imports_by_capsule = by_source.get(source_path)
         if not imports_by_capsule:
             continue
