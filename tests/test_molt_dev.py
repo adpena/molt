@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -60,10 +61,13 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-import harness_memory_guard  # noqa: E402
+import dirty_tree_policy  # noqa: E402
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "molt_dev_gates.toml"
+KEYED_PIN_DIGEST = "0123456789abcdef" * 4
+KEYED_RUNTIME_PIN = f"wasm/molt_runtime.wasm.{KEYED_PIN_DIGEST}.sha256"
+NON_KEYED_RUNTIME_PIN = "wasm/molt_runtime.wasm.release-fast.sha256"
 
 
 def _load_driver():
@@ -86,15 +90,28 @@ def drv():
 
 
 def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = None):
-    proc = harness_memory_guard.guarded_completed_process(
-        ["git", "-C", str(repo), *args],
-        prefix="MOLT_TEST",
-        cwd=REPO_ROOT,
-        input=input_text,
-        capture_output=True,
-        text=True,
-        timeout=30.0,
-    )
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            cwd=REPO_ROOT,
+            env=env,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        proc = subprocess.CompletedProcess(
+            ["git", "-C", str(repo), *args],
+            124,
+            stdout,
+            f"{stderr.rstrip()}\ngit fixture command timed out after 30.0s\n",
+        )
     if check and proc.returncode != 0:
         raise AssertionError(
             f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr}"
@@ -167,7 +184,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/ops.rs"])
 
-    assert [r.name for r in matched] == ["tir-midend"]
+    assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
     assert "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings" in (
         gates
     )
@@ -179,7 +196,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
     assert "cargo test -p molt-passes --all-features" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/passes/effects.rs"])
-    assert [r.name for r in matched] == ["tir-midend"]
+    assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
     assert (
         "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
@@ -187,7 +204,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
     assert "cargo test -p molt-passes --all-features" in gates
 
     gates, matched = cfg.select(["runtime/molt-passes/src/tir/lower_to_simple.rs"])
-    assert [r.name for r in matched] == ["tir-midend"]
+    assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
     assert (
         "cargo clippy -p molt-passes --all-targets --all-features -- -D warnings"
         in gates
@@ -217,7 +234,11 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
         ]
     )
 
-    assert [r.name for r in matched] == ["backend-llvm", "op-kind-registry"]
+    assert [r.name for r in matched] == [
+        "backend-llvm",
+        "op-kind-registry",
+        "rust-ffi-blocks",
+    ]
     assert (
         "cargo test --profile release-fast -p molt-backend-native --features llvm --lib"
         in gates
@@ -229,7 +250,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-runtime-text/src/codec_registry.rs"])
 
-    assert [r.name for r in matched] == ["codec-tables"]
+    assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
     assert "python3 tools/gen_codecs.py --check" in gates
     assert "uv run python -m pytest -q tests/test_gen_codecs.py" in gates
 
@@ -240,13 +261,13 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(
         ["runtime/molt-runtime-text/src/codec_aliases_generated.rs"]
     )
-    assert [r.name for r in matched] == ["codec-tables"]
+    assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
     assert "python3 tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-runtime-text/src/charmap_codecs_generated.rs"]
     )
-    assert [r.name for r in matched] == ["codec-tables"]
+    assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
     assert "python3 tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
@@ -259,7 +280,7 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
 
-    assert [r.name for r in matched] == ["wasm-host"]
+    assert [r.name for r in matched] == ["wasm-host", "rust-ffi-blocks"]
     assert "cargo clippy -p molt-wasm-host -- -D warnings" in gates
     assert "cargo build --profile release-fast -p molt-wasm-host" in gates
 
@@ -509,20 +530,40 @@ def test_cleanup_refuses_dirty_tracked(drv, origin_and_clone, tmp_path):
     assert wt.exists()
 
 
+def test_molt_dev_default_ignore_globs_use_dirty_tree_policy_authority(drv):
+    assert drv.DEFAULT_IGNORE_GLOBS is dirty_tree_policy.DEFAULT_DIRTY_TREE_IGNORE_GLOBS
+
+
 def test_cleanup_ignore_set_allows_wasm_sha(drv, origin_and_clone, tmp_path):
     # A change confined to the wasm sha256 ignore set must NOT block cleanup.
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_wasm")
-    sha_file = wt / "wasm" / "molt_runtime.wasm.sha256"
+    sha_file = wt / KEYED_RUNTIME_PIN
     sha_file.parent.mkdir(parents=True, exist_ok=True)
     sha_file.write_text("deadbeef\n", encoding="utf-8")
-    _git(wt, "add", "--", "wasm/molt_runtime.wasm.sha256")
+    _git(wt, "add", "--", KEYED_RUNTIME_PIN)
     # Staged change to an IGNORED path only -> cleanup still allowed.
     rc = drv._cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_OK
     assert not wt.exists()
+
+
+def test_cleanup_refuses_non_keyed_wasm_sha_label(drv, origin_and_clone, tmp_path):
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_wasm_label")
+    sha_file = wt / NON_KEYED_RUNTIME_PIN
+    sha_file.parent.mkdir(parents=True, exist_ok=True)
+    sha_file.write_text("cafef00d\n", encoding="utf-8")
+    _git(wt, "add", "--", NON_KEYED_RUNTIME_PIN)
+
+    rc = drv._cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+
+    assert rc == drv.EXIT_FAIL
+    assert wt.exists()
 
 
 def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
@@ -612,10 +653,10 @@ def test_secure_wip_honors_ignore_set(drv, origin_and_clone):
     # A real tracked edit ...
     (work / "README.md").write_text("seed\nedit\n", encoding="utf-8")
     # ... plus a churn to an IGNORED wasm sha file that must be left behind.
-    sha = work / "wasm" / "molt_runtime.wasm.release-fast.sha256"
+    sha = work / KEYED_RUNTIME_PIN
     sha.parent.mkdir(parents=True, exist_ok=True)
     sha.write_text("cafef00d\n", encoding="utf-8")
-    _git(work, "add", "--", "wasm/molt_runtime.wasm.release-fast.sha256")
+    _git(work, "add", "--", KEYED_RUNTIME_PIN)
 
     ns = _ns(
         drv,
@@ -628,10 +669,10 @@ def test_secure_wip_honors_ignore_set(drv, origin_and_clone):
     assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
     files = set(_git(work, "show", "--name-only", "--format=", "HEAD").stdout.split())
     assert "README.md" in files
-    assert "wasm/molt_runtime.wasm.release-fast.sha256" not in files  # excluded
+    assert KEYED_RUNTIME_PIN not in files  # excluded
     # The ignored file is still pending (not swept into the recovery commit).
     remaining = {p for _xy, p in git.status_porcelain()}
-    assert "wasm/molt_runtime.wasm.release-fast.sha256" in remaining
+    assert KEYED_RUNTIME_PIN in remaining
 
 
 def test_secure_wip_excludes_untracked_by_default(drv, origin_and_clone):
@@ -715,6 +756,9 @@ def test_binaries_identical_helper(drv, tmp_path):
 def _fake_binary(path: Path, prints: str) -> None:
     """A tiny executable python 'binary' that prints a marker, runnable under
     safe_run.py (which the driver always uses to run a binary)."""
+    if os.name == "nt":
+        path.write_text(f"@echo off\r\necho {prints}\r\n", encoding="utf-8")
+        return
     path.write_text("#!/usr/bin/env python3\nprint(%r)\n" % prints, encoding="utf-8")
     path.chmod(0o755)
 
@@ -739,7 +783,7 @@ def test_verify_toolchain_fresh_binary_with_marker(drv, origin_and_clone, tmp_pa
     origin, work = origin_and_clone
     git = drv.Git(work)
     _commit_file(work, "runtime/molt-backend/src/y.rs", "// y\n", "rt: y")
-    binary = tmp_path / "fresh_bin"
+    binary = tmp_path / ("fresh_bin.cmd" if os.name == "nt" else "fresh_bin")
     _fake_binary(binary, "native=148 ready")  # marker in output
     # Binary is created AFTER the commit -> fresh.
     report = drv.verify_toolchain(
@@ -754,7 +798,7 @@ def test_verify_toolchain_missing_marker_fails(drv, origin_and_clone, tmp_path):
     origin, work = origin_and_clone
     git = drv.Git(work)
     _commit_file(work, "runtime/molt-backend/src/z.rs", "// z\n", "rt: z")
-    binary = tmp_path / "nomarker_bin"
+    binary = tmp_path / ("nomarker_bin.cmd" if os.name == "nt" else "nomarker_bin")
     _fake_binary(binary, "some other output")
     report = drv.verify_toolchain(
         git, binary, marker="native=148", probe_args=[], rss_mb=256, timeout=10
@@ -976,11 +1020,11 @@ def test_integrate_full_push_and_confirm(drv, origin_and_clone, tmp_path):
     gates = tmp_path / "g.toml"
     gates.write_text(
         """
-always = ["true"]
+always = ["echo true"]
 [[rule]]
 name = "frontend-python"
 globs = ["src/molt/**/*.py"]
-gates = ["true"]
+gates = ["echo true"]
 """,
         encoding="utf-8",
     )
@@ -1170,9 +1214,12 @@ def test_detached_daemon_survives_spawner_and_runs_in_new_session(
     assert rc == drv.EXIT_OK  # spawner returned while the daemon still runs
     state = state_root / "sleeper"
     assert not (state / "rc").exists()  # still running -> detachment is real
-    # New session: daemon sid differs from the test process's sid.
-    daemon_sid = int((state / "sid").read_text().strip())
-    assert daemon_sid != os.getsid(0)
+    sid_text = (state / "sid").read_text().strip()
+    if os.name == "nt":
+        assert sid_text.startswith("windows-process-group:")
+    else:
+        # New session: daemon sid differs from the test process's sid.
+        assert int(sid_text) != os.getsid(0)
     vrc, verdict = _verify_json(
         drv, capsys, _dv_ns(drv, "sleeper", state_root, min_age_s=0.0)
     )
