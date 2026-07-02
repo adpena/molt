@@ -17673,6 +17673,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
                 cast(tuple[str, ...], kwargs["runtime_features"])
             ),
             "rustflags": cast(str, kwargs["rustflags"]),
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
         },
     )
     # The reuse decision authority is _runtime_artifact_fingerprint_matches
@@ -17705,8 +17706,10 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
     monkeypatch.setattr(
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
     )
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authority.
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_exports_satisfy", lambda path, req: True
+        RUNTIME_BUILD, "_split_runtime_wasm_exports_satisfy", lambda path, req: True
     )
 
     assert RUNTIME_BUILD._ensure_runtime_wasm(
@@ -17775,6 +17778,11 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
     )
 
 
+# Any 64-hex value is a valid runtime integrity-pin key; the real key is the
+# runtime fingerprint meta digest (resolved profile/feature identity).
+_TEST_RUNTIME_META_DIGEST = "ab" * 32
+
+
 def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -17792,7 +17800,12 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "new",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
     )
     monkeypatch.setattr(
         cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
@@ -17812,6 +17825,18 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
     monkeypatch.setattr(
         RUNTIME_BUILD, "_write_runtime_fingerprint", lambda *args, **kwargs: None
     )
+    # Shared-mode (reloc=False) post-build validation routes through the
+    # split-runtime authorities; the fixture bytes are not a parseable module.
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_materialize_split_runtime_public_exports",
+        lambda runtime_wasm, required_exports, *, json_output: True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_missing_exports",
+        lambda path, required: set(),
+    )
 
     assert RUNTIME_BUILD._ensure_runtime_wasm(
         runtime_wasm,
@@ -17827,10 +17852,14 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
         required_exports=None,
     )
 
-    sidecar = runtime_wasm.with_name(f"{runtime_wasm.name}.sha256")
+    sidecar = runtime_wasm.with_name(
+        f"{runtime_wasm.name}.{_TEST_RUNTIME_META_DIGEST}.sha256"
+    )
     assert runtime_wasm.read_bytes() == built_src.read_bytes()
     assert sidecar.exists()
     assert sidecar.read_text(encoding="utf-8").strip() == cli._sha256_file(runtime_wasm)
+    # The retired single-slot sidecar must not reappear.
+    assert not runtime_wasm.with_name(f"{runtime_wasm.name}.sha256").exists()
 
 
 def _expand_rustflags_response_files(rustflags: str) -> str:
@@ -17865,7 +17894,12 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     captured_env: dict[str, str] = {}
 
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "new",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
     )
     monkeypatch.setattr(
         cli_link_pipeline, "_artifact_needs_rebuild", lambda *args, **kwargs: True
@@ -17925,10 +17959,19 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
     stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
+    # A stale single-slot pin from the retired convention must be superseded
+    # deterministically by the keyed writer.
+    legacy_sidecar = runtime_wasm.with_name(f"{runtime_wasm.name}.sha256")
+    legacy_sidecar.write_text("0" * 64 + "\n", encoding="utf-8")
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"}
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "same",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
     )
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
@@ -17968,9 +18011,13 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
         required_exports=None,
     )
 
-    sidecar = runtime_wasm.with_name(f"{runtime_wasm.name}.sha256")
+    sidecar = runtime_wasm.with_name(
+        f"{runtime_wasm.name}.{_TEST_RUNTIME_META_DIGEST}.sha256"
+    )
     assert sidecar.exists()
     assert sidecar.read_text(encoding="utf-8").strip() == cli._sha256_file(runtime_wasm)
+    # Migration: the writer removes the retired single-slot sidecar.
+    assert not legacy_sidecar.exists()
 
 
 def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
@@ -19415,7 +19462,12 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
         lambda path: stored_fingerprint,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"}
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "ok",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
     )
     monkeypatch.setattr(
         RUNTIME_FINGERPRINTS,
@@ -19429,9 +19481,11 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authority.
     monkeypatch.setattr(
         RUNTIME_BUILD,
-        "_runtime_wasm_exports_satisfy",
+        "_split_runtime_wasm_exports_satisfy",
         lambda path, required: path == runtime,
     )
 
@@ -19474,7 +19528,12 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     os.utime(runtime_source, ns=(1, 1))
     cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
     cargo_runtime.write_bytes(b"\0asm\x01\0\0\0runtime")
-    fingerprint = {"hash": "ok", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "ok",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     stored_fingerprint = {
         **fingerprint,
         "artifact_sha256": cli._sha256_file(cargo_runtime),
@@ -19520,11 +19579,17 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
         RUNTIME_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_inspect_wasm_binary", lambda path: "valid")
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authorities.
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_exports_satisfy", lambda path, required: True
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_exports_satisfy",
+        lambda path, required: True,
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_wasm_missing_exports", lambda path, required: set()
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_missing_exports",
+        lambda path, required: set(),
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -19551,7 +19616,7 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     assert cargo_builds == []
     assert runtime.read_bytes() == cargo_runtime.read_bytes()
     assert RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(
-        runtime
+        runtime, _TEST_RUNTIME_META_DIGEST
     ).exists()
 
 
@@ -19568,7 +19633,12 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     os.utime(runtime_source, ns=(1, 1))
     staticlib.parent.mkdir(parents=True, exist_ok=True)
     staticlib.write_bytes(b"!<arch>\nprebuilt")
-    fingerprint = {"hash": "ok", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "ok",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     stored_fingerprint = {
         **fingerprint,
         "artifact_sha256": cli._sha256_file(staticlib),
@@ -19641,7 +19711,7 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     assert linked_from == [staticlib]
     assert runtime.read_bytes() == b"\0asm\x01\0\0\0reloc"
     assert RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(
-        runtime
+        runtime, _TEST_RUNTIME_META_DIGEST
     ).exists()
 
 
@@ -25221,7 +25291,9 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     wasm_path = tmp_path / "wasm" / "app.wasm"
     wasm_path.parent.mkdir(parents=True)
     wasm_path.write_bytes(b"\0asm")
-    RUNTIME_WASM_VALIDATION._write_runtime_wasm_integrity_sidecar(wasm_path)
+    RUNTIME_WASM_VALIDATION._write_runtime_wasm_integrity_sidecar(
+        wasm_path, integrity_key=_TEST_RUNTIME_META_DIGEST
+    )
 
     generated_text_path = tmp_path / "generated" / "module.py"
     cli._write_text_if_changed(generated_text_path, "value = 1\n")
@@ -25256,7 +25328,9 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     cli._atomic_write_bytes(signature_path, b"signature")
 
     expected_dests = {
-        RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(wasm_path),
+        RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(
+            wasm_path, _TEST_RUNTIME_META_DIGEST
+        ),
         generated_text_path,
         diagnostics_path,
         emitted_ir_path,
