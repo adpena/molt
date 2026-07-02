@@ -31,6 +31,7 @@ from molt.cli.extension_manifest import (
     _validate_extension_manifest,
 )
 from molt.cli.file_hashing import _sha256_file
+from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli.models import (
     _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -1261,24 +1262,14 @@ def _validate_external_package_native_artifact(
             )
         except (OSError, SyntaxError):
             return set()
-        names: set[str] = set()
-        package_parts = module_name.split(".")
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                if node.level:
-                    base_parts = package_parts[: len(package_parts) - node.level]
-                    base = ".".join(
-                        part
-                        for part in (*base_parts, node.module or "")
-                        if part
-                    )
-                else:
-                    base = node.module or ""
-                if base:
-                    names.add(base)
-                    names.update(f"{base}.{alias.name}" for alias in node.names)
+        names = set(
+            _module_import_scanner._collect_imports(
+                tree,
+                module_name=module_name,
+                is_package=source_path.name == "__init__.py",
+                import_scan_mode="module_init",
+            )
+        )
         return {
             name
             for name in names
