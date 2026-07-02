@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sys
 
+from molt.cli.config_resolution import AUTO_STDLIB_PROFILE
 from molt.cli.default_paths import (
     _default_home_str,
     _default_molt_bin,
@@ -22,28 +23,28 @@ _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "wasm_profile": "pure",
         "precompile": True,
         "tmp_quota_mb": 32,
-        "stdlib_profile": "micro",
+        "stdlib_profile": AUTO_STDLIB_PROFILE,
     },
     "browser": {
         "wasm_opt_level": "Oz",
         "wasm_profile": "auto",
         "precompile": False,
         "tmp_quota_mb": 64,
-        "stdlib_profile": "micro",
+        "stdlib_profile": AUTO_STDLIB_PROFILE,
     },
     "wasi": {
         "wasm_opt_level": "O3",
         "wasm_profile": "auto",
         "precompile": False,
         "tmp_quota_mb": 256,
-        "stdlib_profile": "full",
+        "stdlib_profile": AUTO_STDLIB_PROFILE,
     },
     "fastly": {
         "wasm_opt_level": "Oz",
         "wasm_profile": "pure",
         "precompile": True,
         "tmp_quota_mb": 64,
-        "stdlib_profile": "micro",
+        "stdlib_profile": AUTO_STDLIB_PROFILE,
     },
 }
 _BUILD_PROFILE_CHOICES = ("dev", "release")

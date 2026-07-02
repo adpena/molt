@@ -100,6 +100,20 @@ def test_resolver_precedence_deploy_over_default() -> None:
     assert (value, source) == ("full", "deploy-profile")
 
 
+def test_deploy_profiles_preserve_auto_stdlib_intent() -> None:
+    from molt.cli.build_output_layout import _DEPLOY_PROFILE_DEFAULTS
+
+    assert {
+        profile: defaults.get("stdlib_profile")
+        for profile, defaults in sorted(_DEPLOY_PROFILE_DEFAULTS.items())
+    } == {
+        "browser": AUTO_STDLIB_PROFILE,
+        "cloudflare": AUTO_STDLIB_PROFILE,
+        "fastly": AUTO_STDLIB_PROFILE,
+        "wasi": AUTO_STDLIB_PROFILE,
+    }
+
+
 def test_resolver_ignores_invalid_values_at_each_layer() -> None:
     # An invalid flag falls through to the env layer.
     value, source = resolve_stdlib_profile(
