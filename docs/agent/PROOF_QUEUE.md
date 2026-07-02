@@ -143,6 +143,10 @@ cache, a broad selector, or a stale generated file.
   proof-row authority.
 - Submit long or compile-heavy proof rows with `--detach`, then keep working or
   end the arc. Do not spend a turn tailing a queued log.
+- When historical warning rows make audit output noisy, use
+  `tools\proof_queue.py audit --errors-only` for human triage. This hides
+  warning rows only from the terminal text; JSON/output payloads and the audit
+  exit status still preserve real errors.
 - For generators, use their timing mode when available and record the number.
   A generator check that rewrites identical files or reruns formatters on every
   output is a structural DX defect, not background noise.
@@ -285,7 +289,8 @@ Pact missing-output acceptance failures, Rust compiler errors, pytest assertion
 failures, external native artifact custody refusals, reachable native support
 modules without source/artifact custody, reachability-driven stdlib profile
 refusals, generated WASM ABI/link-import surface gaps, dependency-blocked rows,
-and memory-guard orphan cleanup.
+non-final memory-guard summaries on terminal rows, and memory-guard orphan
+cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 
@@ -305,6 +310,10 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose R
 `status` also prints the first diagnostic for recent failed rows. If a repeated
 failure only shows `unclassified-failed-proof`, add a deterministic diagnosis
 rule to `tools/proof_queue.py` before that pattern becomes tribal knowledge.
+If a terminal row still has only a `running` or `child_running` memory-guard
+summary with no summary return code, it must classify as
+`memory-guard-summary-incomplete`; treat that row as queue-custody incomplete
+evidence and rerun or fix the guard final-summary lifecycle.
 If the queue itself fails before launching a proof command, it must mark the row
 terminal, write the failure log, release the contention key, and classify the
 row as `queue-preexecution-failure`; that row is infrastructure evidence, not

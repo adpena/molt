@@ -842,6 +842,100 @@ def test_proof_queue_diagnoses_stale_running_launch_summary(
     assert str(summary_path) in out
 
 
+def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "failed.log"
+    summary_path = tmp_path / "failed.memory_guard.json"
+    log_path.write_text(
+        "proof_queue run_id=failed-run\n"
+        "proof_queue finished status=failed exit_code=15 elapsed=18.812s\n",
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "returncode": None,
+                "recorded_at": "2026-07-02T20:47:16Z",
+                "child_process": {
+                    "pid": 22_068,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="failed-run",
+        logical_id="failed",
+        reason="prove terminal unfinished guard summaries are classified",
+        command=[sys.executable, "-c", "print('failed')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python-proof",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="failed-run",
+        body="test: terminal memory_guard summary must not collapse to unclassified",
+        kind="submission",
+        author="codex",
+    )
+    proof_queue._update_run(conn, "failed-run", status="failed", returncode=15)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "failed-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "memory-guard-summary-incomplete" in out
+    assert "summary_status=child_running" in out
+    assert "queue-custody incomplete" in out
+    assert "unclassified-failed-proof" not in out
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 1
+    )
+    out = capsys.readouterr().out
+    assert "audit-memory-guard-summary-incomplete run=failed-run" in out
+    assert "audit-unclassified-failure" not in out
+
+
 def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2768,6 +2862,99 @@ def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
     assert "frontier:" in output
     assert "external-native-abi-link-surface-missing run=frontier-run" in output
     assert output.index("frontier:") < output.index("audit-memory-guard-orphan-cleanup")
+
+
+def test_proof_queue_audit_errors_only_hides_warning_rows_not_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+
+    error_log = tmp_path / "error.log"
+    proof_queue._insert_run(
+        conn,
+        run_id="error-run",
+        logical_id="error-run",
+        reason="prove audit errors-only still surfaces errors",
+        command=[sys.executable, "-c", "raise SystemExit(1)"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:error-run",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=error_log,
+        summary_json=tmp_path / "error.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="error-run",
+        body="test: unclassified errors stay visible under errors-only",
+        kind="submission",
+        author="codex",
+    )
+    error_log.write_text("mystery failure without a diagnostic\n", encoding="utf-8")
+    proof_queue._update_run(conn, "error-run", status="failed", returncode=1)
+
+    warning_log = tmp_path / "warning.log"
+    proof_queue._insert_run(
+        conn,
+        run_id="warning-run",
+        logical_id="warning-run",
+        reason="prove audit errors-only filters warning rows",
+        command=[sys.executable, "-c", "print('ok')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:warning-run",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=warning_log,
+        summary_json=tmp_path / "warning.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="warning-run",
+        body="test: warning rows are optional human noise",
+        kind="submission",
+        author="codex",
+    )
+    warning_log.write_text(
+        "memory_guard: orphaned child processes detected after command exit; "
+        "killed_at=2026-07-02T00:00:00Z elapsed=1.00s\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "warning-run", status="passed", returncode=0)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+                "--errors-only",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "audit-unclassified-failure run=error-run" in output
+    assert "audit-memory-guard-orphan-cleanup" not in output
+    assert "hidden 1 warning issue(s) due to --errors-only" in output
+    assert "issue_severity: error=1, warning=1" in output
 
 
 def test_proof_queue_audit_omits_superseded_frontier_failures(
