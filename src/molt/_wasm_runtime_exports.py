@@ -7,6 +7,7 @@ from typing import Iterable
 
 from ._intrinsic_symbols import intrinsic_runtime_symbol_name
 from ._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
@@ -32,14 +33,25 @@ _INTRINSIC_LOADER_CALL_NAMES = frozenset(
 )
 
 
-def _is_cpython_abi_link_import(name: str) -> bool:
+def _raw_is_cpython_abi_link_import(name: str) -> bool:
     return (
         WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
         == _CPYTHON_ABI_LINK_IMPORT_CLASS
     )
 
 
+def wasm_split_runtime_canonical_import_name(name: str) -> str:
+    return WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME.get(name, name)
+
+
+def _is_cpython_abi_link_import(name: str) -> bool:
+    return _raw_is_cpython_abi_link_import(
+        wasm_split_runtime_canonical_import_name(name)
+    )
+
+
 def _runtime_export_name_or_fail(name: str) -> str:
+    name = wasm_split_runtime_canonical_import_name(name)
     export_name = wasm_runtime_export_name(name)
     if export_name is not None:
         return export_name
@@ -49,6 +61,7 @@ def _runtime_export_name_or_fail(name: str) -> str:
 
 
 def _split_runtime_export_name_or_fail(name: str) -> str:
+    name = wasm_split_runtime_canonical_import_name(name)
     export_name = wasm_runtime_export_name(name)
     if export_name is not None:
         return export_name
@@ -71,6 +84,15 @@ def wasm_split_runtime_export_name_for_import(name: str) -> str | None:
         return _split_runtime_export_name_or_fail(name)
     except ValueError:
         return None
+
+
+def wasm_split_runtime_import_name_for_export(name: str) -> str | None:
+    import_name = WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME.get(name)
+    if import_name is not None:
+        return import_name
+    if _raw_is_cpython_abi_link_import(name):
+        return name
+    return None
 
 
 def wasm_split_runtime_export_rename_map(

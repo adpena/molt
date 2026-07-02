@@ -6,8 +6,10 @@ from molt.cli import runtime_build as RUNTIME_BUILD
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_requested_export_names,
+    wasm_split_runtime_canonical_import_name,
     wasm_split_runtime_export_rename_map,
     wasm_split_runtime_export_name_for_import,
+    wasm_split_runtime_import_name_for_export,
     wasm_split_runtime_missing_required_exports,
     wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
@@ -164,13 +166,34 @@ def test_wasm_runtime_export_names_are_generated() -> None:
         == "molt_PyArg_ParseTuple"
     )
     assert (
+        wasm_split_runtime_export_name_for_import("molt_PyArg_ParseTuple")
+        == "molt_PyArg_ParseTuple"
+    )
+    assert (
         wasm_split_runtime_export_name_for_import("PyType_Ready") == "molt_PyType_Ready"
+    )
+    assert (
+        wasm_split_runtime_import_name_for_export("molt_PyArg_ParseTuple")
+        == "PyArg_ParseTuple"
+    )
+    assert (
+        wasm_split_runtime_canonical_import_name("molt_PyArg_ParseTuple")
+        == "PyArg_ParseTuple"
+    )
+    assert (
+        wasm_split_runtime_import_name_for_export("PyArg_ParseTuple")
+        == "PyArg_ParseTuple"
     )
     assert (
         wasm_split_runtime_export_name_for_import("molt_cpython_abi_date_from_date")
         == "molt_cpython_abi_date_from_date"
     )
+    assert (
+        wasm_split_runtime_import_name_for_export("molt_cpython_abi_date_from_date")
+        == "molt_cpython_abi_date_from_date"
+    )
     assert wasm_runtime_export_name_for_import("PyArray_NDIM") is None
+    assert wasm_split_runtime_import_name_for_export("molt_PyArray_NDIM") is None
 
 
 def test_split_runtime_cpython_abi_exports_use_public_molt_names() -> None:

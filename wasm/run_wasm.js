@@ -27,6 +27,8 @@ const {
 } = require('./loader_bridge.js');
 const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
 let runtimeImportExportNames = runtimeExportByImport;
+const runtimeCanonicalByImport = wasmAbiGenerated.runtime_import_canonical_names || {};
+let runtimeImportCanonicalNames = runtimeCanonicalByImport;
 const runtimeImportFallbacks = wasmAbiGenerated.runtime_import_fallbacks || {};
 let UndiciWebSocket = null;
 try {
@@ -283,12 +285,19 @@ const initWasmAssets = () => {
   const siblingManifest = loadSiblingManifest(wasmPath);
   const siblingRuntimeImports = siblingManifest?.abi?.runtime_imports || {};
   const siblingRuntimeImportExportNames = siblingRuntimeImports.export_names || null;
+  const siblingRuntimeImportCanonicalNames = siblingRuntimeImports.canonical_names || null;
   runtimeImportExportNames = siblingRuntimeImportExportNames
     ? {
         ...runtimeExportByImport,
         ...siblingRuntimeImportExportNames,
       }
     : runtimeExportByImport;
+  runtimeImportCanonicalNames = siblingRuntimeImportCanonicalNames
+    ? {
+        ...runtimeCanonicalByImport,
+        ...siblingRuntimeImportCanonicalNames,
+      }
+    : runtimeCanonicalByImport;
   const manifestReservedRuntimeCallables =
     reservedRuntimeCallablesFromManifest(siblingManifest);
   activeReservedRuntimeCallables =
@@ -4923,7 +4932,8 @@ const buildRuntimeImportWrappers = () => {
 };
 
 const runtimeFallbackFunction = (runtimeExports, name) => {
-  const fallback = runtimeImportFallbacks[name] || null;
+  const manifestName = runtimeImportCanonicalNames[name] || name;
+  const fallback = runtimeImportFallbacks[manifestName] || null;
   if (!fallback || !Array.isArray(fallback.exports) || fallback.exports.length === 0) {
     return null;
   }

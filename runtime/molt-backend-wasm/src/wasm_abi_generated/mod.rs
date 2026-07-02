@@ -55,5 +55,4 @@ pub(crate) use runtime_callables::{
     RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult,
     poll_table_import_slot, runtime_callable_arity, runtime_callable_import,
 };
-pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};
