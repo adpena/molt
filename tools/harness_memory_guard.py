@@ -16,9 +16,11 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
 try:
     from tools import memory_guard, process_sentinel
+    from tools.process_spawn import detached_process_group_kwargs
 except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
     import memory_guard  # type: ignore
     import process_sentinel  # type: ignore
+    from process_spawn import detached_process_group_kwargs  # type: ignore
 
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
@@ -1713,8 +1715,10 @@ def batch_process_group_kwargs(
 ) -> dict[str, object]:
     resolved_limits = limits or limits_from_env("MOLT", env)
     if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        return {"creationflags": creationflags} if creationflags else {}
+        return detached_process_group_kwargs(
+            windows=True,
+            subprocess_module=subprocess,
+        )
     if os.name != "posix":
         return {}
     kwargs: dict[str, object] = {"start_new_session": True}

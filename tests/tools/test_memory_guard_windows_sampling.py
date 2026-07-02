@@ -27,6 +27,14 @@ def _load_memory_guard():
     return module
 
 
+def _windows_guard_creationflags(module) -> int:
+    from tools.process_spawn import hidden_windows_process_group_creationflags
+
+    return hidden_windows_process_group_creationflags(
+        subprocess_module=module.subprocess
+    )
+
+
 def test_parse_windows_process_snapshot_rows_builds_process_samples() -> None:
     module = _load_memory_guard()
     rows = [
@@ -197,11 +205,89 @@ def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
         0x00000200,
         raising=False,
     )
+    monkeypatch.setattr(
+        module.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
 
     kwargs = module._guarded_popen_process_isolation_kwargs()
 
-    assert kwargs == {"creationflags": 0x00000200}
+    assert kwargs == {"creationflags": 0x08000200}
     assert "start_new_session" not in kwargs
+
+
+def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) -> None:
+    import tools.harness_memory_guard as harness_memory_guard
+
+    monkeypatch.setattr(harness_memory_guard.os, "name", "nt")
+    monkeypatch.setattr(
+        harness_memory_guard.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    assert harness_memory_guard.batch_process_group_kwargs() == {
+        "creationflags": 0x08000200
+    }
+
+
+def test_process_spawn_is_single_windows_hidden_group_authority(monkeypatch) -> None:
+    import tools.process_spawn as process_spawn
+
+    monkeypatch.setattr(
+        process_spawn.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        process_spawn.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    assert process_spawn.hidden_windows_process_group_kwargs(windows=True) == {
+        "creationflags": 0x08000200
+    }
+    assert process_spawn.detached_process_group_kwargs(windows=True) == {
+        "creationflags": 0x08000200
+    }
+    assert process_spawn.detached_process_group_kwargs(windows=False) == {
+        "start_new_session": True
+    }
+
+
+def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
+    monkeypatch,
+) -> None:
+    import tools.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    assert pytest_memory_guard_bootstrap._windows_process_group_kwargs() == {
+        "creationflags": 0x08000200
+    }
 
 
 def test_posix_guarded_popen_uses_new_session(monkeypatch) -> None:
@@ -471,11 +557,7 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
 
     assert rc == 37
     assert calls["check"] is False
-    assert calls["creationflags"] == getattr(
-        module.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0,
-    )
+    assert calls["creationflags"] == _windows_guard_creationflags(module)
     assert calls["argv"][0] == sys.executable
     env = calls["env"]
     assert env[module.INTERNAL_WORKER_ENV] == "1"
@@ -509,11 +591,7 @@ def test_child_runner_uses_subprocess_on_windows(monkeypatch) -> None:
     assert rc == 23
     assert calls["argv"] == ["python", "-c", "print(1)"]
     assert calls["check"] is False
-    assert calls["creationflags"] == getattr(
-        module.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0,
-    )
+    assert calls["creationflags"] == _windows_guard_creationflags(module)
     child_env = calls["env"]
     assert module.INTERNAL_CHILD_COMMAND_ENV not in child_env
 
