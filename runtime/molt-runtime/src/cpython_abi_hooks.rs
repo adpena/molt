@@ -1155,6 +1155,31 @@ unsafe fn static_pyinit_is_bridge_module_object(result_pyobj: *mut PyObject) -> 
     unsafe { static_pyinit_type_matches(result_pyobj, &raw mut PyModule_Type, b"module") }
 }
 
+unsafe fn static_pyinit_has_module_def_shape(result_pyobj: *mut PyObject) -> bool {
+    if result_pyobj.is_null() {
+        return false;
+    }
+    let def = result_pyobj as *mut PyModuleDef;
+    let base = unsafe { &(*def).m_base };
+    if base.m_init.is_some() || base.m_index != 0 || !base.m_copy.is_null() {
+        return false;
+    }
+    let name = unsafe { (*def).m_name };
+    if name.is_null() {
+        return false;
+    }
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    if name_bytes.is_empty() {
+        return false;
+    }
+    if unsafe { (*def).m_size } < -1 {
+        return false;
+    }
+    name_bytes
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'.'))
+}
+
 unsafe fn static_module_spec_for_def_name(name_bytes: &[u8]) -> Option<*mut PyObject> {
     let spec_type_name = b"importlib.machinery.ModuleSpec";
     let spec_bits = unsafe { hook_alloc_module(spec_type_name.as_ptr(), spec_type_name.len()) };
@@ -1271,6 +1296,25 @@ pub extern "C" fn molt_cpython_abi_pyinit_module_to_bits(result_pyobj: u64) -> u
                     }
                 }
             }
+        }
+        if !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
+            || crate::exception_pending(&_py)
+        {
+            let message = static_pyinit_import_error_message(
+                "static extension PyInit returned an invalid module handle",
+            );
+            return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
+        }
+        if unsafe { static_pyinit_has_module_def_shape(result_ptr) } {
+            if let Some(module_bits) =
+                unsafe { static_module_def_to_bits(result_pyobj as *mut PyModuleDef) }
+            {
+                return module_bits;
+            }
+            let message = static_pyinit_import_error_message(
+                "static extension PyInit returned an invalid module definition",
+            );
+            return crate::raise_exception::<u64>(&_py, "ImportError", message.as_str());
         }
         let message = static_pyinit_import_error_message(
             "static extension PyInit returned an invalid module handle",
@@ -1626,7 +1670,7 @@ pub fn register_cpython_hooks() {
 mod tests {
     use super::*;
     use molt_cpython_abi::abi_types::{
-        PyExc_RuntimeError, PyModuleDef_Base, PyObject, PyTypeObject,
+        PyExc_RuntimeError, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
     };
     use std::os::raw::c_int;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -1640,15 +1684,16 @@ mod tests {
     }
 
     fn pending_exception_message_for_assertion() -> String {
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        if MoltObject::from_bits(exc_bits).is_none() {
-            return "no pending exception".to_string();
-        }
         with_gil(|_py| {
+            let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+            if MoltObject::from_bits(exc_bits).is_none() {
+                return "no pending exception".to_string();
+            }
             let message = MoltObject::from_bits(exc_bits)
                 .as_ptr()
                 .map(|exc_ptr| crate::format_exception_message(&_py, exc_ptr))
                 .unwrap_or_else(|| "pending exception handle was not a heap object".to_string());
+            crate::clear_exception(&_py);
             dec_ref_bits(&_py, exc_bits);
             message
         })
@@ -1808,6 +1853,60 @@ mod tests {
     }
 
     #[test]
+    fn pyinit_module_to_bits_accepts_structural_module_def_without_type_marker() {
+        let _guard = cpython_abi_test_guard();
+        let _ = molt_cpython_abi_prepare_static_extension();
+        STATIC_LINK_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
+        let mut slots = [
+            PyModuleDef_Slot {
+                slot: STATIC_PY_MOD_EXEC,
+                value: static_link_exec_records_module as *mut c_void,
+            },
+            PyModuleDef_Slot {
+                slot: 0,
+                value: std::ptr::null_mut(),
+            },
+        ];
+        let mut def = PyModuleDef {
+            m_base: PyModuleDef_Base {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: std::ptr::null_mut(),
+                },
+                m_init: None,
+                m_index: 0,
+                m_copy: std::ptr::null_mut(),
+            },
+            m_name: c"source_recompiled_structural_module".as_ptr(),
+            m_doc: std::ptr::null(),
+            m_size: -1,
+            m_methods: std::ptr::null_mut(),
+            m_slots: slots.as_mut_ptr(),
+            m_traverse: std::ptr::null_mut(),
+            m_clear: std::ptr::null_mut(),
+            m_free: std::ptr::null_mut(),
+        };
+
+        let bits =
+            molt_cpython_abi_pyinit_module_to_bits((&mut def as *mut PyModuleDef) as usize as u64);
+        let module_ptr = MoltObject::from_bits(bits)
+            .as_ptr()
+            .expect("structural PyModuleDef must convert to a Molt module");
+
+        assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+        assert_eq!(
+            STATIC_LINK_EXEC_MODULE_BITS.load(AtomicOrdering::Relaxed),
+            bits
+        );
+        let def_ptr = (&mut def as *mut PyModuleDef) as usize;
+        let registered_bits = crate::c_api::molt_module_state_find(def_ptr);
+        if registered_bits != 0 {
+            assert_eq!(registered_bits, bits);
+            assert_eq!(crate::c_api::molt_module_state_remove(def_ptr), 0);
+        }
+    }
+
+    #[test]
     fn pyinit_module_to_bits_executes_static_link_py_mod_exec_and_metadata_slots() {
         let _guard = cpython_abi_test_guard();
         let _ = molt_cpython_abi_prepare_static_extension();
@@ -1893,15 +1992,7 @@ mod tests {
         );
 
         assert!(MoltObject::from_bits(bits).is_none());
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        let message = with_gil(|_py| {
-            let exc_ptr = MoltObject::from_bits(exc_bits)
-                .as_ptr()
-                .expect("static-link slot bridge gap must raise a pending ImportError");
-            let message = crate::format_exception_message(&_py, exc_ptr);
-            dec_ref_bits(&_py, exc_bits);
-            message
-        });
+        let message = pending_exception_message_for_assertion();
         assert!(message.contains(
             "static-link PyModuleDef Py_mod_create slot requires module creation bridge"
         ));
@@ -2127,15 +2218,7 @@ mod tests {
         let bits = molt_cpython_abi_pyinit_module_to_bits(0);
 
         assert!(MoltObject::from_bits(bits).is_none());
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        let message = with_gil(|_py| {
-            let exc_ptr = MoltObject::from_bits(exc_bits)
-                .as_ptr()
-                .expect("PyInit NULL must raise a pending ImportError");
-            let message = crate::format_exception_message(&_py, exc_ptr);
-            dec_ref_bits(&_py, exc_bits);
-            message
-        });
+        let message = pending_exception_message_for_assertion();
         assert!(message.contains("static extension PyInit returned NULL"));
         assert!(message.contains("missing PyArray primitive"));
     }
@@ -2174,15 +2257,7 @@ mod tests {
         let bits = molt_cpython_abi_pyinit_module_to_bits(pyinit_result as usize as u64);
 
         assert!(MoltObject::from_bits(bits).is_none());
-        let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        let message = with_gil(|_py| {
-            let exc_ptr = MoltObject::from_bits(exc_bits)
-                .as_ptr()
-                .expect("invalid PyInit handle must raise a pending ImportError");
-            let message = crate::format_exception_message(&_py, exc_ptr);
-            dec_ref_bits(&_py, exc_bits);
-            message
-        });
+        let message = pending_exception_message_for_assertion();
         assert!(message.contains("static extension PyInit returned an invalid module definition"));
         assert!(message.contains("module definition missing name"));
     }

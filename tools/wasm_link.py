@@ -504,6 +504,7 @@ def _read_link_allowlist_symbols(path: Path) -> list[str]:
 
 
 _COMPILER_RT_LINK_IMPORT_CLASS = "wasm_compiler_rt_link_import"
+_CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 _DEFAULT_SPLIT_APP_GLOBAL_BASE = 64 * 1024 * 1024
 
 
@@ -512,7 +513,10 @@ def _external_native_host_link_imports() -> tuple[str, ...]:
         symbol
         for symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORTS
         if WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
-        != _COMPILER_RT_LINK_IMPORT_CLASS
+        not in {
+            _COMPILER_RT_LINK_IMPORT_CLASS,
+            _CPYTHON_ABI_LINK_IMPORT_CLASS,
+        }
     )
 
 

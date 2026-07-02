@@ -21,6 +21,7 @@ from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
 from molt.cli.c_api_symbols import c_api_primitive_class
 from molt.cli.c_api_symbols import is_c_api_external_requirement
 from molt.cli.c_api_symbols import is_c_api_symbol
+from molt.cli.c_api_symbols import is_cpython_abi_link_symbol
 from molt.cli.extension_manifest import (
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
@@ -90,9 +91,6 @@ _EXTERNAL_PACKAGE_NATIVE_SOURCE_SUFFIXES = (
 _SOURCE_RECOMPILED_EXTERNAL_PACKAGE_ROOTS = frozenset({"numpy", "scipy"})
 _EXTERNAL_PACKAGE_EXTENSION_MANIFEST = "extension_manifest.json"
 _EXTERNAL_PACKAGE_ARTIFACT_MANIFEST_SUFFIX = ".extension_manifest.json"
-_WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES = ("molt_cpython_abi_",)
-
-
 _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
     ".git",
     ".hg",
@@ -755,16 +753,11 @@ def _external_link_primitive_class(symbol: str) -> str:
     primitive_class = WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
     if primitive_class is not None:
         return primitive_class
-    if symbol.startswith(_WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES):
-        return "molt_cpython_abi_link_import"
     raise AssertionError(f"unknown external native link import: {symbol!r}")
 
 
 def _is_external_link_import(symbol: str) -> bool:
-    return (
-        symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
-        or symbol.startswith(_WASM_CPYTHON_ABI_LINK_IMPORT_PREFIXES)
-    )
+    return symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
 
 
 def _wasm_static_link_runtime_symbols_for_imports(
@@ -777,7 +770,7 @@ def _wasm_static_link_runtime_symbols_for_imports(
             for symbol in import_symbols
             if symbol in runtime_backed_symbols
             or _is_external_link_import(symbol)
-            or is_c_api_symbol(symbol)
+            or is_cpython_abi_link_symbol(symbol)
         )
     )
 
@@ -933,7 +926,10 @@ def _object_closure_c_api_symbol_board(
             if primitive_class == "numpy_c_api":
                 if status in {"source_compile_only", "missing"}:
                     status = "package_native"
-            elif status not in {"project_defined", "fail_fast"}:
+            elif is_cpython_abi_link_symbol(symbol) and status not in {
+                "project_defined",
+                "fail_fast",
+            }:
                 status = "cpython_abi_link"
         if (
             status == "missing"

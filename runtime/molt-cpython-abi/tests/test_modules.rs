@@ -954,7 +954,10 @@ fn test_module_create2_registers_capi_state_and_pystate_registry_roundtrip() {
         );
     }
 
-    assert!(unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) }.is_null());
+    let created_found = unsafe { molt_cpython_abi::api::modules::PyState_FindModule(def) };
+    assert_eq!(created_found, m);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(created_found) };
+
     assert_eq!(
         unsafe { molt_cpython_abi::api::modules::PyState_AddModule(m, def) },
         0
