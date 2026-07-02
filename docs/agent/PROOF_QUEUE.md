@@ -75,7 +75,9 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
 Use `--depends-on RUN_ID` when a proof is not valid until earlier evidence has
 passed. Dependency edges are immutable, acyclic, and queue-enforced: a child
 waits while parents are queued/running and becomes `blocked` if a parent has
-already failed or gone stale.
+already failed or gone stale. A blocked row is scheduling evidence, not a lost
+proof log: the queue writes a small blocked log, keeps the DAG parent visible in
+`evidence`, and reports the deterministic `proof-dependency-blocked` diagnostic.
 
 Queue commands that invoke Python must use:
 
@@ -270,7 +272,8 @@ proof failure classes such as queue policy rejection, static-linked
 Pact missing-output acceptance failures, Rust compiler errors, pytest assertion
 failures, external native artifact custody refusals, reachable native support
 modules without source/artifact custody, reachability-driven stdlib profile
-refusals, and memory-guard orphan cleanup.
+refusals, generated WASM ABI/link-import surface gaps, dependency-blocked rows,
+and memory-guard orphan cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 
@@ -310,9 +313,12 @@ guards, duplicate active contention keys, stale active logs, missing proof
 notes, and missing notebook projections are surfaced as explicit audit issues.
 By default the command exits non-zero for errors and reports warnings without
 failing; add `--strict` when warnings should fail the pass. Human output prints
-diagnostic and issue counts first, then caps the issue wall by default; use
-`--max-issues 0`, `--json`, or `--output` for the full machine-readable
-handoff.
+diagnostic and issue counts first, then a `frontier:` block for the latest
+non-superseded classified product failures, then queue-debt issues. Rerun or
+supersede edges retire older frontier failures from that block once a child row
+exists, so audit points agents at the current boundary instead of replaying
+stale failures. The issue wall is capped by default; use `--max-issues 0`,
+`--json`, or `--output` for the full machine-readable handoff.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
