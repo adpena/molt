@@ -15,10 +15,13 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
+from tools.process_spawn import hidden_windows_process_group_kwargs  # noqa: E402
 
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
@@ -101,8 +104,10 @@ def _process_exit_code(returncode: int | None) -> int:
 
 
 def _windows_process_group_kwargs() -> dict[str, object]:
-    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    return {"creationflags": creationflags} if creationflags else {}
+    return hidden_windows_process_group_kwargs(
+        windows=_is_windows_process_model(),
+        subprocess_module=subprocess,
+    )
 
 
 def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:

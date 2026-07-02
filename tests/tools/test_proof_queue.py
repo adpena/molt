@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -617,6 +618,45 @@ def test_proof_queue_named_lane_can_detach_runner(
     assert rows[0]["status"] == "queued"
     assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
     assert [note["body"] for note in _notes(db)][-1:] == ["detached queue launch smoke"]
+
+
+def test_proof_queue_windows_launchers_hide_console(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, _command: list[str], **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(proof_queue.os, "name", "nt")
+    monkeypatch.setattr(
+        proof_queue.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        proof_queue.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+
+    args = SimpleNamespace(
+        db=tmp_path / "proof_queue.sqlite3",
+        logs_root=tmp_path / "runs",
+        notebooks_root=None,
+        repo_root=tmp_path,
+    )
+
+    proof_queue._launch_detached_runner(args, run_id="hidden-runner", timeout=1.0)
+
+    assert captured[0]["creationflags"] == 0x08000200
+    assert proof_queue._queued_command_process_kwargs() == {"creationflags": 0x08000200}
 
 
 def test_proof_queue_rejects_uv_run_without_active_project_python(

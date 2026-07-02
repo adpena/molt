@@ -21,11 +21,17 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt.dx import development_artifact_env  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
+from tools.process_spawn import (  # noqa: E402
+    detached_process_group_kwargs,
+    hidden_windows_process_group_kwargs,
+)
 
 RUNNING = {"queued", "running"}
 NOTE_KIND_DESCRIPTIONS = {
@@ -2223,13 +2229,12 @@ def _launch_detached_runner(
         "stdin": subprocess.DEVNULL,
         "text": True,
     }
-    if os.name == "nt":
-        flags = 0
-        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        popen_kwargs["creationflags"] = flags
-    else:
-        popen_kwargs["start_new_session"] = True
+    popen_kwargs.update(
+        detached_process_group_kwargs(
+            windows=os.name == "nt",
+            subprocess_module=subprocess,
+        )
+    )
     with runner_log.open("w", encoding="utf-8") as log:
         print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
         print(f"command={shlex.join(command)}", file=log, flush=True)
@@ -2240,6 +2245,13 @@ def _launch_detached_runner(
             **popen_kwargs,
         )
     return proc.pid, runner_log
+
+
+def _queued_command_process_kwargs() -> dict[str, object]:
+    return hidden_windows_process_group_kwargs(
+        windows=os.name == "nt",
+        subprocess_module=subprocess,
+    )
 
 
 def _run_one(
@@ -2473,6 +2485,7 @@ def _run_one(
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
+            **_queued_command_process_kwargs(),
         )
     except Exception as exc:
         try:
