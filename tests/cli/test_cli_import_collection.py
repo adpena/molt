@@ -19083,7 +19083,11 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
             "-c",
             "import time; print('ok'); time.sleep(0.3)",
         ],
-        timeout=1.0,
+        # Generous bound: the guarded spawn chain pays several interpreter
+        # startups, so a tight timeout flakes under parallel build load.
+        # The keepalive assertion only needs the 0.3s sleep to outlast the
+        # 0.01s keepalive interval.
+        timeout=30.0,
         progress_label="Tempfile helper",
     )
     assert result.returncode == 0
