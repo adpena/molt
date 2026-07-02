@@ -386,6 +386,18 @@ def _runtime_feature_gate_for_symbol(
     return best[1] if best is not None else None
 
 
+def runtime_export_name(entry: dict) -> str | None:
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    runtime_name = entry.get("runtime_name")
+    if isinstance(runtime_name, str):
+        return runtime_name
+    if name.startswith("molt_"):
+        return name
+    return f"molt_{name}"
+
+
 def _annotate_runtime_callable_features(
     imports: list[dict],
     *,
@@ -393,14 +405,14 @@ def _annotate_runtime_callable_features(
 ) -> None:
     gates = _load_runtime_feature_gates_from_categories()
     for idx, entry in enumerate(imports):
-        runtime_name = entry.get("runtime_name")
-        if not isinstance(runtime_name, str):
+        export_name = runtime_export_name(entry)
+        if not isinstance(export_name, str):
             if entry.get("runtime_feature") is not None:
                 raise WasmAbiManifestError(
-                    f"import entry {idx} has runtime_feature without runtime_name"
+                    f"import entry {idx} has runtime_feature without a valid name"
                 )
             continue
-        feature = _runtime_feature_gate_for_symbol(runtime_name, gates)
+        feature = _runtime_feature_gate_for_symbol(export_name, gates)
         existing = entry.get("runtime_feature")
         if existing is not None:
             if reject_existing:

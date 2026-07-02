@@ -3378,18 +3378,17 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
 }
 
 /// # Safety
-/// Dereferences pointer bits. Caller must ensure `attr_name_ptr_bits` encodes
-/// valid UTF-8 of length `attr_name_len_bits`.
+/// Dereferences `attr_name_ptr`. Caller must ensure it points to valid UTF-8
+/// of length `attr_name_len_bits`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_get_attr_special(
     obj_bits: u64,
-    attr_name_ptr_bits: u64,
+    attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
-            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
