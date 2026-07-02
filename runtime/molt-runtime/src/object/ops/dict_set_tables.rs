@@ -2546,6 +2546,59 @@ pub(crate) unsafe fn dict_get_in_place(
     }
 }
 
+pub(crate) unsafe fn dict_get_str_bytes_borrowed(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    key: &[u8],
+) -> Option<u64> {
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        let table = dict_table(ptr);
+        if table.is_empty() {
+            return None;
+        }
+        let hash = hash_string_bytes(_py, key) as u64;
+        let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
+        let mask = table.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        loop {
+            let entry = table[slot];
+            if entry == 0 {
+                return None;
+            }
+            if entry == TABLE_TOMBSTONE {
+                slot = (slot + 1) & mask;
+                continue;
+            }
+            let entry_idx = entry - 1;
+            if entry_idx * 2 >= order.len() {
+                slot = (slot + 1) & mask;
+                continue;
+            }
+            if hashes.get(entry_idx).copied() != Some(hash) {
+                slot = (slot + 1) & mask;
+                continue;
+            }
+            let entry_key_bits = order[entry_idx * 2];
+            let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
+                slot = (slot + 1) & mask;
+                continue;
+            };
+            if object_type_id(entry_key_ptr) == TYPE_ID_STRING {
+                let len = string_len(entry_key_ptr);
+                if len == key.len() && simd_bytes_eq(string_bytes(entry_key_ptr), key.as_ptr(), len)
+                {
+                    return Some(order[entry_idx * 2 + 1]);
+                }
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+}
+
 pub(crate) unsafe fn dict_find_entry_kv_in_place(
     _py: &PyToken<'_>,
     ptr: *mut u8,

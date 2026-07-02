@@ -217,6 +217,38 @@ impl ObjectBridge {
         }
     }
 
+    fn singleton_pyobj(bits: AbiHandle) -> Option<*mut PyObject> {
+        let obj = MoltObject::from_bits(bits);
+        if obj.is_none() {
+            return Some(&raw mut Py_None);
+        }
+        if obj.is_bool() {
+            return Some(if obj.as_bool().unwrap_or(false) {
+                &raw mut Py_True
+            } else {
+                &raw mut Py_False
+            });
+        }
+        None
+    }
+
+    unsafe fn allocate_pyobj_entry(&mut self, bits: AbiHandle, ob_refcnt: isize) -> *mut PyObject {
+        let tag = self.classify_handle(bits);
+        let ob_type = unsafe { tag_to_type(tag) };
+
+        let mut entry = Box::new(BridgeEntry {
+            header: Box::new(BridgeHeader {
+                py_obj: PyObject { ob_refcnt, ob_type },
+                molt_bits: bits,
+            }),
+        });
+
+        let raw_ptr = &mut entry.header.py_obj as *mut PyObject;
+        self.from_py.insert(raw_ptr as usize, bits);
+        self.to_py.insert(bits, entry);
+        raw_ptr
+    }
+
     /// Translate a Molt handle to a `*mut PyObject` that a C extension can use.
     ///
     /// Allocates a `PyObject` header on the heap (cached on repeat calls),
@@ -236,37 +268,33 @@ impl ObjectBridge {
             return ptr;
         }
 
-        let obj = MoltObject::from_bits(bits);
-
-        // Singletons: None, True, False — return static pointers, no allocation.
-        if obj.is_none() {
-            return &raw mut Py_None;
-        }
-        if obj.is_bool() {
-            return if obj.as_bool().unwrap_or(false) {
-                &raw mut Py_True
-            } else {
-                &raw mut Py_False
-            };
+        if let Some(ptr) = Self::singleton_pyobj(bits) {
+            return ptr;
         }
 
-        let tag = self.classify_handle(bits);
-        let ob_type = unsafe { tag_to_type(tag) };
+        unsafe { self.allocate_pyobj_entry(bits, 1) }
+    }
 
-        let mut entry = Box::new(BridgeEntry {
-            header: Box::new(BridgeHeader {
-                py_obj: PyObject {
-                    ob_refcnt: 1,
-                    ob_type,
-                },
-                molt_bits: bits,
-            }),
-        });
+    /// Translate a Molt handle to a borrowed `*mut PyObject`.
+    ///
+    /// Existing bridge entries are returned without incrementing the logical
+    /// `ob_refcnt`. A missing non-singleton entry is materialized with refcount
+    /// 1 as a bridge cache anchor representing the Molt-side owner; callers of
+    /// borrowed C-API functions must not `Py_DECREF` it unless they first
+    /// `Py_INCREF`.
+    ///
+    /// # Safety
+    /// The Molt-side owner must keep `bits` live for the borrowed result.
+    pub unsafe fn handle_to_borrowed_pyobj(&mut self, bits: AbiHandle) -> *mut PyObject {
+        if let Some(entry) = self.to_py.get(&bits) {
+            return &entry.header.py_obj as *const PyObject as *mut PyObject;
+        }
 
-        let raw_ptr = &mut entry.header.py_obj as *mut PyObject;
-        self.from_py.insert(raw_ptr as usize, bits);
-        self.to_py.insert(bits, entry);
-        raw_ptr
+        if let Some(ptr) = Self::singleton_pyobj(bits) {
+            return ptr;
+        }
+
+        unsafe { self.allocate_pyobj_entry(bits, 1) }
     }
 
     /// Translate a `*mut PyObject` back to a Molt handle.
