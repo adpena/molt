@@ -33,7 +33,7 @@ from molt.cli import build_diagnostics as cli_build_diagnostics
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
-from molt.cli import c_api_symbols as cli_c_api_symbols
+from molt import c_api_symbols as cli_c_api_symbols
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
@@ -52,6 +52,7 @@ from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalNativeCallableExport,
     _ExternalNativeAbiSymbol,
+    _ExternalNativeCapiSymbol,
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _StagedExternalPackageNativeArtifact,
@@ -17840,10 +17841,20 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
                         source="undefined_symbols",
                     ),
                 ),
+                c_api_symbols=(
+                    _ExternalNativeCapiSymbol(
+                        symbol="PyErr_Format",
+                        status="cpython_abi_link",
+                        primitive_class="exceptions",
+                        source="undefined_symbols",
+                    ),
+                ),
             ),
         )
     )
     link_calls: list[list[str]] = []
+    reloc_required: list[set[str]] = []
+    shared_required: list[set[str]] = []
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
@@ -17876,8 +17887,12 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         json_output=True,
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda required=None: True,
+        ensure_runtime_wasm_shared=lambda required=None: (
+            shared_required.append(set(required or ())) or True
+        ),
+        ensure_runtime_wasm_reloc=lambda required=None: (
+            reloc_required.append(set(required or ())) or True
+        ),
         runtime_cargo_profile="release-fast",
         molt_root=tmp_path,
         split_runtime=False,
@@ -17897,6 +17912,8 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
+    assert reloc_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
+    assert shared_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     staged_native_inputs = [
         path for path in native_inputs if "external_static_packages" in path.parts
     ]
@@ -17970,10 +17987,20 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
                         source="undefined_symbols",
                     ),
                 ),
+                c_api_symbols=(
+                    _ExternalNativeCapiSymbol(
+                        symbol="PyErr_Format",
+                        status="cpython_abi_link",
+                        primitive_class="exceptions",
+                        source="undefined_symbols",
+                    ),
+                ),
             ),
         )
     )
     link_calls: list[list[str]] = []
+    reloc_required: list[set[str]] = []
+    shared_required: list[set[str]] = []
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
@@ -18006,8 +18033,12 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         json_output=True,
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=runtime_reloc_wasm,
-        ensure_runtime_wasm_shared=lambda required=None: True,
-        ensure_runtime_wasm_reloc=lambda required=None: True,
+        ensure_runtime_wasm_shared=lambda required=None: (
+            shared_required.append(set(required or ())) or True
+        ),
+        ensure_runtime_wasm_reloc=lambda required=None: (
+            reloc_required.append(set(required or ())) or True
+        ),
         runtime_cargo_profile="release-fast",
         molt_root=tmp_path,
         split_runtime=True,
@@ -18028,6 +18059,8 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
+    assert reloc_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
+    assert shared_required == [{"PyErr_Format", "molt_cpython_abi_date_from_date"}]
     staged_native_inputs = [
         path for path in native_inputs if "external_static_packages" in path.parts
     ]
