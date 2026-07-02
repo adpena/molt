@@ -45,6 +45,7 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.source_extensions import (
+    source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
 )
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
@@ -591,6 +592,15 @@ def _manifest_object_closure_required_capsules(
     return tuple(sorted(required))
 
 
+def _manifest_has_sealed_extension_custody(manifest: Mapping[str, Any]) -> bool:
+    object_closure = manifest.get("object_closure")
+    return (
+        isinstance(object_closure, Mapping)
+        and isinstance(manifest.get("sealed_from_manifest_sha256"), str)
+        and isinstance(manifest.get("sealed_from_extension_sha256"), str)
+    )
+
+
 def _validate_manifest_source_capsule_requirements(
     manifest: Mapping[str, Any],
     *,
@@ -601,6 +611,10 @@ def _validate_manifest_source_capsule_requirements(
         manifest_path=manifest_path,
     )
     if errors:
+        if _manifest_has_sealed_extension_custody(
+            manifest
+        ) and source_extension_manifest_errors_are_missing_sources(errors):
+            return []
         return errors
     assert source_required is not None
     declared = set(_manifest_object_closure_required_capsules(manifest))
