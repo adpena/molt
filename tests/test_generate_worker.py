@@ -1006,6 +1006,71 @@ def test_runtime_import_signatures_are_manifest_backed() -> None:
     }
 
 
+def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
+    import pytest
+
+    from molt.cli.wasm import (
+        _runtime_import_result_kinds_from_manifest,
+        _runtime_import_signatures_from_manifest,
+    )
+
+    runtime_export_signatures = {
+        "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
+        "PyFloat_Check": {"params": ["i32"], "result": "i32"},
+    }
+    import_names = {"PyArg_ParseTuple", "PyFloat_Check"}
+
+    assert _runtime_import_result_kinds_from_manifest(
+        import_names,
+        runtime_export_signatures=runtime_export_signatures,
+    ) == {
+        "PyArg_ParseTuple": "i32",
+        "PyFloat_Check": "i32",
+    }
+    assert _runtime_import_signatures_from_manifest(
+        import_names,
+        runtime_export_signatures=runtime_export_signatures,
+    ) == runtime_export_signatures
+
+    with pytest.raises(ValueError, match="missing from WASM ABI manifest"):
+        _runtime_import_signatures_from_manifest(
+            {"NotARuntimeImport"},
+            runtime_export_signatures={
+                "NotARuntimeImport": {"params": [], "result": "i32"}
+            },
+        )
+
+
+def test_runtime_export_signatures_use_cpython_abi_raw_export_names(monkeypatch) -> (
+    None
+):
+    import molt.cli.non_native_output as non_native_output
+
+    requested: dict[str, set[str]] = {}
+
+    def fake_export_signatures(runtime_wasm, *, export_names):
+        requested["export_names"] = set(export_names)
+        return {
+            "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
+            "molt_socket_drop": {"params": ["i64"], "result": "nil"},
+        }
+
+    monkeypatch.setattr(
+        non_native_output,
+        "_wasm_export_function_signatures",
+        fake_export_signatures,
+    )
+
+    assert non_native_output._runtime_export_signatures_for_imports(
+        Path("runtime.wasm"),
+        {"PyArg_ParseTuple", "socket_drop"},
+    ) == {
+        "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
+        "socket_drop": {"params": ["i64"], "result": "nil"},
+    }
+    assert requested["export_names"] == {"PyArg_ParseTuple", "molt_socket_drop"}
+
+
 def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:
     from molt.wasm_artifact import (
         _wasm_export_function_signatures,
