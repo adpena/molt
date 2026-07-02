@@ -290,6 +290,76 @@ def test_pytest_bootstrap_process_group_kwargs_hide_windows_console(
     }
 
 
+def test_pytest_bootstrap_handoff_preserves_stdio_under_hidden_console(
+    monkeypatch,
+) -> None:
+    import tools.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
+
+    calls: dict[str, object] = {}
+    stdio = {"stdin": "in", "stdout": "out", "stderr": "err"}
+
+    def fake_run(
+        argv,
+        *,
+        env,
+        check,
+        creationflags=0,
+        stdin=None,  # noqa: ANN001
+        stdout=None,  # noqa: ANN001
+        stderr=None,  # noqa: ANN001
+    ):  # noqa: ANN001
+        calls["argv"] = argv
+        calls["env"] = env
+        calls["check"] = check
+        calls["creationflags"] = creationflags
+        calls["stdin"] = stdin
+        calls["stdout"] = stdout
+        calls["stderr"] = stderr
+        return SimpleNamespace(returncode=7)
+
+    def fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "inherit_stdio_kwargs", lambda: stdio
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_flush_standard_streams", lambda: None
+    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        pytest_memory_guard_bootstrap.handoff_to_outer_guard(
+            ["python", "-m", "pytest"],
+            {"PYTEST_CURRENT_TEST": "demo"},
+        )
+
+    assert exc.value.code == 7
+    assert calls["argv"] == ["python", "-m", "pytest"]
+    assert calls["env"] == {"PYTEST_CURRENT_TEST": "demo"}
+    assert calls["check"] is False
+    assert calls["creationflags"] == 0x08000200
+    assert calls["stdin"] == "in"
+    assert calls["stdout"] == "out"
+    assert calls["stderr"] == "err"
+
+
 def test_posix_guarded_popen_uses_new_session(monkeypatch) -> None:
     module = _load_memory_guard()
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
