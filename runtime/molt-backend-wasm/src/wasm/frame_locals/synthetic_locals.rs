@@ -38,14 +38,15 @@ impl WasmFrameSyntheticLocal {
 
     fn val_type(self) -> ValType {
         match self {
-            Self::WasmTmp0 | Self::WasmAllocResolve => ValType::I32,
+            // WasmScopeArena holds a runtime `*mut ScopeArena`: a real
+            // wasm32 pointer, matching the arena import signatures.
+            Self::WasmTmp0 | Self::WasmAllocResolve | Self::WasmScopeArena => ValType::I32,
             Self::DeadSink
             | Self::MoltTmp0
             | Self::MoltTmp1
             | Self::MoltTmp2
             | Self::MoltTmp3
-            | Self::WasmTmp1
-            | Self::WasmScopeArena => ValType::I64,
+            | Self::WasmTmp1 => ValType::I64,
         }
     }
 }
@@ -136,7 +137,7 @@ mod tests {
                 ValType::I32,
                 ValType::I64,
                 ValType::I32,
-                ValType::I64,
+                ValType::I32,
                 ValType::I64,
             ]
         );

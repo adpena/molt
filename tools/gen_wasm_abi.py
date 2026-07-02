@@ -29,6 +29,7 @@ from wasm_abi_gen.manifest import (
     generator_input_files,
     generator_runtime_export_signature_rows,
     load_manifest,
+    runtime_export_name,
 )
 from wasm_abi_gen.paths import (
     LEGACY_OUT_RS,
@@ -375,13 +376,10 @@ def _rust_runtime_import_from_variants(
 
 
 def _runtime_export_name(entry: dict) -> str:
-    name = entry["name"]
-    runtime_name = entry.get("runtime_name")
-    if runtime_name is not None:
-        return runtime_name
-    if name.startswith("molt_"):
-        return name
-    return f"molt_{name}"
+    export_name = runtime_export_name(entry)
+    if export_name is None:
+        raise WasmAbiManifestError("runtime import entry must have a valid name")
+    return export_name
 
 
 def _rust_option_str(value: str | None) -> str:

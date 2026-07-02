@@ -1276,6 +1276,12 @@ pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> 
             required_imports: &[WasmRuntimeImport::IsGenerator],
             sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
         }),
+        "is_native_awaitable" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::IsNativeAwaitable,
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            required_imports: &[WasmRuntimeImport::IsNativeAwaitable],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
         "is_callable" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IsCallable,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
@@ -1842,6 +1848,16 @@ pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> 
             required_imports: &[WasmRuntimeImport::DictStrIntInc],
             sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
         }),
+        "dict_set" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::DictSet,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            required_imports: &[WasmRuntimeImport::DictSet],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
         "dict_setdefault" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictSetdefault,
             args: &[
@@ -1850,6 +1866,16 @@ pub(crate) fn op_loop_runtime_call(kind: &str) -> Option<OpLoopRuntimeCallSpec> 
                 OpLoopRuntimeArgSpec::Local(2),
             ],
             required_imports: &[WasmRuntimeImport::DictSetdefault],
+            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+        }),
+        "dict_update_missing" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::DictUpdateMissing,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            required_imports: &[WasmRuntimeImport::DictUpdateMissing],
             sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
         }),
         "callargs_push_kw" => Some(OpLoopRuntimeCallSpec {
