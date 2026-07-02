@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -48,6 +49,7 @@ from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.source_extensions import (
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
+    source_extension_manifest_runtime_python_imports,
 )
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
@@ -1147,6 +1149,12 @@ def _validate_external_package_native_artifact(
             manifest_path=manifest_path,
         )
     )
+    runtime_python_imports, _skipped_runtime_import_sources = (
+        source_extension_manifest_runtime_python_imports(
+            manifest,
+            manifest_path=manifest_path,
+        )
+    )
     python_exports = _manifest_dotted_name_tuple(
         manifest,
         "python_exports",
@@ -1219,8 +1227,87 @@ def _validate_external_package_native_artifact(
         package_dir=package_dir,
         module=module_name,
     )
+    # Package-internal Python modules the extension imports dynamically at
+    # runtime travel through the same sidecar/support custody as declared
+    # support files; only non-package names (stdlib) go to the import-graph
+    # closure. Molt never synthesizes package modules from visibility.
+    package_prefix = f"{package}."
+    runtime_import_support_file_sha256: list[tuple[str, str]] = []
+    external_runtime_python_imports: list[str] = []
+    runtime_python_import_modules: list[str] = []
+
+    def _package_module_candidate(import_name: str) -> Path | None:
+        rel_parts = import_name.split(".")
+        module_candidate = package_source_root.joinpath(*rel_parts).with_suffix(".py")
+        init_candidate = package_source_root.joinpath(*rel_parts, "__init__.py")
+        for candidate in (module_candidate, init_candidate):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _package_module_imports(module_name: str, source_path: Path) -> set[str]:
+        try:
+            tree = ast.parse(
+                source_path.read_text(encoding="utf-8", errors="replace"),
+                filename=str(source_path),
+            )
+        except (OSError, SyntaxError):
+            return set()
+        names: set[str] = set()
+        package_parts = module_name.split(".")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    base_parts = package_parts[: len(package_parts) - node.level]
+                    base = ".".join(
+                        part
+                        for part in (*base_parts, node.module or "")
+                        if part
+                    )
+                else:
+                    base = node.module or ""
+                if base:
+                    names.add(base)
+                    names.update(f"{base}.{alias.name}" for alias in node.names)
+        return {
+            name
+            for name in names
+            if name == package or name.startswith(package_prefix)
+        }
+
+    pending_names = list(runtime_python_imports)
+    seen_names: set[str] = set()
+    while pending_names:
+        import_name = pending_names.pop()
+        if import_name in seen_names:
+            continue
+        seen_names.add(import_name)
+        if import_name != package and not import_name.startswith(package_prefix):
+            external_runtime_python_imports.append(import_name)
+            continue
+        candidate = _package_module_candidate(import_name)
+        if candidate is None:
+            # Sealed roots carry a deliberate source subset; unresolved
+            # package attrs (from-import names) end here too and are
+            # simply not modules.
+            continue
+        rel_path = candidate.relative_to(package_source_root).as_posix()
+        runtime_import_support_file_sha256.append((rel_path, _sha256_file(candidate)))
+        runtime_python_import_modules.append(import_name)
+        # The sealed support surface is the transitive package-internal
+        # Python closure of every runtime-imported module: its imports run
+        # at module exec and need the same sidecar custody.
+        pending_names.extend(_package_module_imports(import_name, candidate))
     support_file_sha256 = tuple(
-        sorted({*package_init_support_file_sha256, *manifest_support_file_sha256})
+        sorted(
+            {
+                *package_init_support_file_sha256,
+                *manifest_support_file_sha256,
+                *runtime_import_support_file_sha256,
+            }
+        )
     )
     return (
         _ExternalPackageNativeArtifact(
@@ -1245,6 +1332,10 @@ def _validate_external_package_native_artifact(
             callable_exports=callable_exports,
             abi_symbols=abi_symbols,
             c_api_symbols=c_api_symbols,
+            runtime_python_imports=tuple(sorted(external_runtime_python_imports)),
+            runtime_python_import_modules=tuple(
+                sorted(runtime_python_import_modules)
+            ),
         ),
         [],
     )
