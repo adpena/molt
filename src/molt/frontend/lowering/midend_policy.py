@@ -457,7 +457,12 @@ class MidendPolicyMixin(_MixinBase):
                     promotion_signal = hot_signal
         defaults: dict[tuple[MidendProfile, MidendTier], dict[str, Any]] = {
             ("dev", "A"): {
-                "max_rounds": 2,
+                # Converged functions exit the fixed-point loop early, so
+                # extra headroom only costs work for functions that need
+                # it. numpy.lib._iotools.NameValidator.validate needs 3
+                # rounds; 2 hard-failed the whole build (fail-closed
+                # non-convergence).
+                "max_rounds": 4,
                 "sccp_iter_cap": 48,
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": True,
