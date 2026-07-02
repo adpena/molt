@@ -32,6 +32,10 @@ from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,
 )
+from tools.dirty_tree_policy import (  # noqa: E402
+    DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
+    filter_status_lines,
+)
 
 RUNNING = {"queued", "running"}
 NOTE_KIND_DESCRIPTIONS = {
@@ -845,11 +849,16 @@ def _git_snapshot(cwd: Path) -> dict[str, object]:
         return {"available": False}
     status = run_git("status", "--short")
     status_lines = status.stdout.splitlines() if status.returncode == 0 else []
+    filtered_status, ignored_status = filter_status_lines(
+        status_lines,
+        DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
+    )
     return {
         "available": True,
         "head": head.stdout.strip(),
-        "dirty": bool(status_lines),
-        "status": status_lines[:200],
+        "dirty": bool(filtered_status),
+        "status": filtered_status[:200],
+        "ignored_status_count": len(ignored_status),
     }
 
 

@@ -129,7 +129,6 @@ import argparse
 import filecmp
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -156,20 +155,16 @@ from molt_dev_common import (
 )
 from molt_dev_detached import DETACHED_STATE_ROOT, cmd_detached_run, cmd_detached_verify
 from molt_dev_probe import probe_path, probe_pid
+from dirty_tree_policy import (
+    DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
+    is_ignored as _is_ignored,
+)
 
 # --------------------------------------------------------------------------
 # Constants / locations
 # --------------------------------------------------------------------------
 
 GATES_CONFIG_NAME = "molt_dev_gates.toml"
-
-# Tracked paths excluded from the cleanup "dirty tree" and secure-wip checks by
-# default: the wasm checksum sidecars that a build legitimately churns and that
-# a partner regenerates. Override via --ignore (repeatable) or the gate config.
-DEFAULT_IGNORE_GLOBS = (
-    "wasm/molt_runtime.wasm.sha256",
-    "wasm/molt_runtime_reloc.wasm.sha256",
-)
 
 # Recovery marker prefix for secure-wip commits, greppable so a salvaged WIP is
 # never mistaken for a deliberate landing.
@@ -338,70 +333,6 @@ class Git:
 # --------------------------------------------------------------------------
 # Ignore-set helper
 # --------------------------------------------------------------------------
-
-
-def _glob_to_regex(glob: str) -> "re.Pattern[str]":
-    """Translate a repo-relative POSIX glob to an anchored regex with REAL `**`.
-
-    Path-glob semantics (NOT fnmatch's, which treats `**` like `*` and so would
-    fail to match `src/molt/**/*.py` against `src/molt/frontend.py`):
-      *   matches any run of characters EXCEPT '/'  (one path segment)
-      ?   matches a single character except '/'
-      **  matches any number of FULL path segments, including zero, so
-          `a/**/b.py` matches `a/b.py`, `a/x/b.py`, `a/x/y/b.py`.
-      **/ at a prefix collapses to "zero-or-more leading segments".
-    The result is cached per glob (compiled once) for cheap repeated matching.
-    """
-    out: list[str] = ["^"]
-    i = 0
-    n = len(glob)
-    while i < n:
-        c = glob[i]
-        if c == "*":
-            if i + 1 < n and glob[i + 1] == "*":
-                # `**` — consume it, and an optional trailing '/'.
-                i += 2
-                if i < n and glob[i] == "/":
-                    i += 1
-                    # `**/` -> zero or more leading segments ("(seg/)*").
-                    out.append("(?:[^/]+/)*")
-                else:
-                    # bare `**` -> anything, including '/'.
-                    out.append(".*")
-                continue
-            out.append("[^/]*")
-            i += 1
-            continue
-        if c == "?":
-            out.append("[^/]")
-            i += 1
-            continue
-        out.append(re.escape(c))
-        i += 1
-    out.append("$")
-    return re.compile("".join(out))
-
-
-_GLOB_CACHE: dict[str, "re.Pattern[str]"] = {}
-
-
-def _glob_match(path: str, glob: str) -> bool:
-    norm = path.replace("\\", "/")
-    pat = _GLOB_CACHE.get(glob)
-    if pat is None:
-        pat = _glob_to_regex(glob)
-        _GLOB_CACHE[glob] = pat
-    return pat.match(norm) is not None
-
-
-def _is_ignored(path: str, ignore_globs: tuple[str, ...]) -> bool:
-    """True if `path` matches any glob (repo-relative POSIX, real `**`).
-
-    Shared by the cleanup/secure-wip ignore set AND by gate-rule selection, so
-    both use identical, correct path-glob semantics (a `**` rule matches nested
-    files; an exact path matches itself).
-    """
-    return any(_glob_match(path, glob) for glob in ignore_globs)
 
 
 def _tracked_dirty(git: Git, ignore_globs: tuple[str, ...]) -> list[tuple[str, str]]:
