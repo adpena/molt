@@ -106,7 +106,10 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     _windows_process_snapshot_rows_hard_timeout as _windows_process_snapshot_rows_hard_timeout,
     _windows_process_snapshot_rows as _windows_process_snapshot_rows,
 )
-from tools.process_spawn import detached_process_group_kwargs  # noqa: E402
+from tools.process_spawn import (  # noqa: E402
+    detached_process_group_kwargs,
+    inherit_stdio_kwargs,
+)
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
@@ -424,6 +427,7 @@ def _run_child_runner(environ: Mapping[str, str]) -> int:
                 command,
                 env=child_env,
                 check=False,
+                **inherit_stdio_kwargs(),
                 **_guarded_popen_process_isolation_kwargs(),
             )
         except OSError as exc:
@@ -793,12 +797,16 @@ def run_guarded(
         popen_kwargs: dict[str, object] = {
             "cwd": cwd,
             "env": dict(launch.env) if launch.env is not None else None,
-            "stdout": stdout_capture if capture_output else None,
-            "stderr": stderr_capture if capture_output else None,
-            "stdin": subprocess.PIPE if input is not None else None,
             "text": text,
             **_guarded_popen_process_isolation_kwargs(),
         }
+        if capture_output:
+            popen_kwargs["stdout"] = stdout_capture
+            popen_kwargs["stderr"] = stderr_capture
+        else:
+            popen_kwargs.update(inherit_stdio_kwargs())
+        if input is not None:
+            popen_kwargs["stdin"] = subprocess.PIPE
         if launch.pass_fds:
             popen_kwargs["pass_fds"] = launch.pass_fds
         if launch.preexec_fn is not None:
@@ -2124,6 +2132,7 @@ def main(
                 worker_argv,
                 env=_worker_env(current_env, command),
                 check=False,
+                **inherit_stdio_kwargs(),
                 **_guarded_popen_process_isolation_kwargs(),
             )
             return completed.returncode
