@@ -27,9 +27,7 @@ from molt.cli.file_hashing import _sha256_file
 _MOLT_NUMPY_ARRAY_API_CAPSULE = "numpy.core._multiarray_umath._ARRAY_API"
 _MOLT_NUMPY_UFUNC_API_CAPSULE = "numpy.core._multiarray_umath._UFUNC_API"
 _C_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-_PY_MODULE_NAME_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-)
+_PY_MODULE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 _SOURCE_EXTENSION_CAPSULE_IMPORT_TOKENS: dict[str, str] = {
     "import_array": _MOLT_NUMPY_ARRAY_API_CAPSULE,
     "import_array1": _MOLT_NUMPY_ARRAY_API_CAPSULE,
