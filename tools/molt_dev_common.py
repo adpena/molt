@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import subprocess
+import os
 import sys
 from pathlib import Path
 
@@ -87,10 +88,49 @@ def _run_driver_command_bytes(
     )
 
 
+def _run_fast_captured_command(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+    timeout: float | None = 60.0,
+) -> subprocess.CompletedProcess[str]:
+    """Run cheap non-shell plumbing directly, with a bounded fail-loud timeout."""
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd or DEFAULT_REPO,
+            env=env,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        if timeout is None:
+            timeout_msg = "command timed out"
+        else:
+            timeout_msg = f"command timed out after {timeout:.1f}s"
+        if stderr:
+            stderr = f"{stderr.rstrip()}\n{timeout_msg}\n"
+        else:
+            stderr = f"{timeout_msg}\n"
+        return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
+
+
 def _run_live_gate(cmd: str, *, repo: Path, env: dict[str, str]) -> int:
     """Run a manifest gate live through memory custody while preserving shell syntax."""
+    if os.name == "nt":
+        shell = os.environ.get("COMSPEC") or "cmd.exe"
+        argv = [shell, "/d", "/c", cmd]
+    else:
+        argv = ["/bin/sh", "-c", cmd]
     proc = harness_memory_guard.guarded_completed_process(
-        ["/bin/sh", "-c", cmd],
+        argv,
         prefix="MOLT_TEST_SUITE",
         cwd=repo,
         env=env,

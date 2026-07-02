@@ -8,6 +8,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -32,6 +34,13 @@ DETACHED_STATE_ROOT = Path(tempfile.gettempdir()) / "molt_dev_detached"
 _DETACHED_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
+def _windows_hidden_creationflags() -> int:
+    flags = 0
+    for name in ("CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW", "DETACHED_PROCESS"):
+        flags |= getattr(subprocess, name, 0)
+    return flags
+
+
 def _detached_state_dir(name: str, override: str | None) -> Path:
     if not _DETACHED_NAME_RE.fullmatch(name):
         raise DriverError(
@@ -48,11 +57,38 @@ def _atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _exec_wait_rc(command: list[str], env: dict[str, str]) -> int:
+def _write_exec_message(message: str, log_file: object | None) -> None:
+    if log_file is not None:
+        log_file.write(message)
+        log_file.flush()
+    else:
+        os.write(1, message.encode())
+
+
+def _exec_wait_rc(
+    command: list[str], env: dict[str, str], log_file: object | None = None
+) -> int:
     """Exec ``command`` in a child and return shell-style exit status."""
     if not command:
-        os.write(1, b"detached-run: empty command\n")
+        _write_exec_message("detached-run: empty command\n", log_file)
         return 127
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                command,
+                env=env,
+                check=False,
+                creationflags=_windows_hidden_creationflags(),
+                stdout=log_file if log_file is not None else None,
+                stderr=subprocess.STDOUT if log_file is not None else None,
+            )
+            return proc.returncode if proc.returncode >= 0 else 128 + abs(proc.returncode)
+        except FileNotFoundError as exc:
+            _write_exec_message(f"detached-run: exec failed: {exc}\n", log_file)
+            return 127
+        except Exception as exc:  # noqa: BLE001 - child must report every exec death
+            _write_exec_message(f"detached-run: exec crashed: {exc}\n", log_file)
+            return 126
     child = os.fork()
     if child == 0:
         try:
@@ -86,6 +122,8 @@ def _detached_daemonize(
     exit status (127 exec-failure / 126 crash sentinels included), and
     `os._exit`s, so no parent atexit/exception machinery runs twice.
     """
+    if os.name == "nt":
+        return _windows_detached_daemonize(state, command, cwd, env)
     pid_f = state / "pid"
     first = os.fork()
     if first == 0:
@@ -129,6 +167,77 @@ def _detached_daemonize(
     if daemon_pid is None:
         raise DriverError(f"detached-run: daemon never wrote {pid_f} within 5s")
     return daemon_pid
+
+
+def _windows_detached_daemonize(
+    state: Path, command: list[str], cwd: Path, env: dict[str, str]
+) -> int:
+    payload_path = state / "worker.json"
+    _atomic_write_text(
+        payload_path,
+        json.dumps({"argv": command, "cwd": str(cwd)}, indent=2),
+    )
+    worker = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--detached-worker",
+        str(payload_path),
+    ]
+    proc = subprocess.Popen(
+        worker,
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=_windows_hidden_creationflags(),
+        close_fds=True,
+    )
+    _atomic_write_text(state / "sid", f"windows-process-group:{proc.pid}")
+    _atomic_write_text(state / "pid", str(proc.pid))
+    return proc.pid
+
+
+def _detached_worker_main(payload_path: Path) -> int:
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    state = payload_path.parent
+    command = list(payload["argv"])
+    cwd = Path(payload["cwd"])
+    if os.name == "nt":
+        try:
+            with (state / "run.log").open("w", encoding="utf-8", buffering=1) as log:
+                _atomic_write_text(state / "sid", f"windows-process-group:{os.getpid()}")
+                _atomic_write_text(state / "pid", str(os.getpid()))
+                os.chdir(cwd)
+                rc = _exec_wait_rc(command, os.environ.copy(), log)
+                _atomic_write_text(state / "rc", str(rc))
+            return 0
+        except Exception as exc:  # noqa: BLE001 - worker must record every death
+            with (state / "run.log").open("a", encoding="utf-8", buffering=1) as log:
+                log.write(f"detached-run: daemon crashed: {exc}\n")
+            _atomic_write_text(state / "rc", "126")
+            return 0
+    fd = os.open(state / "run.log", os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    try:
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        null = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(null, 0)
+        finally:
+            os.close(null)
+        _atomic_write_text(state / "sid", str(os.getsid(0)))
+        _atomic_write_text(state / "pid", str(os.getpid()))
+        os.chdir(cwd)
+        rc = _exec_wait_rc(command, os.environ.copy())
+        _atomic_write_text(state / "rc", str(rc))
+        return 0
+    except Exception as exc:  # noqa: BLE001 - worker must record every death
+        os.write(1, f"detached-run: daemon crashed: {exc}\n".encode())
+        _atomic_write_text(state / "rc", "126")
+        return 0
+    finally:
+        os.close(fd)
 
 
 def cmd_detached_run(args: argparse.Namespace) -> int:
@@ -256,3 +365,9 @@ def cmd_detached_verify(args: argparse.Namespace) -> int:
         f"lost buffers: {log_f} ({result['log_size']}B)"
     )
     return EXIT_FAIL
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--detached-worker":
+        raise SystemExit(_detached_worker_main(Path(sys.argv[2])))
+    raise SystemExit("molt_dev_detached.py is an internal module; use tools/molt_dev.py")

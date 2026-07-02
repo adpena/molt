@@ -145,6 +145,7 @@ from molt_dev_common import (
     EXIT_USAGE,
     DriverError,
     _fail,
+    _run_fast_captured_command,
     _ok,
     _run_driver_command,
     _run_driver_command_bytes,
@@ -201,8 +202,11 @@ class Git:
         check: bool = True,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        proc = _run_driver_command(
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        proc = _run_fast_captured_command(
             ["git", "-C", str(self.repo), *args],
+            env=env,
             input_text=input_text,
         )
         if check and proc.returncode != 0:
@@ -683,9 +687,11 @@ def verify_toolchain(
             # may be a detached worktree/clone without tools/. Fall back to the
             # probed repo's copy only if the driver's is somehow absent.
             safe_run = _resolve_safe_run(git.repo)
-            out_path = Path(
-                tempfile.mkstemp(prefix="molt_dev_probe_", suffix=".out")[1]
+            out_fd, out_name = tempfile.mkstemp(
+                prefix="molt_dev_probe_", suffix=".out"
             )
+            os.close(out_fd)
+            out_path = Path(out_name)
             try:
                 cmd = [
                     sys.executable,
