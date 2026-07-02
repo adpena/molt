@@ -94,10 +94,13 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     assert any("src/app.py" in line for line in snapshot["status"])
 
 
-def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
+def test_proof_queue_exec_records_passed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     notebooks = tmp_path / "notebooks"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_POLL_SEC", "0.1")
 
     rc = proof_queue.main(
         [
@@ -136,7 +139,10 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["status"] == "passed"
     assert rows[0]["returncode"] == 0
-    assert "queue-ok" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "queue-ok" in log_text
+    assert "memory_guard_poll_sec=2.0" in log_text
+    assert "--poll-interval 2.0" in log_text
     notes = _notes(db)
     assert [note["body"] for note in notes] == [
         "changed queue smoke to verify note capture"
@@ -148,6 +154,63 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert "changed queue smoke to verify note capture" in notebook_text
     assert '"note_kind_counts": {' in notebook_text
     assert '"submission": 1' in notebook_text
+
+
+def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "queue-poll-override",
+            "--reason",
+            "prove queue memory guard poll override",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:queue-poll-override",
+            "--env",
+            "MOLT_MEMORY_GUARD_POLL_SEC=0.25",
+            "--note",
+            "synthetic override: queue wrapper must route the operator poll interval into memory_guard.py",
+            "--timeout",
+            "30",
+            "--",
+            sys.executable,
+            "-c",
+            "import os; print(os.environ['MOLT_MEMORY_GUARD_POLL_SEC'])",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]["status"] == "passed"
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "0.25" in log_text
+    assert "memory_guard_poll_sec=0.25" in log_text
+    assert "--poll-interval 0.25" in log_text
+
+
+def test_proof_queue_rejects_invalid_memory_guard_poll_override() -> None:
+    with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
+        proof_queue._proof_queue_memory_guard_poll_sec(
+            {"MOLT_MEMORY_GUARD_POLL_SEC": "not-a-number"}
+        )
+    with pytest.raises(ValueError, match="MOLT_MEMORY_GUARD_POLL_SEC"):
+        proof_queue._proof_queue_memory_guard_poll_sec(
+            {"MOLT_MEMORY_GUARD_POLL_SEC": "0"}
+        )
 
 
 def test_proof_queue_evidence_accepts_positional_run_id(

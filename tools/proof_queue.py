@@ -63,6 +63,8 @@ EDGE_KINDS = frozenset(EDGE_KIND_DESCRIPTIONS)
 DEFAULT_EDGE_KIND = "depends_on"
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
+MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
+DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
@@ -1814,6 +1816,7 @@ def _memory_guard_command(
     command: list[str],
     summary_json: Path,
     timeout: float,
+    poll_interval: str,
 ) -> list[str]:
     return [
         sys.executable,
@@ -1823,7 +1826,7 @@ def _memory_guard_command(
         "--max-total-rss-gb",
         "18.0",
         "--poll-interval",
-        "0.1",
+        poll_interval,
         "--summary-json",
         str(summary_json),
         "--child-rlimit-gb",
@@ -1833,6 +1836,23 @@ def _memory_guard_command(
         "--",
         *command,
     ]
+
+
+def _proof_queue_memory_guard_poll_sec(env_overrides: dict[str, str]) -> str:
+    value = env_overrides.get(
+        MEMORY_GUARD_POLL_SEC_ENV, DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC
+    ).strip()
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{MEMORY_GUARD_POLL_SEC_ENV} must be a positive finite number"
+        ) from exc
+    if parsed <= 0.0 or parsed == float("inf") or parsed != parsed:
+        raise ValueError(
+            f"{MEMORY_GUARD_POLL_SEC_ENV} must be a positive finite number"
+        )
+    return value
 
 
 def _required_rust_targets_for_resource(
@@ -2808,10 +2828,13 @@ def _run_one(
         env["MOLT_PROOF_QUEUE_DB"] = str(db)
         env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
         env.update(env_overrides)
+        poll_interval = _proof_queue_memory_guard_poll_sec(env_overrides)
+        env[MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
         wrapped = _memory_guard_command(
             command=command,
             summary_json=summary_json,
             timeout=timeout,
+            poll_interval=poll_interval,
         )
     except Exception as exc:
         return _fail_preexecution_run(
@@ -2846,6 +2869,7 @@ def _run_one(
             )
         print(f"proof_session_id={session_id}", file=log)
         print(f"cargo_target_dir={env.get('CARGO_TARGET_DIR', '')}", file=log)
+        print(f"memory_guard_poll_sec={poll_interval}", file=log)
         print(f"memory_guard_summary_json={summary_json}", file=log)
         print(f"memory_guard_command={shlex.join(wrapped)}", file=log)
         print("", file=log, flush=True)

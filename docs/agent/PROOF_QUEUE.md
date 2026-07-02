@@ -128,9 +128,19 @@ cache, a broad selector, or a stale generated file.
 - Prefer exact test selectors for new invariants. A substring selector that
   misses the newly added test is false evidence; cite the precise test name or
   the precise queue run that covered it.
+- Never pay a cold Cargo compile for one exact test. Use the queue-native
+  `cargo` lane, batch the relevant crate shard into the same compile, and use
+  `--allow-warm-single-test` only after a warmup has already made the target dir
+  hot.
 - Prefer a warmed canonical target/cache when it is already part of the DX
   authority and safe for the lane. If overriding `CARGO_TARGET_DIR` or another
   cache knob, record the reason in `--note`.
+- Queue-owned proof runs default `MOLT_MEMORY_GUARD_POLL_SEC` to `2.0` for
+  local iteration and pass that value through to `memory_guard.py`; set an
+  explicit queue `--env MOLT_MEMORY_GUARD_POLL_SEC=...` override only when a
+  proof genuinely needs a tighter poll.
+- Submit long or compile-heavy proof rows with `--detach`, then keep working or
+  end the arc. Do not spend a turn tailing a queued log.
 - For generators, use their timing mode when available and record the number.
   A generator check that rewrites identical files or reruns formatters on every
   output is a structural DX defect, not background noise.
