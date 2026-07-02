@@ -491,6 +491,32 @@ unsafe extern "C" fn hook_alloc_module(name_data: *const u8, name_len: usize) ->
     })
 }
 
+unsafe extern "C" fn hook_import_module(name_data: *const u8, name_len: usize) -> u64 {
+    if name_data.is_null() || name_len == 0 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(name_data, name_len) };
+    let name_bits = with_gil(|_py| {
+        let name_ptr = alloc_string(&_py, bytes);
+        if name_ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(name_ptr).bits()
+    });
+    if MoltObject::from_bits(name_bits).as_ptr().is_none() {
+        return 0;
+    }
+    // molt_module_import owns its own GIL entry and returns an owned module
+    // reference; import failures stay in the runtime pending-exception state
+    // so the ABI-side module-init diagnostics can drain the real error.
+    let module_bits = crate::builtins::modules::molt_module_import(name_bits);
+    with_gil(|_py| dec_ref_bits(&_py, name_bits));
+    match MoltObject::from_bits(module_bits).as_ptr() {
+        Some(_) => module_bits,
+        None => 0,
+    }
+}
+
 unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
     with_gil(|_py| {
         let module_obj = MoltObject::from_bits(module_bits);
@@ -1659,6 +1685,7 @@ pub fn register_cpython_hooks() {
         module_state_find: hook_module_state_find,
         module_state_remove: hook_module_state_remove,
         register_c_function: hook_register_c_function,
+        import_module: hook_import_module,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {
@@ -1697,6 +1724,31 @@ mod tests {
             dec_ref_bits(&_py, exc_bits);
             message
         })
+    }
+
+    #[test]
+    fn pyimport_importmodule_routes_through_runtime_import_pipeline() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+
+        let module = unsafe {
+            molt_cpython_abi::api::imports::PyImport_ImportModule(
+                c"molt_test_definitely_absent_module".as_ptr(),
+            )
+        };
+
+        assert!(module.is_null());
+        // The runtime import pipeline owns the failure: the pending error is
+        // the real ModuleNotFoundError, never the standalone ABI stub text.
+        let message = pending_exception_message_for_assertion();
+        assert!(
+            message.contains("molt_test_definitely_absent_module"),
+            "runtime import pipeline must name the missing module: {message}"
+        );
+        assert!(
+            !message.contains("standalone molt-cpython-abi"),
+            "registered hooks must not surface the standalone stub error: {message}"
+        );
     }
 
     #[test]
