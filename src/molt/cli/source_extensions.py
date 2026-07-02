@@ -1122,6 +1122,37 @@ def _source_extension_wasm_compile_args(
     return []
 
 
+def _source_extension_unit_args_for_driver(
+    unit_compile_args: Sequence[str],
+    *,
+    cc_cmd: Sequence[str],
+) -> list[str]:
+    """Translate replayed compile_commands args for the active driver.
+
+    Source plans replay the upstream build's per-source arguments verbatim.
+    Zig owns its own target and sysroot (its `-target` grammar names the WASI
+    OS "wasi", and its bundled libc/libc++ replace the clang sysroot), so the
+    upstream clang-shaped `-target`/`--sysroot` pairs must not reach it.
+    Other drivers keep the full replay.
+    """
+    tool = Path(cc_cmd[0]).name.lower() if cc_cmd else ""
+    if tool not in {"zig", "zig.exe"}:
+        return list(unit_compile_args)
+    out: list[str] = []
+    skip_next = False
+    for token in unit_compile_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-target", "--target", "--sysroot", "-isysroot"}:
+            skip_next = True
+            continue
+        if token.startswith(("-target=", "--target=", "--sysroot=", "-isysroot=")):
+            continue
+        out.append(token)
+    return out
+
+
 def _source_extension_gc_link_args(
     *,
     cc_cmd: Sequence[str],

@@ -781,7 +781,15 @@ typedef struct PyGetSetDef {
 
 /* ── PyMODINIT_FUNC ───────────────────────────────────────────────────────── */
 
+/* CPython parity: module init functions defined in C++ translation units
+ * must keep C linkage and an unmangled symbol name; the macro carries the
+ * extern "C" itself because the definition site sits outside this header's
+ * extern "C" block. */
+#ifdef __cplusplus
+#define PyMODINIT_FUNC  extern "C" __attribute__((visibility("default"))) PyObject *
+#else
 #define PyMODINIT_FUNC  __attribute__((visibility("default"))) PyObject *
+#endif
 
 /* ── Singleton singletons ─────────────────────────────────────────────────── */
 
