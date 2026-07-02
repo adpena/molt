@@ -1005,6 +1005,78 @@ def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
     assert _rows(db)[0]["status"] == "stale"
 
 
+def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    stale_mtime = (
+        time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    )
+    conn = proof_queue._connect(db)
+    for run_id, guard_pid in (("target-run", 99_001), ("sibling-run", 99_002)):
+        log_path = tmp_path / f"{run_id}.log"
+        summary_path = tmp_path / f"{run_id}.memory_guard.json"
+        log_path.write_text(f"proof_queue run_id={run_id}\n", encoding="utf-8")
+        os.utime(log_path, (stale_mtime, stale_mtime))
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "child_process": None,
+                    "returncode": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove targeted stale pruning",
+            command=[sys.executable, "-c", "print('active')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python-tests",
+            contention_key="proof-queue-dx",
+            scopes=["tools/proof_queue.py"],
+            log_path=log_path,
+            summary_json=summary_path,
+        )
+        proof_queue._update_run(
+            conn,
+            run_id,
+            status="running",
+            guard_pid=guard_pid,
+            started_at=proof_queue._utc_now(),
+        )
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid in {99_001, 99_002})
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "target-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "stale target-run" in out
+    assert "sibling-run" not in out
+    assert "pruned=1" in out
+    statuses = {row["run_id"]: row["status"] for row in _rows(db)}
+    assert statuses == {"target-run": "stale", "sibling-run": "running"}
+
+
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2484,6 +2556,175 @@ def test_proof_queue_diagnoses_pytest_assertion_failure(
         diagnostics[0]["summary"]
     )
     assert "unexpected rescan" in str(diagnostics[0]["evidence"])
+
+
+def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "cold-single-cargo.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="cold-single-cargo-run",
+        logical_id="indirect-call-trampoline-fix-runtime-call-shard",
+        reason="prove cold single Cargo proof policy diagnostics",
+        command=[
+            "uv",
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "python",
+            "tools/guarded_exec.py",
+            "--prefix",
+            "MOLT_TEST_SUITE",
+            "--",
+            "cargo",
+            "test",
+            "-p",
+            "molt-runtime",
+            "--lib",
+            "call",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="cargo",
+        contention_key="cargo:molt-runtime",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "cold-single-cargo.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="cold-single-cargo-run",
+        body="test: cold single-test Cargo policy refusal must be classified",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "proof queue refuses cold-prone single-test Cargo proofs "
+        "('call' under --lib). Batch the relevant crate shard in one compile.\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn,
+        "cold-single-cargo-run",
+        status="failed",
+        returncode=2,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "cold-single-cargo-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "queue-cold-single-cargo-proof"
+    assert diagnostics[0]["severity"] == "operator"
+    assert "filter call" in diagnostics[0]["summary"]
+    assert "--allow-warm-single-test" in diagnostics[0]["next_action"]
+
+
+def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "molt-runtime-invalid-header.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="molt-runtime-invalid-header-run",
+        logical_id="native-module-dunder-cleanup-trace",
+        reason="prove Molt runtime fatal diagnostics",
+        command=[str(tmp_path / "compiled-native-binary")],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="native-import-regression",
+        scopes=["runtime/molt-runtime/src/builtins/modules.rs"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "molt-runtime-invalid-header.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="molt-runtime-invalid-header-run",
+        body="test: runtime fatal must be classified before generic pytest failure",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "module_get_attr: mod=0x7ffc013480238fb8 "
+                "attr=0x7ffc013480230dc8 name=__dict__",
+                "molt module attr get module=probe_mod attr=__dict__",
+                "molt fatal: invalid object header in dec_ref "
+                "ptr=0x134802399a8 type_id=2149817200 "
+                "(use-after-free or corrupted header)",
+                "FAILED tests/test_native_import_bootstrap_regressions.py::"
+                "test_native_imported_module_dunder_getattr_handles_missing_attr",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn,
+        "molt-runtime-invalid-header-run",
+        status="failed",
+        returncode=4294967295,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "molt-runtime-invalid-header-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "molt-runtime-invalid-object-header"
+    assert diagnostics[0]["severity"] == "error"
+    assert "dec_ref" in diagnostics[0]["summary"]
+    assert "use-after-free or corrupted header" in diagnostics[0]["evidence"]
+    assert "runtime/molt-runtime/" in diagnostics[0]["scopes"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
 
 
 def test_proof_queue_diagnoses_pytest_import_error(

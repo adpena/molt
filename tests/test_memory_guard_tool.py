@@ -149,6 +149,25 @@ def test_descendant_pids_includes_grandchildren() -> None:
     assert memory_guard.descendant_pids(samples, 100) == {100, 101, 102}
 
 
+def test_timeout_sampler_uses_bounded_windows_snapshot_only_for_default_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def custom_sampler() -> dict[int, memory_guard.ProcessSample]:
+        return {}
+
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    assert (
+        memory_guard._timeout_sampler(memory_guard.sample_processes)
+        is memory_guard.sample_processes_windows_hard_timeout
+    )
+    assert memory_guard._timeout_sampler(custom_sampler) is custom_sampler
+
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: False)
+    assert memory_guard._timeout_sampler(memory_guard.sample_processes) is (
+        memory_guard.sample_processes
+    )
+
+
 def test_watched_pids_excludes_unobserved_reparented_process_group_members() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
