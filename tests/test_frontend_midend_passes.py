@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import molt.frontend as frontend_module
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend.cfg_analysis import build_cfg
 from molt.type_facts import collect_type_facts_from_paths
@@ -1773,6 +1772,56 @@ else:
     assert _module_attr_reads_named(ops, "__NUMPY_SETUP__") == []
 
 
+def test_imported_module_control_flow_name_reads_use_load_global_semantics() -> None:
+    # The ``try: __NUMPY_SETUP__ / except NameError`` guard runs inside an
+    # IMPORTED package initializer (module_name != entry_module) when a user
+    # program does ``import numpy``, and large package inits additionally lower
+    # with module chunking.  Bare-name reads of a not-yet-bound module global
+    # must use MODULE_GET_GLOBAL (NameError on a miss) in those configurations
+    # too — MODULE_GET_ATTR would leak AttributeError into ``except NameError``.
+    source = """
+try:
+    __NUMPY_SETUP__
+except NameError:
+    __NUMPY_SETUP__ = False
+
+if __NUMPY_SETUP__:
+    state = "setup"
+else:
+    state = "runtime"
+"""
+    generators = {
+        "imported": SimpleTIRGenerator(
+            module_name="numpy",
+            entry_module="main",
+            known_modules={"main", "numpy"},
+        ),
+        "imported-chunked": SimpleTIRGenerator(
+            module_name="numpy",
+            entry_module="main",
+            known_modules={"main", "numpy"},
+            module_chunking=True,
+            module_chunk_max_ops=8,
+        ),
+    }
+    for config_name, gen in generators.items():
+        gen.visit(ast.parse(source))
+        ir = gen.to_json()
+
+        global_read_funcs = [
+            func["name"]
+            for func in ir["functions"]
+            if _module_global_reads_named(func["ops"], "__NUMPY_SETUP__")
+        ]
+        attr_read_funcs = [
+            func["name"]
+            for func in ir["functions"]
+            if _module_attr_reads_named(func["ops"], "__NUMPY_SETUP__")
+        ]
+        assert attr_read_funcs == [], (config_name, attr_read_funcs)
+        assert global_read_funcs, config_name
+
+
 def test_module_control_flow_named_calls_use_load_global_semantics() -> None:
     source = """
 flag = False
@@ -2040,8 +2089,12 @@ value = Point(3)
     ir = gen.to_json()
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
-    reads = _module_attr_reads_named(ops, "Point")
+    # Once globals() escapes, the class read must stay a runtime lookup with
+    # LOAD_GLOBAL semantics (MODULE_GET_GLOBAL): ns mutation must be observed
+    # and a deleted binding must raise NameError, not AttributeError.
+    reads = _module_global_reads_named(ops, "Point")
     assert reads
+    assert _module_attr_reads_named(ops, "Point") == []
     assert all(op.get("effect_proof") is None for op in reads)
 
 
@@ -2825,7 +2878,10 @@ def test_midend_policy_budget_ms_does_not_gate_on_wall_clock(
         tick["value"] += 0.05
         return tick["value"]
 
-    monkeypatch.setattr(frontend_module.time, "perf_counter", fake_perf_counter)
+    # The midend wall-clock reads live in
+    # molt.frontend.lowering.midend_pipeline, which calls the stdlib
+    # ``time.perf_counter`` directly — patch it at its one authority.
+    monkeypatch.setattr("time.perf_counter", fake_perf_counter)
 
     out = gen.map_ops_to_json(ops, function_name="slow_func")
 
