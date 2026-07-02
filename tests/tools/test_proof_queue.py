@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -436,6 +437,88 @@ def test_proof_queue_status_shows_active_log_phase(
     assert f"log={log_path}" in out
     assert "last_log_age=" in out
     assert "Runtime wasm build: still running elapsed=120s" in out
+
+
+def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tools import memory_guard
+
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    child_pid = 432_100
+    log_path.write_text(
+        "proof_queue run_id=active-run\n"
+        "source-recompiled external native packages use package/native artifact custody\n",
+        encoding="utf-8",
+    )
+    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "child_process": {
+                    "pid": child_pid,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        proof_queue, "_pid_alive", lambda pid: pid in {child_pid, 99_001}
+    )
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+    monkeypatch.setattr(memory_guard, "descendant_pids", lambda samples, pid: set())
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="prove stale nested guard diagnosis",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm-build",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        guard_pid=99_001,
+        started_at=proof_queue._utc_now(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "running-proof-child-missing" in out
+    assert "descendants=0" in out
+    assert str(summary_path) in out
 
 
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(

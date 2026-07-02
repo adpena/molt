@@ -60,6 +60,7 @@ DEFAULT_EDGE_KIND = "depends_on"
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
+RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 STATIC_PYMOD_EXEC_RE = re.compile(
     r"ImportError:\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
@@ -194,6 +195,99 @@ def _read_log_tail(path: Path, *, limit: int = DIAGNOSTIC_LOG_TAIL_BYTES) -> str
             return handle.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _log_age_seconds(path: Path) -> float | None:
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _is_guard_command(command: object) -> bool:
+    if isinstance(command, str):
+        return "memory_guard.py" in command.replace("\\", "/")
+    if not isinstance(command, list):
+        return False
+    return any(
+        isinstance(part, str) and part.replace("\\", "/").endswith("tools/memory_guard.py")
+        for part in command
+    )
+
+
+def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | None:
+    if row["status"] != "running":
+        return None
+    log_age_s = _log_age_seconds(Path(row["log_path"]))
+    if log_age_s is None or log_age_s < RUNNING_CHILD_MISSING_STALE_LOG_SECONDS:
+        return None
+    summary = _read_json_object(Path(row["summary_json"]))
+    child = summary.get("child_process")
+    if not isinstance(child, dict):
+        return None
+    child_pid = child.get("pid")
+    if not isinstance(child_pid, int) or child_pid <= 0:
+        return None
+    if not _is_guard_command(child.get("command")):
+        return None
+    if not _pid_alive(child_pid):
+        evidence = (
+            f"summary_json={row['summary_json']} child_pid={child_pid} "
+            f"last_log_age={_format_duration(log_age_s)}"
+        )
+        summary_text = "Running proof row's nested memory guard child is no longer live."
+    else:
+        try:
+            from tools import memory_guard
+
+            samples = memory_guard.sample_processes()
+            descendants = memory_guard.descendant_pids(samples, child_pid)
+        except Exception as exc:  # pragma: no cover - sampler failure is host-specific.
+            return _diagnostic(
+                signal_id="running-proof-custody-sampler-failed",
+                severity="infra",
+                summary="Running proof row could not be inspected by the process sampler.",
+                evidence=(
+                    f"summary_json={row['summary_json']} child_pid={child_pid} "
+                    f"sampler_error={type(exc).__name__}: {exc}"
+                ),
+                next_action=(
+                    "Inspect the memory-guard summary and process custody manually, "
+                    "then fix the sampler if this host shape repeats."
+                ),
+                scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+            )
+        if descendants:
+            return None
+        evidence = (
+            f"summary_json={row['summary_json']} child_pid={child_pid} "
+            f"last_log_age={_format_duration(log_age_s)} descendants=0"
+        )
+        summary_text = (
+            "Running proof row has a live nested memory guard but no visible "
+            "work child beneath it."
+        )
+    return _diagnostic(
+        signal_id="running-proof-child-missing",
+        severity="infra",
+        summary=summary_text,
+        evidence=evidence,
+        next_action=(
+            "Treat the row as custody-incomplete evidence. Inspect the log and "
+            "memory-guard summary, then use `prune-stale` or rerun through the "
+            "same queue lane; do not interrupt via Codex stdin."
+        ),
+        scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+        artifacts=(str(row["summary_json"]), str(row["log_path"])),
+    )
 
 
 def _active_log_status(row: sqlite3.Row) -> list[str]:
@@ -943,6 +1037,9 @@ def _diagnostic(
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
+    running_child_missing = _running_child_missing_diagnostic(row)
+    if running_child_missing is not None:
+        diagnostics.append(running_child_missing)
     if row["status"] == "blocked":
         diagnostics.append(
             _diagnostic(
