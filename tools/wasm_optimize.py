@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -57,8 +58,35 @@ _DEFAULT_FEATURE_FLAGS = [
 
 
 def find_wasm_opt() -> str | None:
-    """Return the path to ``wasm-opt`` if it is on ``$PATH``."""
-    return shutil.which("wasm-opt")
+    """Return the ``wasm-opt`` binary through the toolchain discovery order.
+
+    Resolution order (one authority for every wasm-opt consumer):
+    1. ``MOLT_WASM_OPT`` — explicit pin to a binary path.
+    2. ``$PATH``.
+    3. ``MOLT_TARGET_ROOT/toolchains/binaryen-*/bin`` — the same managed
+       toolchain root that provides the WASI sysroot, so a repo-provisioned
+       Binaryen works without PATH mutation.
+    """
+    pinned = os.environ.get("MOLT_WASM_OPT", "").strip()
+    if pinned:
+        pinned_path = Path(pinned).expanduser()
+        if pinned_path.is_file():
+            return str(pinned_path)
+    on_path = shutil.which("wasm-opt")
+    if on_path is not None:
+        return on_path
+    target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
+    if target_root:
+        toolchains = Path(target_root).expanduser() / "toolchains"
+        exe_name = "wasm-opt.exe" if os.name == "nt" else "wasm-opt"
+        candidates = sorted(
+            toolchains.glob(f"binaryen-*/bin/{exe_name}"),
+            reverse=True,
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:

@@ -24,7 +24,11 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import artifact_publish  # noqa: E402
+from wasm_optimize import find_wasm_opt  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
+from molt._wasm_runtime_exports import (  # noqa: E402
+    wasm_split_runtime_export_name_for_import,
+)
 
 from wasm_link_format import (  # noqa: E402
     CALL_INDIRECT_MANGLED_RE as CALL_INDIRECT_MANGLED_RE,
@@ -79,7 +83,6 @@ from wasm_link_format import (  # noqa: E402
     is_call_indirect_import_name as is_call_indirect_import_name,
     parse_table_ref_export_name as parse_table_ref_export_name,
     table_ref_export_name as table_ref_export_name,
-    wasm_runtime_export_name as wasm_runtime_export_name,
     _get_total_func_count as _get_total_func_count,
     parse_wasm_module_facts as parse_wasm_module_facts,
     _scan_code_ref_funcs as _scan_code_ref_funcs,
@@ -880,7 +883,7 @@ def _tree_shake_runtime(
     # large live runtime dependency surface.
     normalized_required_exports = set(required_exports)
     for name in required_exports:
-        export_name = wasm_runtime_export_name(name)
+        export_name = wasm_split_runtime_export_name_for_import(name)
         if export_name is not None:
             normalized_required_exports.add(export_name)
     normalized_required_exports.update(_ESSENTIAL_EXPORTS)
@@ -975,12 +978,16 @@ def _tree_shake_runtime(
         )
 
     # Use wasm-opt to eliminate dead code (functions no longer reachable
-    # from the reduced export set).
-    wasm_opt = shutil.which("wasm-opt")
+    # from the reduced export set). Resolution goes through the one
+    # toolchain authority (MOLT_WASM_OPT, PATH, then the managed
+    # MOLT_TARGET_ROOT/toolchains/binaryen-* root).
+    wasm_opt = find_wasm_opt()
     if not wasm_opt:
         print(
             "wasm-opt not found; skipping dead-code elimination "
-            "(export stripping only)",
+            "(export stripping only). Provision Binaryen on PATH, set "
+            "MOLT_WASM_OPT, or unpack a binaryen-* release under "
+            "MOLT_TARGET_ROOT/toolchains/.",
             file=sys.stderr,
         )
         return optimized_baseline
@@ -1383,10 +1390,10 @@ def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
         return False
     missing: list[str] = []
     for name in app_imports:
-        export_name = wasm_runtime_export_name(name)
-        if name in rt_exports:
-            continue
+        export_name = wasm_split_runtime_export_name_for_import(name)
         if export_name is not None and export_name in rt_exports:
+            continue
+        if export_name is None and name in rt_exports:
             continue
         if name in _ESSENTIAL_EXPORTS:
             continue
@@ -1750,6 +1757,7 @@ def _run_wasm_ld(
         tuple(native_objects),
         runtime_exports,
         temp_dir,
+        split_runtime=split_runtime,
     )
     force_exports.extend(native_force_exports)
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
@@ -2317,13 +2325,13 @@ def _run_wasm_ld(
                 )
                 missing_runtime_imports: list[str] = []
                 for name in app_imports:
-                    export_name = wasm_runtime_export_name(name)
-                    if name in canonical_required_exports:
-                        continue
+                    export_name = wasm_split_runtime_export_name_for_import(name)
                     if (
                         export_name is not None
                         and export_name in canonical_required_exports
                     ):
+                        continue
+                    if export_name is None and name in canonical_required_exports:
                         continue
                     if name in _ESSENTIAL_EXPORTS:
                         continue
