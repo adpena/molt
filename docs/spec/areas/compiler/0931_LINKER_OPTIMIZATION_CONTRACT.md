@@ -53,7 +53,8 @@ WASM link commands must:
   WebAssembly port defaults to `--gc-sections` for size-oriented linking;
 - treat generated runtime callable names as a catalog, not a root set: builtins,
   intrinsics, GPU entrypoints, and C/API shims are imported only when the app
-  reachability plan observes them;
+  reachability plan observes them or a generated runtime structure, such as the
+  poll table, owns their slot;
 - prefer `--export-if-defined` for optional runtime exports so missing optional
   symbols do not fail the link but required exports are still explicitly
   enumerated;

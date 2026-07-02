@@ -6,8 +6,8 @@ use super::runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
-    IMPORT_REGISTRY, RUNTIME_CALLABLE_IMPORTS, RUNTIME_IMPORT_MODULE, RuntimeImportSpec,
-    WasmRuntimeImport,
+    IMPORT_REGISTRY, POLL_TABLE_IMPORTS, RUNTIME_CALLABLE_IMPORTS, RUNTIME_IMPORT_MODULE,
+    RuntimeImportSpec, WasmRuntimeImport,
 };
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
@@ -30,9 +30,12 @@ impl WasmBackend {
             is_pure: self.options.wasm_profile == WasmProfile::Pure,
         };
 
+        let poll_table_root_imports: BTreeSet<WasmRuntimeImport> =
+            POLL_TABLE_IMPORTS.iter().map(|spec| spec.import).collect();
         let on_demand_runtime_callables: BTreeSet<WasmRuntimeImport> = RUNTIME_CALLABLE_IMPORTS
             .iter()
             .map(|spec| spec.import)
+            .filter(|import| !poll_table_root_imports.contains(import))
             .collect();
         for spec in IMPORT_REGISTRY {
             if !on_demand_runtime_callables.contains(&spec.import) {

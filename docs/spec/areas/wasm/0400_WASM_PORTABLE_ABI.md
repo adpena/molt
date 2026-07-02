@@ -149,14 +149,17 @@ consumers:
 Do not add host import names or linker/export keep policy by parsing Rust or
 hand-editing generated outputs. Update the manifest and regenerate.
 
-Runtime callable imports are reachability-owned. Generated builtin,
-intrinsic, GPU, and C/API callable names may appear in the manifest and host
-export policy, but that catalog is not an import root. The WASM backend must
-admit those imports only from observed app IR: op dependency facts,
-`builtin_func` materialization, direct runtime-call specs, literal intrinsic
-lookup, or native-extension sidecar custody. If a callable is not observed, it
-must be absent from the app import section, absent from any app-local resolver
-table, and unavailable as a fake fallback symbol.
+Runtime callable imports are reachability-owned unless another generated
+runtime structure owns the slot. Generated builtin, intrinsic, GPU, and C/API
+callable names may appear in the manifest and host export policy, but that
+catalog is not an import root. The WASM backend must admit ordinary callable
+imports only from observed app IR: op dependency facts, `builtin_func`
+materialization, direct runtime-call specs, literal intrinsic lookup, or
+native-extension sidecar custody. Poll-table callables are the current
+exception: their generated table slots make them table-layout roots until the
+poll table itself becomes reachability-sliced. If an ordinary callable is not
+observed, it must be absent from the app import section, absent from any
+app-local resolver table, and unavailable as a fake fallback symbol.
 
 ### 5.1 Required imports
 - `molt_alloc(size: i64) -> i64`
