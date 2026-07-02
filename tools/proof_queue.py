@@ -128,8 +128,13 @@ MEMORY_GUARD_ORPHANED_RE = re.compile(
     r"memory_guard: orphaned child processes detected after command exit; "
     r"(?P<detail>[^\r\n]+)"
 )
+MEMORY_GUARD_TIMEOUT_RE = re.compile(
+    r"memory_guard: timeout after (?P<timeout>[0-9.]+)s; "
+    r"(?P<detail>[^\r\n]+)"
+)
 AUDIT_ERROR_DIAGNOSTICS = frozenset(
     {
+        "memory-guard-timeout",
         "proof-log-missing",
         "queue-preexecution-failure",
     }
@@ -1553,6 +1558,30 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "queue diagnostic."
                 ),
                 scopes=("tools/proof_queue.py",),
+            )
+        )
+
+    match = MEMORY_GUARD_TIMEOUT_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="memory-guard-timeout",
+                severity="error",
+                summary=(
+                    "Memory guard terminated the proof after "
+                    f"{match.group('timeout')}s."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Treat this proof result as incomplete. Inspect the last "
+                    "active phase once, then reshape the proof, warm the target "
+                    "dir, or raise --timeout only for intentional long-running "
+                    "work."
+                ),
+                scopes=(
+                    "tools/memory_guard.py",
+                    "tools/proof_queue.py",
+                ),
             )
         )
 
