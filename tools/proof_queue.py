@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
 import hashlib
 import json
@@ -72,6 +73,10 @@ DIAGNOSTIC_JSON_RE = re.compile(r"diagnostic_json=(?P<path>\S+)")
 NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
     r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
 )
+NATIVE_ARTIFACT_ABI_SURFACE_RE = re.compile(
+    r"runtime ABI symbol '(?P<symbol>[^']+)' is not in the generated "
+    r"WASM ABI/link import surface"
+)
 NATIVE_SUPPORT_CUSTODY_RE = re.compile(
     r"reachable native support source imports native package modules without source "
     r"or artifact custody:\s+(?P<detail>[^\r\n]+)"
@@ -91,6 +96,23 @@ PYTEST_ASSERTION_RE = re.compile(r"(?m)^E\s+(?P<error>AssertionError[^\r\n]*)")
 MEMORY_GUARD_ORPHANED_RE = re.compile(
     r"memory_guard: orphaned child processes detected after command exit; "
     r"(?P<detail>[^\r\n]+)"
+)
+AUDIT_ERROR_DIAGNOSTICS = frozenset(
+    {
+        "proof-log-missing",
+        "queue-preexecution-failure",
+    }
+)
+AUDIT_WARNING_DIAGNOSTICS = frozenset(
+    {
+        "queue-infra-warning",
+        "memory-guard-orphan-cleanup",
+        "queue-policy-rejection",
+    }
+)
+FRONTIER_SUPERSEDING_EDGE_KINDS = frozenset({"reruns", "supersedes"})
+FRONTIER_SUPERSEDING_CHILD_STATUSES = frozenset(
+    {"queued", "running", "passed", "failed"}
 )
 
 
@@ -907,6 +929,26 @@ def _diagnostic(
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
+    if row["status"] == "blocked":
+        diagnostics.append(
+            _diagnostic(
+                signal_id="proof-dependency-blocked",
+                severity="operator",
+                summary="The proof did not run because a dependency edge did not pass.",
+                evidence=(
+                    _first_log_line_containing(
+                        log_tail, "proof queue blocked by dependency"
+                    )
+                    or f"log_path={row['log_path']}"
+                ),
+                next_action=(
+                    "Inspect the run DAG parents in evidence/status, fix or supersede "
+                    "the failed dependency, then queue a new rerun edge."
+                ),
+                scopes=("tools/proof_queue.py", "docs/agent/PROOF_QUEUE.md"),
+            )
+        )
+        return diagnostics
     if not log_tail and row["status"] not in {"passed", "queued", "running"}:
         return [
             _diagnostic(
@@ -1112,27 +1154,63 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
 
     match = NATIVE_ARTIFACT_CUSTODY_RE.search(log_tail)
     if match is not None:
-        diagnostics.append(
-            _diagnostic(
-                signal_id="external-native-artifact-custody",
-                severity="error",
-                summary=(
-                    "External native package admission failed because a declared "
-                    "callable export is not backed by a native method, direct "
-                    "symbol, or sealed provider module."
-                ),
-                evidence=match.group(0),
-                next_action=(
-                    "Fix package-native object closure or provider-module custody; "
-                    "do not rerun the heavy lane until the manifest/source authority "
-                    "can prove the callable without a facade."
-                ),
-                scopes=(
-                    "src/molt/cli/external_native.py",
-                    "src/molt/cli/source_extensions.py",
-                ),
+        missing_abi_symbols = tuple(
+            dict.fromkeys(
+                symbol_match.group("symbol")
+                for symbol_match in NATIVE_ARTIFACT_ABI_SURFACE_RE.finditer(
+                    match.group("detail")
+                )
             )
         )
+        if missing_abi_symbols:
+            listed = ", ".join(missing_abi_symbols[:6])
+            if len(missing_abi_symbols) > 6:
+                listed += f", ... (+{len(missing_abi_symbols) - 6} more)"
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="external-native-abi-link-surface-missing",
+                    severity="error",
+                    summary=(
+                        "External native object closure requires runtime ABI "
+                        f"link imports missing from the generated WASM surface: {listed}."
+                    ),
+                    evidence=match.group(0),
+                    next_action=(
+                        "Route the missing symbols through the generated WASM ABI "
+                        "manifest/link-import authority and link validation; do not "
+                        "paper over them with prefix admission or package-local shims."
+                    ),
+                    scopes=(
+                        "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
+                        "tools/gen_wasm_abi.py",
+                        "src/molt/cli/external_native.py",
+                        "tests/test_gen_wasm_abi.py",
+                        "tests/test_wasm_link_validation.py",
+                    ),
+                )
+            )
+        else:
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="external-native-artifact-custody",
+                    severity="error",
+                    summary=(
+                        "External native package admission failed because a declared "
+                        "callable export is not backed by a native method, direct "
+                        "symbol, or sealed provider module."
+                    ),
+                    evidence=match.group(0),
+                    next_action=(
+                        "Fix package-native object closure or provider-module custody; "
+                        "do not rerun the heavy lane until the manifest/source authority "
+                        "can prove the callable without a facade."
+                    ),
+                    scopes=(
+                        "src/molt/cli/external_native.py",
+                        "src/molt/cli/source_extensions.py",
+                    ),
+                )
+            )
 
     match = NATIVE_SUPPORT_CUSTODY_RE.search(log_tail)
     if match is not None:
@@ -2662,6 +2740,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
             status="blocked",
             finished_at=_utc_now(),
         )
+        payload = _row_to_payload(row)
+        _write_failed_run_log(
+            Path(str(payload["log_path"])),
+            run_id=str(payload["run_id"]),
+            logical_id=str(payload["logical_id"]),
+            reason=str(payload["reason"]),
+            repo_root=_repo_root(args),
+            command=list(payload["command"]),
+            lines=[
+                "proof queue blocked by dependency before command execution:",
+                f"parents={blocker_summary}",
+                "",
+                "No proof command was launched for this row.",
+            ],
+        )
+        _try_write_marimo_notebook(
+            args,
+            conn,
+            str(payload["run_id"]),
+            log_path=Path(str(payload["log_path"])),
+            phase="blocked projection",
+        )
         print(f"blocked {row['run_id']} parents={blocker_summary}")
     rc = 0
     for row in rows:
@@ -2755,6 +2855,24 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            int(pid),
+        )
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -2828,6 +2946,40 @@ def _audit_issue(
     }
 
 
+def _frontier_failure(
+    row: sqlite3.Row, diagnostics: list[dict[str, object]]
+) -> dict[str, object] | None:
+    for item in diagnostics:
+        if str(item["severity"]) != "error":
+            continue
+        signal_id = str(item["signal_id"])
+        if (
+            signal_id in AUDIT_ERROR_DIAGNOSTICS
+            or signal_id in AUDIT_WARNING_DIAGNOSTICS
+        ):
+            continue
+        return {
+            "run_id": row["run_id"],
+            "logical_id": row["logical_id"],
+            "diagnostic": signal_id,
+            "summary": item["summary"],
+            "evidence": item["evidence"],
+            "next_action": item["next_action"],
+            "log_path": row["log_path"],
+            "finished_at": row["finished_at"],
+        }
+    return None
+
+
+def _frontier_superseded(dag: dict[str, list[dict[str, object]]]) -> bool:
+    for edge in dag.get("children", []):
+        if str(edge["kind"]) not in FRONTIER_SUPERSEDING_EDGE_KINDS:
+            continue
+        if str(edge["child_status"]) in FRONTIER_SUPERSEDING_CHILD_STATUSES:
+            return True
+    return False
+
+
 def _audit_rows(
     conn: sqlite3.Connection, args: argparse.Namespace
 ) -> list[sqlite3.Row]:
@@ -2882,6 +3034,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
     notes_by_run = _notes_for_run_ids(conn, run_ids)
     edges_by_run = _edges_for_run_ids(conn, run_ids)
     issues: list[dict[str, object]] = []
+    frontier_failures: list[dict[str, object]] = []
     diagnostic_counts: dict[str, int] = {}
     classified_failed_runs = 0
 
@@ -2935,11 +3088,16 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                 )
             elif diagnostics:
                 classified_failed_runs += 1
+                dag = edges_by_run.get(run_id, {"parents": [], "children": []})
+                if not _frontier_superseded(dag):
+                    frontier = _frontier_failure(row, diagnostics)
+                    if frontier is not None:
+                        frontier_failures.append(frontier)
 
         for item in diagnostics:
             signal_id = str(item["signal_id"])
             severity = str(item["severity"])
-            if signal_id in {"proof-log-missing", "queue-preexecution-failure"}:
+            if signal_id in AUDIT_ERROR_DIAGNOSTICS:
                 issues.append(
                     _audit_issue(
                         signal_id=f"audit-{signal_id}",
@@ -2950,11 +3108,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                         next_action=str(item["next_action"]),
                     )
                 )
-            elif signal_id in {
-                "queue-infra-warning",
-                "memory-guard-orphan-cleanup",
-                "queue-policy-rejection",
-            }:
+            elif signal_id in AUDIT_WARNING_DIAGNOSTICS:
                 issues.append(
                     _audit_issue(
                         signal_id=f"audit-{signal_id}",
@@ -3077,6 +3231,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         "scanned_runs": len(rows),
         "active_runs": sum(1 for row in rows if row["status"] in RUNNING),
         "classified_failed_runs": classified_failed_runs,
+        "frontier_failures": frontier_failures,
         "diagnostic_counts": {
             key: diagnostic_counts[key] for key in sorted(diagnostic_counts)
         },
@@ -3113,6 +3268,19 @@ def _cmd_audit(args: argparse.Namespace) -> int:
                     for key in sorted(payload["issue_counts"])
                 )
             )
+        frontier_failures = payload["frontier_failures"]
+        if frontier_failures:
+            print("frontier:")
+            for item in frontier_failures[:5]:
+                print(f"- {item['diagnostic']} run={item['run_id']}: {item['summary']}")
+                print(f"  log: {item['log_path']}")
+                print(f"  next: {item['next_action']}")
+            hidden_frontier = len(frontier_failures) - min(5, len(frontier_failures))
+            if hidden_frontier > 0:
+                print(
+                    f"- showing 5 of {len(frontier_failures)} frontier failures; "
+                    "use --json or --output for the complete payload"
+                )
         if not payload["issues"]:
             print("- no queue health issues")
         max_issues = max(0, int(args.max_issues))

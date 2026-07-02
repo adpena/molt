@@ -270,8 +270,23 @@ unsafe fn register_module_capi(module: *mut PyObject, def: *mut PyModuleDef) -> 
     let rc = unsafe { (h.module_capi_register)(module_bits, def as usize, module_state_size(def)) };
     if rc != 0 {
         set_module_system_error_if_clear("module C-API metadata registration failed");
+        return rc;
+    }
+    let rc = unsafe { (h.module_state_add)(module_bits, def as usize) };
+    if rc != 0 {
+        set_module_system_error_if_clear("module state registration failed");
     }
     rc
+}
+
+unsafe fn unregister_module_state(def: *mut PyModuleDef) {
+    if def.is_null() {
+        return;
+    }
+    let h = hooks::hooks_or_stubs();
+    unsafe {
+        let _ = (h.module_state_remove)(def as usize);
+    }
 }
 
 unsafe fn module_from_def_and_slots(
@@ -335,6 +350,7 @@ unsafe fn module_from_def_and_slots(
                 PY_MOD_EXEC => {
                     if slot.value.is_null() {
                         set_module_system_error("Py_mod_exec slot is NULL");
+                        unregister_module_state(def);
                         crate::api::refcount::Py_DECREF(module);
                         return ptr::null_mut();
                     }
@@ -344,6 +360,7 @@ unsafe fn module_from_def_and_slots(
                         set_module_system_error_if_clear(
                             "Py_mod_exec slot returned non-zero without setting an exception",
                         );
+                        unregister_module_state(def);
                         crate::api::refcount::Py_DECREF(module);
                         return ptr::null_mut();
                     }
@@ -351,6 +368,7 @@ unsafe fn module_from_def_and_slots(
                 PY_MOD_MULTIPLE_INTERPRETERS | PY_MOD_GIL => {}
                 _ => {
                     set_module_system_error(format!("unsupported PyModuleDef slot {}", slot.slot));
+                    unregister_module_state(def);
                     crate::api::refcount::Py_DECREF(module);
                     return ptr::null_mut();
                 }
@@ -473,6 +491,7 @@ pub unsafe extern "C" fn PyModule_Create2(
                         "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                          method {meth_name_str:?} has a NULL function pointer",
                     );
+                    unregister_module_state(def);
                     crate::api::refcount::Py_DECREF(module);
                     return ptr::null_mut();
                 };
@@ -504,6 +523,7 @@ pub unsafe extern "C" fn PyModule_Create2(
                             "molt_cpython_abi: PyModule_Create2 for {mod_name:?}: \
                              failed to register method {meth_name_str:?}",
                         );
+                        unregister_module_state(def);
                         crate::api::refcount::Py_DECREF(module);
                         return ptr::null_mut();
                     }
@@ -519,6 +539,7 @@ pub unsafe extern "C" fn PyModule_Create2(
                          runtime rejected method {meth_name_str:?} (flags 0x{:x})",
                         entry.ml_flags,
                     );
+                    unregister_module_state(def);
                     crate::api::refcount::Py_DECREF(module);
                     return ptr::null_mut();
                 }

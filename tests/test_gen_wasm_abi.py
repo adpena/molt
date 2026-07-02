@@ -1413,6 +1413,9 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert "molt_cbor_parse_scalar" in allowed
     assert allowed_classes["molt_cbor_parse_scalar"] == "molt_runtime_host_import"
     assert external_native_classes["__cpp_exception"] == ("wasm_toolchain_link_import")
+    assert external_native_classes["molt_cpython_abi_date_from_date"] == (
+        "molt_cpython_abi_link_import"
+    )
     assert external_native_classes["__cxa_atexit"] == "wasm_libc_link_import"
     assert external_native_classes["acos"] == "wasm_libc_link_import"
     assert external_native_classes["cpow"] == "wasm_libc_link_import"
