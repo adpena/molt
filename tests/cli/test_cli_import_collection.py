@@ -901,6 +901,29 @@ def test_source_extension_runtime_python_imports_detects_c_import_calls() -> Non
     )
 
 
+def test_source_extension_runtime_python_imports_skips_helper_body_imports() -> None:
+    source = """
+    static int __Pyx_init_co_variables(void) {
+        PyImport_ImportModule("inspect");
+        return 0;
+    }
+    static PyObject *__Pyx_DecompressString(void) {
+        PyImport_ImportModuleLevel("compression.zstd", NULL, NULL, NULL, 0);
+        return NULL;
+    }
+    static int __pyx_pymod_exec__nativepkg(PyObject *module) {
+        PyImport_ImportModule("numpy");
+        IMPORT_GLOBAL("math", floor, floor_obj);
+        return 0;
+    }
+    """
+
+    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+        "math",
+        "numpy",
+    )
+
+
 def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
