@@ -307,7 +307,28 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
                 scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
             )
         if descendants:
-            return None
+            evidence = (
+                f"summary_json={row['summary_json']} child_pid={child_pid} "
+                f"last_log_age={_format_duration(log_age_s)} "
+                f"descendants={len(descendants)}"
+            )
+            return _diagnostic(
+                signal_id="running-proof-log-stale-live-child",
+                severity="infra",
+                summary=(
+                    "Running proof row has a stale log, but its nested memory "
+                    "guard still owns live work descendants."
+                ),
+                evidence=evidence,
+                next_action=(
+                    "Do not prune or interrupt this row from the diagnostic alone. "
+                    "Inspect the child command or add one queue note if the row is "
+                    "compile-dominated, then let the owner timeout/finish or rerun "
+                    "with a better-shaped proof."
+                ),
+                scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
         evidence = (
             f"summary_json={row['summary_json']} child_pid={child_pid} "
             f"last_log_age={_format_duration(log_age_s)} descendants=0"
