@@ -536,12 +536,14 @@ def _prepare_non_native_build_result(
         artifacts: dict[str, str] = {"wasm": str(output_wasm)}
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
         staged_runtime_wasm: Path | None = None
+        # The split-runtime lane reads the staged artifact set too, so the
+        # empty defaults must exist on every path, not just `linked`.
+        staged_external_native_artifacts: tuple[
+            _StagedExternalPackageNativeArtifact, ...
+        ] = ()
+        external_native_fingerprint_inputs: tuple[Path, ...] = ()
+        wasm_static_link_native_inputs: tuple[Path, ...] = ()
         if linked:
-            staged_external_native_artifacts: tuple[
-                _StagedExternalPackageNativeArtifact, ...
-            ] = ()
-            external_native_fingerprint_inputs: tuple[Path, ...] = ()
-            wasm_static_link_native_inputs: tuple[Path, ...] = ()
             if native_artifact_plan is not None and native_artifact_plan.artifacts:
                 try:
                     staged_external_native_artifacts = (
