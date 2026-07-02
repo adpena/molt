@@ -31,7 +31,7 @@ use crate::object::layout::{
     function_set_call_target_ptr, function_set_dict_bits, function_set_trampoline_ptr,
     module_dict_bits, seq_vec, seq_vec_ref,
 };
-use crate::object::ops::{dict_del_in_place, dict_set_in_place};
+use crate::object::ops::{dict_del_in_place, dict_get_str_bytes_borrowed, dict_set_in_place};
 use crate::object::type_ids::{
     TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET,
     TYPE_ID_STRING, TYPE_ID_TUPLE,
@@ -412,6 +412,49 @@ unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> u64 {
     crate::molt_format_builtin(obj_bits, spec_bits)
 }
 
+fn clear_speculative_sys_lookup_exception(had_pending_exception: bool) {
+    if !had_pending_exception && with_gil(|_py| crate::exception_pending(&_py)) {
+        let _ = crate::molt_exception_clear();
+    }
+}
+
+/// Resolve a borrowed attribute of the compiled `sys` module through import custody.
+///
+/// The Python-side `sys` module owns the CPython-shaped views (e.g.
+/// `sys.flags` is an attribute-carrying tuple subclass built from the raw
+/// payload dict), so ABI consumers read the module attribute rather than a
+/// duplicate raw-intrinsic lane. Returns 0 when the compiled program does not
+/// link the `sys` module or the attribute is absent.
+fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
+    let had_pending_exception = with_gil(|_py| crate::exception_pending(&_py));
+    let module_bits = unsafe { hook_import_module(b"sys".as_ptr(), 3) };
+    if MoltObject::from_bits(module_bits).as_ptr().is_none() {
+        clear_speculative_sys_lookup_exception(had_pending_exception);
+        return 0;
+    }
+    let out = with_gil(|_py| unsafe {
+        let module_obj = MoltObject::from_bits(module_bits);
+        let Some(module_ptr) = module_obj.as_ptr() else {
+            return 0;
+        };
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            return 0;
+        }
+        let dict_bits = module_dict_bits(module_ptr);
+        let Some(dict_ptr) = MoltObject::from_bits(dict_bits).as_ptr() else {
+            return 0;
+        };
+        dict_get_str_bytes_borrowed(&_py, dict_ptr, attr).unwrap_or(0)
+    });
+    with_gil(|_py| {
+        dec_ref_bits(&_py, module_bits);
+    });
+    if out == 0 {
+        clear_speculative_sys_lookup_exception(had_pending_exception);
+    }
+    out
+}
+
 unsafe extern "C" fn hook_sys_get_object_borrowed(name_data: *const u8, name_len: usize) -> u64 {
     if name_data.is_null() {
         return 0;
@@ -421,18 +464,7 @@ unsafe extern "C" fn hook_sys_get_object_borrowed(name_data: *const u8, name_len
         Ok(name) => name,
         Err(_) => return 0,
     };
-    match name {
-        "argv" => crate::molt_sys_argv(),
-        "builtin_module_names" => crate::molt_sys_builtin_module_names(),
-        "executable" => crate::molt_sys_executable(),
-        "flags" => crate::molt_sys_flags_payload(),
-        "hexversion" => crate::molt_sys_hexversion(),
-        "modules" => crate::molt_sys_modules(),
-        "path" => crate::molt_sys_path(),
-        "version" => crate::molt_sys_version(),
-        "version_info" => crate::molt_sys_version_info(),
-        _ => 0,
-    }
+    sys_module_attr_borrowed(name.as_bytes())
 }
 
 unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
@@ -1645,6 +1677,7 @@ static HOOKS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// Register the runtime hooks into `molt-lang-cpython-abi`.
 /// Idempotent — safe to call multiple times (only registers once).
 pub fn register_cpython_hooks() {
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
     if HOOKS_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -1731,6 +1764,46 @@ mod tests {
         })
     }
 
+    struct ModuleCacheRestore {
+        name_bits: u64,
+        previous_bits: u64,
+    }
+
+    impl ModuleCacheRestore {
+        fn new(_py: &crate::PyToken<'_>, name_bits: u64) -> Self {
+            let previous_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
+            let _ = crate::molt_exception_clear();
+            let _ = crate::builtins::modules::molt_module_cache_del(name_bits);
+            let _ = crate::molt_exception_clear();
+            Self {
+                name_bits,
+                previous_bits,
+            }
+        }
+    }
+
+    impl Drop for ModuleCacheRestore {
+        fn drop(&mut self) {
+            crate::with_gil_entry_nopanic!(_py, {
+                let _ = crate::molt_exception_clear();
+                let _ = crate::builtins::modules::molt_module_cache_del(self.name_bits);
+                let _ = crate::molt_exception_clear();
+                if !MoltObject::from_bits(self.previous_bits).is_none() {
+                    let restore_bits = crate::builtins::modules::molt_module_cache_set(
+                        self.name_bits,
+                        self.previous_bits,
+                    );
+                    if !MoltObject::from_bits(restore_bits).is_none() {
+                        dec_ref_bits(_py, restore_bits);
+                    }
+                    let _ = crate::molt_exception_clear();
+                    dec_ref_bits(_py, self.previous_bits);
+                }
+                dec_ref_bits(_py, self.name_bits);
+            });
+        }
+    }
+
     #[test]
     fn pyimport_importmodule_routes_through_runtime_import_pipeline() {
         let _guard = cpython_abi_test_guard();
@@ -1754,6 +1827,111 @@ mod tests {
             !message.contains("standalone molt-cpython-abi"),
             "registered hooks must not surface the standalone stub error: {message}"
         );
+    }
+
+    #[test]
+    fn pysys_getobject_missing_sys_module_clears_speculative_import_failure() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _cache_restore = with_gil(|_py| {
+            let name_ptr = alloc_string(&_py, b"sys");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            ModuleCacheRestore::new(&_py, name_bits)
+        });
+
+        let flags = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(c"flags".as_ptr()) };
+        assert!(
+            flags.is_null(),
+            "PySys_GetObject(flags) must fail closed when sys is not linked"
+        );
+        assert!(
+            !with_gil(|_py| crate::exception_pending(&_py)),
+            "speculative sys import failure must not leak into the C-API caller"
+        );
+    }
+
+    #[test]
+    fn pysys_getobject_prefers_cached_sys_module_attribute() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+
+        let (_cache_restore, expected_flags_bits, sys_module_bits) = with_gil(|_py| unsafe {
+            let name_ptr = alloc_string(&_py, b"sys");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let cache_restore = ModuleCacheRestore::new(&_py, name_bits);
+
+            let module_ptr = alloc_module_obj(&_py, name_bits);
+            assert!(!module_ptr.is_null());
+            let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+            let flags_ptr = alloc_tuple_with_capacity(&_py, &[MoltObject::from_int(7).bits()], 1);
+            assert!(!flags_ptr.is_null());
+            let flags_bits = MoltObject::from_ptr(flags_ptr).bits();
+
+            let flags_name_ptr = alloc_string(&_py, b"flags");
+            assert!(!flags_name_ptr.is_null());
+            let flags_name_bits = MoltObject::from_ptr(flags_name_ptr).bits();
+            let dict_bits = module_dict_bits(module_ptr);
+            let dict_ptr = MoltObject::from_bits(dict_bits)
+                .as_ptr()
+                .expect("sys module dict pointer");
+            assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
+            dict_set_in_place(&_py, dict_ptr, flags_name_bits, flags_bits);
+            dec_ref_bits(&_py, flags_name_bits);
+            assert!(
+                !crate::exception_pending(&_py),
+                "test sys.flags registration must not leave an exception"
+            );
+
+            let result_bits =
+                crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+            if !MoltObject::from_bits(result_bits).is_none() {
+                dec_ref_bits(&_py, result_bits);
+            }
+            assert!(
+                !crate::exception_pending(&_py),
+                "test sys module registration must not leave an exception"
+            );
+
+            (cache_restore, flags_bits, module_bits)
+        });
+
+        let flags = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(c"flags".as_ptr()) };
+        assert!(
+            !flags.is_null(),
+            "PySys_GetObject(flags) must resolve through the cached sys module"
+        );
+        let flags_bits = unsafe { molt_cpython_abi::bridge::read_bridge_header_bits(flags) };
+        assert_eq!(
+            flags_bits, expected_flags_bits,
+            "PySys_GetObject must prefer sys.flags over the raw flags payload"
+        );
+        assert_eq!(unsafe { (*flags).ob_refcnt }, 1);
+
+        let flags_again = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(c"flags".as_ptr()) };
+        assert_eq!(flags_again, flags);
+        assert_eq!(unsafe { (*flags).ob_refcnt }, 1);
+        unsafe { molt_cpython_abi::api::refcount::Py_INCREF(flags) };
+        assert_eq!(unsafe { (*flags).ob_refcnt }, 2);
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(flags) };
+        assert_eq!(unsafe { (*flags).ob_refcnt }, 1);
+        assert!(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .lock()
+                .release_pyobj(flags)
+        );
+
+        with_gil(|_py| {
+            let flags_ptr = MoltObject::from_bits(expected_flags_bits)
+                .as_ptr()
+                .expect("sys.flags test object must remain live");
+            assert_eq!(unsafe { object_type_id(flags_ptr) }, TYPE_ID_TUPLE);
+            assert_eq!(unsafe { tuple_len(flags_ptr) }, 1);
+            dec_ref_bits(&_py, expected_flags_bits);
+            dec_ref_bits(&_py, sys_module_bits);
+        });
     }
 
     #[test]

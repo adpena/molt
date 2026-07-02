@@ -141,6 +141,38 @@ fn test_bridge_caches_second_lookup() {
     }
 }
 
+#[test]
+fn test_bridge_borrowed_lookup_does_not_incref_cached_entry() {
+    init();
+    let bits = MoltObject::from_int(54321).bits();
+    let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
+    assert_eq!(unsafe { (*py).ob_refcnt }, 1);
+
+    let borrowed = unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(bits) };
+    assert_eq!(borrowed, py);
+    assert_eq!(unsafe { (*py).ob_refcnt }, 1);
+
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_INCREF(borrowed);
+    }
+    assert_eq!(unsafe { (*py).ob_refcnt }, 2);
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(borrowed);
+        molt_cpython_abi::api::refcount::Py_DECREF(py);
+    }
+}
+
+#[test]
+fn test_bridge_borrowed_lookup_materializes_cache_anchor() {
+    init();
+    let bits = MoltObject::from_int(54322).bits();
+    let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(bits) };
+    assert!(!py.is_null());
+    assert_eq!(unsafe { (*py).ob_refcnt }, 1);
+    assert_eq!(GLOBAL_BRIDGE.lock().pyobj_to_handle(py), Some(bits));
+    assert!(GLOBAL_BRIDGE.lock().release_pyobj(py));
+}
+
 // ---------------------------------------------------------------------------
 // release_pyobj removes mapping
 // ---------------------------------------------------------------------------
