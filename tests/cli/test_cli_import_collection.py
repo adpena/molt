@@ -925,7 +925,7 @@ def test_source_extension_runtime_python_imports_skips_helper_body_imports() -> 
 
 
 def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> None:
-    source = r'''
+    source = r"""
     extern "C" {
     PyMODINIT_FUNC PyInit_nativepkg(void) {
         if (ready) {
@@ -938,7 +938,7 @@ def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> 
         PyImport_ImportModule("inspect");
         return 0;
     }
-    '''
+    """
 
     assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
         "math",

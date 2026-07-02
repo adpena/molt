@@ -1186,13 +1186,22 @@ def _source_extension_function_name_before_brace(
     source_text: str,
     brace_pos: int,
 ) -> str | None:
-    prefix = source_text[:brace_pos].rstrip()
-    paren_pos = prefix.rfind("(")
+    paren_pos = source_text.rfind("(", 0, brace_pos)
     if paren_pos < 0:
         return None
-    before_paren = prefix[:paren_pos].rstrip()
-    match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", before_paren)
-    return match.group(1) if match is not None else None
+    end = paren_pos
+    while end > 0 and source_text[end - 1].isspace():
+        end -= 1
+    start = end
+    while start > 0:
+        ch = source_text[start - 1]
+        if ch == "_" or ch.isalnum():
+            start -= 1
+            continue
+        break
+    if start == end or not (source_text[start] == "_" or source_text[start].isalpha()):
+        return None
+    return source_text[start:end]
 
 
 def _source_extension_eager_import_function_name(function_name: str | None) -> bool:
