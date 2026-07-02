@@ -5870,6 +5870,139 @@ def test_external_native_artifact_plan_accepts_source_capsule_manifest_custody(
     ]
 
 
+def test_external_native_artifact_plan_relocates_source_plan_manifest_sources(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    source_root = tmp_path / "scipy_source"
+    stale_source_root = tmp_path / "deleted" / "scipy_source"
+    source_path = source_root / "scipy" / "ndimage" / "src" / "nd_image.c"
+    stale_source_path = stale_source_root / "scipy" / "ndimage" / "src" / "nd_image.c"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "static int module_exec(PyObject *module) {\n"
+        "    if (_import_array() < 0) { return -1; }\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__nd_image")
+    artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="numpy",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={**wasm_manifest, "provided_capsules": [capsule]},
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=artifact_bytes,
+        manifest_overrides={
+            **wasm_manifest,
+            "sources": [str(stale_source_path)],
+            "source_plan": {"source_root": str(stale_source_root)},
+            "object_closure": {
+                "required_capsules": [capsule],
+                "objects": [
+                    {
+                        "source": str(stale_source_path),
+                        "object": "0_nd_image.o",
+                        "source_sha256": source_sha256,
+                        "object_sha256": artifact_sha256,
+                        "defined_symbols": ["PyInit__nd_image"],
+                        "undefined_symbols": [],
+                        "required_c_api_symbols": [],
+                        "required_capsules": [capsule],
+                    }
+                ],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"numpy", "scipy"},
+        required_modules={"scipy.ndimage"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    by_module = {artifact.module: artifact for artifact in plan.artifacts}
+    assert by_module["scipy.ndimage._nd_image"].required_capsules == (capsule,)
+
+
+def test_external_native_artifact_plan_rejects_relocated_source_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    source_root = tmp_path / "scipy_source"
+    stale_source_root = tmp_path / "deleted" / "scipy_source"
+    source_path = source_root / "scipy" / "ndimage" / "src" / "nd_image.c"
+    stale_source_path = stale_source_root / "scipy" / "ndimage" / "src" / "nd_image.c"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "static int module_exec(PyObject *module) {\n"
+        "    if (_import_array() < 0) { return -1; }\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="scipy",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "sources": [str(stale_source_path)],
+            "source_plan": {"source_root": str(stale_source_root)},
+            "object_closure": {
+                "required_capsules": [capsule],
+                "objects": [
+                    {
+                        "source": str(stale_source_path),
+                        "object": "0_nd_image.o",
+                        "source_sha256": "0" * 64,
+                        "object_sha256": "1" * 64,
+                        "defined_symbols": ["PyInit__nd_image"],
+                        "undefined_symbols": [],
+                        "required_c_api_symbols": [],
+                        "required_capsules": [capsule],
+                    }
+                ],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"scipy"},
+        required_modules={"scipy.ndimage"},
+    )
+
+    assert plan is None
+    assert any("relocated source checksum mismatch" in error for error in errors)
+
+
 def test_external_native_artifact_plan_closes_over_wasm_static_capsule_providers(
     tmp_path: Path,
 ) -> None:
