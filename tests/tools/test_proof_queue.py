@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,48 @@ def test_proof_queue_session_id_is_contention_key_scoped() -> None:
 def test_proof_queue_pid_alive_detects_current_process() -> None:
     assert proof_queue._pid_alive(os.getpid())
     assert not proof_queue._pid_alive(0)
+
+
+def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
+    tmp_path: Path,
+) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test User")
+    (tmp_path / "wasm").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "wasm" / "molt_runtime.wasm.sha256").write_text(
+        "old\n", encoding="utf-8"
+    )
+    (tmp_path / "wasm" / "molt_runtime_reloc.wasm.sha256").write_text(
+        "old\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "init")
+
+    (tmp_path / "wasm" / "molt_runtime.wasm.sha256").write_text(
+        "new\n", encoding="utf-8"
+    )
+    snapshot = proof_queue._git_snapshot(tmp_path)
+    assert snapshot["dirty"] is False
+    assert snapshot["status"] == []
+    assert snapshot["ignored_status_count"] == 1
+
+    (tmp_path / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
+    snapshot = proof_queue._git_snapshot(tmp_path)
+    assert snapshot["dirty"] is True
+    assert any("src/app.py" in line for line in snapshot["status"])
 
 
 def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
