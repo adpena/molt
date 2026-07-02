@@ -2516,7 +2516,7 @@ def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
     assert dev_policy.tier == "A"
     assert dev_policy.tier_base == "A"
     assert dev_policy.promoted is False
-    assert dev_policy.max_rounds == 2
+    assert dev_policy.max_rounds == 4
 
     stdlib_gen = SimpleTIRGenerator(
         optimization_profile="release",
