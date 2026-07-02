@@ -87,6 +87,22 @@ is reconciled.
   it as a binding scope override: narrow the aperture, deepen the structural
   rip, and stop defending comfort-sized work.
 
+## Orchestration And Lane Discipline
+
+- `docs/agent/ORCHESTRATION.md` is the live lane board, owned by the
+  orchestrator (Claude, senior engineer). Read it at the start of every arc
+  and before every commit. Work only lanes assigned or delegated there; if
+  your planned work touches a frozen or reserved lane, pick a delegated lane
+  instead.
+- The import/bootstrap/module-state layer is governed by
+  `docs/design/foundation/69_import_bedrock_frozen_module_layer.md`. Once its
+  migration lands, that layer is FROZEN: changes require the design's full
+  invariant gauntlet, never incremental patches.
+- Keep the shared checkout compile-green between edits: `cargo check` touched
+  crates before any pause. Regenerate generated files in the same edit as
+  their consumers. Commit with pathspecs only; never sweep another lane's
+  dirty files; delete replaced code in the same commit.
+
 ## DX, Queue, And Proof Discipline
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
