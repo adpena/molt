@@ -89,8 +89,8 @@ RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
-RUNTIME_INTRINSIC_SYMBOLS = importlib.import_module(
-    "molt.cli.runtime_intrinsic_symbols"
+RUNTIME_CALLABLE_SYMBOLS = importlib.import_module(
+    "molt.cli.runtime_callable_symbols"
 )
 NATIVE_LINK_COMMAND = importlib.import_module("molt.cli.native_link_command")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
@@ -240,8 +240,8 @@ def _install_fake_backend_compile(
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        RUNTIME_INTRINSIC_SYMBOLS,
-        "_runtime_intrinsic_symbols_file",
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_runtime_callable_symbols_file",
         lambda runtime_lib: (fake_symbols_file, None),
     )
 
@@ -16821,7 +16821,7 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
     assert any("not a verified live daemon" in warning for warning in warnings)
 
 
-def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit(
+def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -16881,8 +16881,8 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        RUNTIME_INTRINSIC_SYMBOLS,
-        "_runtime_intrinsic_symbols_file",
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_runtime_callable_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
@@ -16921,13 +16921,13 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit
     assert prepared_backend_setup is not None
     assert prepared_backend_setup.cache_hit is True
     assert ensure_calls == [runtime_lib]
-    assert os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] == str(symbols_file)
-    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
+    assert os.environ["MOLT_RUNTIME_CALLABLE_SYMBOLS"] == str(symbols_file)
+    assert cache_setup_kwargs[0]["runtime_callable_symbols_digest"] == (
+        RUNTIME_CALLABLE_SYMBOLS._runtime_callable_symbols_digest(symbols_file)
     )
 
 
-def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_miss(
+def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -16985,8 +16985,8 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        RUNTIME_INTRINSIC_SYMBOLS,
-        "_runtime_intrinsic_symbols_file",
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_runtime_callable_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
@@ -17025,12 +17025,12 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_mis
     assert prepared_backend_setup is not None
     assert prepared_backend_setup.cache_hit is False
     assert ensure_calls == [runtime_lib]
-    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
+    assert cache_setup_kwargs[0]["runtime_callable_symbols_digest"] == (
+        RUNTIME_CALLABLE_SYMBOLS._runtime_callable_symbols_digest(symbols_file)
     )
 
 
-def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_async(
+def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_async(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -17086,8 +17086,8 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        RUNTIME_INTRINSIC_SYMBOLS,
-        "_runtime_intrinsic_symbols_file",
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_runtime_callable_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
@@ -17133,12 +17133,12 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
     assert scheduled == []
-    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
+    assert cache_setup_kwargs[0]["runtime_callable_symbols_digest"] == (
+        RUNTIME_CALLABLE_SYMBOLS._runtime_callable_symbols_digest(symbols_file)
     )
 
 
-def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without_async(
+def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_async(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -17195,8 +17195,8 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
         RUNTIME_BUILD, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready
     )
     monkeypatch.setattr(
-        RUNTIME_INTRINSIC_SYMBOLS,
-        "_runtime_intrinsic_symbols_file",
+        RUNTIME_CALLABLE_SYMBOLS,
+        "_runtime_callable_symbols_file",
         lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
@@ -17236,9 +17236,9 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
     assert prepared_backend_setup is not None
     assert ensure_calls == [runtime_lib]
     assert scheduled == []
-    assert os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] == str(symbols_file)
-    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
-        RUNTIME_INTRINSIC_SYMBOLS._runtime_intrinsic_symbols_digest(symbols_file)
+    assert os.environ["MOLT_RUNTIME_CALLABLE_SYMBOLS"] == str(symbols_file)
+    assert cache_setup_kwargs[0]["runtime_callable_symbols_digest"] == (
+        RUNTIME_CALLABLE_SYMBOLS._runtime_callable_symbols_digest(symbols_file)
     )
 
 
@@ -26755,7 +26755,7 @@ def test_external_static_package_digest_changes_backend_cache_identity() -> None
     assert "external_static_packages=" in variant_a
 
 
-def test_runtime_intrinsic_symbol_digest_changes_backend_cache_identity() -> None:
+def test_runtime_callable_symbol_digest_changes_backend_cache_identity() -> None:
     variant_a = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
         runtime_cargo="debug",
@@ -26765,7 +26765,7 @@ def test_runtime_intrinsic_symbol_digest_changes_backend_cache_identity() -> Non
         codegen_env="x",
         linked=False,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
-        runtime_intrinsic_symbols_digest="a" * 64,
+        runtime_callable_symbols_digest="a" * 64,
     )
     variant_b = cli_backend_cache_setup._build_cache_variant(
         profile="dev",
@@ -26776,8 +26776,8 @@ def test_runtime_intrinsic_symbol_digest_changes_backend_cache_identity() -> Non
         codegen_env="x",
         linked=False,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
-        runtime_intrinsic_symbols_digest="b" * 64,
+        runtime_callable_symbols_digest="b" * 64,
     )
 
     assert variant_a != variant_b
-    assert "runtime_intrinsics=" in variant_a
+    assert "runtime_callables=" in variant_a

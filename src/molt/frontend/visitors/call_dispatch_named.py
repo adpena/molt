@@ -257,6 +257,21 @@ class CallNamedDispatchMixin(_MixinBase):
             ):
                 func_symbol = self._function_symbol_for_reference(func_id)
                 target_info = MoltValue(func_id, type_hint=f"Func:{func_symbol}")
+            if (
+                self.current_func_name == "molt_main"
+                and func_id in self.module_global_mutations
+            ):
+                callee = self._emit_global_get(func_id)
+                callargs = self._emit_call_args_builder(node)
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="CALL_BIND",
+                        args=[callee, callargs],
+                        result=res,
+                    )
+                )
+                return res
             lowered_wrapper_intrinsic = self._try_lower_local_intrinsic_wrapper_call(
                 func_id=func_id,
                 node=node,
@@ -1366,10 +1381,9 @@ class CallNamedDispatchMixin(_MixinBase):
                 # `except ... as` target) may be unbound when called; a bare Name
                 # read has LOAD_GLOBAL semantics, so resolve through
                 # MODULE_GET_GLOBAL (NameError on a missing binding) rather than
-                # the static class ref / MODULE_GET_ATTR (AttributeError) the
-                # known-class fast path would otherwise take.  Dropping `class_id`
-                # routes the callee through the generic Name resolution, which
-                # applies the same del-target rule.
+                # the static class ref the known-class fast path would otherwise
+                # take. Dropping `class_id` routes the callee through the generic
+                # Name resolution, which applies the same del-target rule.
                 class_id = None
             if class_id is not None:
                 class_info = self.classes[class_id]
@@ -1384,7 +1398,7 @@ class CallNamedDispatchMixin(_MixinBase):
                     # `class_value_name` SSA value reset out of `self.globals`
                     # at the chunk boundary (`_reset_module_chunk_state`); the
                     # resolver then returns None and we fall back to a
-                    # chunk-safe MODULE_GET_ATTR re-fetch.  Trusting
+                    # chunk-safe MODULE_GET_GLOBAL re-fetch.  Trusting
                     # `class_value_name` directly here would materialise a
                     # dangling cross-chunk SSA ref that lowering degrades to a
                     # CONST_STR of the variable name, feeding a string where a
@@ -1399,7 +1413,7 @@ class CallNamedDispatchMixin(_MixinBase):
                     ):
                         class_ref = static_class_ref
                     else:
-                        class_ref = self._emit_module_attr_get(class_id)
+                        class_ref = self._emit_global_get(class_id)
                 else:
                     static_class_ref = self._current_module_static_class_ref(class_id)
                     if static_class_ref is not None:
@@ -1415,7 +1429,7 @@ class CallNamedDispatchMixin(_MixinBase):
                             if local_class is not None:
                                 class_ref = local_class
                             else:
-                                class_ref = self._emit_module_attr_get(class_id)
+                                class_ref = self._emit_global_get(class_id)
                 if self._class_is_exception_subclass(class_id, class_info):
                     new_method = class_info.get("methods", {}).get("__new__")
                     if new_method is None:

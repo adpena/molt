@@ -20,7 +20,7 @@ from molt._wasm_abi_generated import (
     wasm_runtime_callable_spec,
     wasm_runtime_import_name,
 )
-from molt._wasm_runtime_exports import wasm_runtime_export_name_for_import
+from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
@@ -210,7 +210,7 @@ def _is_cpython_abi_link_import(import_name: str) -> bool:
 
 
 def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | None:
-    return wasm_runtime_export_name_for_import(import_name)
+    return wasm_split_runtime_export_name_for_import(import_name)
 
 
 def _runtime_import_export_names_from_manifest(

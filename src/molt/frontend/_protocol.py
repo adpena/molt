@@ -1303,6 +1303,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_return_value(self, value: MoltValue) -> None: ...
 
+    def _emit_runtime_call(
+        self, runtime_name: str, args: Sequence[MoltValue], *, type_hint: str = "Any"
+    ) -> MoltValue: ...
+
     def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue: ...
 
     def _emit_runtime_function_with_defaults(

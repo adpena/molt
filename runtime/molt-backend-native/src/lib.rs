@@ -5,8 +5,8 @@
 // Native and LLVM codegen authority lives here so Cranelift/LLVM edits do not
 // rebuild the backend composition crate.
 pub use molt_ir::{
-    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary,
-    process_diagnostics, repr, stdlib_module_symbols,
+    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
+    repr, runtime_callable_symbols, stdlib_module_symbols,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_dump_ir};
@@ -17,8 +17,8 @@ pub(crate) use molt_tir::trampolines::{
 };
 pub use molt_tir::{passes, representation_plan, tir};
 
-pub use molt_ir::intrinsic_symbols::{
-    runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
+pub use molt_ir::runtime_callable_symbols::{
+    runtime_callable_symbols_from_env, runtime_callable_symbols_required,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) mod app_resolver_abi;
@@ -38,7 +38,7 @@ pub(crate) use crate::native_backend::{
 };
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
-    compute_intrinsic_manifest, compute_intrinsic_manifest_checked, elide_dead_struct_allocs,
+    compute_app_callable_manifest, compute_app_callable_manifest_checked, elide_dead_struct_allocs,
     elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
     eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
     escape_analysis, fold_constants, fold_constants_cross_block, fuse_method_dispatch,

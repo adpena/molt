@@ -1024,9 +1024,10 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
     build_rs = (ROOT / "runtime/molt-cpython-abi/build.rs").read_text()
     runtime_anchor = (
-        ROOT / "runtime/molt-runtime/src/c_api/cpython_abi_variadic_exports.rs"
+        ROOT / "runtime/molt-runtime/src/c_api/cpython_abi_wasm_exports.rs"
     ).read_text()
     runtime_c_api_mod = (ROOT / "runtime/molt-runtime/src/c_api/mod.rs").read_text()
+    runtime_build_rs = (ROOT / "runtime/molt-runtime/build.rs").read_text()
 
     required_variadic_exports = {
         "PyArg_ParseTuple",
@@ -1042,13 +1043,17 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
         "PyObject_CallMethod",
         "PyTuple_Pack",
     }
-    assert "mod cpython_abi_variadic_exports;" in runtime_c_api_mod
+    assert "mod cpython_abi_wasm_exports;" in runtime_c_api_mod
     assert "MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS" in runtime_anchor
     assert "cargo:rustc-link-search=native=" in build_rs
     assert 'name = "molt_pyarg_shims"' in runtime_anchor
     assert 'kind = "static"' in runtime_anchor
     assert 'modifiers = "+whole-archive"' in runtime_anchor
-    assert "molt_cpython_abi_variadic_export_anchor_count" in runtime_anchor
+    assert "molt_cpython_abi_wasm_export_anchor_count" in runtime_anchor
+    assert "molt_cpython_abi_requested_exports.rs" in runtime_anchor
+    assert "MOLT_WASM_CPYTHON_ABI_EXPORTS" in runtime_build_rs
+    assert "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS" in runtime_build_rs
+    assert "is_cpython_abi_data_symbol" not in runtime_build_rs
     assert "core::hint::black_box" in runtime_anchor
     for symbol in required_variadic_exports:
         assert f"{symbol}(" in shim

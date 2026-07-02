@@ -3,7 +3,7 @@ use super::LlvmBackend;
 #[cfg(feature = "llvm")]
 use crate::app_resolver_abi::{
     APP_RESOLVER_NAMES_SYMBOL, APP_RESOLVER_RECORD_BYTES, APP_RESOLVER_SYMBOL,
-    APP_RESOLVER_TABLE_SYMBOL, dump_intrinsic_manifest,
+    APP_RESOLVER_TABLE_SYMBOL, dump_app_callable_manifest,
 };
 #[cfg(feature = "llvm")]
 use inkwell::{
@@ -18,36 +18,36 @@ use std::collections::BTreeSet;
 
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
-    /// Emit the per-app intrinsic resolver `molt_app_resolve_intrinsic` into the
+    /// Emit the per-app callable resolver `molt_app_resolve_callable` into the
     /// LLVM module, structurally identical to the Cranelift backend's
     /// `SimpleBackend::emit_app_resolver_function`.
     ///
     /// The main stub (emitted by the CLI) references this symbol and registers
-    /// it with the runtime via `molt_set_app_intrinsic_resolver` before
+    /// it with the runtime via `molt_set_app_callable_resolver` before
     /// `molt_runtime_init`. Without it the LLVM-compiled application object
-    /// leaves `_molt_app_resolve_intrinsic` undefined at link, and every
-    /// name-based intrinsic resolution at runtime would fail because
+    /// leaves `_molt_app_resolve_callable` undefined at link, and every
+    /// name-based callable resolution at runtime would fail because
     /// `resolve_symbol`/`resolve_core_symbol` are intentionally left
     /// native-unreachable for dead-stripping.
     ///
     /// Layout (mirrors the Cranelift emitter so the two backends are byte-for-
     /// byte interchangeable at the ABI level):
     ///
-    /// * `molt_app_intrinsic_names`: the manifest names, sorted by unsigned-byte
+    /// * `molt_app_callable_names`: the manifest names, sorted by unsigned-byte
     ///   lexicographic order (the `BTreeSet` iteration order) and concatenated.
-    /// * `molt_app_intrinsic_table`: N fixed-size 16-byte records, one per name,
+    /// * `molt_app_callable_table`: N fixed-size 16-byte records, one per name,
     ///   `{ i32 name_off, i32 name_len, ptr func_ptr }`, sorted to match the
-    ///   names blob. `func_ptr` is the address of the intrinsic — LLVM emits the
+    ///   names blob. `func_ptr` is the address of the callable. LLVM emits the
     ///   pointer relocation that the linker resolves against the runtime
-    ///   staticlib. The intrinsics are declared `External`, so `-dead_strip` /
-    ///   `--gc-sections` still removes every intrinsic whose name appears in no
+    ///   staticlib. The callables are declared `External`, so `-dead_strip` /
+    ///   `--gc-sections` still removes every callable whose name appears in no
     ///   manifest record.
-    /// * `molt_app_resolve_intrinsic`: an `i64 (ptr, i64)` binary-search lookup
-    ///   over the sorted table, returning the intrinsic function pointer as a
+    /// * `molt_app_resolve_callable`: an `i64 (ptr, i64)` binary-search lookup
+    ///   over the sorted table, returning the callable function pointer as a
     ///   `u64`, or 0 when the name is not in the manifest.
     #[cfg(feature = "llvm")]
     pub fn emit_app_resolver_function(&self, manifest_names: &BTreeSet<String>) {
-        dump_intrinsic_manifest(manifest_names);
+        dump_app_callable_manifest(manifest_names);
 
         let ctx = self.context;
         let module = &self.module;
@@ -71,18 +71,18 @@ impl<'ctx> LlvmBackend<'ctx> {
             let bytes = name.as_bytes();
             assert!(
                 off <= u32::MAX as usize && bytes.len() <= u32::MAX as usize,
-                "app resolver: intrinsic name table exceeds u32 addressing"
+                "app resolver: callable name table exceeds u32 addressing"
             );
             names_blob.extend_from_slice(bytes);
 
-            // Address-take the intrinsic. Declare it `External` if a prior
+            // Address-take the callable. Declare it `External` if a prior
             // runtime-import declaration did not already create it; with opaque
             // pointers the declared signature is irrelevant for address use.
-            let intrinsic_fn = module.get_function(name).unwrap_or_else(|| {
+            let callable_fn = module.get_function(name).unwrap_or_else(|| {
                 let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
                 module.add_function(name, placeholder_ty, Some(Linkage::External))
             });
-            let func_addr = intrinsic_fn.as_global_value().as_pointer_value();
+            let func_addr = callable_fn.as_global_value().as_pointer_value();
 
             let record = record_ty.const_named_struct(&[
                 i32_ty.const_int(off as u64, false).into(),
@@ -111,7 +111,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         let table_init = record_ty.const_array(&record_values);
         table_global.set_initializer(&table_init);
 
-        // Resolver function: i64 molt_app_resolve_intrinsic(ptr name, i64 len).
+        // Resolver function: i64 molt_app_resolve_callable(ptr name, i64 len).
         // Matches the C stub declaration `unsigned long long(const char*,
         // unsigned long long)` and the Cranelift emitter's ABI.
         let resolver_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);

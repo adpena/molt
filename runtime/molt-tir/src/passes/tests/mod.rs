@@ -48,6 +48,16 @@ fn make_call_func(out: &str, callee: &str, args: &[&str]) -> OpIR {
     }
 }
 
+fn make_builtin_func(out: &str, runtime_name: &str, arity: i64) -> OpIR {
+    OpIR {
+        kind: "builtin_func".to_string(),
+        out: Some(out.to_string()),
+        s_value: Some(runtime_name.to_string()),
+        value: Some(arity),
+        ..Default::default()
+    }
+}
+
 fn manifest_func(ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
         name: "m".to_string(),

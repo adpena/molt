@@ -2,21 +2,21 @@
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
 
-pub use molt_ir::intrinsic_symbols::{
-    runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
-};
 pub use molt_ir::repr::Repr;
+pub use molt_ir::runtime_callable_symbols::{
+    runtime_callable_symbols_from_env, runtime_callable_symbols_required,
+};
 pub use molt_ir::stdlib_module_symbols::{
     STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
 pub use molt_ir::{
-    FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, PgoProfileIR, SimpleIR, debug_artifacts,
-    intrinsic_symbols, ir, ir_schema, json_boundary, native_callable_abi, process_diagnostics,
-    repr, stdlib_module_symbols, validate_simple_ir,
+    FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, PgoProfileIR, SimpleIR, debug_artifacts, ir,
+    ir_schema, json_boundary, native_callable_abi, process_diagnostics, repr,
+    runtime_callable_symbols, stdlib_module_symbols, validate_simple_ir,
 };
 pub use molt_tir::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
-    compute_intrinsic_manifest, compute_intrinsic_manifest_checked, elide_dead_struct_allocs,
+    compute_app_callable_manifest, compute_app_callable_manifest_checked, elide_dead_struct_allocs,
     elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
     eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
     escape_analysis, fold_constants, fold_constants_cross_block, fuse_method_dispatch,

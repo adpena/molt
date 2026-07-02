@@ -101,6 +101,13 @@ pub(crate) fn emit_static_type_section(types: &mut TypeSection) {
     }
 }
 
+pub(crate) fn static_func_type_idx(params: &[ValType], results: &[ValType]) -> Option<u32> {
+    STATIC_FUNC_TYPES
+        .iter()
+        .position(|spec| spec.params == params && spec.results == results)
+        .map(|idx| idx as u32)
+}
+
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
 
 #[cfg(test)]

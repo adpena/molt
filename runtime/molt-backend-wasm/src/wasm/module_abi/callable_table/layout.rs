@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_encoder::{EntityType, ExportKind, RefType, TableType};
 
@@ -8,7 +8,7 @@ use super::{WasmCallableTablePlan, WasmCallableTrampolineEntry};
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
-    ReservedRuntimeCallableDispatch, wasm_runtime_import,
+    ReservedRuntimeCallableDispatch, runtime_callable_import, wasm_runtime_import,
 };
 use crate::{SimpleIR, TrampolineKind, TrampolineSpec};
 
@@ -26,9 +26,17 @@ impl WasmBackend {
         user_type_map: &BTreeMap<usize, u32>,
         reloc_enabled: bool,
         sentinel_func_idx: u32,
+        manifest_intrinsic_names: &BTreeSet<String>,
     ) -> WasmCallableTablePlan {
         let runtime_callable_plan = WasmRuntimeCallableTablePlan::build(builtin_trampoline_specs);
         let compact_builtin_table_len = runtime_callable_plan.compact_builtin_table_len();
+        let app_callable_resolver_names =
+            app_callable_resolver_names(manifest_intrinsic_names, builtin_trampoline_specs);
+        let app_callable_resolver_table_len = if app_callable_resolver_names.is_empty() {
+            0
+        } else {
+            1 + app_callable_resolver_names.len()
+        };
         let split_runtime_runtime_table_min = self.options.split_runtime_runtime_table_min;
         let table_base: u32 = split_runtime_runtime_table_min
             .map(|min| min.max(self.options.table_base))
@@ -43,6 +51,7 @@ impl WasmBackend {
             + reserved_runtime_callable_table_len * 2
             + compact_builtin_table_len
             + runtime_callable_plan.compact_builtin_trampoline_count() as usize
+            + app_callable_resolver_table_len
             + ir.functions.len() * 2) as u32;
         let table_min = table_base + table_len;
         let table_ty = TableType {
@@ -96,8 +105,10 @@ impl WasmBackend {
         let split_runtime_shared_abi_slot_end = compact_builtin_table_start as usize;
         let compact_builtin_trampoline_table_start =
             compact_builtin_table_start + compact_builtin_table_len as u32;
-        let user_func_table_start = compact_builtin_trampoline_table_start
+        let app_callable_resolver_table_start = compact_builtin_trampoline_table_start
             + runtime_callable_plan.compact_builtin_trampoline_count();
+        let user_func_table_start =
+            app_callable_resolver_table_start + app_callable_resolver_table_len as u32;
         let user_trampoline_table_start = user_func_table_start + ir.functions.len() as u32;
 
         let reserved_runtime_trampoline_count = RESERVED_RUNTIME_CALLABLE_SPECS
@@ -168,9 +179,17 @@ impl WasmBackend {
 
         let user_func_start = self.func_count;
         let user_func_count = ir.functions.len() as u32;
+        let app_callable_resolver_func_index = if app_callable_resolver_names.is_empty() {
+            None
+        } else {
+            Some(user_func_start + user_func_count)
+        };
+        let app_callable_resolver_func_count =
+            u32::from(app_callable_resolver_func_index.is_some());
         let compact_builtin_trampoline_count =
             runtime_callable_plan.compact_builtin_trampoline_count();
-        let builtin_trampoline_start = user_func_start + user_func_count;
+        let builtin_trampoline_start =
+            user_func_start + user_func_count + app_callable_resolver_func_count;
         let reserved_runtime_trampoline_func_start = builtin_trampoline_start;
         let compact_builtin_trampoline_func_start =
             reserved_runtime_trampoline_func_start + reserved_runtime_trampoline_count;
@@ -218,6 +237,33 @@ impl WasmBackend {
         }
         for target_index in &compact_builtin_entries {
             table_indices.push(*target_index);
+        }
+        let mut app_callable_resolver = None;
+        if let Some(resolver_func_index) = app_callable_resolver_func_index {
+            let resolver_slot = app_callable_resolver_table_start;
+            let resolver_table_index = table_base + resolver_slot;
+            table_indices.push(resolver_func_index);
+            let mut entries = Vec::new();
+            for (idx, runtime_name) in app_callable_resolver_names.iter().enumerate() {
+                let import = runtime_callable_import(runtime_name).unwrap_or_else(|| {
+                    panic!("app callable resolver missing generated WASM import: {runtime_name}")
+                });
+                let import_idx = self.import_ids[import];
+                if import_idx == u32::MAX {
+                    panic!("app callable resolver import unexpectedly stripped for {runtime_name}");
+                }
+                let table_slot = app_callable_resolver_table_start + 1 + idx as u32;
+                table_indices.push(import_idx);
+                entries.push(super::WasmAppCallableResolverEntry {
+                    name: runtime_name.clone(),
+                    table_index: table_base + table_slot,
+                });
+            }
+            app_callable_resolver = Some(super::WasmAppCallableResolverPlan {
+                resolver_func_index,
+                resolver_table_index,
+                entries,
+            });
         }
         for runtime_name in direct_import_call_specs.keys() {
             let import = wasm_runtime_import(runtime_name).unwrap_or_else(|| {
@@ -376,6 +422,7 @@ impl WasmBackend {
             func_to_table_idx,
             func_to_index,
             func_to_trampoline_idx,
+            app_callable_resolver,
             closure_functions,
             trampoline_entries,
         }
@@ -389,4 +436,31 @@ fn push_trampoline_entry(
 ) {
     table_indices.push(entry.expected_func_index);
     trampoline_entries.push(entry);
+}
+
+fn app_callable_resolver_names(
+    manifest_intrinsic_names: &BTreeSet<String>,
+    builtin_trampoline_specs: &BTreeMap<String, usize>,
+) -> BTreeSet<String> {
+    let mut names = manifest_intrinsic_names.clone();
+    names.extend(builtin_trampoline_specs.keys().cloned());
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_callable_resolver_names_include_intrinsics_and_builtins() {
+        let names = app_callable_resolver_names(
+            &BTreeSet::from(["molt_json_parse_scalar".to_string()]),
+            &BTreeMap::from([("molt_len".to_string(), 1usize)]),
+        );
+
+        assert_eq!(
+            names,
+            BTreeSet::from(["molt_json_parse_scalar".to_string(), "molt_len".to_string()])
+        );
+    }
 }

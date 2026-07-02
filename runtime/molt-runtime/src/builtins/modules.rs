@@ -13,7 +13,7 @@ use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
     attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup,
 };
-use crate::builtins::classes::builtin_classes;
+use crate::builtins::classes::{builtin_class_bits_from_name, builtin_classes};
 use crate::builtins::exceptions::{
     exception_kind_bits, exception_message_is_lazy, exception_msg_bits, molt_exception_last_pending,
 };
@@ -95,6 +95,56 @@ fn trace_module_attrs_verbose() -> bool {
             Some("all" | "verbose")
         )
     })
+}
+
+enum BuiltinsGlobalLookup {
+    Found(u64),
+    Missing,
+    Unavailable,
+}
+
+fn cached_builtins_global_lookup(_py: &PyToken<'_>, name_bits: u64) -> BuiltinsGlobalLookup {
+    let builtins_bits = {
+        let cache = crate::builtins::exceptions::internals::module_cache(_py);
+        let guard = cache.lock().unwrap();
+        guard.get("builtins").copied()
+    };
+    let Some(builtins_bits) = builtins_bits else {
+        return BuiltinsGlobalLookup::Unavailable;
+    };
+    let builtins_ptr = match obj_from_bits(builtins_bits).as_ptr() {
+        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE => ptr,
+        _ => return BuiltinsGlobalLookup::Unavailable,
+    };
+    let builtins_dict_bits = unsafe { module_dict_bits(builtins_ptr) };
+    let builtins_dict_ptr = match obj_from_bits(builtins_dict_bits).as_ptr() {
+        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_DICT => ptr,
+        _ => return BuiltinsGlobalLookup::Unavailable,
+    };
+    if let Some(val) = unsafe { dict_get_in_place(_py, builtins_dict_ptr, name_bits) } {
+        inc_ref_bits(_py, val);
+        BuiltinsGlobalLookup::Found(val)
+    } else {
+        BuiltinsGlobalLookup::Missing
+    }
+}
+
+fn runtime_builtins_global_lookup(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    if name == "exec" || name == "eval" {
+        return None;
+    }
+    if let Some(bits) = builtin_class_bits_from_name(_py, name) {
+        return Some(bits);
+    }
+    if let Some(bits) =
+        crate::builtins::exceptions::builtin_exception_type_bits_from_name(_py, name)
+    {
+        return Some(bits);
+    }
+    if let Some(bits) = crate::builtins::functions::python_builtin_function_bits(_py, name) {
+        return Some(bits);
+    }
+    crate::intrinsics::registry::try_resolve_intrinsic_func(_py, name, true)
 }
 
 fn trace_sys_module() -> bool {
@@ -690,6 +740,14 @@ fn simple_edit_distance(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[n]
+}
+
+fn lookup_builtin_global(_py: &PyToken<'_>, name_bits: u64, name: &str) -> Option<u64> {
+    match cached_builtins_global_lookup(_py, name_bits) {
+        BuiltinsGlobalLookup::Found(bits) => Some(bits),
+        BuiltinsGlobalLookup::Missing => None,
+        BuiltinsGlobalLookup::Unavailable => runtime_builtins_global_lookup(_py, name),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2549,30 +2607,8 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                     return val;
                 }
             }
-            let builtins_bits = {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let guard = cache.lock().unwrap();
-                guard.get("builtins").copied()
-            };
-            if let Some(builtins_bits) = builtins_bits {
-                let builtins_ptr = match obj_from_bits(builtins_bits).as_ptr() {
-                    Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE => ptr,
-                    _ => std::ptr::null_mut(),
-                };
-                if !builtins_ptr.is_null() {
-                    let builtins_dict_bits = unsafe { module_dict_bits(builtins_ptr) };
-                    let builtins_dict_ptr = match obj_from_bits(builtins_dict_bits).as_ptr() {
-                        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_DICT => ptr,
-                        _ => std::ptr::null_mut(),
-                    };
-                    if !builtins_dict_ptr.is_null()
-                        && let Some(val) =
-                            unsafe { dict_get_in_place(_py, builtins_dict_ptr, name_bits) }
-                    {
-                        inc_ref_bits(_py, val);
-                        return val;
-                    }
-                }
+            if let Some(val) = lookup_builtin_global(_py, name_bits, &trace_name) {
+                return val;
             }
             if trace_name == "exec" || trace_name == "eval" {
                 let msg = format!(
@@ -2669,30 +2705,13 @@ Use static modules or pre-generated code paths instead."
                     module_name, trace_name, module_bits, dict_bits
                 );
             }
-            // Mirror CPython LOAD_GLOBAL: fall back to the builtins module dict.
-            let builtins_bits = {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let guard = cache.lock().unwrap();
-                guard.get("builtins").copied()
-            };
-            if let Some(builtins_bits) = builtins_bits {
-                let builtins_ptr = match obj_from_bits(builtins_bits).as_ptr() {
-                    Some(ptr) if object_type_id(ptr) == TYPE_ID_MODULE => ptr,
-                    _ => std::ptr::null_mut(),
-                };
-                if !builtins_ptr.is_null() {
-                    let builtins_dict_bits = module_dict_bits(builtins_ptr);
-                    let builtins_dict_ptr = match obj_from_bits(builtins_dict_bits).as_ptr() {
-                        Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                        _ => std::ptr::null_mut(),
-                    };
-                    if !builtins_dict_ptr.is_null()
-                        && let Some(val) = dict_get_in_place(_py, builtins_dict_ptr, name_bits)
-                    {
-                        inc_ref_bits(_py, val);
-                        return val;
-                    }
-                }
+            // Mirror CPython LOAD_GLOBAL: fall back to the builtins namespace.
+            // Native keeps builtins lazy for startup and binary-size reasons, so
+            // the fallback also asks the intrinsic registry for builtin spellings
+            // when the builtins module dict is absent or does not yet hold the
+            // name.
+            if let Some(val) = lookup_builtin_global(_py, name_bits, &trace_name) {
+                return val;
             }
             if trace_name == "exec" || trace_name == "eval" {
                 let msg = format!(
@@ -3111,6 +3130,25 @@ mod tests {
         }
     }
 
+    fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
+        assert!(exception_pending(_py));
+        let exc_bits = molt_exception_last_pending();
+        assert!(!obj_from_bits(exc_bits).is_none());
+        let kind_bits = molt_exception_kind(exc_bits);
+        let class_bits = crate::builtins::exceptions::molt_exception_class(kind_bits);
+        let expected_bits =
+            crate::builtins::exceptions::exception_type_bits_from_name(_py, expected);
+        assert!(
+            crate::issubclass_bits(class_bits, expected_bits),
+            "expected pending exception to be {expected}"
+        );
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, kind_bits);
+        dec_ref_bits(_py, exc_bits);
+        let _ = crate::molt_exception_clear();
+        assert!(!exception_pending(_py));
+    }
+
     #[test]
     fn modules_runtime_state_is_owned_and_clearable() {
         let _guard = crate::TEST_MUTEX
@@ -3194,6 +3232,146 @@ mod tests {
                 dec_ref_bits(_py, missing_key_bits);
                 dec_ref_bits(_py, module_bits);
             }
+        });
+    }
+
+    #[test]
+    fn module_get_global_resolves_lazy_builtin_without_builtins_cache() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins_name_ptr = alloc_string(_py, b"builtins");
+            assert!(!builtins_name_ptr.is_null());
+            let _builtins_cache_restore =
+                ModuleCacheRestore::new(_py, MoltObject::from_ptr(builtins_name_ptr).bits());
+
+            let module_name_ptr = alloc_string(_py, b"lazy_builtin_lookup_module");
+            assert!(!module_name_ptr.is_null());
+            let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+            let module_ptr = alloc_module_obj(_py, module_name_bits);
+            dec_ref_bits(_py, module_name_bits);
+            assert!(!module_ptr.is_null());
+            let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+            let len_name_ptr = alloc_string(_py, b"len");
+            assert!(!len_name_ptr.is_null());
+            let len_name_bits = MoltObject::from_ptr(len_name_ptr).bits();
+            let len_bits = molt_module_get_global(module_bits, len_name_bits);
+            assert!(
+                !exception_pending(_py),
+                "lazy builtin LOAD_GLOBAL fallback must not raise"
+            );
+            let len_ptr = obj_from_bits(len_bits)
+                .as_ptr()
+                .expect("len should resolve to a function object");
+            assert_eq!(unsafe { object_type_id(len_ptr) }, crate::TYPE_ID_FUNCTION);
+            assert_eq!(
+                unsafe { crate::object_class_bits(len_ptr) },
+                builtin_classes(_py).builtin_function_or_method
+            );
+
+            let len_bits_again = molt_module_get_global(module_bits, len_name_bits);
+            assert!(
+                !exception_pending(_py),
+                "lazy builtin cache hit must not raise"
+            );
+            assert_eq!(
+                len_bits_again, len_bits,
+                "lazy builtin global resolver must cache one runtime-state-owned callable"
+            );
+
+            let name_attr_bits = attr_name_bits_from_bytes(_py, b"__name__").unwrap();
+            let module_attr_bits = attr_name_bits_from_bytes(_py, b"__module__").unwrap();
+            let arg_names_attr_bits =
+                attr_name_bits_from_bytes(_py, b"__molt_arg_names__").unwrap();
+            let name_value = unsafe { crate::function_attr_bits(_py, len_ptr, name_attr_bits) }
+                .expect("generated builtin callable must publish __name__");
+            let module_value = unsafe { crate::function_attr_bits(_py, len_ptr, module_attr_bits) }
+                .expect("generated builtin callable must publish __module__");
+            let arg_names_value =
+                unsafe { crate::function_attr_bits(_py, len_ptr, arg_names_attr_bits) }
+                    .expect("generated builtin callable must publish arg names");
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(name_value)).as_deref(),
+                Some("len")
+            );
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(module_value)).as_deref(),
+                Some("builtins")
+            );
+            let arg_names_ptr = obj_from_bits(arg_names_value)
+                .as_ptr()
+                .expect("arg names must be a tuple");
+            assert_eq!(unsafe { object_type_id(arg_names_ptr) }, TYPE_ID_TUPLE);
+            let arg_names = unsafe { seq_vec_ref(arg_names_ptr) };
+            assert_eq!(arg_names.len(), 1);
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(arg_names[0])).as_deref(),
+                Some("obj")
+            );
+            dec_ref_bits(_py, name_attr_bits);
+            dec_ref_bits(_py, module_attr_bits);
+            dec_ref_bits(_py, arg_names_attr_bits);
+
+            let empty_tuple_ptr = alloc_tuple(_py, &[]);
+            assert!(!empty_tuple_ptr.is_null());
+            let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+            let result_bits = unsafe { call_callable1(_py, len_bits, empty_tuple_bits) };
+            assert!(
+                !exception_pending(_py),
+                "lazy builtin function object must be directly callable"
+            );
+            assert_eq!(to_i64(obj_from_bits(result_bits)), Some(0));
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, empty_tuple_bits);
+
+            dec_ref_bits(_py, len_bits_again);
+            dec_ref_bits(_py, len_bits);
+            dec_ref_bits(_py, len_name_bits);
+            dec_ref_bits(_py, module_bits);
+        });
+    }
+
+    #[test]
+    fn module_get_global_respects_present_builtins_dict_miss() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins_name_ptr = alloc_string(_py, b"builtins");
+            assert!(!builtins_name_ptr.is_null());
+            let builtins_name_bits = MoltObject::from_ptr(builtins_name_ptr).bits();
+            let cache_restore = ModuleCacheRestore::new(_py, builtins_name_bits);
+
+            let builtins_module_ptr = alloc_module_obj(_py, cache_restore.name_bits());
+            assert!(!builtins_module_ptr.is_null());
+            let builtins_module_bits = MoltObject::from_ptr(builtins_module_ptr).bits();
+            let set_result = molt_module_cache_set(cache_restore.name_bits(), builtins_module_bits);
+            assert!(obj_from_bits(set_result).is_none());
+            assert!(!exception_pending(_py));
+
+            let module_name_ptr = alloc_string(_py, b"empty_builtins_lookup_module");
+            assert!(!module_name_ptr.is_null());
+            let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+            let module_ptr = alloc_module_obj(_py, module_name_bits);
+            dec_ref_bits(_py, module_name_bits);
+            assert!(!module_ptr.is_null());
+            let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+            let len_name_ptr = alloc_string(_py, b"len");
+            assert!(!len_name_ptr.is_null());
+            let len_name_bits = MoltObject::from_ptr(len_name_ptr).bits();
+            let len_bits = molt_module_get_global(module_bits, len_name_bits);
+            assert!(
+                obj_from_bits(len_bits).is_none(),
+                "LOAD_GLOBAL miss through a present builtins dict must not synthesize len"
+            );
+            assert_pending_exception_class(_py, "NameError");
+
+            dec_ref_bits(_py, len_name_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, builtins_module_bits);
         });
     }
 

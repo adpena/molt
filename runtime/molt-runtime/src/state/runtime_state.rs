@@ -353,6 +353,7 @@ pub(crate) struct RuntimeState {
     pub(crate) signal: SignalRuntimeState,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
+    pub(crate) python_builtin_function_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) start_time: OnceLock<Instant>,
     /// VFS state lazily initialized from environment variables on first access.
     pub(crate) vfs_state: OnceLock<Option<crate::vfs::VfsState>>,
@@ -460,6 +461,7 @@ impl RuntimeState {
             signal: SignalRuntimeState::new(),
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
+            python_builtin_function_slots: OnceLock::new(),
             start_time: OnceLock::new(),
             vfs_state: OnceLock::new(),
             extension_states: Mutex::new(HashMap::new()),

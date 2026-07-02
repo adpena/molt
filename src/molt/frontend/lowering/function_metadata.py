@@ -363,16 +363,10 @@ class FunctionMetadataMixin(_MixinBase):
                 result=metadata_tuple,
             )
         )
-        init_metadata = self._emit_runtime_function(
-            "molt_function_init_metadata_packed", 4
-        )
-        init_res = MoltValue(self.next_var(), type_hint="None")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[init_metadata, func_val, metadata_tuple, code_val, bind_kind_val],
-                result=init_res,
-            )
+        self._emit_runtime_call(
+            "molt_function_init_metadata_packed",
+            [func_val, metadata_tuple, code_val, bind_kind_val],
+            type_hint="None",
         )
 
         def set_attr(attr: str, value: MoltValue) -> None:

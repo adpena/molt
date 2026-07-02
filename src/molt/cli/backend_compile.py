@@ -68,8 +68,8 @@ from molt.cli.runtime_build import (
     _initialize_runtime_artifact_state,
     _maybe_start_native_runtime_lib_ready_async,
 )
-from molt.cli.runtime_intrinsic_symbols import (
-    _stage_runtime_intrinsic_symbols_for_native_codegen,
+from molt.cli.runtime_callable_symbols import (
+    _stage_runtime_callable_symbols_for_native_codegen,
 )
 from molt.cli.target_python import TargetPythonVersion
 from molt.wasm_artifact import (
@@ -126,9 +126,9 @@ def _prepare_backend_setup(
         stdlib_profile=stdlib_profile,
         extra_runtime_features=extra_runtime_features,
     )
-    runtime_intrinsic_symbols_digest = ""
-    runtime_intrinsic_symbols_digest, intrinsic_symbols_error = (
-        _stage_runtime_intrinsic_symbols_for_native_codegen(
+    runtime_callable_symbols_digest = ""
+    runtime_callable_symbols_digest, callable_symbols_error = (
+        _stage_runtime_callable_symbols_for_native_codegen(
             runtime_state,
             target_triple=target_triple,
             json_output=json_output,
@@ -139,8 +139,8 @@ def _prepare_backend_setup(
             resolved_modules=resolved_modules,
         )
     )
-    if intrinsic_symbols_error is not None:
-        return None, intrinsic_symbols_error
+    if callable_symbols_error is not None:
+        return None, callable_symbols_error
     cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
         cache_enabled=cache,
         ir=ir,
@@ -161,13 +161,13 @@ def _prepare_backend_setup(
         target_python=target_python,
         stdlib_profile=stdlib_profile,
         native_artifact_plan=native_artifact_plan,
-        runtime_intrinsic_symbols_digest=runtime_intrinsic_symbols_digest,
+        runtime_callable_symbols_digest=runtime_callable_symbols_digest,
         capabilities_list=capabilities_list,
         capability_profiles=capability_profiles,
         manifest_env_vars=manifest_env_vars,
         capability_config_digest=capability_config_digest,
     )
-    if emit_mode != "obj" and not runtime_intrinsic_symbols_digest:
+    if emit_mode != "obj" and not runtime_callable_symbols_digest:
         _maybe_start_native_runtime_lib_ready_async(
             runtime_state,
             target_triple=target_triple,
@@ -245,7 +245,7 @@ def _prepare_backend_runtime_context(
             required_exports=required_exports,
         )
 
-    _, intrinsic_symbols_error = _stage_runtime_intrinsic_symbols_for_native_codegen(
+    _, callable_symbols_error = _stage_runtime_callable_symbols_for_native_codegen(
         runtime_state,
         target_triple=target_triple,
         json_output=json_output,
@@ -256,8 +256,8 @@ def _prepare_backend_runtime_context(
         resolved_modules=resolved_modules,
         is_wasm_freestanding=is_wasm_freestanding,
     )
-    if intrinsic_symbols_error is not None:
-        return None, intrinsic_symbols_error
+    if callable_symbols_error is not None:
+        return None, callable_symbols_error
 
     return _PreparedBackendRuntimeContext(
         runtime_state=runtime_state,

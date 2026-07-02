@@ -1131,8 +1131,8 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         )
 
     assert _runtime_import_export_names_from_manifest(import_names) == {
-        "PyArg_ParseTuple": "PyArg_ParseTuple",
-        "PyFloat_Check": "PyFloat_Check",
+        "PyArg_ParseTuple": "molt_PyArg_ParseTuple",
+        "PyFloat_Check": "molt_PyFloat_Check",
     }
 
     worker_js = _generate_split_worker_js(
@@ -1146,12 +1146,12 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         '"PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"}'
         in worker_js
     )
-    assert '"PyArg_ParseTuple": "PyArg_ParseTuple"' in worker_js
+    assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in worker_js
     assert "exportCandidates" not in worker_js
     assert "`molt_${entry.name}`" not in worker_js
 
 
-def test_runtime_export_signatures_use_cpython_abi_raw_export_names(
+def test_runtime_export_signatures_use_cpython_abi_split_export_names(
     monkeypatch,
 ) -> None:
     import molt.cli.non_native_output as non_native_output
@@ -1161,7 +1161,10 @@ def test_runtime_export_signatures_use_cpython_abi_raw_export_names(
     def fake_export_signatures(runtime_wasm, *, export_names):
         requested["export_names"] = set(export_names)
         return {
-            "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
+            "molt_PyArg_ParseTuple": {
+                "params": ["i32", "i32", "i32"],
+                "result": "i32",
+            },
             "molt_socket_drop": {"params": ["i64"], "result": "nil"},
         }
 
@@ -1178,7 +1181,7 @@ def test_runtime_export_signatures_use_cpython_abi_raw_export_names(
         "PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"},
         "socket_drop": {"params": ["i64"], "result": "nil"},
     }
-    assert requested["export_names"] == {"PyArg_ParseTuple", "molt_socket_drop"}
+    assert requested["export_names"] == {"molt_PyArg_ParseTuple", "molt_socket_drop"}
 
 
 def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:

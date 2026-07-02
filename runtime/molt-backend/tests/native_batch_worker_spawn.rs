@@ -121,12 +121,12 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     let ir_path = tmp.path.join("stdlib_split.json");
     let output_path = tmp.path.join("out.o");
     let stdlib_path = tmp.path.join("stdlib_shared.o");
-    let runtime_symbols_path = tmp.path.join("runtime_intrinsic_symbols.txt");
+    let runtime_symbols_path = tmp.path.join("runtime_callable_symbols.txt");
     std::fs::write(
         &runtime_symbols_path,
         "molt_main\nmolt_host_init\nmolt_init_demo\nmolt_init_sys\nsys__helper\n",
     )
-    .expect("write runtime intrinsic symbol set");
+    .expect("write runtime callable symbol set");
     std::fs::write(
         &ir_path,
         r#"{
@@ -236,7 +236,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             "{\"cache_key\":\"stdlib-batch-key\"}",
         )
         .env("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]")
-        .env("MOLT_RUNTIME_INTRINSIC_SYMBOLS", &runtime_symbols_path)
+        .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
         .env("MOLT_BACKEND_BATCH_SIZE", "1")
         .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
         .output()

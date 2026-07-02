@@ -894,7 +894,7 @@ class ComprehensionMixin(_MixinBase):
         # filters. These must leak to the enclosing scope per PEP 572.
         walrus_names = self._collect_inline_comp_walrus_names(exprs, comp.ifs)
         # At module scope the single storage authority for a name is the
-        # module dict (MODULE_SET_ATTR / MODULE_GET_ATTR), not a boxed
+        # module dict (MODULE_SET_ATTR / MODULE_GET_GLOBAL), not a boxed
         # function cell: other functions read the global via the module dict,
         # and module-scope SSA refs dangle across chunk boundaries (#45 item
         # 3).  A walrus target that is *also* bound non-comprehensionally (a

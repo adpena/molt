@@ -723,7 +723,7 @@ class CallModuleDispatchMixin(_MixinBase):
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
             self.emit(MoltOp(kind="COPY", args=[placeholder], result=result))
             self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
-            resolved = self._emit_module_attr_get(class_name)
+            resolved = self._emit_global_get(class_name)
             self.emit(
                 MoltOp(
                     kind="STORE_VAR",

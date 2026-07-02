@@ -80,14 +80,10 @@ class ClassMethodCompilationMixin(_MixinBase):
         func_val, defaults_val, kwdefaults_val = self._emit_function_default_values(
             func_val, default_exprs, kw_default_exprs, kwonly_params
         )
-        setter = self._emit_runtime_function("molt_function_set_defaults", 3)
-        res = MoltValue(self.next_var(), type_hint="None")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[setter, func_val, defaults_val, kwdefaults_val],
-                result=res,
-            )
+        self._emit_runtime_call(
+            "molt_function_set_defaults",
+            [func_val, defaults_val, kwdefaults_val],
+            type_hint="None",
         )
         return func_val
 

@@ -62,9 +62,15 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
             "PyObject_Init",
             "PyObject_InitVar",
             "PyModuleDef_Init",
+            "PyType_Ready",
             "_PyObject_New",
             "PyMemoryView_FromMemory",
             "Py_None",
+            "Py_EllipsisObject",
+            "Py_GenericAliasType",
+            "Py_NotImplementedSentinel",
+            "Py_OptimizeFlag",
+            "Py_Version",
             "PyFloat_Check",
             "PyExc_TypeError",
         ]
@@ -131,7 +137,30 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
     fs::create_dir_all(&target_dir).expect("create target dir");
     fs::create_dir_all(&tmp_dir).expect("create tmp dir");
 
-    let cpython_abi_export_flags = expected_cpython_abi_requested_exports()
+    let expected_cpython_abi = expected_cpython_abi_requested_exports();
+    let cpython_abi_requested_exports = expected_cpython_abi
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cpython_abi_requested_data_exports = expected_cpython_abi
+        .iter()
+        .filter(|name| {
+            matches!(
+                name.as_str(),
+                "Py_EllipsisObject"
+                    | "Py_GenericAliasType"
+                    | "Py_None"
+                    | "Py_NotImplementedSentinel"
+                    | "Py_OptimizeFlag"
+                    | "Py_Version"
+                    | "PyExc_TypeError"
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cpython_abi_export_flags = expected_cpython_abi
         .iter()
         .map(|name| format!("-C link-arg=--export-if-defined={name}"))
         .collect::<Vec<_>>();
@@ -152,6 +181,14 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("TMPDIR", &tmp_dir)
         .env("MOLT_SESSION_ID", "test-wasm-cdylib-exports")
+        .env(
+            "MOLT_WASM_CPYTHON_ABI_EXPORTS",
+            cpython_abi_requested_exports,
+        )
+        .env(
+            "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
+            cpython_abi_requested_data_exports,
+        )
         .env("CARGO_INCREMENTAL", "0")
         .env("RUSTFLAGS", rustflags)
         .args([
@@ -189,7 +226,6 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         missing.is_empty(),
         "missing fixed wasm cdylib exports: {missing:?}"
     );
-    let expected_cpython_abi = expected_cpython_abi_requested_exports();
     let missing_cpython_abi: Vec<String> = expected_cpython_abi
         .difference(&export_names)
         .cloned()

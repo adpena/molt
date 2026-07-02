@@ -92,6 +92,7 @@ impl WasmBackend {
             type_layout.user_type_map(),
             reloc_enabled,
             sentinel_func_idx,
+            &host_surface.intrinsic_manifest_names,
         );
         callable_table.validate_ir_call_target_closure(&ir);
 
@@ -116,6 +117,7 @@ impl WasmBackend {
             let type_idx = type_layout.type_idx_for_function(func_ir);
             self.compile_func(func_ir, type_idx, &compile_ctx);
         }
+        self.emit_app_callable_resolver(&callable_table, reloc_enabled);
 
         self.emit_table_abi_trampolines(&callable_table, reloc_enabled);
 

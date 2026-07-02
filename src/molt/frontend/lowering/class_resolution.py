@@ -46,7 +46,12 @@ class ClassResolutionMixin(_MixinBase):
         module_name = class_info.get("module") if class_info else None
         if module_name and module_name != self.module_name:
             return self._emit_module_attr_get_on(module_name, class_name)
-        return self._emit_module_attr_get(class_name)
+        # A current-module class reference is still a bare Name read, not
+        # ``module.attr`` syntax. When the static class value is unavailable
+        # (chunk boundary, control-flow mutation, or pending definition), keep
+        # CPython LOAD_GLOBAL semantics: module dict, builtins fallback, then
+        # NameError on miss.
+        return self._emit_global_get(class_name)
 
     def _current_module_static_class_ref(self, class_name: str) -> MoltValue | None:
         if self.current_func_name != "molt_main":

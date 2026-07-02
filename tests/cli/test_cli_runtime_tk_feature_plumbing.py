@@ -1001,7 +1001,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     )
     monkeypatch.setattr(
         cli_backend_compile,
-        "_stage_runtime_intrinsic_symbols_for_native_codegen",
+        "_stage_runtime_callable_symbols_for_native_codegen",
         lambda *args, **kwargs: ("", None),
         raising=True,
     )
@@ -1098,7 +1098,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
     )
     monkeypatch.setattr(
         cli_backend_compile,
-        "_stage_runtime_intrinsic_symbols_for_native_codegen",
+        "_stage_runtime_callable_symbols_for_native_codegen",
         lambda *args, **kwargs: ("", None),
         raising=True,
     )

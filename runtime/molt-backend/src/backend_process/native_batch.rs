@@ -96,7 +96,7 @@ pub(crate) fn resolved_batch_op_budget_limit(default: usize) -> usize {
 pub(crate) struct NativeApplicationObjectOptions<'a> {
     pub(crate) target_triple: Option<&'a str>,
     pub(crate) stdlib_split_enabled: bool,
-    pub(crate) app_intrinsic_manifest: Option<std::collections::BTreeSet<String>>,
+    pub(crate) app_callable_manifest: Option<std::collections::BTreeSet<String>>,
     pub(crate) log_prefix: &'a str,
 }
 
@@ -119,8 +119,8 @@ pub(crate) struct NativeBatchObjectJob {
     pub(crate) ir: SimpleIR,
     pub(crate) module_context_path: PathBuf,
     pub(crate) target_triple: Option<String>,
-    pub(crate) emit_app_intrinsic_resolver: bool,
-    pub(crate) app_intrinsic_manifest: Option<std::collections::BTreeSet<String>>,
+    pub(crate) emit_app_callable_resolver: bool,
+    pub(crate) app_callable_manifest: Option<std::collections::BTreeSet<String>>,
     pub(crate) external_function_names: std::collections::BTreeSet<String>,
 }
 
@@ -253,8 +253,8 @@ pub(crate) fn compile_native_batch_object_job(
     let mut backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
     backend.skip_ir_passes = true;
     backend.skip_shared_stdlib_partition = true;
-    backend.emit_app_intrinsic_resolver = job.emit_app_intrinsic_resolver;
-    backend.app_intrinsic_manifest = job.app_intrinsic_manifest;
+    backend.emit_app_callable_resolver = job.emit_app_callable_resolver;
+    backend.app_callable_manifest = job.app_callable_manifest;
     backend.external_function_names = job.external_function_names;
     backend.set_module_context(metadata.module_context);
     let output = backend.compile(job.ir);
@@ -452,10 +452,10 @@ pub(crate) fn compile_native_application_object_to_path(
     output_path: &Path,
     mut options: NativeApplicationObjectOptions<'_>,
 ) -> io::Result<NativeApplicationObjectResult> {
-    if options.stdlib_split_enabled && options.app_intrinsic_manifest.is_none() {
+    if options.stdlib_split_enabled && options.app_callable_manifest.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "stdlib-split native application object requires a full-set app intrinsic manifest",
+            "stdlib-split native application object requires a full-set app callable manifest",
         ));
     }
 
@@ -481,7 +481,7 @@ pub(crate) fn compile_native_application_object_to_path(
         if options.stdlib_split_enabled {
             backend.skip_shared_stdlib_partition = true;
         }
-        backend.app_intrinsic_manifest = options.app_intrinsic_manifest.take();
+        backend.app_callable_manifest = options.app_callable_manifest.take();
         let obj_output = backend.compile(ir);
         write_output_path(output_path, &obj_output.bytes)?;
         eprintln!(
@@ -500,8 +500,8 @@ pub(crate) fn compile_native_application_object_to_path(
     let all_func_names: std::collections::BTreeSet<String> =
         all_functions.iter().map(|f| f.name.clone()).collect();
     let module_context = SimpleBackend::build_module_context(&all_functions);
-    if options.app_intrinsic_manifest.is_none() {
-        options.app_intrinsic_manifest = Some(molt_backend::compute_intrinsic_manifest_checked(
+    if options.app_callable_manifest.is_none() {
+        options.app_callable_manifest = Some(molt_backend::compute_app_callable_manifest_checked(
             &all_functions,
         ));
     }
@@ -549,9 +549,9 @@ pub(crate) fn compile_native_application_object_to_path(
                     ir: batch_ir,
                     module_context_path: module_context_path.clone(),
                     target_triple: options.target_triple.map(str::to_owned),
-                    emit_app_intrinsic_resolver: batch_idx == 0,
-                    app_intrinsic_manifest: if batch_idx == 0 {
-                        options.app_intrinsic_manifest.take()
+                    emit_app_callable_resolver: batch_idx == 0,
+                    app_callable_manifest: if batch_idx == 0 {
+                        options.app_callable_manifest.take()
                     } else {
                         None
                     },

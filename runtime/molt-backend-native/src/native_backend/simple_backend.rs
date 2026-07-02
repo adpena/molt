@@ -67,18 +67,19 @@ pub struct SimpleBackend {
     pub(crate) import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
-    /// Whether this object emits the per-app `molt_app_resolve_intrinsic` resolver.
+    /// Whether this object emits the per-app `molt_app_resolve_callable` resolver.
     /// Exactly one object per final binary must emit it (the one main_stub.c
     /// registers): the main application object. Stdlib-cache batch objects and all
     /// but one program batch set this `false` to avoid a duplicate symbol.
-    pub emit_app_intrinsic_resolver: bool,
-    /// Pre-computed per-app intrinsic manifest (the intrinsics reached by the
+    pub emit_app_callable_resolver: bool,
+    /// Pre-computed per-app callable manifest (runtime functions reached by the
     /// dynamic name-based resolver path). Set by the orchestrator when the full
-    /// function set is split across objects (stdlib cache split / batching) so the
-    /// resolver covers names whose defining functions live in another object. When
-    /// `None`, `compile` derives it from this object's own `ir.functions` (the
-    /// single-object, non-split case where `ir` already holds the full set).
-    pub app_intrinsic_manifest: Option<std::collections::BTreeSet<String>>,
+    /// function set is split across objects (stdlib cache split / batching) so
+    /// the resolver covers names whose defining functions live in another
+    /// object. When `None`, `compile` derives it from this object's own
+    /// `ir.functions` (the single-object, non-split case where `ir` already
+    /// holds the full set).
+    pub app_callable_manifest: Option<std::collections::BTreeSet<String>>,
     /// Function names that exist in other batches  use Linkage::Import.
     pub external_function_names: std::collections::BTreeSet<String>,
     module_context: Option<NativeBackendModuleContext>,
