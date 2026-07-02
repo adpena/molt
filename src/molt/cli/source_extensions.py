@@ -1633,7 +1633,7 @@ def source_extension_manifest_runtime_python_imports(
             )
             continue
         names.update(source_extension_runtime_python_imports(source_text))
-    return tuple(sorted(names)), read_errors
+    return tuple(sorted(names)), [*errors, *read_errors]
 
 
 def source_extension_manifest_required_capsule_imports(
