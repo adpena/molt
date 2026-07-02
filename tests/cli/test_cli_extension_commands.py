@@ -1044,7 +1044,12 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     }
     assert "mod cpython_abi_variadic_exports;" in runtime_c_api_mod
     assert "MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS" in runtime_anchor
-    assert "static:+whole-archive=molt_pyarg_shims" in build_rs
+    assert "cargo:rustc-link-search=native=" in build_rs
+    assert 'name = "molt_pyarg_shims"' in runtime_anchor
+    assert 'kind = "static"' in runtime_anchor
+    assert 'modifiers = "+whole-archive"' in runtime_anchor
+    assert "molt_cpython_abi_variadic_export_anchor_count" in runtime_anchor
+    assert "core::hint::black_box" in runtime_anchor
     for symbol in required_variadic_exports:
         assert f"{symbol}(" in shim
         assert f"fn {symbol}();" in runtime_anchor

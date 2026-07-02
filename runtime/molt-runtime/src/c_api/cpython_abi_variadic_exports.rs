@@ -9,6 +9,11 @@
 
 #![allow(dead_code, improper_ctypes)]
 
+#[link(
+    name = "molt_pyarg_shims",
+    kind = "static",
+    modifiers = "+whole-archive"
+)]
 unsafe extern "C" {
     fn PyArg_ParseTuple();
     fn PyArg_ParseTupleAndKeywords();
@@ -63,3 +68,9 @@ static MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS: [unsafe extern "C" fn(); 24] = 
     PyErr_FormatUnraisable,
     PySys_WriteStderr,
 ];
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cpython_abi_variadic_export_anchor_count() -> usize {
+    core::hint::black_box(MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS.as_ptr());
+    MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS.len()
+}
