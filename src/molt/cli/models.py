@@ -723,6 +723,9 @@ class _ExternalPackageNativeArtifact:
             "path": str(self.path),
             "manifest_path": str(self.manifest_path),
             "runtime_python_imports": list(self.runtime_python_imports),
+            "runtime_python_import_modules": list(
+                self.runtime_python_import_modules
+            ),
             "extension_sha256": self.extension_sha256,
             "manifest_sha256": self.manifest_sha256,
             "capabilities": list(self.capabilities),
@@ -892,14 +895,23 @@ class _ExternalPackageNativeArtifactPlan:
         return names
 
     @staticmethod
-    def _support_python_module_name(rel_path: str) -> str | None:
+    def _support_python_module_name(
+        rel_path: str,
+        *,
+        include_init: bool = False,
+    ) -> str | None:
         normalized = rel_path.replace("\\", "/")
         if not normalized.endswith(".py"):
             return None
         parts = normalized.split("/")
-        if not parts or parts[-1] == "__init__.py":
+        if not parts:
             return None
-        module_parts = [*parts[:-1], parts[-1][:-3]]
+        if parts[-1] == "__init__.py":
+            if not include_init:
+                return None
+            module_parts = parts[:-1]
+        else:
+            module_parts = [*parts[:-1], parts[-1][:-3]]
         if not module_parts:
             return None
         return ".".join(module_parts)
@@ -949,7 +961,10 @@ class _ExternalPackageNativeArtifactPlan:
                 artifact.package,
             )
             for rel_path, _digest in artifact.support_file_sha256:
-                module_name = self._support_python_module_name(rel_path)
+                module_name = self._support_python_module_name(
+                    rel_path,
+                    include_init=True,
+                )
                 if module_name is not None:
                     sources[module_name] = (
                         package_source_root / Path(rel_path.replace("\\", "/"))

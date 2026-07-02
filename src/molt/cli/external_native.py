@@ -1149,12 +1149,20 @@ def _validate_external_package_native_artifact(
             manifest_path=manifest_path,
         )
     )
-    runtime_python_imports, _skipped_runtime_import_sources = (
+    runtime_python_imports, runtime_python_import_errors = (
         source_extension_manifest_runtime_python_imports(
             manifest,
             manifest_path=manifest_path,
         )
     )
+    if runtime_python_import_errors and not (
+        source_extension_manifest_errors_are_missing_sources(
+            runtime_python_import_errors
+        )
+    ):
+        errors.extend(
+            f"{package}: {error}" for error in runtime_python_import_errors
+        )
     python_exports = _manifest_dotted_name_tuple(
         manifest,
         "python_exports",
