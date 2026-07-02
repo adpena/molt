@@ -6,8 +6,8 @@ use super::runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
-    IMPORT_REGISTRY, POLL_TABLE_IMPORTS, RUNTIME_CALLABLE_IMPORTS, RUNTIME_IMPORT_MODULE,
-    RuntimeImportSpec, WasmRuntimeImport,
+    IMPORT_REGISTRY, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS,
+    RUNTIME_CALLABLE_IMPORTS, RUNTIME_IMPORT_MODULE, RuntimeImportSpec, WasmRuntimeImport,
 };
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
@@ -32,10 +32,27 @@ impl WasmBackend {
 
         let poll_table_root_imports: BTreeSet<WasmRuntimeImport> =
             POLL_TABLE_IMPORTS.iter().map(|spec| spec.import).collect();
+        // The callable-table layout indexes these unconditionally (init/
+        // shutdown/version bootstrap plus every reserved runtime callable's
+        // import when computing table indices), so they are layout roots
+        // that must survive callable deforestation just like poll-table
+        // roots — a missing entry is a codegen panic, not a size win.
+        let layout_root_imports: BTreeSet<WasmRuntimeImport> = RESERVED_RUNTIME_CALLABLE_SPECS
+            .iter()
+            .filter_map(|spec| spec.import)
+            .chain([
+                WasmRuntimeImport::RuntimeInit,
+                WasmRuntimeImport::RuntimeShutdown,
+                WasmRuntimeImport::SysSetVersionInfo,
+            ])
+            .collect();
         let on_demand_runtime_callables: BTreeSet<WasmRuntimeImport> = RUNTIME_CALLABLE_IMPORTS
             .iter()
             .map(|spec| spec.import)
-            .filter(|import| !poll_table_root_imports.contains(import))
+            .filter(|import| {
+                !poll_table_root_imports.contains(import)
+                    && !layout_root_imports.contains(import)
+            })
             .collect();
         for spec in IMPORT_REGISTRY {
             if !on_demand_runtime_callables.contains(&spec.import) {
