@@ -1,13 +1,13 @@
 # Reachability-Driven Runtime-Feature Elimination
 
-Status: DESIGN (ready_to_implement after Phase 0 lands)
+Status: PARTIALLY IMPLEMENTED (authority flipped; import-driven gate deleted)
 Owner: feature-gate / tree-shaking authority
 Scope: the gratuitous-heavy-import bug class, and its permanent structural cure.
-Companion facts (verified in-tree 2026-06-26):
-- Frontend gate: `src/molt/cli/module_stdlib_policy.py:130` (`_enforce_profile_feature_availability`)
+Companion facts (verified in-tree 2026-07-02):
+- Reachability gate: `src/molt/cli/backend_ir.py` (`_reachability_feature_refusal`)
 - Symbol-feature authority: `runtime/molt-runtime/src/intrinsics/categories.toml` owns prefix-to-feature attribution; `runtime/molt-runtime/Cargo.toml` plus cfg-gated runtime modules own link-affecting feature status; `src/molt/_runtime_feature_gates.py` is generated consumer data.
-- Drifted profile model: `src/molt/cli/runtime_features.py:104` (`_ALL_DOMAIN_FEATURES`), `:153` (`_runtime_builtin_features_for_profile`)
-- The reachability fact (already exists, wrong layer): `runtime/molt-tir/src/passes/app_callable_manifest.rs:61` (`compute_app_callable_manifest`)
+- Profile ceiling authority: `src/molt/cli/runtime_features.py` (`profile_link_features`) reads the Cargo ladder instead of a hand-maintained domain-feature mirror.
+- The reachability fact: `runtime/molt-tir/src/passes/app_callable_manifest.rs:61` (`compute_app_callable_manifest`)
 - Symbol-set authority + fail-closed: `runtime/molt-ir/src/runtime_callable_symbols.rs:50` (`runtime_callable_symbols_required`)
 - Native dead-strip resolver: `runtime/molt-backend/src/native_backend/simple_backend/app_resolver.rs:35`; runtime side `runtime/molt-runtime/src/intrinsics/registry.rs:55` (`molt_set_app_callable_resolver`)
 - Cargo feature ladder: `runtime/molt-runtime/Cargo.toml:15-125`
@@ -16,26 +16,22 @@ Companion facts (verified in-tree 2026-06-26):
 
 ## 0. One-paragraph thesis
 
-molt **already computes a whole-program, data-flow-complete intrinsic-reachability
-closure** — `compute_app_callable_manifest` in `molt-tir` — and the native backend
-already emits a per-app resolver covering exactly that set so the linker
-dead-strips every unreached intrinsic. But molt makes the *feature-requirement
-decision* (which Cargo features the runtime archive must build, and whether to
-refuse the build) from a **second, coarser, drift-prone fact**: the per-module
-presence of an intrinsic literal anywhere in the static import graph
-(`module_required_intrinsic_names`). The two facts disagree: importing `re`
-forces `stdlib_regex` under the frontend gate even when no regex call is ever
-reached, and — because of an unrelated drift bug — `stdlib_regex` is missing
-from the Python profile model entirely, so `import re` is refused on *every*
-profile including `full`. The canonical fix is to **delete the coarse fact as a
-requirement source and make the existing TIR-reachability closure the single
-authority** for (a) the required link-affecting feature set, (b) the
-compile-time refusal, and (c) the per-app resolver / dead-strip — with a
-curated, fail-closed implicit/dynamic-edge table for the edges static analysis
-cannot see (the GraalVM reachability-metadata / Nuitka implicit-imports model).
-After this, an unreached `molt_re_*` section is *unexpressible* in the binary,
-an unprovable dynamic edge is *refused or retained* (never silently dropped),
-and the import-vs-feature drift class is *gone* because there is only one fact.
+molt computes a whole-program, data-flow-complete intrinsic-reachability closure
+— `compute_app_callable_manifest` in `molt-tir` — and the native backend emits a
+per-app resolver covering exactly that set so the linker dead-strips every
+unreached intrinsic. The former requirement decision used a second, coarser,
+drift-prone fact: the per-module presence of an intrinsic literal anywhere in
+the static import graph (`module_required_intrinsic_names`). That authority is
+now deleted from the build requirement path. The live requirement/refusal gate is
+the TIR-reachability closure compared against the selected profile's
+link-affecting feature ceiling, using the same callable set that drives
+dead-strip. The remaining end-state work is to make archive selection itself
+minimum-required-feature driven and to finish the curated, fail-closed
+implicit/dynamic-edge table for edges static analysis cannot see (the GraalVM
+reachability-metadata / Nuitka implicit-imports model). After that, an unreached
+`molt_re_*` section is unexpressible in the binary, an unprovable dynamic edge is
+refused or retained (never silently dropped), and import-vs-feature drift is
+gone because there is only one requirement fact.
 
 ---
 
@@ -45,8 +41,9 @@ and the import-vs-feature drift class is *gone* because there is only one fact.
 
 A program writes `import re` (often transitively — `re` sits under
 `warnings` → `importlib.abc` → `importlib.metadata`) but never executes a regex
-operation. Under today's gate the mere *presence* of `re/__init__.py` in the
-static import graph forces the `stdlib_regex` Cargo feature, which:
+operation. Under the deleted import-presence gate the mere *presence* of
+`re/__init__.py` in the static import graph forced the `stdlib_regex` Cargo
+feature, which:
 
 1. is refused at compile time on any profile whose Python model lacks
    `stdlib_regex` (see §1.3 — currently *all* of them), and
@@ -71,15 +68,15 @@ the *class*.
         │ src/molt/stdlib_intrinsic_policy.py:97                     │ runtime/molt-tir/src/passes/app_callable_manifest.rs:61
         └───────────────┬────────────────────────────────────────────┴───────────────┬───────────────┘
                         │                                                              │
-            DRIVES (today)                                                  DRIVES (today)
+            DROVE BEFORE 2026-07-02                                         DRIVES NOW
         ┌───────────────▼───────────────┐                          ┌───────────────────▼───────────────────┐
-        │ _enforce_profile_feature_      │                          │ emit_app_resolver_function(manifest)   │
-        │   availability  → REFUSE/PASS  │                          │  → per-app resolver; linker dead-strips │
-        │ (module_stdlib_policy.py:130)  │                          │   every unreached intrinsic            │
+        │ import-presence profile gate   │                          │ reachability profile-ceiling refusal   │
+        │   → REFUSE/PASS (deleted)      │                          │ + per-app resolver; linker dead-strips │
+        │                                │                          │   every unreached intrinsic            │
         └───────────────┬───────────────┘                          └───────────────────┬───────────────────┘
                         │                                                              │
-            chooses link-affecting feature requirement              chooses which intrinsics survive in the binary
-            (compared against runtime_features profile model)        (precise, correct, data-flow-complete)
+            chose link-affecting feature requirement                chooses both the refusal input and which
+            (compared against runtime_features profile model)        intrinsics survive in the binary
 ```
 
 **The defect is structural, not a typo:** the requirement decision and the
@@ -91,20 +88,22 @@ simply not consulted for the feature-requirement / refusal decision.
 
 ### 1.3 The drift bug that makes it bite on every profile (the CRUX)
 
-`runtime_features._ALL_DOMAIN_FEATURES` (`runtime_features.py:104`) is the Python
-model of "what features does profile P provide." Verified 2026-06-26: it
-contains `stdlib_csv` and `stdlib_math` but is **missing** `stdlib_regex`,
+The former `runtime_features._ALL_DOMAIN_FEATURES` mirror
+(`runtime_features.py:104` before Phase 0) was the Python model of "what
+features does profile P provide." Verified 2026-06-26: it contained
+`stdlib_csv` and `stdlib_math` but was **missing** `stdlib_regex`,
 `stdlib_itertools`, `stdlib_path`, `stdlib_difflib`, `stdlib_xml`,
 `stdlib_ipaddress`, `simdutf`, and `stdlib_crypto_legacy` — all of which the
 real `stdlib_full` Cargo chain links (`Cargo.toml:20-31`, `:51-56`).
 
-`_runtime_builtin_features_for_profile("full", …)` returns
+Before Phase 0, `_runtime_builtin_features_for_profile("full", ...)` returned
 `_ALL_BUILTIN_FEATURES + _ALL_DOMAIN_FEATURES + _MICRO_BASE_RUNTIME_FEATURES`
-(`runtime_features.py:159`), which therefore *never* contains `stdlib_regex`.
-So `_profile_feature_gap_for_module(re/__init__.py, full_features)` is non-empty
-→ the gate refuses → the user is told "Rebuild with `--stdlib-profile full`",
-which **cannot help** because the Python "full" model does not know full links
-`stdlib_regex`. The refusal message is actively misleading.
+(`runtime_features.py:159`), which therefore never contained `stdlib_regex`.
+So `_profile_feature_gap_for_module(re/__init__.py, full_features)` was
+non-empty → the gate refused → the user was told "Rebuild with
+`--stdlib-profile full`", which **could not help** because the Python "full"
+model did not know full links `stdlib_regex`. The refusal message was actively
+misleading.
 
 This drift went uncaught because `tests/cli/test_cli_profile_feature_refusal.py`
 tests `stdlib_ast`/`stdlib_crypto`/`sqlite`/`stdlib_text`/`stdlib_stringprep`/
@@ -252,13 +251,15 @@ file is unavailable, the build fails closed rather than guessing.
 
 ### 3.3 Where it plugs in (exact seam)
 
-Today: `module_graph.py:780` calls `_enforce_profile_feature_availability(...)`
-*before* codegen, using Fact A, and `runtime_build.py:278` selects features via
-`_runtime_builtin_features_for_profile(profile, …)` using the profile model.
+Before the authority flip, `module_graph.py` called
+`_enforce_profile_feature_availability(...)` before codegen, using Fact A, and
+`runtime_build.py` selected features via
+`_runtime_builtin_features_for_profile(profile, ...)` using the profile model.
+That early import-presence gate is deleted.
 
-New: a single `required_features.py` authority computes `RequiredLinkFeatures`
-from the reachability pass, and **both** the refusal and the archive selection
-consume it:
+Current in-tree: `required_features.py` computes `RequiredLinkFeatures` from the
+reachability pass, and `backend_ir._reachability_feature_refusal` is the single
+profile-ceiling refusal. End-state selection still needs the same authority:
 - `runtime_build.py` selects the archive from `RequiredLinkFeatures` (§5.2),
   not from a flat profile expansion.
 - the refusal (now a *thin* check, §3.4) compares `RequiredLinkFeatures` to the
@@ -399,22 +400,19 @@ piece** and the tree is never left with two live requirement authorities silentl
 disagreeing. Phases 0–1 are an atomic correctness arc (land together or with an
 explicit hybrid-state baton note); 2–4 widen the structure.
 
-### Phase 0 — Stop the bleeding *correctly*: fix the drift at its source (NOT a band-aid)
+### Phase 0 — Implemented: fix profile drift at its source
 
 The §1.3 drift is a genuine bug independent of the redesign and blocks every
-`re`/`itertools`/`difflib`/`xml`/`ipaddress`/`pathlib`-intrinsic program today.
-The structurally correct Phase-0 is **make `LinkFeatures(profile)` read the
-Cargo chain** (the §5.3 function) and route `_enforce_profile_feature_availability`
-+ `runtime_build` feature selection through it, *deleting* the divergent
-`_ALL_DOMAIN_FEATURES` mirror. This is not a workaround: it removes a duplicate
-authority (Python list mirroring Cargo) and is a strict subset of the final
-design (§5.3). After Phase 0, the gate is still import-driven (Fact A) but no
-longer *drifts*; `import re` builds on `full`.
+`re`/`itertools`/`difflib`/`xml`/`ipaddress`/`pathlib`-intrinsic program.
+`LinkFeatures(profile)` now reads the Cargo chain (the §5.3 function), deleting
+the divergent `_ALL_DOMAIN_FEATURES` mirror. This is not a workaround: it
+removes a duplicate authority (Python list mirroring Cargo) and is a strict
+subset of the final design (§5.3).
 
 - Files: `src/molt/cli/runtime_features.py` (replace `_ALL_DOMAIN_FEATURES`
   flat list with `profile_link_features(profile)` reading
-  `runtime/molt-runtime/Cargo.toml`); `src/molt/cli/module_stdlib_policy.py:140`
-  (consume it); `src/molt/cli/runtime_build.py:278` (consume it).
+  `runtime/molt-runtime/Cargo.toml`); `src/molt/cli/runtime_build.py:278`
+  (consume it).
 - Test: extend `tests/cli/test_cli_profile_feature_refusal.py` with the missing
   coverage — `re`, `itertools`, `difflib`, `xml`, `ipaddress` MUST be buildable
   on `full` and refused on `micro`. These tests fail on main (proving the drift)
@@ -424,10 +422,11 @@ longer *drifts*; `import re` builds on `full`.
   `stdlib_full` chain transitively enables (mechanically, from Cargo.toml), so a
   future Cargo edit cannot silently desync.
 
-### Phase 1 — Introduce `RequiredFeatureSet` as a *shadow*, assert agreement
+### Phase 1 — Implemented: introduce `RequiredFeatureSet` from reachability
 
 Add `required_features.py` computing `RequiredLinkFeatures` from the reachability
-pass (§3). Wire it to run alongside the existing Fact-A gate but **not yet
+pass (§3). It runs in the backend IR preparation path and no longer shadows a
+live Fact-A gate; the import-presence requirement gate has been deleted.
 authoritative**. Add a debug-gated assertion (the *only* sanctioned use of a
 shadow assertion per CLAUDE.md — verifying an invariant *while* migrating, not
 deferring it) that for every build, `RequiredLinkFeatures ⊆ FactA_required`
@@ -446,16 +445,15 @@ measurement data on real programs before flipping authority.
   pass 1). This is the structural heart; it must be a real shared call into
   `molt-tir`, not a Python re-implementation (one fact, §G1).
 
-### Phase 2 — Flip authority for *selection*, keep profile as ceiling
+### Phase 2 — Partially implemented: flip refusal authority, keep profile as ceiling
 
-Make `runtime_build` select the archive from `RequiredLinkFeatures` (§5.2),
-capped at the profile. Now the gratuitous-`re` program on default profile selects
-`micro`. The Fact-A gate is downgraded to the §3.4 thin ceiling check
-(`RequiredLinkFeatures ⊆ LinkFeatures(profile)`), and the §4 dynamic-edge
-refusal is added. Delete `_profile_feature_gap_for_module`'s role as the
-requirement computer.
+The refusal authority is flipped: `backend_ir._reachability_feature_refusal`
+checks `RequiredLinkFeatures ⊆ LinkFeatures(profile)`, and
+`_profile_feature_gap_for_module` no longer exists as a requirement computer.
+The remaining selection work is to make `runtime_build` select the archive from
+`RequiredLinkFeatures` (§5.2), capped at the profile.
 
-### Phase 3 — Delete the coarse requirement fact
+### Phase 3 — Implemented for build requirements: delete the coarse requirement fact
 
 Remove `module_required_intrinsic_names` from the *requirement* path entirely
 (it may survive only as an *input* to the existing `_enforce_intrinsic_stdlib`
@@ -710,10 +708,13 @@ New:
 - A TIR gate refusing non-`const_str` intrinsic names (§4.1).
 
 Changed:
-- `src/molt/cli/module_stdlib_policy.py:130` — `_enforce_profile_feature_availability`
-  becomes the thin ceiling check (`RequiredLinkFeatures ⊆ LinkFeatures(profile)`)
-  + the dynamic-edge refusal; drops per-module gap as requirement computer.
-- `src/molt/cli/runtime_build.py:278` — archive selection from
+- `src/molt/cli/backend_ir.py` — `_reachability_feature_refusal` is the thin
+  ceiling check (`RequiredLinkFeatures ⊆ LinkFeatures(profile)`) and the only
+  build-refusal authority for link-affecting runtime features.
+- `src/molt/cli/module_stdlib_policy.py` — deleted
+  `_enforce_profile_feature_availability` and `_profile_feature_gap_for_module`;
+  remaining stdlib scans are classifiers/audits, not link-feature authority.
+- `src/molt/cli/runtime_build.py:278` — end-state archive selection from
   `RequiredLinkFeatures` capped at profile (§5.2), replacing flat profile
   expansion.
 - `src/molt/cli/runtime_features.py:104,153` — `_ALL_DOMAIN_FEATURES` /
@@ -801,5 +802,6 @@ Unchanged (correct as-is, gains an authoritative upstream):
 | Pipeline stage | static import-graph resolution (pre-codegen) | codegen (per-app manifest), liftable pre-codegen (§3.2) |
 | Sees dead/unloaded module imports? | YES (the bug) | NO (the cure) |
 | Validated against linked symbols? | NO | YES (`runtime_callable_symbols_required`, fail-closed) |
-| Drives today | the refusal + (via profile model) selection | the per-app resolver + linker dead-strip |
+| Drives before 2026-07-02 | the refusal + (via profile model) selection | the per-app resolver + linker dead-strip |
+| Drives now | nothing in the build requirement path | profile-ceiling refusal + per-app resolver + linker dead-strip |
 | Drives after | nothing (removed) | refusal + selection + dead-strip (one fact) |

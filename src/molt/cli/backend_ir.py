@@ -1346,10 +1346,8 @@ def _prepare_backend_ir(
     # backends dead-strip), so ``required_features`` computes the link-affecting
     # features the REACHED code actually needs and refuses BEFORE codegen/link
     # (with a truthful, reached-intrinsic message) when the selected profile's
-    # ceiling omits one. This is the authoritative requirement fact; the coarse
-    # per-module ``module_required_intrinsic_names`` presence gate in
-    # ``module_stdlib_policy`` remains only as the early fail-fast pre-frontend
-    # check and as the Python-only-module classifier.
+    # ceiling omits one. This is the only requirement fact; stdlib source scans
+    # are classifiers/audits, never link-feature authority.
     feature_refusal = _reachability_feature_refusal(
         ir,
         stdlib_profile=stdlib_profile,
