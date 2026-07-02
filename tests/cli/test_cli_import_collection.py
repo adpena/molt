@@ -1106,9 +1106,10 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     util_path.parent.mkdir(parents=True)
     exceptions_path.parent.mkdir(parents=True)
     filters_path.write_text(
+        "import math\n"
         "from scipy._lib._util import normalize_axis_index\n\n"
         "def gaussian_filter(value):\n"
-        "    return normalize_axis_index(value, 3)\n",
+        "    return normalize_axis_index(value, math.prod((3,)))\n",
         encoding="utf-8",
     )
     util_path.write_text(
@@ -1220,6 +1221,8 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
         artifact.module for artifact in import_plan.native_artifact_plan.artifacts
     ] == ["numpy._core._multiarray_umath", "scipy.ndimage._nd_image"]
     assert "scipy.ndimage._filters" in import_plan.compile_modules
+    assert "math" in import_plan.compile_modules
+    assert "math" in import_plan.runtime_import_dispatch_roots
     assert "scipy._lib._util" in import_plan.compile_modules
     assert "scipy._lib" in import_plan.known_modules
     assert "scipy._lib" in import_plan.runtime_import_dispatch_roots
@@ -1235,6 +1238,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     assert "scipy._lib._util" in native_init_modules
     assert "numpy.exceptions" in native_init_modules
     assert "native_support_source" in module_reasons["scipy.ndimage._filters"]
+    assert "native_support_source_closure" in module_reasons["math"]
     assert "native_support_source" in module_reasons["scipy._lib._util"]
     assert "native_support_source" in module_reasons["numpy.exceptions"]
 
@@ -1399,6 +1403,51 @@ def test_source_extension_manifest_runtime_python_imports_uses_object_closure_so
 
     assert errors == []
     assert imports == ("math",)
+
+
+def test_source_extension_manifest_runtime_python_imports_preserves_resolvable_subset(
+    tmp_path: Path,
+) -> None:
+    closure_source = tmp_path / "closure.c"
+    missing_source = tmp_path / "generated" / "missing.c"
+    closure_source.write_text(
+        "static int exec(PyObject *module) {\n"
+        '    PyImport_ImportModule("math");\n'
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "artifact.extension_manifest.json"
+    manifest = {
+        "object_closure": {
+            "objects": [
+                {
+                    "source": str(missing_source),
+                    "source_sha256": "0" * 64,
+                },
+                {
+                    "source": str(closure_source),
+                    "source_sha256": hashlib.sha256(
+                        closure_source.read_bytes()
+                    ).hexdigest(),
+                },
+            ]
+        }
+    }
+
+    imports, errors = (
+        cli_source_extensions.source_extension_manifest_runtime_python_imports(
+            manifest,
+            manifest_path=manifest_path,
+        )
+    )
+
+    assert imports == ("math",)
+    assert errors == [
+        "extension_manifest.json source missing: "
+        "object_closure.objects[0].source: "
+        f"{missing_source}"
+    ]
 
 
 def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
@@ -6601,6 +6650,15 @@ def test_external_native_artifact_plan_accepts_sealed_missing_sources(
     external_root = tmp_path / "site"
     capsule = "numpy.core._multiarray_umath._ARRAY_API"
     missing_source = tmp_path / "deleted_build" / "scipy" / "ndimage" / "_nd_image.c"
+    runtime_import_source = tmp_path / "scipy_source" / "nd_image_imports.c"
+    runtime_import_source.parent.mkdir(parents=True)
+    runtime_import_source.write_text(
+        "static int module_exec(PyObject *module) {\n"
+        '    PyImport_ImportModule("math");\n'
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
     wasm_manifest = {
         "target_triple": "wasm32-wasip1",
         "platform_tag": "wasm32_wasip1",
@@ -6634,6 +6692,17 @@ def test_external_native_artifact_plan_accepts_sealed_missing_sources(
                         "undefined_symbols": [],
                         "required_c_api_symbols": [],
                         "required_capsules": [capsule],
+                    },
+                    {
+                        "source": str(runtime_import_source),
+                        "source_sha256": hashlib.sha256(
+                            runtime_import_source.read_bytes()
+                        ).hexdigest(),
+                        "object": "1_nd_image_imports.o",
+                        "defined_symbols": [],
+                        "undefined_symbols": [],
+                        "required_c_api_symbols": [],
+                        "required_capsules": [],
                     }
                 ],
             },
@@ -6650,6 +6719,7 @@ def test_external_native_artifact_plan_accepts_sealed_missing_sources(
     assert plan is not None
     by_module = {artifact.module: artifact for artifact in plan.artifacts}
     assert by_module["scipy.ndimage._nd_image"].required_capsules == (capsule,)
+    assert by_module["scipy.ndimage._nd_image"].runtime_python_imports == ("math",)
     assert by_module["numpy._core._multiarray_umath"].provided_capsules == (capsule,)
 
 
