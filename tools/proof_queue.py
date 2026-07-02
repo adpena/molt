@@ -1106,6 +1106,32 @@ def _diagnostic(
     }
 
 
+def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | None:
+    if not summary_json:
+        return None
+    summary = _read_json_object(Path(str(summary_json)))
+    candidates: list[object] = [summary.get("pytest")]
+    repro = summary.get("repro")
+    if isinstance(repro, dict):
+        candidates.append(repro.get("pytest"))
+    for pytest_section in candidates:
+        if not isinstance(pytest_section, dict):
+            continue
+        current_test_file = pytest_section.get("current_test_file")
+        payload: object = None
+        if isinstance(current_test_file, dict):
+            payload = current_test_file.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        nodeid = payload.get("nodeid")
+        if not isinstance(nodeid, str) or not nodeid.strip():
+            continue
+        phase = payload.get("phase")
+        phase_text = phase.strip() if isinstance(phase, str) and phase.strip() else None
+        return nodeid.strip(), phase_text
+    return None
+
+
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
@@ -1563,18 +1589,31 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
 
     match = MEMORY_GUARD_TIMEOUT_RE.search(log_tail)
     if match is not None:
+        pytest_context = _pytest_timeout_context(row["summary_json"])
+        pytest_suffix = ""
+        evidence = match.group(0)
+        next_action_context = "the last active phase"
+        if pytest_context is not None:
+            nodeid, phase = pytest_context
+            pytest_suffix = f" while pytest was in {nodeid}"
+            if phase is not None:
+                pytest_suffix += f" ({phase})"
+            evidence += f" pytest_nodeid={nodeid}"
+            if phase is not None:
+                evidence += f" pytest_phase={phase}"
+            next_action_context = f"{nodeid}"
         diagnostics.append(
             _diagnostic(
                 signal_id="memory-guard-timeout",
                 severity="error",
                 summary=(
                     "Memory guard terminated the proof after "
-                    f"{match.group('timeout')}s."
+                    f"{match.group('timeout')}s{pytest_suffix}."
                 ),
-                evidence=match.group(0),
+                evidence=evidence,
                 next_action=(
-                    "Treat this proof result as incomplete. Inspect the last "
-                    "active phase once, then reshape the proof, warm the target "
+                    "Treat this proof result as incomplete. Inspect "
+                    f"{next_action_context} once, then reshape the proof, warm the target "
                     "dir, or raise --timeout only for intentional long-running "
                     "work."
                 ),
