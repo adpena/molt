@@ -53,3 +53,9 @@ Last updated: 2026-07-02 by the orchestrator.
   deleted in the same commit, tests with teeth (proven to fail on
   violation).
 - Run the gates you touched before landing; cite queue run IDs as evidence.
+- Compatibility floor: CPython >= 3.12 parity with explicit VERSION GATING
+  (semantic deltas across 3.12/3.13+ are gated variants keyed on the
+  TargetPythonVersion authority, never silent single-version assumptions),
+  and Windows/macOS/Linux support with explicit PLATFORM GATING for any
+  divergent behavior — all within the verified subset, with honest-early
+  fail-closed diagnostics outside it.
