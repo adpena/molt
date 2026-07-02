@@ -1,19 +1,17 @@
-"""Loud compile-time refusal for feature-gated stdlib modules (task #70).
+"""Reachability-driven refusal for feature-gated runtime callables.
 
-A domain-feature-gated stdlib module on a profile that excludes its feature must
-produce a LOUD, actionable compile-time refusal -- never a raw undefined-symbol
-linker error. These guards pin that doctrine against the REAL stdlib modules and
-the REAL profile feature surface, so the refusal can never silently regress into
-a link-time failure.
+The build must refuse a selected stdlib profile only when the finalized,
+reachable backend IR links a runtime callable whose defining feature is absent
+from that profile's target-specific Cargo feature ceiling. Importing or staging
+a source module is not link authority.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 import tomllib
 
 import molt.cli as cli
-from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
+from molt.cli import required_features as RF
 from molt.cli import runtime_features as RUNTIME_FEATURES
 from molt._runtime_feature_gates import (
     LINK_AFFECTING_FEATURES,
@@ -23,7 +21,6 @@ from molt._runtime_feature_gates import (
 
 
 MOLT_ROOT = cli._compiler_root()
-STDLIB_ROOT = MOLT_ROOT / "src" / "molt" / "stdlib"
 
 
 def _micro_features() -> frozenset[str]:
@@ -42,7 +39,41 @@ def _full_features() -> frozenset[str]:
     )
 
 
-# --- the mapping itself: module -> required gating feature -----------------
+def _builtin_func(out: str, symbol: str, arity: int = 1) -> dict[str, object]:
+    return {"kind": "builtin_func", "s_value": symbol, "value": arity, "out": out}
+
+
+def _functions_reaching(*symbols: str) -> list[dict[str, object]]:
+    return [
+        {
+            "name": "molt_main",
+            "params": [],
+            "ops": [
+                _builtin_func(f"v{index}", symbol)
+                for index, symbol in enumerate(symbols)
+            ],
+        }
+    ]
+
+
+def _refusal_for_reached_symbols(
+    *symbols: str,
+    profile: str,
+    target_triple: str | None,
+) -> str | None:
+    profile_features = frozenset(
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+            profile, target_triple=target_triple
+        )
+    )
+    return RF.reachability_profile_feature_refusal(
+        _functions_reaching(*symbols),
+        profile_name=profile,
+        profile_features=profile_features,
+    )
+
+
+# --- Cargo ladder/profile ceiling -----------------------------------------
 
 
 def test_micro_profile_excludes_stdlib_ast() -> None:
@@ -76,168 +107,47 @@ def test_full_profile_includes_stdlib_zoneinfo() -> None:
     assert "stdlib_zoneinfo" in _full_features()
 
 
-def test_ast_module_requires_stdlib_ast_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "ast.py", _micro_features()
-    )
-    assert "stdlib_ast" in gap
-    # The gap names the concrete intrinsics that would be undefined at link.
-    assert any(sym.startswith("molt_ast_") for sym in gap["stdlib_ast"])
+# --- Generated symbol -> link-affecting feature gates ----------------------
 
 
-def test_ast_module_buildable_on_full_profile() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "ast.py", _full_features()
-    )
-    assert gap == {}
+def test_representative_symbols_map_to_link_affecting_features() -> None:
+    cases = {
+        "molt_ast_parse": "stdlib_ast",
+        "molt_hash_new": "stdlib_crypto",
+        "molt_sqlite3_connect": "sqlite",
+        "molt_stringprep_in_table": "stdlib_stringprep",
+        "molt_html_escape": "stdlib_text",
+        "molt_unicodedata_name": "stdlib_text",
+        "molt_zoneinfo_new": "stdlib_zoneinfo",
+        "molt_gpu_prim_device": "molt_gpu_primitives",
+        "molt_base64_b64encode": "stdlib_serial",
+        "molt_email_message_new": "stdlib_email",
+        "molt_colorsys_rgb_to_hls": "stdlib_math",
+        "molt_difflib_sequence_matcher_new": "stdlib_difflib",
+        "molt_xml_element_new": "stdlib_xml",
+        "molt_ipaddress_ip_address": "stdlib_ipaddress",
+    }
+    for symbol, feature in cases.items():
+        assert link_affecting_feature_gate_for_symbol(symbol) == feature
 
 
-def test_second_gated_module_hashlib_requires_stdlib_crypto() -> None:
-    # Negative-control completeness: the refusal names the RIGHT feature for a
-    # different gated module, proving it is data-driven, not ast-special-cased.
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "hashlib.py", _micro_features()
-    )
-    assert set(gap) == {"stdlib_crypto"}
-
-
-def test_third_gated_module_sqlite_requires_sqlite_feature() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "_sqlite3.py", _micro_features()
-    )
-    assert set(gap) == {"sqlite"}
-
-
-def test_sqlite_module_buildable_on_full_profile() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "_sqlite3.py", _full_features()
-    )
-    assert gap == {}
-
-
-def test_stringprep_module_requires_stdlib_stringprep_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "stringprep.py", _micro_features()
-    )
-    assert set(gap) == {"stdlib_stringprep"}
-    assert any(sym.startswith("molt_stringprep_") for sym in gap["stdlib_stringprep"])
-
-
-def test_stringprep_module_buildable_on_full_profile() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "stringprep.py", _full_features()
-    )
-    assert gap == {}
-
-
-def test_html_module_requires_stdlib_text_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "html" / "__init__.py", _micro_features()
-    )
-    assert set(gap) == {"stdlib_text"}
-    assert any(sym.startswith("molt_html_") for sym in gap["stdlib_text"])
-
-
-def test_unicodedata_module_requires_stdlib_text_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "unicodedata.py", _micro_features()
-    )
-    assert set(gap) == {"stdlib_text"}
-    assert any(sym.startswith("molt_unicodedata_") for sym in gap["stdlib_text"])
-
-
-def test_text_modules_buildable_on_full_profile() -> None:
-    assert (
-        cli_module_stdlib_policy._profile_feature_gap_for_module(
-            STDLIB_ROOT / "html" / "__init__.py", _full_features()
-        )
-        == {}
-    )
-    assert (
-        cli_module_stdlib_policy._profile_feature_gap_for_module(
-            STDLIB_ROOT / "unicodedata.py", _full_features()
-        )
-        == {}
-    )
-
-
-def test_zoneinfo_module_requires_stdlib_zoneinfo_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "zoneinfo" / "__init__.py", _micro_features()
-    )
-    assert set(gap) == {"stdlib_zoneinfo"}
-    assert any(sym.startswith("molt_zoneinfo_") for sym in gap["stdlib_zoneinfo"])
-
-
-def test_zoneinfo_module_buildable_on_full_profile() -> None:
-    assert (
-        cli_module_stdlib_policy._profile_feature_gap_for_module(
-            STDLIB_ROOT / "zoneinfo" / "__init__.py", _full_features()
-        )
-        == {}
-    )
-
-
-def test_tinygrad_package_requires_gpu_primitives_gate_on_micro_profile() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "tinygrad" / "__init__.py", _micro_features()
-    )
-    assert set(gap) == {"molt_gpu_primitives"}
-    assert gap["molt_gpu_primitives"] == ["molt_gpu_prim_device"]
-
-
-def test_tinygrad_package_buildable_on_full_profile() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "tinygrad" / "__init__.py", _full_features()
-    )
-    assert gap == {}
-
-
-def test_ungated_ssl_abi_is_never_refused() -> None:
-    # ssl keeps a deliberately always-linkable ABI (asyncio imports it eagerly
-    # even on micro); importing it must NOT trigger a feature refusal.
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "ssl.py", _micro_features()
-    )
-    assert gap == {}
-
-
-# --- resolver-only features must NOT cause false refusals ------------------
+def test_ungated_ssl_abi_is_never_link_refused() -> None:
+    # ssl keeps a deliberately always-linkable ABI; even if asyncio imports it
+    # eagerly, no ssl symbol maps to a link-affecting feature.
+    assert link_affecting_feature_gate_for_symbol("molt_ssl_context_new") is None
 
 
 def test_importlib_extra_is_resolver_only_not_link_affecting() -> None:
-    # importlib.machinery requires molt_importlib_resources_* intrinsics whose
-    # resolver arm is gated by stdlib_importlib_extra, but their
-    # #[unsafe(no_mangle)] definitions are compiled unconditionally -- the
-    # symbols are ALWAYS in the archive. The resolver-arm gate is therefore NOT
-    # a link gate, so importlib.machinery must build on micro.
+    # importlib.machinery uses molt_importlib_resources_* resolver arms, but
+    # those symbols are compiled unconditionally. The raw resolver-arm gate may
+    # name stdlib_importlib_extra; the link-affecting predicate must not.
     assert "stdlib_importlib_extra" not in LINK_AFFECTING_FEATURES
-    # The raw resolver-arm gate still attributes the symbol to the feature ...
     sym = "molt_importlib_resources_reader_contents_from_roots"
     assert feature_gate_for_symbol(sym) == "stdlib_importlib_extra"
-    # ... but the link-affecting predicate (the one the refusal uses) returns
-    # None, so it is never refused.
     assert link_affecting_feature_gate_for_symbol(sym) is None
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "importlib" / "machinery.py", _micro_features()
-    )
-    assert gap == {}
-
-
-def test_micro_build_importing_importlib_machinery_is_allowed() -> None:
-    rc, message = _run_pass(
-        [("importlib.machinery", STDLIB_ROOT / "importlib" / "machinery.py")],
-        "micro",
-        "native",
-    )
-    assert rc is None
-    assert message is None
 
 
 def test_empty_cargo_group_features_are_resolver_only() -> None:
-    # The empty `[]` Cargo feature groups gate only resolver arms; none of them
-    # may be classified link-affecting (doing so re-creates the false-positive
-    # class this distinction exists to prevent).
     resolver_only = {
         "stdlib_logging",
         "stdlib_concurrent",
@@ -249,193 +159,79 @@ def test_empty_cargo_group_features_are_resolver_only() -> None:
     assert resolver_only.isdisjoint(LINK_AFFECTING_FEATURES)
 
 
-def test_base64_module_requires_stdlib_serial_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "base64.py", _micro_features()
+# --- Reachability-owned refusal -------------------------------------------
+
+
+def test_micro_profile_refuses_reached_ast_callable_loudly() -> None:
+    message = _refusal_for_reached_symbols(
+        "molt_ast_parse", profile="micro", target_triple=None
     )
-    assert set(gap) == {"stdlib_serial"}
-    assert any(sym.startswith("molt_base64_") for sym in gap["stdlib_serial"])
-
-
-def test_email_module_requires_stdlib_email_gate() -> None:
-    gap = cli_module_stdlib_policy._profile_feature_gap_for_module(
-        STDLIB_ROOT / "email" / "message.py", _micro_features()
-    )
-    assert set(gap) == {"stdlib_email"}
-    assert any(sym.startswith("molt_email_") for sym in gap["stdlib_email"])
-
-
-# --- the enforcement pass --------------------------------------------------
-
-
-def _run_pass(module_paths, profile, target):
-    captured: list[str] = []
-    graph = {name: path for name, path in module_paths}
-    orig_fail = cli_module_stdlib_policy._fail
-
-    def fake_fail(message, json_output, code=2, command="molt"):
-        captured.append(message)
-        return code
-
-    cli_module_stdlib_policy._fail = fake_fail  # type: ignore[assignment]
-    try:
-        rc = cli_module_stdlib_policy._enforce_profile_feature_availability(
-            graph, STDLIB_ROOT, profile, target, json_output=False
-        )
-    finally:
-        cli_module_stdlib_policy._fail = orig_fail  # type: ignore[assignment]
-    return rc, (captured[0] if captured else None)
-
-
-def test_micro_build_importing_ast_is_refused_loudly() -> None:
-    rc, message = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "micro", "native")
-    assert rc is not None and rc != 0
     assert message is not None
     assert "stdlib_ast" in message
+    assert "molt_ast_parse" in message
     assert "'micro'" in message
-    # Actionable remedy with the repo's real knob names.
     assert "--stdlib-profile full" in message
     assert "MOLT_STDLIB_PROFILE=full" in message
-    # Names the offending module.
-    assert "ast" in message
 
 
-def test_full_build_importing_ast_is_allowed() -> None:
-    rc, message = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "full", "native")
-    assert rc is None
-    assert message is None
-
-
-def test_refusal_names_the_right_feature_for_a_second_module() -> None:
-    rc, message = _run_pass(
-        [("hashlib", STDLIB_ROOT / "hashlib.py")], "micro", "native"
+def test_full_profile_allows_reached_ast_callable() -> None:
+    assert (
+        _refusal_for_reached_symbols(
+            "molt_ast_parse", profile="full", target_triple=None
+        )
+        is None
     )
-    assert rc is not None and rc != 0
-    assert message is not None
-    assert "stdlib_crypto" in message
-    assert "stdlib_ast" not in message
-    assert "hashlib" in message
 
 
-def test_refusal_groups_multiple_blocked_modules() -> None:
-    rc, message = _run_pass(
-        [
-            ("ast", STDLIB_ROOT / "ast.py"),
-            ("hashlib", STDLIB_ROOT / "hashlib.py"),
-        ],
-        "micro",
-        "native",
+def test_refusal_groups_reached_symbols_by_feature_not_module() -> None:
+    message = _refusal_for_reached_symbols(
+        "molt_ast_parse",
+        "molt_hash_new",
+        profile="micro",
+        target_triple=None,
     )
-    assert rc is not None and rc != 0
     assert message is not None
     assert "stdlib_ast" in message
+    assert "molt_ast_parse" in message
     assert "stdlib_crypto" in message
+    assert "molt_hash_new" in message
+    assert "import graph requires" not in message
+    assert "required by module" not in message
 
 
-def test_core_intrinsic_imports_are_unaffected() -> None:
-    # A stdlib module backed only by core ungated intrinsics never refuses.
-    rc, message = _run_pass(
-        [("keyword", STDLIB_ROOT / "keyword.py")], "micro", "native"
+def test_core_intrinsic_reachability_is_unaffected() -> None:
+    assert (
+        _refusal_for_reached_symbols(
+            "molt_stdlib_probe", profile="micro", target_triple=None
+        )
+        is None
     )
-    assert rc is None
-    assert message is None
-
-
-def test_math_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
-    rc, message = _run_pass(
-        [("colorsys", STDLIB_ROOT / "colorsys.py")], "micro", "native"
-    )
-    assert rc is not None and rc != 0
-    assert message is not None
-    assert "stdlib_math" in message
-    assert "colorsys" in message
-
-
-def test_difflib_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
-    rc, message = _run_pass(
-        [("difflib", STDLIB_ROOT / "difflib.py")], "micro", "native"
-    )
-    assert rc is not None and rc != 0
-    assert message is not None
-    assert "stdlib_difflib" in message
-    assert "difflib" in message
-
-
-def test_ipaddress_leaf_intrinsic_modules_refuse_on_server_profile() -> None:
-    rc, message = _run_pass(
-        [("ipaddress", STDLIB_ROOT / "ipaddress.py")], "server", "native"
-    )
-    assert rc is not None and rc != 0
-    assert message is not None
-    assert "stdlib_ipaddress" in message
-    assert "stdlib_net" not in message
-    assert "ipaddress" in message
-
-
-def test_xml_leaf_intrinsic_modules_refuse_on_micro_profile() -> None:
-    rc, message = _run_pass(
-        [("xml.etree.ElementTree", STDLIB_ROOT / "xml" / "etree" / "ElementTree.py")],
-        "micro",
-        "native",
-    )
-    assert rc is not None and rc != 0
-    assert message is not None
-    assert "stdlib_xml" in message
-    assert "xml.etree.ElementTree" in message
-
-
-def test_modules_outside_stdlib_root_are_ignored() -> None:
-    # User modules (not under stdlib_root) are not feature-gated stdlib and must
-    # be skipped even if their path does not resolve under the stdlib tree.
-    rc, message = _run_pass(
-        [("user_app", Path("/nonexistent/user_app.py"))], "micro", "native"
-    )
-    assert rc is None
-    assert message is None
 
 
 def test_wasm_micro_uses_wasm_feature_surface_and_refuses_ast() -> None:
-    # The wasm micro surface excludes stdlib_ast (it is in the wasm-excluded
-    # set), so `import ast` on a wasm micro build is also refused -- and the
-    # refusal computes the SAME feature surface the wasm staticlib links.
-    rc, message = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "micro", "wasm")
-    assert rc is not None and rc != 0
+    message = _refusal_for_reached_symbols(
+        "molt_ast_parse", profile="micro", target_triple="wasm32-wasip1"
+    )
     assert message is not None
     assert "stdlib_ast" in message
 
 
-def test_wasm_micro_excludes_sqlite_and_refuses_sqlite3() -> None:
-    wasm_micro = frozenset(
-        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
-            "micro", target_triple="wasm32-wasip1"
-        )
-    )
-    assert "sqlite" not in wasm_micro
-    rc, message = _run_pass(
-        [("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "micro", "wasm"
-    )
-    assert rc is not None and rc != 0
-    assert message is not None
-    assert "sqlite" in message
-    assert "_sqlite3" in message
-
-
-def test_wasm_full_excludes_sqlite_and_refuses_sqlite3() -> None:
+def test_wasm_full_excludes_sqlite_and_refuses_reached_sqlite() -> None:
     wasm_full = frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
             "full", target_triple="wasm32-wasip1"
         )
     )
     assert "sqlite" not in wasm_full
-    rc, message = _run_pass([("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "full", "wasm")
-    assert rc is not None and rc != 0
+    message = _refusal_for_reached_symbols(
+        "molt_sqlite3_connect", profile="full", target_triple="wasm32-wasip1"
+    )
     assert message is not None
     assert "sqlite" in message
-    assert "_sqlite3" in message
+    assert "molt_sqlite3_connect" in message
 
 
-def test_wasm_micro_excludes_crypto_so_hashlib_is_refused() -> None:
-    # Browser/edge WASM micro must stay small: crypto stays behind full.
+def test_wasm_micro_excludes_crypto_so_reached_hashlib_refuses() -> None:
     wasm_micro = frozenset(
         RUNTIME_FEATURES._runtime_builtin_features_for_profile(
             "micro", target_triple="wasm32-wasip1"
@@ -444,11 +240,12 @@ def test_wasm_micro_excludes_crypto_so_hashlib_is_refused() -> None:
     assert "stdlib_crypto" not in wasm_micro
     assert "stdlib_compression" not in wasm_micro
     assert "stdlib_archive" not in wasm_micro
-    rc, message = _run_pass([("hashlib", STDLIB_ROOT / "hashlib.py")], "micro", "wasm")
-    assert rc is not None and rc != 0
+    message = _refusal_for_reached_symbols(
+        "molt_hash_new", profile="micro", target_triple="wasm32-wasip1"
+    )
     assert message is not None
     assert "stdlib_crypto" in message
-    assert "hashlib" in message
+    assert "molt_hash_new" in message
 
 
 # --- Phase 0: profile feature sets read the Cargo ladder, not a Python mirror -
@@ -456,15 +253,9 @@ def test_wasm_micro_excludes_crypto_so_hashlib_is_refused() -> None:
 # ``runtime_features.profile_link_features`` resolves "what link-affecting +
 # builtin features does profile P provide" by transitively expanding the Cargo
 # ``[features]`` chain (micro -> stdlib_micro ... full -> stdlib_full), replacing
-# the hand-maintained ``_ALL_DOMAIN_FEATURES`` flat list that DRIFTED from the
-# Cargo chain.  The old mirror omitted ``stdlib_regex``/``stdlib_itertools``/
-# ``stdlib_path``/``stdlib_difflib``/``stdlib_xml``/``stdlib_ipaddress`` -- all of
-# which ``stdlib_full`` transitively links -- so the Python "full" model could not
-# even name the features its own archive builds.  These guards turn that
-# "Python model drifts from Cargo ladder" class into a CI failure.
+# the hand-maintained ``_ALL_DOMAIN_FEATURES`` flat list that drifted from the
+# Cargo chain. These guards turn that class into a CI failure.
 
-# The six dep-backed leaf-crate stdlib features the old ``_ALL_DOMAIN_FEATURES``
-# mirror omitted but the Cargo ``stdlib_full`` chain transitively links.
 _PREVIOUSLY_DRIFTED_FULL_FEATURES = frozenset(
     {
         "stdlib_regex",
@@ -489,12 +280,6 @@ def _cargo_feature_graph() -> dict[str, list[str]]:
 
 
 def _independent_cargo_expansion(seed: str) -> frozenset[str]:
-    """Transitive feature-name closure of *seed*, recomputed from scratch.
-
-    Deliberately a second, independent implementation of the expansion so the
-    agreement test cross-checks ``profile_link_features`` against the raw
-    Cargo.toml rather than against the same code under test.
-    """
     graph = _cargo_feature_graph()
     reached: set[str] = set()
     stack = [seed]
@@ -521,8 +306,6 @@ _LADDER_PROFILE_TO_CARGO = {
 
 
 def test_profile_link_features_full_includes_dep_backed_leaf_features() -> None:
-    # The headline Phase-0 assertion: the Cargo-derived "full" feature set names
-    # every dep-backed leaf-crate stdlib feature the old mirror dropped.
     full = RUNTIME_FEATURES.profile_link_features("full", target_triple=None)
     assert _PREVIOUSLY_DRIFTED_FULL_FEATURES <= full, (
         "profile_link_features('full') is missing Cargo-linked features: "
@@ -531,9 +314,6 @@ def test_profile_link_features_full_includes_dep_backed_leaf_features() -> None:
 
 
 def test_profile_link_features_matches_cargo_chain_for_every_ladder_tier() -> None:
-    # The anti-drift gate: for EVERY ladder tier, the function's expansion must
-    # equal the transitive Cargo chain recomputed independently from Cargo.toml.
-    # A future Cargo edit that desyncs the Python view fails here.
     for profile, cargo_feature in _LADDER_PROFILE_TO_CARGO.items():
         derived = RUNTIME_FEATURES.profile_link_features(profile, target_triple=None)
         expected = _independent_cargo_expansion(cargo_feature)
@@ -586,7 +366,6 @@ def test_wasm_runtime_feature_plan_requires_concrete_runtime_tier() -> None:
 
 
 def test_profile_link_features_rejects_unknown_profile() -> None:
-    # Fail loudly (not silently fall back) on a profile that has no ladder tier.
     import pytest
 
     with pytest.raises(ValueError):
@@ -594,16 +373,10 @@ def test_profile_link_features_rejects_unknown_profile() -> None:
 
 
 def test_full_features_superset_includes_previously_drifted_features() -> None:
-    # The composed builtin-feature set the gate/runtime_build consume must also
-    # carry the previously-drifted features (not just the raw ladder helper).
     assert _PREVIOUSLY_DRIFTED_FULL_FEATURES <= _full_features()
 
 
 def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
-    # No-regression (migration-safety invariant section 6: Phase 0 only WIDENS what full
-    # accepts; it never narrows micro and never drops a feature full already had).
-    # micro/native is byte-identical to the documented pre-migration set, and
-    # full/native is a strict SUPERSET of the documented pre-migration full set.
     builtin = {
         "builtin_set",
         "builtin_memoryview",
@@ -653,8 +426,6 @@ def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
 
 
 def test_wasm_feature_surface_matches_cargo_ladder_after_migration() -> None:
-    # WASM uses the same Cargo-derived profile ladder as native, with explicit
-    # target exclusions applied before the runtime feature plan is built.
     def wasm(profile: str) -> frozenset[str]:
         return frozenset(
             RUNTIME_FEATURES._runtime_builtin_features_for_profile(
@@ -674,18 +445,17 @@ def test_wasm_feature_surface_matches_cargo_ladder_after_migration() -> None:
     )
 
 
-def test_full_build_refusing_genuinely_gated_module_names_truthful_feature() -> None:
-    # The truthful-message property the drift used to break: `ast` (genuinely
-    # link-affecting via stdlib_ast) is refused on micro and the remedy it points
-    # to -- full -- now genuinely provides stdlib_ast (the Cargo-derived full set
-    # contains it), so the "rebuild with --stdlib-profile full" message is no
-    # longer a lie.
+def test_full_remedy_for_reached_ast_refusal_is_truthful() -> None:
     assert "stdlib_ast" in _full_features()
-    rc, message = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "micro", "native")
-    assert rc is not None and rc != 0
+    message = _refusal_for_reached_symbols(
+        "molt_ast_parse", profile="micro", target_triple=None
+    )
     assert message is not None
     assert "stdlib_ast" in message
     assert "--stdlib-profile full" in message
-    # And the remedy actually works: ast builds on full.
-    rc_full, _ = _run_pass([("ast", STDLIB_ROOT / "ast.py")], "full", "native")
-    assert rc_full is None
+    assert (
+        _refusal_for_reached_symbols(
+            "molt_ast_parse", profile="full", target_triple=None
+        )
+        is None
+    )
