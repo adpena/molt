@@ -42,6 +42,13 @@ def _runtime_export_name_or_fail(name: str) -> str:
     raise ValueError(f"unknown WASM runtime import/export name: {name}")
 
 
+def wasm_runtime_export_name_for_import(name: str) -> str | None:
+    try:
+        return _runtime_export_name_or_fail(name)
+    except ValueError:
+        return None
+
+
 def wasm_static_link_runtime_symbols_for_imports(
     import_symbols: Iterable[str],
 ) -> tuple[str, ...]:
