@@ -1855,6 +1855,14 @@ def _proof_queue_memory_guard_poll_sec(env_overrides: dict[str, str]) -> str:
     return value
 
 
+def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
+    try:
+        _proof_queue_memory_guard_poll_sec(env_overrides)
+    except ValueError as exc:
+        return f"proof queue refuses invalid environment override: {exc}"
+    return None
+
+
 def _required_rust_targets_for_resource(
     resource_family: str, *, repo_root: Path
 ) -> tuple[str, ...]:
@@ -2539,7 +2547,11 @@ def _queue_one(
             log_path=log_path,
             phase="submission projection",
         )
-    policy_error = policy_error or _proof_command_policy_error(command)
+    policy_error = (
+        policy_error
+        or _proof_command_policy_error(command)
+        or _proof_env_policy_error(env_overrides)
+    )
     if policy_error is not None:
         rc = _record_policy_rejection(
             args,
@@ -2765,7 +2777,11 @@ def _run_one(
                 log_path=log_path,
                 phase="submission projection",
             )
-    policy_error = policy_error or _proof_command_policy_error(command)
+    policy_error = (
+        policy_error
+        or _proof_command_policy_error(command)
+        or _proof_env_policy_error(env_overrides)
+    )
     if policy_error is not None:
         return _record_policy_rejection(
             args,
@@ -3094,6 +3110,9 @@ def _cmd_submit(args: argparse.Namespace) -> int:
         if edge_note_raw is not None and not isinstance(edge_note_raw, str):
             raise SystemExit(f"proof {logical_id!r}: edge_note must be a string")
         env_overrides = _env_overrides_from_spec(spec.get("env"))
+        env_policy_error = _proof_env_policy_error(env_overrides)
+        if env_policy_error is not None:
+            raise SystemExit(f"proof {logical_id!r}: {env_policy_error}")
         initial_notes = _notes_from_raw(spec.get("note"))
         initial_notes.extend(_notes_from_raw(spec.get("notes")))
         depends_on = _dependencies_from_raw(spec.get("depends_on"))
