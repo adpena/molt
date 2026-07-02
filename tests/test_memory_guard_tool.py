@@ -2477,9 +2477,11 @@ def test_main_writes_running_summary_before_launch_result(
     summary_path = tmp_path / "running-summary.json"
 
     def fake_run_guarded(_command, **_kwargs):
+        assert _kwargs["running_summary_json"] == str(summary_path)
         payload = json.loads(summary_path.read_text(encoding="utf-8"))
         assert payload["status"] == "running"
         assert payload["returncode"] is None
+        assert payload["child_process"] is None
         assert payload["incident"]["reason"] == "guard_started"
         assert payload["repro"]["summary_json"] == str(summary_path)
         return memory_guard.GuardResult(
@@ -2515,6 +2517,38 @@ def test_main_writes_running_summary_before_launch_result(
     final_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert final_payload["returncode"] == 0
     assert "status" not in final_payload
+
+
+def test_running_summary_refresh_records_spawned_child_process(tmp_path) -> None:
+    summary_path = tmp_path / "running-summary-child.json"
+    child = memory_guard.GuardedChildProcess(
+        pid=1234,
+        pgid=None,
+        sid=None,
+        command=(sys.executable, "-c", "pass"),
+        started_at="2026-07-02T17:03:11Z",
+    )
+
+    memory_guard._write_running_summary_json(
+        str(summary_path),
+        command=[sys.executable, "-c", "pass"],
+        cwd=None,
+        environ={},
+        max_rss_kb=1_000_000,
+        max_total_rss_kb=None,
+        max_global_rss_kb=None,
+        child_rlimit_kb=None,
+        timeout_s=5,
+        poll_interval_s=0.01,
+        child_process=child,
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "running"
+    assert payload["child_process"]["pid"] == 1234
+    assert payload["child_process"]["command"] == [sys.executable, "-c", "pass"]
+    assert payload["incident"]["reason"] == "child_running"
+    assert payload["repro"]["summary_json"] == str(summary_path)
 
 
 def test_main_reports_signal_status_without_guard_violation(

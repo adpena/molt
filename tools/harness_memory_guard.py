@@ -1919,8 +1919,19 @@ class RepoProcessMemorySentinel:
         return payload
 
     def _run(self) -> None:
-        while not self._stop.wait(self._limits.poll_interval):
+        # Pace each wait by the measured cost of the previous scan so a slow
+        # process-table snapshot (Windows under build load) cannot pin this
+        # thread at a ~100% sampling duty cycle and steal wall time from the
+        # guarded workload. The configured poll interval stays the floor, so
+        # cheap scans keep the exact configured cadence.
+        wait_s = self._limits.poll_interval
+        while not self._stop.wait(wait_s):
+            scan_started = time.monotonic()
             self.scan_once()
+            wait_s = memory_guard.paced_poll_interval(
+                self._limits.poll_interval,
+                time.monotonic() - scan_started,
+            )
 
     def _notify_scan(
         self,
@@ -2137,6 +2148,7 @@ class RepoProcessMemorySentinel:
         clean_since: float | None = None
         started = time.monotonic()
         while True:
+            scan_started = time.monotonic()
             groups = self._new_groups()
             now = time.monotonic()
             if not groups:
@@ -2237,7 +2249,12 @@ class RepoProcessMemorySentinel:
                         }
                     )
                 return drained
-            time.sleep(self._limits.poll_interval)
+            time.sleep(
+                memory_guard.paced_poll_interval(
+                    self._limits.poll_interval,
+                    time.monotonic() - scan_started,
+                )
+            )
 
 
 def repo_process_sentinel(
