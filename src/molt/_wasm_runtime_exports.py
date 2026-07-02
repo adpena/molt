@@ -218,22 +218,44 @@ def wasm_runtime_missing_required_exports(
     return missing
 
 
+def _export_if_defined_link_args(export_names: Iterable[str]) -> str:
+    return "".join(
+        f" -C link-arg=--export-if-defined={name}" for name in sorted(export_names)
+    )
+
+
+def wasm_runtime_shared_export_link_args(
+    required_runtime_imports: Iterable[str] | None = None,
+) -> str:
+    """Shared split-runtime export surface plus explicit runtime obligations.
+
+    The shared artifact always publishes the full generated public ABI. Native
+    extension objects admitted for a build add exact runtime-backed
+    obligations (for example CPython ABI variadic C shim symbols) that are not
+    part of the generated import registry, so they must be threaded into the
+    link args of the same build the export validator checks.
+    """
+    export_names = {
+        _runtime_export_name_or_fail(name) for name in wasm_runtime_import_names()
+    }
+    export_names.update(WASM_RUNTIME_HOST_EXPORTS)
+    export_names.update(
+        canonical_intrinsic_runtime_name(name)
+        for name in _all_dynamic_runtime_owned_intrinsic_exports()
+    )
+    if required_runtime_imports is not None:
+        export_names.update(
+            wasm_runtime_required_export_names(required_runtime_imports)
+        )
+    return _export_if_defined_link_args(export_names)
+
+
 def wasm_runtime_export_link_args(
     required_runtime_imports: Iterable[str] | None = None,
     resolved_modules: Iterable[str] | None = None,
 ) -> str:
     if required_runtime_imports is None:
-        export_names = {
-            _runtime_export_name_or_fail(name) for name in wasm_runtime_import_names()
-        }
-        export_names.update(WASM_RUNTIME_HOST_EXPORTS)
-        export_names.update(
-            canonical_intrinsic_runtime_name(name)
-            for name in _all_dynamic_runtime_owned_intrinsic_exports()
-        )
-    else:
-        export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
-        export_names.update(wasm_runtime_dynamic_export_names(resolved_modules))
-    return "".join(
-        f" -C link-arg=--export-if-defined={name}" for name in sorted(export_names)
-    )
+        return wasm_runtime_shared_export_link_args()
+    export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
+    export_names.update(wasm_runtime_dynamic_export_names(resolved_modules))
+    return _export_if_defined_link_args(export_names)

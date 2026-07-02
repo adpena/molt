@@ -15,7 +15,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Collection, Literal, Mapping, Sequence
 
-from molt._wasm_runtime_exports import wasm_runtime_export_link_args
+from molt._wasm_runtime_exports import (
+    wasm_runtime_export_link_args,
+    wasm_runtime_shared_export_link_args,
+)
 from molt.cli.artifact_state import (
     _artifact_state_path_for_build_state_root,
     _build_state_root,
@@ -1413,14 +1416,15 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = _cargo_build_env()
-    runtime_exports = (
-        wasm_runtime_export_link_args(
+    if reloc:
+        runtime_exports = wasm_runtime_export_link_args(
             required_exports,
             resolved_modules=resolved_modules,
         )
-        if reloc
-        else wasm_runtime_export_link_args()
-    )
+    else:
+        # The shared split-runtime artifact keeps its full generated public ABI
+        # for loader imports; runtime-backed extension obligations are additive.
+        runtime_exports = wasm_runtime_shared_export_link_args(required_exports)
     if reloc:
         link_flags = runtime_exports
         cargo_link_flags = _wasm_link_args_response_rustflags(
