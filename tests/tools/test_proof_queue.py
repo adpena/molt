@@ -70,6 +70,9 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     (tmp_path / "wasm" / "molt_runtime_reloc.wasm.sha256").write_text(
         "old\n", encoding="utf-8"
     )
+    (tmp_path / "wasm" / "molt_runtime_reloc.wasm.wasm-release.sha256").write_text(
+        "old\n", encoding="utf-8"
+    )
     (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "init")
@@ -77,10 +80,13 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     (tmp_path / "wasm" / "molt_runtime.wasm.sha256").write_text(
         "new\n", encoding="utf-8"
     )
+    (tmp_path / "wasm" / "molt_runtime_reloc.wasm.wasm-release.sha256").write_text(
+        "new\n", encoding="utf-8"
+    )
     snapshot = proof_queue._git_snapshot(tmp_path)
     assert snapshot["dirty"] is False
     assert snapshot["status"] == []
-    assert snapshot["ignored_status_count"] == 1
+    assert snapshot["ignored_status_count"] == 2
 
     (tmp_path / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
     snapshot = proof_queue._git_snapshot(tmp_path)
