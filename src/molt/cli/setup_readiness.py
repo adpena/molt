@@ -494,9 +494,10 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             )
         else:
             rustc_detail = (rustc.stdout or rustc.stderr).strip()
-            rustc_ok = rustc.returncode == 0 and re.search(
+            rustc_matches_pin = re.search(
                 rf"\brustc\s+{re.escape(pinned_rust)}(?:\s|\b)", rustc_detail
             )
+            rustc_ok = rustc.returncode == 0 and rustc_matches_pin is not None
             record(
                 "rust-toolchain",
                 rustc_ok,
