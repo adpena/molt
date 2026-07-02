@@ -79,6 +79,31 @@ Last updated: 2026-07-02 by the orchestrator.
   and had to be re-applied. If a file you didn't edit shows up dirty, leave
   it alone; it is another lane's live WIP.
 
+## Proof and cargo DX rules (binding — incident: 835s cold compile for one test)
+
+- NEVER pay a cold crate compile for a single exact test. If your proof
+  needs a compile, run the whole relevant test SHARD in that same compile
+  (one compile, many tests). An exact `--lib <one_test>` proof is only
+  acceptable against a warm target dir.
+- Warm before you prove: session target dirs (target/sessions/<id>) start
+  cold. Prefer the shared proof-family target dir the queue assigns per
+  contention key; if you must use a fresh session dir, run a `cargo check
+  -p <crate>` warmup FIRST while you do other work, then submit the proof.
+- Set an explicit `--timeout` matched to warm-compile reality (a warm lib
+  test proof is <120s; if your row is projected to exceed it because of a
+  cold compile, cancel your plan and re-shape, don't wait it out).
+- NEVER sit idle narrating a wait. Submit proofs with `--detach`, do other
+  lane work (or end your arc), and read the row result when it closes. A
+  turn that only tails a log is a wasted turn.
+- Batch proof rows: if you have N tests to prove across one crate, that is
+  ONE row, not N rows contending for the same contention key.
+- Env for local iteration builds: `MOLT_MEMORY_GUARD_POLL_SEC=2.0` (the
+  0.1s default guard sampling is for CI; locally it wastes a third of your
+  wall time even after the caching fix).
+- When a row's time is dominated by compile (log shows cargo compiling >60%
+  of elapsed), file ONE queue note naming the crate and move on — do not
+  re-diagnose build latency per row.
+
 ## Working agreement (binding)
 
 - Keep the shared tree compile-green: `cargo check` the crates you touched
