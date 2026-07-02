@@ -924,6 +924,27 @@ def test_source_extension_runtime_python_imports_skips_helper_body_imports() -> 
     )
 
 
+def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> None:
+    source = r'''
+    extern "C" {
+    PyMODINIT_FUNC PyInit_nativepkg(void) {
+        if (ready) {
+            PyImport_ImportModule("math");
+        }
+        return NULL;
+    }
+    }
+    static int helper(void) {
+        PyImport_ImportModule("inspect");
+        return 0;
+    }
+    '''
+
+    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+        "math",
+    )
+
+
 def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
