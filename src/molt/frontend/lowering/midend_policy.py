@@ -522,14 +522,16 @@ class MidendPolicyMixin(_MixinBase):
             resolved_function == "molt_main" or promoted or tier == "A"
         )
         if not monolith_pressure_exempt and monolith_pressure_level >= 1:
-            selected["max_rounds"] = max(1, int(selected["max_rounds"]) - 1)
+            # Round count is a fixed-point soundness floor for functions admitted
+            # to the midend. Under monolith pressure, trim pass intensity and
+            # budgets; the separate oversized-function gate decides when to skip
+            # the midend entirely.
             selected["sccp_iter_cap"] = max(
                 8, int(int(selected["sccp_iter_cap"]) * 0.75)
             )
             selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
             selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.85
         if not monolith_pressure_exempt and monolith_pressure_level >= 2:
-            selected["max_rounds"] = max(1, int(selected["max_rounds"]) - 1)
             selected["sccp_iter_cap"] = max(
                 8, int(int(selected["sccp_iter_cap"]) * 0.75)
             )

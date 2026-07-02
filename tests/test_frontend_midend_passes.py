@@ -2887,7 +2887,8 @@ def test_midend_monolith_pressure_trims_cold_function_policy() -> None:
     assert pressured.monolith_pressure_level >= 1
     assert pressured.module_function_count >= 96
     assert pressured.module_total_ops >= 96 * 80
-    assert pressured.max_rounds < baseline.max_rounds
+    assert baseline.max_rounds == 3
+    assert pressured.max_rounds == baseline.max_rounds
     assert pressured.sccp_iter_cap < baseline.sccp_iter_cap
     assert pressured.cse_iter_cap < baseline.cse_iter_cap
     assert pressured.budget_ms < baseline.budget_ms
