@@ -40,6 +40,7 @@ pub(crate) use deferred_codegen::{
 };
 pub(crate) use deferred_codegen::{DeferredDefine, should_flush_deferred_codegen};
 mod app_resolver;
+mod module_registry;
 mod program_pipeline;
 #[cfg(any(test, feature = "llvm"))]
 pub(crate) use program_pipeline::preprocess_backend_tir_input;
@@ -82,6 +83,14 @@ pub struct SimpleBackend {
     pub app_callable_manifest: Option<std::collections::BTreeSet<String>>,
     /// Function names that exist in other batches  use Linkage::Import.
     pub external_function_names: std::collections::BTreeSet<String>,
+    /// Per-build module registry (import bedrock, design doc 69).  When set,
+    /// this object emits the exported `molt_module_registry_blob` data symbol
+    /// with one function-address relocation per MODULE_INIT_TABLE entry, and
+    /// the registry's init symbols seed dead-function-elimination roots (init
+    /// bodies are reachable only through the table — invariant I5).  Follows
+    /// the `emit_app_callable_resolver` custody: exactly one object per final
+    /// binary emits the blob.
+    pub module_registry: Option<ModuleRegistryIR>,
     module_context: Option<NativeBackendModuleContext>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,

@@ -25,7 +25,7 @@ pub(crate) struct DaemonJobRequest {
     pub(crate) skip_module_output_if_synced: bool,
     pub(crate) skip_function_output_if_synced: bool,
     pub(crate) probe_cache_only: bool,
-    pub(crate) ir: Option<SimpleIR>,
+    pub(crate) ir: Option<molt_backend::BackendIrDocument>,
     pub(crate) ir_path: Option<String>,
 }
 
@@ -129,7 +129,7 @@ impl DaemonJobRequest {
         }
         let ir = match obj.get("ir") {
             None | Some(JsonValue::Null) => None,
-            Some(ir_value) => Some(SimpleIR::from_json_value(ir_value)?),
+            Some(ir_value) => Some(molt_backend::BackendIrDocument::from_json_value(ir_value)?),
         };
         Ok(Self {
             id: required_string(obj, "id", ctx)?,
@@ -162,7 +162,9 @@ impl DaemonJobRequest {
 }
 
 #[cfg(any(unix, test))]
-pub(crate) fn simple_ir_from_json_path(path: &str) -> Result<SimpleIR, String> {
+pub(crate) fn backend_ir_document_from_json_path(
+    path: &str,
+) -> Result<molt_backend::BackendIrDocument, String> {
     let file = File::open(path).map_err(|err| format!("failed to open ir_path {path:?}: {err}"))?;
     serde_json::from_reader(io::BufReader::new(file))
         .map_err(|err| format!("failed to parse ir_path {path:?}: {err}"))
@@ -716,11 +718,11 @@ pub(crate) fn compile_single_job(
             };
         }
 
-        let mut ir = if let Some(ir) = job.ir {
-            ir
+        let document = if let Some(document) = job.ir {
+            document
         } else if let Some(ir_path) = job.ir_path.as_deref() {
-            match simple_ir_from_json_path(ir_path) {
-                Ok(ir) => ir,
+            match backend_ir_document_from_json_path(ir_path) {
+                Ok(document) => document,
                 Err(err) => {
                     return DaemonJobResponse {
                         id: job.id,
@@ -746,6 +748,10 @@ pub(crate) fn compile_single_job(
                 warnings: Vec::new(),
             };
         };
+        let molt_backend::BackendIrDocument {
+            mut ir,
+            module_registry,
+        } = document;
 
         let mut warnings = Vec::new();
         let compiled_output = if job.is_wasm {
@@ -822,6 +828,7 @@ pub(crate) fn compile_single_job(
                         entry_module: &entry_module,
                         explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
                         log_prefix: "MOLT_BACKEND(daemon)",
+                        module_registry,
                     },
                 ) {
                     Ok(options) => options,

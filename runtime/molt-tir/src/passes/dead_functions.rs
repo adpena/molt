@@ -12,6 +12,18 @@ use std::collections::{BTreeMap, BTreeSet};
 /// call sites, it becomes unreachable and will be eliminated here.
 /// Applies to both native and WASM backends.
 pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
+    eliminate_dead_functions_with_roots(ir, &BTreeSet::new());
+}
+
+/// Dead-function elimination with additional named roots.
+///
+/// The import-bedrock registry lane (design doc 69) reaches module init
+/// bodies ONLY through `MODULE_INIT_TABLE` function-address relocations in
+/// the registry blob — there are no `call` edges to them in the IR — so the
+/// native application-object pipeline seeds `module_registry.init_symbols`
+/// here.  Every native DFE invocation on IR that carries a module registry
+/// MUST pass those roots or the registry blob relocations dangle at link.
+pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTreeSet<String>) {
     if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
         return;
     }
@@ -116,7 +128,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     // Binary size should be controlled by the module graph itself, not by
     // mutating the semantics of runtime entrypoints during DFE.
     for func in &ir.functions {
-        if is_protected_runtime_entrypoint(&func.name) {
+        if is_protected_runtime_entrypoint(&func.name) || extra_roots.contains(&func.name) {
             seed(func.name.clone(), &mut reachable, &mut queue);
         }
     }

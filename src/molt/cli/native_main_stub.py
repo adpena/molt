@@ -199,6 +199,13 @@ extern void molt_print_obj(unsigned long long val);
  * so the resolver is in place before any lookup runs. */
 extern unsigned long long molt_app_resolve_callable(const char* name, unsigned long long len);
 extern unsigned long long molt_set_app_callable_resolver(unsigned long long fn_ptr);
+/* Per-build module registry blob (import bedrock, design doc 69): the backend
+ * emits the registry (module identity, MODULE_INIT_TABLE function pointers,
+ * sorted name table) into the application object as one relocated data
+ * symbol. It MUST be installed before molt_runtime_init() so module identity
+ * resolution and molt_module_ensure are in place before any import runs. */
+extern const unsigned char molt_module_registry_blob[];
+extern unsigned long long molt_module_registry_install(const unsigned char* blob);
 /* MOLT_TRUSTED_SNIPPET */
 /* MOLT_CAPABILITIES_SNIPPET */
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
@@ -227,6 +234,7 @@ int wmain(int argc, wchar_t** argv) {
     /* MOLT_CAPABILITIES_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
     molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
+    molt_module_registry_install(molt_module_registry_blob);
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
@@ -239,6 +247,7 @@ int main(int argc, char** argv) {
     /* MOLT_CAPABILITIES_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
     molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
+    molt_module_registry_install(molt_module_registry_blob);
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv(argc, (const char**)argv);

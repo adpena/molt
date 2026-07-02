@@ -56,6 +56,7 @@ pub(crate) mod json;
 pub(crate) mod lzma;
 pub(crate) mod methods;
 mod micro_stubs;
+pub(crate) mod module_table;
 pub(crate) mod modules;
 pub(crate) mod numbers;
 pub(crate) mod operator;

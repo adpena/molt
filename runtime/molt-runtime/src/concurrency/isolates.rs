@@ -43,7 +43,6 @@ use crate::{
 #[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" {
     fn molt_isolate_bootstrap() -> u64;
-    fn molt_isolate_import(name_bits: u64) -> u64;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -358,7 +357,9 @@ fn run_thread_payload(payload: Vec<u8>) {
         let module_bits = MoltObject::from_ptr(module_ptr).bits();
         let mut loaded_bits = molt_module_cache_get(module_bits);
         if obj_from_bits(loaded_bits).is_none() {
-            loaded_bits = unsafe { molt_isolate_import(module_bits) };
+            // Import bedrock: registry resolve → molt_module_ensure (the old
+            // app-owned molt_isolate_import chain is deleted on native).
+            loaded_bits = crate::builtins::module_table::isolate_import_dispatch(_py, "threading");
         }
         dec_ref_bits(_py, module_bits);
         if obj_from_bits(loaded_bits).is_none() {

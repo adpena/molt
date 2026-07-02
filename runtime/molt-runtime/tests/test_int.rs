@@ -11,11 +11,6 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    MoltObject::none().bits()
-}
-
 // molt_runtime_init is pub extern "C" but not re-exported in the Rust API.
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
