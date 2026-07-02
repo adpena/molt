@@ -5,6 +5,7 @@ const dns = require('dns');
 const os = require('os');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
+const wasmAbiGenerated = require('./wasm_abi_generated.json');
 const {
   callIndirectObjectSignature,
   callIsolateImportExport,
@@ -24,6 +25,9 @@ const {
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
 } = require('./loader_bridge.js');
+const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
+let runtimeImportExportNames = runtimeExportByImport;
+const runtimeImportFallbacks = wasmAbiGenerated.runtime_import_fallbacks || {};
 let UndiciWebSocket = null;
 try {
   ({ WebSocket: UndiciWebSocket } = require('undici'));
@@ -277,6 +281,14 @@ const initWasmAssets = () => {
   wasmPath = resolved.wasmPath;
   wasmBuffer = fs.readFileSync(wasmPath);
   const siblingManifest = loadSiblingManifest(wasmPath);
+  const siblingRuntimeImports = siblingManifest?.abi?.runtime_imports || {};
+  const siblingRuntimeImportExportNames = siblingRuntimeImports.export_names || null;
+  runtimeImportExportNames = siblingRuntimeImportExportNames
+    ? {
+        ...runtimeExportByImport,
+        ...siblingRuntimeImportExportNames,
+      }
+    : runtimeExportByImport;
   const manifestReservedRuntimeCallables =
     reservedRuntimeCallablesFromManifest(siblingManifest);
   activeReservedRuntimeCallables =
@@ -4786,6 +4798,13 @@ const runtimeExportImportSignature = (runtimeExport) => {
   };
 };
 
+const runtimeExportNameForImport = (importName) => {
+  const exportName = runtimeImportExportNames[importName] || null;
+  return typeof exportName === 'string' && exportName.length > 0
+    ? exportName
+    : null;
+};
+
 let cachedRuntimeImportFuncSigs = null;
 
 const runtimeImportFuncSigs = () => {
@@ -4879,48 +4898,23 @@ const buildRuntimeImportWrappers = () => {
     seen.add(entry.name);
     const name = entry.name;
     runtimeImports[name] = (...args) => {
-      const runtimeExport = name.startsWith('molt_') ? name : `molt_${name}`;
-      const sig = funcSigs.get(name) || runtimeExportImportSignature(runtimeExport);
-      let fn = runtimeInstance ? runtimeInstance.exports[runtimeExport] : null;
+      const runtimeExport = runtimeExportNameForImport(name);
+      const sig =
+        funcSigs.get(name) ||
+        (runtimeExport ? runtimeExportImportSignature(runtimeExport) : null);
+      let fn =
+        runtimeInstance && runtimeExport
+          ? runtimeInstance.exports[runtimeExport]
+          : null;
       if (typeof fn !== 'function') {
         if (!runtimeInstance) {
           throw new Error(`molt_runtime not initialized (${name})`);
         } else {
-          const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
-          const callargsNew = runtimeInstance.exports.molt_callargs_new;
-          const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
-          const dictSet = runtimeInstance.exports.molt_dict_set;
-          const dictGetitemBorrowed = runtimeInstance.exports.molt_dict_getitem_borrowed;
-          const tupleGetitemBorrowed = runtimeInstance.exports.molt_tuple_getitem_borrowed;
-          const makeCallBindFallback = (arity) => {
-            if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
-              return null;
-            }
-            return (methodBits, ...argBits) => {
-              const builderBits = callargsNew(boxInt(arity), boxInt(0));
-              for (const argBitsValue of argBits) {
-                callargsPushPos(builderBits, argBitsValue);
-              }
-              return callBindIc(boxInt(0), methodBits, builderBits);
-            };
-          };
-          if (name === 'fast_list_append') {
-            fn = makeCallBindFallback(1);
-          } else if (name === 'fast_str_join') {
-            fn = makeCallBindFallback(1);
-          } else if (name === 'fast_dict_get') {
-            fn = makeCallBindFallback(2);
-          } else if (name === 'dict_setitem') {
-            fn = typeof dictSet === 'function' ? dictSet : null;
-          } else if (name === 'dict_getitem') {
-            fn = typeof dictGetitemBorrowed === 'function' ? dictGetitemBorrowed : null;
-          } else if (name === 'tuple_getitem') {
-            fn = typeof tupleGetitemBorrowed === 'function' ? tupleGetitemBorrowed : null;
-          }
+          fn = runtimeFallbackFunction(runtimeInstance.exports, name);
         }
       }
       if (typeof fn !== 'function') {
-        throw new Error(`molt_runtime.${name} missing export ${runtimeExport}`);
+        throw new Error(`molt_runtime.${name} missing export ${runtimeExport || name}`);
       }
       return makeRuntimeImportAdapter(name, fn, sig, { traceStrings })(...args);
     };
@@ -4928,53 +4922,56 @@ const buildRuntimeImportWrappers = () => {
   return runtimeImports;
 };
 
-const buildRuntimeImportDirect = (runtimeInst) => {
-  const runtimeImports = {};
-  const funcSigs = runtimeImportFuncSigs();
-  const callBindIc = runtimeInst.exports.molt_call_bind_ic;
-  const callargsNew = runtimeInst.exports.molt_callargs_new;
-  const callargsPushPos = runtimeInst.exports.molt_callargs_push_pos;
-  const dictSet = runtimeInst.exports.molt_dict_set;
-  const dictGetitemBorrowed = runtimeInst.exports.molt_dict_getitem_borrowed;
-  const tupleGetitemBorrowed = runtimeInst.exports.molt_tuple_getitem_borrowed;
-  const makeCallBindFallback = (arity) => {
+const runtimeFallbackFunction = (runtimeExports, name) => {
+  const fallback = runtimeImportFallbacks[name] || null;
+  if (!fallback || !Array.isArray(fallback.exports) || fallback.exports.length === 0) {
+    return null;
+  }
+  if (fallback.strategy === 'call_bind_ic') {
+    if (!Number.isInteger(fallback.call_arity)) {
+      return null;
+    }
+    const callBindIc = runtimeExports.molt_call_bind_ic;
+    const callargsNew = runtimeExports.molt_callargs_new;
+    const callargsPushPos = runtimeExports.molt_callargs_push_pos;
     if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
       return null;
     }
     return (methodBits, ...argBits) => {
-      const builderBits = callargsNew(boxInt(arity), boxInt(0));
+      const builderBits = callargsNew(boxInt(fallback.call_arity), boxInt(0));
       for (const argBitsValue of argBits) {
         callargsPushPos(builderBits, argBitsValue);
       }
       return callBindIc(boxInt(0), methodBits, builderBits);
     };
-  };
+  }
+  if (fallback.strategy === 'direct_export' && fallback.exports.length === 1) {
+    const candidate = runtimeExports[fallback.exports[0]];
+    return typeof candidate === 'function' ? candidate : null;
+  }
+  return null;
+};
+
+const buildRuntimeImportDirect = (runtimeInst) => {
+  const runtimeImports = {};
+  const funcSigs = runtimeImportFuncSigs();
   for (const entry of outputImports.funcImports) {
     if (entry.module !== 'molt_runtime') {
       continue;
     }
-    const runtimeExport = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
-    let fn = runtimeInst.exports[runtimeExport];
+    const runtimeExport = runtimeExportNameForImport(entry.name);
+    let fn = runtimeExport ? runtimeInst.exports[runtimeExport] : null;
     if (typeof fn !== 'function') {
-      if (entry.name === 'fast_list_append') {
-        fn = makeCallBindFallback(1);
-      } else if (entry.name === 'fast_str_join') {
-        fn = makeCallBindFallback(1);
-      } else if (entry.name === 'fast_dict_get') {
-        fn = makeCallBindFallback(2);
-      } else if (entry.name === 'dict_setitem') {
-        fn = typeof dictSet === 'function' ? dictSet : null;
-      } else if (entry.name === 'dict_getitem') {
-        fn = typeof dictGetitemBorrowed === 'function' ? dictGetitemBorrowed : null;
-      } else if (entry.name === 'tuple_getitem') {
-        fn = typeof tupleGetitemBorrowed === 'function' ? tupleGetitemBorrowed : null;
-      }
+      fn = runtimeFallbackFunction(runtimeInst.exports, entry.name);
     }
     if (typeof fn !== 'function') {
-      throw new Error(`molt_runtime.${entry.name} missing export ${runtimeExport}`);
+      throw new Error(
+        `molt_runtime.${entry.name} missing export ${runtimeExport || entry.name}`,
+      );
     }
     const sig =
-      funcSigs.get(entry.name) || runtimeExportImportSignature(runtimeExport);
+      funcSigs.get(entry.name) ||
+      (runtimeExport ? runtimeExportImportSignature(runtimeExport) : null);
     runtimeImports[entry.name] = (...args) => {
       if (traceRun) {
         console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);

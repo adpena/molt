@@ -30,6 +30,7 @@ __all__ = (
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
     "_runtime_export_name_for_import_from_manifest",
+    "_runtime_import_export_names_from_manifest",
     "_runtime_import_fallbacks_from_manifest",
     "_runtime_import_result_kinds_from_manifest",
     "_runtime_import_signatures_from_manifest",
@@ -212,6 +213,17 @@ def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | Non
     return wasm_runtime_export_name_for_import(import_name)
 
 
+def _runtime_import_export_names_from_manifest(
+    import_names: Iterable[str],
+) -> dict[str, str]:
+    export_names: dict[str, str] = {}
+    for import_name in sorted(set(import_names)):
+        export_name = _runtime_export_name_for_import_from_manifest(import_name)
+        if export_name is not None:
+            export_names[import_name] = export_name
+    return export_names
+
+
 def _runtime_export_signature_for_cpython_abi_link_import(
     import_name: str,
     runtime_export_signatures: Mapping[str, Mapping[str, object]] | None,
@@ -311,11 +323,17 @@ def _generate_split_worker_js(
         runtime_import_names,
         runtime_export_signatures=runtime_export_signatures,
     )
+    runtime_import_export_names = _runtime_import_export_names_from_manifest(
+        runtime_import_names,
+    )
     runtime_import_result_kinds_json = json.dumps(
         runtime_import_result_kinds, sort_keys=True
     )
     runtime_import_signatures_json = json.dumps(
         runtime_import_signatures, sort_keys=True
+    )
+    runtime_import_export_names_json = json.dumps(
+        runtime_import_export_names, sort_keys=True
     )
     runtime_export_signatures_json = json.dumps(
         dict(runtime_export_signatures or {}), sort_keys=True
@@ -425,6 +443,7 @@ export default {
     const NONE_BITS = QNAN | TAG_NONE;
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
+    const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
     const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
     const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
@@ -1214,19 +1233,8 @@ export default {
       };
       for (const entry of WebAssembly.Module.imports(module)) {
         if (entry.module !== "molt_runtime") continue;
-        const exportCandidates = entry.name.startsWith("molt_")
-          ? [entry.name]
-          : [`molt_${entry.name}`, entry.name];
-        let exportName = exportCandidates[0];
-        let fn = null;
-        for (const candidate of exportCandidates) {
-          const candidateFn = runtimeInstance.exports[candidate];
-          if (typeof candidateFn === "function") {
-            exportName = candidate;
-            fn = candidateFn;
-            break;
-          }
-        }
+        const exportName = runtimeImportExportNames[entry.name] || null;
+        let fn = exportName ? runtimeInstance.exports[exportName] : null;
         const exportSignature = runtimeExportSignatures[entry.name] || null;
         const signature = runtimeImportSignatures[entry.name] || exportSignature;
         const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);
@@ -1236,7 +1244,7 @@ export default {
           callSignature = signature;
         }
         if (typeof fn !== "function") {
-          throw new Error(`molt_runtime missing export ${exportName}`);
+          throw new Error(`molt_runtime missing export ${exportName || entry.name} for import ${entry.name}`);
         }
         imports[entry.name] = (...args) => {
           const callArgs = callSignature && Array.isArray(callSignature.params)
@@ -1544,6 +1552,10 @@ export default {
         .replace(
             "__MOLT_RUNTIME_IMPORT_SIGNATURES__",
             runtime_import_signatures_json,
+        )
+        .replace(
+            "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__",
+            runtime_import_export_names_json,
         )
         .replace(
             "__MOLT_RUNTIME_EXPORT_SIGNATURES__",

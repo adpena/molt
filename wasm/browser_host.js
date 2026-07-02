@@ -1323,6 +1323,7 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
   const runtimeImportAbi = options.runtimeImportAbi || {};
   const manifestNames = new Set(runtimeImportAbi.names || []);
   const signatures = runtimeImportAbi.signatures || {};
+  const runtimeExportNames = runtimeImportAbi.export_names || {};
   const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};
   const resultKinds = runtimeImportAbi.result_kinds || {};
   const runtimeImportFallbacks = options.runtimeImportFallbacks || {};
@@ -1381,27 +1382,16 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
     if (!resultKind) {
       throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
     }
-    const exportCandidates = entry.name.startsWith('molt_')
-      ? [entry.name]
-      : [`molt_${entry.name}`, entry.name];
+    const exportName = runtimeExportNames[entry.name] || null;
     imports[entry.name] = (...args) => {
-      let exportName = exportCandidates[0];
-      let fn = null;
-      for (const candidate of exportCandidates) {
-        const candidateFn = runtimeExport(candidate);
-        if (candidateFn) {
-          exportName = candidate;
-          fn = candidateFn;
-          break;
-        }
-      }
+      let fn = exportName ? runtimeExport(exportName) : null;
       let callSignature = runtimeExportSignatures[entry.name] || signature;
       if (!fn) {
         fn = resolveFallback(entry.name);
         callSignature = signature;
       }
       if (typeof fn !== 'function') {
-        throw new Error(`molt_runtime missing export ${exportName}`);
+        throw new Error(`molt_runtime missing export ${exportName || entry.name} for import ${entry.name}`);
       }
       const callArgs = callSignature && Array.isArray(callSignature.params)
         ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))

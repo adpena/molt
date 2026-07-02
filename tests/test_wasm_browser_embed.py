@@ -661,6 +661,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert runtime_imports["names"] == sorted(app_runtime_import_names)
     runtime_import_name_set = set(runtime_imports["names"])
     assert runtime_import_name_set
+    assert set(runtime_imports["export_names"]).issubset(runtime_import_name_set)
     assert set(runtime_imports["signatures"]) == runtime_import_name_set
     assert set(runtime_imports["result_kinds"]) == runtime_import_name_set
     assert set(runtime_imports["runtime_export_signatures"]).issubset(
@@ -671,6 +672,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
         assert isinstance(signature["result"], str), name
         assert runtime_imports["result_kinds"][name]
     assert "molt_exception_init" not in runtime_imports["signatures"]
+    assert "molt_exception_init" not in runtime_imports["export_names"]
     assert "molt_exception_init" not in runtime_imports["runtime_export_signatures"]
 
     handler = type("_EmbedHandler", (_StaticDirHandler,), {"root": out_dir})
