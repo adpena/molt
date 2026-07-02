@@ -1448,22 +1448,14 @@ def _prepare_entry_module_graph(
     )
     if intrinsic_enforced is not None:
         return None, intrinsic_enforced
-    # Runtime-feature availability is now decided by REACHABILITY, not whole-file
-    # import-graph presence (Option b,
-    # docs/design/foundation/feature_reachability_tree_shaking.md): the coarse
-    # ``_enforce_profile_feature_availability`` gate forced a feature the instant a
-    # module appeared anywhere in the static import graph - even when no reached
-    # code path ever linked one of its intrinsics - and keyed on the
-    # ``MOLT_STDLIB_PROFILE`` env var rather than the resolved ``--stdlib-profile``
-    # that actually selects the staticlib (so an env/flag mismatch could pass the
-    # gate yet still fail at link). The authoritative requirement check now runs in
-    # ``backend_ir._reachability_feature_refusal`` over the finalized merged
-    # SimpleIR (``required_features.required_link_features``) against the resolved
-    # profile's link-affecting ceiling - it refuses exactly when the REACHED code
-    # links an intrinsic the profile excludes, with a truthful, reached-intrinsic
-    # message. ``_enforce_profile_feature_availability`` /
-    # ``_profile_feature_gap_for_module`` survive only as the whole-file helper the
-    # loud-refusal unit tests pin; they no longer drive the build.
+    # Runtime-feature availability is decided by REACHABILITY, not whole-file
+    # import-graph presence. The old coarse profile gate was deleted because it
+    # forced a feature the instant a module appeared anywhere in the static graph,
+    # even when no reached code path linked one of its intrinsics. The only
+    # requirement check now runs in ``backend_ir._reachability_feature_refusal``
+    # over the finalized merged SimpleIR
+    # (``required_features.required_link_features``) against the resolved
+    # profile's link-affecting ceiling.
     augmentation, augmentation_error = _augment_module_graph_for_entry_and_runtime(
         source_path=source_path,
         entry_module=entry_module,

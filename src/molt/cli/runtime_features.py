@@ -186,10 +186,10 @@ def profile_link_features(
     Reads the runtime Cargo feature ladder and transitively expands the profile
     feature (``micro`` -> ``stdlib_micro`` ... ``full`` -> ``stdlib_full``),
     collecting the reachable molt-runtime feature names.  This is the canonical
-    "what does profile P build" fact; both the compile-time profile-availability
-    gate (``module_stdlib_policy._enforce_profile_feature_availability``) and the
-    runtime archive feature selection (``runtime_build``) read it, so they can no
-    longer disagree with the Cargo chain.
+    "what does profile P build" fact; both the reachability profile-ceiling
+    check (``backend_ir._reachability_feature_refusal``) and the runtime archive
+    feature selection (``runtime_build``) read it, so they can no longer
+    disagree with the Cargo chain.
 
     The WASM stable-target exclusions (``_WASM_RUNTIME_STABLE_EXCLUDED_FEATURES``)
     are subtracted for ``wasm32`` targets so the derived set matches the features
