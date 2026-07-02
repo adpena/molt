@@ -267,7 +267,10 @@ Evidence includes deterministic `diagnostics` derived from queue metadata and
 log tails. These are not guesses; they are first-party rules for recurring
 proof failure classes such as queue policy rejection, static-linked
 `Py_mod_exec` failure, unresolved native/WASM symbols, unsupported direct calls,
-and Pact missing-output acceptance failures.
+Pact missing-output acceptance failures, Rust compiler errors, pytest assertion
+failures, external native artifact custody refusals, reachable native support
+modules without source/artifact custody, reachability-driven stdlib profile
+refusals, and memory-guard orphan cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 
@@ -302,12 +305,14 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py audit
 `audit` walks active and recent rows, diagnostics, append-only notes, DAG edges,
 guard liveness, log freshness, and notebook projections. A classified product
 failure is allowed to remain evidence. Queue debt is not: missing logs, queue
-pre-execution failures, unclassified failures, dead running guards, duplicate
-active contention keys, stale active logs, missing proof notes, and missing
-notebook projections are surfaced as explicit audit issues. By default the
-command exits non-zero for errors and reports warnings without failing; add
-`--strict` when warnings should fail the pass. Use `--json` or `--output` for
-machine-readable handoff.
+pre-execution failures, policy rejections, unclassified failures, dead running
+guards, duplicate active contention keys, stale active logs, missing proof
+notes, and missing notebook projections are surfaced as explicit audit issues.
+By default the command exits non-zero for errors and reports warnings without
+failing; add `--strict` when warnings should fail the pass. Human output prints
+diagnostic and issue counts first, then caps the issue wall by default; use
+`--max-issues 0`, `--json`, or `--output` for the full machine-readable
+handoff.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
