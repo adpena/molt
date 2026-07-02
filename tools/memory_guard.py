@@ -106,6 +106,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     _windows_process_snapshot_rows_hard_timeout as _windows_process_snapshot_rows_hard_timeout,
     _windows_process_snapshot_rows as _windows_process_snapshot_rows,
 )
+from tools.process_spawn import detached_process_group_kwargs  # noqa: E402
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
@@ -572,10 +573,10 @@ def _close_fds(fds: Sequence[int | None]) -> None:
 
 
 def _guarded_popen_process_isolation_kwargs() -> dict[str, object]:
-    if _is_windows_process_model():
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        return {"creationflags": creationflags} if creationflags else {}
-    return {"start_new_session": True}
+    return detached_process_group_kwargs(
+        windows=_is_windows_process_model(),
+        subprocess_module=subprocess,
+    )
 
 
 def _read_child_started_at(fd: int | None) -> float | None:
