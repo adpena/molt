@@ -65,6 +65,8 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
             "_PyObject_New",
             "PyMemoryView_FromMemory",
             "Py_None",
+            "PyFloat_Check",
+            "PyExc_TypeError",
         ]
         .into_iter()
         .map(str::to_string),

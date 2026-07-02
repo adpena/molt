@@ -165,6 +165,13 @@ CPYTHON_ABI_C_FUNCTION_RE = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*\s+)+\*?"
     r"(?P<name>_?Py[A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+CPYTHON_ABI_MACRO_RULES_RE = re.compile(
+    r"macro_rules!\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{"
+)
+CPYTHON_ABI_MACRO_INVOCATION_RE = re.compile(
+    r"\b(?P<macro>[A-Za-z_][A-Za-z0-9_]*)!\s*\((?P<args>[^;]*)\)\s*;"
+)
+CPYTHON_ABI_RUST_IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
 
 def _parse_call_indirect_import_arity(name: str) -> int | None:
@@ -191,6 +198,46 @@ def _is_cpython_abi_export_name(name: str) -> bool:
     return name.startswith(CPYTHON_ABI_EXPORT_PREFIXES)
 
 
+def _matching_brace_index(text: str, open_index: int) -> int:
+    depth = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise WasmAbiManifestError("unterminated macro_rules! block in CPython ABI source")
+
+
+def _no_mangle_macro_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for match in CPYTHON_ABI_MACRO_RULES_RE.finditer(text):
+        open_index = text.find("{", match.end() - 1)
+        if open_index < 0:
+            continue
+        close_index = _matching_brace_index(text, open_index)
+        body = text[open_index:close_index]
+        if "#[unsafe(no_mangle)]" in body or "#[no_mangle]" in body:
+            names.add(match.group("name"))
+    return names
+
+
+def _macro_generated_cpython_abi_export_names(text: str) -> set[str]:
+    exported_macros = _no_mangle_macro_names(text)
+    if not exported_macros:
+        return set()
+    names: set[str] = set()
+    for match in CPYTHON_ABI_MACRO_INVOCATION_RE.finditer(text):
+        if match.group("macro") not in exported_macros:
+            continue
+        for ident in CPYTHON_ABI_RUST_IDENT_RE.findall(match.group("args")):
+            if _is_cpython_abi_export_name(ident):
+                names.add(ident)
+    return names
+
+
 @lru_cache(maxsize=1)
 def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
     """Return runtime-owned CPython ABI symbols extensions may import.
@@ -213,6 +260,7 @@ def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
                 name = match.group("name")
                 if _is_cpython_abi_export_name(name):
                     names.add(name)
+        names.update(_macro_generated_cpython_abi_export_names(text))
 
     c_text = CPYTHON_ABI_VARIADIC_SHIM.read_text(encoding="utf-8")
     for match in CPYTHON_ABI_C_FUNCTION_RE.finditer(c_text):

@@ -199,9 +199,13 @@ def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> No
 def test_wasm_runtime_export_link_args_accepts_generated_raw_c_api_symbols() -> None:
     # Raw CPython C-API names are admitted through generated external-native
     # link authority derived from the shipped CPython ABI exports.
-    flags = wasm_runtime_export_link_args({"PyModuleDef_Init", "PyObject_Init"})
+    flags = wasm_runtime_export_link_args(
+        {"PyModuleDef_Init", "PyObject_Init", "PyFloat_Check", "PyExc_TypeError"}
+    )
     assert " -C link-arg=--export-if-defined=PyModuleDef_Init" in flags
     assert " -C link-arg=--export-if-defined=PyObject_Init" in flags
+    assert " -C link-arg=--export-if-defined=PyFloat_Check" in flags
+    assert " -C link-arg=--export-if-defined=PyExc_TypeError" in flags
 
 
 def test_wasm_runtime_export_link_args_rejects_non_runtime_c_api_symbols() -> None:
