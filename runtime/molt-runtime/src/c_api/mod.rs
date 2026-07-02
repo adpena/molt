@@ -2,6 +2,8 @@
 // symbols are owned by the molt-cpython-abi crate.
 #![allow(dead_code, non_snake_case, unused_imports)]
 
+#[cfg(target_arch = "wasm32")]
+mod cpython_abi_variadic_exports;
 #[cfg(not(target_arch = "wasm32"))]
 mod cpython_compat;
 mod molt_api;

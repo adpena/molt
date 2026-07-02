@@ -1416,6 +1416,38 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert external_native_classes["molt_cpython_abi_date_from_date"] == (
         "molt_cpython_abi_link_import"
     )
+    variadic_shim_imports = {
+        "PyArg_ParseTuple",
+        "PyArg_ParseTupleAndKeywords",
+        "PyArg_UnpackTuple",
+        "PyArg_VaParseTupleAndKeywords",
+        "PyTuple_Pack",
+        "PyObject_CallFunction",
+        "PyObject_CallFunctionObjArgs",
+        "PyObject_CallMethodObjArgs",
+        "PyObject_CallMethod",
+        "Py_BuildValue",
+        "_Py_BuildValue_SizeT",
+        "Py_VaBuildValue",
+        "PyUnicode_FromFormat",
+        "PyUnicode_FromFormatV",
+        "PyOS_snprintf",
+        "PyOS_vsnprintf",
+        "PyOS_string_to_double",
+        "PyOS_strtol",
+        "PyOS_strtoul",
+        "PyErr_WarnFormat",
+        "PyErr_Format",
+        "PyErr_FormatV",
+        "PyErr_FormatUnraisable",
+        "PySys_WriteStderr",
+    }
+    assert {
+        name
+        for name, primitive_class in external_native_classes.items()
+        if primitive_class == "molt_cpython_abi_link_import"
+        and name in variadic_shim_imports
+    } == variadic_shim_imports
     assert external_native_classes["__cxa_atexit"] == "wasm_libc_link_import"
     assert external_native_classes["acos"] == "wasm_libc_link_import"
     assert external_native_classes["cpow"] == "wasm_libc_link_import"

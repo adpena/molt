@@ -7,11 +7,14 @@ from typing import Iterable
 
 from ._intrinsic_symbols import intrinsic_runtime_symbol_name
 from ._wasm_abi_generated import (
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
     wasm_runtime_export_name,
 )
+
+_CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
 _INTRINSIC_LOADER_CALL_NAMES = frozenset(
     {
@@ -29,9 +32,27 @@ _INTRINSIC_LOADER_CALL_NAMES = frozenset(
 
 def _runtime_export_name_or_fail(name: str) -> str:
     export_name = wasm_runtime_export_name(name)
-    if export_name is None:
-        raise ValueError(f"unknown WASM runtime import/export name: {name}")
-    return export_name
+    if export_name is not None:
+        return export_name
+    if (
+        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
+        == _CPYTHON_ABI_LINK_IMPORT_CLASS
+    ):
+        return name
+    raise ValueError(f"unknown WASM runtime import/export name: {name}")
+
+
+def wasm_static_link_runtime_symbols_for_imports(
+    import_symbols: Iterable[str],
+) -> tuple[str, ...]:
+    runtime_symbols: set[str] = set()
+    for symbol in import_symbols:
+        try:
+            _runtime_export_name_or_fail(symbol)
+        except ValueError:
+            continue
+        runtime_symbols.add(symbol)
+    return tuple(sorted(runtime_symbols))
 
 
 @lru_cache(maxsize=1)
@@ -183,8 +204,9 @@ def wasm_runtime_missing_required_exports(
     available = set(export_names)
     missing: set[str] = set()
     for raw_name in required_runtime_imports:
-        name = wasm_runtime_export_name(raw_name)
-        if name is None:
+        try:
+            name = _runtime_export_name_or_fail(raw_name)
+        except ValueError:
             missing.add(raw_name)
             continue
         if name in available:

@@ -51,7 +51,7 @@ from molt.cli.config_resolution import (
     STDLIB_PROFILE_CHOICES,
     _config_value,
 )
-from molt.cli.c_api_symbols import is_c_api_symbol
+from molt.c_api_symbols import is_c_api_symbol
 from molt.cli.deps import _load_toml, _normalize_name
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.env_paths import _base_env
@@ -74,7 +74,6 @@ from molt.cli.extension_manifest import (
 )
 from molt.cli.external_native import (
     _source_recompiled_external_package_root,
-    _wasm_static_link_runtime_symbols_for_imports,
 )
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
@@ -111,6 +110,7 @@ from molt.cli.wrapper_build import (
     _run_wrapper_build,
 )
 from molt.cli.wasm_toolchain import normalize_wasi_sysroot, resolve_wasi_sysroot
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
 
@@ -2880,7 +2880,7 @@ def extension_build(
                 "defined_symbols": wasm_defined_symbols,
                 "undefined_symbols": wasm_import_symbols,
             }
-            runtime_symbols = _wasm_static_link_runtime_symbols_for_imports(
+            runtime_symbols = wasm_static_link_runtime_symbols_for_imports(
                 wasm_import_symbols
             )
             if runtime_symbols:

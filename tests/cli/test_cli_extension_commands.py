@@ -1022,8 +1022,16 @@ def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
 
 def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
+    build_rs = (ROOT / "runtime/molt-cpython-abi/build.rs").read_text()
+    runtime_anchor = (
+        ROOT / "runtime/molt-runtime/src/c_api/cpython_abi_variadic_exports.rs"
+    ).read_text()
+    runtime_c_api_mod = (ROOT / "runtime/molt-runtime/src/c_api/mod.rs").read_text()
 
     required_variadic_exports = {
+        "PyArg_ParseTuple",
+        "PyArg_ParseTupleAndKeywords",
+        "PyArg_UnpackTuple",
         "Py_BuildValue",
         "PyErr_Format",
         "PyErr_FormatV",
@@ -1032,10 +1040,17 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
         "PyObject_CallFunction",
         "PyObject_CallFunctionObjArgs",
         "PyObject_CallMethod",
+        "PyTuple_Pack",
     }
+    assert "mod cpython_abi_variadic_exports;" in runtime_c_api_mod
+    assert "MOLT_CPYTHON_ABI_VARIADIC_EXPORT_ANCHORS" in runtime_anchor
+    assert "static:+whole-archive=molt_pyarg_shims" in build_rs
     for symbol in required_variadic_exports:
         assert f"{symbol}(" in shim
+        assert f"fn {symbol}();" in runtime_anchor
+        assert symbol in runtime_anchor
     assert "PyOS_snprintf(" in shim
+    assert "fn PyOS_snprintf();" in runtime_anchor
     assert "vsnprintf(str, size, format, ap)" in shim
 
 

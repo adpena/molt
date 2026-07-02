@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from molt.cli.c_api_symbols import c_api_primitive_class, is_c_api_external_requirement
+from molt.c_api_symbols import c_api_primitive_class, is_c_api_external_requirement
 from molt.cli.config_resolution import _config_value
 from molt.cli.deps import _load_toml
 from molt.cli.extension_manifest import _coerce_str_list

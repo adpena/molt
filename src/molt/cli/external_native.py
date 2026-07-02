@@ -18,10 +18,10 @@ from molt._wasm_abi_generated import (
     wasm_runtime_export_name,
 )
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
-from molt.cli.c_api_symbols import c_api_primitive_class
-from molt.cli.c_api_symbols import is_c_api_external_requirement
-from molt.cli.c_api_symbols import is_c_api_symbol
-from molt.cli.c_api_symbols import is_cpython_abi_link_symbol
+from molt.c_api_symbols import c_api_primitive_class
+from molt.c_api_symbols import is_c_api_external_requirement
+from molt.c_api_symbols import is_c_api_symbol
+from molt.c_api_symbols import is_cpython_abi_link_symbol
 from molt.cli.extension_manifest import (
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
@@ -758,21 +758,6 @@ def _external_link_primitive_class(symbol: str) -> str:
 
 def _is_external_link_import(symbol: str) -> bool:
     return symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
-
-
-def _wasm_static_link_runtime_symbols_for_imports(
-    import_symbols: Collection[str],
-) -> tuple[str, ...]:
-    runtime_backed_symbols = _wasm_runtime_backed_abi_symbols()
-    return tuple(
-        sorted(
-            symbol
-            for symbol in import_symbols
-            if symbol in runtime_backed_symbols
-            or _is_external_link_import(symbol)
-            or is_cpython_abi_link_symbol(symbol)
-        )
-    )
 
 
 def _molt_runtime_namespace_symbol(symbol: str) -> bool:
