@@ -1982,6 +1982,75 @@ def test_proof_queue_diagnoses_pytest_assertion_failure(
     assert "unexpected rescan" in str(diagnostics[0]["evidence"])
 
 
+def test_proof_queue_diagnoses_pytest_import_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "pytest-import-error.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="pytest-import-error-run",
+        logical_id="pytest-import-error",
+        reason="prove pytest import diagnostics",
+        command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:pytest-import-error",
+        scopes=["tests/test_molt_dev.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "pytest-import-error.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="pytest-import-error-run",
+        body="test: capture pytest import diagnostics",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "E   ImportError: cannot import name '_run_fast_captured_command' from 'molt_dev_common'",
+                "ERROR tests/test_molt_dev.py::test_secure_wip_honors_ignore_set - ImportError: cannot import name '_run_fast_captured_command'",
+                "1 error in 0.42s",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "pytest-import-error-run", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "pytest-import-error-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "pytest-error"
+    assert "test_secure_wip_honors_ignore_set" in str(diagnostics[0]["summary"])
+    assert "_run_fast_captured_command" in str(diagnostics[0]["evidence"])
+
+
 def test_proof_queue_diagnoses_external_native_and_profile_refusals(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
