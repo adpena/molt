@@ -324,6 +324,71 @@ console.log(imports[symbol](35n).toString());
     assert run.stdout.strip() == "42"
 
 
+def test_browser_embed_pyinit_native_callable_import_adapter(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed native callable adapter test")
+
+    root = Path(__file__).resolve().parents[1]
+    embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+    script = tmp_path / "run_pyinit_native_callable.mjs"
+    script.write_text(
+        f"""
+import {{ createMoltNativeCallableImports }} from {embed_uri!r};
+
+const symbol = 'PyInit__nd_image';
+const imports = createMoltNativeCallableImports(
+  {{ memory: new WebAssembly.Memory({{ initial: 1 }}), runtimeInstance: null }},
+  {{ funcImports: [{{ module: 'molt_native', name: symbol }}] }},
+  {{
+    manifest: {{
+      abi: {{
+        browser_embed: {{
+          native_callables: {{
+            module: 'molt_native',
+            symbols: {{
+              [symbol]: {{
+                abi: 'molt.pyinit_module_v1',
+                binding: 'direct_symbol',
+                signature: {{
+                  params: [],
+                  result: 'molt.pyobject_ptr',
+                }},
+                exports: [{{ qualified_name: 'scipy.ndimage._nd_image' }}],
+              }},
+            }},
+          }},
+        }},
+      }},
+    }},
+    nativeCallables: {{
+      [symbol]: (ctx) => {{
+        if (ctx.abi !== 'molt.pyinit_module_v1') throw new Error('wrong abi');
+        if (ctx.arity !== 0) throw new Error('wrong arity');
+        return 0x12345678;
+      }},
+    }},
+  }},
+);
+
+console.log(imports[symbol]().toString(16));
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    run = _run_wasm_test_process(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "12345678"
+
+
 def test_browser_embed_object_call_native_callable_result_must_be_handle(
     tmp_path: Path,
 ) -> None:

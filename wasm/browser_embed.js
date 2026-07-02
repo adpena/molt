@@ -83,6 +83,7 @@ const requireIntegerField = (
 const NATIVE_CALLABLE_ABI_OBJECT_CALL_V1 = 'molt.object_call_v1';
 const NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1 = 'molt.object_callargs_v1';
 const NATIVE_CALLABLE_ABI_FORWARD_F32_V1 = 'molt.forward_f32_v1';
+const NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1 = 'molt.pyinit_module_v1';
 
 const nativeCallableBrowserSignature = (abi) => {
   if (abi === NATIVE_CALLABLE_ABI_OBJECT_CALL_V1) {
@@ -93,6 +94,9 @@ const nativeCallableBrowserSignature = (abi) => {
   }
   if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
     return { params: ['bytes.float32'], result: 'bytes.float32' };
+  }
+  if (abi === NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1) {
+    return { params: [], result: 'molt.pyobject_ptr' };
   }
   throw new Error(`unsupported browser native callable ABI: ${abi}`);
 };
@@ -664,6 +668,35 @@ const callObjectNative = (state, symbol, impl, args, abi, expectedArity = null) 
   return normalizeMoltValueHandle(symbol, abi, result, 'result');
 };
 
+const normalizeWasmI32 = (symbol, abi, value, label) => {
+  const numberValue = typeof value === 'bigint' ? Number(value) : value;
+  if (
+    typeof numberValue === 'number' &&
+    Number.isFinite(numberValue) &&
+    Number.isInteger(numberValue) &&
+    numberValue >= 0 &&
+    numberValue <= 0xffffffff
+  ) {
+    return numberValue >>> 0;
+  }
+  throw new TypeError(`${symbol} ${abi} ${label} must be a wasm i32 pointer`);
+};
+
+const callPyInitNative = (state, symbol, impl, args) => {
+  const abi = NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1;
+  if (args.length !== 0) {
+    throw new Error(`${symbol} ${abi} expects no argument(s)`);
+  }
+  const result = impl({
+    abi,
+    arity: 0,
+    memory: state.memory,
+    runtimeInstance: state.runtimeInstance,
+    symbol,
+  });
+  return normalizeWasmI32(symbol, abi, result, 'result');
+};
+
 export const createMoltNativeCallableImports = (state, appImports, options = {}) => {
   const callables = nativeCallableMap(options.nativeCallables);
   const abiBySymbol = nativeCallableAbiMap(options.nativeCallableAbis);
@@ -707,6 +740,9 @@ export const createMoltNativeCallableImports = (state, appImports, options = {})
       }
       if (abi === NATIVE_CALLABLE_ABI_FORWARD_F32_V1) {
         return callForwardF32Native(state, symbol, impl, args);
+      }
+      if (abi === NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1) {
+        return callPyInitNative(state, symbol, impl, args);
       }
       throw new Error(`unsupported browser native callable ABI for ${symbol}: ${abi}`);
     };

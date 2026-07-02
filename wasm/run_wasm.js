@@ -5184,6 +5184,27 @@ const ensureTableCapacityForExportedRefs = (instance, table, label) => {
   }
 };
 
+const unresolvedNativeImportNames = (importsDesc) => {
+  const names = [];
+  for (const entry of importsDesc?.funcImports || []) {
+    if (entry.module === 'molt_native') {
+      names.push(entry.name);
+    }
+  }
+  return [...new Set(names)].sort();
+};
+
+const assertNoUnresolvedNativeImports = (importsDesc, description) => {
+  const names = unresolvedNativeImportNames(importsDesc);
+  if (names.length === 0) {
+    return;
+  }
+  throw new Error(
+    `${description} still imports molt_native; static native link/export ` +
+      `custody is incomplete: ${names.join(', ')}`,
+  );
+};
+
 const runDirectLink = async () => {
   appInstanceForHostCalls = null;
   appInstanceForExceptions = null;
@@ -5443,6 +5464,7 @@ const runDirectLink = async () => {
   if (traceRun) {
     console.error('[molt wasm] direct: instantiate output');
   }
+  assertNoUnresolvedNativeImports(outputImports, 'direct-link output wasm');
   const outputImportsDirect = buildRuntimeImportDirect(runtimeInst);
   const outputWasi = createWasiContext();
   const outputImportObject = {
@@ -5542,6 +5564,7 @@ const runLinked = async () => {
       )}; JS call_indirect stubs removed.`,
     );
   }
+  assertNoUnresolvedNativeImports(linkedImports, 'linked wasm');
 
   const importObject = {
     wasi_snapshot_preview1: wasiImport,
