@@ -161,7 +161,9 @@ entrypoints, and C/API callable exports remain generated ABI facts, but the app
 import section admits them only when the frontend/backend observed a concrete
 use. In particular, there is no default GPU intrinsic manifest list and no
 baseline import sweep for generated runtime callables; unused callables must
-tree-shake out of browser artifacts.
+tree-shake out of browser artifacts. Generated runtime-owned table roots, such
+as the current poll-table slots, remain explicit table-layout roots until that
+table is itself reachability-sliced.
 
 ## Package Compatibility Boundary
 

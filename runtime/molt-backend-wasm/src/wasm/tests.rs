@@ -1536,6 +1536,40 @@ fn unreachable_runtime_callables_are_not_imported() {
 }
 
 #[test]
+fn poll_table_runtime_callables_remain_table_roots() {
+    let func = wasm_test_function(
+        "poll_table_roots",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    );
+    let ir = SimpleIR {
+        functions: vec![func],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("poll-table root module must be valid WASM");
+
+    let imports: BTreeSet<String> = wasm_function_import_names(&wasm).into_iter().collect();
+    for spec in POLL_TABLE_IMPORTS {
+        let import_name = spec.import.name();
+        assert!(
+            imports.contains(import_name),
+            "poll-table root import {import_name} must remain available for slot {}",
+            spec.table_slot
+        );
+    }
+}
+
+#[test]
 fn reachable_builtin_runtime_callable_is_imported() {
     let mut abs_builtin = wasm_test_op("builtin_func", Some("fn"), vec![]);
     abs_builtin.s_value = Some("molt_abs_builtin".to_string());
