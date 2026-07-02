@@ -30,6 +30,35 @@ fn expected_fixed_exports() -> BTreeSet<String> {
     names
 }
 
+fn expected_variadic_shim_exports() -> BTreeSet<String> {
+    BTreeSet::from([
+        "PyArg_ParseTuple".to_string(),
+        "PyArg_ParseTupleAndKeywords".to_string(),
+        "PyArg_UnpackTuple".to_string(),
+        "PyArg_VaParseTupleAndKeywords".to_string(),
+        "PyTuple_Pack".to_string(),
+        "PyObject_CallFunction".to_string(),
+        "PyObject_CallFunctionObjArgs".to_string(),
+        "PyObject_CallMethod".to_string(),
+        "PyObject_CallMethodObjArgs".to_string(),
+        "Py_BuildValue".to_string(),
+        "_Py_BuildValue_SizeT".to_string(),
+        "Py_VaBuildValue".to_string(),
+        "PyUnicode_FromFormat".to_string(),
+        "PyUnicode_FromFormatV".to_string(),
+        "PyOS_snprintf".to_string(),
+        "PyOS_vsnprintf".to_string(),
+        "PyOS_string_to_double".to_string(),
+        "PyOS_strtol".to_string(),
+        "PyOS_strtoul".to_string(),
+        "PyErr_WarnFormat".to_string(),
+        "PyErr_Format".to_string(),
+        "PyErr_FormatV".to_string(),
+        "PyErr_FormatUnraisable".to_string(),
+        "PySys_WriteStderr".to_string(),
+    ])
+}
+
 fn read_export_names(path: &Path) -> BTreeSet<String> {
     let data = fs::read(path).expect("read wasm artifact");
     assert!(
@@ -87,6 +116,10 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
     fs::create_dir_all(&target_dir).expect("create target dir");
     fs::create_dir_all(&tmp_dir).expect("create tmp dir");
 
+    let variadic_export_flags = expected_variadic_shim_exports()
+        .iter()
+        .map(|name| format!("-C link-arg=--export-if-defined={name}"))
+        .collect::<Vec<_>>();
     let rustflags = [
         "-C link-arg=--import-memory",
         "-C link-arg=--import-table",
@@ -94,6 +127,8 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         "-C link-arg=--export-dynamic",
         "-C target-feature=-reference-types,+simd128",
     ]
+    .into_iter()
+    .chain(variadic_export_flags.iter().map(String::as_str))
     .join(" ");
     let output = Command::new("cargo")
         .current_dir(&root)
@@ -136,5 +171,14 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
     assert!(
         missing.is_empty(),
         "missing fixed wasm cdylib exports: {missing:?}"
+    );
+    let expected_variadic = expected_variadic_shim_exports();
+    let missing_variadic: Vec<String> = expected_variadic
+        .difference(&export_names)
+        .cloned()
+        .collect();
+    assert!(
+        missing_variadic.is_empty(),
+        "missing variadic shim wasm exports: {missing_variadic:?}"
     );
 }

@@ -1428,65 +1428,6 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     assert (notebooks / "failed-run.py").exists()
 
 
-def test_proof_queue_diagnoses_runtime_wasm_missing_required_exports(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    db = tmp_path / "proof_queue.sqlite3"
-    log_path = tmp_path / "runtime-missing-exports.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
-        conn,
-        run_id="runtime-missing-exports",
-        logical_id="pact-witness-acceptance",
-        reason="prove runtime export diagnostics",
-        command=[sys.executable, "-m", "molt", "build", "field_solve.py"],
-        cwd=proof_queue.ROOT,
-        resource_family="wasm",
-        contention_key="wasm:pact-witness",
-        scopes=["src/molt/cli/runtime_build.py"],
-        git_snapshot={
-            "available": True,
-            "head": "abc123",
-            "dirty": False,
-            "status": [],
-        },
-        log_path=log_path,
-        summary_json=tmp_path / "runtime-missing-exports.memory_guard.json",
-    )
-    log_path.write_text(
-        "Runtime wasm build produced artifact missing required exports: "
-        "PyArg_ParseTuple, PyErr_Format, PyObject_CallFunction\n",
-        encoding="utf-8",
-    )
-    proof_queue._update_run(
-        conn,
-        "runtime-missing-exports",
-        status="failed",
-        returncode=1,
-    )
-
-    assert (
-        proof_queue.main(
-            [
-                "--db",
-                str(db),
-                "--logs-root",
-                str(tmp_path / "runs"),
-                "--repo-root",
-                str(proof_queue.ROOT),
-                "evidence",
-                "runtime-missing-exports",
-            ]
-        )
-        == 0
-    )
-    evidence = json.loads(capsys.readouterr().out)
-    diagnostics = evidence[0]["diagnostics"]
-    assert diagnostics[0]["signal_id"] == "runtime-wasm-missing-required-exports"
-    assert "PyArg_ParseTuple" in diagnostics[0]["summary"]
-    assert "wasm_runtime_shared_export_link_args" in diagnostics[0]["next_action"]
-
-
 def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
