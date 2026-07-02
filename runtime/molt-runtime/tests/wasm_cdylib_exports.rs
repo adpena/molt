@@ -30,8 +30,8 @@ fn expected_fixed_exports() -> BTreeSet<String> {
     names
 }
 
-fn expected_variadic_shim_exports() -> BTreeSet<String> {
-    BTreeSet::from([
+fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
+    let mut names = BTreeSet::from([
         "PyArg_ParseTuple".to_string(),
         "PyArg_ParseTupleAndKeywords".to_string(),
         "PyArg_UnpackTuple".to_string(),
@@ -56,7 +56,20 @@ fn expected_variadic_shim_exports() -> BTreeSet<String> {
         "PyErr_FormatV".to_string(),
         "PyErr_FormatUnraisable".to_string(),
         "PySys_WriteStderr".to_string(),
-    ])
+    ]);
+    names.extend(
+        [
+            "PyObject_Init",
+            "PyObject_InitVar",
+            "PyModuleDef_Init",
+            "_PyObject_New",
+            "PyMemoryView_FromMemory",
+            "Py_None",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    names
 }
 
 fn read_export_names(path: &Path) -> BTreeSet<String> {
@@ -116,11 +129,11 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
     fs::create_dir_all(&target_dir).expect("create target dir");
     fs::create_dir_all(&tmp_dir).expect("create tmp dir");
 
-    let variadic_export_flags = expected_variadic_shim_exports()
+    let cpython_abi_export_flags = expected_cpython_abi_requested_exports()
         .iter()
         .map(|name| format!("-C link-arg=--export-if-defined={name}"))
         .collect::<Vec<_>>();
-    let rustflags = [
+    let mut rustflags = [
         "-C link-arg=--import-memory",
         "-C link-arg=--import-table",
         "-C link-arg=--growable-table",
@@ -128,8 +141,10 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         "-C target-feature=-reference-types,+simd128",
     ]
     .into_iter()
-    .chain(variadic_export_flags.iter().map(String::as_str))
-    .join(" ");
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    rustflags.extend(cpython_abi_export_flags);
+    let rustflags = rustflags.join(" ");
     let output = Command::new("cargo")
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", &target_dir)
@@ -172,13 +187,13 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         missing.is_empty(),
         "missing fixed wasm cdylib exports: {missing:?}"
     );
-    let expected_variadic = expected_variadic_shim_exports();
-    let missing_variadic: Vec<String> = expected_variadic
+    let expected_cpython_abi = expected_cpython_abi_requested_exports();
+    let missing_cpython_abi: Vec<String> = expected_cpython_abi
         .difference(&export_names)
         .cloned()
         .collect();
     assert!(
-        missing_variadic.is_empty(),
-        "missing variadic shim wasm exports: {missing_variadic:?}"
+        missing_cpython_abi.is_empty(),
+        "missing requested CPython ABI wasm exports: {missing_cpython_abi:?}"
     );
 }
