@@ -955,16 +955,24 @@ class _ExternalPackageNativeArtifactPlan:
 
     def support_source_paths_by_module(self) -> dict[str, Path]:
         sources: dict[str, Path] = {}
+        runtime_import_modules = self.runtime_python_import_module_names()
         for artifact in self.artifacts:
             package_source_root = self._package_source_root(
                 artifact.package_dir,
                 artifact.package,
             )
             for rel_path, _digest in artifact.support_file_sha256:
-                module_name = self._support_python_module_name(
-                    rel_path,
-                    include_init=True,
-                )
+                module_name = self._support_python_module_name(rel_path)
+                if module_name is None:
+                    init_module_name = self._support_python_module_name(
+                        rel_path,
+                        include_init=True,
+                    )
+                    module_name = (
+                        init_module_name
+                        if init_module_name in runtime_import_modules
+                        else None
+                    )
                 if module_name is not None:
                     sources[module_name] = (
                         package_source_root / Path(rel_path.replace("\\", "/"))
