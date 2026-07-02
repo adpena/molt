@@ -38,6 +38,11 @@ def test_proof_queue_session_id_is_contention_key_scoped() -> None:
     ) != proof_queue._proof_session_id("wasm", "wasm-browser")
 
 
+def test_proof_queue_pid_alive_detects_current_process() -> None:
+    assert proof_queue._pid_alive(os.getpid())
+    assert not proof_queue._pid_alive(0)
+
+
 def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
@@ -961,6 +966,113 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     assert '"derives_from": 1' in notebook_text
 
 
+def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    conn = proof_queue._connect(db)
+    for run_id, status in (("failed-parent", "failed"), ("blocked-child", "queued")):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove blocked dependency evidence",
+            command=[sys.executable, "-c", "print('blocked')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._update_run(conn, run_id, status=status)
+    proof_queue._insert_note(
+        conn,
+        run_id="blocked-child",
+        body="test: blocked dependency must leave evidence",
+        kind="submission",
+        author="codex",
+    )
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="failed-parent",
+        child_run_id="blocked-child",
+        kind="reruns",
+        note="child waits on failed parent",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+            ]
+        )
+        == 0
+    )
+    child_log = logs / "blocked-child.log"
+    assert "proof queue blocked by dependency" in child_log.read_text(encoding="utf-8")
+    assert (notebooks / "blocked-child.py").exists()
+    capsys.readouterr()
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "blocked-child",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    assert evidence[0]["status"] == "blocked"
+    assert [item["signal_id"] for item in evidence[0]["diagnostics"]] == [
+        "proof-dependency-blocked"
+    ]
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "proof-log-missing" in output
+    assert "run=failed-parent" in output
+    assert "run=blocked-child" not in output
+
+
 def test_proof_queue_appends_notes_and_exports_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1419,6 +1531,74 @@ def test_proof_queue_diagnoses_external_native_and_profile_refusals(
     }
 
 
+def test_proof_queue_diagnoses_external_native_abi_link_surface_gap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "abi-link-surface.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="abi-link-surface",
+        logical_id="pact-witness-acceptance",
+        reason="prove generated ABI link surface diagnostics",
+        command=[sys.executable, "-c", "raise SystemExit(2)"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact-witness",
+        scopes=["src/molt/cli/external_native.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "abi-link-surface.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="abi-link-surface",
+        body="test: classify generated WASM ABI link import surface gaps",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "External static package native-artifact custody errors: "
+        "numpy: object_closure runtime ABI symbol "
+        "'molt_cpython_abi_date_from_date' is not in the generated WASM "
+        "ABI/link import surface; numpy: object_closure runtime ABI symbol "
+        "'molt_cpython_abi_delta_from_delta' is not in the generated WASM "
+        "ABI/link import surface\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "abi-link-surface", status="failed", returncode=2)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "abi-link-surface",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert [item["signal_id"] for item in diagnostics] == [
+        "external-native-abi-link-surface-missing"
+    ]
+    assert "molt_cpython_abi_date_from_date" in diagnostics[0]["summary"]
+    assert "generated WASM ABI manifest" in diagnostics[0]["next_action"]
+
+
 def test_proof_queue_audit_distinguishes_classified_product_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1475,6 +1655,181 @@ def test_proof_queue_audit_distinguishes_classified_product_failure(
     output = capsys.readouterr().out
     assert "classified_failed=1" in output
     assert "no queue health issues" in output
+
+
+def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    product_log = tmp_path / "frontier.log"
+    warning_log = tmp_path / "guard-warning.log"
+    proof_queue._insert_run(
+        conn,
+        run_id="frontier-run",
+        logical_id="pact-witness-acceptance",
+        reason="prove audit product frontier",
+        command=[sys.executable, "-c", "raise SystemExit(2)"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact-witness",
+        scopes=["collab/pact/"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=product_log,
+        summary_json=tmp_path / "frontier.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="frontier-run",
+        body="test: product frontier must be visible before warning noise",
+        kind="submission",
+        author="codex",
+    )
+    product_log.write_text(
+        "External static package native-artifact custody errors: "
+        "numpy: object_closure runtime ABI symbol "
+        "'molt_cpython_abi_date_from_date' is not in the generated WASM "
+        "ABI/link import surface\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "frontier-run", status="failed", returncode=2)
+
+    proof_queue._insert_run(
+        conn,
+        run_id="guard-warning-run",
+        logical_id="guard-warning",
+        reason="prove audit warning noise does not hide frontier",
+        command=[sys.executable, "-c", "print('ok')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:guard-warning",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=warning_log,
+        summary_json=tmp_path / "guard-warning.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="guard-warning-run",
+        body="test: warning remains visible but secondary",
+        kind="submission",
+        author="codex",
+    )
+    warning_log.write_text(
+        "memory_guard: orphaned child processes detected after command exit; "
+        "killed_at=2026-07-02T00:00:00Z elapsed=1.00s\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "guard-warning-run", status="passed", returncode=0)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "frontier:" in output
+    assert "external-native-abi-link-surface-missing run=frontier-run" in output
+    assert output.index("frontier:") < output.index("audit-memory-guard-orphan-cleanup")
+
+
+def test_proof_queue_audit_omits_superseded_frontier_failures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id, status in (
+        ("stale-failure", "failed"),
+        ("rerun-child", "passed"),
+        ("current-failure", "failed"),
+    ):
+        log_path = tmp_path / f"{run_id}.log"
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id="pact-witness-acceptance",
+            reason="prove superseded frontier filtering",
+            command=[sys.executable, "-c", "raise SystemExit(1)"],
+            cwd=proof_queue.ROOT,
+            resource_family="wasm-browser",
+            contention_key=f"wasm:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=log_path,
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._insert_note(
+            conn,
+            run_id=run_id,
+            body="test: frontier filtering has explicit run context",
+            kind="submission",
+            author="codex",
+        )
+        log_path.write_text(
+            "External static package native-artifact custody errors: "
+            "numpy: object_closure runtime ABI symbol "
+            "'molt_cpython_abi_date_from_date' is not in the generated WASM "
+            "ABI/link import surface\n",
+            encoding="utf-8",
+        )
+        proof_queue._update_run(
+            conn,
+            run_id,
+            status=status,
+            returncode=0 if status == "passed" else 1,
+        )
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="stale-failure",
+        child_run_id="rerun-child",
+        kind="reruns",
+        note="rerun retired stale frontier",
+        author="codex",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "external-native-abi-link-surface-missing run=current-failure" in output
+    assert "run=stale-failure" not in output
 
 
 def test_proof_queue_audit_fails_on_unclassified_failure(

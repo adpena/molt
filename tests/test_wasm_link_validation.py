@@ -2102,6 +2102,40 @@ def test_rewrite_native_runtime_imports_canonicalizes_env_molt_abi_only(
         ]
 
 
+def test_rewrite_native_runtime_imports_routes_canonical_cpython_abi_symbols(
+    tmp_path: Path,
+) -> None:
+    native = tmp_path / "ndimage.molt.wasm"
+    native.write_bytes(
+        _build_env_function_import_module(
+            ["PyModuleDef_Init", "molt_cpython_abi_date_from_date", "malloc"]
+        )
+    )
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            {"PyModuleDef_Init", "molt_cpython_abi_date_from_date"},
+            temp_dir,
+        )
+
+        assert force_exports == []
+        assert len(rewritten_paths) == 1
+        assert rewritten_paths[0] != native
+        assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
+            ("molt_runtime", "PyModuleDef_Init"),
+            ("molt_runtime", "molt_cpython_abi_date_from_date"),
+            ("env", "malloc"),
+        ]
+        assert _function_import_pairs(native.read_bytes()) == [
+            ("env", "PyModuleDef_Init"),
+            ("env", "molt_cpython_abi_date_from_date"),
+            ("env", "malloc"),
+        ]
+
+
 def test_rewrite_native_runtime_imports_forces_generated_runtime_exports(
     tmp_path: Path,
 ) -> None:

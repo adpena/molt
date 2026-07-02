@@ -10,6 +10,9 @@ from pathlib import Path
 from types import MappingProxyType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 _WASM_ABI_GENERATED = REPO_ROOT / "src/molt/_wasm_abi_generated.py"
 _WASM_ABI_SPEC = importlib.util.spec_from_file_location(
     "molt_tools_wasm_abi_generated", _WASM_ABI_GENERATED
@@ -18,6 +21,8 @@ if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
     raise RuntimeError(f"cannot load generated WASM ABI data: {_WASM_ABI_GENERATED}")
 _WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
 _WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
+
+from molt.cli.c_api_symbols import is_cpython_abi_link_symbol  # noqa: E402,F401
 
 
 WASM_MAGIC = b"\x00asm"

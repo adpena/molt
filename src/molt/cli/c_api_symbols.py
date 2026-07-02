@@ -148,3 +148,19 @@ def c_api_primitive_class(symbol: str) -> str:
         if symbol.startswith(prefixes):
             return primitive_class
     return "python_c_api"
+
+
+_NON_CPYTHON_ABI_PRIMITIVE_CLASSES = frozenset(
+    {
+        "numpy_c_api",
+        "cython_runtime_helper",
+    }
+)
+
+
+def is_cpython_abi_link_symbol(symbol: str) -> bool:
+    """Return whether *symbol* is owned by the Molt CPython ABI runtime lane."""
+    return (
+        is_c_api_external_requirement(symbol)
+        and c_api_primitive_class(symbol) not in _NON_CPYTHON_ABI_PRIMITIVE_CLASSES
+    )

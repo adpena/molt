@@ -4296,6 +4296,10 @@ def test_c_api_primitive_class_contract_buckets_shared_surfaces() -> None:
     assert {
         symbol: cli_c_api_symbols.c_api_primitive_class(symbol) for symbol in cases
     } == cases
+    assert cli_c_api_symbols.is_cpython_abi_link_symbol("PyModuleDef_Init")
+    assert cli_c_api_symbols.is_cpython_abi_link_symbol("PyErr_SetString")
+    assert not cli_c_api_symbols.is_cpython_abi_link_symbol("PyArray_NDIM")
+    assert not cli_c_api_symbols.is_cpython_abi_link_symbol("_Pyx_PyObject_Call")
 
 
 def test_external_native_artifact_plan_records_c_api_symbol_board(
@@ -17771,7 +17775,7 @@ def test_split_runtime_static_native_reuse_rejects_hidden_active_table_slot(
     )
 
 
-def test_prepare_non_native_build_result_links_cpython_abi_provider(
+def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -17840,8 +17844,6 @@ def test_prepare_non_native_build_result_links_cpython_abi_provider(
         )
     )
     link_calls: list[list[str]] = []
-    provider_calls: list[dict[str, object]] = []
-
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(
         cli_non_native_output,
@@ -17849,16 +17851,6 @@ def test_prepare_non_native_build_result_links_cpython_abi_provider(
         lambda _path, _module_name: set(),
     )
 
-    def fake_provider(**kwargs: object) -> Path:
-        provider_calls.append(dict(kwargs))
-        return cpython_abi_provider
-
-    monkeypatch.setattr(
-        cli_non_native_output,
-        "_ensure_wasm_cpython_abi_staticlib",
-        fake_provider,
-        raising=True,
-    )
     monkeypatch.setattr(
         cli_wasm_toolchain,
         "wasm_wasi_libc_archive",
@@ -17895,14 +17887,6 @@ def test_prepare_non_native_build_result_links_cpython_abi_provider(
 
     assert err is None
     assert prepared is not None
-    assert provider_calls == [
-        {
-            "project_root": tmp_path,
-            "json_output": True,
-            "cargo_profile": "release-fast",
-            "cargo_timeout": None,
-        }
-    ]
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
     native_inputs = [
@@ -17910,7 +17894,138 @@ def test_prepare_non_native_build_result_links_cpython_abi_provider(
         for index, arg in enumerate(link_cmd)
         if arg == "--native-object"
     ]
-    assert cpython_abi_provider in native_inputs
+    assert cpython_abi_provider not in native_inputs
+    assert libc_provider in native_inputs
+    assert compiler_rt_provider in native_inputs
+    staged_native_inputs = [
+        path for path in native_inputs if "external_static_packages" in path.parts
+    ]
+    assert len(staged_native_inputs) == 1
+    assert staged_native_inputs[0].read_bytes() == artifact_bytes
+
+
+def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    _write_split_runtime_vfs_support(tmp_path)
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    artifact_path = package_dir / "_multiarray_umath.molt.wasm"
+    artifact_bytes = b"\0asm\x01\0\0\0native"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest_path = package_dir / "extension_manifest.json"
+    manifest_bytes = b'{"runtime_linkage":"static_link"}\n'
+    manifest_path.write_bytes(manifest_bytes)
+    cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
+    cpython_abi_provider.parent.mkdir(parents=True)
+    cpython_abi_provider.write_bytes(b"!<arch>\nprovider")
+    libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
+    libc_provider.parent.mkdir(parents=True)
+    libc_provider.write_bytes(b"!<arch>\nlibc")
+    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
+    compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
+    native_artifact_plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.core._multiarray_umath",
+                package_dir=package_dir,
+                path=artifact_path,
+                manifest_path=manifest_path,
+                extension_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+                manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                capabilities=(),
+                abi_tag="molt_abi1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                abi_symbols=(
+                    _ExternalNativeAbiSymbol(
+                        symbol="printf",
+                        status="external_link",
+                        primitive_class="wasm_libc_link_import",
+                        source="undefined_symbols",
+                    ),
+                    _ExternalNativeAbiSymbol(
+                        symbol="molt_cpython_abi_date_from_date",
+                        status="external_link",
+                        primitive_class="molt_cpython_abi_link_import",
+                        source="undefined_symbols",
+                    ),
+                    _ExternalNativeAbiSymbol(
+                        symbol="__trunctfdf2",
+                        status="external_link",
+                        primitive_class="wasm_compiler_rt_link_import",
+                        source="undefined_symbols",
+                    ),
+                ),
+            ),
+        )
+    )
+    link_calls: list[list[str]] = []
+    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    monkeypatch.setattr(
+        cli_non_native_output,
+        "_collect_wasm_module_import_names",
+        lambda _path, _module_name: set(),
+    )
+
+    monkeypatch.setattr(
+        cli_wasm_toolchain,
+        "wasm_wasi_libc_archive",
+        lambda: libc_provider,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli_wasm_toolchain,
+        "wasm_compiler_builtins_archive",
+        lambda: compiler_rt_provider,
+        raising=True,
+    )
+
+    prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda required=None: True,
+        ensure_runtime_wasm_reloc=lambda required=None: True,
+        runtime_cargo_profile="release-fast",
+        molt_root=tmp_path,
+        split_runtime=True,
+        precompile=False,
+        native_artifact_plan=native_artifact_plan,
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert len(link_calls) == 1
+    link_cmd = link_calls[0]
+    assert "--split-runtime" in link_cmd
+    native_inputs = [
+        Path(link_cmd[index + 1])
+        for index, arg in enumerate(link_cmd)
+        if arg == "--native-object"
+    ]
+    assert cpython_abi_provider not in native_inputs
     assert libc_provider in native_inputs
     assert compiler_rt_provider in native_inputs
     staged_native_inputs = [

@@ -7069,6 +7069,42 @@ name = "__cpp_exception"
 primitive_class = "wasm_toolchain_link_import"
 
 [[external_native_link_import]]
+name = "molt_cpython_abi_date_from_date"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_date_from_timestamp"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_datetime_from_date_and_time"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_datetime_from_date_and_time_and_fold"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_datetime_from_timestamp"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_delta_from_delta"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_time_from_time"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_time_from_time_and_fold"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
+name = "molt_cpython_abi_timezone_from_timezone"
+primitive_class = "molt_cpython_abi_link_import"
+
+[[external_native_link_import]]
 name = "__trunctfdf2"
 primitive_class = "wasm_compiler_rt_link_import"
 
