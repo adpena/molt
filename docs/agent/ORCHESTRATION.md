@@ -104,6 +104,43 @@ Last updated: 2026-07-02 by the orchestrator.
   of elapsed), file ONE queue note naming the crate and move on — do not
   re-diagnose build latency per row.
 
+## Conduct standards (binding — you are brilliant; act like it)
+
+- **Lane ownership is exclusive.** The native call-dispatch/trampoline
+  defect currently has ONE integrator (orchestrator's agent, harvesting the
+  E:/Molt/worktrees/native-import-typeerror-20260702 fix and the
+  fc/modules.rs operand fix). If you were on it: your evidence is captured;
+  STOP editing that lane and pick your next board item. Before opening any
+  file, check this board for the lane owner; two engineers fixing one
+  defect from two angles produces conflicts, not speed.
+- **Evidence beats vigil.** A poll loop is not work. The budget is: at most
+  ONE status read per 5 minutes on a row you own, ZERO on rows you don't.
+  If you catch yourself writing "still running" twice in a row, you are
+  idling — switch to a second deliverable or end the arc.
+- **Diagnosis is time-boxed.** 15 minutes per fault to form a hypothesis
+  with a bounded experiment; if the experiment needs a build, submit it
+  detached and work on something else. Never re-run a failed shape
+  unchanged ("doomed exact timeout" reruns).
+- **No unbounded filesystem scans, ever.** You have the pytest log, the
+  queue log, and the artifact manifest — derive exact paths. A recursive
+  Get-ChildItem over E:\Molt\tmp is a firable offense in this codebase; it
+  starves the builds everyone else is waiting on.
+- **Process spelunking is capped at one snapshot.** One targeted
+  Win32_Process query per incident to confirm liveness, then the queue owns
+  it. Walking a guard chain five levels deep four separate times is
+  self-harm.
+- **Write down what you learned the moment you learn it** (queue note or
+  worktree commit message). You are forgetful across compactions; the
+  notes are your memory. A finding that lives only in your context is a
+  finding the team loses.
+- **Fix the tool when the tool wastes you twice.** The second time a queue
+  row lies to you (stale status, zombie child-runner, prune gap), the
+  defect IS the work: file it precisely on the board's queue-DX list with
+  the row ID, don't route around it forever.
+- **Side worktrees for runtime/backend edits** (as engineer A correctly
+  did): the shared checkout's cargo state is everyone's build cache; your
+  compile churn belongs in your own worktree until the arc is done.
+
 ## Working agreement (binding)
 
 - Keep the shared tree compile-green: `cargo check` the crates you touched
