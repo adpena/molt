@@ -562,10 +562,20 @@ static int Py_OptimizeFlag = 0;
 #endif
 
 #ifndef PyMODINIT_FUNC
+/* CPython parity: keep C linkage for module init functions defined in C++
+ * translation units so the PyInit_* symbol stays unmangled. */
+#ifdef __cplusplus
+#if defined(_WIN32)
+#define PyMODINIT_FUNC extern "C" __declspec(dllexport) PyObject *
+#else
+#define PyMODINIT_FUNC extern "C" PyObject *
+#endif
+#else
 #if defined(_WIN32)
 #define PyMODINIT_FUNC __declspec(dllexport) PyObject *
 #else
 #define PyMODINIT_FUNC PyObject *
+#endif
 #endif
 #endif
 

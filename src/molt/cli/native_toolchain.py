@@ -225,6 +225,10 @@ def _zig_target_query(target_triple: str) -> str:
         "mingw32": "windows",
         "mingw64": "windows",
         "cygwin": "windows",
+        # Zig names the WASI OS "wasi" regardless of the preview revision
+        # encoded in LLVM triples (wasip1/wasip2).
+        "wasip1": "wasi",
+        "wasip2": "wasi",
     }
     abi_aliases = {
         "sim": "simulator",

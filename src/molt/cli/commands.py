@@ -2540,7 +2540,12 @@ def extension_build(
                         cc_cmd=unit_cc_cmd,
                     )
                 )
-            cmd.extend(unit_compile_args)
+            cmd.extend(
+                _source_extensions._source_extension_unit_args_for_driver(
+                    unit_compile_args,
+                    cc_cmd=unit_cc_cmd,
+                )
+            )
             result = _run_completed_command(
                 cmd,
                 cwd=project_root,
