@@ -1026,11 +1026,23 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         " -C link-arg=--export-if-defined=molt_required_export"
         " -C link-arg=--export-if-defined=molt_other_required_export"
     )
+    export_link_arg_calls: list[frozenset[str] | None] = []
+
+    def fake_wasm_runtime_shared_export_link_args(
+        required_runtime_imports=None,
+    ):  # type: ignore[no-untyped-def]
+        export_link_arg_calls.append(
+            None
+            if required_runtime_imports is None
+            else frozenset(required_runtime_imports),
+        )
+        return export_flags
+
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(
         RUNTIME_BUILD,
-        "wasm_runtime_export_link_args",
-        lambda *args, **kwargs: export_flags,
+        "wasm_runtime_shared_export_link_args",
+        fake_wasm_runtime_shared_export_link_args,
         raising=True,
     )
     monkeypatch.setattr(
@@ -1114,8 +1126,12 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         project_root=project_root,
         stdlib_profile="micro",
         resolved_modules={"__main__", "math", "sys", "builtins"},
+        required_exports={"molt_required_export", "molt_other_required_export"},
     )
 
+    assert export_link_arg_calls == [
+        frozenset({"molt_required_export", "molt_other_required_export"})
+    ]
     cargo_rustflags = captured["env"]["RUSTFLAGS"]
     assert "--export-if-defined=molt_required_export" not in cargo_rustflags
     assert "-C link-arg=@" in cargo_rustflags

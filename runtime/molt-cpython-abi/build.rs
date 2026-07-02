@@ -66,7 +66,6 @@ fn main() {
     build.compile("molt_pyarg_shims");
     if target_arch == "wasm32" {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
-        println!("cargo:rustc-link-lib=static:+whole-archive=molt_pyarg_shims");
     }
 
     // Force the static shim's symbols into the cdylib output so that
