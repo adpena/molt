@@ -64,6 +64,14 @@ _SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX = (
     "extension_manifest.json source missing:"
 )
 _MESON_EXTENSION_TARGET_TYPES = {"shared module", "shared library", "library"}
+_SOURCE_EXTENSION_EAGER_IMPORT_CALLEES = frozenset({"IMPORT_GLOBAL", "IMPORT_NAME"})
+_SOURCE_EXTENSION_GENERIC_IMPORT_CALLEES = frozenset(
+    {
+        "npy_cache_import",
+        "npy_cache_import_runtime",
+        "npy_import",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -1156,17 +1164,70 @@ def _source_extension_object_fact(
     )
 
 
-def _source_extension_runtime_import_callee(callee: str) -> bool:
+def _source_extension_runtime_import_callee(callee: str) -> str | None:
+    if callee in _SOURCE_EXTENSION_EAGER_IMPORT_CALLEES:
+        return "eager"
     if callee.startswith("PyImport_"):
-        return True
-    if callee in {"IMPORT_GLOBAL", "IMPORT_NAME", "npy_cache_import"}:
-        return True
+        return "generic"
+    if callee in _SOURCE_EXTENSION_GENERIC_IMPORT_CALLEES:
+        return "generic"
     lowered = callee.lower()
-    return (
+    if (
         lowered == "import"
         or lowered.startswith("import_")
         or lowered.endswith("_import")
         or "_import_" in lowered
+    ):
+        return "generic"
+    return None
+
+
+def _source_extension_brace_stack_until(source_text: str, limit: int) -> list[int]:
+    stack: list[int] = []
+    pos = 0
+    while pos < limit:
+        ch = source_text[pos]
+        if ch in {'"', "'"}:
+            pos = _skip_c_string_or_char(source_text, pos)
+            continue
+        if source_text.startswith("//", pos) or source_text.startswith("/*", pos):
+            pos = _skip_c_ws_comments(source_text, pos)
+            continue
+        if ch == "{":
+            stack.append(pos)
+        elif ch == "}" and stack:
+            stack.pop()
+        pos += 1
+    return stack
+
+
+def _source_extension_function_name_before_brace(
+    source_text: str,
+    brace_pos: int,
+) -> str | None:
+    prefix = source_text[:brace_pos].rstrip()
+    paren_pos = prefix.rfind("(")
+    if paren_pos < 0:
+        return None
+    before_paren = prefix[:paren_pos].rstrip()
+    match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", before_paren)
+    return match.group(1) if match is not None else None
+
+
+def _source_extension_eager_import_context(source_text: str, call_pos: int) -> bool:
+    stack = _source_extension_brace_stack_until(source_text, call_pos)
+    if not stack:
+        return False
+    function_name = _source_extension_function_name_before_brace(source_text, stack[0])
+    if function_name is None:
+        return False
+    lowered = function_name.lower()
+    return (
+        function_name == "exec"
+        or function_name == "module_exec"
+        or function_name.startswith("PyInit_")
+        or "pymod_exec" in lowered
+        or lowered.endswith("_exec")
     )
 
 
@@ -1240,14 +1301,18 @@ def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]
     """Return dotted module names a C extension imports at runtime.
 
     Source-recompiled extensions import Python modules dynamically from
-    module init and helper paths (``PyImport_ImportModule("math")``,
+    module init paths (``PyImport_ImportModule("math")``,
     numpy's ``IMPORT_GLOBAL("numpy.exceptions", ...)`` /
     ``npy_cache_import("numpy._core._internal", ...)`` conventions). Those
     imports are invisible to the AOT import graph, so tree-shaking would
     drop the modules and the extension init fails at runtime with
     ``No module named ...``. The scan keys on the C convention of an
-    import-named callsite taking a leading dotted-module string literal;
-    resolution against module roots decides admission downstream.
+    import-named callsite taking a leading dotted-module string literal,
+    but generic import helpers are admitted as eager roots only inside a
+    module init/exec function. Helper-body imports are lazy runtime edges;
+    treating them as AOT roots drags broad stdlib closures into small
+    browser builds. Resolution against module roots decides admission
+    downstream.
     """
     names: set[str] = set()
     pos = 0
@@ -1268,10 +1333,15 @@ def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]
         while pos < n and (source_text[pos] == "_" or source_text[pos].isalnum()):
             pos += 1
         callee = source_text[start:pos]
-        if not _source_extension_runtime_import_callee(callee):
+        import_kind = _source_extension_runtime_import_callee(callee)
+        if import_kind is None:
             continue
         call_pos = _skip_c_ws_comments(source_text, pos)
         if call_pos >= n or source_text[call_pos] != "(":
+            continue
+        if import_kind == "generic" and not _source_extension_eager_import_context(
+            source_text, start
+        ):
             continue
         module_pos = _skip_c_ws_comments(source_text, call_pos + 1)
         module_name, _end_pos = _parse_c_string_literal(source_text, module_pos)
