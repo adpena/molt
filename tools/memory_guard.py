@@ -653,6 +653,15 @@ WINDOWS_PROCESS_SIGNAL_EXIT_CODES = frozenset(
     if code > 0
 )
 
+_CONVENTIONAL_SIGNAL_NAMES = {
+    1: "SIGHUP",
+    2: "SIGINT",
+    3: "SIGQUIT",
+    6: "SIGABRT",
+    9: "SIGKILL",
+    15: "SIGTERM",
+}
+
 
 def _returncode_signal_payload(returncode: int) -> dict[str, object] | None:
     conventional_shell_status = False
@@ -676,7 +685,7 @@ def _returncode_signal_payload(returncode: int) -> dict[str, object] | None:
         }
     return {
         "signal": signo,
-        "name": None,
+        "name": _CONVENTIONAL_SIGNAL_NAMES.get(signo),
         "conventional_shell_status": conventional_shell_status,
     }
 
