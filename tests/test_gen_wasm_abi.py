@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import sys
 import tomllib
 from pathlib import Path
@@ -197,6 +198,7 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
         encoding="utf-8"
     ) == gen.render_runtime_callables_rs(data)
     assert gen.OUT_PY.read_text(encoding="utf-8") == gen.render_py(data)
+    assert gen.OUT_JS_ABI.read_text(encoding="utf-8") == gen.render_js_abi(data)
     assert gen.OUT_TABLE_LAYOUT_INC.read_text(
         encoding="utf-8"
     ) == gen.render_table_layout_inc(data)
@@ -311,6 +313,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
 
     rendered_py = gen.render_py(data)
+    rendered_js_abi = json.loads(gen.render_js_abi(data))
     rendered_rs = _rendered_rs(gen, data)
     assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
     assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
@@ -328,6 +331,21 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '("runtime_init", "molt_runtime_init")' in rendered_py
     assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
+    assert rendered_js_abi["runtime_export_by_import"]["socket_drop"] == (
+        "molt_socket_drop"
+    )
+    assert rendered_js_abi["runtime_export_by_import"]["PyArg_ParseTuple"] == (
+        "PyArg_ParseTuple"
+    )
+    assert rendered_js_abi["runtime_import_fallbacks"]["fast_dict_get"] == {
+        "call_arity": 2,
+        "exports": [
+            "molt_call_bind_ic",
+            "molt_callargs_new",
+            "molt_callargs_push_pos",
+        ],
+        "strategy": "call_bind_ic",
+    }
     assert "runtime_export_name" in rendered_rs
     assert "RUNTIME_HOST_EXPORTS" in rendered_rs
     assert "RUNTIME_HOST_EXPORT_SIGNATURES" in rendered_rs

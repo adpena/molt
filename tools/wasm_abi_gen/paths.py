@@ -30,6 +30,7 @@ OUT_RUNTIME_CALLABLES_RS = (
     ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
 )
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
+OUT_JS_ABI = ROOT / "wasm/wasm_abi_generated.json"
 INTRINSICS_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 INTRINSIC_CATEGORIES = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 RUNTIME_ROOT = ROOT / "runtime"

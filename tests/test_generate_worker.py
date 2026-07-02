@@ -577,6 +577,10 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         in content
     )
     assert (
+        'const runtimeImportExportNames = {"function_set_builtin": "molt_function_set_builtin", "string_from_bytes": "molt_string_from_bytes"};'
+        in content
+    )
+    assert (
         'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64"], "result": "i64"}};'
         in content
     )
@@ -613,9 +617,9 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         "const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);"
         in content
     )
-    assert 'const exportCandidates = entry.name.startsWith("molt_")' in content
-    assert ": [`molt_${entry.name}`, entry.name];" in content
-    assert "for (const candidate of exportCandidates) {" in content
+    assert "const exportName = runtimeImportExportNames[entry.name] || null;" in content
+    assert "exportCandidates" not in content
+    assert "`molt_${entry.name}`" not in content
     assert (
         "let callSignature = runtimeExportSignatures[entry.name] || signature;"
         in content
@@ -683,6 +687,9 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         in browser_embed
     )
     assert (
+        "const runtimeExportNames = runtimeImports.export_names || {};" in browser_embed
+    )
+    assert (
         "const exportSignature = runtimeExportSignatures[entry.name] || null;"
         in browser_embed
     )
@@ -693,7 +700,9 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         "const resultKind = resultKinds[entry.name] || signature.result || null;"
         in browser_embed
     )
-    assert "const exportCandidates = entry.name.startsWith('molt_')" in browser_embed
+    assert "const exportName = runtimeExportNames[entry.name] || null;" in browser_embed
+    assert "exportCandidates" not in browser_embed
+    assert "`molt_${entry.name}`" not in browser_embed
     assert (
         "let callSignature = runtimeExportSignatures[entry.name] || signature;"
         in browser_embed
@@ -702,6 +711,39 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         "normalizeValueForKind(value, callSignature.params[index] || null)"
         in browser_embed
     )
+    run_wasm = (root / "wasm/run_wasm.js").read_text(encoding="utf-8")
+    assert "const wasmAbiGenerated = require('./wasm_abi_generated.json');" in run_wasm
+    assert (
+        "const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};"
+        in run_wasm
+    )
+    assert (
+        "const runtimeImportFallbacks = wasmAbiGenerated.runtime_import_fallbacks || {};"
+        in run_wasm
+    )
+    assert "let runtimeImportExportNames = runtimeExportByImport;" in run_wasm
+    assert (
+        "const siblingRuntimeImportExportNames = siblingRuntimeImports.export_names || null;"
+        in run_wasm
+    )
+    assert (
+        "runtimeImportExportNames = siblingRuntimeImportExportNames\n"
+        "    ? {\n"
+        "        ...runtimeExportByImport,\n"
+        "        ...siblingRuntimeImportExportNames,\n"
+        "      }\n"
+        "    : runtimeExportByImport;" in run_wasm
+    )
+    assert "generatedRuntimeExportByImport" not in run_wasm
+    assert run_wasm.count("const runtimeExportNameForImport =") == 1
+    assert "const runtimeExportNameForImport = (importName) => {" in run_wasm
+    assert "const runtimeExport = runtimeExportNameForImport(entry.name);" in run_wasm
+    assert "const runtimeExport = runtimeExportNameForImport(name);" in run_wasm
+    assert "fn = runtimeFallbackFunction(runtimeInstance.exports, name);" in run_wasm
+    assert "fn = runtimeFallbackFunction(runtimeInst.exports, entry.name);" in run_wasm
+    assert "entry.name.startsWith('molt_')" not in run_wasm
+    assert "`molt_${entry.name}`" not in run_wasm
+    assert "`molt_${name}`" not in run_wasm
 
 
 def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
@@ -777,6 +819,10 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         "const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};"
         in browser_host
     )
+    assert (
+        "const runtimeExportNames = runtimeImportAbi.export_names || {};"
+        in browser_host
+    )
     assert "const resultKinds = runtimeImportAbi.result_kinds || {};" in browser_host
     assert (
         "const runtimeImportFallbacks = options.runtimeImportFallbacks || {};"
@@ -798,9 +844,9 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         "const resultKind = resultKinds[entry.name] || signature.result || null;"
         in browser_host
     )
-    assert "const exportCandidates = entry.name.startsWith('molt_')" in browser_host
-    assert ": [`molt_${entry.name}`, entry.name];" in browser_host
-    assert "for (const candidate of exportCandidates) {" in browser_host
+    assert "const exportName = runtimeExportNames[entry.name] || null;" in browser_host
+    assert "exportCandidates" not in browser_host
+    assert "`molt_${entry.name}`" not in browser_host
     assert (
         "let callSignature = runtimeExportSignatures[entry.name] || signature;"
         in browser_host
@@ -1050,6 +1096,7 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
 
     from molt.cli.wasm import (
         _generate_split_worker_js,
+        _runtime_import_export_names_from_manifest,
         _runtime_import_result_kinds_from_manifest,
         _runtime_import_signatures_from_manifest,
     )
@@ -1083,6 +1130,11 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
             },
         )
 
+    assert _runtime_import_export_names_from_manifest(import_names) == {
+        "PyArg_ParseTuple": "PyArg_ParseTuple",
+        "PyFloat_Check": "PyFloat_Check",
+    }
+
     worker_js = _generate_split_worker_js(
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
@@ -1094,8 +1146,9 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         '"PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"}'
         in worker_js
     )
-    assert 'const exportCandidates = entry.name.startsWith("molt_")' in worker_js
-    assert ": [`molt_${entry.name}`, entry.name];" in worker_js
+    assert '"PyArg_ParseTuple": "PyArg_ParseTuple"' in worker_js
+    assert "exportCandidates" not in worker_js
+    assert "`molt_${entry.name}`" not in worker_js
 
 
 def test_runtime_export_signatures_use_cpython_abi_raw_export_names(
