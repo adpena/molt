@@ -2105,6 +2105,81 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     assert signals[:2] == ["rust-compiler-error", "memory-guard-orphan-cleanup"]
 
 
+def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "timeout.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="timeout-run",
+        logical_id="native-import-typeerror-current-recheck",
+        reason="prove timeout diagnosis outranks orphan cleanup",
+        command=[
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_native_import_bootstrap_regressions.py",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="native-import-regression",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "timeout.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="timeout-run",
+        body="test: timeout must be primary queue evidence",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "F.",
+                "memory_guard: timeout after 900.00s; terminated tracked process tree to prevent orphaned Molt subprocesses: killed_at=2026-07-02T20:04:56Z elapsed=901.44s child_pid=33900",
+                "memory_guard: orphaned child processes detected after command exit; terminated tracked process groups to prevent accumulation: killed_at=2026-07-02T20:04:56Z elapsed=901.44s pgids=18104 reason=direct child exited while descendants were still live",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "timeout-run", status="failed", returncode=124)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "timeout-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert [item["signal_id"] for item in diagnostics[:2]] == [
+        "memory-guard-timeout",
+        "memory-guard-orphan-cleanup",
+    ]
+    assert "900.00s" in diagnostics[0]["summary"]
+    assert "Treat this proof result as incomplete" in diagnostics[0]["next_action"]
+
+
 def test_proof_queue_diagnoses_pytest_assertion_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
