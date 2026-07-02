@@ -249,6 +249,14 @@ def sample_processes() -> dict[int, ProcessSample]:
     return sample_processes_posix()
 
 
+def _timeout_sampler(
+    sampler: Callable[[], Mapping[int, ProcessSample]],
+) -> Callable[[], Mapping[int, ProcessSample]]:
+    if _is_windows_process_model() and sampler is sample_processes:
+        return sample_processes_windows_hard_timeout
+    return sampler
+
+
 def _sync_process_custody_facade() -> None:
     _process_custody._is_windows_process_model = _is_windows_process_model
     _process_custody.sample_processes = sample_processes
@@ -981,12 +989,15 @@ def run_guarded(
 
         last_sample_cost_s = 0.0
 
-        def sample_tracked_tree() -> tuple[Mapping[int, ProcessSample], set[int]]:
+        def sample_tracked_tree(
+            *, timeout_deadline: bool = False
+        ) -> tuple[Mapping[int, ProcessSample], set[int]]:
             nonlocal guard_interrupted, last_sample_cost_s
             nonlocal remembered_samples, remembered_watched
+            active_sampler = _timeout_sampler(sampler) if timeout_deadline else sampler
             sample_started = time.monotonic()
             try:
-                samples = sampler()
+                samples = active_sampler()
             except KeyboardInterrupt:
                 guard_interrupted = True
                 terminate_after_sampling_failure(reason="guard_interrupted")
@@ -1038,7 +1049,7 @@ def run_guarded(
                 break
             if timeout is not None and now - start >= timeout:
                 timed_out = True
-                samples, watched = sample_tracked_tree()
+                samples, watched = sample_tracked_tree(timeout_deadline=True)
                 if guard_interrupted:
                     break
                 _update_active_guard_marker(
