@@ -37,6 +37,18 @@ Molt value to the native pointer/length call and then wraps the output buffer
 once. `browser_embed.js` satisfies that typed import from plain JS by passing
 `Float32Array` input/output views over WASM memory.
 
+Extension init imports are a separate native primitive:
+`molt.pyinit_module_v1` is a zero-argument direct symbol ABI that returns a
+wasm32 `PyObject*` pointer. Split-runtime packaging derives
+`manifest.abi.browser_embed.native_callables.symbols` from the actual
+`app.wasm` `molt_native` import section. Ordinary callable entries are admitted
+from sidecar `callable_exports`; `PyInit_*` entries are admitted only from the
+matching staged artifact `init_symbol`. Final source-recompiled static-native
+artifacts must not leak unresolved `molt_native` imports into the deployed app;
+the runner rejects raw or stale pre-link artifacts that still import
+`molt_native.PyInit_*` instead of asking JavaScript to fake extension
+initialization.
+
 ## Minimal Kernel
 
 ```python
