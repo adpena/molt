@@ -210,8 +210,10 @@ def _build_minimal_module(element_payload: bytes) -> bytes:
     code_payload.append(0x0B)
     sections.append((10, bytes(code_payload)))
 
-    # Element section.
-    sections.append((9, element_payload))
+    # Element section. The payload is a wasm vector, so it must at least
+    # encode its segment count; an empty payload would be an invalid module
+    # that the strict module-facts parser rejects at link time.
+    sections.append((9, element_payload or write_varuint(0)))
 
     return wasm_link._build_sections(sections)
 
