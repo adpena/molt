@@ -1331,6 +1331,286 @@ def test_materialize_import_plan_compiles_pruned_native_support_source(
     assert "native_support_source" in module_reasons["nativepkg.ndimage._filters"]
 
 
+def test_source_extension_runtime_python_import_scan_filters_import_callees() -> None:
+    source = """
+static int module_exec(PyObject *module) {
+    // PyImport_ImportModule("comment_only");
+    const char *debug = "PyImport_ImportModule(\"string_only\")";
+    PyImport_ImportModule("math");
+    IMPORT_GLOBAL("numpy._core._internal", "dtype", dtype_obj);
+    npy_cache_import("numpy.exceptions", "AxisError");
+    import_helper("nativepkg._internal");
+    important("not_a_module");
+    return 0;
+}
+"""
+
+    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+        "math",
+        "nativepkg._internal",
+        "numpy._core._internal",
+        "numpy.exceptions",
+    )
+
+
+def test_source_extension_manifest_runtime_python_imports_uses_object_closure_sources(
+    tmp_path: Path,
+) -> None:
+    closure_source = tmp_path / "closure.c"
+    stale_top_level_source = tmp_path / "stale.c"
+    closure_source.write_text(
+        "static int exec(PyObject *module) {\n"
+        "    PyImport_ImportModule(\"math\");\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    stale_top_level_source.write_text(
+        "static int exec(PyObject *module) {\n"
+        "    PyImport_ImportModule(\"json\");\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "artifact.extension_manifest.json"
+    manifest = {
+        "sources": [str(stale_top_level_source)],
+        "object_closure": {
+            "objects": [
+                {
+                    "source": str(closure_source),
+                    "source_sha256": hashlib.sha256(
+                        closure_source.read_bytes()
+                    ).hexdigest(),
+                }
+            ]
+        },
+    }
+
+    imports, errors = (
+        cli_source_extensions.source_extension_manifest_runtime_python_imports(
+            manifest,
+            manifest_path=manifest_path,
+        )
+    )
+
+    assert errors == []
+    assert imports == ("math",)
+
+
+def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    provider_source = tmp_path / "provider.c"
+    provider_source.write_text(
+        "static int module_exec(PyObject *module) {\n"
+        "    IMPORT_GLOBAL(\"math\", \"floor\", floor_obj);\n"
+        "    PyImport_ImportModule(\"nativepkg._internal\");\n"
+        "    important(\"not_a_module\");\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    internal_path = external_root / "nativepkg" / "_internal.py"
+    exceptions_path = external_root / "nativepkg" / "exceptions.py"
+    internal_path.parent.mkdir(parents=True)
+    internal_path.write_text(
+        "import re\n"
+        "from nativepkg.exceptions import AxisError\n\n"
+        "def dtype_error(value):\n"
+        "    return AxisError(value)\n",
+        encoding="utf-8",
+    )
+    exceptions_path.write_text(
+        "class AxisError(Exception):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    capsule = "nativepkg.core._multiarray_umath._ARRAY_API"
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "python_exports": ["nativepkg"],
+            "sources": [str(provider_source)],
+            "provided_capsules": [capsule],
+        },
+    )
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="consumer",
+        artifact_name="consumer.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "object_closure": {"required_capsules": [capsule]},
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.consumer"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    by_module = {
+        artifact.module: artifact
+        for artifact in import_plan.native_artifact_plan.artifacts
+    }
+    provider = by_module["nativepkg.core._multiarray_umath"]
+    assert provider.runtime_python_imports == ("math",)
+    assert provider.runtime_python_import_modules == (
+        "nativepkg._internal",
+        "nativepkg.exceptions",
+    )
+    assert "not_a_module" not in import_plan.module_graph
+    assert "math" in import_plan.module_graph
+    assert "math" in import_plan.runtime_import_dispatch_roots
+    assert "native_runtime_python_import" in module_reasons["math"]
+    assert "nativepkg._internal" in import_plan.compile_modules
+    assert "nativepkg.exceptions" in import_plan.compile_modules
+    assert "native_support_source" in module_reasons["nativepkg._internal"]
+    assert "native_support_source" in module_reasons["nativepkg.exceptions"]
+    internal_source = import_plan.module_graph["nativepkg._internal"].read_text(
+        encoding="utf-8"
+    )
+    assert "import re" in internal_source
+    assert "def dtype_error" in internal_source
+
+
+def test_materialize_import_plan_compiles_native_runtime_package_import_init(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    source_path = tmp_path / "native_exec.c"
+    source_path.write_text(
+        "static int exec(PyObject *module) {\n"
+        "    PyImport_ImportModule(\"nativepkg\");\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    package_init = external_root / "nativepkg" / "__init__.py"
+    child_path = external_root / "nativepkg" / "_child.py"
+    package_init.parent.mkdir(parents=True)
+    package_init.write_text(
+        "from nativepkg import _child\n"
+        "VALUE = _child.VALUE\n",
+        encoding="utf-8",
+    )
+    child_path.write_text("VALUE = 42\n", encoding="utf-8")
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["nativepkg.dynamic"],
+            "sources": [str(source_path)],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact = policy.native_artifact_plan.artifacts[0]
+    assert artifact.runtime_python_import_modules == (
+        "nativepkg",
+        "nativepkg._child",
+    )
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.dynamic"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert "nativepkg" in import_plan.compile_modules
+    assert "nativepkg._child" in import_plan.compile_modules
+    assert "native_support_source" in module_reasons["nativepkg"]
+    assert "native_support_source" in module_reasons["nativepkg._child"]
+    init_source = import_plan.module_graph["nativepkg"].read_text(encoding="utf-8")
+    assert "VALUE = _child.VALUE" in init_source
+
+
 def test_materialize_import_plan_rejects_missing_native_support_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6643,6 +6923,48 @@ def test_module_graph_policy_digest_includes_native_artifact_plan(
     ) != cli_module_graph_cache._module_graph_policy_digest({"sys"}, second_policy)
 
 
+def test_module_graph_policy_digest_includes_native_runtime_import_modules(
+    tmp_path: Path,
+) -> None:
+    artifact_path = tmp_path / "native.molt.wasm"
+    manifest_path = tmp_path / "native.molt.wasm.extension_manifest.json"
+    artifact_path.write_bytes(b"native")
+    manifest_path.write_text("{}", encoding="utf-8")
+    base_artifact = _ExternalPackageNativeArtifact(
+        package="nativepkg",
+        module="nativepkg._native",
+        package_dir=tmp_path,
+        path=artifact_path,
+        manifest_path=manifest_path,
+        extension_sha256="0" * 64,
+        manifest_sha256="1" * 64,
+        capabilities=(),
+        abi_tag="molt_abi1",
+        target_triple="wasm32-wasip1",
+        platform_tag="wasm32_wasip1",
+        init_symbol="PyInit__native",
+        runtime_linkage="static_link",
+        artifact_kind="wasm_relocatable_object",
+    )
+    first_policy = cli._ImportAdmissionPolicy(
+        native_artifact_plan=_ExternalPackageNativeArtifactPlan(
+            (replace(base_artifact, runtime_python_import_modules=("nativepkg.a",)),)
+        )
+    )
+    second_policy = cli._ImportAdmissionPolicy(
+        native_artifact_plan=_ExternalPackageNativeArtifactPlan(
+            (replace(base_artifact, runtime_python_import_modules=("nativepkg.b",)),)
+        )
+    )
+
+    assert first_policy.native_artifact_plan.digest() != (
+        second_policy.native_artifact_plan.digest()
+    )
+    assert cli_module_graph_cache._module_graph_policy_digest(
+        {"sys"}, first_policy
+    ) != cli_module_graph_cache._module_graph_policy_digest({"sys"}, second_policy)
+
+
 def test_external_native_artifact_output_custody_accepts_native_binary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -7212,7 +7534,9 @@ def test_frontend_native_callable_module_attr_rejects_memory_abi() -> None:
         "abi": "molt.forward_f32_v1",
     }
 
-    with pytest.raises(CompatibilityError, match="module_attr memory ABI"):
+    with pytest.raises(
+        CompatibilityError, match="uses module_attr direct-symbol ABI"
+    ):
         _frontend_main_ops_for_import_source(
             "from scipy.ndimage import distance_transform_edt\n"
             "mask = 1\n"
