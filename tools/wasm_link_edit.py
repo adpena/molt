@@ -388,6 +388,9 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for public_name, index in export_indices.items():
         candidates = by_index.get(index, [])
+        if is_table_ref_export_name(public_name):
+            mapping[public_name] = public_name
+            continue
         preferred = next((name for name in candidates if name == public_name), None)
         if preferred is None:
             preferred = next(
@@ -403,6 +406,27 @@ def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
         if preferred is not None:
             mapping[public_name] = preferred
     return mapping
+
+
+def _inject_table_ref_export_symbols(
+    output: Path, temp_dir: tempfile.TemporaryDirectory
+) -> Path:
+    data = output.read_bytes()
+    entries = [
+        (
+            name,
+            index,
+            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED | FLAG_NO_STRIP,
+        )
+        for name, index in sorted(_collect_function_exports(data).items())
+        if is_table_ref_export_name(name)
+    ]
+    updated = _append_linking_function_symbols(data, entries)
+    if updated is None:
+        return output
+    alias_path = Path(temp_dir.name) / "output_table_ref_symbols.wasm"
+    alias_path.write_bytes(updated)
+    return alias_path
 
 
 def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | None:

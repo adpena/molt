@@ -107,6 +107,7 @@ from wasm_link_edit import (  # noqa: E402
     _entry_module_prefix_from_main_init as _entry_module_prefix_from_main_init,
     _highest_exported_table_ref_index as _highest_exported_table_ref_index,
     _inject_output_export_aliases as _inject_output_export_aliases,
+    _inject_table_ref_export_symbols as _inject_table_ref_export_symbols,
     _is_public_output_export_name as _is_public_output_export_name,
     _memory_import_min as _memory_import_min,
     _neutralize_linked_table_init as _neutralize_linked_table_init,
@@ -1757,6 +1758,7 @@ def _run_wasm_ld(
     if rewritten is None:
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
+    rewritten_path = _inject_table_ref_export_symbols(rewritten_path, temp_dir)
     native_link_inputs, native_force_exports = _rewrite_native_runtime_imports(
         tuple(native_objects),
         runtime_exports,
