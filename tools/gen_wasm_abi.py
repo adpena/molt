@@ -135,9 +135,10 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
     with tempfile.TemporaryDirectory(prefix="molt-wasm-abi-rustfmt-") as raw_tmp:
         tmp = Path(raw_tmp)
         paths: list[Path] = []
+        for name, source in modules.items():
+            (tmp / name).write_text(source, encoding="utf-8", newline="\n")
         for name, source in misses.items():
             path = tmp / name
-            path.write_text(source, encoding="utf-8", newline="\n")
             paths.append(path)
         try:
             proc = subprocess.run(
@@ -462,7 +463,6 @@ def _render_rs_mod() -> str:
             "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, RuntimeCallableResult,\n",
             "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
-            "pub(crate) use runtime_surface::GPU_INTRINSIC_MANIFEST_NAMES;\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
             "};\n",
@@ -1468,14 +1468,6 @@ def _render_rs_runtime_surface(data: dict) -> str:
     lines.append("];\n\n")
     lines.extend(
         [
-            "pub(crate) const GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[\n",
-        ]
-    )
-    for entry in data.get("gpu_intrinsic_manifest_name", []):
-        lines.append(f'    "{entry["name"]}",\n')
-    lines.append("];\n\n")
-    lines.extend(
-        [
             "#[allow(dead_code)]\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeImportFallbackSpec {\n",
@@ -2463,10 +2455,6 @@ def render_py(data: dict) -> str:
         lines.append(f'        "{name}",\n')
     lines.append("    }\n")
     lines.append(")\n\n")
-    lines.append("WASM_GPU_INTRINSIC_MANIFEST_NAMES: tuple[str, ...] = (\n")
-    for entry in data.get("gpu_intrinsic_manifest_name", []):
-        lines.append(f'    "{entry["name"]}",\n')
-    lines.append(")\n\n")
     lines.append(
         "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
     )
@@ -2515,10 +2503,25 @@ def render_py(data: dict) -> str:
         lines.append(f'    "{name}": "{primitive_class}",\n')
     lines.append("}\n\n")
     lines.append("WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {\n")
+    cpython_abi_split_import_by_export: dict[str, str] = {}
     for name, primitive_class in sorted(external_native_link_imports.items()):
         if primitive_class != CPYTHON_ABI_LINK_IMPORT_CLASS:
             continue
-        lines.append(f'    "{name}": "{_split_runtime_external_export_name(name)}",\n')
+        export_name = _split_runtime_external_export_name(name)
+        existing_name = cpython_abi_split_import_by_export.get(export_name)
+        if existing_name is not None and existing_name != name:
+            raise WasmAbiManifestError(
+                "duplicate split-runtime CPython ABI export name "
+                f"{export_name!r} for {existing_name!r} and {name!r}"
+            )
+        cpython_abi_split_import_by_export[export_name] = name
+        lines.append(f'    "{name}": "{export_name}",\n')
+    lines.append("}\n\n")
+    lines.append(
+        "WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {\n"
+    )
+    for export_name, name in sorted(cpython_abi_split_import_by_export.items()):
+        lines.append(f'    "{export_name}": "{name}",\n')
     lines.append("}\n\n")
     lines.append("WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {\n")
     for name, symbol_kind in sorted(external_native_link_import_symbol_kinds.items()):
@@ -2578,16 +2581,19 @@ def render_js_abi(data: dict) -> str:
     runtime_export_by_import: dict[str, str] = {
         entry["name"]: _runtime_export_name(entry) for entry in data["import"]
     }
+    runtime_import_canonical_names: dict[str, str] = {}
     for name in data["runtime_export_policy"]["host_exports"]:
         runtime_export_by_import.setdefault(name, name)
     for name in generator_cpython_abi_link_import_names():
-        runtime_export_by_import.setdefault(
-            name, _split_runtime_external_export_name(name)
-        )
+        split_export_name = _split_runtime_external_export_name(name)
+        runtime_export_by_import.setdefault(name, split_export_name)
+        runtime_export_by_import.setdefault(split_export_name, split_export_name)
+        runtime_import_canonical_names.setdefault(split_export_name, name)
 
     payload = {
         "generated_by": "tools/gen_wasm_abi.py",
         "runtime_export_by_import": runtime_export_by_import,
+        "runtime_import_canonical_names": runtime_import_canonical_names,
         "runtime_import_fallbacks": {
             entry["import"]: {
                 "strategy": entry["strategy"],

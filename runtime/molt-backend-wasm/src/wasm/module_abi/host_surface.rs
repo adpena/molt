@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use wasm_encoder::{EntityType, ExportKind, MemoryType};
 
-use super::runtime_surface::effective_manifest_intrinsic_names;
 use crate::wasm::WasmBackend;
 use crate::wasm_data::DataSegmentRef;
 
@@ -43,7 +42,6 @@ impl WasmBackend {
         max_call_arity: usize,
         max_class_def_words: usize,
     ) -> WasmModuleHostSurface {
-        let manifest_intrinsic_names = effective_manifest_intrinsic_names(manifest_intrinsic_names);
         let manifest_bytes: Vec<u8> = {
             let mut buf = Vec::new();
             for (i, name) in manifest_intrinsic_names.iter().enumerate() {

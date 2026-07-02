@@ -1,10 +1,13 @@
+use std::collections::BTreeSet;
+
 use wasm_encoder::{EntityType, ImportSection};
 
 use super::runtime_surface::WasmRuntimeSurfacePlan;
 use crate::SimpleIR;
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{
-    IMPORT_REGISTRY, RUNTIME_IMPORT_MODULE, RuntimeImportSpec, WasmRuntimeImport,
+    IMPORT_REGISTRY, RUNTIME_CALLABLE_IMPORTS, RUNTIME_IMPORT_MODULE, RuntimeImportSpec,
+    WasmRuntimeImport,
 };
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
@@ -27,8 +30,14 @@ impl WasmBackend {
             is_pure: self.options.wasm_profile == WasmProfile::Pure,
         };
 
+        let on_demand_runtime_callables: BTreeSet<WasmRuntimeImport> = RUNTIME_CALLABLE_IMPORTS
+            .iter()
+            .map(|spec| spec.import)
+            .collect();
         for spec in IMPORT_REGISTRY {
-            registrar.add_spec(*spec);
+            if !on_demand_runtime_callables.contains(&spec.import) {
+                registrar.add_spec(*spec);
+            }
         }
 
         let next_type_idx = crate::wasm_abi::STATIC_TYPE_COUNT;

@@ -20,7 +20,11 @@ from molt._wasm_abi_generated import (
     wasm_runtime_callable_spec,
     wasm_runtime_import_name,
 )
-from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
+from molt._wasm_runtime_exports import (
+    wasm_split_runtime_canonical_import_name,
+    wasm_split_runtime_export_name_for_import,
+    wasm_split_runtime_import_name_for_export,
+)
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
@@ -30,6 +34,7 @@ __all__ = (
     "_generate_split_worker_js",
     "_generate_split_wrangler_jsonc",
     "_runtime_export_name_for_import_from_manifest",
+    "_runtime_import_canonical_names_from_manifest",
     "_runtime_import_export_names_from_manifest",
     "_runtime_import_fallbacks_from_manifest",
     "_runtime_import_result_kinds_from_manifest",
@@ -189,11 +194,11 @@ def _runtime_import_result_kinds_from_manifest(
 def _runtime_import_signature_from_manifest(
     import_name: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    manifest_import_name = wasm_runtime_import_name(import_name) or import_name
+    manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
     signature = wasm_import_signature(manifest_import_name)
     if signature is not None:
         return signature
-    spec = wasm_runtime_callable_spec(import_name)
+    spec = wasm_runtime_callable_spec(manifest_import_name)
     if spec is not None:
         _import_name, arity, result = spec
         params = tuple("i64" for _ in range(arity))
@@ -202,15 +207,27 @@ def _runtime_import_signature_from_manifest(
     return None
 
 
+def _runtime_lookup_import_name_from_manifest(name: str) -> str:
+    canonical_name = wasm_split_runtime_canonical_import_name(name)
+    return wasm_runtime_import_name(canonical_name) or canonical_name
+
+
 def _is_cpython_abi_link_import(import_name: str) -> bool:
+    manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
     return (
-        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(import_name)
+        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(manifest_import_name)
         == _CPYTHON_ABI_LINK_IMPORT_CLASS
     )
 
 
 def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | None:
-    return wasm_split_runtime_export_name_for_import(import_name)
+    export_name = wasm_split_runtime_export_name_for_import(import_name)
+    if export_name is not None:
+        return export_name
+    manifest_import_name = wasm_split_runtime_import_name_for_export(import_name)
+    if manifest_import_name is None:
+        return None
+    return wasm_split_runtime_export_name_for_import(manifest_import_name)
 
 
 def _runtime_import_export_names_from_manifest(
@@ -224,6 +241,17 @@ def _runtime_import_export_names_from_manifest(
     return export_names
 
 
+def _runtime_import_canonical_names_from_manifest(
+    import_names: Iterable[str],
+) -> dict[str, str]:
+    canonical_names: dict[str, str] = {}
+    for import_name in sorted(set(import_names)):
+        canonical_name = wasm_split_runtime_canonical_import_name(import_name)
+        if canonical_name != import_name:
+            canonical_names[import_name] = canonical_name
+    return canonical_names
+
+
 def _runtime_export_signature_for_cpython_abi_link_import(
     import_name: str,
     runtime_export_signatures: Mapping[str, Mapping[str, object]] | None,
@@ -232,7 +260,13 @@ def _runtime_export_signature_for_cpython_abi_link_import(
         import_name
     ):
         return None
+    manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
+    export_name = _runtime_export_name_for_import_from_manifest(import_name)
     signature = runtime_export_signatures.get(import_name)
+    if signature is None:
+        signature = runtime_export_signatures.get(manifest_import_name)
+    if signature is None and export_name is not None:
+        signature = runtime_export_signatures.get(export_name)
     if signature is None:
         return None
     params = signature.get("params")
@@ -251,11 +285,11 @@ def _runtime_export_signature_for_cpython_abi_link_import(
 
 
 def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
-    manifest_import_name = wasm_runtime_import_name(import_name) or import_name
+    manifest_import_name = _runtime_lookup_import_name_from_manifest(import_name)
     result_kind = wasm_import_result_kind(manifest_import_name)
     if result_kind is not None:
         return result_kind
-    result = wasm_runtime_callable_result(import_name)
+    result = wasm_runtime_callable_result(manifest_import_name)
     if result is not None:
         return "nil" if result == "void" else result
     return None
@@ -328,6 +362,12 @@ def _generate_split_worker_js(
     )
     runtime_import_result_kinds_json = json.dumps(
         runtime_import_result_kinds, sort_keys=True
+    )
+    runtime_import_canonical_names = _runtime_import_canonical_names_from_manifest(
+        runtime_import_names,
+    )
+    runtime_import_canonical_names_json = json.dumps(
+        runtime_import_canonical_names, sort_keys=True
     )
     runtime_import_signatures_json = json.dumps(
         runtime_import_signatures, sort_keys=True
@@ -444,6 +484,7 @@ export default {
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
+    const runtimeImportCanonicalNames = __MOLT_RUNTIME_IMPORT_CANONICAL_NAMES__;
     const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
     const runtimeImportFallbacks = __MOLT_RUNTIME_IMPORT_FALLBACKS__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
@@ -1214,9 +1255,7 @@ export default {
         };
       };
       const runtimeFallback = (importName) => {
-        const manifestImportName = importName.startsWith("molt_")
-          ? importName.slice(5)
-          : importName;
+        const manifestImportName = runtimeImportCanonicalNames[importName] || importName;
         const fallback = runtimeImportFallbacks[manifestImportName] || null;
         if (!fallback || !Array.isArray(fallback.exports) || fallback.exports.length === 0) {
           return null;
@@ -1556,6 +1595,10 @@ export default {
         .replace(
             "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__",
             runtime_import_export_names_json,
+        )
+        .replace(
+            "__MOLT_RUNTIME_IMPORT_CANONICAL_NAMES__",
+            runtime_import_canonical_names_json,
         )
         .replace(
             "__MOLT_RUNTIME_EXPORT_SIGNATURES__",

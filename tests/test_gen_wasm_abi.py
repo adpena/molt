@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -186,6 +187,37 @@ def _exec_rendered_py(rendered_py: str) -> dict[str, object]:
     return namespace
 
 
+def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
+    gen = _load_gen_wasm_abi()
+    modules = {
+        "mod.rs": "mod child;\n",
+        "child.rs": "pub(crate) fn child() {}\n",
+    }
+    seen: dict[str, bool] = {}
+
+    monkeypatch.setattr(gen, "_rustfmt_version", lambda: "rustfmt-test")
+    monkeypatch.setattr(
+        gen,
+        "_load_rustfmt_cache",
+        lambda name, source, version: source if name == "child.rs" else None,
+    )
+    monkeypatch.setattr(gen, "_store_rustfmt_cache", lambda *args: None)
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        mod_path = Path(cmd[-1])
+        child_path = mod_path.with_name("child.rs")
+        seen["child_exists"] = child_path.exists()
+        mod_path.write_text("mod child;\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(gen.subprocess, "run", fake_run)
+
+    rendered = gen._rustfmt_many(modules)
+
+    assert seen["child_exists"] is True
+    assert rendered["child.rs"] == modules["child.rs"]
+
+
 def test_wasm_abi_generated_files_are_in_sync() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
@@ -249,9 +281,6 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     host_export_signatures = {
         entry["name"]: entry for entry in data["runtime_host_export_signature"]
     }
-    gpu_manifest_names = {
-        entry["name"] for entry in data["gpu_intrinsic_manifest_name"]
-    }
     fallback_specs = {
         entry["import"]: entry for entry in data["runtime_import_fallback"]
     }
@@ -290,14 +319,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "params": ["i64"],
         "results": ["i32"],
     }
-    assert (
-        {
-            "molt_gpu_matmul_contiguous",
-            "molt_gpu_tensor__zeros",
-        }
-        <= gpu_manifest_names
-        <= host_exports
-    )
+    assert {"molt_gpu_matmul_contiguous", "molt_gpu_tensor__zeros"} <= host_exports
+    assert "gpu_intrinsic_manifest_name" not in data
     assert fallback_specs["fast_dict_get"] == {
         "import": "fast_dict_get",
         "strategy": "call_bind_ic",
@@ -317,8 +340,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     rendered_py = gen.render_py(data)
     rendered_js_abi = json.loads(gen.render_js_abi(data))
     rendered_rs = _rendered_rs(gen, data)
-    assert "GPU_INTRINSIC_MANIFEST_NAMES" in rendered_rs
-    assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" in rendered_py
+    assert "GPU_INTRINSIC_MANIFEST_NAMES" not in rendered_rs
+    assert "WASM_GPU_INTRINSIC_MANIFEST_NAMES" not in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORTS" in rendered_py
     assert "WASM_RUNTIME_HOST_EXPORT_SIGNATURES" in rendered_py
     assert "WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS" in rendered_py
@@ -327,6 +350,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "WASM_RUNTIME_EXPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_IMPORT_BY_EXPORT" in rendered_py
     assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES" in rendered_py
+    assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME" in rendered_py
     assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS" in rendered_py
     assert "def wasm_runtime_import_name" in rendered_py
     assert "def wasm_runtime_export_name" in rendered_py
@@ -336,6 +360,7 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
     assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in rendered_py
+    assert '"molt_PyArg_ParseTuple": "PyArg_ParseTuple"' in rendered_py
     assert '"Py_EllipsisObject": "molt_Py_EllipsisObject"' in rendered_py
     assert '"Py_EllipsisObject": "data"' in rendered_py
     assert '"Py_GenericAliasType": "data"' in rendered_py
@@ -347,6 +372,12 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert rendered_js_abi["runtime_export_by_import"]["PyArg_ParseTuple"] == (
         "molt_PyArg_ParseTuple"
     )
+    assert rendered_js_abi["runtime_export_by_import"]["molt_PyArg_ParseTuple"] == (
+        "molt_PyArg_ParseTuple"
+    )
+    assert rendered_js_abi["runtime_import_canonical_names"][
+        "molt_PyArg_ParseTuple"
+    ] == "PyArg_ParseTuple"
     assert rendered_js_abi["runtime_export_by_import"]["PyType_Ready"] == (
         "molt_PyType_Ready"
     )
@@ -1402,7 +1433,7 @@ def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matcher
     host_surface = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs"
     ).read_text(encoding="utf-8")
-    assert "GPU_INTRINSIC_MANIFEST_NAMES" in host_surface
+    assert "GPU_INTRINSIC_MANIFEST_NAMES" not in host_surface
     assert "DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES" not in host_surface
 
 

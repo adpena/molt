@@ -156,6 +156,13 @@ registers it through `molt_set_app_callable_resolver` before runtime
 initialization. Unit tests may use generated resolvers to validate registries;
 shipped artifacts must resolve through the app-local table or fail closed.
 
+The manifest catalog itself is not a retention root. Builtins, intrinsics, GPU
+entrypoints, and C/API callable exports remain generated ABI facts, but the app
+import section admits them only when the frontend/backend observed a concrete
+use. In particular, there is no default GPU intrinsic manifest list and no
+baseline import sweep for generated runtime callables; unused callables must
+tree-shake out of browser artifacts.
+
 ## Package Compatibility Boundary
 
 This browser entrypoint is intentionally narrower than NumPy/SciPy/tinygrad

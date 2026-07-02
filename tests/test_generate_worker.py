@@ -1096,6 +1096,7 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
 
     from molt.cli.wasm import (
         _generate_split_worker_js,
+        _runtime_import_canonical_names_from_manifest,
         _runtime_import_export_names_from_manifest,
         _runtime_import_result_kinds_from_manifest,
         _runtime_import_signatures_from_manifest,
@@ -1134,6 +1135,35 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         "PyArg_ParseTuple": "molt_PyArg_ParseTuple",
         "PyFloat_Check": "molt_PyFloat_Check",
     }
+    assert _runtime_import_result_kinds_from_manifest(
+        {"molt_PyArg_ParseTuple"},
+        runtime_export_signatures={
+            "molt_PyArg_ParseTuple": {
+                "params": ["i32", "i32", "i32"],
+                "result": "i32",
+            },
+        },
+    ) == {"molt_PyArg_ParseTuple": "i32"}
+    assert _runtime_import_signatures_from_manifest(
+        {"molt_PyArg_ParseTuple"},
+        runtime_export_signatures={
+            "molt_PyArg_ParseTuple": {
+                "params": ["i32", "i32", "i32"],
+                "result": "i32",
+            },
+        },
+    ) == {
+        "molt_PyArg_ParseTuple": {
+            "params": ["i32", "i32", "i32"],
+            "result": "i32",
+        }
+    }
+    assert _runtime_import_export_names_from_manifest(
+        {"molt_PyArg_ParseTuple"}
+    ) == {"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"}
+    assert _runtime_import_canonical_names_from_manifest(
+        {"molt_PyArg_ParseTuple"}
+    ) == {"molt_PyArg_ParseTuple": "PyArg_ParseTuple"}
 
     worker_js = _generate_split_worker_js(
         shared_memory_initial_pages=1,
@@ -1149,6 +1179,21 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
     assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in worker_js
     assert "exportCandidates" not in worker_js
     assert "`molt_${entry.name}`" not in worker_js
+    public_worker_js = _generate_split_worker_js(
+        shared_memory_initial_pages=1,
+        shared_table_initial=8192,
+        shared_table_base=None,
+        runtime_import_names={"molt_PyArg_ParseTuple"},
+        runtime_export_signatures={
+            "molt_PyArg_ParseTuple": {
+                "params": ["i32", "i32", "i32"],
+                "result": "i32",
+            },
+        },
+    )
+    assert '"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in public_worker_js
+    assert '"molt_PyArg_ParseTuple": "PyArg_ParseTuple"' in public_worker_js
+    assert 'importName.startsWith("molt_")' not in public_worker_js
 
 
 def test_runtime_export_signatures_use_cpython_abi_split_export_names(
@@ -1182,6 +1227,16 @@ def test_runtime_export_signatures_use_cpython_abi_split_export_names(
         "socket_drop": {"params": ["i64"], "result": "nil"},
     }
     assert requested["export_names"] == {"molt_PyArg_ParseTuple", "molt_socket_drop"}
+    assert non_native_output._runtime_export_signatures_for_imports(
+        Path("runtime.wasm"),
+        {"molt_PyArg_ParseTuple"},
+    ) == {
+        "molt_PyArg_ParseTuple": {
+            "params": ["i32", "i32", "i32"],
+            "result": "i32",
+        },
+    }
+    assert requested["export_names"] == {"molt_PyArg_ParseTuple"}
 
 
 def test_wasm_export_function_signatures_reads_wasm_bytes(tmp_path) -> None:

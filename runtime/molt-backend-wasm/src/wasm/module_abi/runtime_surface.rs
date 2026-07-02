@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
 use crate::wasm_abi::{
-    GPU_INTRINSIC_MANIFEST_NAMES, IMPORT_REGISTRY, WasmRuntimeImport, runtime_callable_arity,
-    runtime_callable_import, wasm_runtime_import,
+    IMPORT_REGISTRY, WasmRuntimeImport, runtime_callable_arity, runtime_callable_import,
+    wasm_runtime_import,
 };
+use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR, SimpleIR};
 
@@ -15,6 +16,7 @@ pub(super) struct WasmRuntimeSurfacePlan {
     pub(super) builtin_trampoline_specs: BTreeMap<String, usize>,
     pub(super) direct_import_call_specs: BTreeMap<String, usize>,
     pub(super) manifest_intrinsic_names: BTreeSet<String>,
+    pub(super) required_imports: BTreeSet<WasmRuntimeImport>,
 }
 
 impl WasmRuntimeSurfacePlan {
@@ -30,6 +32,7 @@ impl WasmRuntimeSurfacePlan {
             builtin_trampoline_specs: BTreeMap::new(),
             direct_import_call_specs: BTreeMap::new(),
             manifest_intrinsic_names: BTreeSet::new(),
+            required_imports: BTreeSet::new(),
         };
 
         for func_ir in &ir.functions {
@@ -39,18 +42,23 @@ impl WasmRuntimeSurfacePlan {
     }
 
     pub(super) fn auto_imports(&self, import_ids: &TrackedImportIds) -> Vec<WasmRuntimeImport> {
-        let manifest_intrinsic_names =
-            effective_manifest_intrinsic_names(self.manifest_intrinsic_names.clone());
-        let mut auto_imports: Vec<WasmRuntimeImport> = self
-            .builtin_trampoline_specs
-            .iter()
-            .map(|(runtime_name, _arity)| {
-                runtime_callable_import(runtime_name).unwrap_or_else(|| {
-                    panic!("runtime callable missing generated import spec: {runtime_name}")
-                })
+        let mut auto_imports: Vec<WasmRuntimeImport> =
+            self.required_imports.iter().copied().collect();
+        auto_imports.extend(
+            self.builtin_trampoline_specs
+                .iter()
+                .map(|(runtime_name, _arity)| {
+                    runtime_callable_import(runtime_name).unwrap_or_else(|| {
+                        panic!("runtime callable missing generated import spec: {runtime_name}")
+                    })
+                }),
+        );
+        auto_imports.extend(self.direct_import_call_specs.keys().map(|runtime_name| {
+            wasm_runtime_import(runtime_name).unwrap_or_else(|| {
+                panic!("direct runtime call missing generated import spec: {runtime_name}")
             })
-            .collect();
-        auto_imports.extend(manifest_intrinsic_names.iter().map(|runtime_name| {
+        }));
+        auto_imports.extend(self.manifest_intrinsic_names.iter().map(|runtime_name| {
             runtime_callable_import(runtime_name).unwrap_or_else(|| {
                 panic!("intrinsic manifest symbol missing generated WASM import: {runtime_name}")
             })
@@ -136,6 +144,10 @@ impl WasmRuntimeSurfacePlan {
                 .max_class_def_words
                 .max(ClassDefLayout::parse(meta).spill_words());
         }
+        if let Some(call) = op_loop_runtime_call(kind) {
+            self.required_imports
+                .extend(call.required_imports.iter().copied());
+        }
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
@@ -204,17 +216,6 @@ impl WasmRuntimeSurfacePlan {
     }
 }
 
-pub(super) fn effective_manifest_intrinsic_names(
-    mut manifest_intrinsic_names: BTreeSet<String>,
-) -> BTreeSet<String> {
-    manifest_intrinsic_names.extend(
-        GPU_INTRINSIC_MANIFEST_NAMES
-            .iter()
-            .map(|name| (*name).to_string()),
-    );
-    manifest_intrinsic_names
-}
-
 #[derive(Clone, Copy)]
 enum RuntimeArityPlan {
     BuiltinTrampoline,
@@ -236,22 +237,7 @@ mod tests {
     use crate::wasm_import_tracking::TrackedImportIds;
 
     #[test]
-    fn effective_manifest_intrinsic_names_includes_gpu_names_once() {
-        let original_name = "molt_json_parse_scalar".to_string();
-        let effective = effective_manifest_intrinsic_names(BTreeSet::from([original_name.clone()]));
-
-        assert!(effective.contains(&original_name));
-        for name in GPU_INTRINSIC_MANIFEST_NAMES {
-            assert!(effective.contains(*name));
-        }
-
-        let second_pass = effective_manifest_intrinsic_names(effective.clone());
-        assert_eq!(second_pass, effective);
-    }
-
-    #[test]
-    fn auto_imports_use_effective_manifest_intrinsic_names() {
-        assert!(!GPU_INTRINSIC_MANIFEST_NAMES.is_empty());
+    fn auto_imports_start_empty_for_unreached_runtime_callables() {
         let plan = WasmRuntimeSurfacePlan {
             max_func_arity: 0,
             max_call_arity: 0,
@@ -259,12 +245,14 @@ mod tests {
             builtin_trampoline_specs: BTreeMap::new(),
             direct_import_call_specs: BTreeMap::new(),
             manifest_intrinsic_names: BTreeSet::new(),
+            required_imports: BTreeSet::new(),
         };
         let import_ids = TrackedImportIds::new(BTreeMap::new());
         let imports = plan.auto_imports(&import_ids);
-        let gpu_import = runtime_callable_import(GPU_INTRINSIC_MANIFEST_NAMES[0])
-            .expect("GPU manifest intrinsic names must be generated runtime callables");
 
-        assert!(imports.contains(&gpu_import));
+        assert!(
+            imports.is_empty(),
+            "unobserved builtins/intrinsics must not create runtime callable imports"
+        );
     }
 }
