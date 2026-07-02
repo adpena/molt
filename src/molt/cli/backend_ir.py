@@ -694,6 +694,30 @@ def _build_static_native_module_init_ops(
     ops: list[dict[str, Any]] = [
         {"kind": "const_str", "s_value": spec.module, "out": module_name_var},
     ]
+    # The init function owns the init-exactly-once invariant: every call
+    # path (isolate-import dispatch, capsule alias providers) re-enters
+    # here, and re-running a static extension PyInit trips CPython-side
+    # reload guards ("cannot load module more than once per process")
+    # while re-running a plain init would replace the cached module
+    # object and break module identity.
+    cached_var = f"v{next_var}"
+    next_var += 1
+    none_var = f"v{next_var}"
+    next_var += 1
+    is_missing_var = f"v{next_var}"
+    next_var += 1
+    ops.extend(
+        [
+            {
+                "kind": "module_cache_get",
+                "args": [module_name_var],
+                "out": cached_var,
+            },
+            {"kind": "const_none", "out": none_var},
+            {"kind": "is", "args": [cached_var, none_var], "out": is_missing_var},
+            {"kind": "if", "args": [is_missing_var]},
+        ]
+    )
     module_var: str
     if spec.is_alias:
         provider_init = SimpleTIRGenerator.module_init_symbol(spec.alias_of)
@@ -785,15 +809,27 @@ def _build_static_native_module_init_ops(
             is_extension=spec.is_extension,
             next_var=next_var,
         )
+    ops.append({"kind": "end_if"})
+    # Re-load through the cache so parent binding and attr publication use
+    # the canonical module object on both the first-init and cached paths.
+    canonical_module_var = f"v{next_var}"
+    next_var += 1
+    ops.append(
+        {
+            "kind": "module_cache_get",
+            "args": [module_name_var],
+            "out": canonical_module_var,
+        }
+    )
     next_var = _append_static_native_parent_binding_ops(
         ops,
-        module_var=module_var,
+        module_var=canonical_module_var,
         module_name=spec.module,
         next_var=next_var,
     )
     next_var = _append_static_native_module_attr_export_ops(
         ops,
-        module_var=module_var,
+        module_var=canonical_module_var,
         spec=spec,
         register_global_code_id=register_global_code_id,
         next_var=next_var,

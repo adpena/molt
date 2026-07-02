@@ -308,6 +308,10 @@ unsafe extern "C" fn fake_import_module(_data: *const u8, _len: usize) -> u64 {
     0
 }
 
+unsafe extern "C" fn fake_exception_pending() -> std::os::raw::c_int {
+    0
+}
+
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_str: fake_alloc_str,
     alloc_bytes: fake_alloc_bytes,
@@ -350,6 +354,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     module_state_remove: fake_module_state_remove,
     register_c_function: fake_register_c_function,
     import_module: fake_import_module,
+    exception_pending: fake_exception_pending,
 };
 
 fn init() {
