@@ -1044,70 +1044,75 @@ pub(crate) fn class_name_for_error(class_bits: u64) -> String {
     }
 }
 
+pub(crate) fn builtin_class_bits_from_name(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    let builtins = builtin_classes(_py);
+    let bits = match name {
+        "object" => builtins.object,
+        "type" => builtins.type_obj,
+        "NoneType" => builtins.none_type,
+        "ellipsis" => builtins.ellipsis_type,
+        "NotImplementedType" => builtins.not_implemented_type,
+        "BaseException" => builtins.base_exception,
+        "Exception" => builtins.exception,
+        "BaseExceptionGroup" => builtins.base_exception_group,
+        "ExceptionGroup" => builtins.exception_group,
+        "int" => builtins.int,
+        "float" => builtins.float,
+        "complex" => builtins.complex,
+        "bool" => builtins.bool,
+        "str" => builtins.str,
+        "bytes" => builtins.bytes,
+        "bytearray" => builtins.bytearray,
+        "list" => builtins.list,
+        "tuple" => builtins.tuple,
+        "dict" => builtins.dict,
+        "set" => builtins.set,
+        "frozenset" => builtins.frozenset,
+        "range" => builtins.range,
+        "slice" => builtins.slice,
+        "memoryview" => builtins.memoryview,
+        "enumerate" => builtins.enumerate,
+        "bytes_iterator" => builtins.bytes_iterator,
+        "bytearray_iterator" => builtins.bytearray_iterator,
+        "dict_keyiterator" => builtins.dict_keyiterator,
+        "dict_valueiterator" => builtins.dict_valueiterator,
+        "dict_itemiterator" => builtins.dict_itemiterator,
+        "dict_reversekeyiterator" => builtins.dict_reversekeyiterator,
+        "dict_reversevalueiterator" => builtins.dict_reversevalueiterator,
+        "dict_reverseitemiterator" => builtins.dict_reverseitemiterator,
+        "list_iterator" => builtins.list_iterator,
+        "list_reverseiterator" => builtins.list_reverseiterator,
+        "range_iterator" => builtins.range_iterator,
+        "longrange_iterator" => builtins.longrange_iterator,
+        "set_iterator" => builtins.set_iterator,
+        "str_iterator" => builtins.str_iterator,
+        "str_ascii_iterator" => builtins.str_ascii_iterator,
+        "tuple_iterator" => builtins.tuple_iterator,
+        "reversed" => builtins.reversed,
+        "zip" => builtins.zip,
+        "map" => builtins.map,
+        "filter" => builtins.filter,
+        "super" => builtins.super_type,
+        "classmethod" => builtins.classmethod,
+        "staticmethod" => builtins.staticmethod,
+        "property" => builtins.property,
+        "GenericAlias" => builtins.generic_alias,
+        _ => return None,
+    };
+    inc_ref_bits(_py, bits);
+    Some(bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "builtin class name must be str");
         };
-        let builtins = builtin_classes(_py);
-        let bits = match name.as_str() {
-            "object" => builtins.object,
-            "type" => builtins.type_obj,
-            "NoneType" => builtins.none_type,
-            "ellipsis" => builtins.ellipsis_type,
-            "NotImplementedType" => builtins.not_implemented_type,
-            "BaseException" => builtins.base_exception,
-            "Exception" => builtins.exception,
-            "BaseExceptionGroup" => builtins.base_exception_group,
-            "ExceptionGroup" => builtins.exception_group,
-            "int" => builtins.int,
-            "float" => builtins.float,
-            "complex" => builtins.complex,
-            "bool" => builtins.bool,
-            "str" => builtins.str,
-            "bytes" => builtins.bytes,
-            "bytearray" => builtins.bytearray,
-            "list" => builtins.list,
-            "tuple" => builtins.tuple,
-            "dict" => builtins.dict,
-            "set" => builtins.set,
-            "frozenset" => builtins.frozenset,
-            "range" => builtins.range,
-            "slice" => builtins.slice,
-            "memoryview" => builtins.memoryview,
-            "enumerate" => builtins.enumerate,
-            "bytes_iterator" => builtins.bytes_iterator,
-            "bytearray_iterator" => builtins.bytearray_iterator,
-            "dict_keyiterator" => builtins.dict_keyiterator,
-            "dict_valueiterator" => builtins.dict_valueiterator,
-            "dict_itemiterator" => builtins.dict_itemiterator,
-            "dict_reversekeyiterator" => builtins.dict_reversekeyiterator,
-            "dict_reversevalueiterator" => builtins.dict_reversevalueiterator,
-            "dict_reverseitemiterator" => builtins.dict_reverseitemiterator,
-            "list_iterator" => builtins.list_iterator,
-            "list_reverseiterator" => builtins.list_reverseiterator,
-            "range_iterator" => builtins.range_iterator,
-            "longrange_iterator" => builtins.longrange_iterator,
-            "set_iterator" => builtins.set_iterator,
-            "str_iterator" => builtins.str_iterator,
-            "str_ascii_iterator" => builtins.str_ascii_iterator,
-            "tuple_iterator" => builtins.tuple_iterator,
-            "reversed" => builtins.reversed,
-            "zip" => builtins.zip,
-            "map" => builtins.map,
-            "filter" => builtins.filter,
-            "super" => builtins.super_type,
-            "classmethod" => builtins.classmethod,
-            "staticmethod" => builtins.staticmethod,
-            "property" => builtins.property,
-            "GenericAlias" => builtins.generic_alias,
-            _ => {
-                let msg = format!("builtin class unavailable: {name}");
-                return raise_exception::<_>(_py, "RuntimeError", &msg);
-            }
-        };
-        inc_ref_bits(_py, bits);
-        bits
+        if let Some(bits) = builtin_class_bits_from_name(_py, &name) {
+            return bits;
+        }
+        let msg = format!("builtin class unavailable: {name}");
+        raise_exception::<_>(_py, "RuntimeError", &msg)
     })
 }

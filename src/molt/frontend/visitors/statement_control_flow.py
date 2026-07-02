@@ -48,7 +48,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     # then conditionally reassigned *inside* the if, would
                     # lose its initial value: the pre-if store only wrote to
                     # self.globals (SSA cache), and the post-if eviction
-                    # removes the cache entry, so MODULE_GET_ATTR would find
+                    # removes the cache entry, so MODULE_GET_GLOBAL would find
                     # nothing in the module dict.
                     #
                     # IMPORTANT: skip the flush for variables already tracked
@@ -100,8 +100,8 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             self.control_flow_depth -= 1
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         # Evict module_global_mutations names from the locals/globals cache so
-        # subsequent loads go through MODULE_GET_ATTR instead of reusing a
-        # value that was only assigned in one branch.
+        # subsequent bare-name loads go through MODULE_GET_GLOBAL instead of
+        # reusing a value that was only assigned in one branch.
         if self.current_func_name == "molt_main" and not self.is_async():
             assigned = self._collect_assigned_names(node.body + node.orelse)
             for name in assigned:
@@ -839,8 +839,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         emit_loop_body()
         # Re-evict module-backed mutation names from self.locals.
         # The loop body may have re-added them via _store_local_value,
-        # but post-loop code must read them via module_get_attr to see
-        # the correct value (the loop body may not have executed).
+        # but post-loop code must read them via module_get_global to see
+        # the correct value while preserving NameError-on-miss semantics
+        # (the loop body may not have executed).
         if self.current_func_name == "molt_main":
             for name in assigned:
                 if name in self.module_global_mutations:

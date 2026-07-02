@@ -326,6 +326,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert "WASM_RUNTIME_IMPORT_EXPORT_NAMES" in rendered_py
     assert "WASM_RUNTIME_EXPORT_BY_IMPORT" in rendered_py
     assert "WASM_RUNTIME_IMPORT_BY_EXPORT" in rendered_py
+    assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES" in rendered_py
+    assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS" in rendered_py
     assert "def wasm_runtime_import_name" in rendered_py
     assert "def wasm_runtime_export_name" in rendered_py
     assert '("alloc", "molt_alloc")' in rendered_py
@@ -333,11 +335,20 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '("runtime_init", "molt_runtime_init")' in rendered_py
     assert '("runtime_shutdown", "molt_runtime_shutdown")' in rendered_py
     assert '("socket_drop", "molt_socket_drop")' in rendered_py
+    assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in rendered_py
+    assert '"Py_EllipsisObject": "molt_Py_EllipsisObject"' in rendered_py
+    assert '"Py_EllipsisObject": "data"' in rendered_py
+    assert '"Py_GenericAliasType": "data"' in rendered_py
+    assert '"Py_OptimizeFlag": "data"' in rendered_py
+    assert '"PyType_Ready": "function"' in rendered_py
     assert rendered_js_abi["runtime_export_by_import"]["socket_drop"] == (
         "molt_socket_drop"
     )
     assert rendered_js_abi["runtime_export_by_import"]["PyArg_ParseTuple"] == (
-        "PyArg_ParseTuple"
+        "molt_PyArg_ParseTuple"
+    )
+    assert rendered_js_abi["runtime_export_by_import"]["PyType_Ready"] == (
+        "molt_PyType_Ready"
     )
     assert rendered_js_abi["runtime_import_fallbacks"]["fast_dict_get"] == {
         "call_arity": 2,
@@ -407,6 +418,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_load_intrinsic_runtime"
     )
     assert imports["load_intrinsic_runtime"]["callable_arity"] == 2
+    assert imports["set_app_callable_resolver"]["runtime_name"] == (
+        "molt_set_app_callable_resolver"
+    )
+    assert imports["set_app_callable_resolver"]["type"] == 2
+    assert "callable_arity" not in imports["set_app_callable_resolver"]
     assert imports["function_init_metadata_packed"]["runtime_name"] == (
         "molt_function_init_metadata_packed"
     )
@@ -598,6 +614,31 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
+    assert "pub(crate) fn python_builtin_function_info" in rendered_runtime_rs
+    assert '        "len" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
+    assert "            index: 2," in rendered_runtime_rs
+    assert '            runtime_name: "molt_len",' in rendered_runtime_rs
+    assert "pub(crate) fn python_builtin_function_target_ptr(" in rendered_runtime_rs
+    assert (
+        '        "molt_len" => Some(crate::molt_len as *const ()),'
+        in rendered_runtime_rs
+    )
+    assert "pub(crate) fn python_builtin_function_info(" in rendered_runtime_rs
+    assert "            fn_ptr:" not in rendered_runtime_rs
+    assert '#[cfg(not(target_arch = "wasm32"))]' in rendered_runtime_rs
+    assert '            posonly_params: &["obj"],' in rendered_runtime_rs
+    assert "            defaults: &[]," in rendered_runtime_rs
+    assert '        "print" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
+    assert '            runtime_name: "molt_print_builtin",' in rendered_runtime_rs
+    assert '            vararg: Some("args"),' in rendered_runtime_rs
+    assert '            kwonly_params: &["sep", "end", "file", "flush"],' in rendered_runtime_rs
+    assert (
+        '            kw_defaults: &[("sep", GeneratedBuiltinDefaultValue::Str(" ")), '
+        r'("end", GeneratedBuiltinDefaultValue::Str("\n")), '
+        '("file", GeneratedBuiltinDefaultValue::None), '
+        '("flush", GeneratedBuiltinDefaultValue::Bool(false))],'
+    ) in rendered_runtime_rs
+    assert "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = 41;" in rendered_runtime_rs
     assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
     assert "VOID_CALLABLE_TARGETS" not in rendered_runtime_rs
     assert "crate::intrinsics::resolve_symbol" not in rendered_runtime_rs
@@ -658,6 +699,23 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_returns_void" in function_abi
     assert "VOID_INTRINSICS" not in call_function
     assert "runtime_callable_returns_void(fn_ptr)" in call_function
+
+
+def test_wasm_runtime_callable_resolver_is_app_local_in_production() -> None:
+    registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text(
+        encoding="utf-8"
+    )
+    intrinsics_mod = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/mod.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "#[cfg(test)]\nuse crate::intrinsics::generated::resolve_symbol;" in registry
+    assert "#[cfg(any(target_arch = \"wasm32\", test))]" not in registry
+    assert "#[cfg(not(any(target_arch = \"wasm32\", test)))]" not in registry
+    assert "pub extern \"C\" fn molt_set_app_callable_resolver" in registry
+    assert "pub(crate) fn try_app_resolve_runtime_callable" in registry
+    assert "try_app_resolve_symbol(spec.symbol)" in registry
+    assert "pub(crate) use registry::try_app_resolve_symbol;" in intrinsics_mod
 
 
 def test_runtime_features_are_derived_not_manifest_owned() -> None:

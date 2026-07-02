@@ -132,6 +132,18 @@ That mode emits `app.wasm`, `molt_runtime.wasm`, `worker.js`,
 is designed to stay CDN-cacheable across apps when its export surface is
 unchanged.
 
+## Runtime Callable Reachability
+
+Browser/WASM production artifacts must not retain the generated
+`resolve_symbol` intrinsic resolver or generated Python builtin target resolver
+as executable authority. Those monolithic resolvers address-take broad runtime
+surfaces and defeat whole-program dead-code elimination. Instead, the backend
+derives the effective callable manifest from reachable app IR, imports only
+those generated runtime callables, emits one app-local resolver table, and
+registers it through `molt_set_app_callable_resolver` before runtime
+initialization. Unit tests may use generated resolvers to validate registries;
+shipped artifacts must resolve through the app-local table or fail closed.
+
 ## Package Compatibility Boundary
 
 This browser entrypoint is intentionally narrower than NumPy/SciPy/tinygrad

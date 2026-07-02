@@ -7,9 +7,9 @@ Companion facts (verified in-tree 2026-06-26):
 - Frontend gate: `src/molt/cli/module_stdlib_policy.py:130` (`_enforce_profile_feature_availability`)
 - Symbol-feature authority: `runtime/molt-runtime/src/intrinsics/categories.toml` owns prefix-to-feature attribution; `runtime/molt-runtime/Cargo.toml` plus cfg-gated runtime modules own link-affecting feature status; `src/molt/_runtime_feature_gates.py` is generated consumer data.
 - Drifted profile model: `src/molt/cli/runtime_features.py:104` (`_ALL_DOMAIN_FEATURES`), `:153` (`_runtime_builtin_features_for_profile`)
-- The reachability fact (already exists, wrong layer): `runtime/molt-tir/src/passes/intrinsics_manifest.rs:61` (`compute_intrinsic_manifest`)
-- Symbol-set authority + fail-closed: `runtime/molt-ir/src/intrinsic_symbols.rs:50` (`runtime_intrinsic_symbols_required`)
-- Native dead-strip resolver: `runtime/molt-backend/src/native_backend/simple_backend/app_resolver.rs:35`; runtime side `runtime/molt-runtime/src/intrinsics/registry.rs:55` (`molt_set_app_intrinsic_resolver`)
+- The reachability fact (already exists, wrong layer): `runtime/molt-tir/src/passes/app_callable_manifest.rs:61` (`compute_app_callable_manifest`)
+- Symbol-set authority + fail-closed: `runtime/molt-ir/src/runtime_callable_symbols.rs:50` (`runtime_callable_symbols_required`)
+- Native dead-strip resolver: `runtime/molt-backend/src/native_backend/simple_backend/app_resolver.rs:35`; runtime side `runtime/molt-runtime/src/intrinsics/registry.rs:55` (`molt_set_app_callable_resolver`)
 - Cargo feature ladder: `runtime/molt-runtime/Cargo.toml:15-125`
 
 ---
@@ -17,7 +17,7 @@ Companion facts (verified in-tree 2026-06-26):
 ## 0. One-paragraph thesis
 
 molt **already computes a whole-program, data-flow-complete intrinsic-reachability
-closure** — `compute_intrinsic_manifest` in `molt-tir` — and the native backend
+closure** — `compute_app_callable_manifest` in `molt-tir` — and the native backend
 already emits a per-app resolver covering exactly that set so the linker
 dead-strips every unreached intrinsic. But molt makes the *feature-requirement
 decision* (which Cargo features the runtime archive must build, and whether to
@@ -65,10 +65,10 @@ the *class*.
                                     │
         ┌───────────────────────────┴───────────────────────────────┐
         │ FACT A (coarse, presence-based)                            │ FACT B (precise, reachability-based)
-        │ module_required_intrinsic_names(path)                      │ compute_intrinsic_manifest(ir.functions, symbols)
+        │ module_required_intrinsic_names(path)                      │ compute_app_callable_manifest(ir.functions, symbols)
         │  = ast.walk(module) for require_intrinsic("molt_*")        │  = every const_str op across ALL compiled TIR
         │    literals — whole-file, no call-graph, no liveness       │    functions whose value ∈ linked staticlib symbols
-        │ src/molt/stdlib_intrinsic_policy.py:97                     │ runtime/molt-tir/src/passes/intrinsics_manifest.rs:61
+        │ src/molt/stdlib_intrinsic_policy.py:97                     │ runtime/molt-tir/src/passes/app_callable_manifest.rs:61
         └───────────────┬────────────────────────────────────────────┴───────────────┬───────────────┘
                         │                                                              │
             DRIVES (today)                                                  DRIVES (today)
@@ -194,11 +194,11 @@ Non-goals:
 For a given build (entry module, target, profile), define:
 
 ```
-ReachedIntrinsics(build)  := compute_intrinsic_manifest(all_compiled_TIR_functions,
+ReachedCallables(build)  := compute_app_callable_manifest(all_compiled_TIR_functions,
                                                          staticlib_symbol_set)
-                             ∪ ImplicitClosure(ReachedIntrinsics)        # §4
+                             ∪ ImplicitClosure(ReachedCallables)        # §4
 RequiredLinkFeatures(build) := { link_affecting_feature_gate_for_symbol(s)
-                                 for s in ReachedIntrinsics(build) } \ {None}
+                                 for s in ReachedCallables(build) } \ {None}
 ```
 
 `RequiredLinkFeatures` is the **minimal set of link-affecting Cargo features the
@@ -206,8 +206,8 @@ runtime archive must build** so that every reached intrinsic resolves. It
 replaces the per-module gap computation as the requirement authority.
 
 This reuses, unchanged:
-- `compute_intrinsic_manifest` (the reachability closure) —
-  `intrinsics_manifest.rs:61`.
+- `compute_app_callable_manifest` (the reachability closure) —
+  `app_callable_manifest.rs:61`.
 - `link_affecting_feature_gate_for_symbol` (symbol→link-affecting-feature) —
   generated `_runtime_feature_gates.py`. This is the exact "does dropping this
   feature remove the symbol definition" predicate, so it is the correct
@@ -217,16 +217,16 @@ This reuses, unchanged:
 
 ### 3.2 The chicken-and-egg, and its resolution
 
-`compute_intrinsic_manifest` needs the compiled TIR (Fact B is computed during
+`compute_app_callable_manifest` needs the compiled TIR (Fact B is computed during
 codegen). Feature selection chooses the runtime archive to build/link. The
-symbol-set validation (`runtime_intrinsic_symbols_required`,
+symbol-set validation (`runtime_callable_symbols_required`,
 `intrinsic_symbols.rs:50`) needs a *linked staticlib* to extract `molt_*`
 symbols from. Three quantities, mutually entangled. Resolve it with a **two-pass
 build over a single full-superset archive cache**, which is how molt already
-stages symbols (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`):
+stages symbols (`MOLT_RUNTIME_CALLABLE_SYMBOLS`):
 
 1. **Reachability pass (frontend → TIR, no link).** Compile the program to TIR
-   (this already happens). Compute `ReachedIntrinsics` against the
+   (this already happens). Compute `ReachedCallables` against the
    **full-profile** staticlib symbol set (the maximal set; any reached intrinsic
    is a member). This is a pure analysis over IR + a cached symbol file — no
    per-program runtime rebuild. Derive `RequiredLinkFeatures`.
@@ -235,7 +235,7 @@ stages symbols (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`):
    built once per feature-set and cached (existing behavior keyed by
    `runtime_fingerprints`), this is a cache lookup, not a per-program compile.
 3. **Codegen + link pass.** Emit the per-app resolver from the *same*
-   `ReachedIntrinsics` (Fact B), validated against the *selected* archive's
+   `ReachedCallables` (Fact B), validated against the *selected* archive's
    symbol set. Link. The linker dead-strips every unreached intrinsic within the
    selected features.
 
@@ -268,8 +268,8 @@ consume it:
 
 ## 4. The dynamic-edge contract (the load-bearing soundness piece)
 
-`compute_intrinsic_manifest` is already remarkably complete: its docstring
-(`intrinsics_manifest.rs:61-103`) documents that it captures intrinsic names
+`compute_app_callable_manifest` is already remarkably complete: its docstring
+(`app_callable_manifest.rs:61-103`) documents that it captures intrinsic names
 reaching `require_intrinsic` *through arbitrary data flow* — direct calls,
 wrapper calls (`_require_callable_intrinsic("molt_gc_collect")`), and
 object-field stashing (`_LazyIntrinsic("molt_sys_version_info")`). Because it
@@ -315,7 +315,7 @@ domain whose intrinsic A always transitively needs intrinsic B at runtime.
 
 Make these **one generated `IMPLICIT_INTRINSIC_EDGES` table**, keyed exactly like
 `RUNTIME_FEATURE_GATES`, of the form `reached_intrinsic_or_module → forced_intrinsics`.
-`ImplicitClosure` (§3.1) is its transitive closure over `ReachedIntrinsics`.
+`ImplicitClosure` (§3.1) is its transitive closure over `ReachedCallables`.
 This is the single home for every "static analysis cannot see this edge" fact —
 no scattered special cases (G5). Today there is effectively one such fact (SSL's
 always-linkable ABI sidesteps it by being ungated); the table formalizes the
@@ -334,7 +334,7 @@ reachable module, or a reflective import that could load a *gated* module whose
 membership cannot be decided), the build **refuses** with the actionable
 profile message — it does not fall through to "link everything" (fails open) nor
 "drop and hope" (silently wrong). This mirrors the existing fail-closed posture
-of `runtime_intrinsic_symbols_required` and the JS "retain the whole dynamic
+of `runtime_callable_symbols_required` and the JS "retain the whole dynamic
 candidate set, never drop on a guess" rule. For the *reflective-import-could-
 load-a-gated-module* case specifically, the conservative-correct action is to
 fall back to the **profile upper bound** (§5) for that build — i.e. the existing
@@ -438,11 +438,11 @@ measurement data on real programs before flipping authority.
 
 - New: `src/molt/cli/required_features.py` (Python side that invokes the TIR
   reachability pass and maps via `link_affecting_feature_gate_for_symbol`).
-- The TIR pass already exists; expose `ReachedIntrinsics` to the CLI. There is a
+- The TIR pass already exists; expose `ReachedCallables` to the CLI. There is a
   staging seam already: the backend computes the manifest during codegen
   (`compile_driver.rs:471`). Phase 1 adds a *pre-codegen analysis entry point*
-  that runs the same `compute_intrinsic_manifest` over the TIR the frontend
-  produces, so the CLI has `ReachedIntrinsics` before archive selection (§3.2
+  that runs the same `compute_app_callable_manifest` over the TIR the frontend
+  produces, so the CLI has `ReachedCallables` before archive selection (§3.2
   pass 1). This is the structural heart; it must be a real shared call into
   `molt-tir`, not a Python re-implementation (one fact, §G1).
 
@@ -542,7 +542,7 @@ Every layer of the AST-to-binary spine gets a proof at its own layer.
 ### 7.1 Reachability-fact correctness (TIR layer)
 
 - `reached_intrinsics_excludes_unreached_import`: a synthetic program
-  `import re; print(1)` (no regex call) → `ReachedIntrinsics` contains no
+  `import re; print(1)` (no regex call) → `ReachedCallables` contains no
   `molt_re_*` → `RequiredLinkFeatures` excludes `stdlib_regex`. The keystone
   regression for the whole bug class.
 - `reached_intrinsics_includes_executed_module_body`: `import re` where re's
@@ -550,7 +550,7 @@ Every layer of the AST-to-binary spine gets a proof at its own layer.
   against over-aggressive elimination dropping a genuinely-loaded module's
   load-time requirement.
 - `reached_intrinsics_includes_wrapper_and_field_indirection`: re-pin the
-  existing `intrinsics_manifest.rs` data-flow-completeness cases
+  existing `app_callable_manifest.rs` data-flow-completeness cases
   (`_require_callable_intrinsic`, `_LazyIntrinsic` field stash) at the
   `RequiredLinkFeatures` level, so the requirement fact inherits the manifest's
   completeness guarantees.
@@ -594,7 +594,7 @@ Every layer of the AST-to-binary spine gets a proof at its own layer.
   via a shared helper) — this gate surfaces it and forces re-modularizing that
   feature's intrinsics until each is independently dead-strippable. Run per
   feature with a reached/unreached intrinsic pair; CI-gated.
-- The existing `runtime_intrinsic_symbols_required` fail-closed test stays green
+- The existing `runtime_callable_symbols_required` fail-closed test stays green
   (the symbol-set precondition is unchanged).
 
 ### 7.4 No-regression across backends
@@ -604,9 +604,9 @@ Every layer of the AST-to-binary spine gets a proof at its own layer.
   heavy modules without reaching them; assert identical stdout/stderr to CPython
   and successful build on the *selected* (lower) tier.
 - WASM parity: the WASM manifest scan
-  (`wasm.rs` `manifest_intrinsic_names`) and native `compute_intrinsic_manifest`
-  must agree (they already share the algorithm per `intrinsics_manifest.rs:5`).
-  Add a test that both produce the same `ReachedIntrinsics` for a fixed program,
+  (`wasm.rs` `manifest_intrinsic_names`) and native `compute_app_callable_manifest`
+  must agree (they already share the algorithm per `app_callable_manifest.rs:5`).
+  Add a test that both produce the same `ReachedCallables` for a fixed program,
   so the §3 fact is backend-uniform (a native win never hides a WASM divergence).
 - Luau/LLVM: `RequiredLinkFeatures` is target-independent (it is a property of
   the reached TIR); only archive availability per target differs, handled by the
@@ -705,7 +705,7 @@ New:
   transitively. Deletes the `_ALL_DOMAIN_FEATURES` mirror as a requirement
   source.
 - `runtime/molt-tir/` — pre-codegen analysis entry point exposing
-  `ReachedIntrinsics` (reusing `compute_intrinsic_manifest`); plus
+  `ReachedCallables` (reusing `compute_app_callable_manifest`); plus
   `IMPLICIT_INTRINSIC_EDGES` table + `ImplicitClosure`.
 - A TIR gate refusing non-`const_str` intrinsic names (§4.1).
 
@@ -724,7 +724,7 @@ Changed:
 - Stdlib smell-sweep files (Phase 4, §6).
 
 Unchanged (correct as-is, gains an authoritative upstream):
-- `runtime/molt-tir/src/passes/intrinsics_manifest.rs` (the reachability closure).
+- `runtime/molt-tir/src/passes/app_callable_manifest.rs` (the reachability closure).
 - `runtime/molt-backend/.../app_resolver.rs` (the per-app resolver / dead-strip).
 - `runtime/molt-runtime/src/intrinsics/registry.rs` (the resolver registration).
 - `runtime/molt-runtime/Cargo.toml` feature *groups* (sections are correct).
@@ -794,12 +794,12 @@ Unchanged (correct as-is, gains an authoritative upstream):
 
 | | Fact A (delete as requirement source) | Fact B (promote to authority) |
 |---|---|---|
-| Name | `module_required_intrinsic_names` | `compute_intrinsic_manifest` |
-| File | `src/molt/stdlib_intrinsic_policy.py:97` | `runtime/molt-tir/src/passes/intrinsics_manifest.rs:61` |
+| Name | `module_required_intrinsic_names` | `compute_app_callable_manifest` |
+| File | `src/molt/stdlib_intrinsic_policy.py:97` | `runtime/molt-tir/src/passes/app_callable_manifest.rs:61` |
 | Granularity | per *module* (whole-file `ast.walk`) | per *reached `const_str`* across all TIR functions |
 | Precision | over-approximate (presence) | exact (data-flow-complete for constant names) |
 | Pipeline stage | static import-graph resolution (pre-codegen) | codegen (per-app manifest), liftable pre-codegen (§3.2) |
 | Sees dead/unloaded module imports? | YES (the bug) | NO (the cure) |
-| Validated against linked symbols? | NO | YES (`runtime_intrinsic_symbols_required`, fail-closed) |
+| Validated against linked symbols? | NO | YES (`runtime_callable_symbols_required`, fail-closed) |
 | Drives today | the refusal + (via profile model) selection | the per-app resolver + linker dead-strip |
 | Drives after | nothing (removed) | refusal + selection + dead-strip (one fact) |

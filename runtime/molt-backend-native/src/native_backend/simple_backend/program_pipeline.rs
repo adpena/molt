@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
     pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
-    pub(in crate::native_backend::simple_backend) app_intrinsic_manifest: BTreeSet<String>,
+    pub(in crate::native_backend::simple_backend) app_callable_manifest: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) pre_split_task_kinds:
         BTreeMap<String, TrampolineKind>,
     pub(in crate::native_backend::simple_backend) pre_split_task_closure_sizes:
@@ -119,17 +119,17 @@ impl SimpleBackend {
         rewrite_annotate_stubs(ir);
         run_post_tir_simple_ir_rewrites(&mut ir.functions);
 
-        let emit_resolver_here = self.emit_app_intrinsic_resolver;
-        let app_intrinsic_manifest = if emit_resolver_here {
-            self.app_intrinsic_manifest.take().unwrap_or_else(|| {
+        let emit_resolver_here = self.emit_app_callable_resolver;
+        let app_callable_manifest = if emit_resolver_here {
+            self.app_callable_manifest.take().unwrap_or_else(|| {
                 // `_checked`: requires the staticlib symbol set (fail-closed)
-                // only when some `molt_`-prefixed const_str exists. An empty
-                // module has a necessarily empty manifest and must not demand a
-                // symbol file that is not staged for it.
-                crate::passes::compute_intrinsic_manifest_checked(&ir.functions)
+                // only when some `molt_`-prefixed callable candidate exists. An
+                // empty module has a necessarily empty manifest and must not
+                // demand a symbol file that is not staged for it.
+                crate::passes::compute_app_callable_manifest_checked(&ir.functions)
             })
         } else {
-            self.app_intrinsic_manifest.take().unwrap_or_default()
+            self.app_callable_manifest.take().unwrap_or_default()
         };
         if !self.skip_shared_stdlib_partition {
             externalize_shared_stdlib_partition(ir);
@@ -141,7 +141,7 @@ impl SimpleBackend {
 
         NativeProgramPipeline {
             emit_resolver_here,
-            app_intrinsic_manifest,
+            app_callable_manifest,
             pre_split_task_kinds,
             pre_split_task_closure_sizes,
         }

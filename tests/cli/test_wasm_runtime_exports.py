@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli import runtime_build as RUNTIME_BUILD
 from molt._wasm_runtime_exports import (
+    wasm_cpython_abi_requested_data_export_names,
+    wasm_cpython_abi_requested_export_names,
+    wasm_split_runtime_export_rename_map,
+    wasm_split_runtime_export_name_for_import,
+    wasm_split_runtime_missing_required_exports,
     wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
     wasm_runtime_export_name_for_import,
@@ -16,6 +22,7 @@ from molt._wasm_abi_generated import (
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt.cli.backend_execution import _backend_codegen_env_digest
 from molt.cli.required_features import reached_intrinsic_symbols
+from molt.wasm_artifact import parse_wasm_exports
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +93,30 @@ def _call(symbol: str) -> dict[str, object]:
     return {"kind": "call", "s_value": symbol, "args": [], "out": "v0"}
 
 
+def _encode_wasm_varuint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _build_exported_wasm_module(export_names: list[str]) -> bytes:
+    payload = bytearray()
+    payload.extend(_encode_wasm_varuint(len(export_names)))
+    for index, name in enumerate(export_names):
+        encoded = name.encode("utf-8")
+        payload.extend(_encode_wasm_varuint(len(encoded)))
+        payload.extend(encoded)
+        payload.append(0x00)
+        payload.extend(_encode_wasm_varuint(index))
+    return b"\0asm\x01\0\0\0" + b"\x07" + _encode_wasm_varuint(len(payload)) + payload
+
+
 def _function(name: str, ops: list[dict[str, object]]) -> dict[str, object]:
     return {"name": name, "params": [], "ops": ops}
 
@@ -128,7 +159,119 @@ def test_wasm_runtime_export_names_are_generated() -> None:
     assert wasm_runtime_export_name("molt_alloc") == "molt_alloc"
     assert wasm_runtime_export_name_for_import("socket_drop") == "molt_socket_drop"
     assert wasm_runtime_export_name_for_import("PyArg_ParseTuple") == "PyArg_ParseTuple"
+    assert (
+        wasm_split_runtime_export_name_for_import("PyArg_ParseTuple")
+        == "molt_PyArg_ParseTuple"
+    )
+    assert (
+        wasm_split_runtime_export_name_for_import("PyType_Ready") == "molt_PyType_Ready"
+    )
+    assert (
+        wasm_split_runtime_export_name_for_import("molt_cpython_abi_date_from_date")
+        == "molt_cpython_abi_date_from_date"
+    )
     assert wasm_runtime_export_name_for_import("PyArray_NDIM") is None
+
+
+def test_split_runtime_cpython_abi_exports_use_public_molt_names() -> None:
+    required = {
+        "PyType_Ready",
+        "PyArg_ParseTuple",
+        "molt_cpython_abi_date_from_date",
+        "socket_drop",
+    }
+
+    assert wasm_split_runtime_export_rename_map(required) == {
+        "PyArg_ParseTuple": "molt_PyArg_ParseTuple",
+        "PyType_Ready": "molt_PyType_Ready",
+    }
+    assert (
+        wasm_split_runtime_missing_required_exports(
+            {
+                "molt_PyType_Ready",
+                "molt_PyArg_ParseTuple",
+                "molt_cpython_abi_date_from_date",
+                "molt_socket_drop",
+            },
+            required,
+        )
+        == set()
+    )
+    assert wasm_split_runtime_missing_required_exports(
+        {"PyType_Ready", "molt_socket_drop"},
+        {"PyType_Ready", "socket_drop"},
+    ) == {"molt_PyType_Ready"}
+
+
+def test_runtime_build_receives_raw_cpython_abi_requested_export_names() -> None:
+    required = {
+        "PyType_Ready",
+        "PyArg_ParseTuple",
+        "Py_EllipsisObject",
+        "Py_GenericAliasType",
+        "Py_OptimizeFlag",
+        "Py_Version",
+        "molt_cpython_abi_date_from_date",
+        "socket_drop",
+        "PyArray_NDIM",
+    }
+
+    assert wasm_cpython_abi_requested_export_names(required) == (
+        "PyArg_ParseTuple",
+        "PyType_Ready",
+        "Py_EllipsisObject",
+        "Py_GenericAliasType",
+        "Py_OptimizeFlag",
+        "Py_Version",
+    )
+    assert wasm_cpython_abi_requested_data_export_names(required) == (
+        "Py_EllipsisObject",
+        "Py_GenericAliasType",
+        "Py_OptimizeFlag",
+        "Py_Version",
+    )
+
+
+def test_split_runtime_public_export_materializer_rewrites_raw_cpython_abi_names(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime.wasm"
+    runtime.write_bytes(
+        _build_exported_wasm_module(["PyType_Ready", "molt_socket_drop"])
+    )
+
+    assert RUNTIME_BUILD._materialize_split_runtime_public_exports(
+        runtime,
+        {"PyType_Ready", "socket_drop"},
+        json_output=True,
+    )
+
+    exports = {export.name for export in parse_wasm_exports(runtime.read_bytes(), kind=0)}
+    assert "molt_PyType_Ready" in exports
+    assert "PyType_Ready" not in exports
+    assert "molt_socket_drop" in exports
+
+
+def test_split_runtime_public_export_materializer_rejects_rename_collision(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime.wasm"
+    runtime.write_bytes(
+        _build_exported_wasm_module(["PyType_Ready", "molt_PyType_Ready"])
+    )
+
+    assert not RUNTIME_BUILD._materialize_split_runtime_public_exports(
+        runtime,
+        {"PyType_Ready"},
+        json_output=True,
+    )
+
+
+def test_runtime_wasm_build_gates_split_export_materialization_to_split_mode() -> (
+    None
+):
+    text = (ROOT / "src/molt/cli/runtime_build.py").read_text(encoding="utf-8")
+    assert "if not reloc and not _materialize_split_runtime_public_exports(" in text
 
 
 def test_wasm_runtime_exports_use_generated_intrinsic_symbols_and_ast_scan() -> None:

@@ -153,7 +153,7 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_vec_sum_int_range_trusted", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_vec_sum_int_trusted", 2, RuntimeReturnAbi::I64),
     // Frontend-preserved Copy spellings that reach the generic LLVM
-    // `molt_<kind>` fallback. `MOLT_RUNTIME_INTRINSIC_SYMBOLS` proves only
+    // `molt_<kind>` fallback. `MOLT_RUNTIME_CALLABLE_SYMBOLS` proves only
     // active-profile availability; this table owns the boxed-call ABI.
     runtime_sig("molt_alloc_class", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_alloc_class_static", 2, RuntimeReturnAbi::I64),

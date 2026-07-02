@@ -2097,6 +2097,23 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
     cache_exception_type(_py, name, class_bits)
 }
 
+pub(crate) fn builtin_exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    let canonical = exception_alias_name(name).unwrap_or(name);
+    let is_builtin_exception = matches!(
+        canonical,
+        "BaseException" | "Exception" | "BaseExceptionGroup" | "ExceptionGroup"
+    ) || exception_base_spec(canonical).is_some();
+    if !is_builtin_exception {
+        return None;
+    }
+    let bits = exception_type_bits_from_name(_py, name);
+    if bits == 0 {
+        return None;
+    }
+    inc_ref_bits(_py, bits);
+    Some(bits)
+}
+
 fn alloc_class_obj_from_name(_py: &PyToken<'_>, name: &str) -> *mut u8 {
     let name_ptr = alloc_string(_py, name.as_bytes());
     if name_ptr.is_null() {

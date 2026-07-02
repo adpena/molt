@@ -144,6 +144,7 @@ pub(crate) enum WasmRuntimeImport {
     GpuBarrier,
     RequireIntrinsicRuntime,
     LoadIntrinsicRuntime,
+    SetAppCallableResolver,
     RuntimeActiveRuntime,
     IsBoundMethod,
     IsFunctionObj,

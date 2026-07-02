@@ -18,6 +18,7 @@ from wasm_abi_gen.paths import (
     CPYTHON_ABI_VARIADIC_SHIM,
     INTRINSIC_CATEGORIES,
     INTRINSICS_MANIFEST,
+    FRONTEND_TYPES,
     MANIFEST,
     OUT_RUNTIME_CALLABLES_RS,
     RUNTIME_ROOT,
@@ -224,23 +225,50 @@ def _no_mangle_macro_names(text: str) -> set[str]:
     return names
 
 
-def _macro_generated_cpython_abi_export_names(text: str) -> set[str]:
+def _record_cpython_abi_export_kind(kinds: dict[str, str], name: str, kind: str) -> None:
+    previous = kinds.get(name)
+    if previous is not None and previous != kind:
+        raise WasmAbiManifestError(
+            f"CPython ABI export {name!r} has conflicting symbol kinds: "
+            f"{previous!r} and {kind!r}"
+        )
+    kinds[name] = kind
+
+
+def _macro_generated_cpython_abi_export_kinds(text: str) -> dict[str, str]:
     exported_macros = _no_mangle_macro_names(text)
     if not exported_macros:
-        return set()
-    names: set[str] = set()
+        return {}
+    macro_bodies: dict[str, str] = {}
+    for macro_match in CPYTHON_ABI_MACRO_RULES_RE.finditer(text):
+        macro_name = macro_match.group("name")
+        if macro_name not in exported_macros:
+            continue
+        open_index = text.find("{", macro_match.end() - 1)
+        close_index = _matching_brace_index(text, open_index)
+        macro_bodies[macro_name] = text[open_index:close_index]
+    kinds: dict[str, str] = {}
     for match in CPYTHON_ABI_MACRO_INVOCATION_RE.finditer(text):
         if match.group("macro") not in exported_macros:
             continue
+        body = macro_bodies[match.group("macro")]
+        if "pub static" in body:
+            kind = "data"
+        elif 'extern "C" fn' in body:
+            kind = "function"
+        else:
+            raise WasmAbiManifestError(
+                f"cannot classify CPython ABI no_mangle macro {match.group('macro')!r}"
+            )
         for ident in CPYTHON_ABI_RUST_IDENT_RE.findall(match.group("args")):
             if _is_cpython_abi_export_name(ident):
-                names.add(ident)
-    return names
+                _record_cpython_abi_export_kind(kinds, ident, kind)
+    return kinds
 
 
 @lru_cache(maxsize=1)
-def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
-    """Return runtime-owned CPython ABI symbols extensions may import.
+def generator_cpython_abi_link_import_kinds() -> tuple[tuple[str, str], ...]:
+    """Return runtime-owned CPython ABI import symbols and their object kind.
 
     The external native linker surface is derived from the actual
     `molt-cpython-abi` public C-API/type-object exports plus the C variadic
@@ -248,26 +276,32 @@ def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
     preventing hand-maintained manifest drift from surfacing as late
     Pact/browser build failures.
     """
-    names: set[str] = set()
+    kinds: dict[str, str] = {}
     rust_paths = (CPYTHON_ABI_TYPES, *sorted(CPYTHON_ABI_API_ROOT.glob("*.rs")))
     for path in rust_paths:
         text = path.read_text(encoding="utf-8")
-        for pattern in (
-            CPYTHON_ABI_NO_MANGLE_FUNCTION_RE,
-            CPYTHON_ABI_NO_MANGLE_STATIC_RE,
-        ):
-            for match in pattern.finditer(text):
-                name = match.group("name")
-                if _is_cpython_abi_export_name(name):
-                    names.add(name)
-        names.update(_macro_generated_cpython_abi_export_names(text))
+        for match in CPYTHON_ABI_NO_MANGLE_FUNCTION_RE.finditer(text):
+            name = match.group("name")
+            if _is_cpython_abi_export_name(name):
+                _record_cpython_abi_export_kind(kinds, name, "function")
+        for match in CPYTHON_ABI_NO_MANGLE_STATIC_RE.finditer(text):
+            name = match.group("name")
+            if _is_cpython_abi_export_name(name):
+                _record_cpython_abi_export_kind(kinds, name, "data")
+        for name, kind in _macro_generated_cpython_abi_export_kinds(text).items():
+            _record_cpython_abi_export_kind(kinds, name, kind)
 
     c_text = CPYTHON_ABI_VARIADIC_SHIM.read_text(encoding="utf-8")
     for match in CPYTHON_ABI_C_FUNCTION_RE.finditer(c_text):
         name = match.group("name")
         if _is_cpython_abi_export_name(name):
-            names.add(name)
-    return tuple(sorted(names))
+            _record_cpython_abi_export_kind(kinds, name, "function")
+    return tuple(sorted(kinds.items()))
+
+
+def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
+    """Return runtime-owned CPython ABI symbols extensions may import."""
+    return tuple(name for name, _kind in generator_cpython_abi_link_import_kinds())
 
 
 def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
@@ -282,7 +316,8 @@ def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
         for entry in external_imports
         if isinstance(entry, dict)
     }
-    for name in generator_cpython_abi_link_import_names():
+    generated_kinds = dict(generator_cpython_abi_link_import_kinds())
+    for name, kind in generated_kinds.items():
         if name in link_allowed_names:
             raise WasmAbiManifestError(
                 f"generated CPython ABI link import {name!r} collides with "
@@ -298,8 +333,16 @@ def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
                 )
             continue
         external_imports.append(
-            {"name": name, "primitive_class": CPYTHON_ABI_LINK_IMPORT_CLASS}
+            {
+                "name": name,
+                "primitive_class": CPYTHON_ABI_LINK_IMPORT_CLASS,
+                "symbol_kind": kind,
+            }
         )
+    for entry in external_imports:
+        name = entry.get("name")
+        if name in generated_kinds:
+            entry["symbol_kind"] = generated_kinds[name]
     data["external_native_link_import"] = external_imports
     return data
 
@@ -2108,6 +2151,7 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
         path,
         INTRINSICS_MANIFEST,
         INTRINSIC_CATEGORIES,
+        FRONTEND_TYPES,
     )
 
 

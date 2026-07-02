@@ -18,7 +18,7 @@ pub(crate) fn compile_stdlib_cache_object(
         let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
         stdlib_backend.skip_ir_passes = true;
         stdlib_backend.skip_shared_stdlib_partition = true;
-        stdlib_backend.emit_app_intrinsic_resolver = false;
+        stdlib_backend.emit_app_callable_resolver = false;
         let stdlib_output = stdlib_backend.compile(stdlib_ir);
         std::fs::write(stdlib_path, &stdlib_output.bytes)?;
         return Ok(());
@@ -51,7 +51,7 @@ pub(crate) fn compile_stdlib_cache_object(
         stdlib_backend.skip_shared_stdlib_partition = true;
         // The stdlib cache object is not the main application object; the per-app
         // resolver is emitted once, into the main object.
-        stdlib_backend.emit_app_intrinsic_resolver = false;
+        stdlib_backend.emit_app_callable_resolver = false;
         let stdlib_output = stdlib_backend.compile(stdlib_ir);
         std::fs::write(stdlib_path, &stdlib_output.bytes)?;
         return Ok(());
@@ -93,8 +93,8 @@ pub(crate) fn compile_stdlib_cache_object(
                     ir: batch_ir,
                     module_context_path: module_context_path.clone(),
                     target_triple: target_triple.map(str::to_owned),
-                    emit_app_intrinsic_resolver: false,
-                    app_intrinsic_manifest: None,
+                    emit_app_callable_resolver: false,
+                    app_callable_manifest: None,
                     external_function_names,
                 },
             )?;
@@ -695,9 +695,9 @@ pub(crate) fn prepare_native_application_object<'a>(
     ir: &mut SimpleIR,
     request: NativeStdlibCachePrepare<'a>,
 ) -> io::Result<NativeApplicationObjectOptions<'a>> {
-    let app_intrinsic_manifest = request
+    let app_callable_manifest = request
         .stdlib_obj_path
-        .map(|_| molt_backend::compute_intrinsic_manifest_checked(&ir.functions));
+        .map(|_| molt_backend::compute_app_callable_manifest_checked(&ir.functions));
 
     if let Some(stdlib_path_str) = request.stdlib_obj_path {
         let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
@@ -836,7 +836,7 @@ pub(crate) fn prepare_native_application_object<'a>(
     Ok(NativeApplicationObjectOptions {
         target_triple: request.target_triple,
         stdlib_split_enabled: request.stdlib_obj_path.is_some(),
-        app_intrinsic_manifest,
+        app_callable_manifest,
         log_prefix: request.log_prefix,
     })
 }

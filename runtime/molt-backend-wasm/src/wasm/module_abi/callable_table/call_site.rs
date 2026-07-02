@@ -123,6 +123,7 @@ mod tests {
             func_to_table_idx: BTreeMap::from([("callee".to_string(), 7)]),
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
+            app_callable_resolver: None,
             closure_functions: BTreeSet::from(["callee".to_string()]),
             trampoline_entries: Vec::new(),
         };

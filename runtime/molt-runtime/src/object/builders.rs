@@ -1116,11 +1116,6 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         inc_ref_bits(_py, none_bits);
-        let globals_bits = crate::molt_globals_builtin();
-        if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
-            crate::function_set_globals_bits(_py, ptr, globals_bits);
-            dec_ref_bits(_py, globals_bits);
-        }
     }
     ptr
 }
@@ -1839,4 +1834,35 @@ pub(crate) fn alloc_memoryview_shaped(
         return std::ptr::null_mut();
     };
     alloc_memoryview_from_storage(_py, storage)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::alloc_function_obj;
+    use crate::{TYPE_ID_FUNCTION, dec_ref_bits, function_globals_bits, object_type_id};
+    use molt_obj_model::MoltObject;
+
+    extern "C" fn allocator_inert_function_target() -> u64 {
+        MoltObject::none().bits()
+    }
+
+    #[test]
+    fn function_allocator_does_not_eagerly_capture_globals() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = alloc_function_obj(
+                _py,
+                allocator_inert_function_target as *const () as usize as u64,
+                0,
+            );
+            assert!(!ptr.is_null());
+            assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_FUNCTION);
+            assert_eq!(
+                unsafe { function_globals_bits(ptr) },
+                0,
+                "function creation must be inert; metadata or FunctionType owns globals installation"
+            );
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+        });
+    }
 }

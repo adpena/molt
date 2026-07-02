@@ -127,10 +127,10 @@ class ModuleGlobalsMixin(_MixinBase):
             docstring="Return the current module globals.",
             module_override="builtins",
         )
-        set_builtin = self._emit_builtin_function("_molt_function_set_builtin")
-        builtin_res = MoltValue(self.next_var(), type_hint="None")
-        self.emit(
-            MoltOp(kind="CALL_FUNC", args=[set_builtin, func_val], result=builtin_res)
+        self._emit_runtime_call(
+            "molt_function_set_builtin",
+            [func_val],
+            type_hint="None",
         )
 
         prev_func = self.current_func_name

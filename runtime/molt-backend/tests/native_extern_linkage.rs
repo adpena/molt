@@ -43,14 +43,14 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
     };
 
     // Standalone codegen object for symbol inspection — never linked into a
-    // final binary, so it must not emit the per-app `molt_app_resolve_intrinsic`
+    // final binary, so it must not emit the per-app `molt_app_resolve_callable`
     // resolver (which would require the linked runtime staticlib's
-    // intrinsic-symbol set). This is the same opt-out production uses for every
+    // callable-symbol set). This is the same opt-out production uses for every
     // non-primary object; integration tests cannot rely on the `cfg(test)`
-    // carve-out in `runtime_intrinsic_symbols_required` because they link
+    // carve-out in `runtime_callable_symbols_required` because they link
     // `molt-backend` as a non-test library.
     let mut backend = SimpleBackend::new();
-    backend.emit_app_intrinsic_resolver = false;
+    backend.emit_app_callable_resolver = false;
     let output = backend.compile(ir);
 
     assert!(!output.bytes.is_empty());
@@ -103,7 +103,7 @@ fn externalized_value_returning_stdlib_call_emits_undefined_import_object() {
     };
 
     let mut backend = SimpleBackend::new();
-    backend.emit_app_intrinsic_resolver = false;
+    backend.emit_app_callable_resolver = false;
     backend.set_module_context(module_context);
     let output = backend.compile(ir);
 

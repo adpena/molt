@@ -8,6 +8,8 @@ from typing import Iterable
 from ._intrinsic_symbols import intrinsic_runtime_symbol_name
 from ._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES,
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
     WASM_RUNTIME_IMPORT_FALLBACK_EXPORTS,
@@ -30,15 +32,30 @@ _INTRINSIC_LOADER_CALL_NAMES = frozenset(
 )
 
 
+def _is_cpython_abi_link_import(name: str) -> bool:
+    return (
+        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
+        == _CPYTHON_ABI_LINK_IMPORT_CLASS
+    )
+
+
 def _runtime_export_name_or_fail(name: str) -> str:
     export_name = wasm_runtime_export_name(name)
     if export_name is not None:
         return export_name
-    if (
-        WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
-        == _CPYTHON_ABI_LINK_IMPORT_CLASS
-    ):
+    if _is_cpython_abi_link_import(name):
         return name
+    raise ValueError(f"unknown WASM runtime import/export name: {name}")
+
+
+def _split_runtime_export_name_or_fail(name: str) -> str:
+    export_name = wasm_runtime_export_name(name)
+    if export_name is not None:
+        return export_name
+    if _is_cpython_abi_link_import(name):
+        export_name = WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES.get(name)
+        if export_name is not None:
+            return export_name
     raise ValueError(f"unknown WASM runtime import/export name: {name}")
 
 
@@ -47,6 +64,28 @@ def wasm_runtime_export_name_for_import(name: str) -> str | None:
         return _runtime_export_name_or_fail(name)
     except ValueError:
         return None
+
+
+def wasm_split_runtime_export_name_for_import(name: str) -> str | None:
+    try:
+        return _split_runtime_export_name_or_fail(name)
+    except ValueError:
+        return None
+
+
+def wasm_split_runtime_export_rename_map(
+    required_runtime_imports: Iterable[str] | None,
+) -> dict[str, str]:
+    if required_runtime_imports is None:
+        required_runtime_imports = WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+    rename_map: dict[str, str] = {}
+    for import_name in required_runtime_imports:
+        if not _is_cpython_abi_link_import(import_name):
+            continue
+        export_name = _split_runtime_export_name_or_fail(import_name)
+        if export_name != import_name:
+            rename_map[import_name] = export_name
+    return rename_map
 
 
 def wasm_static_link_runtime_symbols_for_imports(
@@ -60,6 +99,30 @@ def wasm_static_link_runtime_symbols_for_imports(
             continue
         runtime_symbols.add(symbol)
     return tuple(sorted(runtime_symbols))
+
+
+def wasm_cpython_abi_requested_export_names(
+    required_runtime_imports: Iterable[str] | None,
+) -> tuple[str, ...]:
+    if not required_runtime_imports:
+        return ()
+    return tuple(
+        sorted(
+            name
+            for name in required_runtime_imports
+            if _is_cpython_abi_link_import(name) and not name.startswith("molt_")
+        )
+    )
+
+
+def wasm_cpython_abi_requested_data_export_names(
+    required_runtime_imports: Iterable[str] | None,
+) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in wasm_cpython_abi_requested_export_names(required_runtime_imports)
+        if WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS.get(name) == "data"
+    )
 
 
 @lru_cache(maxsize=1)
@@ -222,6 +285,33 @@ def wasm_runtime_missing_required_exports(
         if fallback_exports is not None and set(fallback_exports).issubset(available):
             continue
         missing.add(name)
+    return missing
+
+
+def wasm_split_runtime_missing_required_exports(
+    export_names: Iterable[str],
+    required_runtime_imports: Iterable[str] | None,
+) -> set[str]:
+    if not required_runtime_imports:
+        return set()
+    available = set(export_names)
+    missing: set[str] = set()
+    for raw_name in required_runtime_imports:
+        try:
+            split_name = _split_runtime_export_name_or_fail(raw_name)
+        except ValueError:
+            missing.add(raw_name)
+            continue
+        if split_name in available:
+            continue
+        try:
+            fallback_key = _runtime_export_name_or_fail(raw_name)
+        except ValueError:
+            fallback_key = split_name
+        fallback_exports = _runtime_import_fallback_exports().get(fallback_key)
+        if fallback_exports is not None and set(fallback_exports).issubset(available):
+            continue
+        missing.add(split_name)
     return missing
 
 

@@ -19,8 +19,8 @@ pub mod trampolines;
 
 pub use molt_ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use molt_ir::{
-    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, intrinsic_symbols, ir, ir_schema, json_boundary,
-    process_diagnostics, repr, stdlib_module_symbols,
+    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
+    repr, runtime_callable_symbols, stdlib_module_symbols,
 };
 
 /// The representation lattice element (the orthogonal carrier axis to `TirType`),

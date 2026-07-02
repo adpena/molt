@@ -6,6 +6,7 @@ use wasm_encoder::{
     Instruction,
 };
 
+mod app_callable_resolver;
 mod call_site;
 mod layout;
 mod runtime_callables;
@@ -15,7 +16,9 @@ use crate::SimpleIR;
 use crate::TrampolineSpec;
 use crate::passes::ReturnAliasSummary;
 use crate::wasm::WasmBackend;
-use crate::wasm_binary::{emit_call, emit_i32_const, emit_ref_func, encode_u32_leb128_padded};
+use crate::wasm_binary::{
+    emit_call, emit_i32_const, emit_ref_func, emit_table_index_i64, encode_u32_leb128_padded,
+};
 use crate::wasm_data::DataSegmentRef;
 pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
 
@@ -28,8 +31,20 @@ pub(super) struct WasmCallableTablePlan {
     func_to_table_idx: BTreeMap<String, u32>,
     func_to_index: BTreeMap<String, u32>,
     func_to_trampoline_idx: BTreeMap<String, u32>,
+    app_callable_resolver: Option<WasmAppCallableResolverPlan>,
     closure_functions: BTreeSet<String>,
     trampoline_entries: Vec<WasmCallableTrampolineEntry>,
+}
+
+pub(super) struct WasmAppCallableResolverPlan {
+    resolver_func_index: u32,
+    resolver_table_index: u32,
+    entries: Vec<WasmAppCallableResolverEntry>,
+}
+
+pub(super) struct WasmAppCallableResolverEntry {
+    name: String,
+    table_index: u32,
 }
 
 pub(super) struct WasmCallableTrampolineEntry {
@@ -87,6 +102,12 @@ impl WasmCallableTablePlan {
 
     fn runtime_initializes_slot(&self, slot: usize) -> bool {
         slot >= self.split_runtime_owned_slot_start || slot < self.split_runtime_shared_abi_slot_end
+    }
+
+    fn app_callable_resolver_table_index(&self) -> Option<u32> {
+        self.app_callable_resolver
+            .as_ref()
+            .map(|resolver| resolver.resolver_table_index)
     }
 
     pub(super) fn validate_ir_call_target_closure(&self, ir: &SimpleIR) {
@@ -251,6 +272,7 @@ impl WasmBackend {
                 reloc_enabled,
                 main_index,
                 table_init_index,
+                plan.app_callable_resolver_table_index(),
                 manifest_segment,
                 manifest_len as u32,
             );
@@ -261,6 +283,7 @@ impl WasmBackend {
                     reloc_enabled,
                     host_init_index,
                     table_init_index,
+                    plan.app_callable_resolver_table_index(),
                     manifest_segment,
                     manifest_len as u32,
                 );
@@ -347,6 +370,7 @@ impl WasmBackend {
         reloc_enabled: bool,
         entry_index: u32,
         table_init_index: u32,
+        app_callable_resolver_table_index: Option<u32>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) -> u32 {
@@ -359,6 +383,7 @@ impl WasmBackend {
             func_index,
             &mut func,
             table_init_index,
+            app_callable_resolver_table_index,
             manifest_segment,
             manifest_len,
         );
@@ -374,9 +399,21 @@ impl WasmBackend {
         func_index: u32,
         func: &mut Function,
         table_init_index: u32,
+        app_callable_resolver_table_index: Option<u32>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) {
+        emit_call(func, reloc_enabled, table_init_index);
+        if let Some(table_index) = app_callable_resolver_table_index {
+            emit_table_index_i64(func, reloc_enabled, table_index);
+            emit_call(
+                func,
+                reloc_enabled,
+                self.import_ids
+                    [crate::wasm_abi_generated::WasmRuntimeImport::SetAppCallableResolver],
+            );
+            func.instruction(&Instruction::Drop);
+        }
         emit_call(
             func,
             reloc_enabled,
@@ -393,7 +430,6 @@ impl WasmBackend {
             );
             func.instruction(&Instruction::Drop);
         }
-        emit_call(func, reloc_enabled, table_init_index);
     }
 }
 
@@ -416,6 +452,7 @@ mod tests {
             func_to_table_idx,
             func_to_index,
             func_to_trampoline_idx,
+            app_callable_resolver: None,
             closure_functions: BTreeSet::new(),
             trampoline_entries: Vec::new(),
         }

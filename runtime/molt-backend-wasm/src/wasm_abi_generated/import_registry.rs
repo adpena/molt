@@ -710,6 +710,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::SetAppCallableResolver,
+        name: "set_app_callable_resolver",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::RuntimeActiveRuntime,
         name: "runtime_active_runtime",
         type_idx: 0,
@@ -15121,6 +15126,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_require_intrinsic_runtime" => Some(WasmRuntimeImport::RequireIntrinsicRuntime),
         "load_intrinsic_runtime" => Some(WasmRuntimeImport::LoadIntrinsicRuntime),
         "molt_load_intrinsic_runtime" => Some(WasmRuntimeImport::LoadIntrinsicRuntime),
+        "set_app_callable_resolver" => Some(WasmRuntimeImport::SetAppCallableResolver),
+        "molt_set_app_callable_resolver" => Some(WasmRuntimeImport::SetAppCallableResolver),
         "runtime_active_runtime" => Some(WasmRuntimeImport::RuntimeActiveRuntime),
         "molt_runtime_active_runtime" => Some(WasmRuntimeImport::RuntimeActiveRuntime),
         "is_bound_method" => Some(WasmRuntimeImport::IsBoundMethod),

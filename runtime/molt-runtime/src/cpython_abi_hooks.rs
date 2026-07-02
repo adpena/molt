@@ -427,7 +427,31 @@ fn clear_speculative_sys_lookup_exception(had_pending_exception: bool) {
 /// link the `sys` module or the attribute is absent.
 fn sys_module_attr_borrowed(attr: &[u8]) -> u64 {
     let had_pending_exception = with_gil(|_py| crate::exception_pending(&_py));
-    let module_bits = unsafe { hook_import_module(b"sys".as_ptr(), 3) };
+    // Cache-first: PySys_GetObject is called from extension init code that
+    // may already be inside the import machinery; re-entering a full import
+    // for "sys" from there can deadlock on the import transaction and pays
+    // the dispatcher on every call. The module cache is the custody for
+    // already-initialized modules; the full import stays as the cold
+    // bootstrap fallback.
+    let name_bits = with_gil(|_py| {
+        let name_ptr = alloc_string(&_py, b"sys");
+        if name_ptr.is_null() {
+            return 0;
+        }
+        MoltObject::from_ptr(name_ptr).bits()
+    });
+    let mut module_bits = 0u64;
+    if MoltObject::from_bits(name_bits).as_ptr().is_some() {
+        module_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
+        with_gil(|_py| dec_ref_bits(&_py, name_bits));
+        if MoltObject::from_bits(module_bits).as_ptr().is_none() {
+            clear_speculative_sys_lookup_exception(had_pending_exception);
+            module_bits = 0;
+        }
+    }
+    if module_bits == 0 {
+        module_bits = unsafe { hook_import_module(b"sys".as_ptr(), 3) };
+    }
     if MoltObject::from_bits(module_bits).as_ptr().is_none() {
         clear_speculative_sys_lookup_exception(had_pending_exception);
         return 0;

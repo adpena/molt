@@ -88,7 +88,13 @@ class ExpressionVisitorMixin(_MixinBase):
                 self.current_func_name == "molt_main"
                 and node.id in self.module_global_mutations
             ):
-                return self._emit_module_attr_get(node.id)
+                # The module dict is the mutable storage home for top-level
+                # control-flow bindings, but a bare Name read still has
+                # LOAD_GLOBAL semantics: dict lookup, builtins fallback, and
+                # NameError on a miss.  MODULE_GET_ATTR is reserved for real
+                # module.attribute reads; using it here leaks AttributeError
+                # into package initializers such as ``try: __NUMPY_SETUP__``.
+                return self._emit_global_get(node.id)
             global_val = self.globals.get(node.id)
             if global_val is None:
                 if node.id == "NotImplemented":

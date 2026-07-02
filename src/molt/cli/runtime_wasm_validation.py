@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 
-from molt._wasm_runtime_exports import wasm_runtime_missing_required_exports
+from molt._wasm_runtime_exports import (
+    wasm_runtime_missing_required_exports,
+    wasm_split_runtime_missing_required_exports,
+)
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.file_hashing import _sha256_file
@@ -78,6 +81,13 @@ def _runtime_wasm_exports_satisfy(
     return not _runtime_wasm_missing_exports(path, required_exports)
 
 
+def _split_runtime_wasm_exports_satisfy(
+    path: Path,
+    required_exports: set[str] | frozenset[str] | None,
+) -> bool:
+    return not _split_runtime_wasm_missing_exports(path, required_exports)
+
+
 def _runtime_wasm_missing_exports(
     path: Path,
     required_exports: set[str] | frozenset[str] | None,
@@ -89,3 +99,13 @@ def _runtime_wasm_missing_exports(
             for name in required_exports
         }
     return wasm_runtime_missing_required_exports(export_names, required_exports)
+
+
+def _split_runtime_wasm_missing_exports(
+    path: Path,
+    required_exports: set[str] | frozenset[str] | None,
+) -> set[str]:
+    export_names = _collect_wasm_export_names(path)
+    if not export_names and required_exports:
+        return wasm_split_runtime_missing_required_exports((), required_exports)
+    return wasm_split_runtime_missing_required_exports(export_names, required_exports)

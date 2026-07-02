@@ -3492,6 +3492,45 @@ def test_native_constant_if_false_branch_is_eliminated(tmp_path: Path) -> None:
     assert run.stdout.strip() == "unbound-ok"
 
 
+def test_native_try_guard_assignment_uses_nameerror_lookup(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "try:\n"
+            "    __NUMPY_SETUP__\n"
+            "except NameError:\n"
+            "    __NUMPY_SETUP__ = False\n"
+            "print(__NUMPY_SETUP__)\n"
+        ),
+        "module_try_guard_assignment_nameerror",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "False"
+
+
+def test_native_shadowable_module_calls_use_name_lookup(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "flag = False\n"
+            "if flag:\n"
+            "    len = 7\n"
+            "print(len(globals()) > 0)\n"
+            "\n"
+            "if flag:\n"
+            "    class C:\n"
+            "        pass\n"
+            "try:\n"
+            "    C()\n"
+            "except NameError:\n"
+            "    print('class-nameerror')\n"
+        ),
+        "module_shadowable_calls_load_global",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["True", "class-nameerror"]
+
+
 def test_native_constant_if_branches_match_cpython(tmp_path: Path) -> None:
     program = (
         "def main() -> None:\n"

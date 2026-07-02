@@ -159,7 +159,7 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         module_graph,
         module_stdlib_policy,
         runtime_build,
-        runtime_intrinsic_symbols,
+        runtime_callable_symbols,
         runtime_paths,
     )
 
@@ -192,7 +192,7 @@ def test_auto_intent_keeps_micro_core_until_runtime_tier_selection() -> None:
         runtime_build._ensure_runtime_lib,
         runtime_build._ensure_runtime_wasm_artifact,
         runtime_build._ensure_runtime_wasm,
-        runtime_intrinsic_symbols._stage_runtime_intrinsic_symbols_for_native_codegen,
+        runtime_callable_symbols._stage_runtime_callable_symbols_for_native_codegen,
     ]
     for func in lower_artifact_functions:
         default = inspect.signature(func).parameters["stdlib_profile"].default

@@ -522,7 +522,7 @@ def test_module_try_except_assignments_use_module_storage_after_join() -> None:
     )
 
     assert len(_module_attr_accesses(main_ops, "module_set_attr", "flag")) == 2
-    flag_loads = _module_attr_accesses(main_ops, "module_get_attr", "flag")
+    flag_loads = _module_attr_accesses(main_ops, "module_get_global", "flag")
     print_args = [
         args[0]
         for op in main_ops
@@ -850,6 +850,12 @@ def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
 
     ops = [op for func in gen.funcs_map.values() for op in func["ops"]]
     assert any(
+        op.kind == "CALL"
+        and op.args
+        and op.args[0] == "molt_function_init_metadata_packed"
+        for op in ops
+    )
+    assert not any(
         op.kind == "BUILTIN_FUNC"
         and op.args == ["molt_function_init_metadata_packed", 4]
         for op in ops
@@ -1052,21 +1058,21 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
         for op in main_ops
         if op.get("kind") == "const_str" and isinstance(op.get("out"), str)
     }
-    pathlib_module_vars = {
+    imported_path_values = {
         op["out"]
         for op in main_ops
-        if op.get("kind") == "module_cache_get"
-        and len(op.get("args") or []) == 1
-        and const_str.get(op["args"][0]) == "pathlib"
+        if op.get("kind") == "module_import_from"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "Path"
     }
     path_class_vars = {
         op["out"]
         for op in main_ops
-        if op.get("kind") == "module_get_attr"
+        if op.get("kind") == "module_get_global"
         and len(op.get("args") or []) == 2
-        and op["args"][0] in pathlib_module_vars
         and const_str.get(op["args"][1]) == "Path"
     }
+    assert imported_path_values, "expected from-import to materialize pathlib.Path"
     assert path_class_vars, "expected pathlib.Path lookup in lowered main ops"
     assert any(
         op.get("kind") == "call_bind"
@@ -1115,10 +1121,18 @@ def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
         and const_str.get(op["args"][1]) == "TypeVar"
     }
     assert imported_typevar_values, "expected from-import to materialize TypeVar"
+    typevar_global_values = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_get_global"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "TypeVar"
+    }
+    assert typevar_global_values, "expected bare TypeVar read to use LOAD_GLOBAL"
     assert any(
         op.get("kind") == "call_bind"
         and len(op.get("args") or []) == 2
-        and op["args"][0] in imported_typevar_values
+        and op["args"][0] in typevar_global_values
         for op in main_ops
     )
     assert all(
@@ -1143,7 +1157,7 @@ def _counter_known_classes() -> dict[str, dict[str, object]]:
     }
 
 
-def test_imported_counter_list_constructor_uses_intrinsic_handle_path() -> None:
+def test_imported_counter_list_constructor_uses_global_binding_path() -> None:
     gen = SimpleTIRGenerator(
         known_classes=_counter_known_classes(),
         known_modules={"collections"},
@@ -1162,17 +1176,24 @@ def test_imported_counter_list_constructor_uses_intrinsic_handle_path() -> None:
         if func["name"] == "molt_main"
     )
 
+    counter_global_values = _module_attr_accesses(
+        main_ops, "module_get_global", "Counter"
+    )
+    assert counter_global_values
     assert any(
-        op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_counter_from_iterable"
+        op.get("kind") == "call_bind"
+        and len(op.get("args") or []) >= 1
+        and op["args"][0] in counter_global_values
         for op in main_ops
     )
-    assert any(op.get("kind") == "object_new_bound" for op in main_ops)
-    assert any(
-        op.get("kind") == "set_attr_generic_obj" and op.get("s_value") == "_handle"
+    assert all(
+        not (
+            op.get("kind") == "builtin_func"
+            and op.get("s_value") == "molt_counter_from_iterable"
+        )
         for op in main_ops
     )
-    assert all(op.get("kind") != "call_bind" for op in main_ops)
+    assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
 def test_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
@@ -1249,6 +1270,7 @@ def test_stdlib_direct_call_uses_symbol_when_target_module_is_lowered() -> None:
         module_name="collections",
         known_modules={"collections", "copy"},
         stdlib_allowlist={"collections", "copy"},
+        direct_call_modules={"copy"},
         known_func_defaults={
             "copy": {
                 "copy": {
@@ -1283,6 +1305,7 @@ def test_stdlib_direct_call_uses_symbol_when_target_module_is_lowered() -> None:
 def test_imported_plain_generator_uses_poll_task_symbol() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"tinygrad.engine.realize"},
+        direct_call_modules={"tinygrad.engine.realize"},
         known_func_defaults={
             "tinygrad.engine.realize": {
                 "unwrap_multi": {
@@ -1374,6 +1397,7 @@ def test_from_import_generator_kind_lowers_to_poll_task_with_defaults() -> None:
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
+        direct_call_modules={"helpers"},
         stdlib_allowlist={"helpers"},
         known_func_defaults={
             "helpers": {
@@ -1427,6 +1451,7 @@ def test_aliased_import_generator_kind_without_defaults_never_direct_calls_base(
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
+        direct_call_modules={"helpers"},
         stdlib_allowlist={"helpers"},
         known_func_kinds={"helpers": {"cpu_profile": "gen"}},
     )
@@ -1463,6 +1488,7 @@ def test_assigned_alias_of_imported_generator_preserves_poll_task_defaults() -> 
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
+        direct_call_modules={"helpers"},
         stdlib_allowlist={"helpers"},
         known_func_defaults={
             "helpers": {
@@ -1510,6 +1536,7 @@ def test_aliased_import_async_generator_lowers_to_generator_task_then_asyncgen()
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
+        direct_call_modules={"helpers"},
         stdlib_allowlist={"helpers"},
         known_func_defaults={
             "helpers": {
@@ -1560,6 +1587,7 @@ def test_imported_module_attr_generator_uses_same_poll_task_path() -> None:
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
+        direct_call_modules={"helpers"},
         stdlib_allowlist={"helpers"},
         known_func_defaults={
             "helpers": {
@@ -1677,10 +1705,18 @@ def test_collections_namedtuple_kwonly_defaults_use_call_bind() -> None:
     }
 
     assert imported_namedtuple_values, "expected from-import to materialize namedtuple"
+    namedtuple_global_values = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_get_global"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "namedtuple"
+    }
+    assert namedtuple_global_values, "expected bare namedtuple read to use LOAD_GLOBAL"
     assert any(
         op.get("kind") == "call_bind"
         and len(op.get("args") or []) == 2
-        and op["args"][0] in imported_namedtuple_values
+        and op["args"][0] in namedtuple_global_values
         for op in main_ops
     ), main_ops
     assert all(
@@ -1711,34 +1747,24 @@ def test_minmax_direct_abi_path_does_not_attach_python_call_metadata() -> None:
         if func["name"] == "molt_main"
     )
 
-    max_var = next(
-        op["out"]
+    max_call = next(
+        op
         for op in main_ops
-        if op.get("kind") == "builtin_func" and op.get("s_value") == "molt_max_builtin"
+        if op.get("kind") == "call" and op.get("s_value") == "molt_max_builtin"
     )
-    assert any(
-        op.get("kind") == "call_func"
-        and isinstance(op.get("args"), list)
-        and op["args"]
-        and op["args"][0] == max_var
+    assert not any(
+        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_max_builtin"
         for op in main_ops
     ), main_ops
-    builtin_names = {
-        op["out"]: op["s_value"]
-        for op in main_ops
-        if op.get("kind") == "builtin_func"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
-    }
     metadata_targets = {
-        op["args"][1]
+        op["args"][0]
         for op in main_ops
-        if op.get("kind") == "call_func"
+        if op.get("kind") == "call"
+        and op.get("s_value") == "molt_function_init_metadata_packed"
         and isinstance(op.get("args"), list)
-        and len(op["args"]) >= 2
-        and builtin_names.get(op["args"][0]) == "molt_function_init_metadata_packed"
+        and op["args"]
     }
-    assert max_var not in metadata_targets
+    assert max_call["out"] not in metadata_targets
 
 
 def test_counter_index_and_len_use_intrinsic_handle_path() -> None:
@@ -1749,9 +1775,9 @@ def test_counter_index_and_len_use_intrinsic_handle_path() -> None:
     )
     gen.visit(
         ast.parse(
-            "from collections import Counter\n"
+            "import collections\n"
             'words = "a b a".split()\n'
-            "c = Counter(words)\n"
+            "c = collections.Counter(words)\n"
             'x = c["a"]\n'
             "n = len(c)\n"
         )
@@ -1933,7 +1959,7 @@ def test_unstable_globals_user_class_ctor_lowers_via_call_bind() -> None:
     class_vars = {
         op["out"]
         for op in main_ops
-        if op.get("kind") == "module_get_attr"
+        if op.get("kind") == "module_get_global"
         and len(op.get("args") or []) == 2
         and const_str.get(op["args"][1]) == "A"
     }
@@ -2351,11 +2377,18 @@ def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
 
 
 def test_internal_module_function_import_lowers_via_direct_call() -> None:
-    ir = compile_to_tir(
-        "from molt.gpu.tensor import tensor_linear\n"
-        "def f(x, w):\n"
-        "    return tensor_linear(x, w)\n"
+    gen = SimpleTIRGenerator(
+        known_modules={"molt.gpu.tensor"},
+        direct_call_modules={"molt.gpu.tensor"},
     )
+    gen.visit(
+        ast.parse(
+            "from molt.gpu.tensor import tensor_linear\n"
+            "def f(x, w):\n"
+            "    return tensor_linear(x, w)\n"
+        )
+    )
+    ir = gen.to_json()
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )

@@ -751,8 +751,9 @@ class LocalBindingMixin(_MixinBase):
             and self.module_obj is not None
         ):
             self._emit_module_attr_set_on(self.module_obj, name, value)
-        # Module-level stores inside loops must sync to the module dict
-        # so that module_get_attr reads see the updated value on each iteration.
+        # Module-level stores inside loops must sync to the module dict so that
+        # module_get_global bare-name reads see the updated value on each
+        # iteration while preserving NameError-on-miss semantics.
         if (
             self.current_func_name == "molt_main"
             and self.control_flow_depth > 0
@@ -816,9 +817,10 @@ class LocalBindingMixin(_MixinBase):
             return
         # Do NOT cache in self.locals when the variable is module-backed
         # (in module_global_mutations). The canonical store is the module dict
-        # and reads must go through MODULE_GET_ATTR to see the latest value
-        # across loop iterations. Without this guard, the stale local SSA
-        # value shadows the module dict, causing while-loop conditions and
+        # and bare-name reads must go through MODULE_GET_GLOBAL to see the
+        # latest value across loop iterations while keeping builtins fallback
+        # and NameError-on-miss semantics. Without this guard, the stale local
+        # SSA value shadows the module dict, causing while-loop conditions and
         # augmented assignments to read outdated values.
         if (
             self.current_func_name == "molt_main"

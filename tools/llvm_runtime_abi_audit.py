@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify LLVM runtime import ABI authority for preserved-Copy runtime calls.
 
-`MOLT_RUNTIME_INTRINSIC_SYMBOLS` is an active-profile availability set, not an
+`MOLT_RUNTIME_CALLABLE_SYMBOLS` is an active-profile availability set, not an
 ABI manifest. The LLVM generic preserved-op fallback may call `molt_<kind>` only
 when `runtime_imports/abi_facts.rs` owns an explicit `(symbol, parameter ABI,
 return ABI)` fact.
@@ -13,7 +13,7 @@ vocabulary and the generated TIR mapper:
 * `op_kinds_generated.rs::kind_to_opcode_table` maps first-class TIR kinds.
 * emitted-but-unmapped kinds become preserved `Copy{_original_kind}` values.
 * if a `runtime/molt-runtime*/src/**/*.rs` leaf exports `molt_<kind>`, LLVM's generic
-  fallback can see it through the availability set.
+  fallback can see it through the runtime-callable availability set.
 
 Every boxed/i64 or void export in that surface must be owned by either the
 fixed runtime import table or the residual conservative import table; non-boxed

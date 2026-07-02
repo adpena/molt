@@ -12,18 +12,18 @@ fn op(kind: &str) -> OpIR {
 ///
 /// These tests compile a single function to an object purely to inspect the
 /// emitted symbols; the object is never linked into a final binary. Such
-/// objects must NOT emit the per-app `molt_app_resolve_intrinsic` resolver —
+/// objects must NOT emit the per-app `molt_app_resolve_callable` resolver —
 /// emitting it would demand the linked runtime staticlib's intrinsic-symbol
-/// set (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`), which a unit-level codegen test
+/// set (`MOLT_RUNTIME_CALLABLE_SYMBOLS`), which a unit-level codegen test
 /// neither has nor needs. Production uses the identical opt-out for every
 /// non-primary object (stdlib-cache / batch objects; see
 /// `runtime/molt-backend/src/main.rs`). The `cfg(test)` carve-out in
-/// `runtime_intrinsic_symbols_required` only covers *in-crate* unit tests;
+/// `runtime_callable_symbols_required` only covers *in-crate* unit tests;
 /// integration tests link `molt-backend` as a non-test library, so they take
-/// the canonical `emit_app_intrinsic_resolver = false` path instead.
+/// the canonical `emit_app_callable_resolver = false` path instead.
 fn compile_standalone(ir: SimpleIR) -> molt_backend::CompileOutput {
     let mut backend = SimpleBackend::new();
-    backend.emit_app_intrinsic_resolver = false;
+    backend.emit_app_callable_resolver = false;
     backend.compile(ir)
 }
 

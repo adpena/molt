@@ -16,6 +16,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Collection, Literal, Mapping, Sequence
 
 from molt._wasm_runtime_exports import (
+    wasm_cpython_abi_requested_data_export_names,
+    wasm_cpython_abi_requested_export_names,
+    wasm_split_runtime_export_rename_map,
     wasm_runtime_export_link_args,
     wasm_runtime_shared_export_link_args,
 )
@@ -28,7 +31,11 @@ from molt.cli.artifact_state import (
     _runtime_fingerprint_path,
     _runtime_target_fingerprint_path,
 )
-from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_text
+from molt.cli.atomic_io import (
+    _atomic_copy_file,
+    _atomic_write_bytes,
+    _atomic_write_text,
+)
 from molt.cli.build_locks import _build_lock
 from molt.cli.capability_spec import _dedupe_preserve_order
 from molt.cli.config_resolution import (
@@ -70,13 +77,18 @@ from molt.cli.runtime_paths import (
 from molt.cli.runtime_wasm_validation import (
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,
+    _split_runtime_wasm_exports_satisfy,
+    _split_runtime_wasm_missing_exports,
     _runtime_wasm_exports_satisfy,
     _runtime_wasm_missing_exports,
     _write_runtime_wasm_integrity_sidecar,
 )
 from molt.cli import wasm_toolchain
 from molt.cli.models import BuildProfile, _RuntimeArtifactState
-from molt.wasm_artifact import inspect_wasm_binary as _inspect_wasm_binary
+from molt.wasm_artifact import (
+    inspect_wasm_binary as _inspect_wasm_binary,
+    rename_wasm_export_names,
+)
 
 
 _RUNTIME_LIB_VERIFIED: set[
@@ -1372,6 +1384,51 @@ def _link_runtime_staticlib_to_reloc_wasm(
     return True
 
 
+def _materialize_split_runtime_public_exports(
+    runtime_wasm: Path,
+    required_exports: set[str] | frozenset[str] | None,
+    *,
+    json_output: bool,
+) -> bool:
+    rename_map = wasm_split_runtime_export_rename_map(required_exports)
+    if not rename_map:
+        return True
+    try:
+        updated = rename_wasm_export_names(runtime_wasm.read_bytes(), rename_map)
+        if updated is not None:
+            _atomic_write_bytes(runtime_wasm, updated)
+    except (OSError, ValueError) as exc:
+        if not json_output:
+            print(
+                f"Failed to materialize split-runtime public exports: {exc}",
+                file=sys.stderr,
+            )
+        return False
+    return True
+
+
+def _runtime_exports_satisfy_for_mode(
+    path: Path,
+    required_exports: set[str] | frozenset[str] | None,
+    *,
+    reloc: bool,
+) -> bool:
+    if reloc:
+        return _runtime_wasm_exports_satisfy(path, required_exports)
+    return _split_runtime_wasm_exports_satisfy(path, required_exports)
+
+
+def _runtime_missing_exports_for_mode(
+    path: Path,
+    required_exports: set[str] | frozenset[str] | None,
+    *,
+    reloc: bool,
+) -> set[str]:
+    if reloc:
+        return _runtime_wasm_missing_exports(path, required_exports)
+    return _split_runtime_wasm_missing_exports(path, required_exports)
+
+
 def _ensure_runtime_wasm(
     runtime_wasm: Path,
     *,
@@ -1412,12 +1469,30 @@ def _ensure_runtime_wasm(
             )
             return runtime_valid and (
                 not validate_exports
-                or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+                or _runtime_exports_satisfy_for_mode(
+                    runtime_wasm,
+                    required_exports,
+                    reloc=reloc,
+                )
             )
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = _cargo_build_env()
+    cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
+        required_exports
+    )
+    if cpython_abi_requested_exports:
+        env["MOLT_WASM_CPYTHON_ABI_EXPORTS"] = "\n".join(
+            cpython_abi_requested_exports
+        )
+        cpython_abi_requested_data_exports = (
+            wasm_cpython_abi_requested_data_export_names(required_exports)
+        )
+        if cpython_abi_requested_data_exports:
+            env["MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS"] = "\n".join(
+                cpython_abi_requested_data_exports
+            )
     if reloc:
         runtime_exports = wasm_runtime_export_link_args(
             required_exports,
@@ -1525,9 +1600,10 @@ def _ensure_runtime_wasm(
             and _is_valid_shared_runtime_wasm_artifact(target_runtime_wasm)
             and (
                 not validate_exports
-                or _runtime_wasm_exports_satisfy(
+                or _runtime_exports_satisfy_for_mode(
                     target_runtime_wasm,
                     required_exports,
+                    reloc=reloc,
                 )
             )
         ):
@@ -1627,7 +1703,11 @@ def _ensure_runtime_wasm(
             )
             and (
                 not validate_exports
-                or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+                or _runtime_exports_satisfy_for_mode(
+                    runtime_wasm,
+                    required_exports,
+                    reloc=reloc,
+                )
             )
         ):
             assert fingerprint is not None
@@ -1650,7 +1730,11 @@ def _ensure_runtime_wasm(
         if (
             not needs_rebuild
             and validate_exports
-            and not _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+            and not _runtime_exports_satisfy_for_mode(
+                runtime_wasm,
+                required_exports,
+                reloc=reloc,
+            )
             and not json_output
         ):
             print(
@@ -1929,15 +2013,20 @@ def _ensure_runtime_wasm(
                 src = fallback_src
             else:
                 src = recovery_src
-        missing_exports = _runtime_wasm_missing_exports(src, required_exports)
-        if missing_exports:
-            if not json_output:
-                print(
-                    "Runtime wasm build produced artifact missing required exports: "
-                    + ", ".join(sorted(missing_exports)),
-                    file=sys.stderr,
-                )
-            return False
+        if reloc:
+            missing_exports = _runtime_missing_exports_for_mode(
+                src,
+                required_exports,
+                reloc=reloc,
+            )
+            if missing_exports:
+                if not json_output:
+                    print(
+                        "Runtime wasm build produced artifact missing required exports: "
+                        + ", ".join(sorted(missing_exports)),
+                        file=sys.stderr,
+                    )
+                return False
         if not _is_valid_shared_runtime_wasm_artifact(src):
             if not json_output:
                 print(
@@ -1955,7 +2044,26 @@ def _ensure_runtime_wasm(
                     file=sys.stderr,
                 )
             return False
+        if not reloc and not _materialize_split_runtime_public_exports(
+            runtime_wasm,
+            required_exports,
+            json_output=json_output,
+        ):
+            return False
         try:
+            missing_exports = _runtime_missing_exports_for_mode(
+                runtime_wasm,
+                required_exports,
+                reloc=reloc,
+            )
+            if missing_exports:
+                if not json_output:
+                    print(
+                        "Runtime wasm build produced artifact missing required exports: "
+                        + ", ".join(sorted(missing_exports)),
+                        file=sys.stderr,
+                    )
+                return False
             _write_runtime_wasm_integrity_sidecar(runtime_wasm)
         except OSError:
             if not json_output:

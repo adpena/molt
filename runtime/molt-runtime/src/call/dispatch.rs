@@ -3,7 +3,7 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_FUNCTION,
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, bound_method_func_bits,
     call_builtin_type_if_needed, call_function_obj_vec, class_attr_lookup_raw_mro,
-    class_name_for_error, exception_pending, exception_stack_baseline_get,
+    class_name_for_error, dec_ref_bits, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, function_arity, generic_alias_origin_bits, intern_static_name,
     lookup_call_attr, molt_call_bind, molt_callargs_new, molt_callargs_push_pos, obj_from_bits,
     object_type_id, raise_exception, raise_not_callable, runtime_state, try_call_generator,
@@ -80,9 +80,14 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
             };
 
             if let Some(func_bits) =
+                crate::builtins::functions::python_builtin_function_bits(_py, name)
+            {
+                return bind_owned_callable(_py, func_bits, builder_bits);
+            }
+            if let Some(func_bits) =
                 crate::intrinsics::registry::try_resolve_intrinsic_func(_py, name, true)
             {
-                return molt_call_bind(func_bits, builder_bits);
+                return bind_owned_callable(_py, func_bits, builder_bits);
             }
 
             let builtins_bits = {
@@ -106,9 +111,15 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            molt_call_bind(callable_bits, builder_bits)
+            bind_owned_callable(_py, callable_bits, builder_bits)
         }
     })
+}
+
+unsafe fn bind_owned_callable(_py: &PyToken<'_>, callable_bits: u64, builder_bits: u64) -> u64 {
+    let result = molt_call_bind(callable_bits, builder_bits);
+    dec_ref_bits(_py, callable_bits);
+    result
 }
 
 unsafe fn call_generic_alias_via_bind(_py: &PyToken<'_>, alias_ptr: *mut u8, args: &[u64]) -> u64 {
@@ -293,5 +304,98 @@ pub(crate) unsafe fn call_callable3(
             }
             _ => raise_not_callable(_py, call_obj),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::Ordering as AtomicOrdering;
+
+    fn populated_python_builtin_function_slots(_py: &PyToken<'_>) -> usize {
+        crate::runtime_state(_py)
+            .python_builtin_function_slots
+            .get()
+            .map(|slots| {
+                slots
+                    .iter()
+                    .filter(|slot| slot.load(AtomicOrdering::Acquire) != 0)
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn single_cached_python_builtin_bits(_py: &PyToken<'_>) -> u64 {
+        let slots = crate::runtime_state(_py)
+            .python_builtin_function_slots
+            .get()
+            .expect("python builtin cache should be initialized");
+        let cached = slots
+            .iter()
+            .filter_map(|slot| {
+                let bits = slot.load(AtomicOrdering::Acquire);
+                (bits != 0).then_some(bits)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cached.len(), 1);
+        cached[0]
+    }
+
+    fn object_ref_count(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits)
+            .as_ptr()
+            .expect("cached builtin must be an object");
+        unsafe {
+            (*crate::header_from_obj_ptr(ptr))
+                .ref_count
+                .load(AtomicOrdering::Acquire)
+        }
+    }
+
+    #[test]
+    fn call_builtin_prefers_generated_builtin_cache_over_intrinsic_alias() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            crate::builtins::functions::python_builtin_functions_clear_runtime_state(
+                _py,
+                crate::runtime_state(_py),
+            );
+            assert_eq!(populated_python_builtin_function_slots(_py), 0);
+
+            let name_ptr = crate::alloc_string(_py, b"len");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let arg_ptr = crate::alloc_tuple(_py, &[]);
+            assert!(!arg_ptr.is_null());
+            let arg_bits = MoltObject::from_ptr(arg_ptr).bits();
+            let builder_bits = molt_callargs_new(1, 0);
+            assert!(!obj_from_bits(builder_bits).is_none());
+            let push_result = unsafe { molt_callargs_push_pos(builder_bits, arg_bits) };
+            assert!(obj_from_bits(push_result).is_none());
+
+            let result_bits = molt_call_builtin(name_bits, builder_bits);
+            assert!(
+                !exception_pending(_py),
+                "generated builtin call path must not raise"
+            );
+            assert_eq!(crate::to_i64(obj_from_bits(result_bits)), Some(0));
+            assert_eq!(
+                populated_python_builtin_function_slots(_py),
+                1,
+                "direct builtin calls must populate the generated builtin callable cache"
+            );
+            let cached_bits = single_cached_python_builtin_bits(_py);
+            assert_eq!(
+                object_ref_count(cached_bits),
+                1,
+                "molt_call_builtin must release the owned generated callable reference after binding"
+            );
+
+            crate::dec_ref_bits(_py, result_bits);
+            crate::dec_ref_bits(_py, arg_bits);
+            crate::dec_ref_bits(_py, name_bits);
+        });
     }
 }

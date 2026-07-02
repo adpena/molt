@@ -773,7 +773,8 @@ class LoopLoweringMixin(_MixinBase):
             # which is the heap-resident, loop-carried-correct mutable home — the
             # class-scope analogue of the module dict.  They must NOT be promoted
             # into ``module_global_mutations`` (which would leak the binding into
-            # the enclosing module namespace and steer reads to MODULE_GET_ATTR)
+            # the enclosing module namespace and steer bare-name reads through
+            # module global lookup)
             # nor boxed into list cells.  Strip them; let any genuine
             # surrounding-scope temps fall through to the normal handling.
             names = {n for n in names if not self._is_class_body_managed_name(n)}
@@ -790,16 +791,17 @@ class LoopLoweringMixin(_MixinBase):
         module_backed: set[str] = set()
         if self.current_func_name == "molt_main":
             # Module-scope control-flow bindings already have a canonical mutable
-            # home: the module object. Route loads through MODULE_GET_ATTR instead
-            # of synthesizing one-element list cells just to model loop-carried
-            # mutation. That keeps module lowering canonical and avoids ad hoc
-            # boxed-local indirection for top-level loops.
+            # home: the module object. Route bare-name loads through
+            # MODULE_GET_GLOBAL instead of synthesizing one-element list cells
+            # just to model loop-carried mutation. That keeps module lowering
+            # canonical and avoids ad hoc boxed-local indirection for top-level
+            # loops.
             module_backed = {name for name in names if not name.startswith("__molt_")}
             if module_backed:
                 # Flush any values that were previously assigned (before
                 # this loop) into the module dict.  Without this, a
                 # variable assigned before the loop and then mutated inside
-                # the loop would lose its initial value when module_get_attr
+                # the loop would lose its initial value when module_get_global
                 # reads find nothing in the module dict.
                 for name in sorted(module_backed):
                     # Skip variables already flushed to the module dict
@@ -816,7 +818,7 @@ class LoopLoweringMixin(_MixinBase):
                         self._emit_module_attr_set_on(self.module_obj, name, existing)
                 self.module_global_mutations.update(module_backed)
                 # Remove from self.locals so visit_Name falls through to
-                # the module_global_mutations check (module_get_attr).
+                # the module_global_mutations check (module_get_global).
                 # Without this, the cached local SSA variable shadows the
                 # module dict, making while loop conditions read stale values.
                 for name in module_backed:
@@ -925,8 +927,8 @@ class LoopLoweringMixin(_MixinBase):
         )
         self._store_local_value(index_name, idx)
         # For module-level code, also sync to the module namespace so
-        # that module_get_attr reads inside the loop body see the current
-        # counter value (not the initial value from before the loop).
+        # that module_get_global bare-name reads inside the loop body see the
+        # current counter value (not the initial value from before the loop).
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             key = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[index_name], result=key))

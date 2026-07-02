@@ -86,8 +86,9 @@ _RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
 #: thus makes it a reached-intrinsic candidate. ``builtin_func`` is the direct
 #: link reference (``func_addr`` / ``Linkage::Import`` -> ``.refptr.molt_*``);
 #: ``const_str`` is the name the per-app resolver may resolve dynamically (the
-#: ``compute_intrinsic_manifest`` candidate shape). Both are validated against the
-#: feature-gate authority, so non-intrinsic strings/builtins contribute nothing.
+#: ``compute_app_callable_manifest`` candidate shape). Both are validated
+#: against the feature-gate authority, so non-intrinsic strings/builtins
+#: contribute nothing.
 _INTRINSIC_SYMBOL_OP_KINDS: frozenset[str] = frozenset({"builtin_func", "const_str"})
 
 

@@ -41,8 +41,8 @@ pub struct LlvmBackend<'ctx> {
     /// same typed facts the native/WASM/Luau backends consume.
     pub(crate) function_repr_facts: BTreeMap<String, LlvmReprFacts>,
     /// The set of `molt_*` symbols the linked runtime staticlib defines (the
-    /// active stdlib profile's intrinsic surface, from
-    /// `MOLT_RUNTIME_INTRINSIC_SYMBOLS`). Used by the generic preserved-op
+    /// active stdlib profile's callable surface, from
+    /// `MOLT_RUNTIME_CALLABLE_SYMBOLS`). Used by the generic preserved-op
     /// runtime-call fallback to confirm `molt_<kind>` actually exists before
     /// emitting an external call to it — so an operator kind with no dedicated
     /// lowering routes to its real runtime entry, and an unmappable kind fails
@@ -50,7 +50,7 @@ pub struct LlvmBackend<'ctx> {
     /// Empty when the env var is unset (e.g. in-crate codegen unit tests that
     /// never link a final binary); the generic fallback then declines, matching
     /// the resolver machinery's same `cfg(test)` carve-out.
-    pub(crate) runtime_intrinsic_symbols: std::collections::BTreeSet<String>,
+    pub(crate) runtime_callable_symbols: std::collections::BTreeSet<String>,
 }
 
 #[cfg(feature = "llvm")]
@@ -68,8 +68,9 @@ impl<'ctx> LlvmBackend<'ctx> {
             function_param_types: BTreeMap::new(),
             function_return_types: BTreeMap::new(),
             function_repr_facts: BTreeMap::new(),
-            runtime_intrinsic_symbols:
-                crate::intrinsic_symbols::runtime_intrinsic_symbols_from_env().unwrap_or_default(),
+            runtime_callable_symbols:
+                crate::runtime_callable_symbols::runtime_callable_symbols_from_env()
+                    .unwrap_or_default(),
         }
     }
 
