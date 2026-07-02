@@ -5,6 +5,7 @@ import pytest
 from molt._wasm_runtime_exports import (
     wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
+    wasm_runtime_export_name_for_import,
     wasm_runtime_import_names,
     wasm_runtime_shared_export_link_args,
 )
@@ -125,6 +126,9 @@ def test_wasm_runtime_export_names_are_generated() -> None:
     assert wasm_runtime_export_name("socket_drop") == "molt_socket_drop"
     assert wasm_runtime_export_name("molt_socket_drop") == "molt_socket_drop"
     assert wasm_runtime_export_name("molt_alloc") == "molt_alloc"
+    assert wasm_runtime_export_name_for_import("socket_drop") == "molt_socket_drop"
+    assert wasm_runtime_export_name_for_import("PyArg_ParseTuple") == "PyArg_ParseTuple"
+    assert wasm_runtime_export_name_for_import("PyArray_NDIM") is None
 
 
 def test_wasm_runtime_exports_use_generated_intrinsic_symbols_and_ast_scan() -> None:

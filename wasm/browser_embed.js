@@ -840,17 +840,29 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, o
     if (!manifestNames.has(entry.name)) {
       throw new Error(`app runtime import ${entry.name} missing from manifest`);
     }
-    const signature = signatures[entry.name] || null;
+    const exportSignature = runtimeExportSignatures[entry.name] || null;
+    const signature = signatures[entry.name] || exportSignature;
     if (!signature || !Array.isArray(signature.params)) {
       throw new Error(`app runtime import ${entry.name} missing manifest signature`);
     }
-    const resultKind = resultKinds[entry.name] || null;
+    const resultKind = resultKinds[entry.name] || signature.result || null;
     if (!resultKind) {
       throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
     }
-    const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
+    const exportCandidates = entry.name.startsWith('molt_')
+      ? [entry.name]
+      : [`molt_${entry.name}`, entry.name];
     imports[entry.name] = (...args) => {
-      let fn = runtimeExport(exportName);
+      let exportName = exportCandidates[0];
+      let fn = null;
+      for (const candidate of exportCandidates) {
+        const candidateFn = runtimeExport(candidate);
+        if (candidateFn) {
+          exportName = candidate;
+          fn = candidateFn;
+          break;
+        }
+      }
       let callSignature = runtimeExportSignatures[entry.name] || signature;
       if (!fn) {
         fn = resolveFallback(entry.name);
