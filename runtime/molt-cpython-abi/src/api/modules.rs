@@ -25,9 +25,18 @@ fn set_module_system_error(message: impl AsRef<str>) {
 }
 
 fn set_module_system_error_if_clear(message: impl AsRef<str>) {
-    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-        set_module_system_error(message);
+    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        return;
     }
+    // A pending runtime exception (for example an import failure raised
+    // inside module exec through the import hook) is the real error;
+    // never mask it with a synthetic "without setting an exception"
+    // message the diagnostics would then surface instead.
+    let h = hooks::hooks_or_stubs();
+    if unsafe { (h.exception_pending)() } != 0 {
+        return;
+    }
+    set_module_system_error(message);
 }
 
 /// Resolve a `*mut PyObject` produced by this bridge to its underlying Molt

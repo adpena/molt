@@ -2361,7 +2361,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         {
             "kind": "invoke_ffi",
             "args": [],
-            "out": "v2",
+            "out": "v5",
             "native_callable_export": (
                 "__molt_static_pyinit__.nativepkg.ndimage._nd_image"
             ),
@@ -2375,6 +2375,20 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     ]
     assert "molt_cpython_abi_prepare_static_extension" in extension_call_targets
     assert "molt_cpython_abi_pyinit_module_to_bits" in extension_call_targets
+
+    # Every static-native init owns init-exactly-once: a module-cache guard
+    # must wrap the init body so re-entry (isolate-import dispatch or capsule
+    # alias providers) can never re-run a PyInit or replace a cached module.
+    for init_name in (root_init, public_init, extension_init, capsule_alias_init):
+        guarded_ops = functions[init_name]
+        assert [op.get("kind") for op in guarded_ops[:5]] == [
+            "const_str",
+            "module_cache_get",
+            "const_none",
+            "is",
+            "if",
+        ], f"missing init-once guard preamble in {init_name}"
+        assert any(op.get("kind") == "end_if" for op in guarded_ops), init_name
 
     alias_ops = functions[capsule_alias_init]
     alias_call_targets = [
