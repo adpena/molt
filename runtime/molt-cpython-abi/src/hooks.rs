@@ -176,6 +176,10 @@ pub struct RuntimeHooks {
     /// owned module handle, or 0 on failure with the import error left in
     /// the runtime pending-exception state.
     pub import_module: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
+    /// Return non-zero when the runtime holds a pending Python exception.
+    /// Lets ABI-side fallbacks avoid masking a real runtime error with a
+    /// synthetic "without setting an exception" message.
+    pub exception_pending: unsafe extern "C" fn() -> std::os::raw::c_int,
 }
 
 /// Global hook table, set once by `molt-lang-runtime` at init time.
@@ -392,6 +396,9 @@ unsafe extern "C" fn stub_register_c_function(
 unsafe extern "C" fn stub_import_module(_data: *const u8, _len: usize) -> u64 {
     0
 }
+unsafe extern "C" fn stub_exception_pending() -> std::os::raw::c_int {
+    0
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -436,6 +443,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     module_state_remove: stub_module_state_remove,
     register_c_function: stub_register_c_function,
     import_module: stub_import_module,
+    exception_pending: stub_exception_pending,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.

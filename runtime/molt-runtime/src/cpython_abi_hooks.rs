@@ -517,6 +517,10 @@ unsafe extern "C" fn hook_import_module(name_data: *const u8, name_len: usize) -
     }
 }
 
+unsafe extern "C" fn hook_exception_pending() -> std::os::raw::c_int {
+    with_gil(|_py| crate::exception_pending(&_py) as std::os::raw::c_int)
+}
+
 unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
     with_gil(|_py| {
         let module_obj = MoltObject::from_bits(module_bits);
@@ -1686,6 +1690,7 @@ pub fn register_cpython_hooks() {
         module_state_remove: hook_module_state_remove,
         register_c_function: hook_register_c_function,
         import_module: hook_import_module,
+        exception_pending: hook_exception_pending,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {
