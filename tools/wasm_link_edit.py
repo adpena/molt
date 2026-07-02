@@ -31,7 +31,6 @@ from wasm_link_format import (
     _collect_linking_function_symbols,
     _count_func_imports,
     _find_func_import_index,
-    is_cpython_abi_link_symbol,
     is_table_ref_export_name,
     parse_table_ref_export_name,
     wasm_runtime_export_name,
@@ -858,8 +857,6 @@ def _runtime_import_rewrite_target(
         return name, name not in runtime_exports
     if name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS:
         return None, False
-    if is_cpython_abi_link_symbol(name):
-        return name, name not in runtime_exports
     export_name = wasm_runtime_export_name(name)
     if export_name is None:
         return None, False

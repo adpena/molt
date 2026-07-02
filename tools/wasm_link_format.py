@@ -22,9 +22,6 @@ if _WASM_ABI_SPEC is None or _WASM_ABI_SPEC.loader is None:
 _WASM_ABI = importlib.util.module_from_spec(_WASM_ABI_SPEC)
 _WASM_ABI_SPEC.loader.exec_module(_WASM_ABI)
 
-from molt.cli.c_api_symbols import is_cpython_abi_link_symbol  # noqa: E402,F401
-
-
 WASM_MAGIC = b"\x00asm"
 
 WASM_VERSION = b"\x01\x00\x00\x00"

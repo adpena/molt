@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from molt._wasm_runtime_exports import (
     wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
@@ -171,6 +173,31 @@ def test_wasm_runtime_export_link_args_adds_required_runtime_imports() -> None:
     assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" in flags
     assert " -C link-arg=--export-if-defined=molt_ssl_context_new" in flags
     assert " -C link-arg=--export-if-defined=molt_set_update" not in flags
+
+
+def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> None:
+    flags = wasm_runtime_export_link_args(
+        {
+            "PyErr_Format",
+            "PyArg_ParseTuple",
+            "PyObject_CallFunction",
+            "PyArg_ParseTupleAndKeywords",
+            "PyTuple_Pack",
+            "molt_cpython_abi_date_from_date",
+        }
+    )
+    assert " -C link-arg=--export-if-defined=PyErr_Format" in flags
+    assert " -C link-arg=--export-if-defined=PyArg_ParseTuple" in flags
+    assert " -C link-arg=--export-if-defined=PyObject_CallFunction" in flags
+    assert " -C link-arg=--export-if-defined=PyArg_ParseTupleAndKeywords" in flags
+    assert " -C link-arg=--export-if-defined=PyTuple_Pack" in flags
+    assert " -C link-arg=--export-if-defined=molt_cpython_abi_date_from_date" in flags
+    assert " -C link-arg=--export-if-defined=PyArray_NDIM" not in flags
+
+
+def test_wasm_runtime_export_link_args_reject_non_manifest_raw_c_api_symbol() -> None:
+    with pytest.raises(ValueError, match="unknown WASM runtime import/export name"):
+        wasm_runtime_export_link_args({"PyModuleDef_Init"})
 
 
 def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_resolved_modules() -> (

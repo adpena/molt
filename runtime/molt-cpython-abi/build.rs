@@ -28,10 +28,14 @@ fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let shim = manifest.join("shims/pyarg_variadic.c");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &resolve_build_python());
 
     // Compile the C variadic shim into a static library.
     let mut build = cc::Build::new();
+    if target_arch == "wasm32" {
+        build.cargo_metadata(false);
+    }
     build
         .file(&shim)
         .opt_level(3)
@@ -45,7 +49,7 @@ fn main() {
     if target_os != "macos" {
         build.flag_if_supported("-fno-semantic-interposition");
     }
-    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+    if target_arch == "wasm32" {
         let sysroot = wasi_sysroot::resolve_wasi_sysroot().unwrap_or_else(|| {
             panic!(
                 "WASI sysroot not found: set MOLT_WASI_SYSROOT, WASI_SYSROOT, \
@@ -60,6 +64,10 @@ fn main() {
     }
 
     build.compile("molt_pyarg_shims");
+    if target_arch == "wasm32" {
+        println!("cargo:rustc-link-search=native={}", out_dir.display());
+        println!("cargo:rustc-link-lib=static:+whole-archive=molt_pyarg_shims");
+    }
 
     // Force the static shim's symbols into the cdylib output so that
     // PyArg_ParseTuple / PyArg_ParseTupleAndKeywords are exported even

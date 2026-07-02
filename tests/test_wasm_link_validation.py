@@ -2110,7 +2110,15 @@ def test_rewrite_native_runtime_imports_routes_canonical_cpython_abi_symbols(
     native = tmp_path / "ndimage.molt.wasm"
     native.write_bytes(
         _build_env_function_import_module(
-            ["PyModuleDef_Init", "molt_cpython_abi_date_from_date", "malloc"]
+            [
+                "PyErr_Format",
+                "PyArg_ParseTuple",
+                "PyObject_CallFunction",
+                "PyArg_ParseTupleAndKeywords",
+                "PyTuple_Pack",
+                "molt_cpython_abi_date_from_date",
+                "malloc",
+            ]
         )
     )
 
@@ -2119,7 +2127,14 @@ def test_rewrite_native_runtime_imports_routes_canonical_cpython_abi_symbols(
 
         rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
             (native,),
-            {"PyModuleDef_Init", "molt_cpython_abi_date_from_date"},
+            {
+                "PyErr_Format",
+                "PyArg_ParseTuple",
+                "PyObject_CallFunction",
+                "PyArg_ParseTupleAndKeywords",
+                "PyTuple_Pack",
+                "molt_cpython_abi_date_from_date",
+            },
             temp_dir,
         )
 
@@ -2127,14 +2142,44 @@ def test_rewrite_native_runtime_imports_routes_canonical_cpython_abi_symbols(
         assert len(rewritten_paths) == 1
         assert rewritten_paths[0] != native
         assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
-            ("molt_runtime", "PyModuleDef_Init"),
+            ("molt_runtime", "PyErr_Format"),
+            ("molt_runtime", "PyArg_ParseTuple"),
+            ("molt_runtime", "PyObject_CallFunction"),
+            ("molt_runtime", "PyArg_ParseTupleAndKeywords"),
+            ("molt_runtime", "PyTuple_Pack"),
             ("molt_runtime", "molt_cpython_abi_date_from_date"),
             ("env", "malloc"),
         ]
         assert _function_import_pairs(native.read_bytes()) == [
-            ("env", "PyModuleDef_Init"),
+            ("env", "PyErr_Format"),
+            ("env", "PyArg_ParseTuple"),
+            ("env", "PyObject_CallFunction"),
+            ("env", "PyArg_ParseTupleAndKeywords"),
+            ("env", "PyTuple_Pack"),
             ("env", "molt_cpython_abi_date_from_date"),
             ("env", "malloc"),
+        ]
+
+
+def test_rewrite_native_runtime_imports_rejects_non_manifest_raw_c_api_symbol(
+    tmp_path: Path,
+) -> None:
+    native = tmp_path / "ndimage.molt.wasm"
+    native.write_bytes(_build_env_function_import_module(["PyModuleDef_Init"]))
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            {"PyModuleDef_Init"},
+            temp_dir,
+        )
+
+        assert force_exports == []
+        assert rewritten_paths == (native,)
+        assert _function_import_pairs(native.read_bytes()) == [
+            ("env", "PyModuleDef_Init"),
         ]
 
 

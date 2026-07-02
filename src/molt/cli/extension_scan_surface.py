@@ -4,8 +4,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.cli.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
-from molt.cli.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
+from molt.c_api_symbols import C_API_TOKEN as _C_API_TOKEN
+from molt.c_api_symbols import C_API_TOKEN_RE as _C_API_TOKEN_RE
 
 _C_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", flags=re.DOTALL)
 _C_LINE_COMMENT_RE = re.compile(r"//.*?$", flags=re.MULTILINE)

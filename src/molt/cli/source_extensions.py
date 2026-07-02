@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.cli.backend_cache import _native_object_global_symbol_sets
-from molt.cli.c_api_symbols import is_c_api_external_requirement
+from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
 from molt.cli.extension_scan_surface import _extract_preprocessor_defined_symbols

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
-from molt.cli.c_api_symbols import is_c_api_external_requirement
+from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.extension_manifest import (
     ExtensionSupportFile,
     _manifest_callable_exports,

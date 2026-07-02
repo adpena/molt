@@ -447,6 +447,25 @@ def _staged_artifacts_need_wasm_compiler_rt_link(
     )
 
 
+def _staged_artifact_runtime_export_symbols(
+    artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
+) -> frozenset[str]:
+    symbols: set[str] = set()
+    for artifact in artifacts:
+        symbols.update(
+            symbol.symbol
+            for symbol in artifact.c_api_symbols
+            if symbol.status == "cpython_abi_link"
+        )
+        symbols.update(
+            symbol.symbol
+            for symbol in artifact.abi_symbols
+            if symbol.status == "external_link"
+            and symbol.primitive_class == "molt_cpython_abi_link_import"
+        )
+    return frozenset(symbols)
+
+
 def _external_native_artifact_fingerprint_inputs(
     artifacts: tuple[_StagedExternalPackageNativeArtifact, ...],
 ) -> tuple[Path, ...]:
@@ -603,6 +622,11 @@ def _prepare_non_native_build_result(
                         )
             required_runtime_exports = _collect_wasm_module_import_names(
                 output_wasm, "molt_runtime"
+            )
+            required_runtime_exports.update(
+                _staged_artifact_runtime_export_symbols(
+                    staged_external_native_artifacts
+                )
             )
             structural_error = _validate_wasm_structural(output_wasm)
             if structural_error is not None:
@@ -790,6 +814,11 @@ def _prepare_non_native_build_result(
                 )
             required_runtime_exports = _collect_wasm_module_import_names(
                 output_wasm, "molt_runtime"
+            )
+            required_runtime_exports.update(
+                _staged_artifact_runtime_export_symbols(
+                    staged_external_native_artifacts
+                )
             )
             if not ensure_runtime_wasm_shared(required_runtime_exports):
                 return None, _fail(
