@@ -63,6 +63,10 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     assert cpython_abi_imports == tuple(sorted(cpython_abi_imports))
     assert {
         "PyArg_ParseTuple",
+        "PyFloat_Check",
+        "PyLong_Check",
+        "PyBool_Check",
+        "PyExc_TypeError",
         "PyObject_Init",
         "PyMemoryView_FromMemory",
         "Py_None",
@@ -1430,12 +1434,17 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     )
     assert {
         "PyArg_ParseTuple",
+        "PyFloat_Check",
+        "PyLong_Check",
+        "PyBool_Check",
         "PyObject_Init",
         "PyObject_InitVar",
         "_PyObject_New",
         "PyMemoryView_FromMemory",
         "PyBuffer_FillInfo",
         "PyErr_SetString",
+        "PyExc_ValueError",
+        "PyExc_TypeError",
         "Py_None",
         "molt_cpython_abi_date_from_date",
     } <= generated_cpython_abi_imports
