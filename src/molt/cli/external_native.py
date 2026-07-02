@@ -1161,9 +1161,7 @@ def _validate_external_package_native_artifact(
             runtime_python_import_errors
         )
     ):
-        errors.extend(
-            f"{package}: {error}" for error in runtime_python_import_errors
-        )
+        errors.extend(f"{package}: {error}" for error in runtime_python_import_errors)
     python_exports = _manifest_dotted_name_tuple(
         manifest,
         "python_exports",
@@ -1271,12 +1269,21 @@ def _validate_external_package_native_artifact(
             )
         )
         return {
-            name
-            for name in names
-            if name == package or name.startswith(package_prefix)
+            name for name in names if name == package or name.startswith(package_prefix)
         }
 
+    package_init_support_modules = _support_python_module_names(
+        package_init_support_file_sha256
+    )
+    exported_package_init_modules = {
+        name for name in python_exports if name in package_init_support_modules
+    } | {
+        export.module
+        for export in callable_exports
+        if export.module in package_init_support_modules
+    }
     pending_names = list(runtime_python_imports)
+    pending_names.extend(sorted(exported_package_init_modules))
     seen_names: set[str] = set()
     while pending_names:
         import_name = pending_names.pop()
@@ -1332,9 +1339,7 @@ def _validate_external_package_native_artifact(
             abi_symbols=abi_symbols,
             c_api_symbols=c_api_symbols,
             runtime_python_imports=tuple(sorted(external_runtime_python_imports)),
-            runtime_python_import_modules=tuple(
-                sorted(runtime_python_import_modules)
-            ),
+            runtime_python_import_modules=tuple(sorted(runtime_python_import_modules)),
         ),
         [],
     )
