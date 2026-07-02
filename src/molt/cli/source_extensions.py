@@ -27,6 +27,9 @@ from molt.cli.file_hashing import _sha256_file
 _MOLT_NUMPY_ARRAY_API_CAPSULE = "numpy.core._multiarray_umath._ARRAY_API"
 _MOLT_NUMPY_UFUNC_API_CAPSULE = "numpy.core._multiarray_umath._UFUNC_API"
 _C_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+_PY_MODULE_NAME_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
 _SOURCE_EXTENSION_CAPSULE_IMPORT_TOKENS: dict[str, str] = {
     "import_array": _MOLT_NUMPY_ARRAY_API_CAPSULE,
     "import_array1": _MOLT_NUMPY_ARRAY_API_CAPSULE,
@@ -1155,12 +1158,6 @@ def _source_extension_object_fact(
     )
 
 
-_SOURCE_EXTENSION_RUNTIME_IMPORT_CALL_RE = re.compile(
-    r"\b(?P<callee>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*"
-    r"\"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\""
-)
-
-
 def _source_extension_runtime_import_callee(callee: str) -> bool:
     if callee.startswith("PyImport_"):
         return True
@@ -1173,6 +1170,72 @@ def _source_extension_runtime_import_callee(callee: str) -> bool:
         or lowered.endswith("_import")
         or "_import_" in lowered
     )
+
+
+def _skip_c_ws_comments(source_text: str, pos: int) -> int:
+    n = len(source_text)
+    while pos < n:
+        if source_text[pos].isspace():
+            pos += 1
+            continue
+        if source_text.startswith("//", pos):
+            newline = source_text.find("\n", pos + 2)
+            return n if newline < 0 else _skip_c_ws_comments(source_text, newline + 1)
+        if source_text.startswith("/*", pos):
+            end = source_text.find("*/", pos + 2)
+            return n if end < 0 else _skip_c_ws_comments(source_text, end + 2)
+        return pos
+    return pos
+
+
+def _skip_c_string_or_char(source_text: str, pos: int) -> int:
+    quote = source_text[pos]
+    pos += 1
+    n = len(source_text)
+    escaped = False
+    while pos < n:
+        ch = source_text[pos]
+        pos += 1
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == quote:
+            break
+    return pos
+
+
+def _parse_c_string_literal(source_text: str, pos: int) -> tuple[str | None, int]:
+    n = len(source_text)
+    for prefix in ("u8", "U", "u", "L"):
+        if source_text.startswith(prefix + '"', pos):
+            pos += len(prefix)
+            break
+    if pos >= n or source_text[pos] != '"':
+        return None, pos
+    pos += 1
+    chars: list[str] = []
+    escaped = False
+    while pos < n:
+        ch = source_text[pos]
+        pos += 1
+        if escaped:
+            chars.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            value = "".join(chars)
+            return (
+                (value if _PY_MODULE_NAME_RE.fullmatch(value) else None),
+                pos,
+            )
+        chars.append(ch)
+    return None, pos
 
 
 def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]:
@@ -1188,10 +1251,34 @@ def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]
     import-named callsite taking a leading dotted-module string literal;
     resolution against module roots decides admission downstream.
     """
-    names = set()
-    for match in _SOURCE_EXTENSION_RUNTIME_IMPORT_CALL_RE.finditer(source_text):
-        if _source_extension_runtime_import_callee(match.group("callee")):
-            names.add(match.group("module"))
+    names: set[str] = set()
+    pos = 0
+    n = len(source_text)
+    while pos < n:
+        ch = source_text[pos]
+        if ch in {'"', "'"}:
+            pos = _skip_c_string_or_char(source_text, pos)
+            continue
+        if source_text.startswith("//", pos) or source_text.startswith("/*", pos):
+            pos = _skip_c_ws_comments(source_text, pos)
+            continue
+        if not (ch == "_" or ch.isalpha()):
+            pos += 1
+            continue
+        start = pos
+        pos += 1
+        while pos < n and (source_text[pos] == "_" or source_text[pos].isalnum()):
+            pos += 1
+        callee = source_text[start:pos]
+        if not _source_extension_runtime_import_callee(callee):
+            continue
+        call_pos = _skip_c_ws_comments(source_text, pos)
+        if call_pos >= n or source_text[call_pos] != "(":
+            continue
+        module_pos = _skip_c_ws_comments(source_text, call_pos + 1)
+        module_name, _end_pos = _parse_c_string_literal(source_text, module_pos)
+        if module_name is not None:
+            names.add(module_name)
     return tuple(sorted(names))
 
 
@@ -1503,38 +1590,30 @@ def source_extension_manifest_runtime_python_imports(
 ) -> tuple[tuple[str, ...], list[str]]:
     """Scan manifest sources for dynamic Python imports made from C code.
 
-    Sealed artifacts may travel with a subset of their sources (generated
-    build files stay behind), so unresolvable or unreadable sources are
-    skipped and reported instead of failing the whole scan: the names
-    found in the resolvable sources are still real closure requirements.
+    Runtime import closure uses the same manifest source authority as
+    source-derived capsule custody: object-closure source entries, relocation,
+    and source hashes win over top-level source lists.
     """
-    raw_sources = manifest.get("sources")
-    source_paths: list[Path] = []
-    skipped: list[str] = []
-    if isinstance(raw_sources, list):
-        for raw_path in raw_sources:
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                continue
-            source_path, source_errors = _resolve_source_extension_manifest_source(
-                raw_path,
-                manifest=manifest,
-                manifest_path=manifest_path,
-                expected_sha256=None,
-                field_name="sources",
-            )
-            if source_path is not None and source_path.is_file():
-                source_paths.append(source_path)
-            else:
-                skipped.extend(source_errors or [str(raw_path)])
+    source_paths, errors = _source_extension_manifest_source_paths(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    if errors:
+        return (), errors
+    assert source_paths is not None
     names: set[str] = set()
+    read_errors: list[str] = []
     for source_path in source_paths:
         try:
             source_text = source_path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            skipped.append(f"{source_path}: {exc}")
+            read_errors.append(
+                "cannot scan source-derived runtime Python imports because "
+                f"manifest source {source_path} is unreadable: {exc}"
+            )
             continue
         names.update(source_extension_runtime_python_imports(source_text))
-    return tuple(sorted(names)), skipped
+    return tuple(sorted(names)), read_errors
 
 
 def source_extension_manifest_required_capsule_imports(

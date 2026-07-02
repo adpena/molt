@@ -499,9 +499,22 @@ class CallModuleDispatchMixin(_MixinBase):
         direct_target_is_linkable = self._is_linkable_module_function_symbol(
             target_module
         )
+        # Speculative direct calls assume the target module defines the
+        # attribute as a compiled function. When the module's function facts
+        # are known and the attribute is not among its defs (star-import
+        # re-exports like numpy._core.multiarray.dtype forwarding the C
+        # extension), the direct symbol would never exist at link, so the
+        # call must stay a dynamic bound call.
+        target_module_funcs = self.known_func_kinds.get(target_module)
+        if target_module_funcs is None and normalized is not None:
+            target_module_funcs = self.known_func_kinds.get(normalized)
+        speculative_target_is_defined = (
+            target_module_funcs is None or original_attr in target_module_funcs
+        )
         allow_speculative_internal_direct = (
             not has_known_direct_target
             and target_kind in {None, FunctionKind.SYNC}
+            and speculative_target_is_defined
             and imported_from is not None
             and imported_from not in self.stdlib_allowlist
             and (normalized is None or normalized not in self.stdlib_allowlist)
