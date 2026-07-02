@@ -120,6 +120,13 @@ def _last_nonempty_log_line(path: Path) -> str | None:
     return None
 
 
+def _first_log_line_containing(log_tail: str, needle: str) -> str | None:
+    for line in log_tail.splitlines():
+        if needle in line:
+            return _shorten(line)
+    return None
+
+
 def _read_log_tail(path: Path, *, limit: int = DIAGNOSTIC_LOG_TAIL_BYTES) -> str:
     try:
         size = path.stat().st_size
@@ -800,6 +807,16 @@ def _write_marimo_notebook(
     return path
 
 
+def _log_path_for_run(conn: sqlite3.Connection, run_id: str) -> Path:
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT log_path FROM proof_runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    if row is None:
+        raise SystemExit(f"unknown proof run {run_id!r}")
+    return Path(row["log_path"])
+
+
 def _db_path(args: argparse.Namespace) -> Path:
     return (
         Path(args.db)
@@ -899,21 +916,62 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
-    if "proof queue failed before command execution" in log_tail:
+    fatal_queue_failure = (
+        "proof queue fatal infrastructure failure" in log_tail
+        or "proof queue failed before command execution" in log_tail
+    )
+    if fatal_queue_failure:
         diagnostics.append(
             _diagnostic(
                 signal_id="queue-preexecution-failure",
                 severity="infra",
                 summary=(
-                    "The queue failed before launching the proof command, but "
-                    "the row was made terminal and logged."
+                    "The queue hit a fatal infrastructure failure before "
+                    "launching the proof command, but the row was made terminal "
+                    "and logged."
                 ),
-                evidence=_last_nonempty_log_line(Path(row["log_path"])) or "",
+                evidence=(
+                    _first_log_line_containing(
+                        log_tail, "proof queue fatal infrastructure failure"
+                    )
+                    or _first_log_line_containing(
+                        log_tail, "proof queue failed before command execution"
+                    )
+                    or _last_nonempty_log_line(Path(row["log_path"]))
+                    or ""
+                ),
                 next_action=(
-                    "Fix the queue submission/projection bug, then resubmit or "
-                    "run the same queued lane; do not treat this row as product proof."
+                    "Fix the queue custody bug, then resubmit or run the same "
+                    "queued lane; do not treat this row as product proof."
                 ),
                 scopes=("tools/proof_queue.py",),
+            )
+        )
+
+    if (
+        not fatal_queue_failure
+        and "proof queue nonfatal infrastructure failure" in log_tail
+    ):
+        diagnostics.append(
+            _diagnostic(
+                signal_id="queue-infra-warning",
+                severity="infra",
+                summary=(
+                    "The proof command ran, but queue-side observability had a "
+                    "nonfatal infrastructure failure."
+                ),
+                evidence=(
+                    _first_log_line_containing(
+                        log_tail, "proof queue nonfatal infrastructure failure"
+                    )
+                    or _last_nonempty_log_line(Path(row["log_path"]))
+                    or ""
+                ),
+                next_action=(
+                    "Preserve the proof result, then fix the queue projection or "
+                    "note append issue before it becomes hidden collaboration debt."
+                ),
+                scopes=("tools/proof_queue.py", "docs/agent/PROOF_QUEUE.md"),
             )
         )
 
@@ -1220,7 +1278,10 @@ def _write_failed_run_log(
     lines: Sequence[str],
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as log:
+    append = log_path.exists() and log_path.stat().st_size > 0
+    with log_path.open("a" if append else "w", encoding="utf-8") as log:
+        if append:
+            print("\n--- proof_queue terminal failure ---", file=log)
         print(f"proof_queue run_id={run_id}", file=log)
         print(f"logical_id={logical_id}", file=log)
         print(f"reason={reason}", file=log)
@@ -1229,6 +1290,96 @@ def _write_failed_run_log(
         print("", file=log)
         for line in lines:
             print(line, file=log)
+
+
+def _append_queue_infra_log(
+    log_path: Path,
+    *,
+    run_id: str,
+    phase: str,
+    exc: BaseException,
+    fatal: bool,
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    severity = "fatal" if fatal else "nonfatal"
+    with log_path.open("a", encoding="utf-8") as log:
+        print("", file=log)
+        print(
+            f"proof queue {severity} infrastructure failure during {phase}:",
+            file=log,
+        )
+        print(f"run_id={run_id}", file=log)
+        print(f"{type(exc).__name__}: {exc}", file=log)
+        print("", file=log)
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=log)
+
+
+def _try_insert_queue_infra_note(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    log_path: Path,
+    phase: str,
+    exc: BaseException,
+    fatal: bool,
+) -> None:
+    severity = "fatal" if fatal else "nonfatal"
+    try:
+        _insert_note(
+            conn,
+            run_id=run_id,
+            body=(
+                f"queue {severity} infrastructure failure during {phase}: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+            kind="finding",
+            author=_default_note_author(),
+        )
+    except Exception as note_exc:
+        _append_queue_infra_log(
+            log_path,
+            run_id=run_id,
+            phase=f"{phase} note append",
+            exc=note_exc,
+            fatal=False,
+        )
+
+
+def _try_write_marimo_notebook(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    log_path: Path,
+    phase: str,
+    output: str | None = None,
+) -> Path | None:
+    try:
+        return _write_marimo_notebook(args, conn, run_id, output)
+    except Exception as exc:
+        _append_queue_infra_log(
+            log_path,
+            run_id=run_id,
+            phase=phase,
+            exc=exc,
+            fatal=False,
+        )
+        _try_insert_queue_infra_note(
+            conn,
+            run_id=run_id,
+            log_path=log_path,
+            phase=phase,
+            exc=exc,
+            fatal=False,
+        )
+        print(
+            (
+                f"warning: notebook projection failed for {run_id} during "
+                f"{phase}; log: {log_path}"
+            ),
+            file=sys.stderr,
+        )
+        return None
 
 
 def _fail_preexecution_run(
@@ -1255,7 +1406,7 @@ def _fail_preexecution_run(
         elapsed_s=0.0,
     )
     lines = [
-        f"proof queue failed before command execution during {phase}:",
+        f"proof queue fatal infrastructure failure during {phase}:",
         f"{type(exc).__name__}: {exc}",
         "",
         *traceback.format_exception(type(exc), exc, exc.__traceback__),
@@ -1269,29 +1420,21 @@ def _fail_preexecution_run(
         command=command,
         lines=lines,
     )
-    try:
-        _insert_note(
-            conn,
-            run_id=run_id,
-            body=(
-                f"Queue failed before command execution during {phase}: "
-                f"{type(exc).__name__}: {exc}"
-            ),
-            kind="finding",
-            author=_default_note_author(),
-        )
-    except Exception:
-        with log_path.open("a", encoding="utf-8") as log:
-            print("\nproof_queue note append failed:", file=log)
-            traceback.print_exc(file=log)
-    try:
-        _write_marimo_notebook(args, conn, run_id)
-    except Exception:
-        with log_path.open("a", encoding="utf-8") as log:
-            print(
-                "\nproof_queue notebook projection failed after terminal row:", file=log
-            )
-            traceback.print_exc(file=log)
+    _try_insert_queue_infra_note(
+        conn,
+        run_id=run_id,
+        log_path=log_path,
+        phase=phase,
+        exc=exc,
+        fatal=True,
+    )
+    _try_write_marimo_notebook(
+        args,
+        conn,
+        run_id,
+        log_path=log_path,
+        phase="terminal projection",
+    )
     print(f"failed {run_id} rc=2")
     print(f"log: {log_path}")
     return 2
@@ -1662,6 +1805,7 @@ def _queue_one(
         return 2, None
     run_id = f"{_compact_utc()}-{_slug(logical_id)}-{uuid.uuid4().hex[:16]}"
     logs_root.mkdir(parents=True, exist_ok=True)
+    log_path = logs_root / f"{run_id}.log"
     _insert_run(
         conn,
         run_id=run_id,
@@ -1673,7 +1817,7 @@ def _queue_one(
         contention_key=contention_key,
         scopes=scopes,
         env_overrides=env_overrides,
-        log_path=logs_root / f"{run_id}.log",
+        log_path=log_path,
         summary_json=logs_root / f"{run_id}.memory_guard.json",
     )
     try:
@@ -1687,8 +1831,6 @@ def _queue_one(
             )
         for note in initial_notes or []:
             _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
-        if initial_notes or depends_on:
-            _write_marimo_notebook(args, conn, run_id)
     except Exception as exc:
         rc = _fail_preexecution_run(
             args,
@@ -1698,11 +1840,19 @@ def _queue_one(
             reason=reason,
             repo_root=repo_root,
             command=command,
-            log_path=logs_root / f"{run_id}.log",
+            log_path=log_path,
             exc=exc,
-            phase="submission projection",
+            phase="submission metadata",
         )
         return rc, run_id
+    if initial_notes or depends_on:
+        _try_write_marimo_notebook(
+            args,
+            conn,
+            run_id,
+            log_path=log_path,
+            phase="submission projection",
+        )
     print(f"queued {run_id}")
     return 0, run_id
 
@@ -1842,8 +1992,6 @@ def _run_one(
                 )
             for note in initial_notes or []:
                 _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
-            if initial_notes or depends_on:
-                _write_marimo_notebook(args, conn, run_id)
         except Exception as exc:
             return _fail_preexecution_run(
                 args,
@@ -1855,6 +2003,14 @@ def _run_one(
                 command=command,
                 log_path=log_path,
                 exc=exc,
+                phase="submission metadata",
+            )
+        if initial_notes or depends_on:
+            _try_write_marimo_notebook(
+                args,
+                conn,
+                run_id,
+                log_path=log_path,
                 phase="submission projection",
             )
     policy_error = _proof_command_policy_error(command)
@@ -1882,7 +2038,13 @@ def _run_one(
         print(policy_error, file=sys.stderr)
         print(f"log: {log_path}")
         if _notes_for_run_ids(conn, [run_id]).get(run_id):
-            _write_marimo_notebook(args, conn, run_id)
+            _try_write_marimo_notebook(
+                args,
+                conn,
+                run_id,
+                log_path=log_path,
+                phase="policy rejection projection",
+            )
         return 2
     preflight_errors = _ensure_run_toolchain_preflight(
         repo_root=repo_root,
@@ -1914,28 +2076,52 @@ def _run_one(
             print(line, file=sys.stderr)
         print(f"log: {log_path}")
         if _notes_for_run_ids(conn, [run_id]).get(run_id):
-            _write_marimo_notebook(args, conn, run_id)
+            _try_write_marimo_notebook(
+                args,
+                conn,
+                run_id,
+                log_path=log_path,
+                phase="toolchain preflight projection",
+            )
         return 2
-    session_id = _proof_session_id(resource_family, contention_key)
-    env = development_artifact_env(
-        repo_root,
-        os.environ,
-        session_prefix=f"proof-{resource_family}",
-        session_id=session_id,
-    )
-    env["MOLT_PROOF_QUEUE"] = "1"
-    env["MOLT_PROOF_QUEUE_DB"] = str(db)
-    env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
-    env.update(env_overrides)
-    wrapped = _memory_guard_command(
-        command=command,
-        summary_json=summary_json,
-        timeout=timeout,
-    )
+    try:
+        session_id = _proof_session_id(resource_family, contention_key)
+        env = development_artifact_env(
+            repo_root,
+            os.environ,
+            session_prefix=f"proof-{resource_family}",
+            session_id=session_id,
+        )
+        env["MOLT_PROOF_QUEUE"] = "1"
+        env["MOLT_PROOF_QUEUE_DB"] = str(db)
+        env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
+        env.update(env_overrides)
+        wrapped = _memory_guard_command(
+            command=command,
+            summary_json=summary_json,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return _fail_preexecution_run(
+            args,
+            conn,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            log_path=log_path,
+            exc=exc,
+            phase="execution environment setup",
+        )
     start = time.monotonic()
     started_at = _utc_now()
     _update_run(conn, run_id, status="running", started_at=started_at)
-    with log_path.open("w", encoding="utf-8") as log:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log = log_path.open("a", encoding="utf-8")
+        if log.tell() > 0:
+            print("\n--- proof_queue command execution ---", file=log)
         print(f"proof_queue run_id={run_id}", file=log)
         print(f"logical_id={logical_id}", file=log)
         print(f"reason={reason}", file=log)
@@ -1959,6 +2145,24 @@ def _run_one(
             stderr=subprocess.STDOUT,
             text=True,
         )
+    except Exception as exc:
+        try:
+            log.close()
+        except NameError:
+            pass
+        return _fail_preexecution_run(
+            args,
+            conn,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            log_path=log_path,
+            exc=exc,
+            phase="process launch",
+        )
+    try:
         _update_run(conn, run_id, guard_pid=proc.pid)
         rc = proc.wait()
         elapsed = time.monotonic() - start
@@ -1967,6 +2171,8 @@ def _run_one(
             f"\nproof_queue finished status={status} exit_code={rc} elapsed={elapsed:.3f}s",
             file=log,
         )
+    finally:
+        log.close()
     _update_run(
         conn,
         run_id,
@@ -1976,7 +2182,13 @@ def _run_one(
         elapsed_s=elapsed,
     )
     if _notes_for_run_ids(conn, [run_id]).get(run_id):
-        _write_marimo_notebook(args, conn, run_id)
+        _try_write_marimo_notebook(
+            args,
+            conn,
+            run_id,
+            log_path=log_path,
+            phase="completion projection",
+        )
     print(f"{status} {run_id} rc={rc} elapsed={elapsed:.1f}s")
     print(f"log: {log_path}")
     return rc
@@ -2199,18 +2411,39 @@ def _cmd_submit(args: argparse.Namespace) -> int:
         )
     for item in prepared:
         run_id = str(item["run_id"])
-        for dependency in item["depends_on"]:
-            _insert_edge(
+        log_path = _logs_root(args) / f"{run_id}.log"
+        try:
+            for dependency in item["depends_on"]:
+                _insert_edge(
+                    conn,
+                    parent_run_id=logical_to_run.get(str(dependency), str(dependency)),
+                    child_run_id=run_id,
+                    kind=str(item["edge_kind"]),
+                    note=str(item["edge_note"]),
+                )
+            for note in item["initial_notes"]:
+                _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
+        except Exception as exc:
+            return _fail_preexecution_run(
+                args,
                 conn,
-                parent_run_id=logical_to_run.get(str(dependency), str(dependency)),
-                child_run_id=run_id,
-                kind=str(item["edge_kind"]),
-                note=str(item["edge_note"]),
+                run_id=run_id,
+                logical_id=str(item["logical_id"]),
+                reason=str(item["reason"]),
+                repo_root=_repo_root(args),
+                command=list(item["command"]),
+                log_path=log_path,
+                exc=exc,
+                phase="submission metadata",
             )
-        for note in item["initial_notes"]:
-            _insert_note(conn, run_id=run_id, body=note, kind=SUBMISSION_NOTE_KIND)
         if item["initial_notes"] or item["depends_on"]:
-            _write_marimo_notebook(args, conn, run_id)
+            _try_write_marimo_notebook(
+                args,
+                conn,
+                run_id,
+                log_path=log_path,
+                phase="submission projection",
+            )
         print(f"queued {run_id}")
     return 0
 
@@ -2469,8 +2702,15 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
         )
         print(f"noted {row['run_id']} note_id={note_id}")
         if not args.no_notebook:
-            path = _write_marimo_notebook(args, conn, row["run_id"])
-            print(f"notebook: {path}")
+            path = _try_write_marimo_notebook(
+                args,
+                conn,
+                row["run_id"],
+                log_path=Path(row["log_path"]),
+                phase="diagnosis projection",
+            )
+            if path is not None:
+                print(f"notebook: {path}")
     return 0
 
 
@@ -2489,7 +2729,14 @@ def _cmd_note(args: argparse.Namespace) -> int:
         )
     notebook_path = None
     if not args.no_notebook:
-        notebook_path = _write_marimo_notebook(args, conn, args.run_id, args.output)
+        notebook_path = _try_write_marimo_notebook(
+            args,
+            conn,
+            args.run_id,
+            log_path=_log_path_for_run(conn, args.run_id),
+            phase="note projection",
+            output=args.output,
+        )
     print(
         f"noted {args.run_id} note_ids={','.join(str(note_id) for note_id in note_ids)}"
     )
@@ -2510,8 +2757,16 @@ def _cmd_link(args: argparse.Namespace) -> int:
     )
     notebook_paths = []
     if not args.no_notebook:
-        notebook_paths.append(_write_marimo_notebook(args, conn, args.parent))
-        notebook_paths.append(_write_marimo_notebook(args, conn, args.child_run_id))
+        for run_id in (args.parent, args.child_run_id):
+            path = _try_write_marimo_notebook(
+                args,
+                conn,
+                run_id,
+                log_path=_log_path_for_run(conn, run_id),
+                phase="link projection",
+            )
+            if path is not None:
+                notebook_paths.append(path)
     print(
         f"linked {args.parent} -> {args.child_run_id} "
         f"kind={args.kind} edge_id={edge_id}"

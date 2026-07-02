@@ -94,15 +94,14 @@ def test_proof_queue_exec_records_passed_run(tmp_path: Path) -> None:
     assert '"submission": 1' in notebook_text
 
 
-def test_proof_queue_preexecution_projection_failure_is_terminal(
+def test_proof_queue_projection_failure_is_nonfatal_observability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
-    marker = tmp_path / "should-not-run.txt"
-    followup_marker = tmp_path / "followup-ran.txt"
+    marker = tmp_path / "proof-ran.txt"
 
     def fail_notebook(*_args: object, **_kwargs: object) -> Path:
         raise RuntimeError("notebook projection exploded")
@@ -119,15 +118,15 @@ def test_proof_queue_preexecution_projection_failure_is_terminal(
             str(proof_queue.ROOT),
             "exec",
             "--id",
-            "preexecution-crash",
+            "projection-warning",
             "--reason",
-            "prove preexecution crash is terminal",
+            "prove notebook projection failure does not block proof execution",
             "--resource-family",
             "python",
             "--contention-key",
-            "python:preexecution-crash",
+            "python:projection-warning",
             "--note",
-            "trigger projection before command execution",
+            "trigger projection before command execution but still run",
             "--",
             sys.executable,
             "-c",
@@ -136,16 +135,19 @@ def test_proof_queue_preexecution_projection_failure_is_terminal(
         ]
     )
 
-    assert rc == 2
-    assert not marker.exists()
+    assert rc == 0
+    assert marker.read_text(encoding="utf-8") == "ran"
     rows = _rows(db)
     assert len(rows) == 1
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["returncode"] == 2
+    assert rows[0]["status"] == "passed"
+    assert rows[0]["returncode"] == 0
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
-    assert "proof queue failed before command execution" in log_text
+    assert (
+        "proof queue nonfatal infrastructure failure during submission projection"
+        in log_text
+    )
     assert "RuntimeError: notebook projection exploded" in log_text
-    assert "proof_queue notebook projection failed after terminal row" in log_text
+    assert "--- proof_queue command execution ---" in log_text
 
     capsys.readouterr()
     assert (
@@ -165,7 +167,24 @@ def test_proof_queue_preexecution_projection_failure_is_terminal(
         == 0
     )
     evidence = json.loads(capsys.readouterr().out)
-    assert evidence[0]["diagnostics"][0]["signal_id"] == "queue-preexecution-failure"
+    signals = {item["signal_id"] for item in evidence[0]["diagnostics"]}
+    assert "queue-infra-warning" in signals
+
+
+def test_proof_queue_submission_metadata_failure_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    marker = tmp_path / "should-not-run.txt"
+    followup_marker = tmp_path / "followup-ran.txt"
+
+    def fail_insert_note(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("note insert exploded")
+
+    monkeypatch.setattr(proof_queue, "_insert_note", fail_insert_note)
 
     rc = proof_queue.main(
         [
@@ -177,13 +196,75 @@ def test_proof_queue_preexecution_projection_failure_is_terminal(
             str(proof_queue.ROOT),
             "exec",
             "--id",
-            "preexecution-followup",
+            "metadata-crash",
+            "--reason",
+            "prove submission metadata failure is terminal",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:metadata-crash",
+            "--note",
+            "trigger metadata failure before command execution",
+            "--",
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+            str(marker),
+        ]
+    )
+
+    assert rc == 2
+    assert not marker.exists()
+    rows = _rows(db)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert (
+        "proof queue fatal infrastructure failure during submission metadata"
+        in log_text
+    )
+    assert "RuntimeError: note insert exploded" in log_text
+
+    capsys.readouterr()
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                rows[0]["run_id"],
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    signals = [item["signal_id"] for item in evidence[0]["diagnostics"]]
+    assert signals[0] == "queue-preexecution-failure"
+    assert "queue-infra-warning" not in signals
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "metadata-followup",
             "--reason",
             "prove contention key is released",
             "--resource-family",
             "python",
             "--contention-key",
-            "python:preexecution-crash",
+            "python:metadata-crash",
             "--",
             sys.executable,
             "-c",
@@ -943,6 +1024,72 @@ def test_proof_queue_appends_notes_and_exports_evidence(
     assert "R18 is still running" in payload
 
 
+def test_proof_queue_note_projection_failure_preserves_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "noted-warning.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="noted-warning-run",
+        logical_id="noted-warning",
+        reason="prove note survives notebook projection failure",
+        command=[sys.executable, "-c", "print('noted')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:noted-warning",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "noted-warning.memory_guard.json",
+    )
+
+    def fail_notebook(*_args: object, **_kwargs: object) -> Path:
+        raise RuntimeError("note notebook exploded")
+
+    monkeypatch.setattr(proof_queue, "_write_marimo_notebook", fail_notebook)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "note",
+                "noted-warning-run",
+                "--kind",
+                "observation",
+                "--note",
+                "manual note must survive projection failure",
+            ]
+        )
+        == 0
+    )
+
+    notes = _notes(db)
+    assert notes[0]["body"] == "manual note must survive projection failure"
+    assert notes[0]["kind"] == "observation"
+    assert notes[1]["kind"] == "finding"
+    assert (
+        "queue nonfatal infrastructure failure during note projection"
+        in notes[1]["body"]
+    )
+    log_text = log_path.read_text(encoding="utf-8")
+    assert (
+        "proof queue nonfatal infrastructure failure during note projection" in log_text
+    )
+    assert "RuntimeError: note notebook exploded" in log_text
+
+
 def test_proof_queue_diagnoses_failed_static_module_exec(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1112,6 +1259,72 @@ def test_proof_queue_links_runs_and_exports_dag_evidence(
     evidence = json.loads(capsys.readouterr().out)
     assert evidence[0]["dag"]["parent_kind_counts"] == {"reruns": 1}
     assert evidence[0]["dag"]["parents"][0]["parent_run_id"] == "parent-run"
+
+
+def test_proof_queue_link_projection_failure_preserves_edge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id in ("parent-warning-run", "child-warning-run"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove DAG link survives notebook projection failure",
+            command=[sys.executable, "-c", "print('dag')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+
+    def fail_notebook(*_args: object, **_kwargs: object) -> Path:
+        raise RuntimeError("link notebook exploded")
+
+    monkeypatch.setattr(proof_queue, "_write_marimo_notebook", fail_notebook)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "link",
+                "child-warning-run",
+                "--parent",
+                "parent-warning-run",
+                "--kind",
+                "reruns",
+                "--note",
+                "edge survives projection failure",
+            ]
+        )
+        == 0
+    )
+
+    edges = _edges(db)
+    assert len(edges) == 1
+    assert edges[0]["kind"] == "reruns"
+    assert "projection failure" in edges[0]["note"]
+    for run_id in ("parent-warning-run", "child-warning-run"):
+        log_text = (tmp_path / f"{run_id}.log").read_text(encoding="utf-8")
+        assert (
+            "proof queue nonfatal infrastructure failure during link projection"
+            in log_text
+        )
+        assert "RuntimeError: link notebook exploded" in log_text
 
 
 def test_proof_queue_rejects_unknown_note_kind(tmp_path: Path) -> None:

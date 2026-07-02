@@ -304,6 +304,13 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py notebook R
 Use `--notebooks-root` to redirect projections for local experiments. Generated
 notebooks should normally stay untracked with the rest of `logs/`.
 
+Notebook projection is observability, not launch authority. If projection fails
+during submission, run completion, `note`, `link`, or `diagnose --append-note`,
+the queue must preserve the row or mutation, append a nonfatal infrastructure
+failure to the run log, classify the row as `queue-infra-warning`, and continue.
+Only the explicit `notebook RUN_ID` command treats notebook generation as the
+requested artifact and fails directly when it cannot write that projection.
+
 ## Stall Recovery
 
 If a queue row stalls, inspect the log and memory-guard summary first:
