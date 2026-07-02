@@ -4298,6 +4298,7 @@ def test_c_api_primitive_class_contract_buckets_shared_surfaces() -> None:
         symbol: cli_c_api_symbols.c_api_primitive_class(symbol) for symbol in cases
     } == cases
     assert cli_c_api_symbols.is_cpython_abi_link_symbol("PyModuleDef_Init")
+    assert cli_c_api_symbols.is_cpython_abi_link_symbol("PyObject_Init")
     assert cli_c_api_symbols.is_cpython_abi_link_symbol("PyErr_SetString")
     assert not cli_c_api_symbols.is_cpython_abi_link_symbol("PyArray_NDIM")
     assert not cli_c_api_symbols.is_cpython_abi_link_symbol("_Pyx_PyObject_Call")

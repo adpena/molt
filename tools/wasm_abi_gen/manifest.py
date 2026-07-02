@@ -13,6 +13,9 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
 from wasm_abi_gen.paths import (
+    CPYTHON_ABI_API_ROOT,
+    CPYTHON_ABI_TYPES,
+    CPYTHON_ABI_VARIADIC_SHIM,
     INTRINSIC_CATEGORIES,
     INTRINSICS_MANIFEST,
     MANIFEST,
@@ -141,6 +144,29 @@ class WasmAbiManifestError(ValueError):
     pass
 
 
+CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
+CPYTHON_ABI_EXPORT_PREFIXES = ("Py", "_Py", "molt_cpython_abi_")
+CPYTHON_ABI_NO_MANGLE_FUNCTION_RE = re.compile(
+    r"#\[unsafe\(no_mangle\)\]\s*"
+    r"(?:#\[[^\]]+\]\s*)*"
+    r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)",
+    re.MULTILINE,
+)
+CPYTHON_ABI_NO_MANGLE_STATIC_RE = re.compile(
+    r"#\[unsafe\(no_mangle\)\]\s*"
+    r"(?:#\[[^\]]+\]\s*)*"
+    r"pub\s+static(?:\s+mut)?\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:",
+    re.MULTILINE,
+)
+CPYTHON_ABI_C_FUNCTION_RE = re.compile(
+    r"(?m)^(?!static\b)(?!extern\b)"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\s+)+\*?"
+    r"(?P<name>_?Py[A-Za-z_][A-Za-z0-9_]*)\s*\("
+)
+
+
 def _parse_call_indirect_import_arity(name: str) -> int | None:
     if not name.startswith(CALL_INDIRECT_IMPORT_PREFIX):
         return None
@@ -159,6 +185,75 @@ def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
         if arity is not None:
             imports.append((arity, name))
     return sorted(imports)
+
+
+def _is_cpython_abi_export_name(name: str) -> bool:
+    return name.startswith(CPYTHON_ABI_EXPORT_PREFIXES)
+
+
+@lru_cache(maxsize=1)
+def generator_cpython_abi_link_import_names() -> tuple[str, ...]:
+    """Return runtime-owned CPython ABI symbols extensions may import.
+
+    The external native linker surface is derived from the actual
+    `molt-cpython-abi` public C-API/type-object exports plus the C variadic
+    shim archive. This keeps reachability tree-shaken by default while
+    preventing hand-maintained manifest drift from surfacing as late
+    Pact/browser build failures.
+    """
+    names: set[str] = set()
+    rust_paths = (CPYTHON_ABI_TYPES, *sorted(CPYTHON_ABI_API_ROOT.glob("*.rs")))
+    for path in rust_paths:
+        text = path.read_text(encoding="utf-8")
+        for pattern in (
+            CPYTHON_ABI_NO_MANGLE_FUNCTION_RE,
+            CPYTHON_ABI_NO_MANGLE_STATIC_RE,
+        ):
+            for match in pattern.finditer(text):
+                name = match.group("name")
+                if _is_cpython_abi_export_name(name):
+                    names.add(name)
+
+    c_text = CPYTHON_ABI_VARIADIC_SHIM.read_text(encoding="utf-8")
+    for match in CPYTHON_ABI_C_FUNCTION_RE.finditer(c_text):
+        name = match.group("name")
+        if _is_cpython_abi_export_name(name):
+            names.add(name)
+    return tuple(sorted(names))
+
+
+def _add_generated_cpython_abi_link_imports(data: dict) -> dict:
+    external_imports = list(data.get("external_native_link_import", []))
+    link_allowed_names = {
+        entry.get("name")
+        for entry in data.get("link_allowed_import", [])
+        if isinstance(entry, dict)
+    }
+    external_classes = {
+        entry.get("name"): entry.get("primitive_class")
+        for entry in external_imports
+        if isinstance(entry, dict)
+    }
+    for name in generator_cpython_abi_link_import_names():
+        if name in link_allowed_names:
+            raise WasmAbiManifestError(
+                f"generated CPython ABI link import {name!r} collides with "
+                "link_allowed_import"
+            )
+        primitive_class = external_classes.get(name)
+        if primitive_class is not None:
+            if primitive_class != CPYTHON_ABI_LINK_IMPORT_CLASS:
+                raise WasmAbiManifestError(
+                    f"generated CPython ABI link import {name!r} has manual "
+                    f"primitive_class {primitive_class!r}; expected "
+                    f"{CPYTHON_ABI_LINK_IMPORT_CLASS!r}"
+                )
+            continue
+        external_imports.append(
+            {"name": name, "primitive_class": CPYTHON_ABI_LINK_IMPORT_CLASS}
+        )
+    data["external_native_link_import"] = external_imports
+    return data
 
 
 @lru_cache(maxsize=1)
@@ -1935,7 +2030,9 @@ def validate_loaded_manifest(
 
 def load_manifest(path: Path = MANIFEST) -> dict:
     return validate_loaded_manifest(
-        tomllib.loads(path.read_text(encoding="utf-8")),
+        _add_generated_cpython_abi_link_imports(
+            tomllib.loads(path.read_text(encoding="utf-8"))
+        ),
         reject_manual_runtime_features=True,
     )
 
