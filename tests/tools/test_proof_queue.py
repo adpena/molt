@@ -598,7 +598,9 @@ def test_proof_queue_rejects_uv_run_without_active_project_python(
     assert "should-not-run" in log_text
 
 
-def test_proof_queue_rejects_raw_cargo_exec(tmp_path: Path) -> None:
+def test_proof_queue_rejects_raw_cargo_exec(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
 
@@ -636,6 +638,24 @@ def test_proof_queue_rejects_raw_cargo_exec(tmp_path: Path) -> None:
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "refuses raw `cargo` commands" in log_text
     assert "proof_queue.py cargo" in log_text
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "audit-queue-policy-rejection" in output
 
 
 def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
@@ -1243,6 +1263,162 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     assert signals[:2] == ["rust-compiler-error", "memory-guard-orphan-cleanup"]
 
 
+def test_proof_queue_diagnoses_pytest_assertion_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "pytest-failed.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="pytest-failed-run",
+        logical_id="pytest-failed",
+        reason="prove pytest diagnostics",
+        command=[sys.executable, "-m", "pytest", "tests/test_wasm_link_validation.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:pytest-failed",
+        scopes=["tests/test_wasm_link_validation.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "pytest-failed.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="pytest-failed-run",
+        body="test: capture pytest assertion diagnostics",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "FAILED tests/test_wasm_link_validation.py::test_split_runtime_app_materialization_declares_code_ref_funcs",
+                "E   AssertionError: unexpected rescan",
+                "1 failed, 3 passed",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "pytest-failed-run", status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "pytest-failed-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "pytest-failure"
+    assert "test_split_runtime_app_materialization_declares_code_ref_funcs" in str(
+        diagnostics[0]["summary"]
+    )
+    assert "unexpected rescan" in str(diagnostics[0]["evidence"])
+
+
+def test_proof_queue_diagnoses_external_native_and_profile_refusals(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    cases = [
+        (
+            "native-artifact",
+            "External static package native-artifact custody errors: "
+            "scipy: callable export 'scipy.ndimage.distance_transform_edt' uses "
+            "module_attr provider 'scipy.ndimage._nd_image', but "
+            "'distance_transform_edt' is not declared by a PyMethodDef entry in "
+            "the admitted extension sources.",
+            "external-native-artifact-custody",
+        ),
+        (
+            "native-support",
+            "reachable native support source imports native package modules without "
+            "source or artifact custody: scipy._external.packaging_version "
+            "(no .pyx/.c/.cpp source candidate found under the admitted package roots).",
+            "external-native-support-custody",
+        ),
+        (
+            "profile-refusal",
+            "Profile 'micro' excludes the 'stdlib_regex' runtime feature that this "
+            "program's REACHED code requires.",
+            "stdlib-profile-refusal",
+        ),
+    ]
+    for run_id, log_text, _signal_id in cases:
+        log_path = tmp_path / f"{run_id}.log"
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id="pact-witness-acceptance",
+            reason="prove external native diagnostics",
+            command=[sys.executable, "-c", "raise SystemExit(2)"],
+            cwd=proof_queue.ROOT,
+            resource_family="wasm-browser",
+            contention_key=f"wasm:{run_id}",
+            scopes=["src/molt/cli/external_native.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=log_path,
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._insert_note(
+            conn,
+            run_id=run_id,
+            body="test: classify recurring Pact build refusal",
+            kind="submission",
+            author="codex",
+        )
+        log_path.write_text(log_text + "\n", encoding="utf-8")
+        proof_queue._update_run(conn, run_id, status="failed", returncode=2)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--limit",
+                "3",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    signal_ids = {
+        item["diagnostics"][0]["signal_id"] for item in evidence if item["diagnostics"]
+    }
+    assert signal_ids == {
+        "external-native-artifact-custody",
+        "external-native-support-custody",
+        "stdlib-profile-refusal",
+    }
+
+
 def test_proof_queue_audit_distinguishes_classified_product_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1354,6 +1530,68 @@ def test_proof_queue_audit_fails_on_unclassified_failure(
     output = capsys.readouterr().out
     assert "audit-unclassified-failure" in output
     assert "add a queue diagnostic rule" in output
+
+
+def test_proof_queue_audit_caps_human_issue_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for index in range(3):
+        run_id = f"mystery-run-{index}"
+        log_path = tmp_path / f"{run_id}.log"
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id="mystery",
+            reason="prove capped audit output",
+            command=[sys.executable, "-c", "raise SystemExit(1)"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:mystery:{index}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=log_path,
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._insert_note(
+            conn,
+            run_id=run_id,
+            body="test: unclassified failure must remain visible",
+            kind="submission",
+            author="codex",
+        )
+        log_path.write_text(
+            "mystery failure with no known diagnostic\n", encoding="utf-8"
+        )
+        proof_queue._update_run(conn, run_id, status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+                "--max-issues",
+                "2",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "diagnostics: unclassified-failed-proof=3" in output
+    assert "issue_severity: error=3" in output
+    assert "showing 2 of 3 issues" in output
 
 
 def test_proof_queue_links_runs_and_exports_dag_evidence(
