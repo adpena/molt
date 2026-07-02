@@ -46,6 +46,7 @@ from molt.cli import module_import_scanner as cli_module_import_scanner
 from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
+from molt.cli import source_extensions as cli_source_extensions
 from molt.cli import typecheck as cli_typecheck
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 from molt.cli.models import (
@@ -878,6 +879,113 @@ def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
     assert "nativepkg._native" in import_plan.known_modules
     assert "nativepkg._native" not in import_plan.compile_modules
+
+
+def test_source_extension_runtime_python_imports_detects_c_import_calls() -> None:
+    source = """
+    static int exec(PyObject *module) {
+        PyImport_ImportModule("math");
+        IMPORT_GLOBAL("nativepkg.exceptions", ComplexWarning);
+        npy_cache_import("nativepkg._core._internal", "normalize_axis_tuple");
+        return 0;
+    }
+    """
+
+    assert cli_source_extensions.source_extension_runtime_python_imports(source) == (
+        "math",
+        "nativepkg._core._internal",
+        "nativepkg.exceptions",
+    )
+
+
+def test_materialize_import_plan_adds_native_runtime_python_import_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    source_path = tmp_path / "native_sources" / "native_exec.c"
+    support_path = external_root / "nativepkg" / "exceptions.py"
+    source_path.parent.mkdir(parents=True)
+    support_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        """
+        static int exec(PyObject *module) {
+            PyImport_ImportModule("math");
+            IMPORT_GLOBAL("nativepkg.exceptions", ComplexWarning);
+            return 0;
+        }
+        """,
+        encoding="utf-8",
+    )
+    support_path.write_text(
+        "class ComplexWarning(RuntimeWarning):\n    pass\n",
+        encoding="utf-8",
+    )
+    support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "python_exports": ["nativepkg.dynamic"],
+            "sources": [str(source_path)],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact = policy.native_artifact_plan.artifacts[0]
+    assert artifact.runtime_python_imports == ("math",)
+    assert artifact.runtime_python_import_modules == ("nativepkg.exceptions",)
+    assert ("nativepkg/exceptions.py", support_sha) in artifact.support_file_sha256
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.dynamic"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert "math" in import_plan.module_graph
+    assert "math" in import_plan.compile_modules
+    assert "nativepkg.exceptions" in import_plan.module_graph
+    assert "nativepkg.exceptions" in import_plan.compile_modules
+    assert "native_runtime_python_import" in module_reasons["math"]
+    assert "native_support_source" in module_reasons["nativepkg.exceptions"]
 
 
 def test_materialize_import_plan_adds_reachable_native_support_source_closure(

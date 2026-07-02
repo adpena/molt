@@ -469,12 +469,22 @@ def _extend_native_support_source_closure(
     native_support_function_roots_by_module = _native_support_function_roots_by_module(
         native_artifact_plan
     )
+    runtime_python_import_modules = (
+        native_artifact_plan.runtime_python_import_module_names()
+    )
     entry_paths = tuple(
         path
         for module_name, path in support_paths_by_module.items()
         if (
             module_name not in module_graph
-            and module_name in native_support_function_roots_by_module
+            and (
+                module_name in native_support_function_roots_by_module
+                # Modules the extension imports dynamically at runtime are
+                # compile roots too: without this they stay support-file
+                # names only, materialize as empty static-native shells,
+                # and module init fails on missing attributes.
+                or module_name in runtime_python_import_modules
+            )
         )
     )
     if not entry_paths:
@@ -521,6 +531,78 @@ def _extend_native_support_source_closure(
                 if module_name in support_paths_by_module
                 else "native_support_source_closure"
             ),
+        )
+    return frozenset(explicit_imports)
+
+
+_NATIVE_RUNTIME_IMPORT_ENTRY_MODULE = "_molt_native_runtime_python_imports"
+
+
+def _extend_native_runtime_python_import_closure(
+    *,
+    module_graph: MutableMapping[str, Path],
+    module_reasons: MutableMapping[str, set[str]],
+    native_artifact_plan,
+    artifacts_root: Path,
+    roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    resolver_cache: "_module_resolution._ModuleResolutionCache",
+    target_python: TargetPythonVersion,
+    capability_config_digest: str,
+) -> frozenset[str]:
+    """Admit modules that native extensions import dynamically at runtime.
+
+    Source-recompiled extension init code imports Python modules through
+    the C import API (``PyImport_ImportModule("math")``, import-macro
+    literals). Those imports are invisible to the entry program's AOT
+    import graph, so without this closure tree-shaking drops the modules
+    and module init fails at runtime. The declared names are materialized
+    as a staged synthetic entry and discovered through the same module
+    resolution, admission policy, and stdlib allowlist as every other
+    import edge.
+    """
+    pending = sorted(
+        name
+        for name in native_artifact_plan.runtime_python_imports()
+        if name not in module_graph
+    )
+    if not pending:
+        return frozenset()
+    entry_path = artifacts_root / f"{_NATIVE_RUNTIME_IMPORT_ENTRY_MODULE}.py"
+    entry_path.parent.mkdir(parents=True, exist_ok=True)
+    entry_path.write_text(
+        "".join(f"import {name}\n" for name in pending),
+        encoding="utf-8",
+    )
+    module_roots = [root for root in roots if root != stdlib_root]
+    closure_graph, explicit_imports = (
+        _graph_discovery._discover_module_graph_from_paths(
+            (entry_path,),
+            roots,
+            module_roots,
+            stdlib_root,
+            project_root=None,
+            stdlib_allowlist=stdlib_allowlist,
+            skip_modules=STUB_MODULES,
+            stub_parents=STUB_PARENT_MODULES,
+            resolver_cache=resolver_cache,
+            import_admission_policy=_native_support_source_admission_policy(
+                native_artifact_plan
+            ),
+            allow_entry_external_imports=True,
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        )
+    )
+    for module_name, path in closure_graph.items():
+        if module_name == _NATIVE_RUNTIME_IMPORT_ENTRY_MODULE:
+            continue
+        module_graph.setdefault(module_name, path)
+        _graph_discovery._record_module_reason(
+            module_reasons,
+            module_name,
+            "native_runtime_python_import",
         )
     return frozenset(explicit_imports)
 
@@ -681,9 +763,18 @@ def _native_support_function_roots_by_module(
             if target_name not in roots.setdefault(target_module, set()):
                 roots[target_module].add(target_name)
                 queue.append((target_module, target_name))
+    # Modules the native extensions import dynamically at runtime demand
+    # attributes from C code the AST slicer cannot see (numpy's
+    # IMPORT_GLOBAL pulls ComplexWarning and friends), so they carry no
+    # function roots: every consumer (frontend statement-scope slicer and
+    # the pruned-source materializer) then compiles their full bodies.
+    runtime_import_modules = (
+        native_artifact_plan.runtime_python_import_module_names()
+    )
     return {
         module: tuple(sorted(module_roots))
         for module, module_roots in sorted(roots.items())
+        if module not in runtime_import_modules
     }
 
 
@@ -789,6 +880,9 @@ def _missing_native_support_artifact_imports(
         | native_artifact_plan.support_source_module_names()
     )
     source_modules = frozenset(module_graph)
+    runtime_import_modules = (
+        native_artifact_plan.runtime_python_import_module_names()
+    )
     missing: list[str] = []
     for import_name in sorted(set(support_explicit_imports)):
         if import_name in source_modules or import_name in native_modules:
@@ -797,6 +891,12 @@ def _missing_native_support_artifact_imports(
             import_name == package or import_name.startswith(package + ".")
             for package in native_packages
         ):
+            continue
+        parent = import_name.rsplit(".", 1)[0] if "." in import_name else ""
+        if parent and parent in runtime_import_modules:
+            # The parent is a runtime-import custody module compiled with
+            # its full body (exempt from support pruning), so this name is
+            # a re-exported attribute, not a missing native module.
             continue
         source_prefix = _longest_module_prefix(import_name, source_modules)
         if source_prefix is not None:
@@ -942,6 +1042,27 @@ def _materialize_import_plan(
         )
         before_modules = frozenset(module_graph)
         before_support_imports = frozenset(support_explicit_imports)
+        # Runtime-python-import closure runs FIRST: its entries carry the
+        # real package source paths for modules the extension imports
+        # dynamically, and module_graph merges are setdefault/first-wins.
+        # The support-source closure may discover the same names as
+        # external imports of other artifacts' support sources and would
+        # otherwise seed them as stubs, leaving empty module shells whose
+        # init produces no attributes at runtime.
+        support_explicit_imports.update(
+            _extend_native_runtime_python_import_closure(
+                module_graph=module_graph,
+                module_reasons=module_reasons,
+                native_artifact_plan=next_native_artifact_plan,
+                artifacts_root=artifacts_root,
+                roots=list(prepared_module_graph.roots),
+                stdlib_root=stdlib_root,
+                stdlib_allowlist=stdlib_allowlist,
+                resolver_cache=prepared_module_graph.module_resolution_cache,
+                target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+                capability_config_digest="",
+            )
+        )
         support_explicit_imports.update(
             _extend_native_support_source_closure(
                 module_graph=module_graph,
