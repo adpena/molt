@@ -2266,6 +2266,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
                 init_symbol="PyInit__nd_image",
                 runtime_linkage="static_link",
                 artifact_kind="wasm_relocatable_object",
+                provided_capsules=("nativepkg.legacy._nd_image._ARRAY_API",),
                 support_file_sha256=(
                     ("nativepkg/__init__.py", "a" * 64),
                     ("nativepkg/ndimage/__init__.py", "b" * 64),
@@ -2326,9 +2327,15 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     extension_init = cli.SimpleTIRGenerator.module_init_symbol(
         "nativepkg.ndimage._nd_image"
     )
+    legacy_parent_init = cli.SimpleTIRGenerator.module_init_symbol("nativepkg.legacy")
+    capsule_alias_init = cli.SimpleTIRGenerator.module_init_symbol(
+        "nativepkg.legacy._nd_image"
+    )
     assert root_init in functions
     assert public_init in functions
     assert extension_init in functions
+    assert legacy_parent_init in functions
+    assert capsule_alias_init in functions
 
     import_ops = functions["molt_isolate_import"]
     import_const_names = [
@@ -2340,8 +2347,12 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     assert "nativepkg" in import_const_names
     assert "nativepkg.ndimage" in import_const_names
     assert "nativepkg.ndimage._nd_image" in import_const_names
+    assert "nativepkg.legacy" in import_const_names
+    assert "nativepkg.legacy._nd_image" in import_const_names
     assert public_init in import_call_targets
     assert extension_init in import_call_targets
+    assert legacy_parent_init in import_call_targets
+    assert capsule_alias_init in import_call_targets
 
     extension_ops = functions[extension_init]
     invoke_ops = [op for op in extension_ops if op.get("kind") == "invoke_ffi"]
@@ -2363,6 +2374,18 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     ]
     assert "molt_cpython_abi_prepare_static_extension" in extension_call_targets
     assert "molt_cpython_abi_pyinit_module_to_bits" in extension_call_targets
+
+    alias_ops = functions[capsule_alias_init]
+    alias_call_targets = [
+        op.get("s_value") for op in alias_ops if op.get("kind") == "call"
+    ]
+    alias_const_names = [
+        op.get("s_value") for op in alias_ops if op.get("kind") == "const_str"
+    ]
+    assert extension_init in alias_call_targets
+    assert "nativepkg.legacy._nd_image" in alias_const_names
+    assert "nativepkg.ndimage._nd_image" in alias_const_names
+    assert not any(op.get("kind") == "invoke_ffi" for op in alias_ops)
 
     public_ops = functions[public_init]
     public_call_targets = [
@@ -5774,6 +5797,49 @@ def test_external_native_artifact_plan_closes_over_object_capsule_requirements(
     by_module = {artifact.module: artifact for artifact in plan.artifacts}
     assert by_module["scipy.ndimage._nd_image"].required_capsules == (capsule,)
     assert by_module["numpy._core._multiarray_umath"].provided_capsules == (capsule,)
+
+
+def test_external_native_artifact_plan_publishes_capsule_owner_alias_modules(
+    tmp_path: Path,
+) -> None:
+    external_root = tmp_path / "site"
+    capsule = "numpy.core._multiarray_umath._ARRAY_API"
+    wasm_manifest = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="numpy",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        manifest_overrides={
+            **wasm_manifest,
+            "python_exports": ["numpy"],
+            "provided_capsules": [capsule],
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"numpy"},
+        required_modules={"numpy"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    assert "numpy.core" in plan.native_module_names()
+    assert "numpy.core._multiarray_umath" in plan.native_module_names()
+    specs = {spec.module: spec for spec in plan.native_module_init_specs()}
+    assert specs["numpy._core._multiarray_umath"].init_symbol == (
+        "PyInit__multiarray_umath"
+    )
+    assert specs["numpy.core._multiarray_umath"].alias_of == (
+        "numpy._core._multiarray_umath"
+    )
+    assert not specs["numpy.core._multiarray_umath"].is_extension
 
 
 def test_external_native_artifact_plan_rejects_source_capsule_manifest_drift(

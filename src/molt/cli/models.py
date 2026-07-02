@@ -812,10 +812,15 @@ class _ExternalNativeModuleInitSpec:
     module: str
     init_symbol: str = ""
     module_attr_exports: tuple[_ExternalNativeModuleAttrPublishSpec, ...] = ()
+    alias_of: str = ""
 
     @property
     def is_extension(self) -> bool:
         return bool(self.init_symbol)
+
+    @property
+    def is_alias(self) -> bool:
+        return bool(self.alias_of)
 
 
 @dataclass(frozen=True)
@@ -829,6 +834,26 @@ class _ExternalPackageNativeArtifactPlan:
     def _module_prefixes(name: str) -> set[str]:
         parts = name.split(".")
         return {".".join(parts[:idx]) for idx in range(1, len(parts) + 1)}
+
+    @staticmethod
+    def _capsule_module_name(capsule: str) -> str | None:
+        parts = tuple(part for part in capsule.split(".") if part)
+        if len(parts) < 2:
+            return None
+        return ".".join(parts[:-1])
+
+    @classmethod
+    def _artifact_capsule_alias_module_names(
+        cls,
+        artifact: _ExternalPackageNativeArtifact,
+    ) -> tuple[str, ...]:
+        alias_modules = {
+            module_name
+            for capsule in artifact.provided_capsules
+            for module_name in (cls._capsule_module_name(capsule),)
+            if module_name is not None and module_name != artifact.module
+        }
+        return tuple(sorted(alias_modules))
 
     @staticmethod
     def _support_init_module_names(
@@ -879,6 +904,8 @@ class _ExternalPackageNativeArtifactPlan:
         names = set(cls._module_prefixes(artifact.package))
         names.update(cls._module_prefixes(artifact.module))
         names.update(support_init_modules)
+        for module_name in cls._artifact_capsule_alias_module_names(artifact):
+            names.update(cls._module_prefixes(module_name))
         for module_name in cls._support_python_module_names(artifact):
             names.update(cls._module_prefixes(module_name))
         return names, support_init_modules
@@ -976,6 +1003,7 @@ class _ExternalPackageNativeArtifactPlan:
         module_attr_exports: dict[str, set[_ExternalNativeModuleAttrPublishSpec]] = {}
         for artifact in self.artifacts:
             names, _support_init_modules = self._artifact_base_module_names(artifact)
+            capsule_alias_modules = self._artifact_capsule_alias_module_names(artifact)
             for exported_name in artifact.python_exports:
                 parts = exported_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
@@ -1003,6 +1031,14 @@ class _ExternalPackageNativeArtifactPlan:
                     )
                 elif name not in specs:
                     specs[name] = _ExternalNativeModuleInitSpec(module=name)
+            for alias_module in capsule_alias_modules:
+                existing = specs.get(alias_module)
+                if existing is not None and existing.is_extension:
+                    continue
+                specs[alias_module] = _ExternalNativeModuleInitSpec(
+                    module=alias_module,
+                    alias_of=artifact.module,
+                )
         for module, exports in module_attr_exports.items():
             existing = specs.get(module, _ExternalNativeModuleInitSpec(module=module))
             specs[module] = _ExternalNativeModuleInitSpec(
@@ -1011,6 +1047,7 @@ class _ExternalPackageNativeArtifactPlan:
                 module_attr_exports=tuple(
                     sorted(exports, key=lambda item: (item.provider_module, item.attr))
                 ),
+                alias_of=existing.alias_of,
             )
         return tuple(
             specs[name]
