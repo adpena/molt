@@ -33,6 +33,7 @@ from wasm_link_format import (
     _find_func_import_index,
     is_table_ref_export_name,
     parse_table_ref_export_name,
+    table_ref_export_name,
     wasm_runtime_export_name,
     _parse_custom_section,
     _parse_func_type_indices,
@@ -89,6 +90,18 @@ def _append_table_ref_elements(
                 allowed_table_indices is None or table_idx in allowed_table_indices
             ):
                 table_refs[table_idx] = func_idx
+    return _append_active_table_slot_elements(data, table_refs)
+
+
+def _append_active_table_slot_elements(
+    data: bytes, table_refs: dict[int, int]
+) -> bytes | None:
+    """Append active element segments installing ``table_index -> func_index``.
+
+    Later active segments override earlier ones at instantiation, so appended
+    slots win over any linker-synthesized table placement — the contract the
+    post-link callable-table materialization relies on.
+    """
     if not table_refs:
         return None
 
@@ -412,6 +425,14 @@ def _inject_table_ref_export_symbols(
     output: Path, temp_dir: tempfile.TemporaryDirectory
 ) -> Path:
     data = output.read_bytes()
+    func_import_count = _count_func_imports(_parse_sections(data))
+    # Table-ref exports that target a function IMPORT cannot carry a defined
+    # linker symbol: the WASM object format has no "defined alias of an
+    # import" and LLVM rejects such a symbol table with
+    # ``invalid function symbol index``. Those slots keep their existing
+    # undefined import symbols; the post-link element materialization
+    # resolves them by ABI export name instead
+    # (see ``_resolve_import_targeted_table_refs``).
     entries = [
         (
             name,
@@ -419,7 +440,7 @@ def _inject_table_ref_export_symbols(
             FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED | FLAG_NO_STRIP,
         )
         for name, index in sorted(_collect_function_exports(data).items())
-        if is_table_ref_export_name(name)
+        if is_table_ref_export_name(name) and index >= func_import_count
     ]
     updated = _append_linking_function_symbols(data, entries)
     if updated is None:
@@ -427,6 +448,108 @@ def _inject_table_ref_export_symbols(
     alias_path = Path(temp_dir.name) / "output_table_ref_symbols.wasm"
     alias_path.write_bytes(updated)
     return alias_path
+
+
+def _collect_import_targeted_table_refs(
+    output_data: bytes,
+) -> dict[int, tuple[str, str]]:
+    """Map callable-table slots exported by the reloc output object to the
+    function imports they target.
+
+    The backend publishes ``__molt_table_ref_<slot>`` exports for every
+    runtime-initialized callable-table slot. Slots whose target is a runtime
+    ABI function reference a function *import* of the output object; those
+    references cannot travel through wasm-ld as defined symbols and are
+    instead re-resolved against the final module by ABI export name.
+    """
+    func_imports: list[tuple[str, str]] = [
+        (module, name)
+        for module, name, kind, _desc in _collect_imports(output_data)
+        if kind == 0
+    ]
+    refs: dict[int, tuple[str, str]] = {}
+    for name, func_index in _collect_function_exports(output_data).items():
+        table_index = parse_table_ref_export_name(name)
+        if table_index is None or func_index >= len(func_imports):
+            continue
+        refs[table_index] = func_imports[func_index]
+    return refs
+
+
+def _import_symbol_name_candidates(module: str, name: str) -> tuple[str, ...]:
+    """Names under which a function import can resolve in a linked module.
+
+    Runtime ABI imports resolve through the generated runtime export-name
+    authority (the same mapping the Rust reloc lane uses for linker symbol
+    names); split-runtime cpython-ABI imports additionally publish a
+    dedicated split export name. The raw import field name is the final
+    fallback (native callable objects import under their own symbol name).
+    """
+    candidates: list[str] = []
+    if module == "molt_runtime":
+        export_name = wasm_runtime_export_name(name)
+        if export_name is not None:
+            candidates.append(export_name)
+        split_export_name = wasm_split_runtime_export_name_for_import(name)
+        if split_export_name is not None:
+            candidates.append(split_export_name)
+    candidates.append(name)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return tuple(ordered)
+
+
+def _resolve_import_targeted_table_refs(
+    data: bytes,
+    refs: dict[int, tuple[str, str]],
+    *,
+    description: str,
+) -> dict[int, int]:
+    """Resolve import-targeted table refs to function indices in ``data``.
+
+    In a fully linked module the target resolves to the runtime's defined
+    function (found by its ABI export name); in a still-importing split app
+    module it resolves to the surviving function import. Fails closed when a
+    published slot target cannot be located — a silent skip would leave the
+    callable table slot uninitialized.
+    """
+    if not refs:
+        return {}
+    function_exports = _collect_function_exports(data)
+    func_import_indices: dict[str, int] = {}
+    func_import_index = 0
+    for _module, name, kind, _desc in _collect_imports(data):
+        if kind != 0:
+            continue
+        func_import_indices.setdefault(name, func_import_index)
+        func_import_index += 1
+    resolved: dict[int, int] = {}
+    unresolved: list[tuple[int, str, str]] = []
+    for table_index, (module, name) in sorted(refs.items()):
+        for candidate in _import_symbol_name_candidates(module, name):
+            func_index = function_exports.get(candidate)
+            if func_index is None:
+                func_index = func_import_indices.get(candidate)
+            if func_index is not None:
+                resolved[table_index] = func_index
+                break
+        else:
+            unresolved.append((table_index, module, name))
+    if unresolved:
+        preview = ", ".join(
+            f"{table_ref_export_name(table_index)} -> {module}::{name}"
+            for table_index, module, name in unresolved[:8]
+        )
+        suffix = f", ... (+{len(unresolved) - 8} more)" if len(unresolved) > 8 else ""
+        raise ValueError(
+            f"{description} cannot resolve import-targeted callable table "
+            f"ref(s): {preview}{suffix}"
+        )
+    return resolved
 
 
 def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | None:
