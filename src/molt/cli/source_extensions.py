@@ -1182,25 +1182,6 @@ def _source_extension_runtime_import_callee(callee: str) -> str | None:
     return None
 
 
-def _source_extension_brace_stack_until(source_text: str, limit: int) -> list[int]:
-    stack: list[int] = []
-    pos = 0
-    while pos < limit:
-        ch = source_text[pos]
-        if ch in {'"', "'"}:
-            pos = _skip_c_string_or_char(source_text, pos)
-            continue
-        if source_text.startswith("//", pos) or source_text.startswith("/*", pos):
-            pos = _skip_c_ws_comments(source_text, pos)
-            continue
-        if ch == "{":
-            stack.append(pos)
-        elif ch == "}" and stack:
-            stack.pop()
-        pos += 1
-    return stack
-
-
 def _source_extension_function_name_before_brace(
     source_text: str,
     brace_pos: int,
@@ -1214,11 +1195,7 @@ def _source_extension_function_name_before_brace(
     return match.group(1) if match is not None else None
 
 
-def _source_extension_eager_import_context(source_text: str, call_pos: int) -> bool:
-    stack = _source_extension_brace_stack_until(source_text, call_pos)
-    if not stack:
-        return False
-    function_name = _source_extension_function_name_before_brace(source_text, stack[0])
+def _source_extension_eager_import_function_name(function_name: str | None) -> bool:
     if function_name is None:
         return False
     lowered = function_name.lower()
@@ -1317,6 +1294,7 @@ def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]
     names: set[str] = set()
     pos = 0
     n = len(source_text)
+    eager_context_stack: list[bool] = []
     while pos < n:
         ch = source_text[pos]
         if ch in {'"', "'"}:
@@ -1324,6 +1302,20 @@ def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]
             continue
         if source_text.startswith("//", pos) or source_text.startswith("/*", pos):
             pos = _skip_c_ws_comments(source_text, pos)
+            continue
+        if ch == "{":
+            is_eager_context = _source_extension_eager_import_function_name(
+                _source_extension_function_name_before_brace(source_text, pos)
+            )
+            if eager_context_stack:
+                is_eager_context = eager_context_stack[-1] or is_eager_context
+            eager_context_stack.append(is_eager_context)
+            pos += 1
+            continue
+        if ch == "}":
+            if eager_context_stack:
+                eager_context_stack.pop()
+            pos += 1
             continue
         if not (ch == "_" or ch.isalpha()):
             pos += 1
@@ -1339,8 +1331,8 @@ def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]
         call_pos = _skip_c_ws_comments(source_text, pos)
         if call_pos >= n or source_text[call_pos] != "(":
             continue
-        if import_kind == "generic" and not _source_extension_eager_import_context(
-            source_text, start
+        if import_kind == "generic" and not (
+            eager_context_stack and eager_context_stack[-1]
         ):
             continue
         module_pos = _skip_c_ws_comments(source_text, call_pos + 1)
