@@ -612,10 +612,10 @@ def test_secure_wip_honors_ignore_set(drv, origin_and_clone):
     # A real tracked edit ...
     (work / "README.md").write_text("seed\nedit\n", encoding="utf-8")
     # ... plus a churn to an IGNORED wasm sha file that must be left behind.
-    sha = work / "wasm" / "molt_runtime.wasm.sha256"
+    sha = work / "wasm" / "molt_runtime.wasm.release-fast.sha256"
     sha.parent.mkdir(parents=True, exist_ok=True)
     sha.write_text("cafef00d\n", encoding="utf-8")
-    _git(work, "add", "--", "wasm/molt_runtime.wasm.sha256")
+    _git(work, "add", "--", "wasm/molt_runtime.wasm.release-fast.sha256")
 
     ns = _ns(
         drv,
@@ -628,10 +628,10 @@ def test_secure_wip_honors_ignore_set(drv, origin_and_clone):
     assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
     files = set(_git(work, "show", "--name-only", "--format=", "HEAD").stdout.split())
     assert "README.md" in files
-    assert "wasm/molt_runtime.wasm.sha256" not in files  # excluded
+    assert "wasm/molt_runtime.wasm.release-fast.sha256" not in files  # excluded
     # The ignored file is still pending (not swept into the recovery commit).
     remaining = {p for _xy, p in git.status_porcelain()}
-    assert "wasm/molt_runtime.wasm.sha256" in remaining
+    assert "wasm/molt_runtime.wasm.release-fast.sha256" in remaining
 
 
 def test_secure_wip_excludes_untracked_by_default(drv, origin_and_clone):

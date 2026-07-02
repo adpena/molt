@@ -8,6 +8,7 @@ from collections.abc import Iterable
 DEFAULT_DIRTY_TREE_IGNORE_GLOBS = (
     "wasm/molt_runtime.wasm.sha256",
     "wasm/molt_runtime_reloc.wasm.sha256",
+    "wasm/molt_runtime*.wasm.*.sha256",
 )
 
 _GLOB_CACHE: dict[str, "re.Pattern[str]"] = {}

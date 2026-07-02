@@ -37,7 +37,7 @@ The hazard inventory -> countermeasure map (the spec this file implements)
   3. Worktree cleanup loses work
        -> cleanup REFUSES when unpushed commits exist (rev-list
           upstream..HEAD non-empty) OR tracked staged/unstaged changes exist
-          (excluding a configurable ignore set, default the wasm sha256 files).
+          (excluding a configurable ignore set, default the legacy and keyed wasm sha256 files).
           --force requires NAMING the sha being abandoned (so an abandon is
           deliberate and auditable, never accidental).
   4. Partial WIP salvage (staged vs unstaged split commits)
@@ -1469,7 +1469,7 @@ def _cleanup_worktree(
         return EXIT_FAIL
     remove_args = ["worktree", "remove"]
     # `git worktree remove` refuses (without --force) on ANY modified/untracked
-    # file, including the ignored-set churn (e.g. wasm sha sidecars) our OWN
+    # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
     # safety policy already cleared. Our policy is the authority: if we got here
     # with residual churn that is purely ignored/untracked, OR the operator
     # passed --force, tell git to proceed. We never reach here with non-ignored
