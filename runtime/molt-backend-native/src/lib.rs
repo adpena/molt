@@ -28,7 +28,10 @@ pub mod llvm_backend;
 mod native_backend;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) mod runtime_import_abi;
-pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
+pub use crate::ir::{
+    BackendIrDocument, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR,
+    validate_simple_ir,
+};
 #[cfg(feature = "native-backend")]
 pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
 #[cfg(feature = "native-backend")]
@@ -39,11 +42,11 @@ pub(crate) use crate::native_backend::{
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
     compute_app_callable_manifest, compute_app_callable_manifest_checked, elide_dead_struct_allocs,
-    elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
-    eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
-    escape_analysis, fold_constants, fold_constants_cross_block, fuse_method_dispatch,
-    hoist_loop_invariants, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
-    split_megafunctions,
+    elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_functions_with_roots,
+    eliminate_dead_imports, eliminate_dead_ops, eliminate_redundant_guard_tags,
+    eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
+    fuse_method_dispatch, hoist_loop_invariants, inject_runtime_exit, rc_coalescing,
+    rewrite_stateful_loops, split_megafunctions,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 #[allow(unused_imports)]

@@ -35,11 +35,6 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    MoltObject::none().bits()
-}
-
 unsafe extern "C" {
     fn molt_exception_clear() -> u64;
     fn molt_object_getattr_bytes(obj_bits: u64, name_ptr: *const u8, name_len: u64) -> u64;

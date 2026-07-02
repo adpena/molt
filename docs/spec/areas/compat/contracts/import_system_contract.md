@@ -33,6 +33,26 @@ resolver and load-module cases, dynamic/broader CPython `fromlist`
 star/`__all__` expansion, and namespace-package edge cases still need structural
 reconciliation against CPython 3.12.
 
+Import bedrock (native lane, design
+`docs/design/foundation/69_import_bedrock_frozen_module_layer.md`, PR1):
+within a build, module identity is a dense `ModuleId` from the generated
+per-build `ModuleRegistry` (`molt.cli.module_registry`, emitted into the
+application object as the relocated `molt_module_registry_blob` whose
+init-pointer column is the `MODULE_INIT_TABLE`).  `molt_module_ensure(id)`
+(`runtime/molt-runtime/src/builtins/module_table.rs`) is the only
+module-state transition owner: compiled literal import sites lower to
+`ensure(const ModuleId)`, the importlib/`__import__`/`PyImport_*`/runpy
+dynamic lanes resolve string→id at most once per call and enter the same
+function, and generated module init bodies carry no cache-guard preambles —
+init-exactly-once is the ensure `Uninit→Initializing` CAS.  The former
+app-owned `molt_isolate_import` string-comparison dispatch chain is deleted
+on native (wasm32 keeps its env import until PR3 unifies the WASM
+projection); the legacy `module_cache`/`sys.modules` store remains the
+module-object home until PR2 collapses it into the table-backed
+`sys.modules` view.  Gates: `tests/test_module_registry_gates.py` (G1/G3/G7,
+single-owner and chain-is-gone structural gates) and the runtime G4 state
+machine unit (`g4_ensure_state_machine_transitions`).
+
 ---
 
 ## 2. Module Objects

@@ -35,19 +35,15 @@ use crate::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-// `molt_isolate_import` is APP-OWNED (emitted by the compiler into the user
-// module / provided by the embedding host). On native targets it resolves at
-// static link; on wasm32 the shared-runtime cdylib must declare it as an
-// `env` import (the molt_call_indirect* pattern in lib.rs) — a plain extern
-// is an undefined symbol at rust-lld time and breaks the wasm runtime build.
-#[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" {
-    fn molt_isolate_import(name_bits: u64) -> u64;
-}
+// Import bedrock (design doc 69, PR1): on native targets the app-owned
+// `molt_isolate_import` string_eq dispatch chain is DELETED — cold dispatch
+// is `builtins::module_table::isolate_import_dispatch` (registry resolve →
+// `molt_module_ensure`).  wasm32 keeps the legacy `env` import until PR3
+// unifies the WASM projection; it is the only remaining consumer.
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn molt_isolate_import(name_bits: u64) -> u64;
+    pub(crate) fn molt_isolate_import(name_bits: u64) -> u64;
 }
 
 mod runpy;
@@ -907,6 +903,9 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             }
 
             trace_stage("before_isolate_import");
+            #[cfg(not(target_arch = "wasm32"))]
+            let module_bits = crate::builtins::module_table::isolate_import_dispatch(_py, &name);
+            #[cfg(target_arch = "wasm32")]
             let module_bits = unsafe { molt_isolate_import(name_key_bits) };
             trace_stage("after_isolate_import");
 
@@ -1990,6 +1989,12 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 // reference and will populate the orphan module (harmlessly).
                 // The WASM function's epilogue releases its locals normally.
                 let sys_bits_out = guard.get("sys").copied();
+                drop(guard);
+                // Import bedrock: mirror the effective publication into the
+                // ModuleTable slot while its ensure transaction is open
+                // (publish-before-exec, invariant I6).
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::builtins::module_table::publish_from_cache_set(_py, &name, existing);
                 return if let Some(sys_bits) = sys_bits_out
                     && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                 {
@@ -2017,6 +2022,10 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 (guard.get("sys").copied(), None)
             }
         };
+        // Import bedrock: mirror the publication into the ModuleTable slot
+        // while its ensure transaction is open (publish-before-exec, I6).
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::builtins::module_table::publish_from_cache_set(_py, &name, module_bits);
         if let Some(sys_bits) = sys_bits
             && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
         {
@@ -2154,6 +2163,11 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
             }
             guard.get("sys").copied()
         };
+        // Import bedrock: failed-init cleanup (module bodies emit
+        // MODULE_CACHE_DEL on their exception path) unpublishes the table
+        // slot while the ensure transaction is still open.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::builtins::module_table::unpublish_from_cache_del(_py, &name);
         if let Some(sys_bits) = sys_bits {
             let sys_obj = obj_from_bits(sys_bits);
             let Some(sys_ptr) = sys_obj.as_ptr() else {

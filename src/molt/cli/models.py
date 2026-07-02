@@ -1674,6 +1674,9 @@ class _PreparedBackendRuntimeContext:
 class _PreparedBackendIR:
     ir: dict[str, Any]
     required_link_features: frozenset[str] = frozenset()
+    # Import bedrock registry (molt.cli.module_registry.ModuleRegistry) on the
+    # native lane; None on lanes that keep the legacy isolate dispatch.
+    module_registry: Any | None = None
 
 
 @dataclass(frozen=True)

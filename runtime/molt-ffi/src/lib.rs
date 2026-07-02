@@ -62,13 +62,6 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
-/// Stub: isolate import is not used in FFI mode.
-#[cfg(feature = "runtime_linked")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    molt_obj_model::MoltObject::none().bits()
-}
-
 // Indirect-call trampolines — the runtime declares these as extern but they
 // are only invoked when calling back into compiler-generated function tables.
 // In FFI mode there is no function table, so these should never be reached.

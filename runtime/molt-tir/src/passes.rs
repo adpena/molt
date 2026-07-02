@@ -35,7 +35,7 @@ pub use self::app_callable_manifest::{
     compute_app_callable_manifest, compute_app_callable_manifest_checked,
 };
 pub use self::constant_fold::{fold_constants, fold_constants_cross_block};
-pub use self::dead_functions::eliminate_dead_functions;
+pub use self::dead_functions::{eliminate_dead_functions, eliminate_dead_functions_with_roots};
 pub use self::dead_imports::eliminate_dead_imports;
 pub use self::dead_ops::eliminate_dead_ops;
 pub use self::escape::escape_analysis;
