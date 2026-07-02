@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from pathlib import Path
 import shutil
 
@@ -18,14 +20,78 @@ from molt.wasm_artifact import (
 )
 
 
-def _runtime_wasm_integrity_sidecar_path(path: Path) -> Path:
-    return path.with_name(f"{path.name}.sha256")
+_RUNTIME_WASM_INTEGRITY_KEY_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
-def _write_runtime_wasm_integrity_sidecar(path: Path) -> None:
+def _runtime_wasm_integrity_key(fingerprint: Mapping[str, object]) -> str:
+    """Return the integrity-pin key for one resolved runtime build identity.
+
+    The key is the runtime fingerprint ``meta_digest`` (cargo profile, target,
+    rustflags, and resolved feature set), computed by
+    ``molt.cli.runtime_fingerprints._runtime_fingerprint``. It is the single
+    authority for build identity, so builds with different resolved
+    profile/feature identities publish to distinct pin slots instead of
+    contending for one.
+    """
+    meta_digest = fingerprint.get("meta_digest")
+    if (
+        not isinstance(meta_digest, str)
+        or _RUNTIME_WASM_INTEGRITY_KEY_RE.match(meta_digest) is None
+    ):
+        raise ValueError(
+            "Runtime fingerprint carries no meta_digest integrity key: "
+            f"{meta_digest!r}"
+        )
+    return meta_digest
+
+
+def _runtime_wasm_integrity_sidecar_path(path: Path, integrity_key: str) -> Path:
+    """Keyed integrity-pin slot ``<artifact>.<integrity_key>.sha256``."""
+    if _RUNTIME_WASM_INTEGRITY_KEY_RE.match(integrity_key) is None:
+        raise ValueError(f"Invalid runtime integrity key: {integrity_key!r}")
+    return path.with_name(f"{path.name}.{integrity_key}.sha256")
+
+
+def _runtime_wasm_integrity_pin_paths(path: Path) -> tuple[Path, ...]:
+    """Every keyed integrity pin published for ``path``, sorted by name."""
+    prefix = f"{path.name}."
+    suffix = ".sha256"
+    pins = [
+        candidate
+        for candidate in path.parent.glob(f"{path.name}.*{suffix}")
+        if _RUNTIME_WASM_INTEGRITY_KEY_RE.match(
+            candidate.name[len(prefix) : -len(suffix)]
+        )
+        is not None
+    ]
+    return tuple(sorted(pins))
+
+
+def _runtime_wasm_has_matching_integrity_pin(path: Path) -> bool:
+    """Return true when one keyed integrity pin matches ``path`` exactly."""
+    try:
+        digest = _sha256_file(path)
+    except OSError:
+        return False
+    for sidecar in _runtime_wasm_integrity_pin_paths(path):
+        try:
+            raw = sidecar.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
+        if match is not None and match.group(1).lower() == digest:
+            return True
+    return False
+
+
+def _write_runtime_wasm_integrity_sidecar(path: Path, *, integrity_key: str) -> None:
     digest = _sha256_file(path)
-    sidecar = _runtime_wasm_integrity_sidecar_path(path)
+    sidecar = _runtime_wasm_integrity_sidecar_path(path, integrity_key)
     _atomic_write_text(sidecar, f"{digest}\n")
+    # The retired single-slot convention pinned every profile's build into one
+    # `<artifact>.sha256` file; remove it so the keyed pins are the only
+    # integrity authority.
+    path.with_name(f"{path.name}.sha256").unlink(missing_ok=True)
 
 
 def _validate_wasm_structural(path: Path) -> str | None:

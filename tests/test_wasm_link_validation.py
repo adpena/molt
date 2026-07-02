@@ -98,11 +98,38 @@ def test_wasm_link_default_artifact_paths_follow_external_root(
     )
 
 
+# Integrity pins are keyed by the runtime fingerprint meta digest (one slot
+# per resolved profile/feature identity); any 64-hex value is a valid key.
+_PIN_KEY_A = "ab" * 32
+_PIN_KEY_B = "cd" * 32
+
+
+def _write_keyed_pin(runtime: Path, digest: str, key: str = _PIN_KEY_A) -> Path:
+    pin = runtime.with_name(f"{runtime.name}.{key}.sha256")
+    pin.write_text(digest + "\n", encoding="utf-8")
+    return pin
+
+
 def test_verify_runtime_integrity_accepts_matching_sidecar_hash(tmp_path: Path) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    sidecar = runtime.with_name(f"{runtime.name}.sha256")
-    sidecar.write_text(hashlib.sha256(runtime.read_bytes()).hexdigest() + "\n")
+    _write_keyed_pin(runtime, hashlib.sha256(runtime.read_bytes()).hexdigest())
+
+    wasm_link._verify_runtime_integrity(runtime)
+
+
+def test_verify_runtime_integrity_accepts_pin_of_another_build_identity(
+    tmp_path: Path,
+) -> None:
+    """Different-profile pins coexist; the artifact must match its own pin."""
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    _write_keyed_pin(runtime, "0" * 64, key=_PIN_KEY_A)
+    _write_keyed_pin(
+        runtime,
+        hashlib.sha256(runtime.read_bytes()).hexdigest(),
+        key=_PIN_KEY_B,
+    )
 
     wasm_link._verify_runtime_integrity(runtime)
 
@@ -113,11 +140,12 @@ def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
     digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
+    pin = runtime.with_name(f"{runtime.name}.{_PIN_KEY_A}.sha256")
     reads: list[Path] = []
 
-    def read_sidecar(path: Path) -> str:
+    def read_pins(path: Path) -> dict[Path, str]:
         reads.append(path)
-        return "0" * 64 if len(reads) == 1 else digest
+        return {pin: "0" * 64} if len(reads) == 1 else {pin: digest}
 
     monkeypatch.setattr(
         wasm_link,
@@ -127,8 +155,8 @@ def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
     )
     monkeypatch.setattr(
         wasm_link,
-        "_read_runtime_integrity_sidecar",
-        read_sidecar,
+        "_read_runtime_integrity_pins",
+        read_pins,
         raising=True,
     )
     monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
@@ -139,12 +167,12 @@ def test_verify_runtime_integrity_retries_stale_sidecar_publish_window(
 
 
 def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    sidecar = runtime.with_name(f"{runtime.name}.sha256")
-    sidecar.write_text("0" * 64 + "\n")
+    _write_keyed_pin(runtime, "0" * 64)
+    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
 
     with pytest.raises(SystemExit, match="sidecar"):
         wasm_link._verify_runtime_integrity(runtime)
@@ -155,19 +183,55 @@ def test_verify_runtime_integrity_env_cannot_bypass_mismatched_sidecar_hash(
 ) -> None:
     runtime = tmp_path / "molt_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
-    sidecar = runtime.with_name(f"{runtime.name}.sha256")
-    sidecar.write_text("0" * 64 + "\n")
+    _write_keyed_pin(runtime, "0" * 64)
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_VERIFY", "1")
+    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
 
     with pytest.raises(SystemExit, match="sidecar"):
         wasm_link._verify_runtime_integrity(runtime)
 
 
-def test_verify_runtime_integrity_rejects_missing_sidecar(tmp_path: Path) -> None:
+def test_verify_runtime_integrity_rejects_missing_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime = tmp_path / "custom_runtime.wasm"
     runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
 
-    with pytest.raises(SystemExit, match="publish the matching .sha256 sidecar"):
+    with pytest.raises(SystemExit, match="publish the matching keyed .sha256 sidecar"):
+        wasm_link._verify_runtime_integrity(runtime)
+
+
+def test_verify_runtime_integrity_accepts_writer_published_pin(tmp_path: Path) -> None:
+    """Round trip: the CLI writer's keyed pin satisfies the linker check and
+    deterministically supersedes a stale single-slot sidecar."""
+    from molt.cli.runtime_wasm_validation import _write_runtime_wasm_integrity_sidecar
+
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    legacy = runtime.with_name(f"{runtime.name}.sha256")
+    legacy.write_text("0" * 64 + "\n", encoding="utf-8")
+
+    _write_runtime_wasm_integrity_sidecar(runtime, integrity_key=_PIN_KEY_A)
+
+    assert not legacy.exists()
+    wasm_link._verify_runtime_integrity(runtime)
+
+
+def test_verify_runtime_integrity_rejects_retired_single_slot_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unkeyed `<artifact>.sha256` pin is dead; even a matching hash fails."""
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    legacy = runtime.with_name(f"{runtime.name}.sha256")
+    legacy.write_text(
+        hashlib.sha256(runtime.read_bytes()).hexdigest() + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wasm_link.time, "sleep", lambda _delay: None, raising=True)
+
+    with pytest.raises(SystemExit, match="no keyed integrity sidecar"):
         wasm_link._verify_runtime_integrity(runtime)
 
 

@@ -8,12 +8,29 @@ from pathlib import Path
 from typing import cast
 
 from molt import cli
+import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt.cli import runtime_paths as RUNTIME_PATHS
 import pytest
 
 _FAKE_STATICLIB = b"!<arch>\nfake-staticlib"
+
+# Any 64-hex value is a valid runtime integrity-pin key; the real key is the
+# runtime fingerprint meta digest (resolved profile/feature identity).
+_TEST_RUNTIME_META_DIGEST = "ab" * 32
+
+
+def _valid_wasm_bytes(label: bytes = b"") -> bytes:
+    """Structurally valid wasm module bytes, distinguishable via ``label``.
+
+    Hydration candidacy runs the real ``_artifact_content_looks_valid``
+    check, which rejects magic-plus-garbage fixtures.
+    """
+    if not label:
+        return wasm_artifact._build_wasm_sections([])
+    payload = wasm_artifact._write_wasm_string("molt.test") + label
+    return wasm_artifact._build_wasm_sections([(0, payload)])
 
 
 def _cargo_runtime_artifact_stdout(path: Path) -> bytes:
@@ -311,7 +328,12 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     )
     canonical_backend.chmod(0o755)
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     canonical_fp = cli._artifact_state_path_for_build_state_root(
         cli._canonical_build_state_root(project_root),
         canonical_backend,
@@ -365,7 +387,12 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
     canonical_runtime.write_bytes(_FAKE_STATICLIB)
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     canonical_fp = cli._artifact_state_path_for_build_state_root(
         cli._canonical_build_state_root(project_root),
         canonical_runtime,
@@ -415,7 +442,12 @@ def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
     canonical_runtime.write_bytes(_FAKE_STATICLIB + b"stale")
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     canonical_fp = cli._artifact_state_path_for_build_state_root(
         cli._canonical_build_state_root(project_root),
         canonical_runtime,
@@ -481,9 +513,14 @@ def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
     )
     isolated_runtime = project_root / "wasm" / "molt_runtime.wasm"
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
-    canonical_runtime.write_bytes(b"\x00asm\x01\x00\x00\x00runtime")
+    canonical_runtime.write_bytes(_valid_wasm_bytes(b"runtime"))
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     canonical_fp = cli._artifact_state_path_for_build_state_root(
         target_root / ".molt_state",
         canonical_runtime,
@@ -512,10 +549,17 @@ def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
         "_runtime_wasm_exports_satisfy",
         lambda *_args, **_kwargs: True,
     )
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authority.
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_exports_satisfy",
+        lambda *_args, **_kwargs: True,
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_write_runtime_wasm_integrity_sidecar",
-        lambda _path: None,
+        lambda _path, *, integrity_key: None,
     )
     monkeypatch.setattr(
         RUNTIME_BUILD,
@@ -550,7 +594,12 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
     current_staticlib.parent.mkdir(parents=True, exist_ok=True)
     current_staticlib.write_bytes(_FAKE_STATICLIB)
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     current_staticlib_fp = cli._artifact_state_path_for_build_state_root(
         target_root / ".molt_state",
         current_staticlib,
@@ -604,7 +653,7 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_write_runtime_wasm_integrity_sidecar",
-        lambda _path: None,
+        lambda _path, *, integrity_key: None,
     )
 
     assert RUNTIME_BUILD._ensure_runtime_wasm(
@@ -637,7 +686,12 @@ def test_ensure_runtime_wasm_reloc_relinks_from_hashed_current_target_staticlib(
     current_staticlib.parent.mkdir(parents=True, exist_ok=True)
     current_staticlib.write_bytes(_FAKE_STATICLIB)
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     current_staticlib_fp = cli._artifact_state_path_for_build_state_root(
         target_root / ".molt_state",
         current_staticlib,
@@ -691,7 +745,7 @@ def test_ensure_runtime_wasm_reloc_relinks_from_hashed_current_target_staticlib(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_write_runtime_wasm_integrity_sidecar",
-        lambda _path: None,
+        lambda _path, *, integrity_key: None,
     )
 
     assert RUNTIME_BUILD._ensure_runtime_wasm(
@@ -721,10 +775,15 @@ def test_ensure_runtime_wasm_uses_reported_hashed_artifact_not_stale_primary(
     runtime_wasm = project_root / "wasm" / "molt_runtime.wasm"
     primary.parent.mkdir(parents=True, exist_ok=True)
     reported.parent.mkdir(parents=True, exist_ok=True)
-    primary.write_bytes(b"\x00asm\x01\x00\x00\x00stale-primary")
-    reported.write_bytes(b"\x00asm\x01\x00\x00\x00reported-hashed")
+    primary.write_bytes(_valid_wasm_bytes(b"stale-primary"))
+    reported.write_bytes(_valid_wasm_bytes(b"reported-hashed"))
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     primary_fp = cli._runtime_target_fingerprint_path(
         target_root / ".molt_state",
         primary,
@@ -755,10 +814,22 @@ def test_ensure_runtime_wasm_uses_reported_hashed_artifact_not_stale_primary(
         "_runtime_wasm_missing_exports",
         lambda *_args, **_kwargs: set(),
     )
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authorities.
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_exports_satisfy",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_missing_exports",
+        lambda *_args, **_kwargs: set(),
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_write_runtime_wasm_integrity_sidecar",
-        lambda _path: None,
+        lambda _path, *, integrity_key: None,
     )
 
     cargo_calls: list[tuple[object, object]] = []
@@ -783,7 +854,7 @@ def test_ensure_runtime_wasm_uses_reported_hashed_artifact_not_stale_primary(
     )
     assert cargo_calls
     assert runtime_wasm.read_bytes() == reported.read_bytes()
-    assert primary.read_bytes() == b"\x00asm\x01\x00\x00\x00stale-primary"
+    assert primary.read_bytes() == _valid_wasm_bytes(b"stale-primary")
 
     reported_fp = cli._runtime_target_fingerprint_path(
         target_root / ".molt_state",
@@ -836,7 +907,12 @@ def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
     primary.write_bytes(_FAKE_STATICLIB + b"stale-primary")
     reported.write_bytes(_FAKE_STATICLIB + b"reported-hashed")
 
-    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    fingerprint = {
+        "hash": "abc",
+        "rustc": "rustc",
+        "inputs_digest": "inputs",
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+    }
     primary_fp = cli._runtime_target_fingerprint_path(
         target_root / ".molt_state",
         primary,
@@ -856,7 +932,7 @@ def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_write_runtime_wasm_integrity_sidecar",
-        lambda _path: None,
+        lambda _path, *, integrity_key: None,
     )
 
     cargo_calls: list[tuple[object, object]] = []
