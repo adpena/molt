@@ -64,6 +64,10 @@ UNDEFINED_SYMBOL_RE = re.compile(
     r"(?:wasm-ld: error: .*?undefined symbol:|undefined symbol:)\s+"
     r"(?P<symbol>[A-Za-z_][A-Za-z0-9_@.$]*)"
 )
+RUNTIME_WASM_MISSING_EXPORTS_RE = re.compile(
+    r"Runtime wasm (?:build produced artifact|artifact) missing required "
+    r"exports[:;]?\s*(?P<symbols>[^\r\n]*)"
+)
 UNSUPPORTED_DIRECT_CALL_RE = re.compile(
     r"(?is)(?:unsupported|not supported|not linkable).*?"
     r"(?:direct call|direct-call).*?"
@@ -1094,6 +1098,40 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "src/molt/cli/external_native.py",
                 ),
                 artifacts=artifacts,
+            )
+        )
+
+    match = RUNTIME_WASM_MISSING_EXPORTS_RE.search(log_tail)
+    if match is not None:
+        symbols = tuple(
+            symbol.strip()
+            for symbol in match.group("symbols").split(",")
+            if symbol.strip()
+        )
+        listed = ", ".join(symbols[:6])
+        if len(symbols) > 6:
+            listed += f", ... (+{len(symbols) - 6} more)"
+        diagnostics.append(
+            _diagnostic(
+                signal_id="runtime-wasm-missing-required-exports",
+                severity="error",
+                summary=(
+                    "Runtime wasm build cannot satisfy required runtime "
+                    f"exports: {listed or 'unlisted symbols'}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Thread the obligations through the shared runtime export "
+                    "authority (wasm_runtime_shared_export_link_args plus the "
+                    "generated WASM ABI manifest) and keep the defining archive "
+                    "retained in the runtime build; do not hand-edit the "
+                    "artifact or bypass export validation."
+                ),
+                scopes=(
+                    "src/molt/_wasm_runtime_exports.py",
+                    "src/molt/cli/runtime_build.py",
+                    "runtime/molt-cpython-abi/build.rs",
+                ),
             )
         )
 
