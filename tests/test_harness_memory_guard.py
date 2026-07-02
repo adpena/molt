@@ -1732,7 +1732,21 @@ def test_batch_process_group_kwargs_can_disable_child_rlimit() -> None:
 
     kwargs = harness_memory_guard.batch_process_group_kwargs(limits)
 
-    assert kwargs == {"start_new_session": True}
+    if harness_memory_guard.os.name == "nt":
+        assert kwargs == {
+            "creationflags": getattr(
+                harness_memory_guard.subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                0,
+            )
+            | getattr(
+                harness_memory_guard.subprocess,
+                "CREATE_NO_WINDOW",
+                0,
+            )
+        }
+    else:
+        assert kwargs == {"start_new_session": True}
 
 
 def test_repo_process_sentinel_records_and_terminates_violation(

@@ -19,6 +19,7 @@ def _guard_termination_report(
     reason: str = "test_cleanup",
     root_pid: int = 100,
     root_pgid: int | None = 100,
+    watched_pids: tuple[int, ...] = (),
     actions: tuple[memory_guard.GuardTerminationAction, ...] = (),
 ) -> memory_guard.GuardTerminationReport:
     return memory_guard.GuardTerminationReport(
@@ -29,7 +30,7 @@ def _guard_termination_report(
         root_pgid=root_pgid,
         root_sid=None,
         grace_sec=0.125,
-        watched_pids=(),
+        watched_pids=watched_pids,
         protected_pgids=(),
         escaped_pids=(),
         remaining_pgids=(),
@@ -1320,7 +1321,7 @@ def test_default_child_rlimit_tracks_process_rss_budget() -> None:
 
 def test_run_command_passes_through_success() -> None:
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "print('ok')"],
+        [sys.executable, "-c", "import time; print('ok'); time.sleep(0.2)"],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
     )
@@ -1421,9 +1422,18 @@ def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
 
     terminations: list[dict[str, object]] = []
 
-    def recording_terminate(root_pid: int, **kwargs: object) -> None:
+    def recording_terminate(
+        root_pid: int, **kwargs: object
+    ) -> memory_guard.GuardTerminationReport:
         terminations.append({"root_pid": root_pid, **kwargs})
         processes[0].returncode = -15
+        watched = kwargs.get("watched")
+        return _guard_termination_report(
+            reason=str(kwargs.get("reason", "test_cleanup")),
+            root_pid=root_pid,
+            root_pgid=root_pid,
+            watched_pids=tuple(sorted(watched)) if isinstance(watched, set) else (),
+        )
 
     monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
@@ -1489,9 +1499,18 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
 
     terminations: list[dict[str, object]] = []
 
-    def recording_terminate(root_pid: int, **kwargs: object) -> None:
+    def recording_terminate(
+        root_pid: int, **kwargs: object
+    ) -> memory_guard.GuardTerminationReport:
         terminations.append({"root_pid": root_pid, **kwargs})
         processes[0].returncode = -15
+        watched = kwargs.get("watched")
+        return _guard_termination_report(
+            reason=str(kwargs.get("reason", "test_cleanup")),
+            root_pid=root_pid,
+            root_pgid=root_pid,
+            watched_pids=tuple(sorted(watched)) if isinstance(watched, set) else (),
+        )
 
     monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
@@ -1985,9 +2004,12 @@ def test_run_command_elapsed_excludes_guard_child_runner_startup() -> None:
     )
 
     assert result.returncode == 0
+    assert result.stdout == "ok\n"
     assert result.elapsed_s is not None
     assert result.elapsed_s >= 0.02
-    assert result.elapsed_s < (2.0 if os.name == "nt" else 0.5)
+    nested_guard_budget = memory_guard.ACTIVE_ENV in os.environ
+    elapsed_ceiling = 8.0 if nested_guard_budget else (2.0 if os.name == "nt" else 0.5)
+    assert result.elapsed_s < elapsed_ceiling
 
 
 def test_run_command_ignores_samples_without_root_pid() -> None:
@@ -2032,7 +2054,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
         [sys.executable, "-c", script],
         max_rss_kb=96 * 1024,
         max_total_rss_kb=160 * 1024,
-        poll_interval=1.0,
+        poll_interval=5.0,
         child_rlimit_kb=None,
         sampler=sampler,
     )
@@ -2040,7 +2062,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
     assert result.returncode == memory_guard.GUARD_RETURN_CODE
     assert result.violation is not None
     assert result.elapsed_s is not None
-    assert result.elapsed_s < 1.0
+    assert result.elapsed_s < 5.0
 
 
 def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
@@ -2117,6 +2139,14 @@ def test_exit_signal_payload_classifies_direct_signal_status() -> None:
     assert memory_guard._exit_signal_payload(-15) == {
         "signal": 15,
         "name": "SIGTERM",
+        "conventional_shell_status": False,
+    }
+
+
+def test_exit_signal_payload_names_posix_only_signal_numbers() -> None:
+    assert memory_guard._exit_signal_payload(-9) == {
+        "signal": 9,
+        "name": "SIGKILL",
         "conventional_shell_status": False,
     }
 
@@ -2304,7 +2334,7 @@ def test_main_enforces_timeout_and_writes_summary(
     assert payload["violation"] is None
     assert payload["exit_signal"] is None
     assert payload["incident"]["reason"] == "timeout"
-    assert payload["incident"]["cleanup"] == "terminated tracked process tree"
+    assert payload["incident"]["cleanup"].startswith("terminated tracked process tree")
 
 
 def test_main_writes_summary_when_guard_parent_receives_sigterm(
@@ -2993,10 +3023,11 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
         captured["env"] = dict(env)
         raise SystemExit(73)
 
-    def fake_subprocess_run(argv, *, env, check):
+    def fake_subprocess_run(argv, *, env, check, **kwargs):
         assert check is False
         captured["argv"] = list(argv)
         captured["env"] = dict(env)
+        captured["run_kwargs"] = dict(kwargs)
         return subprocess.CompletedProcess(argv, 73)
 
     main_argv = [
@@ -3097,11 +3128,12 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
         captured["env"] = dict(env)
         raise SystemExit(74)
 
-    def fake_subprocess_run(argv, *, env, check, creationflags=0):
+    def fake_subprocess_run(argv, *, env, check, **kwargs):
         assert check is False
         captured["argv"] = list(argv)
         captured["env"] = dict(env)
-        captured["creationflags"] = creationflags
+        captured["creationflags"] = kwargs.get("creationflags", 0)
+        captured["run_kwargs"] = dict(kwargs)
         return subprocess.CompletedProcess(argv, 74)
 
     main_argv = [
@@ -3151,10 +3183,9 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
     assert "--child-rlimit-gb" in worker_argv
     assert "0.75" in worker_argv
     if os.name == "nt":
-        assert captured["creationflags"] == getattr(
-            memory_guard.subprocess,
-            "CREATE_NEW_PROCESS_GROUP",
-            0,
+        assert captured["creationflags"] == (
+            getattr(memory_guard.subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(memory_guard.subprocess, "CREATE_NO_WINDOW", 0)
         )
 
 
@@ -3334,7 +3365,7 @@ def test_main_writes_summary_json(tmp_path) -> None:
             "--",
             sys.executable,
             "-c",
-            "print('ok')",
+            "import time; print('ok'); time.sleep(0.2)",
         ]
     )
 
