@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import functools
 import json
 import os
 from pathlib import Path
@@ -252,7 +253,16 @@ def _ordered_unique(items: Sequence[str]) -> tuple[str, ...]:
     return tuple(result)
 
 
+@functools.lru_cache(maxsize=64)
 def _normalized_repo_tokens(root: Path) -> tuple[str, ...]:
+    """Return the normalized textual forms of ``root`` used for command matching.
+
+    Cached: the token set is a pure function of the repo-root path plus a
+    one-time filesystem ``Path.resolve``. Classification consults this for
+    every sampled process on every guard tick, and the uncached per-call
+    ``resolve`` round trip (milliseconds on OneDrive-backed checkouts)
+    dominated measured build wall time.
+    """
     candidates = [
         _normalized_path_text(root.as_posix()),
         _normalized_path_text(str(root)),
@@ -278,33 +288,73 @@ def _command_contains(command: str, token: str) -> bool:
     return token in command
 
 
+@functools.lru_cache(maxsize=32)
+def _normalized_token_tuple(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Normalize a static token authority once per distinct tuple value.
+
+    Keyed on the tuple value itself so monkeypatched token authorities get
+    their own cache rows instead of stale normalizations.
+    """
+    return tuple(_normalized_path_text(token) for token in tokens)
+
+
 def _repo_scoped_command_match(command: str, root: Path) -> bool:
     normalized_command = _normalized_path_text(command)
-    entrypoint_tokens = tuple(
-        _normalized_path_text(token) for token in REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS
+    return _repo_scoped_normalized_match(
+        normalized_command,
+        normalized_command.casefold(),
+        root,
+        windows_model=_is_windows_process_model(),
+        entrypoint_tokens=_normalized_token_tuple(REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS),
+        artifact_root_tokens=_normalized_token_tuple(
+            REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
+        ),
+        artifact_identity_tokens=REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
     )
-    artifact_root_tokens = tuple(
-        _normalized_path_text(token) for token in REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS
-    )
+
+
+def _repo_scoped_normalized_match(
+    normalized_command: str,
+    normalized_command_cf: str,
+    root: Path,
+    *,
+    windows_model: bool,
+    entrypoint_tokens: tuple[str, ...],
+    artifact_root_tokens: tuple[str, ...],
+    artifact_identity_tokens: tuple[str, ...],
+) -> bool:
+    """Single matching authority for repo-scoped command classification.
+
+    Semantics are identical to matching every token via ``_command_contains``;
+    the caller-supplied casefolded command text just hoists the repeated
+    ``str.casefold`` calls out of the per-token loop.
+    """
+
+    def contains(text: str, text_cf: str, token: str) -> bool:
+        if windows_model:
+            return token.casefold() in text_cf
+        return token in text
+
     for repo_token in _normalized_repo_tokens(root):
-        if not _command_contains(normalized_command, repo_token):
+        if not contains(normalized_command, normalized_command_cf, repo_token):
             continue
         if any(
-            _command_contains(normalized_command, f"{repo_token}{token}")
+            contains(normalized_command, normalized_command_cf, f"{repo_token}{token}")
             for token in entrypoint_tokens
         ):
             return True
         for token in artifact_root_tokens:
             anchor = f"{repo_token}{token}"
-            if not _command_contains(normalized_command, anchor):
+            if not contains(normalized_command, normalized_command_cf, anchor):
                 continue
-            tail_start = normalized_command.casefold().find(anchor.casefold())
+            tail_start = normalized_command_cf.find(anchor.casefold())
             if tail_start < 0:
                 continue
             tail = normalized_command[tail_start + len(anchor) :]
+            tail_cf = tail.casefold()
             if any(
-                _command_contains(tail, identity_token)
-                for identity_token in REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS
+                contains(tail, tail_cf, identity_token)
+                for identity_token in artifact_identity_tokens
             ):
                 return True
     return False
@@ -485,6 +535,52 @@ def _group_is_fully_owned(
     return bool(group) and all(sample.pid in owned_pids for sample in group)
 
 
+@functools.lru_cache(maxsize=2048)
+def _cached_molt_command_classification(
+    command: str,
+    root: Path,
+    windows_model: bool,
+    inspection_tokens: tuple[str, ...],
+    entrypoint_tokens: tuple[str, ...],
+    artifact_root_tokens: tuple[str, ...],
+    artifact_identity_tokens: tuple[str, ...],
+    molt_tokens: tuple[str, ...],
+) -> bool:
+    """Classify a command string for Molt ownership (memoized).
+
+    The cache key is the full value tuple of every classification input: the
+    raw command text, the repo root, the active process model, and each token
+    authority. There is deliberately no PID or PID-derived component in the
+    key, so PID reuse can never resurface a stale verdict, and monkeypatched
+    token authorities or process models get their own cache rows. This caches
+    only the computation of the classification rules, never the rules
+    themselves.
+    """
+    normalized_command = _normalized_path_text(command)
+    normalized_command_cf = normalized_command.casefold()
+
+    def contains(token: str) -> bool:
+        if windows_model:
+            return token.casefold() in normalized_command_cf
+        return token in normalized_command
+
+    if any(contains(token) for token in _normalized_token_tuple(inspection_tokens)):
+        return False
+    if _repo_scoped_normalized_match(
+        normalized_command,
+        normalized_command_cf,
+        root,
+        windows_model=windows_model,
+        entrypoint_tokens=_normalized_token_tuple(entrypoint_tokens),
+        artifact_root_tokens=_normalized_token_tuple(artifact_root_tokens),
+        artifact_identity_tokens=artifact_identity_tokens,
+    ):
+        return True
+    return any(
+        contains(repo_token) for repo_token in _normalized_repo_tokens(root)
+    ) and any(contains(token) for token in molt_tokens)
+
+
 def is_molt_process(
     sample: memory_guard.ProcessSample,
     *,
@@ -493,22 +589,17 @@ def is_molt_process(
 ) -> bool:
     if self_pid is not None and sample.pid == self_pid:
         return False
-    command = sample.command
     if is_host_control_plane_process(sample):
         return False
-    normalized_command = _normalized_path_text(command)
-    if any(
-        _command_contains(normalized_command, _normalized_path_text(token))
-        for token in INSPECTION_COMMAND_TOKENS
-    ):
-        return False
-    if _repo_scoped_command_match(command, root):
-        return True
-    return any(
-        _command_contains(normalized_command, repo_token)
-        for repo_token in _normalized_repo_tokens(root)
-    ) and any(
-        _command_contains(normalized_command, token) for token in MOLT_PROCESS_TOKENS
+    return _cached_molt_command_classification(
+        sample.command,
+        root,
+        _is_windows_process_model(),
+        INSPECTION_COMMAND_TOKENS,
+        REPO_SCOPED_MOLT_ENTRYPOINT_TOKENS,
+        REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
+        REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
+        MOLT_PROCESS_TOKENS,
     )
 
 
@@ -1304,6 +1395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return violations
 
     while True:
+        scan_started = time.monotonic()
         groups = scan_groups()
         now = time.monotonic()
         violations = process_observed_groups(groups, observed_at=now)
@@ -1328,7 +1420,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and now - started >= args.max_runtime_sec
             ):
                 return 1
-        time.sleep(args.poll_interval)
+        # Pace by the measured scan cost so an expensive process-table
+        # snapshot cannot pin a core; --poll-interval stays the floor.
+        time.sleep(
+            memory_guard.paced_poll_interval(
+                args.poll_interval,
+                time.monotonic() - scan_started,
+            )
+        )
 
 
 if __name__ == "__main__":
