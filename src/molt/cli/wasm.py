@@ -18,9 +18,9 @@ from molt._wasm_abi_generated import (
     wasm_import_signature,
     wasm_runtime_callable_result,
     wasm_runtime_callable_spec,
-    wasm_runtime_export_name,
     wasm_runtime_import_name,
 )
+from molt._wasm_runtime_exports import wasm_runtime_export_name_for_import
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 
@@ -209,19 +209,16 @@ def _is_cpython_abi_link_import(import_name: str) -> bool:
 
 
 def _runtime_export_name_for_import_from_manifest(import_name: str) -> str | None:
-    export_name = wasm_runtime_export_name(import_name)
-    if export_name is not None:
-        return export_name
-    if _is_cpython_abi_link_import(import_name):
-        return import_name
-    return None
+    return wasm_runtime_export_name_for_import(import_name)
 
 
 def _runtime_export_signature_for_cpython_abi_link_import(
     import_name: str,
     runtime_export_signatures: Mapping[str, Mapping[str, object]] | None,
 ) -> dict[str, object] | None:
-    if runtime_export_signatures is None or not _is_cpython_abi_link_import(import_name):
+    if runtime_export_signatures is None or not _is_cpython_abi_link_import(
+        import_name
+    ):
         return None
     signature = runtime_export_signatures.get(import_name)
     if signature is None:
@@ -1217,12 +1214,22 @@ export default {
       };
       for (const entry of WebAssembly.Module.imports(module)) {
         if (entry.module !== "molt_runtime") continue;
-        const exportName = entry.name.startsWith("molt_")
-          ? entry.name
-          : `molt_${entry.name}`;
-        const signature = runtimeImportSignatures[entry.name] || null;
-        const resultKind = runtimeImportResultKinds[entry.name] || null;
-        let fn = runtimeInstance.exports[exportName];
+        const exportCandidates = entry.name.startsWith("molt_")
+          ? [entry.name]
+          : [`molt_${entry.name}`, entry.name];
+        let exportName = exportCandidates[0];
+        let fn = null;
+        for (const candidate of exportCandidates) {
+          const candidateFn = runtimeInstance.exports[candidate];
+          if (typeof candidateFn === "function") {
+            exportName = candidate;
+            fn = candidateFn;
+            break;
+          }
+        }
+        const exportSignature = runtimeExportSignatures[entry.name] || null;
+        const signature = runtimeImportSignatures[entry.name] || exportSignature;
+        const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);
         let callSignature = runtimeExportSignatures[entry.name] || signature;
         if (typeof fn !== "function") {
           fn = runtimeFallback(entry.name);

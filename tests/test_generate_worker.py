@@ -601,8 +601,21 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     )
     assert "const TAG_NONE = 0x0003000000000000n;" in content
     assert "const NONE_BITS = QNAN | TAG_NONE;" in content
-    assert "const resultKind = runtimeImportResultKinds[entry.name] || null;" in content
-    assert "const signature = runtimeImportSignatures[entry.name] || null;" in content
+    assert (
+        "const exportSignature = runtimeExportSignatures[entry.name] || null;"
+        in content
+    )
+    assert (
+        "const signature = runtimeImportSignatures[entry.name] || exportSignature;"
+        in content
+    )
+    assert (
+        "const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);"
+        in content
+    )
+    assert 'const exportCandidates = entry.name.startsWith("molt_")' in content
+    assert ": [`molt_${entry.name}`, entry.name];" in content
+    assert "for (const candidate of exportCandidates) {" in content
     assert (
         "let callSignature = runtimeExportSignatures[entry.name] || signature;"
         in content
@@ -669,6 +682,18 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
         "const runtimeExportSignatures = runtimeImports.runtime_export_signatures || {};"
         in browser_embed
     )
+    assert (
+        "const exportSignature = runtimeExportSignatures[entry.name] || null;"
+        in browser_embed
+    )
+    assert (
+        "const signature = signatures[entry.name] || exportSignature;" in browser_embed
+    )
+    assert (
+        "const resultKind = resultKinds[entry.name] || signature.result || null;"
+        in browser_embed
+    )
+    assert "const exportCandidates = entry.name.startsWith('molt_')" in browser_embed
     assert (
         "let callSignature = runtimeExportSignatures[entry.name] || signature;"
         in browser_embed
@@ -762,6 +787,20 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
     assert (
         "app runtime import ${entry.name} missing manifest result kind" in browser_host
     )
+    assert (
+        "const exportSignature = runtimeExportSignatures[entry.name] || null;"
+        in browser_host
+    )
+    assert (
+        "const signature = signatures[entry.name] || exportSignature;" in browser_host
+    )
+    assert (
+        "const resultKind = resultKinds[entry.name] || signature.result || null;"
+        in browser_host
+    )
+    assert "const exportCandidates = entry.name.startsWith('molt_')" in browser_host
+    assert ": [`molt_${entry.name}`, entry.name];" in browser_host
+    assert "for (const candidate of exportCandidates) {" in browser_host
     assert (
         "let callSignature = runtimeExportSignatures[entry.name] || signature;"
         in browser_host
@@ -1010,6 +1049,7 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
     import pytest
 
     from molt.cli.wasm import (
+        _generate_split_worker_js,
         _runtime_import_result_kinds_from_manifest,
         _runtime_import_signatures_from_manifest,
     )
@@ -1027,10 +1067,13 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         "PyArg_ParseTuple": "i32",
         "PyFloat_Check": "i32",
     }
-    assert _runtime_import_signatures_from_manifest(
-        import_names,
-        runtime_export_signatures=runtime_export_signatures,
-    ) == runtime_export_signatures
+    assert (
+        _runtime_import_signatures_from_manifest(
+            import_names,
+            runtime_export_signatures=runtime_export_signatures,
+        )
+        == runtime_export_signatures
+    )
 
     with pytest.raises(ValueError, match="missing from WASM ABI manifest"):
         _runtime_import_signatures_from_manifest(
@@ -1040,10 +1083,24 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
             },
         )
 
+    worker_js = _generate_split_worker_js(
+        shared_memory_initial_pages=1,
+        shared_table_initial=8192,
+        shared_table_base=None,
+        runtime_import_names=import_names,
+        runtime_export_signatures=runtime_export_signatures,
+    )
+    assert (
+        '"PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"}'
+        in worker_js
+    )
+    assert 'const exportCandidates = entry.name.startsWith("molt_")' in worker_js
+    assert ": [`molt_${entry.name}`, entry.name];" in worker_js
 
-def test_runtime_export_signatures_use_cpython_abi_raw_export_names(monkeypatch) -> (
-    None
-):
+
+def test_runtime_export_signatures_use_cpython_abi_raw_export_names(
+    monkeypatch,
+) -> None:
     import molt.cli.non_native_output as non_native_output
 
     requested: dict[str, set[str]] = {}
