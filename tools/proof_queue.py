@@ -69,6 +69,18 @@ UNSUPPORTED_DIRECT_CALL_RE = re.compile(
     r"(?P<symbol>[A-Za-z_][A-Za-z0-9_.]*)"
 )
 DIAGNOSTIC_JSON_RE = re.compile(r"diagnostic_json=(?P<path>\S+)")
+RUST_COMPILER_ERROR_RE = re.compile(
+    r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
+)
+PYTHON_EXCEPTION_RE = re.compile(
+    r"(?m)^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>.+)$"
+)
+PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
+PYTEST_ASSERTION_RE = re.compile(r"(?m)^E\s+(?P<error>AssertionError[^\r\n]*)")
+MEMORY_GUARD_ORPHANED_RE = re.compile(
+    r"memory_guard: orphaned child processes detected after command exit; "
+    r"(?P<detail>[^\r\n]+)"
+)
 
 
 def _utc_now() -> str:
@@ -975,6 +987,24 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = RUST_COMPILER_ERROR_RE.search(log_tail)
+    if match is not None:
+        code = match.group("code") or "rustc"
+        message = match.group("message").strip()
+        diagnostics.append(
+            _diagnostic(
+                signal_id="rust-compiler-error",
+                severity="error",
+                summary=f"Rust proof failed during compilation at {code}: {message}.",
+                evidence=match.group(0),
+                next_action=(
+                    "Fix the Rust compiler error before rerunning the proof; this "
+                    "row did not reach the intended runtime assertion."
+                ),
+                scopes=("runtime/", "tools/proof_queue.py"),
+            )
+        )
+
     match = STATIC_PYMOD_EXEC_RE.search(log_tail)
     if match is not None:
         module = match.group("module")
@@ -1066,6 +1096,68 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "named pact-witness-acceptance lane after the structural fix."
                 ),
                 scopes=("tools/pact_witness_acceptance.py", "collab/pact/"),
+            )
+        )
+
+    match = PYTEST_FAILED_RE.search(log_tail)
+    if match is not None:
+        assertion = PYTEST_ASSERTION_RE.search(log_tail)
+        detail = assertion.group("error") if assertion is not None else match.group(0)
+        diagnostics.append(
+            _diagnostic(
+                signal_id="pytest-failure",
+                severity="error",
+                summary=f"Pytest proof failed at {match.group('nodeid')}.",
+                evidence=detail,
+                next_action=(
+                    "Fix the failing test or the changed contract it protects, "
+                    "then rerun the same focused queue lane."
+                ),
+                scopes=("tests/",),
+            )
+        )
+
+    match = PYTHON_EXCEPTION_RE.search(log_tail)
+    if match is not None and not diagnostics:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="python-exception",
+                severity="error",
+                summary=(
+                    f"Python proof command raised {match.group('type')}: "
+                    f"{match.group('message').strip()}"
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Inspect the traceback once, then either fix the product "
+                    "failure or promote the recurring pattern into a narrower "
+                    "queue diagnostic."
+                ),
+                scopes=("tools/proof_queue.py",),
+            )
+        )
+
+    match = MEMORY_GUARD_ORPHANED_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="memory-guard-orphan-cleanup",
+                severity="warning",
+                summary=(
+                    "Memory guard cleaned up orphaned child processes after the "
+                    "proof command exited."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Preserve the proof result, then harden the child process "
+                    "lifecycle or run intentional warm daemons inside a suite "
+                    "sentinel that drains at scope exit."
+                ),
+                scopes=(
+                    "tools/memory_guard.py",
+                    "tools/guarded_exec.py",
+                    "tools/proof_queue.py",
+                ),
             )
         )
 
@@ -2636,6 +2728,310 @@ def _cmd_evidence(args: argparse.Namespace) -> int:
     return 0
 
 
+def _audit_issue(
+    *,
+    signal_id: str,
+    severity: str,
+    summary: str,
+    next_action: str,
+    run_id: str | None = None,
+    evidence: str = "",
+) -> dict[str, object]:
+    return {
+        "signal_id": signal_id,
+        "severity": severity,
+        "run_id": run_id,
+        "summary": summary,
+        "evidence": _shorten(evidence, 320),
+        "next_action": next_action,
+    }
+
+
+def _audit_rows(
+    conn: sqlite3.Connection, args: argparse.Namespace
+) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    active = list(
+        conn.execute(
+            "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
+        )
+    )
+    if args.all:
+        historical = list(
+            conn.execute(
+                "SELECT * FROM proof_runs WHERE status NOT IN ('queued', 'running') ORDER BY rowid DESC"
+            )
+        )
+    else:
+        historical = list(
+            conn.execute(
+                """
+                SELECT * FROM proof_runs
+                WHERE status NOT IN ('queued', 'running')
+                ORDER BY rowid DESC
+                LIMIT ?
+                """,
+                (args.limit,),
+            )
+        )
+    seen: set[str] = set()
+    rows: list[sqlite3.Row] = []
+    for row in [*active, *historical]:
+        run_id = str(row["run_id"])
+        if run_id in seen:
+            continue
+        seen.add(run_id)
+        rows.append(row)
+    return rows
+
+
+def _notebook_projection_expected(
+    *,
+    notes: list[dict[str, object]],
+    dag: dict[str, list[dict[str, object]]],
+) -> bool:
+    return bool(notes or dag.get("parents") or dag.get("children"))
+
+
+def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
+    conn = _connect(_db_path(args))
+    conn.row_factory = sqlite3.Row
+    rows = _audit_rows(conn, args)
+    run_ids = [str(row["run_id"]) for row in rows]
+    notes_by_run = _notes_for_run_ids(conn, run_ids)
+    edges_by_run = _edges_for_run_ids(conn, run_ids)
+    issues: list[dict[str, object]] = []
+    diagnostic_counts: dict[str, int] = {}
+    classified_failed_runs = 0
+
+    active_by_key: dict[str, list[str]] = {}
+    for row in rows:
+        if row["status"] in RUNNING:
+            active_by_key.setdefault(str(row["contention_key"]), []).append(
+                str(row["run_id"])
+            )
+    for key, keyed_run_ids in sorted(active_by_key.items()):
+        if len(keyed_run_ids) <= 1:
+            continue
+        issues.append(
+            _audit_issue(
+                signal_id="queue-contention-duplicate",
+                severity="error",
+                summary=f"Multiple active rows share contention key {key!r}.",
+                evidence=", ".join(keyed_run_ids),
+                next_action=(
+                    "Inspect the rows before launching more work; prune stale rows "
+                    "or fix queue admission if more than one live row owns the key."
+                ),
+            )
+        )
+
+    for row in rows:
+        run_id = str(row["run_id"])
+        status = str(row["status"])
+        diagnostics = _run_diagnostics(row)
+        for item in diagnostics:
+            signal_id = str(item["signal_id"])
+            diagnostic_counts[signal_id] = diagnostic_counts.get(signal_id, 0) + 1
+
+        if status == "failed":
+            if any(
+                str(item["signal_id"]) == "unclassified-failed-proof"
+                for item in diagnostics
+            ):
+                issues.append(
+                    _audit_issue(
+                        signal_id="audit-unclassified-failure",
+                        severity="error",
+                        run_id=run_id,
+                        summary="Failed proof row has no deterministic diagnostic.",
+                        evidence=_format_diagnostic_summary(diagnostics) or "",
+                        next_action=(
+                            "Inspect the log once and add a queue diagnostic rule "
+                            "before this failure pattern becomes tribal knowledge."
+                        ),
+                    )
+                )
+            elif diagnostics:
+                classified_failed_runs += 1
+
+        for item in diagnostics:
+            signal_id = str(item["signal_id"])
+            severity = str(item["severity"])
+            if signal_id in {"proof-log-missing", "queue-preexecution-failure"}:
+                issues.append(
+                    _audit_issue(
+                        signal_id=f"audit-{signal_id}",
+                        severity="error",
+                        run_id=run_id,
+                        summary=str(item["summary"]),
+                        evidence=str(item["evidence"]),
+                        next_action=str(item["next_action"]),
+                    )
+                )
+            elif signal_id in {"queue-infra-warning", "memory-guard-orphan-cleanup"}:
+                issues.append(
+                    _audit_issue(
+                        signal_id=f"audit-{signal_id}",
+                        severity="warning",
+                        run_id=run_id,
+                        summary=str(item["summary"]),
+                        evidence=str(item["evidence"]),
+                        next_action=str(item["next_action"]),
+                    )
+                )
+            elif severity == "unknown" and signal_id != "unclassified-failed-proof":
+                issues.append(
+                    _audit_issue(
+                        signal_id="audit-unknown-diagnostic",
+                        severity="error",
+                        run_id=run_id,
+                        summary=str(item["summary"]),
+                        evidence=str(item["evidence"]),
+                        next_action=str(item["next_action"]),
+                    )
+                )
+
+        notes = notes_by_run.get(run_id, [])
+        dag = edges_by_run.get(run_id, {"parents": [], "children": []})
+        if not notes:
+            issues.append(
+                _audit_issue(
+                    signal_id="audit-missing-proof-note",
+                    severity="warning",
+                    run_id=run_id,
+                    summary="Proof row has no append-only note.",
+                    evidence=f"reason={row['reason']}",
+                    next_action=(
+                        "Append a note describing what changed, what was tested "
+                        "or explored, and why before citing this row as evidence."
+                    ),
+                )
+            )
+
+        if not args.no_notebook_check and _notebook_projection_expected(
+            notes=notes, dag=dag
+        ):
+            notebook_path = _notebooks_root(args) / f"{run_id}.py"
+            if not notebook_path.exists():
+                issues.append(
+                    _audit_issue(
+                        signal_id="audit-notebook-missing",
+                        severity="warning",
+                        run_id=run_id,
+                        summary="Run has notes or DAG edges but no notebook projection.",
+                        evidence=str(notebook_path),
+                        next_action=(
+                            "Regenerate the projection with `tools/proof_queue.py "
+                            f"notebook {run_id}`; the SQLite row remains the source "
+                            "of truth."
+                        ),
+                    )
+                )
+
+        if status != "running":
+            continue
+        pid = row["guard_pid"]
+        if pid is None or not _pid_alive(int(pid)):
+            issues.append(
+                _audit_issue(
+                    signal_id="audit-dead-running-guard",
+                    severity="error",
+                    run_id=run_id,
+                    summary="Running proof row has no live guard process.",
+                    evidence=f"guard_pid={pid}",
+                    next_action=(
+                        "Inspect the queue log and memory-guard summary, then use "
+                        "`prune-stale` if the row is truly dead."
+                    ),
+                )
+            )
+        try:
+            stat = Path(row["log_path"]).stat()
+        except OSError:
+            issues.append(
+                _audit_issue(
+                    signal_id="audit-active-log-missing",
+                    severity="error",
+                    run_id=run_id,
+                    summary="Running proof row log is missing.",
+                    evidence=str(row["log_path"]),
+                    next_action=(
+                        "Treat the row as incomplete evidence; inspect guard "
+                        "state before pruning or rerunning."
+                    ),
+                )
+            )
+            continue
+        age_s = max(0.0, time.time() - stat.st_mtime)
+        if age_s > args.stale_log_seconds:
+            issues.append(
+                _audit_issue(
+                    signal_id="audit-active-log-stale",
+                    severity="warning",
+                    run_id=run_id,
+                    summary=(
+                        "Running proof row has not updated its log within the "
+                        "stale-log window."
+                    ),
+                    evidence=f"last_log_age={_format_duration(age_s)}",
+                    next_action=(
+                        "Inspect the queue log and memory-guard summary; avoid "
+                        "interactive interrupts and prefer bounded timeout or "
+                        "proof-queue custody."
+                    ),
+                )
+            )
+
+    severity_counts: dict[str, int] = {}
+    for issue in issues:
+        severity = str(issue["severity"])
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+    return {
+        "scanned_runs": len(rows),
+        "active_runs": sum(1 for row in rows if row["status"] in RUNNING),
+        "classified_failed_runs": classified_failed_runs,
+        "diagnostic_counts": {
+            key: diagnostic_counts[key] for key in sorted(diagnostic_counts)
+        },
+        "issue_counts": {key: severity_counts[key] for key in sorted(severity_counts)},
+        "issues": issues,
+    }
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    payload = _queue_audit_payload(args)
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    if args.output:
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    if args.json:
+        print(text)
+    else:
+        print("proof queue audit")
+        print(
+            f"scanned={payload['scanned_runs']} active={payload['active_runs']} "
+            f"classified_failed={payload['classified_failed_runs']} "
+            f"issues={len(payload['issues'])}"
+        )
+        if not payload["issues"]:
+            print("- no queue health issues")
+        for issue in payload["issues"]:
+            run = f" run={issue['run_id']}" if issue.get("run_id") else ""
+            print(
+                f"- {issue['severity']} {issue['signal_id']}{run}: {issue['summary']}"
+            )
+            if issue["evidence"]:
+                print(f"  evidence: {issue['evidence']}")
+            print(f"  next: {issue['next_action']}")
+
+    error_count = int(payload["issue_counts"].get("error", 0))
+    warning_count = int(payload["issue_counts"].get("warning", 0))
+    if error_count or (args.strict and warning_count):
+        return 1
+    return 0
+
+
 def _diagnose_row(conn: sqlite3.Connection, args: argparse.Namespace) -> sqlite3.Row:
     conn.row_factory = sqlite3.Row
     if args.run_id:
@@ -2942,6 +3338,19 @@ def _build_parser() -> argparse.ArgumentParser:
     evidence_p.add_argument("--limit", type=int, default=20)
     evidence_p.add_argument("--output")
     evidence_p.set_defaults(func=_cmd_evidence)
+
+    audit_p = sub.add_parser(
+        "audit",
+        help="adversarially inspect queue health across rows, notes, DAG, logs, and projections",
+    )
+    audit_p.add_argument("--limit", type=int, default=50)
+    audit_p.add_argument("--all", action="store_true")
+    audit_p.add_argument("--strict", action="store_true")
+    audit_p.add_argument("--json", action="store_true")
+    audit_p.add_argument("--output")
+    audit_p.add_argument("--stale-log-seconds", type=float, default=900.0)
+    audit_p.add_argument("--no-notebook-check", action="store_true")
+    audit_p.set_defaults(func=_cmd_audit)
 
     diagnose_p = sub.add_parser(
         "diagnose",

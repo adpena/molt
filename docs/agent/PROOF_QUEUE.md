@@ -292,6 +292,23 @@ terminal, write the failure log, release the contention key, and classify the
 row as `queue-preexecution-failure`; that row is infrastructure evidence, not
 product proof.
 
+Use `audit` for recursive queue health review before starting another long
+proof tranche:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py audit
+```
+
+`audit` walks active and recent rows, diagnostics, append-only notes, DAG edges,
+guard liveness, log freshness, and notebook projections. A classified product
+failure is allowed to remain evidence. Queue debt is not: missing logs, queue
+pre-execution failures, unclassified failures, dead running guards, duplicate
+active contention keys, stale active logs, missing proof notes, and missing
+notebook projections are surfaced as explicit audit issues. By default the
+command exits non-zero for errors and reports warnings without failing; add
+`--strict` when warnings should fail the pass. Use `--json` or `--output` for
+machine-readable handoff.
+
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
 projection of queue evidence and log tail, not the source of truth. Do not hand

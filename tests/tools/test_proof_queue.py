@@ -1178,6 +1178,184 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     assert (notebooks / "failed-run.py").exists()
 
 
+def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "rust-failed.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="rust-failed-run",
+        logical_id="rust-failed",
+        reason="prove Rust compiler diagnostics",
+        command=["cargo", "test", "-p", "molt-runtime"],
+        cwd=proof_queue.ROOT,
+        resource_family="rust",
+        contention_key="rust:molt-runtime",
+        scopes=["runtime/molt-runtime/src/cpython_abi_hooks.rs"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "rust-failed.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="rust-failed-run",
+        body="test: capture rustc and memory guard signals",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "error[E0308]: mismatched types",
+                "error: could not compile `molt-runtime` (lib test) due to 1 previous error",
+                "memory_guard: orphaned child processes detected after command exit; killed_at=2026-07-01T23:21:47Z elapsed=20.83s",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "rust-failed-run", status="failed", returncode=101)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "rust-failed-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    signals = [item["signal_id"] for item in evidence[0]["diagnostics"]]
+    assert signals[:2] == ["rust-compiler-error", "memory-guard-orphan-cleanup"]
+
+
+def test_proof_queue_audit_distinguishes_classified_product_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "classified.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="classified-run",
+        logical_id="pact-witness-acceptance",
+        reason="prove classified product failure is not queue debt",
+        command=[sys.executable, "-c", "raise SystemExit(1)"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm:pact-witness",
+        scopes=["collab/pact/"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "classified.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="classified-run",
+        body="finding: product failure is classified",
+        kind="finding",
+        author="codex",
+    )
+    log_path.write_text(
+        "ImportError: _nd_image: static-link PyModuleDef Py_mod_exec slot returned non-zero\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "classified-run", status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "classified_failed=1" in output
+    assert "no queue health issues" in output
+
+
+def test_proof_queue_audit_fails_on_unclassified_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "mystery.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="mystery-run",
+        logical_id="mystery",
+        reason="prove queue audit catches unclassified rows",
+        command=[sys.executable, "-c", "raise SystemExit(1)"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:mystery",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "mystery.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="mystery-run",
+        body="test: unclassified failure must be queue debt",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text("mystery failure with no known diagnostic\n", encoding="utf-8")
+    proof_queue._update_run(conn, "mystery-run", status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "audit-unclassified-failure" in output
+    assert "add a queue diagnostic rule" in output
+
+
 def test_proof_queue_links_runs_and_exports_dag_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
