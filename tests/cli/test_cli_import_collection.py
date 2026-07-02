@@ -20573,7 +20573,7 @@ def test_build_cli_defaults_to_auto_stdlib_profile(
     assert seen_profiles == [cli_config_resolution.AUTO_STDLIB_PROFILE]
 
 
-def test_build_cli_keeps_deploy_stdlib_profile_default(
+def test_build_cli_keeps_deploy_stdlib_profile_auto_intent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -20588,14 +20588,21 @@ def test_build_cli_keeps_deploy_stdlib_profile_default(
 
     monkeypatch.setattr(cli, "build", fake_build)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["molt", "build", "--target", "wasm", "--profile", "wasi", str(entry)],
-    )
 
-    assert cli.main() == 0
-    assert seen_profiles == ["full"]
+    for profile in ("browser", "cloudflare", "fastly", "wasi"):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["molt", "build", "--target", "wasm", "--profile", profile, str(entry)],
+        )
+        assert cli.main() == 0
+
+    assert seen_profiles == [
+        cli_config_resolution.AUTO_STDLIB_PROFILE,
+        cli_config_resolution.AUTO_STDLIB_PROFILE,
+        cli_config_resolution.AUTO_STDLIB_PROFILE,
+        cli_config_resolution.AUTO_STDLIB_PROFILE,
+    ]
 
 
 def test_build_scopes_pipeline_env_updates(

@@ -62,7 +62,7 @@ def resolve_stdlib_profile(
     1. ``--stdlib-profile`` CLI flag.
     2. ``MOLT_STDLIB_PROFILE`` environment variable.
     3. ``[tool.molt.build].stdlib-profile`` / ``stdlib_profile`` toml config.
-    4. The selected deploy-profile default (e.g. ``--profile wasi`` -> ``full``).
+    4. The selected deploy-profile default.
     5. :data:`DEFAULT_STDLIB_PROFILE` (``"auto"``).
 
     The env var deliberately outranks toml/deploy/default: it is the transport
