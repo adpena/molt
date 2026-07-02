@@ -3508,6 +3508,44 @@ def test_native_try_guard_assignment_uses_nameerror_lookup(tmp_path: Path) -> No
     assert run.stdout.strip() == "False"
 
 
+def test_native_package_init_try_guard_uses_nameerror_lookup(tmp_path: Path) -> None:
+    # numpy/__init__.py bootstraps with a module-scope NameError guard.  The
+    # guard must also work when the pattern runs inside an IMPORTED package
+    # initializer, not just in the entry module: the bare-name read has
+    # LOAD_GLOBAL semantics (MODULE_GET_GLOBAL -> NameError on a miss), which
+    # ``except NameError`` catches.  MODULE_GET_ATTR would leak
+    # "AttributeError: module 'guardpkg' has no attribute '__NUMPY_SETUP__'"
+    # past the handler and abort the import.
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import guardpkg\n"
+            "print(guardpkg.__NUMPY_SETUP__)\n"
+            "print(guardpkg.state)\n"
+        ),
+        "package_init_try_guard_nameerror",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-init-guard",
+        cache_dir=ROOT / ".molt_cache-package-init-guard",
+        backend="cranelift",
+        extra_files={
+            "guardpkg/__init__.py": (
+                "try:\n"
+                "    __NUMPY_SETUP__\n"
+                "except NameError:\n"
+                "    __NUMPY_SETUP__ = False\n"
+                "\n"
+                "if __NUMPY_SETUP__:\n"
+                "    state = 'setup'\n"
+                "else:\n"
+                "    state = 'runtime'\n"
+            ),
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["False", "runtime"]
+
+
 def test_native_shadowable_module_calls_use_name_lookup(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
