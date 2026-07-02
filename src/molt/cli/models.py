@@ -706,6 +706,14 @@ class _ExternalPackageNativeArtifact:
     callable_exports: tuple["_ExternalNativeCallableExport", ...] = ()
     abi_symbols: tuple["_ExternalNativeAbiSymbol", ...] = ()
     c_api_symbols: tuple["_ExternalNativeCapiSymbol", ...] = ()
+    # Dotted module names the extension imports dynamically at runtime
+    # (PyImport_ImportModule and import-macro literals scanned from its C
+    # sources). They must join the AOT import graph or module init fails
+    # at runtime on tree-shaken modules. Non-package names (stdlib) ride
+    # the import-graph closure; package-internal names ride sidecar
+    # support custody and are recorded separately as compile roots.
+    runtime_python_imports: tuple[str, ...] = ()
+    runtime_python_import_modules: tuple[str, ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
         return {
@@ -714,6 +722,7 @@ class _ExternalPackageNativeArtifact:
             "package_dir": str(self.package_dir),
             "path": str(self.path),
             "manifest_path": str(self.manifest_path),
+            "runtime_python_imports": list(self.runtime_python_imports),
             "extension_sha256": self.extension_sha256,
             "manifest_sha256": self.manifest_sha256,
             "capabilities": list(self.capabilities),
@@ -950,6 +959,20 @@ class _ExternalPackageNativeArtifactPlan:
     def support_source_module_names(self) -> frozenset[str]:
         return frozenset(self.support_source_paths_by_module())
 
+    def runtime_python_imports(self) -> frozenset[str]:
+        return frozenset(
+            name
+            for artifact in self.artifacts
+            for name in artifact.runtime_python_imports
+        )
+
+    def runtime_python_import_module_names(self) -> frozenset[str]:
+        return frozenset(
+            name
+            for artifact in self.artifacts
+            for name in artifact.runtime_python_import_modules
+        )
+
     def native_module_names(self) -> frozenset[str]:
         names: set[str] = set()
         for artifact in self.artifacts:
@@ -1039,6 +1062,17 @@ class _ExternalPackageNativeArtifactPlan:
                     module=alias_module,
                     alias_of=artifact.module,
                 )
+            for runtime_module in artifact.runtime_python_import_modules:
+                # Modules the extension imports dynamically at runtime must
+                # be dispatchable by name through isolate import; the plain
+                # spec supplies the dispatcher entry while the compiled
+                # Python init (which always exists for these support-custody
+                # modules) wins at function emission. Parent packages are
+                # already covered by the artifact base-name expansion.
+                if runtime_module not in specs:
+                    specs[runtime_module] = _ExternalNativeModuleInitSpec(
+                        module=runtime_module
+                    )
         for module, exports in module_attr_exports.items():
             existing = specs.get(module, _ExternalNativeModuleInitSpec(module=module))
             specs[module] = _ExternalNativeModuleInitSpec(

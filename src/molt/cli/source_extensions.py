@@ -1155,6 +1155,46 @@ def _source_extension_object_fact(
     )
 
 
+_SOURCE_EXTENSION_RUNTIME_IMPORT_CALL_RE = re.compile(
+    r"\b(?P<callee>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*"
+    r"\"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\""
+)
+
+
+def _source_extension_runtime_import_callee(callee: str) -> bool:
+    if callee.startswith("PyImport_"):
+        return True
+    if callee in {"IMPORT_GLOBAL", "IMPORT_NAME", "npy_cache_import"}:
+        return True
+    lowered = callee.lower()
+    return (
+        lowered == "import"
+        or lowered.startswith("import_")
+        or lowered.endswith("_import")
+        or "_import_" in lowered
+    )
+
+
+def source_extension_runtime_python_imports(source_text: str) -> tuple[str, ...]:
+    """Return dotted module names a C extension imports at runtime.
+
+    Source-recompiled extensions import Python modules dynamically from
+    module init and helper paths (``PyImport_ImportModule("math")``,
+    numpy's ``IMPORT_GLOBAL("numpy.exceptions", ...)`` /
+    ``npy_cache_import("numpy._core._internal", ...)`` conventions). Those
+    imports are invisible to the AOT import graph, so tree-shaking would
+    drop the modules and the extension init fails at runtime with
+    ``No module named ...``. The scan keys on the C convention of an
+    import-named callsite taking a leading dotted-module string literal;
+    resolution against module roots decides admission downstream.
+    """
+    names = set()
+    for match in _SOURCE_EXTENSION_RUNTIME_IMPORT_CALL_RE.finditer(source_text):
+        if _source_extension_runtime_import_callee(match.group("callee")):
+            names.add(match.group("module"))
+    return tuple(sorted(names))
+
+
 def source_extension_required_capsule_imports(
     source_text: str,
 ) -> dict[str, tuple[str, ...]]:
@@ -1454,6 +1494,47 @@ def source_extension_manifest_required_capsule_imports_by_source(
         if required:
             by_source[source_path] = required
     return by_source, []
+
+
+def source_extension_manifest_runtime_python_imports(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> tuple[tuple[str, ...], list[str]]:
+    """Scan manifest sources for dynamic Python imports made from C code.
+
+    Sealed artifacts may travel with a subset of their sources (generated
+    build files stay behind), so unresolvable or unreadable sources are
+    skipped and reported instead of failing the whole scan: the names
+    found in the resolvable sources are still real closure requirements.
+    """
+    raw_sources = manifest.get("sources")
+    source_paths: list[Path] = []
+    skipped: list[str] = []
+    if isinstance(raw_sources, list):
+        for raw_path in raw_sources:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            source_path, source_errors = _resolve_source_extension_manifest_source(
+                raw_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                expected_sha256=None,
+                field_name="sources",
+            )
+            if source_path is not None and source_path.is_file():
+                source_paths.append(source_path)
+            else:
+                skipped.extend(source_errors or [str(raw_path)])
+    names: set[str] = set()
+    for source_path in source_paths:
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            skipped.append(f"{source_path}: {exc}")
+            continue
+        names.update(source_extension_runtime_python_imports(source_text))
+    return tuple(sorted(names)), skipped
 
 
 def source_extension_manifest_required_capsule_imports(
