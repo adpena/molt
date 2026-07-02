@@ -431,7 +431,10 @@ def _write_static_extension_init_failure_diagnostic(
     if report is None:
         return None
     report_path = run_dir / "static_extension_init_failure.json"
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     _emit_static_extension_init_failure_summary(report, report_path)
     return report_path
 
