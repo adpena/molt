@@ -97,6 +97,10 @@ UNSUPPORTED_DIRECT_CALL_RE = re.compile(
     r"(?P<symbol>[A-Za-z_][A-Za-z0-9_.]*)"
 )
 DIAGNOSTIC_JSON_RE = re.compile(r"diagnostic_json=(?P<path>\S+)")
+QUEUE_COLD_SINGLE_CARGO_PROOF_RE = re.compile(
+    r"proof queue refuses cold-prone single-test Cargo proofs "
+    r"\('(?P<filter>[^']+)' under --lib\)"
+)
 NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
     r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
 )
@@ -111,6 +115,9 @@ NATIVE_SUPPORT_CUSTODY_RE = re.compile(
 STDLIB_PROFILE_REFUSAL_RE = re.compile(
     r"Profile '(?P<profile>[^']+)' excludes the '(?P<feature>[^']+)' "
     r"runtime feature"
+)
+MOLT_RUNTIME_INVALID_OBJECT_HEADER_RE = re.compile(
+    r"(?m)^molt fatal: invalid object header(?P<detail>[^\r\n]*)"
 )
 RUST_COMPILER_ERROR_RE = re.compile(
     r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
@@ -1235,6 +1242,26 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = QUEUE_COLD_SINGLE_CARGO_PROOF_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="queue-cold-single-cargo-proof",
+                severity="operator",
+                summary=(
+                    "The queue rejected a cold-prone single-test Cargo proof "
+                    f"for filter {match.group('filter')}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Batch the relevant crate shard in one compile, warm the "
+                    "target dir first, or resubmit with --allow-warm-single-test "
+                    "only after recording warm-target evidence in the queue note."
+                ),
+                scopes=("tools/proof_queue.py", "docs/agent/PROOF_QUEUE.md"),
+            )
+        )
+
     fatal_queue_failure = (
         "proof queue fatal infrastructure failure" in log_tail
         or "proof queue failed before command execution" in log_tail
@@ -1568,6 +1595,35 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 scopes=(
                     "src/molt/cli/runtime_features.py",
                     "src/molt/cli/module_stdlib_policy.py",
+                ),
+            )
+        )
+
+    match = MOLT_RUNTIME_INVALID_OBJECT_HEADER_RE.search(log_tail)
+    if match is not None:
+        detail = match.group("detail").strip()
+        site_match = re.search(r"\bin (?P<site>[A-Za-z_][A-Za-z0-9_]*)", detail)
+        site = site_match.group("site") if site_match is not None else None
+        diagnostics.append(
+            _diagnostic(
+                signal_id="molt-runtime-invalid-object-header",
+                severity="error",
+                summary=(
+                    "Molt runtime aborted on an invalid object header"
+                    + (f" in {site}" if site else "")
+                    + "."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Treat this as runtime object-lifetime corruption, not a "
+                    "generic pytest failure. Inspect the owning refcount/borrow "
+                    "boundary named by the fatal site and rerun the same queue "
+                    "lane only after that ownership bug changes."
+                ),
+                scopes=(
+                    "runtime/molt-runtime/",
+                    "runtime/molt-backend-native/src/",
+                    "tools/proof_queue.py",
                 ),
             )
         )
@@ -3448,11 +3504,31 @@ def _pid_alive(pid: int) -> bool:
 def _cmd_prune_stale(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
-    rows = list(
-        conn.execute(
-            "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
+    run_ids = tuple(dict.fromkeys(args.run_id or ()))
+    if run_ids:
+        placeholders = ",".join("?" for _ in run_ids)
+        rows = list(
+            conn.execute(
+                "SELECT * FROM proof_runs "
+                "WHERE status IN ('queued', 'running') "
+                f"AND run_id IN ({placeholders}) "
+                "ORDER BY started_at",
+                run_ids,
+            )
         )
-    )
+        found = {str(row["run_id"]) for row in rows}
+        missing = [run_id for run_id in run_ids if run_id not in found]
+        if missing:
+            raise SystemExit(
+                "unknown queued/running proof run(s): " + ", ".join(missing)
+            )
+    else:
+        rows = list(
+            conn.execute(
+                "SELECT * FROM proof_runs "
+                "WHERE status IN ('queued', 'running') ORDER BY started_at"
+            )
+        )
     pruned = 0
     for row in rows:
         if row["status"] == "queued":
@@ -4319,6 +4395,11 @@ def _build_parser() -> argparse.ArgumentParser:
     notebook_p.set_defaults(func=_cmd_notebook)
 
     prune_p = sub.add_parser("prune-stale", help="mark dead running records stale")
+    prune_p.add_argument(
+        "--run-id",
+        action="append",
+        help="Limit pruning to one queued/running proof row; repeat for several rows.",
+    )
     prune_p.set_defaults(func=_cmd_prune_stale)
 
     quickstart_p = sub.add_parser(

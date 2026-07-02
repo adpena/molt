@@ -289,8 +289,8 @@ Pact missing-output acceptance failures, Rust compiler errors, pytest assertion
 failures, external native artifact custody refusals, reachable native support
 modules without source/artifact custody, reachability-driven stdlib profile
 refusals, generated WASM ABI/link-import surface gaps, dependency-blocked rows,
-non-final memory-guard summaries on terminal rows, and memory-guard orphan
-cleanup.
+Molt runtime invalid-object-header aborts, non-final memory-guard summaries on
+terminal rows, and memory-guard orphan cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 
@@ -368,11 +368,14 @@ If a queue row stalls, inspect the log and memory-guard summary first:
 uv run --active --project . --python 3.12 python tools\proof_queue.py evidence --run-id RUN_ID
 ```
 
-Use `prune-stale` only for stale queue rows. Do not kill broad process families,
-Codex, Claude, renderer helpers, node-repl, shell ancestors, or ambiguous host
+Use `prune-stale --run-id RUN_ID` for a stale row you own. The unscoped
+`prune-stale` form is intentionally broad; reserve it for queue-wide cleanup
+after checking active ownership. Do not kill broad process families, Codex,
+Claude, renderer helpers, node-repl, shell ancestors, or ambiguous host
 control-plane processes.
 
 ```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale
 ```
 
