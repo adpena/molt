@@ -1632,12 +1632,16 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     )
     package_init = external_root / "nativepkg" / "__init__.py"
     child_path = external_root / "nativepkg" / "_child.py"
+    expired_path = external_root / "nativepkg" / "_expired.py"
     package_init.parent.mkdir(parents=True)
     package_init.write_text(
-        "from nativepkg import _child\nVALUE = _child.VALUE\n",
+        "from nativepkg import _child\n"
+        "from ._expired import EXPIRED\n"
+        "VALUE = _child.VALUE\n",
         encoding="utf-8",
     )
     child_path.write_text("VALUE = 42\n", encoding="utf-8")
+    expired_path.write_text("EXPIRED = {'old': 'new'}\n", encoding="utf-8")
     _write_external_native_artifact(
         external_root,
         package="nativepkg",
@@ -1666,6 +1670,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     assert artifact.runtime_python_import_modules == (
         "nativepkg",
         "nativepkg._child",
+        "nativepkg._expired",
     )
     module_reasons: dict[str, set[str]] = {}
     prepared, error = cli._prepare_entry_module_graph(
@@ -1699,8 +1704,10 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
 
     assert "nativepkg" in import_plan.compile_modules
     assert "nativepkg._child" in import_plan.compile_modules
+    assert "nativepkg._expired" in import_plan.compile_modules
     assert "native_support_source" in module_reasons["nativepkg"]
     assert "native_support_source" in module_reasons["nativepkg._child"]
+    assert "native_support_source" in module_reasons["nativepkg._expired"]
     init_source = import_plan.module_graph["nativepkg"].read_text(encoding="utf-8")
     assert "VALUE = _child.VALUE" in init_source
 
