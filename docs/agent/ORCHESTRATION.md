@@ -25,19 +25,59 @@ Last updated: 2026-07-02 by the orchestrator.
 
 ## Delegated to Codex (pick up, in priority order)
 
-1. **Crate extraction of `cpython_abi_hooks`** per
+1. **TACTICAL: native imported-module TypeError regression.** Any compiled
+   program importing a sibling module fails at runtime with
+   `TypeError: module name must be str` (main @ aec11e1eb; minimal repro:
+   `main.py = "import guardmod"` + empty `guardmod.py`, native dev build,
+   run the binary; entry-only programs are fine). Frontend lowering is
+   verified sane (const_str name into the `__import__`-shaped call) — do
+   NOT touch the frontend. Raise sites: `builtins/modules.rs` ~759-840,
+   1959, 2124 — the runtime import entrypoint's NAME arg slot is not a str
+   at runtime, suggesting an arg-contract/ABI mismatch from the
+   import-custody rework (suspects b675ab9bc, d1014e24c, 8bda411df); also
+   rule out a stale runtime staticlib in the shared CARGO_TARGET_DIR on E:
+   (clean rebuild disambiguates). SCOPE BOUND: minimal fix at the arg
+   contract ONLY — no restructuring; the bedrock PR1 replaces this layer
+   and will rebase over you. Verify: minimal repro + `pytest
+   tests/test_native_import_bootstrap_regressions.py -k
+   "imported_module_dunder_getattr or try_guard"` all green.
+2. **Dirty-tree ignore globs for keyed wasm pins** (in progress): sidecars
+   moved to keyed pins `wasm/molt_runtime*.wasm.<64-hex>.sha256`
+   (`runtime_wasm_validation.py` authority; reader
+   `wasm_link.py::_read_runtime_integrity_pins`; writer deletes bare
+   slots). Update `tools/dirty_tree_policy.py` DEFAULT_DIRTY_TREE_IGNORE_GLOBS
+   and `tools/molt_dev.py` DEFAULT_IGNORE_GLOBS; check whether molt_dev
+   should IMPORT the policy table instead of duplicating it (single
+   authority). Extend `tests/test_molt_dev.py` fixtures to a keyed pin
+   path. Do not touch proof_queue files. Verify: `pytest
+   tests/test_molt_dev.py -q`.
+3. **Memory-guard test-fake drift** — 5 failures in
+   `tests/test_memory_guard_tool.py` on pristine HEAD guard files. Class 1
+   (sampler-failure + interrupt-snapshot tests): fakes monkeypatch
+   `terminate_watched_processes` returning None; the marker payload
+   (`memory_guard_core/payloads.py::termination_report_payload`) hits
+   AttributeError on None. Production never returns None — make the fakes
+   return real GuardTerminationReport objects (preferred) rather than
+   adding None-tolerance to the payload authority. Class 2 (two reexec
+   tests): main() reexec now passes stdout=/stderr= kwargs the
+   `fake_subprocess_run` doesn't accept — update fakes to the real call
+   signature and assert on the new kwargs. No weakened assertions.
+   Verify: `pytest tests/test_memory_guard_tool.py -q`.
+4. **Crate extraction of `cpython_abi_hooks`** per
    `docs/design/foundation/70_molt_runtime_crate_extraction.md` — follow it
    exactly (pure move, precise pub widening, digest/no_mangle notes,
    per-crate gates). Acceptance: a one-line hook edit rebuilds in seconds,
    `cargo check -p molt-runtime` + backend green, gates added to CI.
-2. **Dirty-tree ignore globs for keyed wasm pins**: `tools/dirty_tree_policy.py`
-   + `tools/molt_dev.py` still name the retired bare
-   `wasm/molt_runtime*.wasm.sha256`; add `wasm/molt_runtime*.wasm.*.sha256`.
-3. **Memory-guard test-fake drift**: 4 failures in
-   `tests/test_memory_guard_tool.py` + 2 in `tests/test_harness_memory_guard.py`
-   where fakes drifted from termination-report/re-exec plumbing. Fix the
-   fakes to the real contract; no weakened assertions.
-4. **Proof-queue DX**: your existing diagnosis-rule lane remains yours.
+   NOTE: coordinate with the bedrock PR1 landing — if modules.rs churn is
+   active, do this lane last.
+5. **Proof-queue DX**: your existing diagnosis-rule lane remains yours.
+
+## Additional working rule (incident 2026-07-02)
+
+- Never revert or checkout files outside your lane, even transiently — an
+  in-flight fix in `module_abi/imports.rs` was wiped by out-of-lane tooling
+  and had to be re-applied. If a file you didn't edit shows up dirty, leave
+  it alone; it is another lane's live WIP.
 
 ## Working agreement (binding)
 
