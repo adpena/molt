@@ -23,6 +23,16 @@ Last updated: 2026-07-02 by the orchestrator.
 - **Witness lane inputs**: `tmp/pact_*` seal roots, the acceptance build
   dirs, `wasm/*.sha256` pins — orchestrator-owned.
 
+## Delegation model (operator directive 2026-07-02)
+
+- The orchestrator runs at most ONE subagent (currently: the native
+  call-dispatch integrator). All other implementation lanes are Codex's.
+- Token-efficient, agent-first tooling is a standing deliverable: every
+  repeated multi-line invocation becomes a script with a one-line compact
+  verdict (rc + stage + first error) and a log path for digging deeper.
+  `tools/witness_cycle.sh [entry] [build|run|cycle]` is the pattern: one
+  short command, one verdict line, full logs on disk.
+
 ## Delegated to Codex (pick up, in priority order)
 
 1. **TACTICAL: native imported-module TypeError regression.** Any compiled
