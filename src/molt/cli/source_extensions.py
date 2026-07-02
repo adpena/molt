@@ -1488,7 +1488,17 @@ def _source_extension_manifest_source_paths(
     manifest: Mapping[str, Any],
     *,
     manifest_path: Path,
+    allow_missing_sources: bool = False,
 ) -> tuple[tuple[Path, ...] | None, list[str]]:
+    """Resolve manifest source paths through relocation custody.
+
+    With ``allow_missing_sources`` the missing-source error class does not
+    nullify the resolvable subset: sealed roots carry deliberate source
+    subsets (build-generated sources are not resealable), so consumers whose
+    failure mode is already fail-closed at runtime may scan what resolves and
+    surface the missing entries as diagnostics. Any non-missing error class
+    still nullifies.
+    """
     errors: list[str] = []
     paths: list[Path] = []
     object_closure = manifest.get("object_closure")
@@ -1525,10 +1535,13 @@ def _source_extension_manifest_source_paths(
                     errors.extend(source_errors)
                     if source_path is not None:
                         paths.append(source_path)
-    if errors:
+    if errors and not (
+        allow_missing_sources
+        and source_extension_manifest_errors_are_missing_sources(errors)
+    ):
         return None, errors
     if paths:
-        return _dedupe_source_extension_manifest_paths(paths), []
+        return _dedupe_source_extension_manifest_paths(paths), errors
 
     raw_sources = manifest.get("sources")
     if raw_sources is not None:
@@ -1551,9 +1564,12 @@ def _source_extension_manifest_source_paths(
                 errors.extend(source_errors)
                 if source_path is not None:
                     paths.append(source_path)
-    if errors:
+    if errors and not (
+        allow_missing_sources
+        and source_extension_manifest_errors_are_missing_sources(errors)
+    ):
         return None, errors
-    return _dedupe_source_extension_manifest_paths(paths), []
+    return _dedupe_source_extension_manifest_paths(paths), errors
 
 
 def source_extension_manifest_required_capsule_imports_by_source(
@@ -1592,15 +1608,19 @@ def source_extension_manifest_runtime_python_imports(
 
     Runtime import closure uses the same manifest source authority as
     source-derived capsule custody: object-closure source entries, relocation,
-    and source hashes win over top-level source lists.
+    and source hashes win over top-level source lists. Missing sources are
+    tolerated: sealed roots deliberately omit build-generated sources, so the
+    scan covers the resolvable subset and reports the missing entries as skip
+    diagnostics; an import that only a missing source declares fails closed at
+    runtime with a precise ImportError naming the module.
     """
     source_paths, errors = _source_extension_manifest_source_paths(
         manifest,
         manifest_path=manifest_path,
+        allow_missing_sources=True,
     )
-    if errors:
+    if source_paths is None:
         return (), errors
-    assert source_paths is not None
     names: set[str] = set()
     read_errors: list[str] = []
     for source_path in source_paths:
