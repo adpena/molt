@@ -2042,10 +2042,12 @@ def test_run_command_returns_guard_code_on_real_low_limit() -> None:
 
 
 def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> None:
+    # Hold the allocation beyond the configured slow poll; otherwise Windows
+    # full-table sampling under load can turn this into a scheduler race.
     script = (
         "import time; "
         "buf = bytearray(192 * 1024 * 1024); "
-        "time.sleep(0.20); "
+        "time.sleep(10.0); "
         "print(len(buf))"
     )
     sampler = memory_guard.sample_processes if os.name == "nt" else (lambda: {})
