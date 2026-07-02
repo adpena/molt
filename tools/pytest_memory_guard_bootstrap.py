@@ -21,7 +21,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
-from tools.process_spawn import hidden_windows_process_group_kwargs  # noqa: E402
+from tools.process_spawn import (  # noqa: E402
+    hidden_windows_process_group_kwargs,
+    inherit_stdio_kwargs,
+)
 
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
@@ -117,6 +120,7 @@ def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
                 list(argv),
                 env=dict(env),
                 check=False,
+                **inherit_stdio_kwargs(),
                 **_windows_process_group_kwargs(),
             )
         except KeyboardInterrupt:
