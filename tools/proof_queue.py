@@ -1463,10 +1463,20 @@ def _parent_statuses(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]
     )
 
 
+_SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
+
+
 def _dependency_state(
     conn: sqlite3.Connection, run_id: str
 ) -> tuple[str, list[sqlite3.Row]]:
-    parents = _parent_statuses(conn, run_id)
+    # depends_on is the only scheduling edge; reruns/supersedes/compares/
+    # derives_from preserve lineage for evidence review and never gate
+    # execution (a rerun's parent is failed or stale by definition).
+    parents = [
+        row
+        for row in _parent_statuses(conn, run_id)
+        if row["kind"] in _SCHEDULING_EDGE_KINDS
+    ]
     waiting = [row for row in parents if row["status"] in RUNNING]
     if waiting:
         return "waiting", waiting
@@ -3595,13 +3605,20 @@ def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="RUN_ID",
-        help="append a proof DAG parent; the run waits until parents pass",
+        help=(
+            "append a proof DAG parent; depends_on edges wait until parents "
+            "pass, lineage kinds (reruns/supersedes/compares/derives_from) "
+            "record provenance without gating"
+        ),
     )
     parser.add_argument(
         "--edge-kind",
         default=DEFAULT_EDGE_KIND,
         choices=sorted(EDGE_KINDS),
-        help="canonical relationship kind for --depends-on edges",
+        help=(
+            "canonical relationship kind for --depends-on edges; only "
+            "depends_on gates scheduling"
+        ),
     )
     parser.add_argument(
         "--edge-note",
