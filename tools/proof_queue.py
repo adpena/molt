@@ -1983,6 +1983,83 @@ def _has_option(command: list[str], option: str, value: str | None = None) -> bo
     return False
 
 
+_CARGO_OPTIONS_WITH_VALUES = frozenset(
+    {
+        "-p",
+        "--package",
+        "--manifest-path",
+        "--target",
+        "--target-dir",
+        "--features",
+        "--profile",
+        "--jobs",
+        "--config",
+        "--message-format",
+        "--color",
+        "--bin",
+        "--example",
+        "--test",
+        "--bench",
+    }
+)
+
+
+def _normalized_cargo_args(cargo_args: list[str]) -> list[str]:
+    args = list(cargo_args)
+    if args[:1] == ["--"]:
+        args = args[1:]
+    if args and _command_basename(args[0]) in {"cargo", "cargo.exe"}:
+        args = args[1:]
+    return args
+
+
+def _cargo_arg_has_flag(cargo_args: list[str], flag: str) -> bool:
+    return any(arg == flag for arg in cargo_args)
+
+
+def _cargo_test_filters(cargo_args: list[str]) -> list[str]:
+    args = _normalized_cargo_args(cargo_args)
+    if args[:1] != ["test"]:
+        return []
+    filters: list[str] = []
+    skip_value = False
+    for arg in args[1:]:
+        if arg == "--":
+            break
+        if skip_value:
+            skip_value = False
+            continue
+        if arg in _CARGO_OPTIONS_WITH_VALUES:
+            skip_value = True
+            continue
+        if any(
+            arg.startswith(f"{option}=")
+            for option in _CARGO_OPTIONS_WITH_VALUES
+            if option.startswith("--")
+        ):
+            continue
+        if arg.startswith("-"):
+            continue
+        filters.append(arg)
+    return filters
+
+
+def _cold_single_lib_test_policy_error(cargo_args: list[str]) -> str | None:
+    args = _normalized_cargo_args(cargo_args)
+    if args[:1] != ["test"] or not _cargo_arg_has_flag(args, "--lib"):
+        return None
+    filters = _cargo_test_filters(args)
+    if len(filters) != 1:
+        return None
+    return (
+        "proof queue refuses cold-prone single-test Cargo proofs "
+        f"({filters[0]!r} under --lib). Batch the relevant crate shard in one "
+        "compile, warm the target dir with cargo check before proving, or "
+        "resubmit with --allow-warm-single-test only after verifying the target "
+        "dir is already warm and recording that in --note."
+    )
+
+
 def _proof_command_policy_error(command: list[str]) -> str | None:
     if not command:
         return None
@@ -2073,11 +2150,7 @@ def _cargo_package_for_contention(cargo_args: list[str]) -> str:
 
 
 def _canonical_cargo_proof_command(cargo_args: list[str]) -> list[str]:
-    args = list(cargo_args)
-    if args[:1] == ["--"]:
-        args = args[1:]
-    if args and _command_basename(args[0]) in {"cargo", "cargo.exe"}:
-        args = args[1:]
+    args = _normalized_cargo_args(cargo_args)
     if not args:
         raise SystemExit("cargo proof command is empty")
     return _uv_active_python_command(
@@ -2305,6 +2378,7 @@ def _queue_one(
     depends_on: list[str] | None = None,
     edge_kind: str = DEFAULT_EDGE_KIND,
     edge_note: str | None = None,
+    policy_error: str | None = None,
 ) -> tuple[int, str | None]:
     if not command:
         raise SystemExit("proof command is empty")
@@ -2318,10 +2392,6 @@ def _queue_one(
     if edge_kind not in EDGE_KINDS:
         allowed = ", ".join(sorted(EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
-    policy_error = _proof_command_policy_error(command)
-    if policy_error is not None:
-        print(policy_error, file=sys.stderr)
-        return 2, None
     active = list(_active_for_key(conn, contention_key))
     if active:
         print(
@@ -2381,6 +2451,20 @@ def _queue_one(
             log_path=log_path,
             phase="submission projection",
         )
+    policy_error = policy_error or _proof_command_policy_error(command)
+    if policy_error is not None:
+        rc = _record_policy_rejection(
+            args,
+            conn,
+            run_id=run_id,
+            logical_id=logical_id,
+            reason=reason,
+            repo_root=repo_root,
+            command=command,
+            log_path=log_path,
+            policy_error=policy_error,
+        )
+        return rc, run_id
     print(f"queued {run_id}")
     return 0, run_id
 
@@ -2447,6 +2531,51 @@ def _queued_command_process_kwargs() -> dict[str, object]:
     )
 
 
+def _record_policy_rejection(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    logical_id: str,
+    reason: str,
+    repo_root: Path,
+    command: list[str],
+    log_path: Path,
+    policy_error: str,
+) -> int:
+    now = _utc_now()
+    _update_run(
+        conn,
+        run_id,
+        status="failed",
+        returncode=2,
+        started_at=now,
+        finished_at=now,
+        elapsed_s=0.0,
+    )
+    _write_failed_run_log(
+        log_path,
+        run_id=run_id,
+        logical_id=logical_id,
+        reason=reason,
+        repo_root=repo_root,
+        command=command,
+        lines=[policy_error],
+    )
+    print(f"rejected {run_id} rc=2")
+    print(policy_error, file=sys.stderr)
+    print(f"log: {log_path}")
+    if _notes_for_run_ids(conn, [run_id]).get(run_id):
+        _try_write_marimo_notebook(
+            args,
+            conn,
+            run_id,
+            log_path=log_path,
+            phase="policy rejection projection",
+        )
+    return 2
+
+
 def _run_one(
     args: argparse.Namespace,
     *,
@@ -2462,6 +2591,7 @@ def _run_one(
     depends_on: list[str] | None = None,
     edge_kind: str = DEFAULT_EDGE_KIND,
     edge_note: str | None = None,
+    policy_error: str | None = None,
     existing_run_id: str | None = None,
     existing_log_path: Path | None = None,
     existing_summary_json: Path | None = None,
@@ -2547,39 +2677,19 @@ def _run_one(
                 log_path=log_path,
                 phase="submission projection",
             )
-    policy_error = _proof_command_policy_error(command)
+    policy_error = policy_error or _proof_command_policy_error(command)
     if policy_error is not None:
-        now = _utc_now()
-        _update_run(
+        return _record_policy_rejection(
+            args,
             conn,
-            run_id,
-            status="failed",
-            returncode=2,
-            started_at=now,
-            finished_at=now,
-            elapsed_s=0.0,
-        )
-        _write_failed_run_log(
-            log_path,
             run_id=run_id,
             logical_id=logical_id,
             reason=reason,
             repo_root=repo_root,
             command=command,
-            lines=[policy_error],
+            log_path=log_path,
+            policy_error=policy_error,
         )
-        print(f"rejected {run_id} rc=2")
-        print(policy_error, file=sys.stderr)
-        print(f"log: {log_path}")
-        if _notes_for_run_ids(conn, [run_id]).get(run_id):
-            _try_write_marimo_notebook(
-                args,
-                conn,
-                run_id,
-                log_path=log_path,
-                phase="policy rejection projection",
-            )
-        return 2
     preflight_errors = _ensure_run_toolchain_preflight(
         repo_root=repo_root,
         resource_family=resource_family,
@@ -2793,6 +2903,17 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
     command = _canonical_cargo_proof_command(cargo_args)
     env_overrides = _env_overrides_from_pairs(args.env)
     initial_notes = getattr(args, "note", []) or []
+    single_lib_test_error = _cold_single_lib_test_policy_error(cargo_args)
+    policy_error = None if args.allow_warm_single_test else single_lib_test_error
+    if args.allow_warm_single_test and single_lib_test_error is not None:
+        initial_notes = [
+            (
+                "policy: --allow-warm-single-test used; submitter asserts the "
+                "Cargo target dir is already warm and this exact lib test will "
+                "not pay a cold compile."
+            ),
+            *initial_notes,
+        ]
     if args.detach:
         rc, run_id = _queue_one(
             args,
@@ -2807,6 +2928,7 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
             depends_on=args.depends_on,
             edge_kind=args.edge_kind,
             edge_note=args.edge_note,
+            policy_error=policy_error,
         )
         if rc != 0 or run_id is None:
             return rc
@@ -2832,6 +2954,7 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
         depends_on=args.depends_on,
         edge_kind=args.edge_kind,
         edge_note=args.edge_note,
+        policy_error=policy_error,
     )
 
 
@@ -3890,6 +4013,14 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_dependency_args(cargo_p)
     cargo_p.add_argument("--timeout", type=float, default=1200.0)
     cargo_p.add_argument("--detach", action="store_true")
+    cargo_p.add_argument(
+        "--allow-warm-single-test",
+        action="store_true",
+        help=(
+            "allow `cargo test --lib <one filter>` only after a target-dir warmup "
+            "has already been verified and recorded in --note"
+        ),
+    )
     cargo_p.add_argument("cargo_args", nargs=argparse.REMAINDER)
     cargo_p.set_defaults(func=_cmd_cargo)
 

@@ -1154,7 +1154,6 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
             "test",
             "-p",
             "molt-runtime",
-            "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error",
             "--lib",
         ]
     )
@@ -1185,13 +1184,123 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "cargo",
         "test",
     ]
-    assert command[14:17] == [
-        "-p",
-        "molt-runtime",
-        "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error",
-    ]
+    assert command[14:16] == ["-p", "molt-runtime"]
     assert command[-1] == "--lib"
     assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
+
+
+def test_proof_queue_cargo_lane_rejects_cold_single_lib_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 4242, tmp_path / "runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "cargo",
+            "--id",
+            "cold-single-lib-test",
+            "--reason",
+            "reject cold single-test cargo proof",
+            "--scope",
+            "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+            "--note",
+            "synthetic violation: exact lib test without warm-target override",
+            "--timeout",
+            "42",
+            "--detach",
+            "--",
+            "test",
+            "-p",
+            "molt-runtime",
+            "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error",
+            "--lib",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 2
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    assert launched == []
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "refuses cold-prone single-test Cargo proofs" in log_text
+    assert "Batch the relevant crate shard" in log_text
+    assert "--allow-warm-single-test" in log_text
+
+
+def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    launched: dict[str, object] = {}
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args
+        launched["run_id"] = run_id
+        launched["timeout"] = timeout
+        return 4242, tmp_path / "runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "cargo",
+            "--id",
+            "warm-single-lib-test",
+            "--reason",
+            "allow explicit warm single-test cargo proof",
+            "--scope",
+            "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+            "--note",
+            "warmup: cargo check -p molt-runtime already completed in this target dir",
+            "--timeout",
+            "42",
+            "--detach",
+            "--allow-warm-single-test",
+            "--",
+            "test",
+            "-p",
+            "molt-runtime",
+            "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error",
+            "--lib",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]["status"] == "queued"
+    assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
+    command = json.loads(rows[0]["command_json"])
+    assert "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error" in command
+    notes = [note["body"] for note in _notes(db)]
+    assert notes[0].startswith("policy: --allow-warm-single-test used")
+    assert notes[1] == (
+        "warmup: cargo check -p molt-runtime already completed in this target dir"
+    )
 
 
 def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> None:
