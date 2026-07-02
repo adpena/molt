@@ -6703,7 +6703,7 @@ def test_external_native_artifact_plan_accepts_sealed_missing_sources(
                         "undefined_symbols": [],
                         "required_c_api_symbols": [],
                         "required_capsules": [],
-                    }
+                    },
                 ],
             },
         },
