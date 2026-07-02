@@ -33,6 +33,7 @@ from wasm_abi_gen.manifest import (
 from wasm_abi_gen.paths import (
     LEGACY_OUT_RS,
     OUT_ALLOWED_IMPORTS,
+    OUT_JS_ABI,
     OUT_PY,
     OUT_RS_DIR,
     OUT_RS_FILES,
@@ -43,13 +44,14 @@ from wasm_abi_gen.paths import (
     WASM_ABI_GEN_CACHE,
 )
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v1"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v2"
 RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 RUSTFMT_CACHE_ENABLED = True
 RENDER_CACHE_FIELDS = (
     "rendered_rs_modules",
     "rendered_runtime_callables_rs",
     "rendered_py",
+    "rendered_js_abi",
     "rendered_table_layout_inc",
     "rendered_allowed_imports",
 )
@@ -2352,6 +2354,30 @@ def render_allowed_imports(data: dict) -> str:
     return "".join(lines)
 
 
+def render_js_abi(data: dict) -> str:
+    runtime_export_by_import: dict[str, str] = {
+        entry["name"]: _runtime_export_name(entry) for entry in data["import"]
+    }
+    for name in data["runtime_export_policy"]["host_exports"]:
+        runtime_export_by_import.setdefault(name, name)
+    for name in generator_cpython_abi_link_import_names():
+        runtime_export_by_import.setdefault(name, name)
+
+    payload = {
+        "generated_by": "tools/gen_wasm_abi.py",
+        "runtime_export_by_import": runtime_export_by_import,
+        "runtime_import_fallbacks": {
+            entry["import"]: {
+                "strategy": entry["strategy"],
+                "call_arity": entry.get("call_arity"),
+                "exports": list(entry["exports"]),
+            }
+            for entry in data.get("runtime_import_fallback", [])
+        },
+    }
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
 def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
@@ -2476,6 +2502,7 @@ def main(argv: list[str]) -> int:
             "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
         )
         rendered_py = timed("render_py", lambda: render_py(data))
+        rendered_js_abi = timed("render_js_abi", lambda: render_js_abi(data))
         rendered_table_layout_inc = timed(
             "render_table_layout_inc", lambda: render_table_layout_inc(data)
         )
@@ -2486,6 +2513,7 @@ def main(argv: list[str]) -> int:
             "rendered_rs_modules": rendered_rs_modules,
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
             "rendered_py": rendered_py,
+            "rendered_js_abi": rendered_js_abi,
             "rendered_table_layout_inc": rendered_table_layout_inc,
             "rendered_allowed_imports": rendered_allowed_imports,
         }
@@ -2494,6 +2522,7 @@ def main(argv: list[str]) -> int:
     rendered_rs_modules = dict(bundle["rendered_rs_modules"])
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
     rendered_py = str(bundle["rendered_py"])
+    rendered_js_abi = str(bundle["rendered_js_abi"])
     rendered_table_layout_inc = str(bundle["rendered_table_layout_inc"])
     rendered_allowed_imports = str(bundle["rendered_allowed_imports"])
     if args.check:
@@ -2502,6 +2531,7 @@ def main(argv: list[str]) -> int:
             if _check_rs_modules(rendered_rs_modules)
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
             and _check(OUT_PY, rendered_py)
+            and _check(OUT_JS_ABI, rendered_js_abi)
             and _check(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
             and _check(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
             and all(_check_absent(path) for path in REMOVED_GENERATED_FILES)
@@ -2517,6 +2547,7 @@ def main(argv: list[str]) -> int:
     _write_rs_modules(rendered_rs_modules)
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
     _write_if_changed(OUT_PY, rendered_py)
+    _write_if_changed(OUT_JS_ABI, rendered_js_abi)
     _write_if_changed(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
     _write_if_changed(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
     for path in REMOVED_GENERATED_FILES:

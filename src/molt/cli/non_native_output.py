@@ -44,6 +44,7 @@ from molt.cli.wasm import (
     _generate_split_worker_js,
     _generate_split_wrangler_jsonc,
     _runtime_export_name_for_import_from_manifest,
+    _runtime_import_export_names_from_manifest,
     _runtime_import_result_kinds_from_manifest,
     _runtime_import_signatures_from_manifest,
     _split_runtime_browser_abi_from_manifest,
@@ -940,6 +941,11 @@ def _prepare_non_native_build_result(
             app_runtime_export_signatures = _runtime_export_signatures_for_imports(
                 rt_wasm, app_runtime_import_names
             )
+            app_runtime_import_export_names = (
+                _runtime_import_export_names_from_manifest(
+                    app_runtime_import_names,
+                )
+            )
             app_runtime_import_result_kinds = (
                 _runtime_import_result_kinds_from_manifest(
                     app_runtime_import_names,
@@ -1028,6 +1034,7 @@ def _prepare_non_native_build_result(
                     "runtime_imports": {
                         "module": "molt_runtime",
                         "names": sorted(app_runtime_import_names),
+                        "export_names": app_runtime_import_export_names,
                         "signatures": app_runtime_import_signatures,
                         "runtime_export_signatures": app_runtime_export_signatures,
                         "result_kinds": app_runtime_import_result_kinds,

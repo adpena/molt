@@ -1865,6 +1865,7 @@ class TestManifestJson:
 
     def test_runtime_import_abi_matches_app_wasm(self, split_build_a):
         from molt.cli.wasm import (
+            _runtime_import_export_names_from_manifest,
             _runtime_import_result_kinds_from_manifest,
             _runtime_import_signatures_from_manifest,
         )
@@ -1884,6 +1885,9 @@ class TestManifestJson:
         expected_result_kinds = _runtime_import_result_kinds_from_manifest(
             runtime_import_names
         )
+        expected_export_names = _runtime_import_export_names_from_manifest(
+            runtime_import_names
+        )
         if not expected_signatures:
             pytest.skip("app has no runtime imports")
 
@@ -1891,6 +1895,7 @@ class TestManifestJson:
 
         assert abi["module"] == "molt_runtime"
         assert abi["names"] == sorted(runtime_import_names)
+        assert abi["export_names"] == expected_export_names
         assert abi["signatures"] == expected_signatures
         assert abi["result_kinds"] == expected_result_kinds
 
@@ -1900,6 +1905,9 @@ class TestManifestJson:
 
         assert manifest_abi["signatures"] == self._worker_json_const(
             worker_js, "runtimeImportSignatures"
+        )
+        assert manifest_abi["export_names"] == self._worker_json_const(
+            worker_js, "runtimeImportExportNames"
         )
         assert manifest_abi["runtime_export_signatures"] == self._worker_json_const(
             worker_js, "runtimeExportSignatures"
