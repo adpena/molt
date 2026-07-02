@@ -18,7 +18,12 @@ from tests.cli.process_guard import run_cli_test_process
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
+RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
+
+# Any 64-hex value is a valid runtime integrity-pin key; the real key is the
+# runtime fingerprint meta digest (resolved profile/feature identity).
+_TEST_RUNTIME_META_DIGEST = "ab" * 32
 
 
 def _valid_wasm_bytes(label: bytes = b"") -> bytes:
@@ -382,7 +387,10 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "recovery"},
+        lambda *args, **kwargs: {
+            "hash": "recovery",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
         raising=True,
     )
     monkeypatch.setattr(
@@ -484,7 +492,10 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "fallback"},
+        lambda *args, **kwargs: {
+            "hash": "fallback",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
         raising=True,
     )
     monkeypatch.setattr(
@@ -597,7 +608,10 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "new-shape"},
+        lambda *args, **kwargs: {
+            "hash": "new-shape",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
         raising=True,
     )
     monkeypatch.setattr(
@@ -696,7 +710,12 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
         RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [runtime_source]
     )
     monkeypatch.setattr(
-        RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
+        RUNTIME_BUILD,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "new",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
     )
     monkeypatch.setattr(RUNTIME_BUILD, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(
@@ -723,6 +742,18 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
     )
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_wasm_missing_exports", lambda path, required: set()
+    )
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authorities.
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_exports_satisfy",
+        lambda path, required: True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_missing_exports",
+        lambda path, required: set(),
     )
     build_calls: list[list[str]] = []
 
@@ -785,7 +816,7 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         captured_fingerprint_features.append(
             tuple(kwargs["runtime_features"])  # type: ignore[arg-type]
         )
-        return {"hash": "full-profile"}
+        return {"hash": "full-profile", "meta_digest": _TEST_RUNTIME_META_DIGEST}
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
@@ -910,6 +941,55 @@ def test_ensure_runtime_wasm_skip_rebuild_still_requires_requested_exports(
     )
 
     assert not RUNTIME_BUILD._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        required_exports={"molt_fast_list_append"},
+    )
+
+
+def test_ensure_runtime_wasm_skip_rebuild_requires_matching_integrity_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(_valid_wasm_bytes(b"runtime"))
+
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_runtime_exports_satisfy_for_mode",
+        lambda path, required, *, reloc: True,
+        raising=True,
+    )
+
+    assert not RUNTIME_BUILD._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        required_exports={"molt_fast_list_append"},
+    )
+
+    RUNTIME_WASM_VALIDATION._write_runtime_wasm_integrity_sidecar(
+        runtime_wasm,
+        integrity_key=_TEST_RUNTIME_META_DIGEST,
+    )
+
+    assert RUNTIME_BUILD._ensure_runtime_wasm(
         runtime_wasm,
         reloc=False,
         json_output=True,
@@ -1069,6 +1149,14 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
         lambda path, required: set(),
         raising=True,
     )
+    # Shared-mode (reloc=False) export validation routes through the
+    # split-runtime authority.
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
+        "_split_runtime_wasm_missing_exports",
+        lambda path, required: set(),
+        raising=True,
+    )
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_is_valid_shared_runtime_wasm_artifact",
@@ -1079,7 +1167,7 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
 
     def fake_runtime_fingerprint(*args, **kwargs):  # type: ignore[no-untyped-def]
         fingerprint_rustflags.append(kwargs["rustflags"])
-        return {"hash": "response-file"}
+        return {"hash": "response-file", "meta_digest": _TEST_RUNTIME_META_DIGEST}
 
     monkeypatch.setattr(
         RUNTIME_BUILD, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
@@ -1183,7 +1271,10 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "reloc-staticlib"},
+        lambda *args, **kwargs: {
+            "hash": "reloc-staticlib",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
         raising=True,
     )
     monkeypatch.setattr(
@@ -1385,7 +1476,10 @@ def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explic
     monkeypatch.setattr(
         RUNTIME_BUILD,
         "_runtime_fingerprint",
-        lambda *args, **kwargs: {"hash": "incremental"},
+        lambda *args, **kwargs: {
+            "hash": "incremental",
+            "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        },
         raising=True,
     )
     monkeypatch.setattr(

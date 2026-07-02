@@ -26,6 +26,9 @@ import harness_memory_guard  # noqa: E402
 import artifact_publish  # noqa: E402
 from wasm_optimize import find_wasm_opt  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
+from molt.cli.runtime_wasm_validation import (  # noqa: E402
+    _runtime_wasm_integrity_pin_paths,
+)
 from molt._wasm_runtime_exports import (  # noqa: E402
     wasm_split_runtime_export_name_for_import,
 )
@@ -198,72 +201,73 @@ def _default_output_path() -> Path:
     return _default_dist_artifact_path("output_linked.wasm")
 
 
-def _runtime_integrity_sidecar_path(path: Path) -> Path:
-    return path.with_name(f"{path.name}.sha256")
-
-
 _RUNTIME_INTEGRITY_PAIR_ATTEMPTS = 8
 _RUNTIME_INTEGRITY_PAIR_RETRY_DELAY_SEC = 0.05
 
 
-def _read_runtime_integrity_sidecar(path: Path) -> str | None:
-    sidecar = _runtime_integrity_sidecar_path(path)
-    if not sidecar.exists():
-        return None
-    raw = sidecar.read_text(encoding="utf-8").strip()
-    match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
-    if match is None:
-        raise SystemExit(f"Runtime integrity sidecar is malformed: {sidecar}")
-    return match.group(1).lower()
+def _read_runtime_integrity_pins(path: Path) -> dict[Path, str]:
+    """Read every keyed integrity pin published next to ``path``.
+
+    Pins are keyed by the runtime build's fingerprint meta digest
+    (``<artifact>.<meta_digest>.sha256``) — one slot per resolved
+    profile/feature identity — so like builds verify against like pins and
+    different-profile builds never contend for a single pinned hash.
+    """
+    pins: dict[Path, str] = {}
+    for sidecar in _runtime_wasm_integrity_pin_paths(path):
+        try:
+            raw = sidecar.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            continue
+        match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
+        if match is None:
+            raise SystemExit(f"Runtime integrity sidecar is malformed: {sidecar}")
+        pins[sidecar] = match.group(1).lower()
+    return pins
 
 
 def _verify_runtime_integrity(path: Path) -> None:
-    """Verify SHA-256 integrity of the runtime binary.
+    """Verify SHA-256 integrity of the runtime binary against keyed pins.
 
-    Raises ``SystemExit`` when no integrity authority exists or a hash mismatch
-    is detected.
+    Raises ``SystemExit`` when no keyed integrity pin exists or the artifact
+    hash matches none of the published pins.
     """
     # Reject path-traversal components before reading the file.
     for part in path.parts:
         if part == "..":
             raise SystemExit(f"Runtime path contains '..' traversal component: {path}")
 
-    sidecar_mismatch: tuple[str, str] | None = None
-    missing_sidecar_digest: str | None = None
+    pins: dict[Path, str] = {}
+    digest = ""
     for attempt in range(_RUNTIME_INTEGRITY_PAIR_ATTEMPTS):
         data = path.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
-        sidecar_expected = _read_runtime_integrity_sidecar(path)
-        if sidecar_expected is None:
-            missing_sidecar_digest = digest
-            break
-        if digest == sidecar_expected:
+        pins = _read_runtime_integrity_pins(path)
+        if digest in pins.values():
             return
-        sidecar_mismatch = (sidecar_expected, digest)
         if attempt + 1 < _RUNTIME_INTEGRITY_PAIR_ATTEMPTS:
             time.sleep(_RUNTIME_INTEGRITY_PAIR_RETRY_DELAY_SEC)
 
-    if sidecar_mismatch is not None:
-        sidecar_expected, digest = sidecar_mismatch
+    if pins:
+        pin_lines = "".join(
+            f"  pinned SHA-256 ({sidecar.name}): {expected}\n"
+            for sidecar, expected in sorted(pins.items())
+        )
         raise SystemExit(
             f"Runtime integrity check failed for {path}\n"
-            f"  source: sidecar {_runtime_integrity_sidecar_path(path)}\n"
-            f"  expected SHA-256: {sidecar_expected}\n"
-            f"  actual   SHA-256: {digest}\n"
+            f"  source: keyed integrity sidecars in {path.parent}\n"
+            f"{pin_lines}"
+            f"  actual SHA-256: {digest}\n"
         )
-
-    digest_line = (
-        f"  actual   SHA-256: {missing_sidecar_digest}\n"
-        if missing_sidecar_digest is not None
-        else ""
-    )
     raise SystemExit(
         "Runtime integrity check failed for "
-        f"{path}\n  no sidecar was found at "
-        f"{_runtime_integrity_sidecar_path(path)}\n"
-        f"{digest_line}"
-        "  publish the matching .sha256 sidecar; hardcoded runtime hash pins "
-        "are not supported."
+        f"{path}\n  no keyed integrity sidecar "
+        f"({path.name}.<fingerprint-meta-digest>.sha256) was found in "
+        f"{path.parent}\n"
+        f"  actual SHA-256: {digest}\n"
+        "  publish the matching keyed .sha256 sidecar (the molt runtime build "
+        "writes it); unkeyed single-slot sidecars and hardcoded runtime hash "
+        "pins are not supported."
     )
 
 

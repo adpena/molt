@@ -242,17 +242,22 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
             f"{runtime_artifact} is a generated build artifact; build the WASM "
             "runtime before running the compiled export-signature gate"
         )
-    runtime_sidecar = runtime_artifact.with_suffix(".wasm.sha256")
-    if not runtime_sidecar.exists():
+    from molt.cli.runtime_wasm_validation import _runtime_wasm_integrity_pin_paths
+
+    runtime_pins = _runtime_wasm_integrity_pin_paths(runtime_artifact)
+    if not runtime_pins:
         pytest.skip(
-            f"{runtime_sidecar} is missing; build the WASM runtime before "
-            "running the compiled export-signature gate"
+            f"no keyed integrity sidecar exists for {runtime_artifact}; build "
+            "the WASM runtime before running the compiled export-signature gate"
         )
-    expected_sha = runtime_sidecar.read_text(encoding="utf-8").strip()
+    pinned_shas = {
+        pin.read_text(encoding="utf-8").strip() for pin in runtime_pins
+    }
     actual_sha = hashlib.sha256(runtime_artifact.read_bytes()).hexdigest()
-    assert actual_sha == expected_sha, (
-        f"{runtime_artifact} does not match {runtime_sidecar}; rebuild runtime "
-        "artifacts before trusting compiled export signatures"
+    assert actual_sha in pinned_shas, (
+        f"{runtime_artifact} matches none of its keyed integrity sidecars "
+        f"({[pin.name for pin in runtime_pins]}); rebuild runtime artifacts "
+        "before trusting compiled export signatures"
     )
     runtime_signatures = _parse_wasm_export_signatures(runtime_artifact)
     assert len(runtime_signatures) > 1000, (

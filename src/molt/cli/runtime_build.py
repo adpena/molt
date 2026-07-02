@@ -80,6 +80,8 @@ from molt.cli.runtime_wasm_validation import (
     _split_runtime_wasm_exports_satisfy,
     _split_runtime_wasm_missing_exports,
     _runtime_wasm_exports_satisfy,
+    _runtime_wasm_has_matching_integrity_pin,
+    _runtime_wasm_integrity_key,
     _runtime_wasm_missing_exports,
     _write_runtime_wasm_integrity_sidecar,
 )
@@ -1467,12 +1469,16 @@ def _ensure_runtime_wasm(
                 if reloc
                 else _is_valid_shared_runtime_wasm_artifact(runtime_wasm)
             )
-            return runtime_valid and (
-                not validate_exports
-                or _runtime_exports_satisfy_for_mode(
-                    runtime_wasm,
-                    required_exports,
-                    reloc=reloc,
+            return (
+                runtime_valid
+                and _runtime_wasm_has_matching_integrity_pin(runtime_wasm)
+                and (
+                    not validate_exports
+                    or _runtime_exports_satisfy_for_mode(
+                        runtime_wasm,
+                        required_exports,
+                        reloc=reloc,
+                    )
                 )
             )
     requested_cargo_profile = cargo_profile
@@ -1578,6 +1584,14 @@ def _ensure_runtime_wasm(
         if not json_output:
             print("Failed to compute runtime wasm fingerprint.", file=sys.stderr)
         return False
+    def _publish_runtime_integrity_pin() -> None:
+        # One integrity-pin slot per resolved build identity: the fingerprint
+        # meta digest keys the sidecar so different-profile builds never
+        # contend for a single pinned hash.
+        _write_runtime_wasm_integrity_sidecar(
+            runtime_wasm, integrity_key=_runtime_wasm_integrity_key(fingerprint)
+        )
+
     lock_suffix = "reloc" if reloc else "shared"
     lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.{lock_suffix}"
     with _build_lock(root, lock_name):
@@ -1619,7 +1633,7 @@ def _ensure_runtime_wasm(
                     )
                 return False
             try:
-                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                _publish_runtime_integrity_pin()
                 target_runtime_wasm_fingerprint_path.parent.mkdir(
                     parents=True,
                     exist_ok=True,
@@ -1664,7 +1678,7 @@ def _ensure_runtime_wasm(
             ):
                 return False
             try:
-                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                _publish_runtime_integrity_pin()
                 target_runtime_staticlib_fingerprint_path.parent.mkdir(
                     parents=True,
                     exist_ok=True,
@@ -1712,7 +1726,7 @@ def _ensure_runtime_wasm(
         ):
             assert fingerprint is not None
             try:
-                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                _publish_runtime_integrity_pin()
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_runtime_fingerprint(
                     fingerprint_path,
@@ -1848,7 +1862,7 @@ def _ensure_runtime_wasm(
             ):
                 return False
             try:
-                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                _publish_runtime_integrity_pin()
             except OSError:
                 if not json_output:
                     print(
@@ -2064,7 +2078,7 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+            _publish_runtime_integrity_pin()
         except OSError:
             if not json_output:
                 print(
