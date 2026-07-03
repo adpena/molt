@@ -3823,25 +3823,22 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "timeout.log"
     summary_path = tmp_path / "timeout.memory_guard.json"
-    nodeid = (
-        "tests/test_native_import_bootstrap_regressions.py::"
-        "test_native_package_init_try_guard_uses_nameerror_lookup"
-    )
+    nodeid = "tests/tools/test_proof_queue.py::test_generic_timeout_context"
     conn = proof_queue._connect(db)
     proof_queue._insert_run(
         conn,
         run_id="timeout-run",
-        logical_id="native-import-typeerror-current-recheck",
+        logical_id="generic-timeout-recheck",
         reason="prove timeout diagnosis outranks orphan cleanup",
         command=[
             sys.executable,
             "-m",
             "pytest",
-            "tests/test_native_import_bootstrap_regressions.py",
+            "tests/tools/test_proof_queue.py",
         ],
         cwd=proof_queue.ROOT,
         resource_family="python-tests",
-        contention_key="native-import-regression",
+        contention_key="python-tests",
         scopes=["tools/proof_queue.py"],
         git_snapshot={
             "available": True,
@@ -3911,9 +3908,125 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
         "memory-guard-orphan-cleanup",
     ]
     assert "900.00s" in diagnostics[0]["summary"]
-    assert "test_native_package_init_try_guard_uses_nameerror_lookup" in diagnostics[0]["summary"]
+    assert "test_generic_timeout_context" in diagnostics[0]["summary"]
     assert "pytest_phase=call" in diagnostics[0]["evidence"]
     assert f"Inspect {nodeid} once" in diagnostics[0]["next_action"]
+
+
+def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "native-import-timeout.log"
+    summary_path = tmp_path / "native-import-timeout.memory_guard.json"
+    nodeid = (
+        "tests/test_native_import_bootstrap_regressions.py::"
+        "test_native_package_entry_direct_import_and_from_import_bindings_are_resolved"
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="native-import-timeout-run",
+        logical_id="native-import-bootstrap-regressions-full",
+        reason="prove native call-lane timeouts route to the lane owner",
+        command=[
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_native_import_bootstrap_regressions.py",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="native-import-regression",
+        scopes=["tests/test_native_import_bootstrap_regressions.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    log_path.write_text(
+        (
+            "memory_guard: timeout after 7200.00s; terminated tracked process "
+            "tree to prevent orphaned Molt subprocesses\n"
+        ),
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps(
+            {
+                "repro": {
+                    "pytest": {
+                        "current_test_file": {
+                            "payload": {
+                                "nodeid": nodeid,
+                                "phase": "call",
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "native-import-timeout-run", status="failed", returncode=124
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "native-import-timeout-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "native-call-lane-memory-guard-timeout"
+    assert diagnostics[0]["severity"] == "error"
+    assert "R1 integrator" in diagnostics[0]["summary"]
+    assert "pytest_phase=call" in diagnostics[0]["evidence"]
+    assert "Route this timeout row to the native call-lane owner" in diagnostics[0][
+        "next_action"
+    ]
+    assert "runtime/molt-runtime/src/call/function.rs" in diagnostics[0]["scopes"]
+    assert "memory-guard-timeout" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 1
+    )
+    audit_out = capsys.readouterr().out
+    assert "diagnostics: native-call-lane-memory-guard-timeout=1" in audit_out
+    assert (
+        "audit-native-call-lane-memory-guard-timeout run=native-import-timeout-run"
+        in audit_out
+    )
 
 
 def test_proof_queue_diagnoses_pytest_assertion_failure(
