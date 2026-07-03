@@ -231,13 +231,44 @@ Everything else: parallel, lane-owned.
 
 ## Delegated to Codex (pick up, in priority order)
 
-1. **R6 conformance rotation**: keep shards green through the queue;
+WITNESS CLOSURE is the top program (goal: field_solve.py → candidate_outputs.npz
+→ check_parity.py PASS through Molt WASM). The orchestrator's ONE subagent owns
+the numpy `_multiarray_umath` exec C-API closure (current import blocker — exec
+returns -1 without exception; task #20). Lanes 1-3 run in PARALLEL and are
+structurally testable WITHOUT a working numpy import (synthetic
+native_callable_exports fixtures — `test_cli_import_collection.py`
+native-callable tests pass today). Do NOT touch the numpy exec / cpython-abi
+lane the subagent owns.
+
+1. **WITNESS: scipy.ndimage executable ABI dispatch** (goal's named aperture):
+   `distance_transform_edt`, `gaussian_filter`, `label`, `maximum_filter`,
+   `minimum_filter` must lower to executable ABI dispatch (native
+   callable_exports → `invoke_ffi` → runtime forward/object-call ABI), NOT
+   import-visible-only. Both `import scipy.ndimage as ndi; ndi.op(x)` and `from
+   scipy.ndimage import op; op(x)` forms must emit `invoke_ffi` with correct
+   binding/abi/symbol. No fake module__function symbols, no host fallback.
+   Prove: `tests/cli/test_cli_import_collection.py` (frontend_native_callable_*
+   + pact_ndimage_operation_closure) + the wasm export triple gate
+   (`test_wasm_runtime_export_no_mangle.py`).
+2. **WITNESS: ndarray/dtype/shape/stride/buffer truth** — typed strided
+   storage + buffer protocol the ndimage ABI dispatch passes arrays across
+   (dtype/shape/stride/contiguity). One storage home; no Python reimpl of numpy
+   behavior. Prove with the buffer/ndarray structural tests; coordinate the ABI
+   contract with lane 1.
+3. **WITNESS: adversarial review of the numpy-exec closure** — as the
+   subagent lands each closed C-API primitive (runtime/molt-cpython-abi),
+   independently re-verify: re-run diag_probe, read the primitive against the
+   CPython C-API spec (cite it), confirm it is a real reusable primitive not a
+   numpy-specific hack, and flag/reconcile duplicate authority (e.g.
+   include/molt/Python.h inline Py_BuildValue vs pyarg_variadic.c). Report
+   confirmations or defects with evidence.
+4. **R6 conformance rotation**: keep shards green through the queue;
    version/platform gates expressed via TargetPythonVersion authority.
    Use `tools/proof_queue.py r6-target-version-parity` for the named lane;
    use `--queue-only` to park rows without launching a runner.
-2. **R5a crate extraction** (`cpython_abi_hooks` per doc 70) — ONLY once R1
+5. **R5a crate extraction** (`cpython_abi_hooks` per doc 70) — ONLY once R1
    + PR2 land and modules.rs is quiet; check this board before starting.
-3. **Proof-queue diagnosis/help/audit DX**: take only concrete defects from
+6. **Proof-queue diagnosis/help/audit DX**: take only concrete defects from
    a failed/stale row or operator report; no open-ended queue rewrites.
 
 Done recently by Codex (verified on origin/main): keyed-pin dirty-tree
