@@ -486,6 +486,23 @@ graphlib) extracts NOW as a leaf via the bridge pattern (marshals through the
 bridge; no dependency on core). Object-manipulating stdlib (json/io/pickle)
 waits for core. Foundation-first for everything object-coupled.
 
+THE LIVE WORK-LIST IS NOW MACHINE-GENERATED. `tools/canonicalization_contract.py`
+(landed 57c3fdc2f, CI-enforced ratchet) is the authoritative, always-current
+systematization backlog — run it for the ranked violations. As of 2026-07-03 it
+flags: (1) `asyncio` facade — 1665 impl lines stranded in builtins/ (blocked on
+async_rt, sequence after core); (2) **14,503 lines of GPU/tensor code misfiled in
+`builtins/` → move to `molt-gpu`** — the SINGLE BIGGEST clean god-crate shrink
+available, DISJOINT from every witness lane; (3) 15 layer crates not in
+`[workspace].members`. Every completion drops the ratchet; the ratchet fails CI
+on any new facade / misplacement / layer-cycle.
+
+TOP DISJOINT CODEX CUT (do this now): move `builtins/{gpu.rs, gpu_backend.rs,
+gpu_primitives.rs, attention.rs, contiguous.rs, kernels.rs, objects.rs,
+tensor_methods.rs, tensor_runtime.rs}` (14.5k lines) into `molt-gpu` behind a
+thin bridge. Move-only, build-verified, exact-pathspec commits, isolated
+worktree. Verify with `tools/canonicalization_contract.py` (misplaced_module_lines
+must drop) + a molt-runtime build. This shrinks the god-crate ~5% in one clean cut.
+
 SEQUENCED PLAN (respecting active witness lanes):
 - **QUEUED — the build-speed win, fires when buffer lane 2 lands.** CORE/object
   (`object/**` + `builtins/module_table.rs` + `array_mod.rs`) is OWNED by buffer
