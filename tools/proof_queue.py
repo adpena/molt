@@ -144,6 +144,10 @@ PARTIAL_MODULE_PUBLICATION_RE = re.compile(
     r"'(?P<module>[^']+)' before its publication "
     r"\(circular import during module allocation\)"
 )
+MOLT_DIFF_FAIL_RE = re.compile(
+    r"(?m)^\[FAIL\]\s+(?P<case>\S+)\s+\((?P<target>[^)]+)\)\s+"
+    r"(?P<detail>[^\r\n]+)"
+)
 PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
 PYTEST_ERROR_RE = re.compile(
     r"(?m)^ERROR\s+(?P<nodeid>\S+)(?:\s+-\s+(?P<detail>[^\r\n]+))?"
@@ -2004,26 +2008,41 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
-    match = PARTIAL_MODULE_PUBLICATION_RE.search(log_tail)
-    if match is not None:
+    partial_module_match = PARTIAL_MODULE_PUBLICATION_RE.search(log_tail)
+    if partial_module_match is not None:
+        diff_fail_match = None
+        for candidate in MOLT_DIFF_FAIL_RE.finditer(
+            log_tail, 0, partial_module_match.start()
+        ):
+            diff_fail_match = candidate
+        failing_case = (
+            diff_fail_match.group("case") if diff_fail_match is not None else None
+        )
+        summary = (
+            "Import failed because module "
+            f"{partial_module_match.group('module')} was observed before publication."
+        )
+        evidence = partial_module_match.group(0)
+        scopes = [
+            "runtime/molt-runtime/src/builtins/module_table.rs",
+            "runtime/molt-runtime/src/builtins/modules.rs",
+            "src/molt/cli/backend_ir.py",
+        ]
+        if failing_case is not None:
+            summary = f"{summary} Failing fixture: {failing_case}."
+            evidence = f"{diff_fail_match.group(0)}\n{evidence}"
+            scopes.insert(0, failing_case)
         diagnostics.append(
             _diagnostic(
                 signal_id="import-partial-module-publication",
                 severity="error",
-                summary=(
-                    "Import failed because module "
-                    f"{match.group('module')} was observed before publication."
-                ),
-                evidence=match.group(0),
+                summary=summary,
+                evidence=evidence,
                 next_action=(
                     "Route this to the import/bootstrap module-state owner; do "
                     "not patch the frozen import layer from an unrelated lane."
                 ),
-                scopes=(
-                    "runtime/molt-runtime/src/builtins/module_table.rs",
-                    "runtime/molt-runtime/src/builtins/modules.rs",
-                    "src/molt/cli/backend_ir.py",
-                ),
+                scopes=tuple(scopes),
             )
         )
 
