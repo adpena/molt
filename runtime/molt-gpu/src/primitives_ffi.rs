@@ -1,4 +1,4 @@
-//! Bridge module: molt-gpu primitive stack -> molt-runtime FFI.
+//! Bridge module: molt-gpu primitive stack -> C ABI.
 //!
 //! Exposes molt-gpu's LazyOp DAG construction, scheduling, fusion, and
 //! CpuDevice execution to compiled Python code via `extern "C"` FFI
@@ -22,29 +22,29 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use molt_gpu::device::cpu::CpuDevice;
-use molt_gpu::device::cpu::interpret;
-use molt_gpu::dtype::DType;
-use molt_gpu::fuse;
-use molt_gpu::lazy::{DeviceBufferRef, LazyOp, alloc_buffer_id};
-use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::FusedKernel;
-use molt_gpu::schedule;
-use molt_gpu::shapetracker::ShapeTracker;
+use crate::device::cpu::CpuDevice;
+use crate::device::cpu::interpret;
+use crate::dtype::DType;
+use crate::fuse;
+use crate::lazy::{DeviceBufferRef, LazyOp, alloc_buffer_id};
+use crate::ops::PrimitiveOp;
+use crate::render::FusedKernel;
+use crate::schedule;
+use crate::shapetracker::ShapeTracker;
 
 // Metal GPU execution path. `molt-gpu`'s `device::metal` module is compiled on
 // EVERY macOS target (gated on `cfg(target_os = "macos")`, not a Cargo feature)
-// and `metal = "0.30"` is an unconditional macOS dependency of molt-gpu, so
-// `MetalDevice` links here whenever `molt_gpu_primitives` pulls in molt-gpu — no
+// and `metal` is an unconditional macOS dependency of molt-gpu, so
+// `MetalDevice` links here whenever the `metal-backend` feature is enabled — no
 // feature-plumbing or version-skew change required. Gated on the SAME cfg as
 // `molt_gpu_prim_device` below so the device a program OBSERVES is the device
 // `realize()` actually executes on (closing the "reports METAL, runs CPU" drift).
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
-use molt_gpu::device::metal::MetalDevice;
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
-use molt_gpu::device::{Allocator, Compiler, DeviceBuffer, DeviceError, Executor};
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
-use molt_gpu::render::{Renderer, msl::MslRenderer};
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use crate::device::metal::MetalDevice;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use crate::device::{Allocator, Compiler, DeviceBuffer, DeviceError, Executor};
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use crate::render::{Renderer, msl::MslRenderer};
 
 // ============================================================================
 // Thread-local tensor store
@@ -306,7 +306,7 @@ pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
     let fused = fuse::fuse(kernels);
 
     // Execute each kernel on the active device (Metal on macOS when
-    // `molt_gpu_metal` is enabled — matching what `molt_gpu_prim_device`
+    // `metal-backend` is enabled — matching what `molt_gpu_prim_device`
     // reports — otherwise the CPU interpreter).
     let numel: usize = shape.iter().product();
     let out_bytes = execute_fused_pipeline(&lazy, &fused, numel, dtype);
@@ -414,7 +414,7 @@ fn execute_fused_pipeline_cpu(
 
 /// Execute the fused kernel pipeline on the active device.
 ///
-/// On macOS with `molt_gpu_metal`, this dispatches to the GPU via `MetalDevice`
+/// On macOS with `metal-backend`, this dispatches to the GPU via `MetalDevice`
 /// — the device `molt_gpu_prim_device` reports — closing the prior drift where
 /// `realize()` always ran the CPU interpreter even though the device was
 /// advertised as METAL. A CPU fallback is taken ONLY when the Metal device is
@@ -429,7 +429,7 @@ fn execute_fused_pipeline(
     output_numel: usize,
     output_dtype: DType,
 ) -> Vec<u8> {
-    #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+    #[cfg(all(target_os = "macos", feature = "metal-backend"))]
     {
         match execute_fused_pipeline_metal(root, fused_kernels, output_numel, output_dtype) {
             Ok(bytes) => return bytes,
@@ -450,7 +450,7 @@ fn execute_fused_pipeline(
 /// → read back. `bufs[0]` is the output (filled on return); `bufs[1..]` are the
 /// input host buffers. Mirrors `interpret::execute_kernel`'s contract exactly so
 /// the Metal and CPU pipelines are interchangeable per kernel.
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn execute_kernel_metal(
     device: &MetalDevice,
     kernel: &FusedKernel,
@@ -505,7 +505,7 @@ fn execute_kernel_metal(
 /// executed on Metal instead of the CPU interpreter. Returns `Err`
 /// (→ CPU fallback in [`execute_fused_pipeline`]) if the Metal device is
 /// unavailable or any kernel fails.
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
 fn execute_fused_pipeline_metal(
     root: &Arc<LazyOp>,
     fused_kernels: &[FusedKernel],
@@ -1441,12 +1441,9 @@ pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
 /// Returns: 0 = CPU, 1 = Metal, 2 = WebGPU
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_device() -> u32 {
-    if cfg!(all(target_os = "macos", feature = "molt_gpu_metal")) {
+    if cfg!(all(target_os = "macos", feature = "metal-backend")) {
         1
-    } else if cfg!(all(
-        not(target_arch = "wasm32"),
-        feature = "molt_gpu_webgpu"
-    )) {
+    } else if cfg!(all(not(target_arch = "wasm32"), feature = "webgpu-backend")) {
         2
     } else {
         0
@@ -1465,12 +1462,12 @@ pub extern "C" fn molt_gpu_prim_tensor_count() -> u64 {
 /// `realize()` used before the fix. If Metal and CPU ever diverge, this fails —
 /// making the silent-CPU drift non-reintroducible. Skips cleanly when no Metal
 /// device is present (headless CI), so it never produces a false failure.
-#[cfg(all(test, target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(test, target_os = "macos", feature = "metal-backend"))]
 mod metal_realize_tests {
     use super::*;
-    use molt_gpu::device::cpu::interpret;
-    use molt_gpu::ops::PrimitiveOp;
-    use molt_gpu::render::{BufferAccess, BufferBinding, FusedOp, FusedSrc, ReductionDomain};
+    use crate::device::cpu::interpret;
+    use crate::ops::PrimitiveOp;
+    use crate::render::{BufferAccess, BufferBinding, FusedOp, FusedSrc, ReductionDomain};
 
     fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
         vals.iter().flat_map(|v| v.to_le_bytes()).collect()
@@ -1820,7 +1817,7 @@ mod metal_realize_tests {
     }
 }
 
-/// CPU-path realize VALUE regressions, gated on `molt_gpu_primitives` only (no
+/// CPU-path realize VALUE regressions, gated on `molt-gpu` test builds only (no
 /// Metal). The buffer-id bug affected the CPU pipeline identically to Metal, so
 /// these assert the CPU `realize()` produces correct VALUES — exercising
 /// [`execute_fused_pipeline_cpu`] directly (independent of which device the
@@ -1833,10 +1830,10 @@ mod metal_realize_tests {
 /// - an offset movement view, where input slots must carry full storage,
 /// - a multi-kernel DAG with TWO live intermediates (`reduce_sum(a) +
 ///   reduce_sum(b)`) — the case the old `last_output`-only routing mis-handled.
-#[cfg(all(test, feature = "molt_gpu_primitives"))]
+#[cfg(test)]
 mod cpu_realize_value_tests {
     use super::*;
-    use molt_gpu::render::{BufferAccess, BufferBinding, KernelBody};
+    use crate::render::{BufferAccess, BufferBinding, KernelBody};
 
     fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         bytes
