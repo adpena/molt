@@ -3348,6 +3348,7 @@ _PROOF_COMMAND_SUBCOMMANDS = frozenset({"exec", "cargo"})
 _GLOBAL_OPTIONS_WITH_VALUES = frozenset(
     {"--db", "--logs-root", "--notebooks-root", "--repo-root"}
 )
+_HELP_OPTIONS = frozenset({"-h", "--help"})
 
 
 def _proof_command_subcommand_index(raw: list[str]) -> int | None:
@@ -3386,6 +3387,11 @@ def _split_proof_command_argv(
             f"proof_queue.py {subcommand} requires a proof command after `--`."
         )
     return before, command
+
+
+def _proof_command_help_requested(raw: list[str]) -> bool:
+    before_delimiter, _command = _command_after_dash(raw)
+    return any(token in _HELP_OPTIONS for token in before_delimiter[1:])
 
 
 def _reject_pre_delimiter_remainder(
@@ -4621,7 +4627,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    exec_p = sub.add_parser("exec", help="submit and run one inline proof")
+    exec_p = sub.add_parser(
+        "exec",
+        help="submit and run one inline proof",
+        description="submit and run one inline proof",
+    )
     exec_p.add_argument("--id", required=True)
     exec_p.add_argument("--reason", required=True)
     exec_p.add_argument("--resource-family", default="generic")
@@ -4646,6 +4656,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cargo_p = sub.add_parser(
         "cargo",
         help="submit a queue-owned Cargo proof with canonical uv and guard wrapping",
+        description=(
+            "submit a queue-owned Cargo proof with canonical uv and guard wrapping"
+        ),
     )
     cargo_p.add_argument("--id", required=True)
     cargo_p.add_argument("--reason", required=True)
@@ -4861,6 +4874,10 @@ def main(argv: list[str] | None = None) -> int:
         subcommand = raw[proof_subcommand_index]
         before_subcommand = raw[:proof_subcommand_index]
         subcommand_argv = raw[proof_subcommand_index:]
+        if _proof_command_help_requested(subcommand_argv):
+            parser = _build_parser()
+            args = parser.parse_args(raw)
+            return int(args.func(args))
         before, command = _split_proof_command_argv(
             subcommand_argv,
             subcommand=subcommand,

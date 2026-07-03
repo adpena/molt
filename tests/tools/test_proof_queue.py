@@ -226,6 +226,73 @@ def test_proof_queue_exec_requires_command_delimiter(tmp_path: Path) -> None:
     assert not db.exists()
 
 
+@pytest.mark.parametrize(
+    ("subcommand", "expected"),
+    [
+        ("exec", "submit and run one inline proof"),
+        ("cargo", "submit a queue-owned Cargo proof"),
+    ],
+)
+def test_proof_queue_proof_command_help_does_not_require_delimiter(
+    subcommand: str,
+    expected: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        proof_queue.main([subcommand, "--help"])
+
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert expected in captured.out
+    assert "requires `--` before the proof command" not in captured.err
+
+
+def test_proof_queue_exec_preserves_command_help_after_delimiter(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "exec",
+                "--id",
+                "command-help",
+                "--reason",
+                "prove command help stays after delimiter",
+                "--resource-family",
+                "python",
+                "--contention-key",
+                "python:command-help",
+                "--scope",
+                "tools/proof_queue.py",
+                "--note",
+                "test: delimiter preflight must not consume proof command help",
+                "--timeout",
+                "30",
+                "--",
+                sys.executable,
+                "-c",
+                "import sys; print(sys.argv[1])",
+                "--help",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "passed" in out
+    log_text = next(logs.glob("*.log")).read_text(encoding="utf-8")
+    assert "--help" in log_text
+
+
 def test_proof_queue_exec_rejects_removed_wait_flag(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
