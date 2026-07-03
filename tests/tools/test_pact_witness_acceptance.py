@@ -169,3 +169,41 @@ def test_pact_witness_acceptance_writes_static_extension_diagnostic(
     assert report["manifest_matches"][0]["missing_manifest_required_capsules"] == [
         "numpy.core._multiarray_umath._ARRAY_API"
     ]
+
+
+def test_pact_witness_acceptance_diagnoses_numpy_wrapped_static_extension_error(
+    tmp_path: Path,
+) -> None:
+    module_root = tmp_path / "site"
+    manifest_path = module_root / "_multiarray_umath.molt.wasm.extension_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "module": "_multiarray_umath",
+                "init_symbol": "PyInit__multiarray_umath",
+                "sources": [],
+                "object_closure": {"required_capsules": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = acceptance._static_extension_init_failure_report(
+        output_text=(
+            "Error: Unhandled Molt exception: ImportError:\n\n"
+            "Original error was: _multiarray_umath: static-link PyModuleDef "
+            "Py_mod_exec slot returned non-zero without setting an exception\n"
+        ),
+        env={"MOLT_MODULE_ROOTS": str(module_root)},
+    )
+
+    assert report is not None
+    assert report["failure"] == {
+        "module": "_multiarray_umath",
+        "reason": (
+            "static-link PyModuleDef Py_mod_exec slot returned non-zero "
+            "without setting an exception"
+        ),
+    }
+    assert report["manifest_matches"][0]["manifest_module"] == "_multiarray_umath"
