@@ -115,10 +115,12 @@ const host = await loadMoltWasm({
 });
 ```
 
-The default browser path dispatches through `wasm/browser_gpu_worker.js` when a
-blocking worker-capable host is available. Tests may inject
-`gpuKernelDispatcher` to prove dispatch deterministically without requiring a
-real browser GPU in CI.
+The full browser host and split-runtime embed both route
+`molt_gpu_webgpu_dispatch_host` through the shared
+`wasm/browser_gpu_dispatch.js` authority. The default path uses
+`wasm/browser_gpu_worker.js` when a blocking worker-capable host is available.
+Tests may inject `gpuKernelDispatcher` to prove dispatch deterministically
+without requiring a real browser GPU in CI.
 
 ## Artifact Distribution
 
@@ -130,8 +132,9 @@ integrity metadata. Until that release lane exists, the honest path is:
 
 1. Build once on a machine allowed to run the Rust/WASM toolchain.
 2. Publish `output.wasm` and `molt_runtime.wasm` together.
-3. Keep `loader_bridge.js`, `browser_host.js`, and `browser_gpu_worker.js`
-   version-matched with the runtime.
+3. Keep `loader_bridge.js`, `browser_host.js`, `browser_target_features.js`,
+   `browser_gpu_dispatch.js`, and `browser_gpu_worker.js` version-matched with
+   the runtime.
 
 `--split-runtime` remains the cache-friendly deployment mode for larger apps:
 
@@ -140,9 +143,14 @@ molt build kernel.py --target wasm --profile browser --split-runtime --out-dir d
 ```
 
 That mode emits `app.wasm`, `molt_runtime.wasm`, `worker.js`,
-`browser_embed.js`, `loader_bridge.js`, and `manifest.json`. The runtime module
-is designed to stay CDN-cacheable across apps when its export surface is
-unchanged.
+`browser_embed.js`, `browser_target_features.js`, `browser_gpu_dispatch.js`,
+`browser_gpu_worker.js`, `loader_bridge.js`, `target_feature_manifest.json`,
+and `manifest.json`. The runtime module is designed to stay CDN-cacheable
+across apps when its export surface is unchanged. `manifest.json` records the
+generated
+`target_features` profile selected from the app's host imports; WebGPU imports
+select `wasm-browser-webgpu`, while plain browser bundles remain
+`wasm-browser`.
 
 ## Runtime Callable Reachability
 

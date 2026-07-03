@@ -628,9 +628,13 @@ class TestSplitRuntimeArtifacts:
         expected = [
             "app.wasm",
             "browser_embed.js",
+            "browser_gpu_dispatch.js",
+            "browser_gpu_worker.js",
+            "browser_target_features.js",
             "loader_bridge.js",
             "molt_runtime.wasm",
             "molt_vfs_browser.js",
+            "target_feature_manifest.json",
             "worker.js",
             "manifest.json",
             "wrangler.jsonc",

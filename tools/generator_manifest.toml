@@ -109,6 +109,20 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_target_feature_manifest.py"
+outputs = [
+  "src/molt/_target_feature_manifest.py",
+  "wasm/target_feature_manifest.json",
+]
+source = "src/molt/target_feature_manifest.toml"
+check_mode = true
+check_command = "tools/gen_target_feature_manifest.py --check"
+idempotent = true
+sync_test = "tests/test_gen_target_feature_manifest.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_intrinsics.py"
 outputs = [
   "src/molt/_intrinsic_symbols.py",

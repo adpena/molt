@@ -138,8 +138,10 @@ Current native compiled-kernel backend proofs:
 - Metal: real backend dispatch on macOS
 - WebGPU: real `wgpu` backend dispatch on native desktop
 - WASM split-runtime/browser host: real browser-host WebGPU dispatch is available
-  through `wasm/browser_host.js` when `MOLT_GPU_BACKEND=webgpu` is present in the
-  WASI env and the host provides either:
+  through the shared `wasm/browser_gpu_dispatch.js` authority used by
+  `wasm/browser_host.js` and `wasm/browser_embed.js` when
+  `MOLT_GPU_BACKEND=webgpu` is present in the WASI env and the host provides
+  either:
   - `gpuKernelDispatcher`, or
   - the default worker-backed WebGPU dispatcher (`wasm/browser_gpu_worker.js`)
 
