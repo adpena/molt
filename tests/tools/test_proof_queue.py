@@ -4078,6 +4078,72 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
     }
 
 
+def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "runtime-wasm-rust-target.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="runtime-wasm-rust-target-run",
+        logical_id="pact-witness-acceptance",
+        reason="prove missing wasm Rust target diagnosis",
+        command=[sys.executable, "tools/pact_witness_acceptance.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact",
+        scopes=["tools/pact_witness_acceptance.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "runtime-wasm-rust-target.memory_guard.json",
+    )
+    log_path.write_text(
+        "Runtime wasm build requires Rust target wasm32-wasip1, but the active "
+        "Rust toolchain does not provide it. Run: rustup target add "
+        "wasm32-wasip1 --toolchain 1.96.1\n"
+        "Runtime wasm build failed\n"
+        "subprocess.CalledProcessError: Command '['python', '-m', 'molt', "
+        "'build']' returned non-zero exit status 2.\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "runtime-wasm-rust-target-run", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "runtime-wasm-rust-target-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "runtime-wasm-rust-target-missing"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "wasm32-wasip1" in diagnostics[0]["summary"]
+    assert "rustup target add wasm32-wasip1" in diagnostics[0]["evidence"]
+    assert "python-exception" not in {item["signal_id"] for item in diagnostics}
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_source_lease_contamination(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
