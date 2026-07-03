@@ -3605,36 +3605,54 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                         Err(err) => return slice_error(_py, err),
                     };
                     if end < start {
-                        let base_offset = memoryview_offset(ptr);
                         let stride = memoryview_stride(ptr);
-                        let out_ptr = alloc_memoryview(
-                            _py,
-                            memoryview_owner_bits(ptr),
-                            base_offset + start * stride,
-                            0,
-                            memoryview_itemsize(ptr),
-                            stride,
+                        let data = memoryview_data(ptr);
+                        let storage = TypedStridedStorage::new_with_owner(
+                            data,
                             memoryview_readonly(ptr),
+                            memoryview_itemsize(ptr),
+                            0,
+                            memoryview_base_bits(ptr),
+                            memoryview_owner_bits(ptr),
                             memoryview_format_bits(ptr),
+                            vec![0],
+                            vec![stride],
                         );
+                        let out_ptr = match storage {
+                            Some(storage) => alloc_memoryview_from_storage(_py, storage),
+                            None => std::ptr::null_mut(),
+                        };
                         if out_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
                         return MoltObject::from_ptr(out_ptr).bits();
                     }
-                    let base_offset = memoryview_offset(ptr);
-                    let new_offset = base_offset + start * memoryview_stride(ptr);
+                    let stride = memoryview_stride(ptr);
+                    let Some(byte_offset) = start.checked_mul(stride) else {
+                        return MoltObject::none().bits();
+                    };
                     let new_len = (end - start) as usize;
-                    let out_ptr = alloc_memoryview(
-                        _py,
-                        memoryview_owner_bits(ptr),
-                        new_offset,
-                        new_len,
-                        memoryview_itemsize(ptr),
-                        memoryview_stride(ptr),
+                    let base_data = memoryview_data(ptr);
+                    let data = if new_len == 0 {
+                        base_data
+                    } else {
+                        base_data.add(byte_offset as usize)
+                    };
+                    let storage = TypedStridedStorage::new_with_owner(
+                        data,
                         memoryview_readonly(ptr),
+                        memoryview_itemsize(ptr),
+                        0,
+                        memoryview_base_bits(ptr),
+                        memoryview_owner_bits(ptr),
                         memoryview_format_bits(ptr),
+                        vec![new_len as isize],
+                        vec![stride],
                     );
+                    let out_ptr = match storage {
+                        Some(storage) => alloc_memoryview_from_storage(_py, storage),
+                        None => std::ptr::null_mut(),
+                    };
                     if out_ptr.is_null() {
                         return MoltObject::none().bits();
                     }

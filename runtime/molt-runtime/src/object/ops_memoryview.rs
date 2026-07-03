@@ -11,7 +11,7 @@ use num_traits::ToPrimitive;
 pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
-        let ptr = match obj.as_ptr() {
+        let _ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
             None => {
                 return raise_exception::<_>(
@@ -22,51 +22,32 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
             }
         };
         unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_MEMORYVIEW {
-                let storage = match TypedStridedStorage::from_object_bits(bits) {
-                    Ok(storage) => storage,
-                    Err(TypedStridedStorageError::ReleasedMemoryView) => {
-                        return raise_released_memoryview(_py);
-                    }
-                    Err(_) => return MoltObject::none().bits(),
-                };
-                let out_ptr = alloc_memoryview_from_storage(_py, storage);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
+            let storage = match TypedStridedStorage::from_object_bits(_py, bits) {
+                Ok(storage) => storage,
+                Err(TypedStridedStorageError::ReleasedMemoryView) => {
+                    return raise_released_memoryview(_py);
                 }
-                return MoltObject::from_ptr(out_ptr).bits();
+                Err(TypedStridedStorageError::InvalidDescriptor) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview: invalid or unsupported buffer descriptor",
+                    );
+                }
+                Err(TypedStridedStorageError::NotBuffer) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview expects a bytes-like object",
+                    );
+                }
+            };
+            let out_ptr = alloc_memoryview_from_storage(_py, storage);
+            if out_ptr.is_null() {
+                return MoltObject::none().bits();
             }
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let len = bytes_len(ptr);
-                let readonly = type_id == TYPE_ID_BYTES;
-                let format_ptr = alloc_string(_py, b"B");
-                if format_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                let format_bits = MoltObject::from_ptr(format_ptr).bits();
-                let storage = TypedStridedStorage::one_dim(
-                    bytes_data(ptr) as *mut u8,
-                    readonly,
-                    len,
-                    1,
-                    1,
-                    0,
-                    bits,
-                    format_bits,
-                );
-                let out_ptr = match storage {
-                    Some(storage) => alloc_memoryview_from_storage(_py, storage),
-                    None => std::ptr::null_mut(),
-                };
-                dec_ref_bits(_py, format_bits);
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
+            return MoltObject::from_ptr(out_ptr).bits();
         }
-        raise_exception::<_>(_py, "TypeError", "memoryview expects a bytes-like object")
     })
 }
 
@@ -219,7 +200,14 @@ pub extern "C" fn molt_memoryview_cast(
                 Some(val) => val,
                 None => return MoltObject::none().bits(),
             };
-            if product.saturating_mul(fmt.itemsize as i128) != nbytes {
+            let Some(expected_nbytes) = product.checked_mul(fmt.itemsize as i128) else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "memoryview: product(shape) * itemsize overflows",
+                );
+            };
+            if expected_nbytes != nbytes {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -230,18 +218,26 @@ pub extern "C" fn molt_memoryview_cast(
             let mut stride = fmt.itemsize as isize;
             for idx in (0..shape.len()).rev() {
                 strides[idx] = stride;
-                stride = stride.saturating_mul(shape[idx].max(1));
+                let Some(next_stride) = stride.checked_mul(shape[idx].max(1)) else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "memoryview: shape is too large",
+                    );
+                };
+                stride = next_stride;
             }
             let data = memoryview_data(view_ptr);
             if data.is_null() {
                 return MoltObject::none().bits();
             }
-            let storage = TypedStridedStorage::new(
+            let storage = TypedStridedStorage::new_with_owner(
                 data,
                 memoryview_readonly(view_ptr),
                 fmt.itemsize,
                 memoryview_offset(view_ptr),
                 memoryview_base_bits(view_ptr),
+                memoryview_owner_bits(view_ptr),
                 format_bits,
                 shape,
                 strides,
@@ -302,14 +298,15 @@ unsafe fn memoryview_tolist_recursive(
     let mut items: Vec<u64> = Vec::with_capacity(dim_len);
     if dim + 1 == shape.len() {
         for i in 0..dim_len {
-            let item_offset = base_offset.checked_add((i as isize).saturating_mul(strides[dim]))?;
+            let item_offset =
+                memoryview_checked_strided_add(base_offset, i as isize, strides[dim])?;
             let scalar = unsafe { memoryview_read_scalar_at(_py, data, item_offset, fmt) }?;
             items.push(scalar);
         }
     } else {
         for i in 0..dim_len {
             let child_offset =
-                base_offset.checked_add((i as isize).saturating_mul(strides[dim]))?;
+                memoryview_checked_strided_add(base_offset, i as isize, strides[dim])?;
             let child = unsafe {
                 memoryview_tolist_recursive(_py, data, fmt, shape, strides, dim + 1, child_offset)
             }?;
@@ -413,7 +410,10 @@ pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
             let stride = memoryview_stride(ptr);
             let mut count = 0i64;
             for idx in 0..len {
-                let item_offset = (idx as isize).saturating_mul(stride);
+                let Some(item_offset) = memoryview_checked_strided_add(0, idx as isize, stride)
+                else {
+                    return MoltObject::none().bits();
+                };
                 let Some(item_bits) =
                     memoryview_read_scalar_at(_py, base.cast_const(), item_offset, fmt)
                 else {
@@ -483,7 +483,10 @@ pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
             let len = memoryview_len(ptr);
             let stride = memoryview_stride(ptr);
             for idx in 0..len {
-                let item_offset = (idx as isize).saturating_mul(stride);
+                let Some(item_offset) = memoryview_checked_strided_add(0, idx as isize, stride)
+                else {
+                    return MoltObject::none().bits();
+                };
                 let Some(item_bits) =
                     memoryview_read_scalar_at(_py, base.cast_const(), item_offset, fmt)
                 else {
@@ -546,7 +549,15 @@ pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
                 return raise_exception::<_>(_py, "TypeError", "release expects a memoryview");
             }
-            memoryview_mark_released(ptr);
+            if !memoryview_released(ptr) {
+                let owner_bits = memoryview_owner_bits(ptr);
+                let base_bits = memoryview_base_bits(ptr);
+                memoryview_mark_released(ptr);
+                crate::object::memoryview::release_buffer_refs(_py, owner_bits, base_bits);
+                let view = memoryview_ptr(ptr);
+                (*view).owner_bits = 0;
+                (*view).base_bits = 0;
+            }
         }
         MoltObject::none().bits()
     })
@@ -566,7 +577,7 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_MEMORYVIEW {
                 return raise_exception::<_>(_py, "TypeError", "toreadonly expects a memoryview");
             }
-            let storage = match TypedStridedStorage::from_object_bits(bits) {
+            let storage = match TypedStridedStorage::from_object_bits(_py, bits) {
                 Ok(storage) => storage,
                 Err(TypedStridedStorageError::ReleasedMemoryView) => {
                     return raise_released_memoryview(_py);
@@ -591,7 +602,7 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut MoltBuf
             if out_ptr.is_null() {
                 return 1;
             }
-            let storage = match TypedStridedStorage::from_object_bits(obj_bits) {
+            let storage = match TypedStridedStorage::from_object_bits(_py, obj_bits) {
                 Ok(storage) => storage,
                 Err(TypedStridedStorageError::ReleasedMemoryView) => {
                     let _ = raise_released_memoryview::<u64>(_py);
@@ -599,7 +610,7 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut MoltBuf
                 }
                 Err(_) => return 1,
             };
-            let Some(export) = MoltBufferView::from_typed_storage(&storage) else {
+            let Some(export) = MoltBufferView::project_typed_storage(&storage) else {
                 return 1;
             };
             *out_ptr = export;

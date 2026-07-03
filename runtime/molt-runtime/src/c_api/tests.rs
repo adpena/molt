@@ -1453,7 +1453,7 @@ fn buffer_acquire_exports_shaped_memoryview_descriptor() {
         assert_eq!(view.readonly, 0);
         assert_eq!(view.ndim, 2);
         assert_eq!(view.itemsize, 1);
-        assert_eq!(view.owner, view_bits);
+        assert_eq!(view.owner, owner_bits);
         assert_eq!(view.base, owner_bits);
         assert_eq!(&view.shape[..2], &[3, 4]);
         assert_eq!(&view.strides[..2], &[4, 1]);
@@ -1468,6 +1468,60 @@ fn buffer_acquire_exports_shaped_memoryview_descriptor() {
         dec_ref_bits(_py, view_bits);
         dec_ref_bits(_py, owner_bits);
         dec_ref_bits(_py, format_bits);
+    });
+}
+
+#[test]
+fn memoryview_array_buffer_export_keeps_semantic_base_and_lifetime_owner_distinct() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let typecode_ptr = alloc_string(_py, b"h");
+        assert!(!typecode_ptr.is_null());
+        let typecode_bits = MoltObject::from_ptr(typecode_ptr).bits();
+        let item_bits = [
+            int_bits_from_i64(_py, 1),
+            int_bits_from_i64(_py, 2),
+            int_bits_from_i64(_py, 3),
+        ];
+        let list_ptr = alloc_list(_py, &item_bits);
+        assert!(!list_ptr.is_null());
+        let list_bits = MoltObject::from_ptr(list_ptr).bits();
+        let array_bits = crate::molt_array_from_list(typecode_bits, list_bits);
+        assert!(!obj_from_bits(array_bits).is_none());
+        assert!(!exception_pending(_py));
+
+        let mut view = MoltBufferView::default();
+        let rc = unsafe { molt_buffer_acquire(array_bits, &mut view as *mut MoltBufferView) };
+        assert_eq!(rc, 0);
+        assert_eq!(view.base, array_bits);
+        assert_ne!(view.owner, 0);
+        assert_ne!(view.owner, array_bits);
+        assert_eq!(view.len, 6);
+        assert_eq!(view.ndim, 1);
+        assert_eq!(view.itemsize, 2);
+        assert_eq!(view.shape[0], 3);
+        assert_eq!(view.strides[0], 2);
+        assert_eq!(view.format[0], b'h');
+        assert!(!view.data.is_null());
+        let observed =
+            unsafe { std::slice::from_raw_parts(view.data as *const u8, view.len as usize) };
+        assert_eq!(observed.len(), 6);
+
+        let blocked = crate::molt_array_append(array_bits, int_bits_from_i64(_py, 4));
+        assert_none_with_exception_class(_py, blocked, "BufferError");
+
+        let release_rc = unsafe { molt_buffer_release(&mut view as *mut MoltBufferView) };
+        assert_eq!(release_rc, 0);
+        assert_eq!(view.owner, 0);
+        assert_eq!(view.base, 0);
+
+        let appended = crate::molt_array_append(array_bits, int_bits_from_i64(_py, 4));
+        assert!(obj_from_bits(appended).is_none());
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, array_bits);
+        dec_ref_bits(_py, list_bits);
+        dec_ref_bits(_py, typecode_bits);
     });
 }
 
@@ -1513,7 +1567,7 @@ fn memoryview_clone_and_c_export_share_typed_strided_descriptor() {
         assert_eq!(view.len, 12);
         assert_eq!(view.ndim, 2);
         assert_eq!(view.itemsize, 1);
-        assert_eq!(view.owner, clone_bits);
+        assert_eq!(view.owner, owner_bits);
         assert_eq!(view.base, owner_bits);
         assert_eq!(&view.shape[..2], &[3, 4]);
         assert_eq!(&view.strides[..2], &[4, 1]);
@@ -1573,7 +1627,7 @@ fn memoryview_from_c_buffer_roundtrips_typed_descriptor() {
         assert_eq!(exported.readonly, 0);
         assert_eq!(exported.ndim, 1);
         assert_eq!(exported.itemsize, 1);
-        assert_eq!(exported.owner, view_bits);
+        assert_eq!(exported.owner, 0);
         assert_eq!(exported.base, 0);
         assert_eq!(exported.shape[0], 4);
         assert_eq!(exported.strides[0], 1);
@@ -1615,6 +1669,7 @@ fn memoryview_from_c_buffer_roundtrips_typed_descriptor() {
         assert_eq!(slice_rc, 0);
         assert_eq!(sliced.data, unsafe { data.as_mut_ptr().add(1) });
         assert_eq!(sliced.len, 2);
+        assert_eq!(sliced.offset, 0);
         assert_eq!(sliced.base, 0);
         assert_eq!(sliced.shape[0], 2);
         let slice_release = unsafe { molt_buffer_release(&mut sliced as *mut MoltBufferView) };
@@ -1622,6 +1677,243 @@ fn memoryview_from_c_buffer_roundtrips_typed_descriptor() {
         dec_ref_bits(_py, sliced_bits);
         dec_ref_bits(_py, slice_bits);
         dec_ref_bits(_py, view_bits);
+    });
+}
+
+#[test]
+fn memoryview_from_c_buffer_retains_explicit_owner_across_release() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"wxyz");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let mut source = MoltBufferView {
+            data: unsafe { bytes_data(owner_ptr).cast_mut() },
+            len: 4,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: owner_bits,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        source.shape[0] = 4;
+        source.strides[0] = 1;
+        source.format[0] = b'B';
+
+        let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
+        assert!(!obj_from_bits(view_bits).is_none());
+        dec_ref_bits(_py, owner_bits);
+
+        let mut exported = MoltBufferView {
+            data: std::ptr::null_mut(),
+            len: 0,
+            readonly: 1,
+            ndim: 1,
+            itemsize: 1,
+            offset: 0,
+            owner: 0,
+            base: 0,
+            shape: [0; MOLT_BUFFER_MAX_NDIM],
+            strides: [0; MOLT_BUFFER_MAX_NDIM],
+            format: [0; MOLT_BUFFER_FORMAT_CAP],
+        };
+        let rc = unsafe { molt_buffer_acquire(view_bits, &mut exported as *mut MoltBufferView) };
+        assert_eq!(rc, 0);
+        assert_eq!(exported.owner, owner_bits);
+        assert_eq!(exported.base, 0);
+        assert_eq!(exported.len, 4);
+        let release_bits = crate::molt_memoryview_release(view_bits);
+        assert!(obj_from_bits(release_bits).is_none());
+        assert!(!exception_pending(_py));
+        let observed = unsafe {
+            std::slice::from_raw_parts(exported.data as *const u8, exported.len as usize)
+        };
+        assert_eq!(observed, b"wxyz");
+
+        let rc_release = unsafe { molt_buffer_release(&mut exported as *mut MoltBufferView) };
+        assert_eq!(rc_release, 0);
+        dec_ref_bits(_py, view_bits);
+    });
+}
+
+#[test]
+fn memoryview_from_c_buffer_rejects_invalid_typed_descriptors() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let mut data = [1u8, 2, 3, 4];
+        let data_ptr = data.as_mut_ptr();
+        let data_len = data.len();
+        let valid_view = || {
+            let mut view = MoltBufferView {
+                data: data_ptr,
+                len: data_len as u64,
+                readonly: 0,
+                ndim: 1,
+                itemsize: 1,
+                offset: 0,
+                owner: 0,
+                base: 0,
+                shape: [0; MOLT_BUFFER_MAX_NDIM],
+                strides: [0; MOLT_BUFFER_MAX_NDIM],
+                format: [0; MOLT_BUFFER_FORMAT_CAP],
+            };
+            view.shape[0] = data_len as isize;
+            view.strides[0] = 1;
+            view.format[0] = b'B';
+            view
+        };
+        let assert_rejects = |_py: &PyToken<'_>, view: &MoltBufferView| {
+            let bits = unsafe { molt_memoryview_from_buffer(view as *const MoltBufferView) };
+            assert!(obj_from_bits(bits).is_none());
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+        };
+
+        let mut bad_readonly = valid_view();
+        bad_readonly.readonly = 7;
+        assert_rejects(_py, &bad_readonly);
+
+        let mut bad_length = valid_view();
+        bad_length.len = 3;
+        assert_rejects(_py, &bad_length);
+
+        let mut bad_offset = valid_view();
+        bad_offset.offset = -1;
+        assert_rejects(_py, &bad_offset);
+
+        let mut bad_raw_offset = valid_view();
+        bad_raw_offset.offset = 1;
+        assert_rejects(_py, &bad_raw_offset);
+
+        let mut bad_shape = valid_view();
+        bad_shape.shape[0] = -1;
+        assert_rejects(_py, &bad_shape);
+
+        let mut bad_format = valid_view();
+        bad_format.format = [b'x'; MOLT_BUFFER_FORMAT_CAP];
+        assert_rejects(_py, &bad_format);
+
+        let mut bad_negative_stride = valid_view();
+        bad_negative_stride.strides[0] = -1;
+        assert_rejects(_py, &bad_negative_stride);
+
+        let mut bad_zero_negative_stride = valid_view();
+        bad_zero_negative_stride.len = 0;
+        bad_zero_negative_stride.shape[0] = 0;
+        bad_zero_negative_stride.strides[0] = -1;
+        assert_rejects(_py, &bad_zero_negative_stride);
+
+        let mut bad_raw_stride_span = valid_view();
+        bad_raw_stride_span.strides[0] = 2;
+        assert_rejects(_py, &bad_raw_stride_span);
+
+        let mut bad_format_itemsize = valid_view();
+        bad_format_itemsize.len = 8;
+        bad_format_itemsize.itemsize = 2;
+        bad_format_itemsize.shape[0] = 4;
+        bad_format_itemsize.strides[0] = 2;
+        assert_rejects(_py, &bad_format_itemsize);
+    });
+}
+
+#[test]
+fn memoryview_storage_rejects_truncated_format_authority() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"abcd");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let format_ptr = alloc_string(_py, b"abcdefghijklmnop");
+        assert!(!format_ptr.is_null());
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+
+        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+            _py,
+            owner_bits,
+            0,
+            1,
+            false,
+            format_bits,
+            vec![4],
+            vec![1],
+        );
+
+        assert!(view_ptr.is_null());
+        dec_ref_bits(_py, owner_bits);
+        dec_ref_bits(_py, format_bits);
+    });
+}
+
+#[test]
+fn buffer_acquire_accepts_positive_strided_descriptor() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"abcd");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let format_ptr = alloc_string(_py, b"B");
+        assert!(!format_ptr.is_null());
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+            _py,
+            owner_bits,
+            0,
+            1,
+            false,
+            format_bits,
+            vec![2],
+            vec![2],
+        );
+        assert!(!view_ptr.is_null());
+        let view_bits = MoltObject::from_ptr(view_ptr).bits();
+
+        let mut view = MoltBufferView::default();
+        let rc = unsafe { molt_buffer_acquire(view_bits, &mut view as *mut MoltBufferView) };
+        assert_eq!(rc, 0);
+        assert!(!view.data.is_null());
+        assert_ne!(view.owner, 0);
+        assert_eq!(view.len, 2);
+        assert_eq!(view.shape[0], 2);
+        assert_eq!(view.strides[0], 2);
+        assert!(!exception_pending(_py));
+        let release_rc = unsafe { molt_buffer_release(&mut view as *mut MoltBufferView) };
+        assert_eq!(release_rc, 0);
+        assert_eq!(view.owner, 0);
+
+        dec_ref_bits(_py, view_bits);
+        dec_ref_bits(_py, owner_bits);
+        dec_ref_bits(_py, format_bits);
+    });
+}
+
+#[test]
+fn memoryview_storage_rejects_negative_stride_until_lower_bound_custody() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let owner_ptr = alloc_bytes(_py, b"abcd");
+        assert!(!owner_ptr.is_null());
+        let owner_bits = MoltObject::from_ptr(owner_ptr).bits();
+        let format_ptr = alloc_string(_py, b"B");
+        assert!(!format_ptr.is_null());
+        let format_bits = MoltObject::from_ptr(format_ptr).bits();
+        let view_ptr = crate::object::builders::alloc_memoryview_shaped(
+            _py,
+            owner_bits,
+            0,
+            1,
+            false,
+            format_bits,
+            vec![0],
+            vec![-1],
+        );
+        assert!(view_ptr.is_null());
+        assert!(!exception_pending(_py));
+        dec_ref_bits(_py, owner_bits);
+        dec_ref_bits(_py, format_bits);
     });
 }
 
