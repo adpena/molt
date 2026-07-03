@@ -387,6 +387,34 @@ def _memory_guard_child_runner_status_line(summary_json: object) -> str | None:
     return f"  guard_child={evidence}"
 
 
+def _descendant_sample_evidence(
+    samples: Mapping[int, object],
+    descendants: set[int],
+    *,
+    limit: int = 3,
+) -> str | None:
+    snippets: list[str] = []
+    for pid in sorted(descendants):
+        sample = samples.get(pid)
+        command = getattr(sample, "command", None)
+        if not isinstance(command, str) or not command.strip():
+            continue
+        if _low_signal_descendant_command(command):
+            continue
+        snippets.append(f"{pid}:{_shorten(command, 96)}")
+        if len(snippets) >= limit:
+            break
+    if not snippets:
+        return None
+    suffix = "" if len(descendants) <= len(snippets) else f" +{len(descendants) - len(snippets)} more"
+    return "descendant_samples=" + "; ".join(snippets) + suffix
+
+
+def _low_signal_descendant_command(command: str) -> bool:
+    normalized = command.replace("\\", "/").strip().strip('"').casefold()
+    return normalized.endswith("/conhost.exe") or normalized == "conhost.exe"
+
+
 def _running_pytest_failures_observed_diagnostic(
     row: sqlite3.Row,
 ) -> dict[str, object] | None:
@@ -564,11 +592,14 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
                 scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
             )
         if descendants:
+            sample_evidence = _descendant_sample_evidence(samples, descendants)
             evidence = (
                 f"summary_json={row['summary_json']} child_pid={child_pid} "
                 f"last_log_age={_format_duration(log_age_s)} "
                 f"descendants={len(descendants)}"
             )
+            if sample_evidence is not None:
+                evidence += f" {sample_evidence}"
             return _diagnostic(
                 signal_id="running-proof-log-stale-live-child",
                 severity="infra",
