@@ -2939,6 +2939,61 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
     }
 
 
+_R6_TARGET_VERSION_PARITY_FILES = [
+    "tests/differential/stdlib/sys_metadata_intrinsics.py",
+    "tests/differential/stdlib/sys_stat_version_gate.py",
+    "tests/differential/stdlib/stat_api_surface_versioned.py",
+    "tests/differential/stdlib/queue_shutdown_version_gate.py",
+    "tests/differential/stdlib/removed_stdlib_modules_version_gate.py",
+]
+
+
+def _r6_target_version_parity_spec(
+    python_version: str,
+    timeout: float | None = None,
+) -> dict[str, object]:
+    normalized_version = python_version.strip()
+    if not normalized_version:
+        raise SystemExit("--python-version must not be empty")
+    target_tag = "py" + "".join(normalized_version.split(".")[:2])
+    return {
+        "logical_id": f"r6-target-version-parity-{target_tag}",
+        "reason": (
+            "Run the R6 target-version parity shard through queue custody with "
+            "the differential harness and TargetPythonVersion command authority."
+        ),
+        "command": _uv_active_python_command(
+            "tests/molt_diff.py",
+            "--jobs",
+            "1",
+            "--python-version",
+            normalized_version,
+            "--build-profile",
+            "dev",
+            *_R6_TARGET_VERSION_PARITY_FILES,
+        ),
+        "resource_family": "python",
+        "contention_key": f"python:r6-target-version-{target_tag}",
+        "scopes": [
+            "tools/target_python_runtime.py",
+            "tests/molt_diff.py",
+            "src/molt/cli/target_python.py",
+            "src/molt/stdlib/sys.py",
+            "src/molt/stdlib/stat.py",
+            "src/molt/stdlib/queue.py",
+            *_R6_TARGET_VERSION_PARITY_FILES,
+        ],
+        "env_overrides": {},
+        "notes": [
+            "Named R6 parity lane runs sys metadata plus stdlib version-gated "
+            "stat, queue shutdown, and PEP 594 removed-module fixtures with "
+            "serial differential custody; missing target interpreters fail "
+            "closed through tools/target_python_runtime.py."
+        ],
+        "timeout": timeout if timeout is not None else 900.0,
+    }
+
+
 def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
     env_overrides = dict(spec["env_overrides"])
     env_overrides.update(_env_overrides_from_pairs(args.env))
@@ -3002,6 +3057,13 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
 
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
     return _run_named_spec(args, _pact_witness_oracle_spec(args.timeout))
+
+
+def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:
+    return _run_named_spec(
+        args,
+        _r6_target_version_parity_spec(args.python_version, args.timeout),
+    )
 
 
 def _queue_one(
@@ -5062,6 +5124,30 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_oracle_p.add_argument("--detach", action="store_true")
     pact_oracle_p.add_argument("--print-spec", action="store_true")
     pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)
+
+    r6_parity_p = sub.add_parser(
+        "r6-target-version-parity",
+        help="run the queued R6 target-version stdlib parity shard",
+    )
+    r6_parity_p.add_argument(
+        "--python-version",
+        default="3.12",
+        help="target CPython minor to validate (default: 3.12)",
+    )
+    r6_parity_p.add_argument(
+        "--env", action="append", default=[], metavar="NAME=VALUE"
+    )
+    r6_parity_p.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help="append submission context to the R6 parity run",
+    )
+    _add_dependency_args(r6_parity_p)
+    r6_parity_p.add_argument("--timeout", type=float)
+    r6_parity_p.add_argument("--detach", action="store_true")
+    r6_parity_p.add_argument("--print-spec", action="store_true")
+    r6_parity_p.set_defaults(func=_cmd_r6_target_version_parity)
     return parser
 
 

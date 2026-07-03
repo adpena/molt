@@ -4986,6 +4986,70 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
     assert proof_queue._proof_command_policy_error(command) is None
 
 
+def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
+    spec = proof_queue._r6_target_version_parity_spec("3.12")
+
+    assert spec["logical_id"] == "r6-target-version-parity-py312"
+    assert spec["resource_family"] == "python"
+    assert spec["contention_key"] == "python:r6-target-version-py312"
+    command = list(spec["command"])
+    assert command[:7] == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+    ]
+    assert command[7:9] == ["python", "tests/molt_diff.py"]
+    assert command[command.index("--python-version") + 1] == "3.12"
+    assert command[command.index("--jobs") + 1] == "1"
+    assert "tests/differential/stdlib/sys_metadata_intrinsics.py" in command
+    assert "tests/differential/stdlib/queue_shutdown_version_gate.py" in command
+    assert "tools/target_python_runtime.py" in spec["scopes"]
+    assert "src/molt/stdlib/queue.py" in spec["scopes"]
+    assert any("missing target interpreters fail closed" in note for note in spec["notes"])
+    assert proof_queue._proof_command_policy_error(command) is None
+
+
+def test_proof_queue_r6_target_version_parity_uses_target_tag() -> None:
+    spec = proof_queue._r6_target_version_parity_spec("3.13")
+    command = list(spec["command"])
+
+    assert spec["logical_id"] == "r6-target-version-parity-py313"
+    assert spec["contention_key"] == "python:r6-target-version-py313"
+    assert command[command.index("--python-version") + 1] == "3.13"
+
+
+def test_proof_queue_r6_target_version_parity_print_spec(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "r6-target-version-parity",
+                "--python-version",
+                "3.13",
+                "--print-spec",
+            ]
+        )
+        == 0
+    )
+    spec = json.loads(capsys.readouterr().out)
+    assert spec["logical_id"] == "r6-target-version-parity-py313"
+    assert spec["command"][spec["command"].index("--python-version") + 1] == "3.13"
+    assert spec["resource_family"] == "python"
+
+
 def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     tmp_path: Path,
 ) -> None:
