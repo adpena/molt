@@ -49,9 +49,12 @@ app-owned `molt_isolate_import` string-comparison dispatch chain is deleted
 on native (wasm32 keeps its env import until PR3 unifies the WASM
 projection); the legacy `module_cache`/`sys.modules` store remains the
 module-object home until PR2 collapses it into the table-backed
-`sys.modules` view.  Gates: `tests/test_module_registry_gates.py` (G1/G3/G7,
-single-owner and chain-is-gone structural gates) and the runtime G4 state
-machine unit (`g4_ensure_state_machine_transitions`).
+`sys.modules` view. The PR2 execution inventory is
+`docs/design/foundation/69a_import_bedrock_pr2_sys_modules_view_cutover.md`;
+it is a cutover map for doc 69's one-store design, not a second authority.
+Gates: `tests/test_module_registry_gates.py` (G1/G3/G7, single-owner and
+chain-is-gone structural gates) and the runtime G4 state machine unit
+(`g4_ensure_state_machine_transitions`).
 
 ---
 
