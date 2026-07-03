@@ -32,6 +32,13 @@ print(
     stat.FILE_ATTRIBUTE_ARCHIVE,
 )
 
+if sys.platform.startswith("win"):
+    print(
+        stat.IO_REPARSE_TAG_APPEXECLINK,
+        stat.IO_REPARSE_TAG_MOUNT_POINT,
+        stat.IO_REPARSE_TAG_SYMLINK,
+    )
+
 expect_313 = sys.version_info >= (3, 13)
 print(
     hasattr(stat, "SF_DATALESS"),

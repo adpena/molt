@@ -24,7 +24,7 @@ _MOLT_STAT_FILEMODE = _require_intrinsic("molt_stat_filemode")
 _constants = _MOLT_STAT_CONSTANTS()
 if (
     not isinstance(_constants, tuple)
-    or len(_constants) != 71
+    or len(_constants) != 74
     or not all(isinstance(v, int) for v in _constants)
 ):
     raise RuntimeError("stat constants intrinsic returned invalid value")
@@ -101,9 +101,13 @@ if (
     FILE_ATTRIBUTE_SYSTEM,
     FILE_ATTRIBUTE_TEMPORARY,
     FILE_ATTRIBUTE_VIRTUAL,
+    _IO_REPARSE_TAG_APPEXECLINK,
+    _IO_REPARSE_TAG_MOUNT_POINT,
+    _IO_REPARSE_TAG_SYMLINK,
 ) = _constants
 
 _HAS_313_CONSTANTS = sys.version_info >= (3, 13)
+_HAS_WINDOWS_CONSTANTS = sys.platform.startswith("win")
 
 if _HAS_313_CONSTANTS:
     UF_SETTABLE = _UF_SETTABLE
@@ -131,6 +135,21 @@ else:
         )
     ):
         raise RuntimeError("stat constants intrinsic returned unexpected 3.13+ payload")
+
+if _HAS_WINDOWS_CONSTANTS:
+    IO_REPARSE_TAG_APPEXECLINK = _IO_REPARSE_TAG_APPEXECLINK
+    IO_REPARSE_TAG_MOUNT_POINT = _IO_REPARSE_TAG_MOUNT_POINT
+    IO_REPARSE_TAG_SYMLINK = _IO_REPARSE_TAG_SYMLINK
+else:
+    if any(
+        value != 0
+        for value in (
+            _IO_REPARSE_TAG_APPEXECLINK,
+            _IO_REPARSE_TAG_MOUNT_POINT,
+            _IO_REPARSE_TAG_SYMLINK,
+        )
+    ):
+        raise RuntimeError("stat constants intrinsic returned unexpected Windows payload")
 
 S_ENFMT = S_ISGID
 S_IREAD = S_IRUSR

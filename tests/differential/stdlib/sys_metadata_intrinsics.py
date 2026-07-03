@@ -8,7 +8,10 @@ impl_version = tuple(impl.version)
 
 assert isinstance(sys.hexversion, int) and not isinstance(sys.hexversion, bool)
 assert isinstance(sys.api_version, int) and not isinstance(sys.api_version, bool)
-assert isinstance(sys.abiflags, str)
+expected_abiflags = not sys.platform.startswith("win")
+assert hasattr(sys, "abiflags") == expected_abiflags
+if expected_abiflags:
+    assert isinstance(sys.abiflags, str)
 
 assert hasattr(impl, "name")
 assert hasattr(impl, "cache_tag")

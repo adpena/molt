@@ -91,6 +91,18 @@ pub extern "C" fn molt_stat_constants() -> u64 {
         const FILE_ATTRIBUTE_SYSTEM: i64 = 4;
         const FILE_ATTRIBUTE_TEMPORARY: i64 = 256;
         const FILE_ATTRIBUTE_VIRTUAL: i64 = 65536;
+        #[cfg(target_os = "windows")]
+        const IO_REPARSE_TAG_APPEXECLINK: i64 = 0x8000001b;
+        #[cfg(not(target_os = "windows"))]
+        const IO_REPARSE_TAG_APPEXECLINK: i64 = 0;
+        #[cfg(target_os = "windows")]
+        const IO_REPARSE_TAG_MOUNT_POINT: i64 = 0xa0000003;
+        #[cfg(not(target_os = "windows"))]
+        const IO_REPARSE_TAG_MOUNT_POINT: i64 = 0;
+        #[cfg(target_os = "windows")]
+        const IO_REPARSE_TAG_SYMLINK: i64 = 0xa000000c;
+        #[cfg(not(target_os = "windows"))]
+        const IO_REPARSE_TAG_SYMLINK: i64 = 0;
         let payload = [
             MoltObject::from_int(S_IFMT_MASK).bits(),
             MoltObject::from_int(S_IFSOCK).bits(),
@@ -163,6 +175,9 @@ pub extern "C" fn molt_stat_constants() -> u64 {
             MoltObject::from_int(FILE_ATTRIBUTE_SYSTEM).bits(),
             MoltObject::from_int(FILE_ATTRIBUTE_TEMPORARY).bits(),
             MoltObject::from_int(FILE_ATTRIBUTE_VIRTUAL).bits(),
+            MoltObject::from_int(IO_REPARSE_TAG_APPEXECLINK).bits(),
+            MoltObject::from_int(IO_REPARSE_TAG_MOUNT_POINT).bits(),
+            MoltObject::from_int(IO_REPARSE_TAG_SYMLINK).bits(),
         ];
         let tuple_ptr = alloc_tuple(_py, &payload);
         if tuple_ptr.is_null() {

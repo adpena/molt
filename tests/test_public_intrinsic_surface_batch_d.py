@@ -80,7 +80,7 @@ _signal_values = {{
     "molt_signal_sigsys": 31,
 }}
 
-_stat_constants = (0,) * 71
+_stat_constants = (0,) * 74
 
 builtins._molt_intrinsics = {{
     "molt_codecs_decode": _codecs_decode,
