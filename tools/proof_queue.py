@@ -67,6 +67,7 @@ MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
+RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
 STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
     {
         "running-proof-child-missing",
@@ -254,6 +255,106 @@ def _is_guard_command(command: object) -> bool:
     )
 
 
+def _row_command_mentions_pytest(row: sqlite3.Row) -> bool:
+    try:
+        command = json.loads(row["command_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(command, list):
+        return False
+    return any(
+        isinstance(part, str)
+        and part.replace("\\", "/").lower().rsplit("/", 1)[-1]
+        in {"pytest", "pytest.exe"}
+        for part in command
+    )
+
+
+def _pytest_sections_from_summary(summary_json: object) -> list[dict[str, object]]:
+    if not summary_json:
+        return []
+    summary = _read_json_object(Path(str(summary_json)))
+    candidates: list[object] = [summary.get("pytest")]
+    repro = summary.get("repro")
+    if isinstance(repro, dict):
+        candidates.append(repro.get("pytest"))
+    return [item for item in candidates if isinstance(item, dict)]
+
+
+def _pytest_current_status_line(summary_json: object) -> str | None:
+    for pytest_section in _pytest_sections_from_summary(summary_json):
+        current_test_file = pytest_section.get("current_test_file")
+        if isinstance(current_test_file, dict):
+            payload = current_test_file.get("payload")
+            if isinstance(payload, dict):
+                nodeid = payload.get("nodeid")
+                if isinstance(nodeid, str) and nodeid.strip():
+                    phase = payload.get("phase")
+                    line = f"  pytest_current={nodeid.strip()}"
+                    if isinstance(phase, str) and phase.strip():
+                        line += f" phase={phase.strip()}"
+                    return line
+            path = current_test_file.get("path")
+            if current_test_file.get("missing") is True and isinstance(path, str):
+                return f"  pytest_current=missing path={path}"
+            error = current_test_file.get("error")
+            if isinstance(error, str) and error.strip():
+                return f"  pytest_current=unreadable error={_shorten(error.strip(), 120)}"
+        current = pytest_section.get("current_test")
+        if isinstance(current, str) and current.strip():
+            return f"  pytest_current={current.strip()}"
+    return None
+
+
+def _pytest_missing_current_test_file_evidence(summary_json: object) -> str | None:
+    for pytest_section in _pytest_sections_from_summary(summary_json):
+        current_test_file = pytest_section.get("current_test_file")
+        if not isinstance(current_test_file, dict):
+            continue
+        if current_test_file.get("missing") is not True:
+            continue
+        path = current_test_file.get("path")
+        if isinstance(path, str) and path.strip():
+            return f"pytest_current_test_file_missing path={path.strip()}"
+        return "pytest_current_test_file_missing"
+    return None
+
+
+def _running_pytest_current_test_missing_diagnostic(
+    row: sqlite3.Row,
+) -> dict[str, object] | None:
+    if row["status"] != "running":
+        return None
+    if not _row_command_mentions_pytest(row):
+        return None
+    log_age_s = _log_age_seconds(Path(row["log_path"]))
+    if (
+        log_age_s is None
+        or log_age_s < RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+    ):
+        return None
+    evidence = _pytest_missing_current_test_file_evidence(row["summary_json"])
+    if evidence is None:
+        return None
+    evidence += f" last_log_age={_format_duration(log_age_s)}"
+    return _diagnostic(
+        signal_id="running-pytest-current-test-missing",
+        severity="infra",
+        summary=(
+            "Running pytest proof has no current-test marker while its queue log "
+            "is quiet."
+        ),
+        evidence=evidence,
+        next_action=(
+            "Treat this as pre-test or collection/startup opacity. Inspect the "
+            "pytest startup path once, then rerun with a first-failure or "
+            "collection-focused proof; do not interrupt via Codex stdin."
+        ),
+        scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+        artifacts=(str(row["summary_json"]), str(row["log_path"])),
+    )
+
+
 def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | None:
     if row["status"] != "running":
         return None
@@ -420,6 +521,9 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     last = _last_nonempty_log_line(path)
     if last:
         lines[-1] = f"{lines[-1]} last={last}"
+    pytest_line = _pytest_current_status_line(row["summary_json"])
+    if pytest_line:
+        lines.append(pytest_line)
     return lines
 
 
@@ -1159,16 +1263,7 @@ def _diagnostic(
 
 
 def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | None:
-    if not summary_json:
-        return None
-    summary = _read_json_object(Path(str(summary_json)))
-    candidates: list[object] = [summary.get("pytest")]
-    repro = summary.get("repro")
-    if isinstance(repro, dict):
-        candidates.append(repro.get("pytest"))
-    for pytest_section in candidates:
-        if not isinstance(pytest_section, dict):
-            continue
+    for pytest_section in _pytest_sections_from_summary(summary_json):
         current_test_file = pytest_section.get("current_test_file")
         payload: object = None
         if isinstance(current_test_file, dict):
@@ -1187,6 +1282,9 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
+    running_pytest_missing = _running_pytest_current_test_missing_diagnostic(row)
+    if running_pytest_missing is not None:
+        diagnostics.append(running_pytest_missing)
     running_child_missing = _running_child_missing_diagnostic(row)
     if running_child_missing is not None:
         diagnostics.append(running_child_missing)
@@ -1856,6 +1954,98 @@ def _dependency_state(
     if blockers:
         return "blocked", blockers
     return "ready", []
+
+
+def _blocker_summary(blockers: Sequence[sqlite3.Row]) -> str:
+    return ", ".join(
+        f"{blocker['parent_run_id']}:{blocker['status']}" for blocker in blockers
+    )
+
+
+def _mark_queued_dependency_blocked(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    blockers: Sequence[sqlite3.Row],
+    *,
+    announce: bool = False,
+) -> str:
+    blocker_summary = _blocker_summary(blockers)
+    payload = _row_to_payload(row)
+    _update_run(
+        conn,
+        row["run_id"],
+        status="blocked",
+        finished_at=_utc_now(),
+    )
+    log_path = Path(str(payload["log_path"]))
+    _write_failed_run_log(
+        log_path,
+        run_id=str(payload["run_id"]),
+        logical_id=str(payload["logical_id"]),
+        reason=str(payload["reason"]),
+        repo_root=_repo_root(args),
+        command=list(payload["command"]),
+        lines=[
+            "proof queue blocked by dependency before command execution:",
+            f"parents={blocker_summary}",
+            "",
+            "No proof command was launched for this row.",
+        ],
+    )
+    _try_write_marimo_notebook(
+        args,
+        conn,
+        str(payload["run_id"]),
+        log_path=log_path,
+        phase="blocked projection",
+    )
+    if announce:
+        print(f"blocked {row['run_id']} parents={blocker_summary}")
+    return blocker_summary
+
+
+def _refresh_blocked_queued_runs(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    *,
+    run_ids: Sequence[str] | None = None,
+    announce: bool = False,
+) -> int:
+    conn.row_factory = sqlite3.Row
+    if run_ids:
+        placeholders = ",".join("?" for _ in run_ids)
+        rows = list(
+            conn.execute(
+                "SELECT * FROM proof_runs "
+                "WHERE status = 'queued' "
+                f"AND run_id IN ({placeholders}) "
+                "ORDER BY rowid",
+                tuple(run_ids),
+            )
+        )
+    else:
+        rows = list(
+            conn.execute(
+                "SELECT * FROM proof_runs "
+                "WHERE status = 'queued' "
+                "ORDER BY rowid"
+            )
+        )
+    blocked_count = 0
+    for row in rows:
+        state, blockers = _dependency_state(conn, row["run_id"])
+        if state != "blocked":
+            continue
+        _mark_queued_dependency_blocked(
+            args,
+            conn,
+            row,
+            blockers,
+            announce=announce,
+        )
+        blocked_count += 1
+    return blocked_count
 
 
 def _insert_run(
@@ -2591,6 +2781,7 @@ def _queue_one(
     if edge_kind not in EDGE_KINDS:
         allowed = ", ".join(sorted(EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
+    _refresh_blocked_queued_runs(args, conn)
     active = list(_active_for_key(conn, contention_key))
     if active:
         print(
@@ -3057,6 +3248,70 @@ def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv[:index], argv[index + 1 :]
 
 
+_PROOF_COMMAND_SUBCOMMANDS = frozenset({"exec", "cargo"})
+_GLOBAL_OPTIONS_WITH_VALUES = frozenset(
+    {"--db", "--logs-root", "--notebooks-root", "--repo-root"}
+)
+
+
+def _proof_command_subcommand_index(raw: list[str]) -> int | None:
+    index = 0
+    while index < len(raw):
+        token = raw[index]
+        if token == "--":
+            return None
+        if token in _PROOF_COMMAND_SUBCOMMANDS:
+            return index
+        if token in _GLOBAL_OPTIONS_WITH_VALUES:
+            index += 2
+            continue
+        if any(
+            token.startswith(f"{option}=") for option in _GLOBAL_OPTIONS_WITH_VALUES
+        ):
+            index += 1
+            continue
+        index += 1
+    return None
+
+
+def _split_proof_command_argv(
+    raw: list[str],
+    *,
+    subcommand: str,
+) -> tuple[list[str], list[str]]:
+    if "--" not in raw:
+        raise SystemExit(
+            f"proof_queue.py {subcommand} requires `--` before the proof command; "
+            "quote option values before the delimiter or use the TOML submit lane."
+        )
+    before, command = _command_after_dash(raw)
+    if not command:
+        raise SystemExit(
+            f"proof_queue.py {subcommand} requires a proof command after `--`."
+        )
+    return before, command
+
+
+def _reject_pre_delimiter_remainder(
+    args: argparse.Namespace,
+    *,
+    subcommand: str,
+    attr: str,
+) -> None:
+    residue = list(getattr(args, attr, []) or [])
+    if not residue:
+        return
+    preview = " ".join(shlex.quote(part) for part in residue[:8])
+    if len(residue) > 8:
+        preview += " ..."
+    raise SystemExit(
+        f"proof_queue.py {subcommand} saw stray positional argument(s) before "
+        f"`--`: {preview}. This usually means a value for --reason, --note, "
+        "or another metadata option lost shell quoting; refusing to run with "
+        "possibly dropped queue metadata."
+    )
+
+
 def _cmd_exec(args: argparse.Namespace) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     env_overrides = _env_overrides_from_pairs(args.env)
@@ -3349,41 +3604,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
             if args.run_id or len(rows) >= args.limit:
                 break
             continue
-        blocker_summary = ", ".join(
-            f"{blocker['parent_run_id']}:{blocker['status']}" for blocker in blockers
-        )
+        blocker_summary = _blocker_summary(blockers)
         if state == "waiting":
             print(f"waiting {row['run_id']} parents={blocker_summary}")
             continue
-        _update_run(
-            conn,
-            row["run_id"],
-            status="blocked",
-            finished_at=_utc_now(),
-        )
-        payload = _row_to_payload(row)
-        _write_failed_run_log(
-            Path(str(payload["log_path"])),
-            run_id=str(payload["run_id"]),
-            logical_id=str(payload["logical_id"]),
-            reason=str(payload["reason"]),
-            repo_root=_repo_root(args),
-            command=list(payload["command"]),
-            lines=[
-                "proof queue blocked by dependency before command execution:",
-                f"parents={blocker_summary}",
-                "",
-                "No proof command was launched for this row.",
-            ],
-        )
-        _try_write_marimo_notebook(
+        _mark_queued_dependency_blocked(
             args,
             conn,
-            str(payload["run_id"]),
-            log_path=Path(str(payload["log_path"])),
-            phase="blocked projection",
+            row,
+            blockers,
+            announce=True,
         )
-        print(f"blocked {row['run_id']} parents={blocker_summary}")
     rc = 0
     for row in rows:
         payload = _row_to_payload(row)
@@ -3413,6 +3644,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
+    _refresh_blocked_queued_runs(args, conn)
     active = list(
         conn.execute(
             "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
@@ -3505,8 +3737,24 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
     run_ids = tuple(dict.fromkeys(args.run_id or ()))
+    _refresh_blocked_queued_runs(
+        args,
+        conn,
+        run_ids=run_ids or None,
+        announce=True,
+    )
     if run_ids:
         placeholders = ",".join("?" for _ in run_ids)
+        known = {
+            str(row["run_id"])
+            for row in conn.execute(
+                f"SELECT run_id FROM proof_runs WHERE run_id IN ({placeholders})",
+                run_ids,
+            )
+        }
+        missing = [run_id for run_id in run_ids if run_id not in known]
+        if missing:
+            raise SystemExit("unknown proof run(s): " + ", ".join(missing))
         rows = list(
             conn.execute(
                 "SELECT * FROM proof_runs "
@@ -3516,12 +3764,6 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 run_ids,
             )
         )
-        found = {str(row["run_id"]) for row in rows}
-        missing = [run_id for run_id in run_ids if run_id not in found]
-        if missing:
-            raise SystemExit(
-                "unknown queued/running proof run(s): " + ", ".join(missing)
-            )
     else:
         rows = list(
             conn.execute(
@@ -3555,6 +3797,10 @@ def _cmd_evidence(args: argparse.Namespace) -> int:
         raise SystemExit("pass one proof run id: positional and --run-id disagree")
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
+    if run_id:
+        _refresh_blocked_queued_runs(args, conn, run_ids=[run_id])
+    else:
+        _refresh_blocked_queued_runs(args, conn)
     if run_id:
         rows = list(
             conn.execute("SELECT * FROM proof_runs WHERE run_id = ?", (run_id,))
@@ -3678,6 +3924,7 @@ def _notebook_projection_expected(
 def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
+    _refresh_blocked_queued_runs(args, conn)
     rows = _audit_rows(conn, args)
     run_ids = [str(row["run_id"]) for row in rows]
     notes_by_run = _notes_for_run_ids(conn, run_ids)
@@ -3782,6 +4029,35 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
 
         notes = notes_by_run.get(run_id, [])
         dag = edges_by_run.get(run_id, {"parents": [], "children": []})
+        metadata_defects: list[str] = []
+        try:
+            scopes = json.loads(row["scopes_json"])
+        except (TypeError, json.JSONDecodeError):
+            scopes = None
+        if not isinstance(scopes, list) or not scopes:
+            metadata_defects.append("missing scopes")
+        if str(row["resource_family"]) == "generic":
+            metadata_defects.append("resource_family=generic")
+        if str(row["contention_key"]) == "generic:default":
+            metadata_defects.append("contention_key=generic:default")
+        reason = str(row["reason"]).strip()
+        if not reason or reason.startswith(('"', "'")):
+            metadata_defects.append(f"suspicious reason={reason!r}")
+        if metadata_defects:
+            issues.append(
+                _audit_issue(
+                    signal_id="audit-weak-proof-metadata",
+                    severity="warning",
+                    run_id=run_id,
+                    summary="Proof row metadata is too weak for durable evidence.",
+                    evidence="; ".join(metadata_defects),
+                    next_action=(
+                        "Use a scoped resource family, contention key, reason, "
+                        "scope, and note; if shell quoting caused this row, rerun "
+                        "through the delimiter-guarded queue shape."
+                    ),
+                )
+            )
         if not notes:
             issues.append(
                 _audit_issue(
@@ -4005,6 +4281,11 @@ def _diagnose_row(conn: sqlite3.Connection, args: argparse.Namespace) -> sqlite3
 
 def _cmd_diagnose(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
+    _refresh_blocked_queued_runs(
+        args,
+        conn,
+        run_ids=[args.run_id] if args.run_id else None,
+    )
     row = _diagnose_row(conn, args)
     diagnostics = _run_diagnostics(row)
     payload = _row_to_payload(row)
@@ -4118,6 +4399,7 @@ def _cmd_link(args: argparse.Namespace) -> int:
 
 def _cmd_notebook(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
+    _refresh_blocked_queued_runs(args, conn, run_ids=[args.run_id])
     path = _write_marimo_notebook(args, conn, args.run_id, args.output)
     print(f"notebook: {path}")
     return 0
@@ -4239,8 +4521,6 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_dependency_args(exec_p)
     exec_p.add_argument("--timeout", type=float, default=1200.0)
     exec_p.add_argument("--detach", action="store_true")
-    exec_p.add_argument("--wait", action="store_true")
-    exec_p.add_argument("--wait-timeout", type=float)
     exec_p.add_argument("command", nargs=argparse.REMAINDER)
     exec_p.set_defaults(func=_cmd_exec)
 
@@ -4457,13 +4737,31 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    if raw and raw[0] in {"exec", "cargo"}:
-        before, command = _command_after_dash(raw)
+    proof_subcommand_index = _proof_command_subcommand_index(raw)
+    if proof_subcommand_index is not None:
+        subcommand = raw[proof_subcommand_index]
+        before_subcommand = raw[:proof_subcommand_index]
+        subcommand_argv = raw[proof_subcommand_index:]
+        before, command = _split_proof_command_argv(
+            subcommand_argv,
+            subcommand=subcommand,
+        )
+        before = [*before_subcommand, *before]
         parser = _build_parser()
         args = parser.parse_args(before)
-        if raw[0] == "exec":
+        if subcommand == "exec":
+            _reject_pre_delimiter_remainder(
+                args,
+                subcommand=subcommand,
+                attr="command",
+            )
             args.command = command
         else:
+            _reject_pre_delimiter_remainder(
+                args,
+                subcommand=subcommand,
+                attr="cargo_args",
+            )
             args.cargo_args = command
     else:
         parser = _build_parser()

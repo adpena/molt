@@ -60,6 +60,12 @@ Every queued run needs a meaningful reason, resource family, contention key,
 scope, and note. The note should say what changed or what is being tested or
 explored and why.
 
+For `exec` and `cargo`, the `--` delimiter before the proof command is
+mandatory. The queue rejects any positional token before that delimiter because
+it means shell quoting likely broke a metadata value such as `--reason` or
+`--note`; running anyway would silently drop scope, contention, notes, detach
+mode, or timeout authority.
+
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   --id runtime-buffer-descriptor-authority `
@@ -78,6 +84,10 @@ waits while parents are queued/running and becomes `blocked` if a parent has
 already failed or gone stale. A blocked row is scheduling evidence, not a lost
 proof log: the queue writes a small blocked log, keeps the DAG parent visible in
 `evidence`, and reports the deterministic `proof-dependency-blocked` diagnostic.
+`run`, `status`, `prune-stale`, `evidence`, `audit`, `diagnose`, `notebook`,
+and new submissions reconcile impossible queued dependencies before reporting
+or enforcing contention; do not launch a worker just to clear a dead dependency
+row.
 
 Queue commands that invoke Python must use:
 
@@ -118,6 +128,10 @@ exact run ID, and prints both the run ID and `*.runner.log`. The runner then
 uses `tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
 queued row. WASM resource families also preflight the checked-in Rust toolchain
 contract and install/check required Rust targets before Cargo starts.
+Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
+`MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
+outer queue memory guard instead of recursively rewrapping the test process on
+Windows.
 
 ## Latency Discipline
 
@@ -289,8 +303,9 @@ Pact missing-output acceptance failures, Rust compiler errors, pytest assertion
 failures, external native artifact custody refusals, reachable native support
 modules without source/artifact custody, reachability-driven stdlib profile
 refusals, generated WASM ABI/link-import surface gaps, dependency-blocked rows,
-Molt runtime invalid-object-header aborts, non-final memory-guard summaries on
-terminal rows, and memory-guard orphan cleanup.
+Molt runtime invalid-object-header aborts, quiet running pytest rows with missing
+current-test custody markers, non-final memory-guard summaries on terminal
+rows, and memory-guard orphan cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 
@@ -310,6 +325,16 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose R
 `status` also prints the first diagnostic for recent failed rows. If a repeated
 failure only shows `unclassified-failed-proof`, add a deterministic diagnosis
 rule to `tools/proof_queue.py` before that pattern becomes tribal knowledge.
+`audit` also reports `audit-weak-proof-metadata` for rows that fell back to
+generic resource/contention authority, have no scopes, or carry suspicious
+reasons from broken shell quoting. Treat those rows as weak evidence and rerun
+with the delimiter-guarded shape before citing them.
+For active pytest rows, `status` prints `pytest_current=<nodeid> phase=<phase>`
+when the memory-guard summary has a live marker. If the marker file is still
+missing while the queue log is quiet, `diagnose` must classify the row as
+`running-pytest-current-test-missing`; treat that as pre-test or collection
+opacity, inspect that startup path once, and rerun with a focused selector
+instead of interrupting through Codex stdin.
 If a terminal row still has only a `running` or `child_running` memory-guard
 summary with no summary return code, it must classify as
 `memory-guard-summary-incomplete`; treat that row as queue-custody incomplete
