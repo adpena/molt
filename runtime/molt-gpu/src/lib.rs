@@ -11,6 +11,7 @@ pub mod fuse;
 pub mod lazy;
 pub mod mlir;
 pub mod ops;
+pub mod primitives_ffi;
 pub mod render;
 pub mod schedule;
 pub mod shapetracker;
