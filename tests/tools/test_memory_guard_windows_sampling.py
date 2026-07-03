@@ -196,6 +196,30 @@ def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
     assert windows_snapshot._windows_process_snapshot_rows_hard_timeout() == []
 
 
+def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
+    monkeypatch,
+) -> None:
+    import ctypes
+
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+
+    def missing_psapi(*_args, **_kwargs):
+        raise OSError("psapi unavailable")
+
+    monkeypatch.setattr(ctypes, "WinDLL", missing_psapi, raising=False)
+
+    assert windows_snapshot.windows_process_handle_rss_kb(1234) is None
+
+
+def test_windows_process_handle_rss_rejects_invalid_handle_values(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(windows_snapshot.os, "name", "nt", raising=False)
+
+    assert windows_snapshot.windows_process_handle_rss_kb(None) is None
+    assert windows_snapshot.windows_process_handle_rss_kb("not-a-handle") is None
+
+
 def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
     module = _load_memory_guard()
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)

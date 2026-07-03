@@ -167,27 +167,30 @@ def windows_process_handle_rss_kb(handle: object) -> int | None:
     except (TypeError, ValueError):
         return None
 
-    import ctypes
-    from ctypes import wintypes
+    try:
+        import ctypes
+        from ctypes import wintypes
 
-    process_memory_counters_type = _windows_process_memory_counters_type(
-        ctypes,
-        wintypes,
-    )
-    psapi = ctypes.WinDLL("psapi", use_last_error=True)
-    get_process_memory_info = _windows_get_process_memory_info(
-        psapi,
-        ctypes,
-        wintypes,
-        process_memory_counters_type,
-    )
-    counters = process_memory_counters_type()
-    counters.cb = ctypes.sizeof(process_memory_counters_type)
-    if not get_process_memory_info(
-        wintypes.HANDLE(handle_value),
-        ctypes.byref(counters),
-        counters.cb,
-    ):
+        process_memory_counters_type = _windows_process_memory_counters_type(
+            ctypes,
+            wintypes,
+        )
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        get_process_memory_info = _windows_get_process_memory_info(
+            psapi,
+            ctypes,
+            wintypes,
+            process_memory_counters_type,
+        )
+        counters = process_memory_counters_type()
+        counters.cb = ctypes.sizeof(process_memory_counters_type)
+        if not get_process_memory_info(
+            wintypes.HANDLE(handle_value),
+            ctypes.byref(counters),
+            counters.cb,
+        ):
+            return None
+    except (AttributeError, OSError, TypeError, ValueError):
         return None
     return _working_set_rss_kb(counters)
 
