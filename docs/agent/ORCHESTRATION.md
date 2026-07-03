@@ -274,6 +274,27 @@ native_callable_exports fixtures — `test_cli_import_collection.py`
 native-callable tests pass today). Do NOT touch the numpy exec / cpython-abi
 lane the subagent owns.
 
+**OPERATOR DIRECTIVE 2026-07-03 — GOD-FILE/GOD-CRATE DECOMPOSITION (high
+priority, PARALLEL to witness).** World-class OSS separation of concerns:
+execute the doc-21 decomposition program's PENDING moves. The god-crate is
+`molt-runtime` (~346k lines); `molt-backend-wasm` (~88k) and `molt-passes`
+(~82k) are next. Rules: (a) run `tools/structural_audit.py` first to get the
+CURRENT RED god-files/crates over the ratchet (the ratchet only moves DOWN —
+never re-baseline to green); (b) pick the highest-leverage PENDING move from
+docs/design/foundation/21b/21e/21f (crate splits) or 21c/21d (Python
+frontend/cli package splits — cli.py, frontend/__init__.py) that is DISJOINT
+from the active witness lanes — do NOT touch `runtime/molt-cpython-abi/**`
+(numpy-exec subagent) or `runtime/molt-runtime/src/object/**` +
+`builtins/module_table.rs` + `builtins/array_mod.rs` (buffer lane 2); (c)
+STRICT move-only diff: keep moved files as pure renames, widen `pub` PRECISELY
+(never blanket `pub(crate)→pub`), gate on a byte-identical corpus build +
+0-warning + lib tests + symbol identity (per 21f execution specs); (d) work in
+an ISOLATED worktree, commit small per-move by exact pathspec, ping the
+orchestrator to cherry-pick to main; (e) new crates are born UNGATED — add the
+per-crate clippy gate to ci.yml + molt_dev_gates.toml in the SAME move. This
+is R5b; it is the permanent fix for the ~2160s god-crate wasm rebuild that
+throttles the witness confirmation loop.
+
 1. **WITNESS: scipy.ndimage executable ABI dispatch** (goal's named aperture):
    `distance_transform_edt`, `gaussian_filter`, `label`, `maximum_filter`,
    `minimum_filter` must lower to executable ABI dispatch (native
