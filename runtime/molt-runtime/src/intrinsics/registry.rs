@@ -885,8 +885,11 @@ mod tests {
     #[cfg(not(feature = "stdlib_regex"))]
     #[test]
     fn regex_engine_intrinsics_do_not_resolve_when_stdlib_regex_is_disabled() {
-        assert!(resolve_symbol("molt_re_literal_advance").is_some());
-        assert!(resolve_symbol("molt_re_charclass_advance").is_some());
+        // The byte-matching primitives moved into the `molt-runtime-regex` leaf
+        // crate alongside the compiled-regex engine, so they are now gated by
+        // `stdlib_regex` too — nothing `molt_re_*` links when the feature is off.
+        assert!(resolve_symbol("molt_re_literal_advance").is_none());
+        assert!(resolve_symbol("molt_re_charclass_advance").is_none());
 
         assert!(resolve_symbol("molt_re_compile").is_none());
         assert!(resolve_symbol("molt_re_execute").is_none());
