@@ -131,6 +131,47 @@ fn test_memoryview_from_buffer_copies_descriptor_without_sharing_release() {
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
 }
 
+#[test]
+fn test_memoryview_from_scalar_buffer_keeps_ndim_zero() {
+    init();
+    let mut byte = b'x';
+    let format = b"B\0";
+    let mut info: Py_buffer = unsafe { std::mem::zeroed() };
+    info.buf = (&mut byte as *mut u8).cast();
+    info.obj = ptr::null_mut();
+    info.len = 1;
+    info.itemsize = 1;
+    info.readonly = 0;
+    info.ndim = 0;
+    info.format = format.as_ptr().cast::<c_char>().cast_mut();
+    info.shape = ptr::null_mut();
+    info.strides = ptr::null_mut();
+    info.suboffsets = ptr::null_mut();
+
+    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
+    assert!(!view.is_null());
+    let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
+    assert!(!buffer.is_null());
+    assert_eq!(unsafe { (*buffer).buf }, (&mut byte as *mut u8).cast());
+    assert_eq!(unsafe { (*buffer).len }, 1);
+    assert_eq!(unsafe { (*buffer).itemsize }, 1);
+    assert_eq!(unsafe { (*buffer).ndim }, 0);
+    assert!(unsafe { (*buffer).shape }.is_null());
+    assert!(unsafe { (*buffer).strides }.is_null());
+    assert!(!unsafe { (*buffer).format }.is_null());
+    unsafe {
+        assert_eq!(*(*buffer).format as u8, b'B');
+        molt_cpython_abi::api::refcount::Py_DECREF(view);
+    }
+
+    let mut suboffset = 0isize;
+    info.suboffsets = (&mut suboffset as *mut isize).cast();
+    let invalid_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
+    assert!(invalid_view.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
 // ---------------------------------------------------------------------------
 // PyObject_Hash
 // ---------------------------------------------------------------------------
