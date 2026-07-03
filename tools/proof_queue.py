@@ -160,6 +160,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
         "queue-infra-warning",
         "memory-guard-orphan-cleanup",
         "queue-policy-rejection",
+        "running-pytest-failures-observed",
         "running-pytest-current-test-missing",
     }
 )
@@ -326,6 +327,19 @@ def _pytest_missing_current_test_file_evidence(summary_json: object) -> str | No
     return None
 
 
+def _pytest_progress_failure_counts(line: str | None) -> tuple[int, int] | None:
+    if line is None:
+        return None
+    progress = line.strip()
+    if PYTEST_PROGRESS_LINE_RE.fullmatch(progress) is None:
+        return None
+    failures = progress.count("F")
+    errors = progress.count("E")
+    if failures == 0 and errors == 0:
+        return None
+    return failures, errors
+
+
 def _summary_child_process(summary_json: object) -> dict[str, object] | None:
     if not summary_json:
         return None
@@ -371,6 +385,48 @@ def _memory_guard_child_runner_status_line(summary_json: object) -> str | None:
     if evidence is None:
         return None
     return f"  guard_child={evidence}"
+
+
+def _running_pytest_failures_observed_diagnostic(
+    row: sqlite3.Row,
+) -> dict[str, object] | None:
+    if row["status"] != "running":
+        return None
+    if not _row_command_mentions_pytest(row):
+        return None
+    log_path = Path(row["log_path"])
+    last_log_line = _last_nonempty_log_line(log_path)
+    counts = _pytest_progress_failure_counts(last_log_line)
+    if counts is None:
+        return None
+    failures, errors = counts
+    evidence_parts = [
+        f"last_pytest_progress={last_log_line}",
+        f"failures={failures}",
+        f"errors={errors}",
+    ]
+    log_age_s = _log_age_seconds(log_path)
+    if log_age_s is not None:
+        evidence_parts.append(f"last_log_age={_format_duration(log_age_s)}")
+    child_runner = _memory_guard_child_runner_evidence(row["summary_json"])
+    if child_runner is not None:
+        evidence_parts.append(child_runner)
+    return _diagnostic(
+        signal_id="running-pytest-failures-observed",
+        severity="warning",
+        summary=(
+            "Running pytest proof has already emitted failure/error progress "
+            "markers."
+        ),
+        evidence=" ".join(evidence_parts),
+        next_action=(
+            "Keep the row running for the full pytest failure report; do not "
+            "classify this as infra-only current-test opacity or interrupt via "
+            "Codex stdin."
+        ),
+        scopes=("tools/proof_queue.py",),
+        artifacts=(str(row["log_path"]),),
+    )
 
 
 def _running_pytest_current_test_missing_diagnostic(
@@ -1403,6 +1459,9 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
+    running_pytest_failures = _running_pytest_failures_observed_diagnostic(row)
+    if running_pytest_failures is not None:
+        diagnostics.append(running_pytest_failures)
     running_pytest_missing = _running_pytest_current_test_missing_diagnostic(row)
     if running_pytest_missing is not None:
         diagnostics.append(running_pytest_missing)
