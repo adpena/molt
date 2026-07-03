@@ -119,22 +119,22 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
         .to_string()
 }
 
-/// Regression  native codegen must compile the CANONICAL bare `get_attr`.
-///
-/// `tir::lower_to_simple` emits the canonical `get_attr` for any `LoadAttr`
-/// that carries no specialized `_original_kind` (its documented default,
-/// exactly like `set_attr`/`del_attr`/`index`/`call`). A TIR pass that
-/// yields a generic by-name attribute load reaches native codegen with that
-/// bare spelling  observed for `__future__._Feature.__repr__` under
-/// `--build-profile release`, where the guard-splitting passes leave a
-/// generic `get_attr` cold-fallback after specializing the
-/// `self.optional`/`.mandatory`/`.compiler_flag` `guarded_field_get`s. The
-/// attribute handler (`fc::attrs`) claimed every specialized `get_attr_*`
-/// alias but NOT the canonical `get_attr`, so the op hit the dispatch's loud
-/// no-codegen catch-all and panicked ("no codegen for result-producing op
-/// kind `get_attr`"). This compiles a function whose body is a bare
-/// `get_attr`; without the fix it panics in `compile_func`, with it the op
-/// routes to the generic-by-name attribute load.
+// Regression  native codegen must compile the CANONICAL bare `get_attr`.
+//
+// `tir::lower_to_simple` emits the canonical `get_attr` for any `LoadAttr`
+// that carries no specialized `_original_kind` (its documented default,
+// exactly like `set_attr`/`del_attr`/`index`/`call`). A TIR pass that
+// yields a generic by-name attribute load reaches native codegen with that
+// bare spelling  observed for `__future__._Feature.__repr__` under
+// `--build-profile release`, where the guard-splitting passes leave a
+// generic `get_attr` cold-fallback after specializing the
+// `self.optional`/`.mandatory`/`.compiler_flag` `guarded_field_get`s. The
+// attribute handler (`fc::attrs`) claimed every specialized `get_attr_*`
+// alias but NOT the canonical `get_attr`, so the op hit the dispatch's loud
+// no-codegen catch-all and panicked ("no codegen for result-producing op
+// kind `get_attr`"). This compiles a function whose body is a bare
+// `get_attr`; without the fix it panics in `compile_func`, with it the op
+// routes to the generic-by-name attribute load.
 
 fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
     let mut functions = vec![func.clone()];
