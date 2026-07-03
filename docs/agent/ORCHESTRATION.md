@@ -496,12 +496,37 @@ available, DISJOINT from every witness lane; (3) 15 layer crates not in
 `[workspace].members`. Every completion drops the ratchet; the ratchet fails CI
 on any new facade / misplacement / layer-cycle.
 
-TOP DISJOINT CODEX CUT (do this now): move `builtins/{gpu.rs, gpu_backend.rs,
-gpu_primitives.rs, attention.rs, contiguous.rs, kernels.rs, objects.rs,
-tensor_methods.rs, tensor_runtime.rs}` (14.5k lines) into `molt-gpu` behind a
-thin bridge. Move-only, build-verified, exact-pathspec commits, isolated
-worktree. Verify with `tools/canonicalization_contract.py` (misplaced_module_lines
-must drop) + a molt-runtime build. This shrinks the god-crate ~5% in one clean cut.
+GPU CUT — CORRECTED SCOPING (audit 2026-07-03, my earlier "14.5k clean" was
+wrong). A coupling audit proved only **`gpu_primitives.rs` (2578 lines) is
+cleanly movable** (zero god-crate refs, u64-handle/raw-ptr FFI, no obj-model
+coupling). It is ALREADY IN-FLIGHT as uncommitted WIP on the
+`codex-doc71-20260703` worktree (moved to `molt-gpu/src/primitives_ffi.rs`) —
+codex-doc71 OWNS this; do NOT duplicate it (a subagent already collided +
+stood down). The other **~11,925 lines** (`gpu.rs`, `attention.rs`,
+`contiguous.rs`, `kernels.rs`, `objects.rs`, `tensor_methods.rs`,
+`tensor_runtime.rs`) are a tightly-coupled `use super::*` cluster that
+manipulates PyObjects and reaches into god-crate internals
+(`call::dispatch::call_callable1`, `builtins::classes::builtin_classes`,
+`alloc_instance_for_class`, `molt_getattr_builtin`, `object::builders::*`,
+`molt_module_import`) — **BLOCKED**, needs a large bidirectional bridge exposing
+that surface through `molt-runtime-core`; sequence as its own arc AFTER the core
+extraction (same keystone that blocks asyncio/net). When codex-doc71 lands
+gpu_primitives, `misplaced_module_lines` drops 14503->11925 — orchestrator
+re-baselines the contract.
+
+FOLLOW-UPS (unclaimed): (a) `molt-gpu` has NO clippy gate + 6 pre-existing
+clippy errors (`molt_gpu_prim_read_data` needs `unsafe`; 5 `collapsible_if` in
+`render/{cuda,hip,msl,opencl,wgsl}.rs`) blocking a graphlib-parity gate;
+(b) `molt-runtime-stringprep` is in NEITHER workspace (contract flags it, the one
+real `non_member_layer_crates` finding) — add it to `runtime/Cargo.toml` members.
+
+LANE VISIBILITY (protocol): `git worktree list` is the GROUND-TRUTH registry of
+in-flight lanes (`E:/Molt/worktrees/codex-*`), which hold UNCOMMITTED WIP not
+listed here. Check it before claiming a cut. Active 2026-07-03: buffer-stride,
+witness-buffer, ndimage-dispatch, doc71(GPU), wasm-webgpu-research, webgpu-proof,
+numpy-linalg-eigh. Clean disjoint decomposition space: stdlib leaf cuts (regex
+SPLIT — orchestrator subagent in flight; text codecs) + non-witness god-crates
+(molt-passes, molt-backend-native).
 
 SEQUENCED PLAN (respecting active witness lanes):
 - **QUEUED — the build-speed win, fires when buffer lane 2 lands.** CORE/object
