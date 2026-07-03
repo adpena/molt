@@ -460,7 +460,8 @@ Complete the derived-attribution stack the STRUCTURAL_AUDIT_BOARD routes:
   values, boxes, generic/runtime-helper calls, RC events, exception events, guards, and
   heap allocations. The opcode-category membership is generated from `op_kinds.toml`
   (`opcode_pass_delta_facts_table`), not hand-classified in the observer. The same
-  JSONL feeds `tools/translation_validator.py --pass-delta-jsonl`, which is the R3a
+  JSONL carries a Rust-owned `translation_validation` verdict consumed by
+  `tools/translation_validator.py --pass-delta-jsonl`, which is the R3a
   proof-order gate for surviving `ValueId`s: raw-carrier proof may be added, but it may
   not silently disappear or drift across scalar families. The default artifact is
   `tmp/molt-backend/tir/pass_delta.jsonl`; `MOLT_PASS_DELTA_PATH` may point at a

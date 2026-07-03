@@ -222,7 +222,10 @@ fuzz_target!(|data: &[u8]| {
     // Run the full optimization pipeline.  We catch panics to distinguish
     // them from expected verification failures (which return empty stats).
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        passes::run_pipeline(&mut func, &TargetInfo::native_release_fast())
+        passes::run_pipeline_with_translation_validation(
+            &mut func,
+            &TargetInfo::native_release_fast(),
+        )
     }));
 
     match result {
