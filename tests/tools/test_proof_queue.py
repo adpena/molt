@@ -247,6 +247,18 @@ def test_proof_queue_proof_command_help_does_not_require_delimiter(
     assert "requires `--` before the proof command" not in captured.err
 
 
+def test_proof_queue_help_detection_ignores_metadata_values_and_command_args() -> None:
+    assert proof_queue._proof_command_help_requested(["exec", "--help"])
+    assert proof_queue._proof_command_help_requested(["exec", "--id", "help-smoke", "-h"])
+    assert not proof_queue._proof_command_help_requested(
+        ["exec", "--note", "--help", "--", sys.executable]
+    )
+    assert not proof_queue._proof_command_help_requested(
+        ["exec", "--note=--help", "--", sys.executable]
+    )
+    assert not proof_queue._proof_command_help_requested(["exec", "--", "--help"])
+
+
 def test_proof_queue_exec_preserves_command_help_after_delimiter(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -953,6 +965,92 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     assert "windows_memory_guard_child_runner pid=3210" in out
     assert "pre-test or collection/startup opacity" in out
     assert "uv/cache contention" in out
+
+
+def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    current_path = tmp_path / "pytest-current.json"
+    log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
+    stale = (
+        time.time()
+        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - 5.0
+    )
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "child_process": {
+                    "pid": 3210,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+                "repro": {"host": {"platform": "win32"}},
+                "pytest": {
+                    "current_test_file": {
+                        "missing": True,
+                        "path": str(current_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="audit quiet pytest startup",
+        command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="molt-dev",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="active-run",
+        body="test: audit must surface current-test custody opacity",
+        kind="submission",
+        author="codex",
+    )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        started_at=proof_queue._utc_now(),
+        guard_pid=os.getpid(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "diagnostics: running-pytest-current-test-missing=1" in output
+    assert "audit-running-pytest-current-test-missing run=active-run" in output
+    assert "pre-test or collection/startup opacity" in output
 
 
 def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
@@ -4037,6 +4135,7 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
         == 0
     )
     output = capsys.readouterr().out
+    assert "archaeology: superseded_terminal=1" in output
     assert "classified_failed=0" in output
     assert "diagnostics:" not in output
     assert "run=stale-timeout" not in output
@@ -4060,7 +4159,100 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
     output = capsys.readouterr().out
     assert "classified_failed=1" in output
     assert "diagnostics: memory-guard-timeout=1" in output
+    assert "archaeology:" not in output
     assert "audit-memory-guard-timeout run=stale-timeout" in output
+
+
+def test_proof_queue_audit_only_retires_explicit_live_superseding_children(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cases = (
+        ("depends_on", "passed"),
+        ("derives_from", "passed"),
+        ("compares", "passed"),
+        ("reruns", "stale"),
+        ("supersedes", "stale"),
+    )
+    for kind, child_status in cases:
+        db = tmp_path / f"{kind}-{child_status}.sqlite3"
+        conn = proof_queue._connect(db)
+        parent_run_id = f"stale-timeout-{kind}-{child_status}"
+        child_run_id = f"child-{kind}-{child_status}"
+        for run_id, status in (
+            (parent_run_id, "failed"),
+            (child_run_id, child_status),
+        ):
+            log_path = tmp_path / f"{run_id}.log"
+            proof_queue._insert_run(
+                conn,
+                run_id=run_id,
+                logical_id="memory-guard-dx",
+                reason="prove audit retirement stays narrow",
+                command=[sys.executable, "-c", "print('proof')"],
+                cwd=proof_queue.ROOT,
+                resource_family="python-tests",
+                contention_key=f"python:{run_id}",
+                scopes=["tools/proof_queue.py"],
+                git_snapshot={
+                    "available": True,
+                    "head": "abc123",
+                    "dirty": False,
+                    "status": [],
+                },
+                log_path=log_path,
+                summary_json=tmp_path / f"{run_id}.memory_guard.json",
+            )
+            proof_queue._insert_note(
+                conn,
+                run_id=run_id,
+                body="test: audit must not over-retire queue debt",
+                kind="submission",
+                author="codex",
+            )
+            log_path.write_text(
+                (
+                    "memory_guard: timeout after 300.00s; terminated tracked "
+                    "process tree to prevent orphaned Molt subprocesses\n"
+                )
+                if run_id == parent_run_id
+                else "ok\n",
+                encoding="utf-8",
+            )
+            proof_queue._update_run(
+                conn,
+                run_id,
+                status=status,
+                returncode=124 if status == "failed" else 0,
+            )
+        proof_queue._insert_edge(
+            conn,
+            parent_run_id=parent_run_id,
+            child_run_id=child_run_id,
+            kind=kind,
+            note="edge must not over-retire parent failure",
+            author="codex",
+        )
+
+        assert (
+            proof_queue.main(
+                [
+                    "--db",
+                    str(db),
+                    "--logs-root",
+                    str(tmp_path / "runs"),
+                    "--repo-root",
+                    str(proof_queue.ROOT),
+                    "audit",
+                    "--no-notebook-check",
+                ]
+            )
+            == 1
+        )
+        output = capsys.readouterr().out
+        assert "classified_failed=1" in output
+        assert "diagnostics: memory-guard-timeout=1" in output
+        assert "archaeology:" not in output
+        assert f"audit-memory-guard-timeout run={parent_run_id}" in output
 
 
 def test_proof_queue_audit_fails_on_unclassified_failure(
