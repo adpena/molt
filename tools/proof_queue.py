@@ -3007,6 +3007,24 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
     if args.print_spec:
         print(json.dumps(runnable, indent=2, sort_keys=True))
         return 0
+    if getattr(args, "queue_only", False):
+        rc, run_id = _queue_one(
+            args,
+            logical_id=str(runnable["logical_id"]),
+            reason=str(runnable["reason"]),
+            command=list(runnable["command"]),
+            resource_family=str(runnable["resource_family"]),
+            contention_key=str(runnable["contention_key"]),
+            scopes=list(runnable["scopes"]),
+            env_overrides=dict(runnable["env_overrides"]),
+            initial_notes=initial_notes,
+            depends_on=getattr(args, "depends_on", []) or [],
+            edge_kind=getattr(args, "edge_kind", DEFAULT_EDGE_KIND),
+            edge_note=getattr(args, "edge_note", None),
+        )
+        if rc == 0 and run_id is not None:
+            print(f"queued {run_id}")
+        return rc
     if getattr(args, "detach", False):
         rc, run_id = _queue_one(
             args,
@@ -4877,6 +4895,26 @@ def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> None:
+    parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help=note_help,
+    )
+    _add_dependency_args(parser)
+    parser.add_argument("--timeout", type=float)
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument(
+        "--queue-only",
+        action="store_true",
+        help="submit the named proof row without running it or launching a runner",
+    )
+    execution.add_argument("--detach", action="store_true")
+    parser.add_argument("--print-spec", action="store_true")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Submit, run, and inspect Molt proof lanes with contention limits."
@@ -5091,38 +5129,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "pact-witness-acceptance",
         help="run the queue-owned Pact Kernel A browser/WASM acceptance aperture",
     )
-    pact_accept_p.add_argument(
-        "--env", action="append", default=[], metavar="NAME=VALUE"
+    _add_named_lane_args(
+        pact_accept_p,
+        note_help="append submission context to the acceptance run",
     )
-    pact_accept_p.add_argument(
-        "--note",
-        action="append",
-        default=[],
-        help="append submission context to the acceptance run",
-    )
-    _add_dependency_args(pact_accept_p)
-    pact_accept_p.add_argument("--timeout", type=float)
-    pact_accept_p.add_argument("--detach", action="store_true")
-    pact_accept_p.add_argument("--print-spec", action="store_true")
     pact_accept_p.set_defaults(func=_cmd_pact_witness_acceptance)
 
     pact_oracle_p = sub.add_parser(
         "pact-witness-oracle",
         help="run the queued Pact Kernel A fixture/reference parity oracle",
     )
-    pact_oracle_p.add_argument(
-        "--env", action="append", default=[], metavar="NAME=VALUE"
+    _add_named_lane_args(
+        pact_oracle_p,
+        note_help="append submission context to the oracle run",
     )
-    pact_oracle_p.add_argument(
-        "--note",
-        action="append",
-        default=[],
-        help="append submission context to the oracle run",
-    )
-    _add_dependency_args(pact_oracle_p)
-    pact_oracle_p.add_argument("--timeout", type=float)
-    pact_oracle_p.add_argument("--detach", action="store_true")
-    pact_oracle_p.add_argument("--print-spec", action="store_true")
     pact_oracle_p.set_defaults(func=_cmd_pact_witness_oracle)
 
     r6_parity_p = sub.add_parser(
@@ -5134,19 +5154,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="3.12",
         help="target CPython minor to validate (default: 3.12)",
     )
-    r6_parity_p.add_argument(
-        "--env", action="append", default=[], metavar="NAME=VALUE"
+    _add_named_lane_args(
+        r6_parity_p,
+        note_help="append submission context to the R6 parity run",
     )
-    r6_parity_p.add_argument(
-        "--note",
-        action="append",
-        default=[],
-        help="append submission context to the R6 parity run",
-    )
-    _add_dependency_args(r6_parity_p)
-    r6_parity_p.add_argument("--timeout", type=float)
-    r6_parity_p.add_argument("--detach", action="store_true")
-    r6_parity_p.add_argument("--print-spec", action="store_true")
     r6_parity_p.set_defaults(func=_cmd_r6_target_version_parity)
     return parser
 
