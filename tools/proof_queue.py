@@ -2293,7 +2293,7 @@ def _wait_for_guard_completion_or_stale(
                     flush=True,
                 )
             elapsed = time.monotonic() - start
-            return "stale", None, elapsed
+            return "stale", PROOF_QUEUE_STALE_EXIT_CODE, elapsed
         else:
             elapsed = time.monotonic() - start
             status = "passed" if rc == 0 else "failed"
@@ -4389,7 +4389,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         rows = list(
             conn.execute(
                 "SELECT * FROM proof_runs "
-                "WHERE status IN ('queued', 'running') "
+                "WHERE status IN ('queued', 'running', 'stale') "
                 f"AND run_id IN ({placeholders}) "
                 "ORDER BY started_at",
                 run_ids,
@@ -4406,6 +4406,27 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
     for row in rows:
         if row["status"] == "queued":
             continue
+        if row["status"] == "stale":
+            if row["returncode"] is None:
+                _update_run(
+                    conn,
+                    row["run_id"],
+                    returncode=PROOF_QUEUE_STALE_EXIT_CODE,
+                )
+                pruned += 1
+                diagnostics = _run_diagnostics(
+                    _row_by_run_id(conn, str(row["run_id"])) or row
+                )
+                diagnostic_summary = _format_diagnostic_summary(diagnostics)
+                if diagnostic_summary is None:
+                    diagnostic_summary = (
+                        "already-stale [infra]: canonicalized stale returncode"
+                    )
+                print(
+                    f"stale {row['run_id']} diagnosis={diagnostic_summary} "
+                    f"returncode={PROOF_QUEUE_STALE_EXIT_CODE}"
+                )
+            continue
         pid = row["guard_pid"]
         guard_alive = pid is not None and _pid_alive(int(pid))
         diagnostics = _run_diagnostics(row)
@@ -4415,6 +4436,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
             conn,
             row["run_id"],
             status="stale",
+            returncode=PROOF_QUEUE_STALE_EXIT_CODE,
             finished_at=_utc_now(),
         )
         pruned += 1
