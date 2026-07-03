@@ -118,6 +118,26 @@ per-crate clippy gate, then cherry-picked. Do renames when the touched crate has
 no other in-flight lane (coordinate on this board). Do NOT interleave a rename
 with a semantic change in the same commit — rename-only diffs must stay reviewable.
 
+## 🚨 P0 BROKEN MAIN (2026-07-03): molt-runtime does not compile under full features
+
+Two independent lane breaks landed without a full-feature molt-runtime build:
+1. **gpu_primitives re-export** — codex-doc71's a8d4897df moved builtins/gpu_primitives.rs
+   into molt-gpu but left a dangling `pub use crate::builtins::gpu_primitives` in
+   lib.rs:276. **FIXED by orchestrator (4a8c603a1)** — repointed to molt_gpu::primitives_ffi.
+2. **memoryview descriptor — BUFFER LANE MUST FIX NOW.** `95f1966c1 "Unify memoryview
+   buffer descriptor authority"` REMOVED `memoryview_format_from_code`, `one_dim_with_format`,
+   `new_with_format` from object/memoryview.rs, but `builtins/array_mod.rs` (lines 22, 98, 537)
+   still calls them → E0432, molt-runtime fails to build under default/full features (the
+   witness + every full build). The unpushed buffer worktree befadadb1 has a reconciled
+   memoryview.rs; the fix is to update array_mod.rs's 3 callers to the new unified
+   MemoryViewFormatKind API (or re-land the removed fns). Orchestrator will NOT hand-fix this
+   (buffer-lane territory + unified-API domain knowledge + risk of trampling befadadb1).
+   **Buffer lane: reconcile array_mod.rs ↔ object/memoryview.rs and push immediately.**
+
+SYSTEMIC GAP: molt-runtime changes are landing without a full-feature `cargo check -p
+molt-runtime` gate, so breaks accumulate on main undetected (non-build gates pass atop a
+broken compiler). Every lane touching molt-runtime MUST run a full-feature build before landing.
+
 ## 🔥 RIP-IT-ALL-UP DECOMPOSITION ROADMAP (operator 2026-07-03: "rip it all up")
 
 **PRIORITY ORDER (operator 2026-07-03): BACKEND / RUNTIME-NATIVE / WASM / LLVM
