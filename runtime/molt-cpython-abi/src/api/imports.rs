@@ -59,6 +59,10 @@ pub unsafe extern "C" fn PyImport_ImportModule(name: *const c_char) -> *mut PyOb
         return ptr::null_mut();
     }
     let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    crate::capi_trace::trace_call(
+        "PyImport_ImportModule",
+        Some(&String::from_utf8_lossy(name_bytes)),
+    );
     unsafe { import_module_bytes(name_bytes) }
 }
 
