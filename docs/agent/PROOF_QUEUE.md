@@ -429,6 +429,11 @@ If the queue guard process is still alive but the nested memory-guard child in
 the running summary is dead and the log is stale, `prune-stale` must still mark
 the row stale with `running-proof-child-missing`; do not keep that row active
 waiting for a child that custody already proved gone.
+Active queue-owned runners apply the same stale-running diagnostics while they
+wait: once a row proves `running-proof-child-missing` or
+`running-proof-launch-summary-stale`, the runner marks its own row `stale`,
+writes the diagnosis and evidence to the queue log, and terminates only the
+guard process it launched for that run.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID
