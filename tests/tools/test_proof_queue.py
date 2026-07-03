@@ -1816,7 +1816,9 @@ def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
     assert str(summary_path) in out
     assert str(log_path) in out
     assert "pruned=1" in out
-    assert _rows(db)[0]["status"] == "stale"
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
@@ -1897,7 +1899,9 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
     assert "diagnosis=running-proof-child-missing" in out
     assert f"child_pid={child_pid}" in out
     assert "pruned=1" in out
-    assert _rows(db)[0]["status"] == "stale"
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
@@ -2008,10 +2012,10 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
     assert rc == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
     out = capsys.readouterr().out
     assert "stale " in out
-    assert "rc=?" in out
+    assert f"rc={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in out
     rows = _rows(db)
     assert rows[0]["status"] == "stale"
-    assert rows[0]["returncode"] is None
+    assert rows[0]["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
     assert popen_instances
     fake_proc = popen_instances[0]
     assert fake_proc.terminated
@@ -2020,7 +2024,10 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
     assert "proof_queue stale-running terminalization" in log_text
     assert "diagnosis=running-proof-child-missing" in log_text
     assert f"child_pid={child_pid}" in log_text
-    assert "proof_queue finished status=stale exit_code=?" in log_text
+    assert (
+        f"proof_queue finished status=stale "
+        f"exit_code={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in log_text
+    )
 
 
 def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
@@ -2094,8 +2101,77 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
     assert str(tmp_path / "target-run.log") in out
     assert "sibling-run" not in out
     assert "pruned=1" in out
-    statuses = {row["run_id"]: row["status"] for row in _rows(db)}
+    rows = {row["run_id"]: row for row in _rows(db)}
+    statuses = {run_id: row["status"] for run_id, row in rows.items()}
     assert statuses == {"target-run": "stale", "sibling-run": "running"}
+    assert rows["target-run"]["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    assert rows["sibling-run"]["returncode"] is None
+
+
+def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "stale.log"
+    summary_path = tmp_path / "stale.memory_guard.json"
+    log_path.write_text(
+        "proof_queue run_id=stale-run\n"
+        "proof_queue finished status=stale exit_code=? elapsed=17.0s\n",
+        encoding="utf-8",
+    )
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "returncode": None,
+                "child_process": None,
+                "recorded_at": "2026-07-03T00:08:37Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="stale-run",
+        logical_id="stale",
+        reason="prove selected stale rows get canonical return codes",
+        command=[sys.executable, "-c", "print('stale')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="proof-queue-dx",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(conn, "stale-run", status="stale")
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "stale-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "stale stale-run" in out
+    assert "memory-guard-summary-incomplete" in out
+    assert f"returncode={proof_queue.PROOF_QUEUE_STALE_EXIT_CODE}" in out
+    assert "pruned=1" in out
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
