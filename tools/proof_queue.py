@@ -148,6 +148,9 @@ MOLT_DIFF_FAIL_RE = re.compile(
     r"(?m)^\[FAIL\]\s+(?P<case>\S+)\s+\((?P<target>[^)]+)\)\s+"
     r"(?P<detail>[^\r\n]+)"
 )
+MOLT_DIFF_STDOUT_LINE_RE = re.compile(
+    r"(?m)^  (?P<label>CPython|Molt)\s+stdout: (?P<value>[^\r\n]+)"
+)
 PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
 NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX = (
     "tests/test_native_import_bootstrap_regressions.py::"
@@ -197,6 +200,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
     {
         "queue-infra-warning",
         "memory-guard-orphan-cleanup",
+        "nested-memory-guard-orphan-cleanup",
         "queue-policy-rejection",
         "runtime-wasm-rust-target-missing",
         "running-pytest-failures-observed",
@@ -2098,6 +2102,42 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    diff_fail_match = MOLT_DIFF_FAIL_RE.search(log_tail)
+    if (
+        diff_fail_match is not None
+        and not _diagnostics_have_signal(
+            diagnostics, "import-partial-module-publication"
+        )
+        and MEMORY_GUARD_TIMEOUT_RE.search(log_tail) is None
+    ):
+        failing_case = diff_fail_match.group("case").replace("\\", "/")
+        stdout_lines = [
+            f"{match.group('label')} stdout={match.group('value')}"
+            for match in MOLT_DIFF_STDOUT_LINE_RE.finditer(log_tail)
+        ]
+        evidence_parts = [diff_fail_match.group(0)]
+        if stdout_lines:
+            evidence_parts.extend(stdout_lines[:2])
+        diagnostics.append(
+            _diagnostic(
+                signal_id="molt-diff-output-mismatch",
+                severity="error",
+                summary=(
+                    "molt_diff found a "
+                    f"{diff_fail_match.group('detail')} in "
+                    f"{failing_case} "
+                    f"on {diff_fail_match.group('target')}."
+                ),
+                evidence="\n".join(evidence_parts),
+                next_action=(
+                    "Treat this as the current product frontier. Fix the "
+                    "semantic authority named by the fixture, then rerun the "
+                    "same queue lane instead of relabeling the row as infra."
+                ),
+                scopes=(failing_case, "tests/molt_diff.py"),
+            )
+        )
+
     match = PYTEST_ERROR_RE.search(log_tail)
     if match is not None:
         exception_line = PYTEST_EXCEPTION_LINE_RE.search(log_tail)
@@ -2254,23 +2294,38 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             receipt = quarantine_match.group("receipt").strip()
             evidence += f" cargo_quarantine_receipt={receipt}"
             artifacts = (receipt,)
+        nested_guard = (
+            "guarded_exec:" in log_tail
+            or "MOLT_TEST_SUITE guarded command" in log_tail
+        )
         diagnostics.append(
             _diagnostic(
-                signal_id="memory-guard-orphan-cleanup",
+                signal_id=(
+                    "nested-memory-guard-orphan-cleanup"
+                    if nested_guard
+                    else "memory-guard-orphan-cleanup"
+                ),
                 severity="warning",
                 summary=(
-                    "Memory guard cleaned up orphaned child processes after the "
-                    "proof command exited."
+                    "Nested guarded_exec memory guard cleaned up orphaned child "
+                    "processes after its guarded command exited."
+                    if nested_guard
+                    else "Memory guard cleaned up orphaned child processes after "
+                    "the proof command exited."
                 ),
                 evidence=evidence,
                 next_action=(
-                    "Preserve the proof result, then harden the child process "
+                    "Preserve the proof result, then harden the nested guarded "
+                    "command lifecycle or move intentional warm daemons inside a "
+                    "suite sentinel that drains at scope exit."
+                    if nested_guard
+                    else "Preserve the proof result, then harden the child process "
                     "lifecycle or run intentional warm daemons inside a suite "
                     "sentinel that drains at scope exit."
                 ),
                 scopes=(
-                    "tools/memory_guard.py",
                     "tools/guarded_exec.py",
+                    "tools/memory_guard.py",
                     "tools/proof_queue.py",
                 ),
                 artifacts=artifacts,
