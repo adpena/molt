@@ -259,12 +259,16 @@ fn normalize_pending_import_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
     }
-    let mut kind = "RuntimeError".to_string();
-    let mut message = "module import failed".to_string();
-    if let Some((pending_kind, pending_message)) = pending_import_exception_kind_and_message(_py) {
-        kind = pending_kind;
-        message = pending_message;
-    }
+    // Only rewrite the pending exception when a concrete (kind, message) can
+    // be read from it. If extraction fails (a lazily-materialized message, or
+    // a non-standard exception object), LEAVE the original exception pending:
+    // clearing it and raising a generic "module import failed" RuntimeError
+    // destroys the real import error — e.g. a C-extension static-init failure
+    // whose detailed message is lazy — and flattens every downstream report to
+    // a useless generic string. The real error must propagate honestly.
+    let Some((mut kind, message)) = pending_import_exception_kind_and_message(_py) else {
+        return;
+    };
     if message.starts_with("No module named ") {
         kind = "ModuleNotFoundError".to_string();
     }
