@@ -3008,7 +3008,7 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         print(json.dumps(runnable, indent=2, sort_keys=True))
         return 0
     if getattr(args, "queue_only", False):
-        rc, run_id = _queue_one(
+        rc, _run_id = _queue_one(
             args,
             logical_id=str(runnable["logical_id"]),
             reason=str(runnable["reason"]),
@@ -3022,8 +3022,6 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
             edge_kind=getattr(args, "edge_kind", DEFAULT_EDGE_KIND),
             edge_note=getattr(args, "edge_note", None),
         )
-        if rc == 0 and run_id is not None:
-            print(f"queued {run_id}")
         return rc
     if getattr(args, "detach", False):
         rc, run_id = _queue_one(

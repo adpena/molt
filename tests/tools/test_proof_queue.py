@@ -2065,7 +2065,9 @@ def test_proof_queue_named_lane_can_detach_runner(
 
 
 def test_proof_queue_named_lane_can_queue_without_runner(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
@@ -2094,7 +2096,9 @@ def test_proof_queue_named_lane_can_queue_without_runner(
     )
 
     rows = _rows(db)
+    stdout = capsys.readouterr().out.strip().splitlines()
     assert rc == 0
+    assert stdout == [f"queued {rows[0]['run_id']}"]
     assert len(rows) == 1
     assert rows[0]["status"] == "queued"
     assert rows[0]["logical_id"] == "r6-target-version-parity-py312"
