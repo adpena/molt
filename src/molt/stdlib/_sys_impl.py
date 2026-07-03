@@ -81,6 +81,30 @@ def _noop_is_string_obj(val: object) -> bool:
     return isinstance(val, str)
 
 
+def _platform_default() -> str:
+    platform_getter = _safe_intrinsic("molt_sys_platform", lambda: "unknown")
+    platform_value = platform_getter()
+    if isinstance(platform_value, str):
+        return platform_value
+    return "unknown"
+
+
+def _platform_is_windows() -> bool:
+    return _platform_default().startswith("win")
+
+
+def _filesystem_encode_errors_default() -> str:
+    if _platform_is_windows():
+        return "surrogatepass"
+    return "surrogateescape"
+
+
+def _platlibdir_default() -> str:
+    if _platform_is_windows():
+        return "DLLs"
+    return "lib"
+
+
 # Define early to avoid circular-import NameError during stdlib bootstrap.
 # _safe_intrinsic never raises — WASM builds won't crash when the lazy
 # resolver hasn't wired these yet.
@@ -203,7 +227,7 @@ _MOLT_SYS_STDIN = _safe_intrinsic("molt_sys_stdin", None)
 _MOLT_SYS_STDOUT = _safe_intrinsic("molt_sys_stdout", None)
 _MOLT_SYS_STDERR = _safe_intrinsic("molt_sys_stderr", None)
 _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _safe_intrinsic(
-    "molt_sys_getfilesystemencodeerrors", lambda: "surrogateescape"
+    "molt_sys_getfilesystemencodeerrors", _filesystem_encode_errors_default
 )
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _safe_intrinsic("molt_sys_bootstrap_payload", None)
 _MOLT_SYS_MAXSIZE = _safe_intrinsic("molt_sys_maxsize", lambda: 2**63 - 1)
@@ -213,7 +237,7 @@ _MOLT_SYS_PREFIX = _safe_intrinsic("molt_sys_prefix", lambda: "")
 _MOLT_SYS_EXEC_PREFIX = _safe_intrinsic("molt_sys_exec_prefix", lambda: "")
 _MOLT_SYS_BASE_PREFIX = _safe_intrinsic("molt_sys_base_prefix", lambda: "")
 _MOLT_SYS_BASE_EXEC_PREFIX = _safe_intrinsic("molt_sys_base_exec_prefix", lambda: "")
-_MOLT_SYS_PLATLIBDIR = _safe_intrinsic("molt_sys_platlibdir", lambda: "lib")
+_MOLT_SYS_PLATLIBDIR = _safe_intrinsic("molt_sys_platlibdir", _platlibdir_default)
 _MOLT_SYS_FLOAT_INFO = _safe_intrinsic("molt_sys_float_info", None)
 _MOLT_SYS_INT_INFO = _safe_intrinsic("molt_sys_int_info", None)
 _MOLT_SYS_HASH_INFO = _safe_intrinsic("molt_sys_hash_info", None)
@@ -873,6 +897,7 @@ def _init_metadata():
             expected_len=len(_THREAD_INFO_FIELDS),
         )
     )
+    platlibdir_value = _try_str_intrinsic(_MOLT_SYS_PLATLIBDIR, _platlibdir_default())
 
     g["version"] = version_text
     g["_raw_version_info"] = _rvi
@@ -896,7 +921,7 @@ def _init_metadata():
     g["exec_prefix"] = ""
     g["base_prefix"] = ""
     g["base_exec_prefix"] = ""
-    g["platlibdir"] = "lib"
+    g["platlibdir"] = platlibdir_value
     g["float_info"] = _float_info_tuple_type()(float_info_values)
     g["int_info"] = _int_info_tuple_type()(int_info_values)
     g["hash_info"] = _hash_info_tuple_type()(hash_info_values)
@@ -1210,7 +1235,7 @@ _fs_encode_errors_val = _MOLT_SYS_GETFILESYSTEMENCODEERRORS()
 _fs_encode_errors = (
     _fs_encode_errors_val
     if isinstance(_fs_encode_errors_val, str)
-    else "surrogateescape"
+    else _filesystem_encode_errors_default()
 )
 
 
