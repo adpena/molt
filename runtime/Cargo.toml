@@ -16,6 +16,7 @@ members = [
     "molt-runtime-difflib",
     "molt-runtime-graphlib",
     "molt-runtime-logging",
+    "molt-runtime-stringprep",
     "molt-runtime-http",
     "molt-runtime-xml",
     "molt-runtime-ipaddress",
