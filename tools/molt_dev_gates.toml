@@ -98,6 +98,19 @@ gates = [
   "cargo build --profile release-fast -p molt-wasm-host",
 ]
 
+# --- GPU runtime Rust -----------------------------------------------------
+[[rule]]
+name = "runtime-gpu"
+description = "GPU acceleration Rust: all-target/all-feature clippy for FFI and renderer surfaces."
+globs = [
+  "runtime/molt-gpu/**/*.rs",
+  "runtime/molt-gpu/**/*.toml",
+  "runtime/molt-gpu/Cargo.toml",
+]
+gates = [
+  "cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings",
+]
+
 # --- Runtime crate Rust (object model / runtime library) -----------------
 [[rule]]
 name = "runtime-lib"

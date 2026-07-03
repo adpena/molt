@@ -648,8 +648,17 @@ fn collect_leaves_recursive(
 /// `out_len`: capacity of output array (in f32 elements)
 ///
 /// Returns the number of elements written, or u64::MAX on failure.
+///
+/// # Safety
+///
+/// `out_ptr` must be valid for writes of at least `out_len` contiguous `f32`
+/// values for the duration of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_read_data(handle: u64, out_ptr: *mut f32, out_len: usize) -> u64 {
+pub unsafe extern "C" fn molt_gpu_prim_read_data(
+    handle: u64,
+    out_ptr: *mut f32,
+    out_len: usize,
+) -> u64 {
     if out_ptr.is_null() {
         return u64::MAX;
     }
@@ -1795,7 +1804,7 @@ mod metal_realize_tests {
         assert_eq!(molt_gpu_prim_realize(hred), 0, "realize must succeed");
 
         let mut out = [0.0f32; 1];
-        let written = molt_gpu_prim_read_data(hred, out.as_mut_ptr(), out.len());
+        let written = unsafe { molt_gpu_prim_read_data(hred, out.as_mut_ptr(), out.len()) };
         assert_eq!(written, 1, "reduce_sum produces one scalar");
 
         let expected: f32 = (0..n).map(|i| a[i] + b[i]).sum();
@@ -1975,7 +1984,7 @@ mod cpu_realize_value_tests {
 
         let mut f32_out = [99.0f32; 2];
         assert_eq!(
-            molt_gpu_prim_read_data(handle, f32_out.as_mut_ptr(), f32_out.len()),
+            unsafe { molt_gpu_prim_read_data(handle, f32_out.as_mut_ptr(), f32_out.len()) },
             u64::MAX
         );
         assert_eq!(f32_out, [99.0f32; 2]);
@@ -2091,7 +2100,7 @@ mod cpu_realize_value_tests {
 
         let mut out = [123.0f32; 4];
         assert_eq!(
-            molt_gpu_prim_read_data(hcast, out.as_mut_ptr(), out.len()),
+            unsafe { molt_gpu_prim_read_data(hcast, out.as_mut_ptr(), out.len()) },
             u64::MAX
         );
         assert_eq!(out, [123.0f32; 4]);
@@ -2145,7 +2154,7 @@ mod cpu_realize_value_tests {
         assert_eq!(molt_gpu_prim_realize(hcontiguous), 0);
         let mut out = [0.0f32; 6];
         assert_eq!(
-            molt_gpu_prim_read_data(hcontiguous, out.as_mut_ptr(), out.len()),
+            unsafe { molt_gpu_prim_read_data(hcontiguous, out.as_mut_ptr(), out.len()) },
             6
         );
         assert_eq!(out, [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
@@ -2169,7 +2178,7 @@ mod cpu_realize_value_tests {
 
         let mut out = [0.0f32; 6];
         assert_eq!(
-            molt_gpu_prim_read_data(hexpand, out.as_mut_ptr(), out.len()),
+            unsafe { molt_gpu_prim_read_data(hexpand, out.as_mut_ptr(), out.len()) },
             6
         );
         assert_eq!(out, [5.0, 5.0, 5.0, 7.0, 7.0, 7.0]);
@@ -2196,7 +2205,7 @@ mod cpu_realize_value_tests {
 
         let mut out = [0.0f32; 3];
         assert_eq!(
-            molt_gpu_prim_read_data(hflip, out.as_mut_ptr(), out.len()),
+            unsafe { molt_gpu_prim_read_data(hflip, out.as_mut_ptr(), out.len()) },
             3
         );
         assert_eq!(out, [3.0, 2.0, 1.0]);
@@ -2333,7 +2342,7 @@ mod cpu_realize_value_tests {
 
         let mut out = [0.0f32; 6];
         assert_eq!(
-            molt_gpu_prim_read_data(hexpand, out.as_mut_ptr(), out.len()),
+            unsafe { molt_gpu_prim_read_data(hexpand, out.as_mut_ptr(), out.len()) },
             6
         );
         assert_eq!(out, [6.0, 6.0, 6.0, 15.0, 15.0, 15.0]);

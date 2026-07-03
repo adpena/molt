@@ -8,7 +8,7 @@
 #[cfg(feature = "wasm-backend")]
 mod wasm_cpu_tests {
     use molt_gpu::device::wasm_cpu::WasmCpuDevice;
-    use molt_gpu::device::{Allocator, Compiler, DeviceError, Executor};
+    use molt_gpu::device::{Allocator, Compiler, Executor};
 
     #[test]
     fn test_wasm_cpu_device_creation() {

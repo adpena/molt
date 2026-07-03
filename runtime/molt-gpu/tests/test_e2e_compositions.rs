@@ -473,9 +473,9 @@ fn test_cpu_interpreter_materialize_copy_zero_fills_padded_raw_elements() {
     interpret::execute_kernel(kernel, &mut bufs);
 
     let mut expected = Vec::with_capacity(5 * elem_size);
-    expected.extend(std::iter::repeat(0u8).take(elem_size));
+    expected.extend(std::iter::repeat_n(0u8, elem_size));
     expected.extend_from_slice(&input);
-    expected.extend(std::iter::repeat(0u8).take(elem_size));
+    expected.extend(std::iter::repeat_n(0u8, elem_size));
     assert_eq!(bufs[0], expected);
 }
 
@@ -507,9 +507,9 @@ fn test_cpu_interpreter_materialize_copy_zero_fills_padded_raw_elements_by_dtype
         interpret::execute_kernel(kernel, &mut bufs);
 
         let mut expected = Vec::with_capacity(5 * elem_size);
-        expected.extend(std::iter::repeat(0u8).take(elem_size));
+        expected.extend(std::iter::repeat_n(0u8, elem_size));
         expected.extend_from_slice(&input);
-        expected.extend(std::iter::repeat(0u8).take(elem_size));
+        expected.extend(std::iter::repeat_n(0u8, elem_size));
         assert_eq!(
             bufs[0], expected,
             "MaterializeCopy pad must zero-fill only invalid raw elements for {:?}",
@@ -532,9 +532,9 @@ fn test_cpu_interpreter_materialize_copy_zero_fills_padded_flipped_raw_elements_
         );
 
         let mut expected = Vec::with_capacity(8 * elem_size);
-        expected.extend(std::iter::repeat(0u8).take(2 * elem_size));
+        expected.extend(std::iter::repeat_n(0u8, 2 * elem_size));
         expected.extend(reverse_element_bytes(&input, elem_size));
-        expected.extend(std::iter::repeat(0u8).take(elem_size));
+        expected.extend(std::iter::repeat_n(0u8, elem_size));
         assert_eq!(
             output, expected,
             "MaterializeCopy pad+flip must zero-fill only invalid raw elements for {:?}",

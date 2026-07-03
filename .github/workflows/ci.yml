@@ -281,6 +281,12 @@ jobs:
             -p molt-runtime-zoneinfo \
             -- -D warnings
 
+      - name: Clippy (molt-gpu)
+        # The GPU acceleration crate carries renderer and FFI surfaces outside
+        # the stdlib satellite family; gate all targets/features so backend
+        # renderer drift cannot silently re-enter.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-gpu --all-targets --all-features -- -D warnings
+
       - name: Test molt-snapshot
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot
 
