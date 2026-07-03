@@ -85,12 +85,12 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
     if info.buf.is_null() && info.len != 0 {
         return Err(());
     }
-    let ndim = if info.ndim == 0 {
-        1
-    } else {
-        info.ndim as usize
-    };
+    let ndim = info.ndim as usize;
     if ndim > MOLT_BUFFER_MAX_NDIM {
+        return Err(());
+    }
+    if ndim == 0 && (!info.shape.is_null() || !info.strides.is_null() || !info.suboffsets.is_null())
+    {
         return Err(());
     }
 
@@ -109,7 +109,9 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
             .unwrap_or_default()
     };
 
-    if !info.shape.is_null() {
+    if ndim == 0 {
+        // Scalar buffers have no shape or stride arrays.
+    } else if !info.shape.is_null() {
         for i in 0..ndim {
             let dim = unsafe { *info.shape.add(i) };
             if dim < 0 {
@@ -124,7 +126,9 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
         }
     }
 
-    if !info.strides.is_null() {
+    if ndim == 0 {
+        // Scalar buffers have no shape or stride arrays.
+    } else if !info.strides.is_null() {
         for i in 0..ndim {
             descriptor.strides[i] = unsafe { *info.strides.add(i) };
         }
@@ -173,12 +177,12 @@ unsafe fn apply_molt_view(
         } else {
             ptr::null_mut()
         };
-        (*view).shape = if (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0 {
+        (*view).shape = if descriptor.ndim != 0 && (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0 {
             descriptor.shape.as_mut_ptr()
         } else {
             ptr::null_mut()
         };
-        (*view).strides = if (flags & PyBUF_STRIDES) != 0 {
+        (*view).strides = if descriptor.ndim != 0 && (flags & PyBUF_STRIDES) != 0 {
             descriptor.strides.as_mut_ptr()
         } else {
             ptr::null_mut()
