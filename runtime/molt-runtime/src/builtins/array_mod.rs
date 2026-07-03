@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::builtins::numbers::{index_i64_with_overflow, sequence_index_i64_with_type_error};
 use crate::object::memoryview::{
-    TypedStridedStorage, TypedStridedStorageError, memoryview_format_from_code,
+    TypedStridedStorage, TypedStridedStorageError, memoryview_format_from_str,
 };
 use crate::object::native_handle::{native_handle_arc, native_handle_new};
 use crate::object::ops::string_obj_to_owned;
@@ -95,7 +95,7 @@ impl Typecode {
         if self == Typecode::U {
             return wchar_itemsize();
         }
-        memoryview_format_from_code(self.as_char() as u8)
+        memoryview_format_from_str(&self.as_char().to_string())
             .map(|format| format.itemsize)
             .unwrap_or(1)
     }
@@ -533,8 +533,12 @@ pub(crate) fn array_storage_from_object_bits(
     let stride =
         isize::try_from(itemsize).map_err(|_| TypedStridedStorageError::InvalidDescriptor)?;
     let data = guard.data.as_ptr().cast_mut();
-    let format = [guard.typecode.as_char() as u8];
-    TypedStridedStorage::one_dim_with_format(
+    let format_ptr = alloc_string(_py, &[guard.typecode.as_char() as u8]);
+    if format_ptr.is_null() {
+        return Err(TypedStridedStorageError::InvalidDescriptor);
+    }
+    let format_bits = MoltObject::from_ptr(format_ptr).bits();
+    TypedStridedStorage::one_dim(
         data,
         false,
         guard.len(),
@@ -542,7 +546,7 @@ pub(crate) fn array_storage_from_object_bits(
         stride,
         0,
         bits,
-        &format,
+        format_bits,
     )
     .ok_or(TypedStridedStorageError::InvalidDescriptor)
 }
