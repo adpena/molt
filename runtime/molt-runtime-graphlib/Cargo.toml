@@ -1,0 +1,12 @@
+[package]
+name = "molt-runtime-graphlib"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "graphlib (TopologicalSorter) intrinsics for the Molt runtime."
+
+[dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }

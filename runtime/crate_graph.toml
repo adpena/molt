@@ -198,6 +198,11 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
+name = "molt-runtime-graphlib"
+layer = 3
+role = "stdlib satellite"
+
+[[crate]]
 name = "molt-runtime-http"
 layer = 3
 role = "stdlib satellite"
