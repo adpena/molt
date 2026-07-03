@@ -117,6 +117,27 @@ def create_kill_on_close_job() -> int | None:
         return None
 
 
+def _resume_process(handle: int, pid: int) -> None:
+    """Resume a SUSPENDED child. Primary path is O(1) by process handle; a
+    thread-snapshot fallback guarantees the child can never hang suspended."""
+    import ctypes
+
+    # Primary: NtResumeProcess resumes all threads of the process by handle with
+    # no enumeration. It is an undocumented-but-ABI-stable ntdll export that
+    # process tools (Process Hacker, Sysinternals-style utilities) have relied on
+    # for 20+ years; it avoids a system-wide thread snapshot on every spawn.
+    try:
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        status = ntdll.NtResumeProcess(ctypes.c_void_p(handle))
+        if status == 0:  # STATUS_SUCCESS
+            return
+    except Exception:
+        pass
+    # Fallback: resume every thread via a snapshot. Only runs if NtResumeProcess
+    # is somehow unavailable, so the per-spawn snapshot cost is not paid normally.
+    _resume_process_threads(pid)
+
+
 def _resume_process_threads(pid: int) -> None:
     """ResumeThread every thread of ``pid`` (via a thread snapshot)."""
     import ctypes
@@ -163,29 +184,33 @@ def assign_and_resume(job: int | None, proc: subprocess.Popen[Any]) -> bool:
     failure the process is still resumed (so a SUSPENDED child never hangs) and
     False is returned; the caller then relies on orphan_reaper as the backstop.
     """
+    # ``_handle`` is the raw process HANDLE (present on every real Windows
+    # subprocess; absent on non-Windows and on fakes/mocks). Without it there is
+    # no real suspended child to place or resume, so this is a clean no-op.
+    handle = getattr(proc, "_handle", None)
+    if not _WINDOWS or handle is None:
+        return False
+    handle = int(handle)
+
     assigned = False
-    if _WINDOWS and job:
+    if job:
         try:
             import ctypes
             from ctypes import wintypes
 
-            handle = getattr(proc, "_handle", None)
-            if handle is not None:
-                k32 = _k32()
-                k32.AssignProcessToJobObject.argtypes = [
-                    wintypes.HANDLE, wintypes.HANDLE,
-                ]
-                assigned = bool(
-                    k32.AssignProcessToJobObject(job, int(handle))
-                )
+            k32 = _k32()
+            k32.AssignProcessToJobObject.argtypes = [
+                wintypes.HANDLE, wintypes.HANDLE,
+            ]
+            assigned = bool(k32.AssignProcessToJobObject(job, handle))
         except Exception:
             assigned = False
-    # Hard guarantee: a child spawned SUSPENDED is always resumed.
-    if _WINDOWS:
-        try:
-            _resume_process_threads(proc.pid)
-        except Exception:
-            pass
+    # Hard guarantee: a child spawned SUSPENDED is always resumed, even if the
+    # job assignment failed (it then relies on orphan_reaper as the backstop).
+    try:
+        _resume_process(handle, proc.pid)
+    except Exception:
+        pass
     return assigned
 
 

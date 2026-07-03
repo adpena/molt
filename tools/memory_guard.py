@@ -154,6 +154,7 @@ from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
     inherit_stdio_kwargs,
 )
+from tools import win_job as _win_job  # noqa: E402
 from tools.memory_guard_core import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import process_custody as _process_custody  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
@@ -848,6 +849,7 @@ def run_guarded(
                 signal.signal(signum, previous_handler)
 
     proc: subprocess.Popen[Any] | None = None
+    guard_job: int | None = None
     launch: GuardedLaunch | None = None
     child_process: GuardedChildProcess | None = None
     termination_reports: list[GuardTerminationReport] = []
@@ -898,9 +900,24 @@ def run_guarded(
             popen_kwargs["pass_fds"] = launch.pass_fds
         if launch.preexec_fn is not None:
             popen_kwargs["preexec_fn"] = launch.preexec_fn
+        # Windows Job Object custody: create a KILL_ON_JOB_CLOSE job and spawn
+        # the child SUSPENDED so it is placed in the job before it can spawn any
+        # descendant (race-free capture). The guard holds the sole handle, so if
+        # it dies for ANY reason the OS reaps the whole build subtree instead of
+        # leaking orphaned cargo/rustc/link/tail that reserve GB. Best-effort:
+        # if the job can't be created this degrades to today's spawn (no
+        # CREATE_SUSPENDED added) with tools/orphan_reaper.py as the backstop.
+        guard_job = _win_job.create_kill_on_close_job()
+        if guard_job is not None:
+            popen_kwargs["creationflags"] = (
+                int(popen_kwargs.get("creationflags", 0) or 0)
+                | _win_job.suspended_creationflag()
+            )
         try:
             proc = subprocess.Popen(launch.command, **popen_kwargs)
         except Exception as exc:
+            _win_job.close_job(guard_job)
+            guard_job = None
             _update_active_guard_marker(
                 guard_marker,
                 guard_token,
@@ -915,6 +932,11 @@ def run_guarded(
             if stderr_capture is not None:
                 stderr_capture.close()
             raise
+        if guard_job is not None:
+            # Child was spawned SUSPENDED; assign it to the job and resume it
+            # immediately. assign_and_resume ALWAYS resumes (even if assignment
+            # fails), so a build can never hang suspended.
+            _win_job.assign_and_resume(guard_job, proc)
         _close_fds(launch.close_fds)
         child_process = GuardedChildProcess(
             pid=proc.pid,
@@ -1535,6 +1557,11 @@ def run_guarded(
         if launch is not None:
             _close_fds((launch.started_read_fd,))
         _restore_guard_signal_handlers()
+        # Drop the job handle last: by now the child has exited and been reaped,
+        # so KILL_ON_JOB_CLOSE is a no-op here. Its whole purpose is the case
+        # where the guard dies BEFORE reaching this line — then the OS closes the
+        # handle for us and reaps the subtree.
+        _win_job.close_job(guard_job)
 
 
 _REPRO_ENV_KEYS = _repro_context.REPRO_ENV_KEYS
