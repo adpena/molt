@@ -101,7 +101,7 @@ jobs:
       - name: Check structural-debt ratchet (kitchen-sink/undecomposed/hand-classifications/debt; down-only)
         run: uv run python3 tools/structural_audit.py --check
 
-      - name: Check canonicalization contract (crate-layer organization: layers/facades/misplacement; down-only)
+      - name: Check canonicalization contract (crate-layer organization; layers/facades/misplacement; down-only)
         run: uv run python3 tools/canonicalization_contract.py --check
 
       - name: Check runtime bridge test stubs are in sync
