@@ -32,6 +32,49 @@ def _edges(db: Path) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM proof_run_edges ORDER BY edge_id"))
 
 
+def _insert_blocked_dependency_fixture(
+    db: Path,
+    logs: Path,
+    *,
+    contention_key: str = "python:blocked-slot",
+) -> None:
+    conn = proof_queue._connect(db)
+    for run_id, status, key in (
+        ("failed-parent", "failed", "python:failed-parent"),
+        ("blocked-child", "queued", contention_key),
+    ):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove blocked dependency reconciliation",
+            command=[sys.executable, "-c", "print('blocked')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=key,
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+        values: dict[str, object] = {"status": status}
+        if status != "queued":
+            values["finished_at"] = proof_queue._utc_now()
+        proof_queue._update_run(conn, run_id, **values)
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="failed-parent",
+        child_run_id="blocked-child",
+        kind="depends_on",
+        note="child waits on failed parent",
+    )
+
+
 def test_proof_queue_session_id_is_contention_key_scoped() -> None:
     assert proof_queue._proof_session_id(
         "wasm", "wasm-build"
@@ -154,6 +197,104 @@ def test_proof_queue_exec_records_passed_run(
     assert "changed queue smoke to verify note capture" in notebook_text
     assert '"note_kind_counts": {' in notebook_text
     assert '"submission": 1' in notebook_text
+
+
+def test_proof_queue_exec_requires_command_delimiter(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    with pytest.raises(SystemExit, match="requires `--` before the proof command"):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "exec",
+                "--id",
+                "missing-delimiter",
+                "--reason",
+                "prove delimiter guard",
+                sys.executable,
+                "-c",
+                "print('would run without delimiter')",
+            ]
+        )
+
+    assert not db.exists()
+
+
+def test_proof_queue_exec_rejects_removed_wait_flag(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    with pytest.raises(SystemExit):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "exec",
+                "--id",
+                "removed-wait",
+                "--reason",
+                "prove removed wait flag",
+                "--resource-family",
+                "python",
+                "--contention-key",
+                "python:removed-wait",
+                "--wait",
+                "--",
+                sys.executable,
+                "-c",
+                "print('must not run')",
+            ]
+        )
+
+    assert not db.exists()
+
+
+def test_proof_queue_exec_rejects_pre_delimiter_residue(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    with pytest.raises(SystemExit, match="stray positional argument"):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "exec",
+                "--id",
+                "bad-shell-quote",
+                "--reason",
+                '"Prove',
+                "molt_dev",
+                "fixture",
+                "--resource-family",
+                "python-tests",
+                "--contention-key",
+                "molt-dev",
+                "--note",
+                "this metadata would be silently swallowed before the fix",
+                "--",
+                sys.executable,
+                "-c",
+                "print('must not run')",
+            ]
+        )
+
+    assert not db.exists()
 
 
 def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
@@ -605,6 +746,136 @@ def test_proof_queue_status_shows_active_log_phase(
     assert f"log={log_path}" in out
     assert "last_log_age=" in out
     assert "Runtime wasm build: still running elapsed=120s" in out
+
+
+def test_proof_queue_status_shows_active_pytest_current_test(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    current_path = tmp_path / "pytest-current.json"
+    nodeid = "tests/test_molt_dev.py::test_cleanup_force_requires_matching_sha"
+    log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "pytest": {
+                    "current_test_file": {
+                        "path": str(current_path),
+                        "payload": {"nodeid": nodeid, "phase": "setup"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="show active pytest phase",
+        command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="molt-dev",
+        scopes=[],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "status",
+                "--recent",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert f"pytest_current={nodeid} phase=setup" in out
+
+
+def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    current_path = tmp_path / "pytest-current.json"
+    log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
+    stale = (
+        time.time()
+        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - 5.0
+    )
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "pytest": {
+                    "current_test_file": {
+                        "missing": True,
+                        "path": str(current_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="diagnose quiet pytest startup",
+        command=[sys.executable, "-m", "pytest", "tests/test_molt_dev.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="molt-dev",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "running-pytest-current-test-missing" in out
+    assert str(current_path) in out
+    assert "pre-test or collection/startup opacity" in out
 
 
 def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
@@ -1474,6 +1745,69 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
 
 
+def test_proof_queue_cargo_rejects_pre_delimiter_residue(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    with pytest.raises(SystemExit, match="stray positional argument"):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "cargo",
+                "--id",
+                "bad-cargo-shell-quote",
+                "--reason",
+                '"Prove',
+                "runtime",
+                "cargo",
+                "--scope",
+                "runtime/molt-runtime/src/cpython_abi_hooks.rs",
+                "--note",
+                "this metadata would be silently swallowed before the fix",
+                "--",
+                "test",
+                "-p",
+                "molt-runtime",
+                "--lib",
+            ]
+        )
+
+    assert not db.exists()
+
+
+def test_proof_queue_cargo_requires_command_delimiter(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    with pytest.raises(SystemExit, match="requires `--` before the proof command"):
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "cargo",
+                "--id",
+                "missing-cargo-delimiter",
+                "--reason",
+                "prove cargo delimiter guard",
+                "test",
+                "-p",
+                "molt-runtime",
+                "--lib",
+            ]
+        )
+
+    assert not db.exists()
+
+
 def test_proof_queue_cargo_lane_rejects_cold_single_lib_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1919,6 +2253,83 @@ def test_proof_queue_blocked_dependency_writes_evidence_without_missing_log_debt
     assert "proof-log-missing" in output
     assert "run=failed-parent" in output
     assert "run=blocked-child" not in output
+
+
+def test_proof_queue_status_reconciles_blocked_queued_dependency(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    _insert_blocked_dependency_fixture(db, logs)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--notebooks-root",
+                str(notebooks),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "status",
+                "--recent",
+                "5",
+            ]
+        )
+        == 0
+    )
+
+    rows = _rows(db)
+    child = next(row for row in rows if row["run_id"] == "blocked-child")
+    out = capsys.readouterr().out
+    assert child["status"] == "blocked"
+    assert "active:\n- none" in out
+    assert "blocked-child" in out
+    assert "proof-dependency-blocked" in out
+    assert "proof queue blocked by dependency" in (
+        logs / "blocked-child.log"
+    ).read_text(encoding="utf-8")
+    assert (notebooks / "blocked-child.py").exists()
+
+
+def test_proof_queue_submission_reconciles_blocked_dependency_before_contention(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    notebooks = tmp_path / "notebooks"
+    contention_key = "python:blocked-slot"
+    _insert_blocked_dependency_fixture(db, logs, contention_key=contention_key)
+    args = SimpleNamespace(
+        db=db,
+        logs_root=logs,
+        notebooks_root=notebooks,
+        repo_root=proof_queue.ROOT,
+    )
+
+    rc, run_id = proof_queue._queue_one(
+        args,
+        logical_id="new-proof",
+        reason="prove freed contention after dependency reconciliation",
+        command=[sys.executable, "-c", "print('new')"],
+        resource_family="python",
+        contention_key=contention_key,
+        scopes=["tools/proof_queue.py"],
+        env_overrides={},
+        initial_notes=["test: blocked dependency must not hold contention"],
+    )
+
+    assert rc == 0
+    assert run_id is not None
+    rows = _rows(db)
+    child = next(row for row in rows if row["run_id"] == "blocked-child")
+    new_row = next(row for row in rows if row["run_id"] == run_id)
+    assert child["status"] == "blocked"
+    assert new_row["status"] == "queued"
+    assert new_row["contention_key"] == contention_key
 
 
 def test_proof_queue_lineage_edges_do_not_gate_execution(
@@ -3007,6 +3418,64 @@ def test_proof_queue_audit_distinguishes_classified_product_failure(
     output = capsys.readouterr().out
     assert "classified_failed=1" in output
     assert "no queue health issues" in output
+
+
+def test_proof_queue_audit_flags_weak_metadata(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "weak-metadata.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="weak-metadata-run",
+        logical_id="bad-shell-quote",
+        reason='"Prove',
+        command=[sys.executable, "-c", "print('passed with weak metadata')"],
+        cwd=proof_queue.ROOT,
+        resource_family="generic",
+        contention_key="generic:default",
+        scopes=[],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "weak-metadata.memory_guard.json",
+    )
+    log_path.write_text("passed with weak metadata\n", encoding="utf-8")
+    proof_queue._update_run(
+        conn,
+        "weak-metadata-run",
+        status="passed",
+        returncode=0,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+                "--max-issues",
+                "0",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "audit-weak-proof-metadata run=weak-metadata-run" in output
+    assert "missing scopes" in output
+    assert "resource_family=generic" in output
+    assert "contention_key=generic:default" in output
+    assert "suspicious reason='\"Prove'" in output
 
 
 def test_proof_queue_audit_surfaces_product_frontier_before_warning_noise(
