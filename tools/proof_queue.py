@@ -1927,10 +1927,12 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     return diagnostics
 
 
-def _has_stale_running_diagnostic(row: sqlite3.Row) -> bool:
+def _diagnostics_have_stale_running_signal(
+    diagnostics: Sequence[dict[str, object]],
+) -> bool:
     return any(
         diagnostic.get("signal_id") in STALE_RUNNING_DIAGNOSTIC_IDS
-        for diagnostic in _run_diagnostics(row)
+        for diagnostic in diagnostics
     )
 
 
@@ -1943,13 +1945,22 @@ def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | No
     )
 
 
+def _diagnostic_artifacts(diagnostics: Sequence[dict[str, object]]) -> list[str]:
+    if not diagnostics:
+        return []
+    artifacts = diagnostics[0].get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return []
+    return [str(path) for path in artifacts]
+
+
 def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]]) -> str:
     if diagnostics:
         first = diagnostics[0]
-        artifacts = first.get("artifacts", [])
         artifact_text = ""
-        if isinstance(artifacts, list) and artifacts:
-            artifact_text = " artifacts: " + ", ".join(str(path) for path in artifacts)
+        artifacts = _diagnostic_artifacts(diagnostics)
+        if artifacts:
+            artifact_text = " artifacts: " + ", ".join(artifacts)
         return (
             f"diagnosis: {row['run_id']} {row['status']} rc={row['returncode']} "
             f"{first['signal_id']}: {first['summary']}{artifact_text} "
@@ -3835,7 +3846,8 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
             continue
         pid = row["guard_pid"]
         guard_alive = pid is not None and _pid_alive(int(pid))
-        if guard_alive and not _has_stale_running_diagnostic(row):
+        diagnostics = _run_diagnostics(row)
+        if guard_alive and not _diagnostics_have_stale_running_signal(diagnostics):
             continue
         _update_run(
             conn,
@@ -3844,7 +3856,16 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
             finished_at=_utc_now(),
         )
         pruned += 1
-        print(f"stale {row['run_id']}")
+        diagnostic_summary = _format_diagnostic_summary(diagnostics)
+        if diagnostic_summary is None:
+            diagnostic_summary = (
+                "dead-guard [infra]: proof guard process is not live"
+            )
+        line = f"stale {row['run_id']} diagnosis={diagnostic_summary}"
+        artifacts = _diagnostic_artifacts(diagnostics)
+        if not artifacts:
+            artifacts = [str(row["summary_json"]), str(row["log_path"])]
+        print(f"{line} artifacts={', '.join(artifacts)}")
     print(f"pruned={pruned}")
     return 0
 
