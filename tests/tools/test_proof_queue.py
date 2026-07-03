@@ -5773,12 +5773,60 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
     assert "--fail-fast" in command
     assert "tests/differential/stdlib/sys_metadata_intrinsics.py" in command
     assert "tests/differential/stdlib/queue_shutdown_version_gate.py" in command
+    assert (
+        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in command
+    )
     assert "tools/target_python_runtime.py" in spec["scopes"]
     assert "src/molt/stdlib/_sys_impl.py" in spec["scopes"]
     assert "src/molt/stdlib/queue.py" in spec["scopes"]
     assert any("serial fail-fast differential custody" in note for note in spec["notes"])
+    assert any("Selected R6 fixtures:" in note for note in spec["notes"])
     assert any("missing target interpreters" in note for note in spec["notes"])
     assert proof_queue._proof_command_policy_error(command) is None
+
+
+def test_proof_queue_r6_target_version_parity_can_select_fixture_subset() -> None:
+    spec = proof_queue._r6_target_version_parity_spec(
+        "3.12",
+        fixtures=[
+            "removed_stdlib_modules_version_gate",
+            "tests/differential/stdlib/sys_metadata_intrinsics.py",
+            "removed_stdlib_modules_version_gate.py",
+        ],
+    )
+    command = list(spec["command"])
+
+    assert (
+        spec["logical_id"]
+        == "r6-target-version-parity-py312-removed-stdlib-modules-version-gate-"
+        "sys-metadata-intrinsics"
+    )
+    assert command[-2:] == [
+        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py",
+        "tests/differential/stdlib/sys_metadata_intrinsics.py",
+    ]
+    assert "tests/differential/stdlib/queue_shutdown_version_gate.py" not in command
+    assert "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in spec[
+        "scopes"
+    ]
+    assert "tests/differential/stdlib/queue_shutdown_version_gate.py" not in spec[
+        "scopes"
+    ]
+    assert any(
+        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in note
+        for note in spec["notes"]
+    )
+
+
+def test_proof_queue_r6_target_version_parity_rejects_unknown_fixture() -> None:
+    with pytest.raises(SystemExit) as exc:
+        proof_queue._r6_target_version_parity_spec(
+            "3.12",
+            fixtures=["queue_shutdown_version_gate.py", "not_a_fixture"],
+        )
+
+    assert "unknown R6 target-version fixture 'not_a_fixture'" in str(exc.value)
+    assert "removed_stdlib_modules_version_gate.py" in str(exc.value)
 
 
 def test_proof_queue_r6_target_version_parity_uses_target_tag() -> None:
@@ -5807,15 +5855,23 @@ def test_proof_queue_r6_target_version_parity_print_spec(
                 "r6-target-version-parity",
                 "--python-version",
                 "3.13",
+                "--fixture",
+                "removed_stdlib_modules_version_gate.py",
                 "--print-spec",
             ]
         )
         == 0
     )
     spec = json.loads(capsys.readouterr().out)
-    assert spec["logical_id"] == "r6-target-version-parity-py313"
+    assert (
+        spec["logical_id"]
+        == "r6-target-version-parity-py313-removed-stdlib-modules-version-gate"
+    )
     assert spec["command"][spec["command"].index("--python-version") + 1] == "3.13"
     assert "--fail-fast" in spec["command"]
+    assert spec["command"][-1] == (
+        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"
+    )
     assert spec["resource_family"] == "python"
 
 
