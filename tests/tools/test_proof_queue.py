@@ -4078,6 +4078,131 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
     }
 
 
+def test_proof_queue_diagnoses_source_lease_contamination(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-lease.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-lease-run",
+        logical_id="source-lease",
+        reason="prove source lease contamination diagnosis",
+        command=[sys.executable, "tests/molt_diff.py", "case.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:source-lease",
+        scopes=["src/molt/stdlib/sys.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": True,
+            "status": [" M src/molt/stdlib/sys.py"],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-lease.memory_guard.json",
+    )
+    log_path.write_text(
+        r"Failed to read module C:\repo\src\molt\stdlib\sys.py: "
+        r"Source lease for C:\repo\src\molt\stdlib\sys.py "
+        "changed size during compile\n"
+        "proof_queue finished status=failed exit_code=1 elapsed=17.0s\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "source-lease-run", status="failed", returncode=1)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-lease-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "source-lease-changed-during-proof"
+    assert diagnostics[0]["severity"] == "operator"
+    assert "contaminated evidence" in diagnostics[0]["summary"]
+    assert "src\\molt\\stdlib\\sys.py" in diagnostics[0]["evidence"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
+def test_proof_queue_diagnoses_partial_module_publication(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "partial-module-publication.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="partial-module-publication-run",
+        logical_id="partial-module-publication",
+        reason="prove partial module publication diagnosis",
+        command=[sys.executable, "tests/molt_diff.py", "case.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:partial-module-publication",
+        scopes=["runtime/molt-runtime/src/builtins/module_table.rs"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "partial-module-publication.memory_guard.json",
+    )
+    log_path.write_text(
+        "ImportError: cannot import partially initialized module "
+        "'importlib.machinery' before its publication "
+        "(circular import during module allocation)\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "partial-module-publication-run", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "partial-module-publication-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "import-partial-module-publication"
+    assert diagnostics[0]["severity"] == "error"
+    assert "importlib.machinery" in diagnostics[0]["summary"]
+    assert "runtime/molt-runtime/src/builtins/module_table.rs" in diagnostics[0][
+        "scopes"
+    ]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_pytest_import_error(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -5411,11 +5536,14 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
     assert command[7:9] == ["python", "tests/molt_diff.py"]
     assert command[command.index("--python-version") + 1] == "3.12"
     assert command[command.index("--jobs") + 1] == "1"
+    assert "--fail-fast" in command
     assert "tests/differential/stdlib/sys_metadata_intrinsics.py" in command
     assert "tests/differential/stdlib/queue_shutdown_version_gate.py" in command
     assert "tools/target_python_runtime.py" in spec["scopes"]
+    assert "src/molt/stdlib/_sys_impl.py" in spec["scopes"]
     assert "src/molt/stdlib/queue.py" in spec["scopes"]
-    assert any("missing target interpreters fail closed" in note for note in spec["notes"])
+    assert any("serial fail-fast differential custody" in note for note in spec["notes"])
+    assert any("missing target interpreters" in note for note in spec["notes"])
     assert proof_queue._proof_command_policy_error(command) is None
 
 
@@ -5453,6 +5581,7 @@ def test_proof_queue_r6_target_version_parity_print_spec(
     spec = json.loads(capsys.readouterr().out)
     assert spec["logical_id"] == "r6-target-version-parity-py313"
     assert spec["command"][spec["command"].index("--python-version") + 1] == "3.13"
+    assert "--fail-fast" in spec["command"]
     assert spec["resource_family"] == "python"
 
 
