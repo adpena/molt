@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import translation_validate
+from tools import target_python_runtime
+
+
+def _expected_translation_target_root(root: Path) -> Path:
+    return translation_validate.cargo_target_dir_for_artifact_root(
+        root,
+        f"translation-validate-{os.getpid()}",
+    )
 
 
 def test_temp_root_defaults_to_repo_tmp(monkeypatch) -> None:
@@ -44,7 +53,7 @@ def test_target_root_defaults_to_repo_target(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
     assert translation_validate._cargo_target_root({}) == (
-        translation_validate._REPO_ROOT / "target"
+        _expected_translation_target_root(translation_validate._REPO_ROOT)
     )
 
 
@@ -59,7 +68,9 @@ def test_target_root_prefers_explicit_override(tmp_path: Path) -> None:
     assert translation_validate._cargo_target_root(env) == cargo_target_dir
 
     env.pop("CARGO_TARGET_DIR")
-    assert translation_validate._cargo_target_root(env) == ext_root / "target"
+    assert translation_validate._cargo_target_root(env) == (
+        _expected_translation_target_root(ext_root)
+    )
 
 
 def test_resolve_target_python_uses_project_floor(tmp_path: Path) -> None:
@@ -79,33 +90,33 @@ def test_resolve_target_python_uses_project_floor(tmp_path: Path) -> None:
 def test_python_command_candidates_are_versioned_not_process_python(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(translation_validate.shutil, "which", lambda name: None)
     target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
 
-    candidates = translation_validate._target_python_command_candidates(
+    candidates = target_python_runtime.target_python_command_candidates(
         target,
         override=None,
     )
 
     assert [sys.executable] not in candidates
     assert ["python3.14"] in candidates
+    if sys.platform.startswith("win"):
+        assert ["py", "-3.14"] in candidates
 
 
 def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
     target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
-    translation_validate._target_python_command_cached.cache_clear()
 
     monkeypatch.delenv("MOLT_TV_PYTHON", raising=False)
-    monkeypatch.setattr(translation_validate.shutil, "which", lambda name: "uv.exe")
+    monkeypatch.setattr(target_python_runtime.shutil, "which", lambda name: "uv.exe")
 
-    def fake_run_subprocess(cmd, **kwargs):
+    def fake_run_command(cmd, **kwargs):
         if cmd[:3] == ["uv.exe", "python", "find"]:
             return "C:/py313/python.exe\n", "", 0
         if cmd[:2] == ["C:/py313/python.exe", "-c"]:
             return "3.13", "", 0
         raise AssertionError(f"unexpected command: {cmd}")
 
-    monkeypatch.setattr(translation_validate, "_run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(target_python_runtime, "_run_command", fake_run_command)
 
     assert translation_validate._target_python_command(target) == [
         "C:/py313/python.exe"
