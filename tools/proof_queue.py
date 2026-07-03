@@ -66,6 +66,9 @@ WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
+PROOF_QUEUE_ACTIVE_POLL_SECONDS = 2.0
+PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS = 5.0
+PROOF_QUEUE_STALE_EXIT_CODE = 2
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
 DIAGNOSTIC_EVIDENCE_MAX_CHARS = 640
@@ -2000,6 +2003,121 @@ def _diagnostics_have_signal(
     return any(diagnostic.get("signal_id") == signal_id for diagnostic in diagnostics)
 
 
+def _row_by_run_id(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    conn.row_factory = sqlite3.Row
+    return conn.execute(
+        "SELECT * FROM proof_runs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+
+
+def _terminate_queue_owned_guard_process(
+    proc: subprocess.Popen[str],
+    log: object,
+    *,
+    run_id: str,
+) -> int | None:
+    try:
+        proc.terminate()
+    except Exception as exc:  # pragma: no cover - host/process-shape specific.
+        print(
+            "proof_queue stale terminalization could not terminate "
+            f"guard_pid={proc.pid} run_id={run_id}: {type(exc).__name__}: {exc}",
+            file=log,
+            flush=True,
+        )
+        return None
+    try:
+        return int(proc.wait(timeout=PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS))
+    except subprocess.TimeoutExpired:
+        print(
+            "proof_queue stale terminalization escalate kill "
+            f"guard_pid={proc.pid} run_id={run_id}",
+            file=log,
+            flush=True,
+        )
+    try:
+        proc.kill()
+    except Exception as exc:  # pragma: no cover - host/process-shape specific.
+        print(
+            "proof_queue stale terminalization could not kill "
+            f"guard_pid={proc.pid} run_id={run_id}: {type(exc).__name__}: {exc}",
+            file=log,
+            flush=True,
+        )
+        return None
+    try:
+        return int(proc.wait(timeout=PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS))
+    except subprocess.TimeoutExpired:  # pragma: no cover - only wedged OS child.
+        print(
+            "proof_queue stale terminalization guard still live after kill "
+            f"guard_pid={proc.pid} run_id={run_id}",
+            file=log,
+            flush=True,
+        )
+        return None
+
+
+def _wait_for_guard_completion_or_stale(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    proc: subprocess.Popen[str],
+    log: object,
+    start: float,
+) -> tuple[str, int | None, float]:
+    while True:
+        try:
+            rc = int(proc.wait(timeout=PROOF_QUEUE_ACTIVE_POLL_SECONDS))
+        except subprocess.TimeoutExpired:
+            row = _row_by_run_id(conn, run_id)
+            if row is None:
+                continue
+            if row["status"] not in RUNNING:
+                elapsed = time.monotonic() - start
+                if proc.poll() is None:
+                    print(
+                        "proof_queue noticed externally terminal row "
+                        f"status={row['status']} while guard_pid={proc.pid} "
+                        "was still live; terminating queue-owned guard",
+                        file=log,
+                        flush=True,
+                    )
+                    _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
+                return str(row["status"]), row["returncode"], elapsed
+            diagnostics = _run_diagnostics(row)
+            if not _diagnostics_have_stale_running_signal(diagnostics):
+                continue
+            diagnostic_summary = _format_diagnostic_summary(diagnostics)
+            print(
+                "\nproof_queue stale-running terminalization "
+                f"diagnosis={diagnostic_summary}",
+                file=log,
+                flush=True,
+            )
+            if diagnostics:
+                evidence = diagnostics[0].get("evidence")
+                if isinstance(evidence, str) and evidence.strip():
+                    print(f"evidence={evidence}", file=log, flush=True)
+                artifacts = _diagnostic_artifacts(diagnostics)
+                if artifacts:
+                    print(f"artifacts={', '.join(artifacts)}", file=log, flush=True)
+            guard_rc = _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
+            if guard_rc is not None:
+                print(
+                    "proof_queue stale terminalization guard_exit_code="
+                    f"{guard_rc}",
+                    file=log,
+                    flush=True,
+                )
+            elapsed = time.monotonic() - start
+            return "stale", None, elapsed
+        else:
+            elapsed = time.monotonic() - start
+            status = "passed" if rc == 0 else "failed"
+            return status, rc, elapsed
+
+
 def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | None:
     if not diagnostics:
         return None
@@ -3344,11 +3462,17 @@ def _run_one(
         )
     try:
         _update_run(conn, run_id, guard_pid=proc.pid)
-        rc = proc.wait()
-        elapsed = time.monotonic() - start
-        status = "passed" if rc == 0 else "failed"
+        status, rc, elapsed = _wait_for_guard_completion_or_stale(
+            conn,
+            run_id=run_id,
+            proc=proc,
+            log=log,
+            start=start,
+        )
+        rc_text = "?" if rc is None else str(rc)
         print(
-            f"\nproof_queue finished status={status} exit_code={rc} elapsed={elapsed:.3f}s",
+            f"\nproof_queue finished status={status} exit_code={rc_text} "
+            f"elapsed={elapsed:.3f}s",
             file=log,
         )
     finally:
@@ -3369,9 +3493,10 @@ def _run_one(
             log_path=log_path,
             phase="completion projection",
         )
-    print(f"{status} {run_id} rc={rc} elapsed={elapsed:.1f}s")
+    rc_text = "?" if rc is None else str(rc)
+    print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
     print(f"log: {log_path}")
-    return rc
+    return rc if rc is not None else PROOF_QUEUE_STALE_EXIT_CODE
 
 
 def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
