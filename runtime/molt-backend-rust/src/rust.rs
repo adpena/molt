@@ -15,7 +15,7 @@
 //! strategy as the Luau backend.
 
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::{FunctionIR, OpIR, SimpleIR};
+use crate::{FunctionIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
