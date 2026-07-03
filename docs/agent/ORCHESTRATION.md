@@ -5,20 +5,54 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-02 (late) by the orchestrator.
+Last updated: 2026-07-03 by the orchestrator.
 
 ## State of the world (read this first)
 
-- The witness build lane is UNBLOCKED. The "custody regression" was a
-  git-bash/MSYS env-var path bug (POSIX `/c/...` roots exported to Windows
-  Python), not a tree regression. Fixed + fail-closed diagnostic landed
-  (603ae3154): missing explicit `MOLT_MODULE_ROOTS` entries now fail the
-  build naming the entries. Bedrock PR1 (83a8a154b) is exonerated and live.
-- The witness runtime frontier is `numpy._core._multiarray_umath` static
-  extension init: it raises, and the failure propagation wedges (R0.1).
-- The native indirect-call P0 has ONE integrator (orchestrator's subagent,
-  successor of the infra-killed one; WIP is in the shared tree — 7 files,
-  call/function.rs + fc/modules.rs + friends. Do not touch that lane).
+- The witness `import numpy` chain has advanced deep into numpy's C-core
+  init. Landed this arc: conditional-import wedge (3b0ca4a80, killed the
+  infinite hang), honest-error propagation (3d5977a9d, real import errors no
+  longer flattened), Py_BuildValue list/dict/char units (920956c86, numpy
+  cleared it), static-extension init unwind (300c6e907), and the first batch
+  of numpy-exec CPython C-API primitives + silent-failure tracer
+  (4ce56305d, capi_trace.rs). Current frontier: numpy `_multiarray_umath_exec`
+  returns -1 inside `setup_scalartypes` — a chain of C-API primitive gaps
+  being closed one decisive-trace at a time.
+- LANE OWNERSHIP right now: numpy-exec C-API primitive closure = orchestrator's
+  ONE subagent (owns runtime/molt-cpython-abi/src/api/*, lib.rs, capi_trace.rs,
+  the exec/PyType_Ready/PyCFunction path). Buffer/ndarray/dtype/shape/stride/
+  memoryview truth (witness lane 2) = Codex (owns object/memoryview.rs,
+  object/ops_memoryview.rs, api/buffer.rs, builtins/module_table.rs,
+  builtins/array_mod.rs). These are DISJOINT — keep them so.
+- The native indirect-call P0 (R1) is LANDED (codex/native-import-typeerror,
+  0 ahead of origin). That lane is closed.
+
+## Drift-resolution protocol (binding — the shared-checkout is the bottleneck)
+
+The shared checkout accumulates multiple hands' uncommitted WIP, which blocks
+`merge origin/main` and causes stale-base builds. Discipline to keep velocity:
+
+- **Commit verified work in SMALL, DISJOINT commits, promptly.** The moment a
+  proof row confirms your lane's change compiles/passes, commit ONLY your
+  files by exact pathspec. Do not accumulate a large dirty tree — it drifts
+  and blocks everyone.
+- **Run an ownership audit before committing** (e.g. grep for a lane-marker
+  like `capi_trace` reference count) to prove a file is yours, not another
+  lane's WIP. Never bundle another lane's uncommitted files.
+- **Never stash/overwrite another hand's WIP to force your branch forward.**
+  If you can't push (non-fast-forward) because the shared tree is dirty, DEFER
+  the push and tell the orchestrator. Preserving parallel work overrides
+  tidiness.
+- **Orchestrator lands via cherry-pick-in-isolated-worktree.** To land a
+  disjoint commit onto origin/main without disturbing the shared dirty tree:
+  `git worktree add --detach <E:/path> origin/main; git -C <path>
+  cherry-pick <sha>; git -C <path> push origin HEAD:main`. Verify the base
+  delta doesn't touch the commit's crate (`git log <oldbase>..origin/main --
+  <crate>`) so the author's compile-check transfers — no rebuild. This is how
+  4ce56305d landed cleanly while the shared tree stayed dirty.
+- **Prefer per-lane worktrees for NEW build-heavy lanes** so the shared
+  checkout stays clean; commit + push to a branch and the orchestrator
+  cherry-picks to main.
 
 ## 1000-Year End-State Roadmap (R0–R9) — the recipe
 
