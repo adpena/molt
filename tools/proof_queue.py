@@ -198,6 +198,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
         "queue-infra-warning",
         "memory-guard-orphan-cleanup",
         "queue-policy-rejection",
+        "runtime-wasm-rust-target-missing",
         "running-pytest-failures-observed",
         "running-pytest-current-test-missing",
     }
@@ -1743,6 +1744,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "tools/wasm_toolchain.py",
                     "tools/proof_queue.py",
                 ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )
         )
 

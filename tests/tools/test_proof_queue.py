@@ -4449,6 +4449,13 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
         log_path=log_path,
         summary_json=tmp_path / "runtime-wasm-rust-target.memory_guard.json",
     )
+    proof_queue._insert_note(
+        conn,
+        run_id="runtime-wasm-rust-target-run",
+        body="test: missing Rust target must surface as actionable audit DX",
+        kind="submission",
+        author="codex",
+    )
     log_path.write_text(
         "Runtime wasm build requires Rust target wasm32-wasip1, but the active "
         "Rust toolchain does not provide it. Run: rustup target add "
@@ -4484,10 +4491,38 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
     assert diagnostics[0]["severity"] == "infra"
     assert "wasm32-wasip1" in diagnostics[0]["summary"]
     assert "rustup target add wasm32-wasip1" in diagnostics[0]["evidence"]
+    assert diagnostics[0]["artifacts"] == [
+        str(tmp_path / "runtime-wasm-rust-target.memory_guard.json"),
+        str(log_path),
+    ]
     assert "python-exception" not in {item["signal_id"] for item in diagnostics}
     assert "unclassified-failed-proof" not in {
         item["signal_id"] for item in diagnostics
     }
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    audit_out = capsys.readouterr().out
+    assert "diagnostics: runtime-wasm-rust-target-missing=1" in audit_out
+    assert "issue_severity: warning=1" in audit_out
+    assert (
+        "audit-runtime-wasm-rust-target-missing run=runtime-wasm-rust-target-run"
+        in audit_out
+    )
+    assert str(log_path) in audit_out
 
 
 def test_proof_queue_diagnoses_source_lease_contamination(
