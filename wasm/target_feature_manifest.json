@@ -1,0 +1,1363 @@
+{
+  "features": [
+    {
+      "description": "Native scalar machine instructions for proven typed scalar paths.",
+      "determinism": "deterministic",
+      "domain": "native",
+      "id": "native.scalar",
+      "tier": "scalar"
+    },
+    {
+      "description": "Native vector instruction lowering for proven vectorizable kernels.",
+      "determinism": "deterministic",
+      "domain": "native",
+      "id": "native.vector",
+      "tier": "vector"
+    },
+    {
+      "description": "Native threading and atomics under platform/runtime support.",
+      "determinism": "deterministic",
+      "domain": "native",
+      "id": "native.threads",
+      "tier": "parallel"
+    },
+    {
+      "description": "BLAS symbol closure through provider libraries or source-recompiled target custody.",
+      "determinism": "external_numeric",
+      "domain": "external_numeric",
+      "id": "numeric.blas",
+      "tier": "blas"
+    },
+    {
+      "description": "LAPACK symbol closure through provider libraries or source-recompiled target custody.",
+      "determinism": "external_numeric",
+      "domain": "external_numeric",
+      "id": "numeric.lapack",
+      "tier": "lapack"
+    },
+    {
+      "description": "GSL symbol closure with explicit license and per-target source/artifact custody.",
+      "determinism": "external_numeric",
+      "domain": "external_numeric",
+      "id": "numeric.gsl",
+      "tier": "gsl"
+    },
+    {
+      "description": "One dtype/shape/stride/offset/owner/device storage identity projected into target APIs.",
+      "determinism": "deterministic",
+      "domain": "tensor",
+      "id": "tensor.typed_strided_storage",
+      "tier": "storage"
+    },
+    {
+      "description": "Baseline WebAssembly core module support.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.mvp",
+      "tier": "core"
+    },
+    {
+      "description": "Multi-value returns for small tuple/error-value internal ABI results.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.multi_value",
+      "tier": "core"
+    },
+    {
+      "description": "Tail-call proposal lowering for tail-position control flow.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.tail_call",
+      "tier": "core"
+    },
+    {
+      "description": "WASM exception handling for Python unwind traffic.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.exception_handling",
+      "tier": "core"
+    },
+    {
+      "description": "64-bit linear-memory and table indexes for large-memory profiles.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.memory64",
+      "tier": "memory"
+    },
+    {
+      "description": "Shared-memory threading support.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.threads",
+      "tier": "parallel"
+    },
+    {
+      "description": "WASM atomics for shared-memory profiles.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.atomics",
+      "tier": "parallel"
+    },
+    {
+      "description": "Deterministic v128 SIMD lane for numeric kernels.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.simd128",
+      "tier": "vector"
+    },
+    {
+      "description": "Relaxed SIMD speed tier; not allowed in bit-exact parity lanes.",
+      "determinism": "non_bit_exact",
+      "domain": "wasm",
+      "id": "wasm.relaxed_simd",
+      "tier": "vector"
+    },
+    {
+      "description": "Flexible vector proposal tracking.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.flexible_vectors",
+      "tier": "vector"
+    },
+    {
+      "description": "Half-precision proposal tracking.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.half_precision",
+      "tier": "numeric"
+    },
+    {
+      "description": "Wide arithmetic proposal tracking for int/hash/crypto lowering.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.wide_arithmetic",
+      "tier": "numeric"
+    },
+    {
+      "description": "WasmGC closed-layout object profile.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.gc",
+      "tier": "object_layout"
+    },
+    {
+      "description": "Reference types used with GC/object-layout profiles.",
+      "determinism": "deterministic",
+      "domain": "wasm",
+      "id": "wasm.reference_types",
+      "tier": "object_layout"
+    },
+    {
+      "description": "JS Promise Integration for naturally async browser host calls.",
+      "determinism": "host_capability",
+      "domain": "wasm",
+      "id": "wasm.js_promise_integration",
+      "tier": "host_async"
+    },
+    {
+      "description": "WASI preview1 style host interface for current wasm-server lanes.",
+      "determinism": "deterministic",
+      "domain": "wasi",
+      "id": "wasi.preview1",
+      "tier": "host_abi"
+    },
+    {
+      "description": "Component Model/WIT interface authority.",
+      "determinism": "deterministic",
+      "domain": "wasi",
+      "id": "wasi.component_model",
+      "tier": "host_abi"
+    },
+    {
+      "description": "WASI 0.3 async func, stream, and future primitives.",
+      "determinism": "deterministic",
+      "domain": "wasi",
+      "id": "wasi.async_0_3",
+      "tier": "host_async"
+    },
+    {
+      "browser_probe": {
+        "adapter": "navigator.gpu.requestAdapter()",
+        "api": "navigator.gpu",
+        "device": "adapter.requestDevice()",
+        "kind": "webgpu_api"
+      },
+      "description": "Browser WebGPU API availability through navigator.gpu and adapter/device probes.",
+      "determinism": "device_dependent",
+      "domain": "webgpu",
+      "id": "webgpu.api",
+      "tier": "gpu"
+    },
+    {
+      "browser_probe": {
+        "adapter_limits": [
+          "maxStorageBufferBindingSize"
+        ],
+        "kind": "adapter_limits_and_shader_validation"
+      },
+      "description": "WGSL storage-buffer compute pipeline support.",
+      "determinism": "deterministic",
+      "domain": "webgpu",
+      "id": "webgpu.wgsl_storage_buffers",
+      "tier": "gpu"
+    },
+    {
+      "browser_probe": {
+        "adapter_limits": [
+          "maxComputeInvocationsPerWorkgroup",
+          "maxComputeWorkgroupSizeX",
+          "maxComputeWorkgroupSizeY",
+          "maxComputeWorkgroupSizeZ",
+          "maxComputeWorkgroupStorageSize"
+        ],
+        "kind": "adapter_limits_and_shader_validation"
+      },
+      "description": "WGSL workgroup memory support.",
+      "determinism": "deterministic",
+      "domain": "webgpu",
+      "id": "webgpu.workgroup_memory",
+      "tier": "gpu"
+    },
+    {
+      "browser_probe": {
+        "kind": "shader_validation"
+      },
+      "description": "WebGPU/WGSL atomic operation support.",
+      "determinism": "deterministic",
+      "domain": "webgpu",
+      "id": "webgpu.atomics",
+      "tier": "gpu"
+    },
+    {
+      "browser_probe": {
+        "adapter_feature": "shader-f16",
+        "kind": "adapter_feature"
+      },
+      "description": "WebGPU shader-f16 feature.",
+      "determinism": "deterministic",
+      "domain": "webgpu",
+      "id": "webgpu.f16",
+      "tier": "gpu"
+    },
+    {
+      "browser_probe": {
+        "adapter_feature": "subgroups",
+        "kind": "adapter_feature"
+      },
+      "description": "WebGPU subgroup operation support.",
+      "determinism": "deterministic",
+      "domain": "webgpu",
+      "id": "webgpu.subgroups",
+      "tier": "gpu"
+    },
+    {
+      "browser_probe": {
+        "adapter_feature": "timestamp-query",
+        "kind": "adapter_feature",
+        "observability": true
+      },
+      "description": "Timestamp query observability; never a semantic fact.",
+      "determinism": "observability",
+      "domain": "webgpu",
+      "id": "webgpu.timestamp_queries",
+      "tier": "observability"
+    },
+    {
+      "browser_probe": {
+        "api": "navigator.ml",
+        "context": "navigator.ml.createContext()",
+        "kind": "webnn_api"
+      },
+      "description": "WebNN graph execution for admitted inference subgraphs.",
+      "determinism": "device_dependent",
+      "domain": "webnn",
+      "id": "webnn.graph",
+      "tier": "nn_graph"
+    }
+  ],
+  "meta": {
+    "authority": "target_feature_manifest",
+    "description": "Target/profile feature ceilings and probe-gated acceleration facts.",
+    "generated_by": "tools/gen_target_feature_manifest.py",
+    "source": "src/molt/target_feature_manifest.toml",
+    "source_doc": "docs/design/foundation/71_wasm_webgpu_numeric_acceleration.md"
+  },
+  "schema_version": 1,
+  "targets": [
+    {
+      "artifact_kind": "native_executable",
+      "description": "Host-native target with provider libraries admitted through platform custody.",
+      "display_name": "Native",
+      "family": "native",
+      "features": [
+        {
+          "fallback": "fail_closed",
+          "gate": "target_triple",
+          "id": "native.scalar",
+          "support": "baseline",
+          "unsupported_reason": "native.scalar is baseline for native; failing target_triple makes the target profile invalid."
+        },
+        {
+          "fallback": "scalar_native",
+          "gate": "host_cpu_feature_probe",
+          "id": "native.vector",
+          "support": "gated",
+          "unsupported_reason": "native.vector for native requires host_cpu_feature_probe; use fallback scalar_native when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "platform_thread_support",
+          "id": "native.threads",
+          "support": "gated",
+          "unsupported_reason": "native.threads for native requires platform_thread_support; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "reference_or_fail_closed",
+          "gate": "provider_library_manifest",
+          "id": "numeric.blas",
+          "support": "gated",
+          "unsupported_reason": "numeric.blas for native requires provider_library_manifest; use fallback reference_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "reference_or_fail_closed",
+          "gate": "provider_library_manifest",
+          "id": "numeric.lapack",
+          "support": "gated",
+          "unsupported_reason": "numeric.lapack for native requires provider_library_manifest; use fallback reference_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "license_and_provider_library_manifest",
+          "id": "numeric.gsl",
+          "support": "gated",
+          "unsupported_reason": "numeric.gsl for native requires license_and_provider_library_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "storage_authority",
+          "id": "tensor.typed_strided_storage",
+          "support": "baseline",
+          "unsupported_reason": "tensor.typed_strided_storage is baseline for native; failing storage_authority makes the target profile invalid."
+        }
+      ],
+      "id": "native",
+      "target_triple": "host"
+    },
+    {
+      "artifact_kind": "wasm_module",
+      "description": "Server-hosted WASM module with raw WASI imports unless component linking proves better.",
+      "display_name": "WASM server",
+      "family": "wasm",
+      "features": [
+        {
+          "fallback": "fail_closed",
+          "gate": "wasm_validation",
+          "id": "wasm.mvp",
+          "support": "baseline",
+          "unsupported_reason": "wasm.mvp is baseline for wasm-server; failing wasm_validation makes the target profile invalid."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "host_imports",
+          "id": "wasi.preview1",
+          "support": "baseline",
+          "unsupported_reason": "wasi.preview1 is baseline for wasm-server; failing host_imports makes the target profile invalid."
+        },
+        {
+          "fallback": "single_value_abi",
+          "gate": "toolchain_and_runtime_probe",
+          "id": "wasm.multi_value",
+          "support": "gated",
+          "unsupported_reason": "wasm.multi_value for wasm-server requires toolchain_and_runtime_probe; use fallback single_value_abi when the gate is not proven."
+        },
+        {
+          "fallback": "scalar_wasm",
+          "gate": "target_feature_probe",
+          "id": "wasm.simd128",
+          "support": "gated",
+          "unsupported_reason": "wasm.simd128 for wasm-server requires target_feature_probe; use fallback scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "deterministic_simd_or_scalar",
+          "gate": "explicit_non_bit_exact_profile",
+          "id": "wasm.relaxed_simd",
+          "support": "gated",
+          "unsupported_reason": "wasm.relaxed_simd for wasm-server requires explicit_non_bit_exact_profile; use fallback deterministic_simd_or_scalar when the gate is not proven."
+        },
+        {
+          "fallback": "simd128_or_scalar_wasm",
+          "gate": "target_feature_probe",
+          "id": "wasm.flexible_vectors",
+          "support": "tracked",
+          "unsupported_reason": "wasm.flexible_vectors for wasm-server requires target_feature_probe; use fallback simd128_or_scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "f32_or_f64_kernel",
+          "gate": "target_feature_probe",
+          "id": "wasm.half_precision",
+          "support": "tracked",
+          "unsupported_reason": "wasm.half_precision for wasm-server requires target_feature_probe; use fallback f32_or_f64_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "checked_scalar_helpers",
+          "gate": "target_feature_probe",
+          "id": "wasm.wide_arithmetic",
+          "support": "tracked",
+          "unsupported_reason": "wasm.wide_arithmetic for wasm-server requires target_feature_probe; use fallback checked_scalar_helpers when the gate is not proven."
+        },
+        {
+          "fallback": "ordinary_call",
+          "gate": "target_feature_probe",
+          "id": "wasm.tail_call",
+          "support": "tracked",
+          "unsupported_reason": "wasm.tail_call for wasm-server requires target_feature_probe; use fallback ordinary_call when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_exception_calls",
+          "gate": "target_feature_probe",
+          "id": "wasm.exception_handling",
+          "support": "tracked",
+          "unsupported_reason": "wasm.exception_handling for wasm-server requires target_feature_probe; use fallback runtime_exception_calls when the gate is not proven."
+        },
+        {
+          "fallback": "memory32",
+          "gate": "program_address_space_requirement",
+          "id": "wasm.memory64",
+          "support": "tracked",
+          "unsupported_reason": "wasm.memory64 for wasm-server requires program_address_space_requirement; use fallback memory32 when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "host_shared_memory_support",
+          "id": "wasm.threads",
+          "support": "gated",
+          "unsupported_reason": "wasm.threads for wasm-server requires host_shared_memory_support; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "host_shared_memory_support",
+          "id": "wasm.atomics",
+          "support": "gated",
+          "unsupported_reason": "wasm.atomics for wasm-server requires host_shared_memory_support; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_object_layout",
+          "gate": "target_feature_probe",
+          "id": "wasm.gc",
+          "support": "tracked",
+          "unsupported_reason": "wasm.gc for wasm-server requires target_feature_probe; use fallback runtime_object_layout when the gate is not proven."
+        },
+        {
+          "fallback": "linear_memory_handles",
+          "gate": "target_feature_probe",
+          "id": "wasm.reference_types",
+          "support": "tracked",
+          "unsupported_reason": "wasm.reference_types for wasm-server requires target_feature_probe; use fallback linear_memory_handles when the gate is not proven."
+        },
+        {
+          "fallback": "sync_host_imports",
+          "gate": "browser_host_feature",
+          "id": "wasm.js_promise_integration",
+          "support": "excluded",
+          "unsupported_reason": "wasm.js_promise_integration is excluded from wasm-server; use fallback sync_host_imports."
+        },
+        {
+          "fallback": "raw_imports",
+          "gate": "wit_world_and_overhead_evidence",
+          "id": "wasi.component_model",
+          "support": "tracked",
+          "unsupported_reason": "wasi.component_model for wasm-server requires wit_world_and_overhead_evidence; use fallback raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "sync_raw_imports",
+          "gate": "component_model_overhead_evidence",
+          "id": "wasi.async_0_3",
+          "support": "tracked",
+          "unsupported_reason": "wasi.async_0_3 for wasm-server requires component_model_overhead_evidence; use fallback sync_raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "cpu_wasm_or_native_gpu_profile",
+          "gate": "browser_webgpu_profile",
+          "id": "webgpu.api",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.api is excluded from wasm-server; use fallback cpu_wasm_or_native_gpu_profile."
+        },
+        {
+          "fallback": "cpu_wasm_or_webgpu_profile",
+          "gate": "browser_webnn_profile",
+          "id": "webnn.graph",
+          "support": "excluded",
+          "unsupported_reason": "webnn.graph is excluded from wasm-server; use fallback cpu_wasm_or_webgpu_profile."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.blas",
+          "support": "tracked",
+          "unsupported_reason": "numeric.blas for wasm-server requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.lapack",
+          "support": "tracked",
+          "unsupported_reason": "numeric.lapack for wasm-server requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "license_and_source_recompiled_numeric_manifest",
+          "id": "numeric.gsl",
+          "support": "tracked",
+          "unsupported_reason": "numeric.gsl for wasm-server requires license_and_source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "storage_authority",
+          "id": "tensor.typed_strided_storage",
+          "support": "baseline",
+          "unsupported_reason": "tensor.typed_strided_storage is baseline for wasm-server; failing storage_authority makes the target profile invalid."
+        }
+      ],
+      "id": "wasm-server",
+      "target_triple": "wasm32-wasip1"
+    },
+    {
+      "artifact_kind": "browser_wasm_bundle",
+      "description": "Browser WASM bundle without GPU/NN graph acceleration.",
+      "display_name": "WASM browser",
+      "family": "wasm-browser",
+      "features": [
+        {
+          "fallback": "fail_closed",
+          "gate": "browser_wasm_validation",
+          "id": "wasm.mvp",
+          "support": "baseline",
+          "unsupported_reason": "wasm.mvp is baseline for wasm-browser; failing browser_wasm_validation makes the target profile invalid."
+        },
+        {
+          "fallback": "single_value_abi",
+          "gate": "browser_feature_probe",
+          "id": "wasm.multi_value",
+          "support": "gated",
+          "unsupported_reason": "wasm.multi_value for wasm-browser requires browser_feature_probe; use fallback single_value_abi when the gate is not proven."
+        },
+        {
+          "fallback": "scalar_wasm",
+          "gate": "browser_feature_probe",
+          "id": "wasm.simd128",
+          "support": "gated",
+          "unsupported_reason": "wasm.simd128 for wasm-browser requires browser_feature_probe; use fallback scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "deterministic_simd_or_scalar",
+          "gate": "explicit_non_bit_exact_profile",
+          "id": "wasm.relaxed_simd",
+          "support": "gated",
+          "unsupported_reason": "wasm.relaxed_simd for wasm-browser requires explicit_non_bit_exact_profile; use fallback deterministic_simd_or_scalar when the gate is not proven."
+        },
+        {
+          "fallback": "simd128_or_scalar_wasm",
+          "gate": "browser_feature_probe",
+          "id": "wasm.flexible_vectors",
+          "support": "tracked",
+          "unsupported_reason": "wasm.flexible_vectors for wasm-browser requires browser_feature_probe; use fallback simd128_or_scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "f32_or_f64_kernel",
+          "gate": "browser_feature_probe",
+          "id": "wasm.half_precision",
+          "support": "tracked",
+          "unsupported_reason": "wasm.half_precision for wasm-browser requires browser_feature_probe; use fallback f32_or_f64_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "checked_scalar_helpers",
+          "gate": "browser_feature_probe",
+          "id": "wasm.wide_arithmetic",
+          "support": "tracked",
+          "unsupported_reason": "wasm.wide_arithmetic for wasm-browser requires browser_feature_probe; use fallback checked_scalar_helpers when the gate is not proven."
+        },
+        {
+          "fallback": "ordinary_call",
+          "gate": "browser_feature_probe",
+          "id": "wasm.tail_call",
+          "support": "tracked",
+          "unsupported_reason": "wasm.tail_call for wasm-browser requires browser_feature_probe; use fallback ordinary_call when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_exception_calls",
+          "gate": "browser_feature_probe",
+          "id": "wasm.exception_handling",
+          "support": "tracked",
+          "unsupported_reason": "wasm.exception_handling for wasm-browser requires browser_feature_probe; use fallback runtime_exception_calls when the gate is not proven."
+        },
+        {
+          "fallback": "memory32",
+          "gate": "program_address_space_requirement",
+          "id": "wasm.memory64",
+          "support": "tracked",
+          "unsupported_reason": "wasm.memory64 for wasm-browser requires program_address_space_requirement; use fallback memory32 when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "browser_shared_memory_and_cross_origin_isolation",
+          "id": "wasm.threads",
+          "support": "gated",
+          "unsupported_reason": "wasm.threads for wasm-browser requires browser_shared_memory_and_cross_origin_isolation; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "browser_shared_memory_and_cross_origin_isolation",
+          "id": "wasm.atomics",
+          "support": "gated",
+          "unsupported_reason": "wasm.atomics for wasm-browser requires browser_shared_memory_and_cross_origin_isolation; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_object_layout",
+          "gate": "browser_feature_probe",
+          "id": "wasm.gc",
+          "support": "tracked",
+          "unsupported_reason": "wasm.gc for wasm-browser requires browser_feature_probe; use fallback runtime_object_layout when the gate is not proven."
+        },
+        {
+          "fallback": "linear_memory_handles",
+          "gate": "browser_feature_probe",
+          "id": "wasm.reference_types",
+          "support": "tracked",
+          "unsupported_reason": "wasm.reference_types for wasm-browser requires browser_feature_probe; use fallback linear_memory_handles when the gate is not proven."
+        },
+        {
+          "fallback": "host_callback_bridge",
+          "gate": "browser_feature_probe",
+          "id": "wasm.js_promise_integration",
+          "support": "tracked",
+          "unsupported_reason": "wasm.js_promise_integration for wasm-browser requires browser_feature_probe; use fallback host_callback_bridge when the gate is not proven."
+        },
+        {
+          "fallback": "browser_host_shim",
+          "gate": "browser_host_import_model",
+          "id": "wasi.preview1",
+          "support": "excluded",
+          "unsupported_reason": "wasi.preview1 is excluded from wasm-browser; use fallback browser_host_shim."
+        },
+        {
+          "fallback": "raw_js_imports",
+          "gate": "browser_component_model_probe",
+          "id": "wasi.component_model",
+          "support": "tracked",
+          "unsupported_reason": "wasi.component_model for wasm-browser requires browser_component_model_probe; use fallback raw_js_imports when the gate is not proven."
+        },
+        {
+          "fallback": "sync_raw_imports",
+          "gate": "browser_component_model_overhead_evidence",
+          "id": "wasi.async_0_3",
+          "support": "tracked",
+          "unsupported_reason": "wasi.async_0_3 for wasm-browser requires browser_component_model_overhead_evidence; use fallback sync_raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.api",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.api is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.wgsl_storage_buffers",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.wgsl_storage_buffers is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.workgroup_memory",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.workgroup_memory is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.atomics",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.atomics is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.f16",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.f16 is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.subgroups",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.subgroups is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.timestamp_queries",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.timestamp_queries is excluded from wasm-browser; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webnn",
+          "gate": "separate_webnn_profile",
+          "id": "webnn.graph",
+          "support": "excluded",
+          "unsupported_reason": "webnn.graph is excluded from wasm-browser; use fallback use_wasm-browser-webnn."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.blas",
+          "support": "tracked",
+          "unsupported_reason": "numeric.blas for wasm-browser requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.lapack",
+          "support": "tracked",
+          "unsupported_reason": "numeric.lapack for wasm-browser requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "license_and_source_recompiled_numeric_manifest",
+          "id": "numeric.gsl",
+          "support": "tracked",
+          "unsupported_reason": "numeric.gsl for wasm-browser requires license_and_source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "storage_authority",
+          "id": "tensor.typed_strided_storage",
+          "support": "baseline",
+          "unsupported_reason": "tensor.typed_strided_storage is baseline for wasm-browser; failing storage_authority makes the target profile invalid."
+        }
+      ],
+      "id": "wasm-browser",
+      "target_triple": "wasm32-wasip1"
+    },
+    {
+      "artifact_kind": "edge_wasm_bundle",
+      "description": "Edge-worker WASM bundle with explicit host capability imports.",
+      "display_name": "WASM edge",
+      "family": "wasm-edge",
+      "features": [
+        {
+          "fallback": "fail_closed",
+          "gate": "edge_runtime_validation",
+          "id": "wasm.mvp",
+          "support": "baseline",
+          "unsupported_reason": "wasm.mvp is baseline for wasm-edge; failing edge_runtime_validation makes the target profile invalid."
+        },
+        {
+          "fallback": "edge_host_shim",
+          "gate": "edge_runtime_imports",
+          "id": "wasi.preview1",
+          "support": "gated",
+          "unsupported_reason": "wasi.preview1 for wasm-edge requires edge_runtime_imports; use fallback edge_host_shim when the gate is not proven."
+        },
+        {
+          "fallback": "single_value_abi",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.multi_value",
+          "support": "gated",
+          "unsupported_reason": "wasm.multi_value for wasm-edge requires edge_runtime_feature_probe; use fallback single_value_abi when the gate is not proven."
+        },
+        {
+          "fallback": "scalar_wasm",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.simd128",
+          "support": "gated",
+          "unsupported_reason": "wasm.simd128 for wasm-edge requires edge_runtime_feature_probe; use fallback scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "deterministic_simd_or_scalar",
+          "gate": "explicit_non_bit_exact_profile",
+          "id": "wasm.relaxed_simd",
+          "support": "gated",
+          "unsupported_reason": "wasm.relaxed_simd for wasm-edge requires explicit_non_bit_exact_profile; use fallback deterministic_simd_or_scalar when the gate is not proven."
+        },
+        {
+          "fallback": "simd128_or_scalar_wasm",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.flexible_vectors",
+          "support": "tracked",
+          "unsupported_reason": "wasm.flexible_vectors for wasm-edge requires edge_runtime_feature_probe; use fallback simd128_or_scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "f32_or_f64_kernel",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.half_precision",
+          "support": "tracked",
+          "unsupported_reason": "wasm.half_precision for wasm-edge requires edge_runtime_feature_probe; use fallback f32_or_f64_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "checked_scalar_helpers",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.wide_arithmetic",
+          "support": "tracked",
+          "unsupported_reason": "wasm.wide_arithmetic for wasm-edge requires edge_runtime_feature_probe; use fallback checked_scalar_helpers when the gate is not proven."
+        },
+        {
+          "fallback": "ordinary_call",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.tail_call",
+          "support": "tracked",
+          "unsupported_reason": "wasm.tail_call for wasm-edge requires edge_runtime_feature_probe; use fallback ordinary_call when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_exception_calls",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.exception_handling",
+          "support": "tracked",
+          "unsupported_reason": "wasm.exception_handling for wasm-edge requires edge_runtime_feature_probe; use fallback runtime_exception_calls when the gate is not proven."
+        },
+        {
+          "fallback": "memory32",
+          "gate": "program_address_space_requirement",
+          "id": "wasm.memory64",
+          "support": "tracked",
+          "unsupported_reason": "wasm.memory64 for wasm-edge requires program_address_space_requirement; use fallback memory32 when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "edge_runtime_shared_memory_support",
+          "id": "wasm.threads",
+          "support": "gated",
+          "unsupported_reason": "wasm.threads for wasm-edge requires edge_runtime_shared_memory_support; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "edge_runtime_shared_memory_support",
+          "id": "wasm.atomics",
+          "support": "gated",
+          "unsupported_reason": "wasm.atomics for wasm-edge requires edge_runtime_shared_memory_support; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_object_layout",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.gc",
+          "support": "tracked",
+          "unsupported_reason": "wasm.gc for wasm-edge requires edge_runtime_feature_probe; use fallback runtime_object_layout when the gate is not proven."
+        },
+        {
+          "fallback": "linear_memory_handles",
+          "gate": "edge_runtime_feature_probe",
+          "id": "wasm.reference_types",
+          "support": "tracked",
+          "unsupported_reason": "wasm.reference_types for wasm-edge requires edge_runtime_feature_probe; use fallback linear_memory_handles when the gate is not proven."
+        },
+        {
+          "fallback": "host_callback_bridge",
+          "gate": "edge_runtime_host_async_probe",
+          "id": "wasm.js_promise_integration",
+          "support": "tracked",
+          "unsupported_reason": "wasm.js_promise_integration for wasm-edge requires edge_runtime_host_async_probe; use fallback host_callback_bridge when the gate is not proven."
+        },
+        {
+          "fallback": "raw_imports",
+          "gate": "wit_world_and_overhead_evidence",
+          "id": "wasi.component_model",
+          "support": "tracked",
+          "unsupported_reason": "wasi.component_model for wasm-edge requires wit_world_and_overhead_evidence; use fallback raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "sync_raw_imports",
+          "gate": "component_model_overhead_evidence",
+          "id": "wasi.async_0_3",
+          "support": "tracked",
+          "unsupported_reason": "wasi.async_0_3 for wasm-edge requires component_model_overhead_evidence; use fallback sync_raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "cpu_wasm_or_native_gpu_profile",
+          "gate": "browser_webgpu_profile",
+          "id": "webgpu.api",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.api is excluded from wasm-edge; use fallback cpu_wasm_or_native_gpu_profile."
+        },
+        {
+          "fallback": "cpu_wasm_or_webgpu_profile",
+          "gate": "browser_webnn_profile",
+          "id": "webnn.graph",
+          "support": "excluded",
+          "unsupported_reason": "webnn.graph is excluded from wasm-edge; use fallback cpu_wasm_or_webgpu_profile."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.blas",
+          "support": "tracked",
+          "unsupported_reason": "numeric.blas for wasm-edge requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.lapack",
+          "support": "tracked",
+          "unsupported_reason": "numeric.lapack for wasm-edge requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "license_and_source_recompiled_numeric_manifest",
+          "id": "numeric.gsl",
+          "support": "tracked",
+          "unsupported_reason": "numeric.gsl for wasm-edge requires license_and_source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "storage_authority",
+          "id": "tensor.typed_strided_storage",
+          "support": "baseline",
+          "unsupported_reason": "tensor.typed_strided_storage is baseline for wasm-edge; failing storage_authority makes the target profile invalid."
+        }
+      ],
+      "id": "wasm-edge",
+      "target_triple": "wasm32-wasip1"
+    },
+    {
+      "artifact_kind": "browser_wasm_webgpu_bundle",
+      "description": "Browser WASM bundle with WebGPU compute dispatch for admitted tensor kernels.",
+      "display_name": "WASM browser WebGPU",
+      "family": "wasm-browser",
+      "features": [
+        {
+          "fallback": "fail_closed",
+          "gate": "browser_wasm_validation",
+          "id": "wasm.mvp",
+          "support": "baseline",
+          "unsupported_reason": "wasm.mvp is baseline for wasm-browser-webgpu; failing browser_wasm_validation makes the target profile invalid."
+        },
+        {
+          "fallback": "scalar_wasm",
+          "gate": "browser_feature_probe",
+          "id": "wasm.simd128",
+          "support": "gated",
+          "unsupported_reason": "wasm.simd128 for wasm-browser-webgpu requires browser_feature_probe; use fallback scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "single_value_abi",
+          "gate": "browser_feature_probe",
+          "id": "wasm.multi_value",
+          "support": "gated",
+          "unsupported_reason": "wasm.multi_value for wasm-browser-webgpu requires browser_feature_probe; use fallback single_value_abi when the gate is not proven."
+        },
+        {
+          "fallback": "deterministic_simd_or_scalar",
+          "gate": "explicit_non_bit_exact_profile",
+          "id": "wasm.relaxed_simd",
+          "support": "gated",
+          "unsupported_reason": "wasm.relaxed_simd for wasm-browser-webgpu requires explicit_non_bit_exact_profile; use fallback deterministic_simd_or_scalar when the gate is not proven."
+        },
+        {
+          "fallback": "simd128_or_scalar_wasm",
+          "gate": "browser_feature_probe",
+          "id": "wasm.flexible_vectors",
+          "support": "tracked",
+          "unsupported_reason": "wasm.flexible_vectors for wasm-browser-webgpu requires browser_feature_probe; use fallback simd128_or_scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "f32_or_f64_kernel",
+          "gate": "browser_feature_probe",
+          "id": "wasm.half_precision",
+          "support": "tracked",
+          "unsupported_reason": "wasm.half_precision for wasm-browser-webgpu requires browser_feature_probe; use fallback f32_or_f64_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "checked_scalar_helpers",
+          "gate": "browser_feature_probe",
+          "id": "wasm.wide_arithmetic",
+          "support": "tracked",
+          "unsupported_reason": "wasm.wide_arithmetic for wasm-browser-webgpu requires browser_feature_probe; use fallback checked_scalar_helpers when the gate is not proven."
+        },
+        {
+          "fallback": "ordinary_call",
+          "gate": "browser_feature_probe",
+          "id": "wasm.tail_call",
+          "support": "tracked",
+          "unsupported_reason": "wasm.tail_call for wasm-browser-webgpu requires browser_feature_probe; use fallback ordinary_call when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_exception_calls",
+          "gate": "browser_feature_probe",
+          "id": "wasm.exception_handling",
+          "support": "tracked",
+          "unsupported_reason": "wasm.exception_handling for wasm-browser-webgpu requires browser_feature_probe; use fallback runtime_exception_calls when the gate is not proven."
+        },
+        {
+          "fallback": "memory32",
+          "gate": "program_address_space_requirement",
+          "id": "wasm.memory64",
+          "support": "tracked",
+          "unsupported_reason": "wasm.memory64 for wasm-browser-webgpu requires program_address_space_requirement; use fallback memory32 when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "browser_shared_memory_and_cross_origin_isolation",
+          "id": "wasm.threads",
+          "support": "gated",
+          "unsupported_reason": "wasm.threads for wasm-browser-webgpu requires browser_shared_memory_and_cross_origin_isolation; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "browser_shared_memory_and_cross_origin_isolation",
+          "id": "wasm.atomics",
+          "support": "gated",
+          "unsupported_reason": "wasm.atomics for wasm-browser-webgpu requires browser_shared_memory_and_cross_origin_isolation; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_object_layout",
+          "gate": "browser_feature_probe",
+          "id": "wasm.gc",
+          "support": "tracked",
+          "unsupported_reason": "wasm.gc for wasm-browser-webgpu requires browser_feature_probe; use fallback runtime_object_layout when the gate is not proven."
+        },
+        {
+          "fallback": "linear_memory_handles",
+          "gate": "browser_feature_probe",
+          "id": "wasm.reference_types",
+          "support": "tracked",
+          "unsupported_reason": "wasm.reference_types for wasm-browser-webgpu requires browser_feature_probe; use fallback linear_memory_handles when the gate is not proven."
+        },
+        {
+          "fallback": "host_callback_bridge",
+          "gate": "browser_feature_probe",
+          "id": "wasm.js_promise_integration",
+          "support": "tracked",
+          "unsupported_reason": "wasm.js_promise_integration for wasm-browser-webgpu requires browser_feature_probe; use fallback host_callback_bridge when the gate is not proven."
+        },
+        {
+          "fallback": "browser_host_shim",
+          "gate": "browser_host_import_model",
+          "id": "wasi.preview1",
+          "support": "excluded",
+          "unsupported_reason": "wasi.preview1 is excluded from wasm-browser-webgpu; use fallback browser_host_shim."
+        },
+        {
+          "fallback": "raw_js_imports",
+          "gate": "browser_component_model_probe",
+          "id": "wasi.component_model",
+          "support": "tracked",
+          "unsupported_reason": "wasi.component_model for wasm-browser-webgpu requires browser_component_model_probe; use fallback raw_js_imports when the gate is not proven."
+        },
+        {
+          "fallback": "sync_raw_imports",
+          "gate": "browser_component_model_overhead_evidence",
+          "id": "wasi.async_0_3",
+          "support": "tracked",
+          "unsupported_reason": "wasi.async_0_3 for wasm-browser-webgpu requires browser_component_model_overhead_evidence; use fallback sync_raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "cpu_wasm_or_fail_closed",
+          "gate": "navigator_gpu_and_adapter_probe",
+          "id": "webgpu.api",
+          "support": "gated",
+          "unsupported_reason": "webgpu.api for wasm-browser-webgpu requires navigator_gpu_and_adapter_probe; use fallback cpu_wasm_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "cpu_wasm_or_fail_closed",
+          "gate": "adapter_limits_and_shader_validation",
+          "id": "webgpu.wgsl_storage_buffers",
+          "support": "gated",
+          "unsupported_reason": "webgpu.wgsl_storage_buffers for wasm-browser-webgpu requires adapter_limits_and_shader_validation; use fallback cpu_wasm_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "lower_tier_kernel_or_fail_closed",
+          "gate": "adapter_limits_and_shader_validation",
+          "id": "webgpu.workgroup_memory",
+          "support": "gated",
+          "unsupported_reason": "webgpu.workgroup_memory for wasm-browser-webgpu requires adapter_limits_and_shader_validation; use fallback lower_tier_kernel_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "non_atomic_kernel_or_fail_closed",
+          "gate": "shader_validation",
+          "id": "webgpu.atomics",
+          "support": "gated",
+          "unsupported_reason": "webgpu.atomics for wasm-browser-webgpu requires shader_validation; use fallback non_atomic_kernel_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "f32_kernel",
+          "gate": "adapter_feature_probe",
+          "id": "webgpu.f16",
+          "support": "gated",
+          "unsupported_reason": "webgpu.f16 for wasm-browser-webgpu requires adapter_feature_probe; use fallback f32_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "workgroup_kernel",
+          "gate": "adapter_feature_probe",
+          "id": "webgpu.subgroups",
+          "support": "tracked",
+          "unsupported_reason": "webgpu.subgroups for wasm-browser-webgpu requires adapter_feature_probe; use fallback workgroup_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "no_timestamp_observability",
+          "gate": "adapter_feature_probe",
+          "id": "webgpu.timestamp_queries",
+          "support": "gated",
+          "unsupported_reason": "webgpu.timestamp_queries for wasm-browser-webgpu requires adapter_feature_probe; use fallback no_timestamp_observability when the gate is not proven."
+        },
+        {
+          "fallback": "use_wasm-browser-webnn",
+          "gate": "separate_webnn_profile",
+          "id": "webnn.graph",
+          "support": "excluded",
+          "unsupported_reason": "webnn.graph is excluded from wasm-browser-webgpu; use fallback use_wasm-browser-webnn."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.blas",
+          "support": "tracked",
+          "unsupported_reason": "numeric.blas for wasm-browser-webgpu requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.lapack",
+          "support": "tracked",
+          "unsupported_reason": "numeric.lapack for wasm-browser-webgpu requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "license_and_source_recompiled_numeric_manifest",
+          "id": "numeric.gsl",
+          "support": "tracked",
+          "unsupported_reason": "numeric.gsl for wasm-browser-webgpu requires license_and_source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "storage_authority",
+          "id": "tensor.typed_strided_storage",
+          "support": "baseline",
+          "unsupported_reason": "tensor.typed_strided_storage is baseline for wasm-browser-webgpu; failing storage_authority makes the target profile invalid."
+        }
+      ],
+      "id": "wasm-browser-webgpu",
+      "target_triple": "wasm32-wasip1"
+    },
+    {
+      "artifact_kind": "browser_wasm_webnn_bundle",
+      "description": "Browser WASM bundle with WebNN graph dispatch for admitted inference subgraphs.",
+      "display_name": "WASM browser WebNN",
+      "family": "wasm-browser",
+      "features": [
+        {
+          "fallback": "fail_closed",
+          "gate": "browser_wasm_validation",
+          "id": "wasm.mvp",
+          "support": "baseline",
+          "unsupported_reason": "wasm.mvp is baseline for wasm-browser-webnn; failing browser_wasm_validation makes the target profile invalid."
+        },
+        {
+          "fallback": "scalar_wasm",
+          "gate": "browser_feature_probe",
+          "id": "wasm.simd128",
+          "support": "gated",
+          "unsupported_reason": "wasm.simd128 for wasm-browser-webnn requires browser_feature_probe; use fallback scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "single_value_abi",
+          "gate": "browser_feature_probe",
+          "id": "wasm.multi_value",
+          "support": "gated",
+          "unsupported_reason": "wasm.multi_value for wasm-browser-webnn requires browser_feature_probe; use fallback single_value_abi when the gate is not proven."
+        },
+        {
+          "fallback": "deterministic_simd_or_scalar",
+          "gate": "explicit_non_bit_exact_profile",
+          "id": "wasm.relaxed_simd",
+          "support": "gated",
+          "unsupported_reason": "wasm.relaxed_simd for wasm-browser-webnn requires explicit_non_bit_exact_profile; use fallback deterministic_simd_or_scalar when the gate is not proven."
+        },
+        {
+          "fallback": "simd128_or_scalar_wasm",
+          "gate": "browser_feature_probe",
+          "id": "wasm.flexible_vectors",
+          "support": "tracked",
+          "unsupported_reason": "wasm.flexible_vectors for wasm-browser-webnn requires browser_feature_probe; use fallback simd128_or_scalar_wasm when the gate is not proven."
+        },
+        {
+          "fallback": "f32_or_f64_kernel",
+          "gate": "browser_feature_probe",
+          "id": "wasm.half_precision",
+          "support": "tracked",
+          "unsupported_reason": "wasm.half_precision for wasm-browser-webnn requires browser_feature_probe; use fallback f32_or_f64_kernel when the gate is not proven."
+        },
+        {
+          "fallback": "checked_scalar_helpers",
+          "gate": "browser_feature_probe",
+          "id": "wasm.wide_arithmetic",
+          "support": "tracked",
+          "unsupported_reason": "wasm.wide_arithmetic for wasm-browser-webnn requires browser_feature_probe; use fallback checked_scalar_helpers when the gate is not proven."
+        },
+        {
+          "fallback": "ordinary_call",
+          "gate": "browser_feature_probe",
+          "id": "wasm.tail_call",
+          "support": "tracked",
+          "unsupported_reason": "wasm.tail_call for wasm-browser-webnn requires browser_feature_probe; use fallback ordinary_call when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_exception_calls",
+          "gate": "browser_feature_probe",
+          "id": "wasm.exception_handling",
+          "support": "tracked",
+          "unsupported_reason": "wasm.exception_handling for wasm-browser-webnn requires browser_feature_probe; use fallback runtime_exception_calls when the gate is not proven."
+        },
+        {
+          "fallback": "memory32",
+          "gate": "program_address_space_requirement",
+          "id": "wasm.memory64",
+          "support": "tracked",
+          "unsupported_reason": "wasm.memory64 for wasm-browser-webnn requires program_address_space_requirement; use fallback memory32 when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "browser_shared_memory_and_cross_origin_isolation",
+          "id": "wasm.threads",
+          "support": "gated",
+          "unsupported_reason": "wasm.threads for wasm-browser-webnn requires browser_shared_memory_and_cross_origin_isolation; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "single_thread",
+          "gate": "browser_shared_memory_and_cross_origin_isolation",
+          "id": "wasm.atomics",
+          "support": "gated",
+          "unsupported_reason": "wasm.atomics for wasm-browser-webnn requires browser_shared_memory_and_cross_origin_isolation; use fallback single_thread when the gate is not proven."
+        },
+        {
+          "fallback": "runtime_object_layout",
+          "gate": "browser_feature_probe",
+          "id": "wasm.gc",
+          "support": "tracked",
+          "unsupported_reason": "wasm.gc for wasm-browser-webnn requires browser_feature_probe; use fallback runtime_object_layout when the gate is not proven."
+        },
+        {
+          "fallback": "linear_memory_handles",
+          "gate": "browser_feature_probe",
+          "id": "wasm.reference_types",
+          "support": "tracked",
+          "unsupported_reason": "wasm.reference_types for wasm-browser-webnn requires browser_feature_probe; use fallback linear_memory_handles when the gate is not proven."
+        },
+        {
+          "fallback": "host_callback_bridge",
+          "gate": "browser_feature_probe",
+          "id": "wasm.js_promise_integration",
+          "support": "tracked",
+          "unsupported_reason": "wasm.js_promise_integration for wasm-browser-webnn requires browser_feature_probe; use fallback host_callback_bridge when the gate is not proven."
+        },
+        {
+          "fallback": "browser_host_shim",
+          "gate": "browser_host_import_model",
+          "id": "wasi.preview1",
+          "support": "excluded",
+          "unsupported_reason": "wasi.preview1 is excluded from wasm-browser-webnn; use fallback browser_host_shim."
+        },
+        {
+          "fallback": "raw_js_imports",
+          "gate": "browser_component_model_probe",
+          "id": "wasi.component_model",
+          "support": "tracked",
+          "unsupported_reason": "wasi.component_model for wasm-browser-webnn requires browser_component_model_probe; use fallback raw_js_imports when the gate is not proven."
+        },
+        {
+          "fallback": "sync_raw_imports",
+          "gate": "browser_component_model_overhead_evidence",
+          "id": "wasi.async_0_3",
+          "support": "tracked",
+          "unsupported_reason": "wasi.async_0_3 for wasm-browser-webnn requires browser_component_model_overhead_evidence; use fallback sync_raw_imports when the gate is not proven."
+        },
+        {
+          "fallback": "cpu_wasm_webgpu_or_fail_closed",
+          "gate": "webnn_graph_builder_probe",
+          "id": "webnn.graph",
+          "support": "gated",
+          "unsupported_reason": "webnn.graph for wasm-browser-webnn requires webnn_graph_builder_probe; use fallback cpu_wasm_webgpu_or_fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.api",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.api is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.wgsl_storage_buffers",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.wgsl_storage_buffers is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.workgroup_memory",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.workgroup_memory is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.atomics",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.atomics is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.f16",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.f16 is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.subgroups",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.subgroups is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "use_wasm-browser-webgpu",
+          "gate": "separate_webgpu_profile",
+          "id": "webgpu.timestamp_queries",
+          "support": "excluded",
+          "unsupported_reason": "webgpu.timestamp_queries is excluded from wasm-browser-webnn; use fallback use_wasm-browser-webgpu."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.blas",
+          "support": "tracked",
+          "unsupported_reason": "numeric.blas for wasm-browser-webnn requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "source_recompiled_numeric_manifest",
+          "id": "numeric.lapack",
+          "support": "tracked",
+          "unsupported_reason": "numeric.lapack for wasm-browser-webnn requires source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "license_and_source_recompiled_numeric_manifest",
+          "id": "numeric.gsl",
+          "support": "tracked",
+          "unsupported_reason": "numeric.gsl for wasm-browser-webnn requires license_and_source_recompiled_numeric_manifest; use fallback fail_closed when the gate is not proven."
+        },
+        {
+          "fallback": "fail_closed",
+          "gate": "storage_authority",
+          "id": "tensor.typed_strided_storage",
+          "support": "baseline",
+          "unsupported_reason": "tensor.typed_strided_storage is baseline for wasm-browser-webnn; failing storage_authority makes the target profile invalid."
+        }
+      ],
+      "id": "wasm-browser-webnn",
+      "target_triple": "wasm32-wasip1"
+    }
+  ]
+}

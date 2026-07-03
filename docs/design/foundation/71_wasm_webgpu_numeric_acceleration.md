@@ -392,18 +392,25 @@ Each target/profile row must record:
 
 ## Immediate Concrete Work
 
-1. Add a generated target feature manifest for native, wasm-server, wasm-browser,
-   wasm-edge, wasm-browser-webgpu, and wasm-browser-webnn.
+1. Keep the generated target feature manifest authoritative for native,
+   wasm-server, wasm-browser, wasm-edge, wasm-browser-webgpu, and
+   wasm-browser-webnn; split-runtime browser packages now publish the generated
+   manifest asset and select `wasm-browser-webgpu` from the WebGPU dispatch
+   host import.
 2. Add opcode/import histogram gates for R4a/R4b: a proven typed arithmetic path
    must emit native WASM scalar or SIMD opcodes and must not retain the boxed
    runtime-call lane.
 3. Extend the typed strided storage primitive so buffer, ndarray, DLPack, Arrow,
    and GPU device storage are projections of one authority.
-4. Add WebGPU feature probing and artifact metadata to browser packaging.
+4. Extend browser WebGPU execution evidence: browser bundles now carry the
+   shared target-feature verifier, WebGPU dispatch, and worker assets, and the
+   split-runtime embed shares the browser WebGPU dispatch host instead of
+   stubbing `molt_gpu_webgpu_dispatch_host`; claimed WebGPU acceleration still
+   needs an actual WGSL dispatch/parity row from a compiled Molt GPU kernel.
 5. Add source-recompiled BLAS/LAPACK/GSL admission metadata with license,
    provider, symbols, object closure, and per-target artifact custody.
-6. Build the one-command WASM artifact inspector before the next manual
-   wasm-objdump/grep loop repeats.
+6. Keep the one-command WASM artifact inspect/diff/prove lane ahead of repeated
+   manual wasm-objdump/grep loops.
 
 ## Primary Sources Checked
 
