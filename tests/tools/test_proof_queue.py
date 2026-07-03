@@ -828,6 +828,14 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
         json.dumps(
             {
                 "status": "child_running",
+                "child_process": {
+                    "pid": 3210,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+                "repro": {"host": {"platform": "win32"}},
                 "pytest": {
                     "current_test_file": {
                         "missing": True,
@@ -875,7 +883,9 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     out = capsys.readouterr().out
     assert "running-pytest-current-test-missing" in out
     assert str(current_path) in out
+    assert "windows_memory_guard_child_runner pid=3210" in out
     assert "pre-test or collection/startup opacity" in out
+    assert "uv/cache contention" in out
 
 
 def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
