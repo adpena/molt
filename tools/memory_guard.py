@@ -303,6 +303,19 @@ def terminate_watched_processes(
     return _custody_terminate_watched_processes(*args, **kwargs)
 
 
+def _validated_termination_report(
+    report: object,
+    *,
+    caller: str,
+) -> GuardTerminationReport:
+    if not isinstance(report, GuardTerminationReport):
+        raise TypeError(
+            f"{caller} must return GuardTerminationReport, "
+            f"got {type(report).__name__}"
+        )
+    return report
+
+
 _terminate_watched_processes_facade = terminate_watched_processes
 
 
@@ -940,13 +953,16 @@ def run_guarded(
             grace: float,
         ) -> None:
             termination_reports.append(
-                terminate_watched_processes(
-                    proc.pid,
-                    samples=samples,
-                    watched=watched,
-                    grace=grace,
-                    reason=reason,
-                    sampler=sampler,
+                _validated_termination_report(
+                    terminate_watched_processes(
+                        proc.pid,
+                        samples=samples,
+                        watched=watched,
+                        grace=grace,
+                        reason=reason,
+                        sampler=sampler,
+                    ),
+                    caller="terminate_watched_processes",
                 )
             )
 
@@ -1012,12 +1028,15 @@ def run_guarded(
                 )
                 return
             termination_reports.append(
-                terminate_watched_processes(
-                    proc.pid,
-                    grace=0.0,
-                    reason=reason,
-                    sampler=sample_processes,
-                    root_owned=True,
+                _validated_termination_report(
+                    terminate_watched_processes(
+                        proc.pid,
+                        grace=0.0,
+                        reason=reason,
+                        sampler=sample_processes,
+                        root_owned=True,
+                    ),
+                    caller="terminate_watched_processes",
                 )
             )
 
@@ -1460,11 +1479,14 @@ def run_guarded(
             )
             with contextlib.suppress(Exception):
                 termination_reports.append(
-                    terminate_watched_processes(
-                        proc.pid,
-                        grace=0.0,
-                        reason="run_guarded_finalizer",
-                        sampler=sample_processes if guard_interrupted else sampler,
+                    _validated_termination_report(
+                        terminate_watched_processes(
+                            proc.pid,
+                            grace=0.0,
+                            reason="run_guarded_finalizer",
+                            sampler=sample_processes if guard_interrupted else sampler,
+                        ),
+                        caller="terminate_watched_processes",
                     )
                 )
             with contextlib.suppress(Exception):

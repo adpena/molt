@@ -39,6 +39,14 @@ def _guard_termination_report(
     )
 
 
+def test_termination_report_validator_rejects_fake_drift() -> None:
+    with pytest.raises(TypeError, match="must return GuardTerminationReport"):
+        memory_guard._validated_termination_report(
+            None,
+            caller="terminate_watched_processes",
+        )
+
+
 def test_parse_process_table_keeps_commands_with_spaces() -> None:
     samples = memory_guard.parse_process_table(
         """
@@ -3064,6 +3072,7 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
 ) -> None:
     marker = "molt-backend-marker"
     captured: dict[str, object] = {}
+    stdio = {"stdin": "in", "stdout": "out", "stderr": "err"}
 
     def fake_execve(path, argv, env):
         captured["path"] = path
@@ -3089,6 +3098,7 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
         f"print({marker!r})",
     ]
     if os.name == "nt":
+        monkeypatch.setattr(memory_guard, "inherit_stdio_kwargs", lambda: stdio)
         monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
         assert (
             memory_guard.main(
@@ -3114,6 +3124,16 @@ def test_main_reexec_hides_guarded_command_from_guard_argv(
     encoded = env[memory_guard.INTERNAL_COMMAND_ENV]
     assert json.loads(encoded) == [sys.executable, "-c", f"print({marker!r})"]
     assert env[memory_guard.INTERNAL_WORKER_ENV] == "1"
+    if os.name == "nt":
+        run_kwargs = captured["run_kwargs"]
+        assert isinstance(run_kwargs, dict)
+        assert run_kwargs["creationflags"] == (
+            getattr(memory_guard.subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(memory_guard.subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        assert run_kwargs["stdin"] == "in"
+        assert run_kwargs["stdout"] == "out"
+        assert run_kwargs["stderr"] == "err"
 
 
 def test_run_guarded_marks_child_environment_as_guarded() -> None:
@@ -3169,6 +3189,7 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
 ) -> None:
     captured: dict[str, object] = {}
     samples_path = tmp_path / "samples.jsonl"
+    stdio = {"stdin": "in", "stdout": "out", "stderr": "err"}
 
     def fake_execve(path, argv, env):
         captured["path"] = path
@@ -3203,6 +3224,7 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
         "print('ok')",
     ]
     if os.name == "nt":
+        monkeypatch.setattr(memory_guard, "inherit_stdio_kwargs", lambda: stdio)
         monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
         assert (
             memory_guard.main(
@@ -3235,6 +3257,11 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
             getattr(memory_guard.subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(memory_guard.subprocess, "CREATE_NO_WINDOW", 0)
         )
+        run_kwargs = captured["run_kwargs"]
+        assert isinstance(run_kwargs, dict)
+        assert run_kwargs["stdin"] == "in"
+        assert run_kwargs["stdout"] == "out"
+        assert run_kwargs["stderr"] == "err"
 
 
 def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> None:
@@ -3422,9 +3449,14 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["returncode"] == 0
     assert payload["violation"] is None
     assert payload["peak"]["rss_kb"] > 0
-    assert payload["peak"]["scope"] in {"process", "process_rusage"}
+    expected_peak_scopes = {"process", "process_rusage"}
+    expected_total_scopes = {"process_tree", "process_tree_rusage"}
+    if os.name == "nt":
+        expected_peak_scopes.add("process_handle")
+        expected_total_scopes.add("process_tree_handle")
+    assert payload["peak"]["scope"] in expected_peak_scopes
     assert payload["peak_total"]["rss_kb"] >= payload["peak"]["rss_kb"]
-    assert payload["peak_total"]["scope"] in {"process_tree", "process_tree_rusage"}
+    assert payload["peak_total"]["scope"] in expected_total_scopes
     assert payload["max_total_rss_gb"] == pytest.approx(18.0)
     assert payload["child_rlimit_gb"] is None
     assert payload["orphaned_process_groups"] == []
