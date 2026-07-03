@@ -80,6 +80,16 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _corpus_digest(source_results: Sequence[Mapping[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for source in source_results:
+        digest.update(str(source.get("path", "")).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(source.get("sha256", "")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _read_python_source(path: Path) -> str:
     with tokenize.open(path) as handle:
         return handle.read()
@@ -454,6 +464,7 @@ def profile_sources(
     *,
     optimization_profile: str,
     top: int,
+    profile_inputs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     pass_aggregate: dict[str, dict[str, Any]] = {}
     cprofile_aggregate: dict[tuple[str, int, str], dict[str, Any]] = {}
@@ -474,17 +485,25 @@ def profile_sources(
     status_counts = Counter(
         str(result.get("status", "unknown")) for result in source_results
     )
+    resolved_sources = [str(result["path"]) for result in source_results]
+    inputs = dict(profile_inputs or {})
+    inputs.setdefault("manifest", None)
+    inputs.setdefault("source_args", [])
+    inputs.setdefault("limit", None)
+    inputs["resolved_sources"] = resolved_sources
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "tool": "frontend_hot_pass_profile",
         "generated_at_utc": _utc_stamp(),
         "git_rev": _git_rev(),
         "optimization_profile": optimization_profile,
+        "profile_inputs": inputs,
         "source_count": len(source_results),
         "status_counts": dict(sorted(status_counts.items())),
         "total_elapsed_ms": round(
             sum(float(result.get("elapsed_ms", 0.0)) for result in source_results), 6
         ),
+        "corpus_digest": _corpus_digest(source_results),
         "sources": source_results,
         "ranked_midend_passes": _rank_passes(pass_aggregate, limit=max(1, top)),
         "ranked_frontend_functions": _rank_cprofile(
@@ -517,6 +536,7 @@ def format_markdown(report: Mapping[str, Any]) -> str:
         f"- Generated: {report.get('generated_at_utc')}",
         f"- Git revision: {report.get('git_rev')}",
         f"- Optimization profile: {report.get('optimization_profile')}",
+        f"- Corpus digest: {report.get('corpus_digest')}",
         f"- Sources: {report.get('source_count')} ({report.get('status_counts')})",
         f"- Total frontend elapsed: {report.get('total_elapsed_ms')} ms",
         "",
@@ -602,6 +622,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _manifest_input_record(path: Path | None) -> dict[str, str] | None:
+    if path is None:
+        return None
+    resolved = path.resolve()
+    return {
+        "path": _repo_rel(resolved),
+        "sha256": _sha256_text(resolved.read_text(encoding="utf-8")),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     sources = resolve_sources(
@@ -613,6 +643,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sources,
         optimization_profile=args.optimization_profile,
         top=args.top,
+        profile_inputs={
+            "manifest": _manifest_input_record(args.manifest),
+            "source_args": list(args.source),
+            "limit": args.limit,
+        },
     )
     stamp = report["generated_at_utc"]
     out_dir = args.out_dir or (ROOT / "logs" / "frontend_profile" / f"profile_{stamp}")
