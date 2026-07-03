@@ -4048,6 +4048,14 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
     for row in rows:
         run_id = str(row["run_id"])
         status = str(row["status"])
+        notes = notes_by_run.get(run_id, [])
+        dag = edges_by_run.get(run_id, {"parents": [], "children": []})
+        superseded_terminal_row = (
+            status not in RUNNING and not args.all and _frontier_superseded(dag)
+        )
+        if superseded_terminal_row:
+            continue
+
         diagnostics = _run_diagnostics(row)
         for item in diagnostics:
             signal_id = str(item["signal_id"])
@@ -4057,7 +4065,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             if any(
                 str(item["signal_id"]) == "unclassified-failed-proof"
                 for item in diagnostics
-            ):
+            ) and not superseded_terminal_row:
                 issues.append(
                     _audit_issue(
                         signal_id="audit-unclassified-failure",
@@ -4073,8 +4081,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                 )
             elif diagnostics:
                 classified_failed_runs += 1
-                dag = edges_by_run.get(run_id, {"parents": [], "children": []})
-                if not _frontier_superseded(dag):
+                if not superseded_terminal_row:
                     frontier = _frontier_failure(row, diagnostics)
                     if frontier is not None:
                         frontier_failures.append(frontier)
@@ -4106,8 +4113,6 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                     )
                 )
 
-        notes = notes_by_run.get(run_id, [])
-        dag = edges_by_run.get(run_id, {"parents": [], "children": []})
         metadata_defects: list[str] = []
         try:
             scopes = json.loads(row["scopes_json"])
