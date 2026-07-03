@@ -4,5 +4,5 @@
   "duplicate_authority_recoverable_lines": 1665.0,
   "layer_dependency_violations": 0.0,
   "misplaced_module_lines": 11925.0,
-  "non_member_layer_crates": 1.0
+  "non_member_layer_crates": 0.0
 }
