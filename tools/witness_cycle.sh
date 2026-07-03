@@ -5,6 +5,13 @@
 # Env: WITNESS_TIMEOUT (node seconds, default 300), WITNESS_REBUILD=1.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Windows Python cannot resolve MSYS POSIX-style paths (/c/Users/...), and
+# MSYS converts command arguments but NOT custom env vars, so env-exported
+# module roots must be Windows-style. cygpath -m emits C:/... which both
+# bash and Windows Python accept.
+if command -v cygpath >/dev/null 2>&1; then
+  ROOT="$(cygpath -m "$ROOT")"
+fi
 ENTRY="${1:-tmp/pact_witness_acceptance_queue/debug_import_trace/alias_probe.py}"
 MODE="${2:-cycle}"
 OUT="$ROOT/tmp/pact_witness_acceptance_queue/debug_import_trace/build"

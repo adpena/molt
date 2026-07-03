@@ -681,6 +681,11 @@ class _RuntimeImportSupportPolicy:
 class _ModuleRootResolution:
     roots: tuple[Path, ...]
     external_roots: tuple[Path, ...]
+    # MOLT_MODULE_ROOTS entries whose paths do not exist. Explicit env roots
+    # are operator intent; dropping one silently turns a one-line config error
+    # into an unattributable downstream custody failure, so callers fail
+    # closed on any missing entry.
+    missing_env_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
