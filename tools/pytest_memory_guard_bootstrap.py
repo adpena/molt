@@ -37,6 +37,9 @@ PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
 ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
 ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
 ACTIVE_GUARD_MARKER_DIR = ROOT / "tmp" / "memory_guard" / "active"
+PROOF_QUEUE_ENV = "MOLT_PROOF_QUEUE"
+PROOF_QUEUE_RUN_ID_ENV = "MOLT_PROOF_QUEUE_RUN_ID"
+PROOF_QUEUE_DB_ENV = "MOLT_PROOF_QUEUE_DB"
 PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
 PYTEST_GUARD_PLUGIN_NAMES = frozenset(
     {
@@ -654,6 +657,13 @@ def _active_guard_marker_valid(
     guard_path = payload.get("path")
     if not isinstance(guard_path, str):
         return False
+    if payload.get("status") in {
+        "completed",
+        "finalizer_cleanup",
+        "finalizer_completed",
+        "guard_exception",
+    }:
+        return False
     try:
         return Path(guard_path).resolve(strict=False) == (
             ROOT / "tools" / "memory_guard.py"
@@ -662,11 +672,46 @@ def _active_guard_marker_valid(
         return False
 
 
+def _proof_queue_outer_guard_active(environ: Mapping[str, str]) -> bool:
+    if environ.get(PROOF_QUEUE_ENV) != "1":
+        return False
+    run_id = environ.get(PROOF_QUEUE_RUN_ID_ENV, "").strip()
+    if not run_id or len(run_id) > 240:
+        return False
+    db_raw = environ.get(PROOF_QUEUE_DB_ENV, "").strip()
+    if not db_raw:
+        return False
+    db_path = Path(db_raw).expanduser()
+    if not db_path.is_absolute():
+        db_path = ROOT / db_path
+    try:
+        if db_path.resolve(strict=False).suffix != ".sqlite3":
+            return False
+    except OSError:
+        return False
+    current_raw = environ.get(PYTEST_CURRENT_TEST_FILE_ENV, "").strip()
+    if not current_raw:
+        return False
+    current_path = Path(current_raw).expanduser()
+    if not current_path.is_absolute():
+        current_path = ROOT / current_path
+    try:
+        current_path = current_path.resolve(strict=False)
+    except OSError:
+        return False
+    return _path_is_under(current_path, PYTEST_OUTER_GUARD_SUMMARY_DIR)
+
+
 def outer_memory_guard_active(environ: Mapping[str, str] | None = None) -> bool:
     source = os.environ if environ is None else environ
     guard_pid = _guard_pid_from_env(source)
     if guard_pid is None:
-        return False
+        return _proof_queue_outer_guard_active(source)
+    marker_valid = _active_guard_marker_valid(source, guard_pid=guard_pid)
+    if marker_valid:
+        return True
+    if _proof_queue_outer_guard_active(source):
+        return True
 
     from tools import memory_guard
 
@@ -676,9 +721,7 @@ def outer_memory_guard_active(environ: Mapping[str, str] | None = None) -> bool:
     guard_sample = samples.get(guard_pid)
     if guard_sample is None:
         return False
-    if not _command_is_repo_memory_guard(
-        guard_sample.command
-    ) and not _active_guard_marker_valid(source, guard_pid=guard_pid):
+    if not _command_is_repo_memory_guard(guard_sample.command):
         return False
 
     current = os.getpid()

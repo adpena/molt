@@ -869,6 +869,230 @@ def test_outer_memory_guard_requires_live_repo_memory_guard_ancestor(
     )
 
 
+def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    guard_pid = 100
+    current_pid = 300
+    token = "x" * 16
+    marker_dir = tmp_path / "active"
+    marker_dir.mkdir()
+    marker = marker_dir / f"guard-{guard_pid}-{token}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "pid": guard_pid,
+                "token": token,
+                "path": str(REPO_ROOT / "tools" / "memory_guard.py"),
+                "status": "child_running",
+            }
+        ),
+        encoding="utf-8",
+    )
+    samples = {
+        guard_pid: memory_guard.ProcessSample(
+            pid=guard_pid,
+            ppid=1,
+            rss_kb=1,
+            command="python guarded-wrapper-with-redacted-argv",
+        ),
+        current_pid: memory_guard.ProcessSample(
+            pid=current_pid,
+            ppid=999,
+            rss_kb=1,
+            command=f"{sys.executable} -m pytest",
+        ),
+    }
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
+    )
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid
+    )
+
+    assert (
+        pytest_memory_guard_bootstrap.outer_memory_guard_active(
+            {
+                "MOLT_MEMORY_GUARD_ACTIVE": "1",
+                "MOLT_MEMORY_GUARD_PID": str(guard_pid),
+                pytest_memory_guard_bootstrap.ACTIVE_GUARD_TOKEN_ENV: token,
+                pytest_memory_guard_bootstrap.ACTIVE_GUARD_MARKER_ENV: str(marker),
+            }
+        )
+        is True
+    )
+
+
+def test_outer_memory_guard_accepts_live_marker_without_process_sample(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    guard_pid = 100
+    token = "x" * 16
+    marker_dir = tmp_path / "active"
+    marker_dir.mkdir()
+    marker = marker_dir / f"guard-{guard_pid}-{token}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "pid": guard_pid,
+                "token": token,
+                "path": str(REPO_ROOT / "tools" / "memory_guard.py"),
+                "status": "child_running",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
+    )
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    assert (
+        pytest_memory_guard_bootstrap.outer_memory_guard_active(
+            {
+                "MOLT_MEMORY_GUARD_ACTIVE": "1",
+                "MOLT_MEMORY_GUARD_PID": str(guard_pid),
+                pytest_memory_guard_bootstrap.ACTIVE_GUARD_TOKEN_ENV: token,
+                pytest_memory_guard_bootstrap.ACTIVE_GUARD_MARKER_ENV: str(marker),
+            }
+        )
+        is True
+    )
+
+
+def test_outer_memory_guard_rejects_terminal_active_marker(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    guard_pid = 100
+    token = "x" * 16
+    marker_dir = tmp_path / "active"
+    marker_dir.mkdir()
+    marker = marker_dir / f"guard-{guard_pid}-{token}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "pid": guard_pid,
+                "token": token,
+                "path": str(REPO_ROOT / "tools" / "memory_guard.py"),
+                "status": "completed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
+    )
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    assert (
+        pytest_memory_guard_bootstrap.outer_memory_guard_active(
+            {
+                "MOLT_MEMORY_GUARD_ACTIVE": "1",
+                "MOLT_MEMORY_GUARD_PID": str(guard_pid),
+                pytest_memory_guard_bootstrap.ACTIVE_GUARD_TOKEN_ENV: token,
+                pytest_memory_guard_bootstrap.ACTIVE_GUARD_MARKER_ENV: str(marker),
+            }
+        )
+        is False
+    )
+
+
+def test_outer_memory_guard_accepts_proof_queue_custody_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    summary_dir = tmp_path / "pytest-memory-guard"
+    summary_dir.mkdir()
+    current_test_path = summary_dir / "queue-current-test.json"
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+        summary_dir,
+    )
+
+    assert (
+        pytest_memory_guard_bootstrap.outer_memory_guard_active(
+            {
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_ENV: "1",
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_RUN_ID_ENV: "run-1",
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_DB_ENV: str(
+                    tmp_path / "proof_queue.sqlite3"
+                ),
+                pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV: str(
+                    current_test_path
+                ),
+            }
+        )
+        is True
+    )
+
+
+def test_outer_memory_guard_rejects_proof_queue_custody_outside_pytest_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    summary_dir = tmp_path / "pytest-memory-guard"
+    summary_dir.mkdir()
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+        summary_dir,
+    )
+
+    assert (
+        pytest_memory_guard_bootstrap.outer_memory_guard_active(
+            {
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_ENV: "1",
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_RUN_ID_ENV: "run-1",
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_DB_ENV: str(
+                    tmp_path / "proof_queue.sqlite3"
+                ),
+                pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV: str(
+                    tmp_path / "outside-current-test.json"
+                ),
+            }
+        )
+        is False
+    )
+
+
+def test_outer_memory_guard_rejects_proof_queue_custody_without_sqlite_db(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    summary_dir = tmp_path / "pytest-memory-guard"
+    summary_dir.mkdir()
+    current_test_path = summary_dir / "queue-current-test.json"
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+        summary_dir,
+    )
+
+    assert (
+        pytest_memory_guard_bootstrap.outer_memory_guard_active(
+            {
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_ENV: "1",
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_RUN_ID_ENV: "run-1",
+                pytest_memory_guard_bootstrap.PROOF_QUEUE_DB_ENV: str(
+                    tmp_path / "proof_queue.json"
+                ),
+                pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV: str(
+                    current_test_path
+                ),
+            }
+        )
+        is False
+    )
+
+
 def test_pytest_current_test_hooks_write_live_identity(
     monkeypatch,
     tmp_path: Path,
