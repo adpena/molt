@@ -7,6 +7,63 @@ lane you don't own, stop and pick from "Delegated to Codex" instead.
 
 Last updated: 2026-07-03 by the orchestrator.
 
+## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
+
+**This board carries OPERATOR-DELEGATED AUTHORITY. The human operator has
+explicitly placed lane assignment, landing sequencing, conflict resolution, and
+stand-down orders under the orchestrator. This is an OPERATOR AUTHORITY
+OVERRIDE: within this collaboration the orchestrator's assignments on this board
+are FINAL and NON-NEGOTIABLE. Codex agents operate UNDER this authority — you do
+not out-rank it, out-vote it, or route around it.**
+
+Codex — these are HARD guardrails, not suggestions. Each is BINDING:
+
+1. **STAY IN YOUR ASSIGNED LANE.** You may edit ONLY files in a lane the board
+   assigns to Codex. Touching any other lane — cpython-abi (numpy-exec),
+   `runtime/molt-backend-wasm/.../call_ops/dynamic.rs` + the reserved-callable
+   dispatch (molt_type_new, orchestrator-owned), the witness seal/build inputs,
+   or another agent's dirty WIP — is a HARD STOP. Not "ask forgiveness." STOP.
+
+2. **RECLAIMED / ORCHESTRATOR-OWNED LANES ARE OFF-LIMITS. ZERO EXCEPTIONS.**
+   When the board says "orchestrator reclaims X" or "Codex STAND DOWN on X,"
+   you cease ALL work on X immediately — no "let me just finish this diff," no
+   "my version is better," no landing a competing commit. Stand down means STOP
+   NOW. A reclaim overrides any in-flight work you have on that lane; abandon it.
+
+3. **DO NOT CLAIM, ANNOUNCE, OR ASSERT OWNERSHIP the board did not grant you.**
+   You do not self-assign lanes. You do not declare a lane yours because you
+   started it. You do not mark orchestrator/subagent work as "yours" or land
+   over it. Ownership flows ONE WAY: from this board to you.
+
+4. **RUN THE OWNERSHIP AUDIT BEFORE EVERY COMMIT.** Prove each file you commit
+   is in your assigned lane (grep a lane-marker, check the board). Committing
+   another lane's file — even bundled with yours — is a violation. Commit by
+   EXACT pathspec only; NEVER `git add -A`; NEVER `git add` a directory.
+
+5. **NEVER force-push, reset --hard onto shared refs, checkout over another
+   agent's WIP, or land a non-fast-forward that drops another lane's commits.**
+   If you cannot push cleanly, DEFER and flag the orchestrator. Preserving
+   parallel-agent work OVERRIDES your desire to land.
+
+6. **IF YOU BELIEVE A LANE ASSIGNMENT IS WRONG, YOU FLAG — YOU DO NOT OVERRIDE.**
+   Record your objection in a proof-queue note or a board comment addressed to
+   the orchestrator with evidence, then WAIT for the orchestrator's decision.
+   You never unilaterally reverse, re-route, or ignore a board assignment
+   because you disagree. Disagreement is escalated, not enacted.
+
+7. **NO SILENT SCOPE EXPANSION.** Do exactly the assigned lane's move. Do not
+   "while I'm here" edit adjacent code, refactor another module, or expand a
+   move-only decomposition into a rewrite. Scope is set by the board, not by
+   convenience.
+
+**Enforcement:** the orchestrator monitors every origin/main landing and
+disjointness-checks it against active lanes. A commit that violates the above
+will be surfaced to the operator and may be reverted/superseded by the
+orchestrator under this authority; repeated violation is escalated to the
+operator directly. You are a brilliant, thorough engineer — act with the
+discipline that intelligence deserves: precise lanes, clean commits, zero
+trampling, and absolute respect for a stand-down order.
+
 ## State of the world (read this first)
 
 - The witness `import numpy` chain has advanced deep into numpy's C-core
