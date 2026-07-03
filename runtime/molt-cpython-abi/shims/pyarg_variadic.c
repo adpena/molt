@@ -45,6 +45,10 @@ extern const char *PyUnicode_AsUTF8(PyObject *op);
 extern PyObject *PyObject_Repr(PyObject *op);
 extern PyObject *PyObject_Str(PyObject *op);
 extern PyObject *PyBytes_FromStringAndSize(const char *s, Py_ssize_t size);
+extern PyObject *PyList_New(Py_ssize_t size);
+extern int PyList_SetItem(PyObject *op, Py_ssize_t i, PyObject *value);
+extern PyObject *PyDict_New(void);
+extern int PyDict_SetItem(PyObject *op, PyObject *key, PyObject *value);
 extern int PyErr_WarnEx(PyObject *category, const char *message, Py_ssize_t stack_level);
 extern void PyErr_SetString(PyObject *exc_type, const char *message);
 extern void PyErr_WriteUnraisable(PyObject *obj);
@@ -207,6 +211,94 @@ error:
     return NULL;
 }
 
+static PyObject *molt_buildvalue_parse_list(const char **cursor, va_list *ap) {
+    PyObject *items[MOLT_VARARG_MAX_ARGS];
+    Py_ssize_t len = 0;
+    for (;;) {
+        molt_buildvalue_skip_separators(cursor);
+        if (**cursor == ']') {
+            (*cursor)++;
+            break;
+        }
+        if (**cursor == '\0') {
+            PyErr_SetString(&PyExc_TypeError, "unterminated list format in Py_BuildValue");
+            goto error;
+        }
+        if (len >= MOLT_VARARG_MAX_ARGS) {
+            PyErr_SetString(&PyExc_TypeError, "too many Py_BuildValue list items");
+            goto error;
+        }
+        items[len] = molt_buildvalue_parse_item(cursor, ap);
+        if (items[len] == NULL) goto error;
+        len++;
+        molt_buildvalue_skip_separators(cursor);
+    }
+
+    PyObject *list = PyList_New(len);
+    if (list == NULL) goto error;
+    for (Py_ssize_t i = 0; i < len; i++) {
+        if (PyList_SetItem(list, i, items[i]) != 0) {
+            Py_DECREF(items[i]);
+            for (Py_ssize_t j = i + 1; j < len; j++) Py_DECREF(items[j]);
+            Py_DECREF(list);
+            return NULL;
+        }
+        items[i] = NULL;
+    }
+    return list;
+
+error:
+    for (Py_ssize_t i = 0; i < len; i++) {
+        if (items[i] != NULL) Py_DECREF(items[i]);
+    }
+    return NULL;
+}
+
+static PyObject *molt_buildvalue_parse_dict(const char **cursor, va_list *ap) {
+    PyObject *dict = PyDict_New();
+    if (dict == NULL) return NULL;
+    for (;;) {
+        molt_buildvalue_skip_separators(cursor);
+        if (**cursor == '}') {
+            (*cursor)++;
+            break;
+        }
+        if (**cursor == '\0') {
+            PyErr_SetString(&PyExc_TypeError, "unterminated dict format in Py_BuildValue");
+            Py_DECREF(dict);
+            return NULL;
+        }
+        PyObject *key = molt_buildvalue_parse_item(cursor, ap);
+        if (key == NULL) {
+            Py_DECREF(dict);
+            return NULL;
+        }
+        molt_buildvalue_skip_separators(cursor);
+        if (**cursor == '}' || **cursor == '\0') {
+            PyErr_SetString(&PyExc_TypeError,
+                            "dict format in Py_BuildValue has an odd number of items");
+            Py_DECREF(key);
+            Py_DECREF(dict);
+            return NULL;
+        }
+        PyObject *value = molt_buildvalue_parse_item(cursor, ap);
+        if (value == NULL) {
+            Py_DECREF(key);
+            Py_DECREF(dict);
+            return NULL;
+        }
+        int rc = PyDict_SetItem(dict, key, value);
+        Py_DECREF(key);
+        Py_DECREF(value);
+        if (rc != 0) {
+            Py_DECREF(dict);
+            return NULL;
+        }
+        molt_buildvalue_skip_separators(cursor);
+    }
+    return dict;
+}
+
 static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     molt_buildvalue_skip_separators(cursor);
     char code = **cursor;
@@ -218,12 +310,25 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
         (*cursor)++;
         return molt_buildvalue_parse_tuple(cursor, ap);
     }
+    if (code == '[') {
+        (*cursor)++;
+        return molt_buildvalue_parse_list(cursor, ap);
+    }
+    if (code == '{') {
+        (*cursor)++;
+        return molt_buildvalue_parse_dict(cursor, ap);
+    }
     (*cursor)++;
     switch (code) {
-    case 'O': {
+    case 'O':
+    case 'S':
+    case 'U': {
+        // 'O'/'S'/'U' all take a borrowed PyObject* and return a new
+        // reference; the S/U type distinction is advisory in CPython's
+        // builder and not enforced here.
         PyObject *obj = va_arg(*ap, PyObject *);
         if (obj == NULL) {
-            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue 'O' received NULL");
+            PyErr_SetString(&PyExc_TypeError, "Py_BuildValue object format received NULL");
             return NULL;
         }
         Py_INCREF(obj);
@@ -239,6 +344,16 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
     }
     case 'i':
         return PyLong_FromLong((long)va_arg(*ap, int));
+    case 'b':
+        return PyLong_FromLong((long)(signed char)va_arg(*ap, int));
+    case 'B':
+        return PyLong_FromUnsignedLong((unsigned long)(unsigned char)va_arg(*ap, int));
+    case 'h':
+        return PyLong_FromLong((long)(short)va_arg(*ap, int));
+    case 'H':
+        return PyLong_FromUnsignedLong((unsigned long)(unsigned short)va_arg(*ap, int));
+    case 'I':
+        return PyLong_FromUnsignedLong((unsigned long)va_arg(*ap, unsigned int));
     case 'l':
         return PyLong_FromLong(va_arg(*ap, long));
     case 'n':
@@ -284,9 +399,33 @@ static PyObject *molt_buildvalue_parse_item(const char **cursor, va_list *ap) {
         if (has_len) (*cursor)++;
         return PyBytes_FromStringAndSize(bytes, len);
     }
-    default:
-        PyErr_SetString(&PyExc_TypeError, "unsupported format unit in Py_BuildValue");
+    case 'c': {
+        // A single byte, returned as a length-1 bytes object.
+        char ch = (char)va_arg(*ap, int);
+        return PyBytes_FromStringAndSize(&ch, 1);
+    }
+    case 'C': {
+        // A single character, returned as a length-1 str. The varargs value
+        // is promoted to int; encode ASCII directly and reject non-ASCII
+        // rather than mis-encoding (a full ordinal path would need
+        // PyUnicode_FromOrdinal).
+        int ordinal = va_arg(*ap, int);
+        if (ordinal < 0 || ordinal > 0x7f) {
+            PyErr_SetString(&PyExc_TypeError,
+                            "Py_BuildValue 'C' supports only ASCII ordinals");
+            return NULL;
+        }
+        char ch = (char)ordinal;
+        return PyUnicode_FromStringAndSize(&ch, 1);
+    }
+    default: {
+        char detail[64];
+        snprintf(detail, sizeof(detail),
+                 "unsupported format unit '%c' (0x%02x) in Py_BuildValue",
+                 (code >= 32 && code < 127) ? code : '?', (unsigned char)code);
+        PyErr_SetString(&PyExc_TypeError, detail);
         return NULL;
+    }
     }
 }
 
