@@ -3923,6 +3923,108 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     assert orphan_issue["artifacts"] == [quarantine_receipt]
 
 
+def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "nested-guarded-exec.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="nested-guarded-exec-run",
+        logical_id="nested-guarded-exec",
+        reason="prove nested guarded_exec orphan cleanup diagnosis",
+        command=["cargo", "test", "-p", "molt-passes", "--lib"],
+        cwd=proof_queue.ROOT,
+        resource_family="rust",
+        contention_key="rust:molt-passes",
+        scopes=["runtime/molt-passes/src/representation_facts.rs"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "nested-guarded-exec.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="nested-guarded-exec-run",
+        body="test: nested guarded_exec orphan cleanup remains distinct",
+        kind="submission",
+        author="codex",
+    )
+    receipt = (
+        "E:\\Molt\\target\\sessions\\proof-rust\\.molt_state\\quarantine\\"
+        "cargo_incremental\\20260703-030911-pid17104-orphaned_processes_cleaned\\"
+        "receipt.json"
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "memory_guard: MOLT_TEST_SUITE guarded command: cargo test -p molt-passes --lib",
+                "memory_guard: quarantined Cargo incremental state after orphaned_processes_cleaned: moved=1 target_dir=E:\\Molt\\target\\sessions\\proof-rust quarantine_dir=E:\\Molt\\target\\sessions\\proof-rust\\.molt_state\\quarantine\\cargo_incremental\\20260703-030911-pid17104-orphaned_processes_cleaned receipt="
+                + receipt
+                + " errors=0",
+                "memory_guard: orphaned child processes detected after command exit; killed_at=2026-07-03T03:09:11Z elapsed=225.28s pgids=8176 reason=direct child exited while descendants were still live",
+                "guarded_exec: elapsed=225.28s returncode=0 command=cargo test -p molt-passes --lib",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "nested-guarded-exec-run", status="passed", returncode=0
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "nested-guarded-exec-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "nested-memory-guard-orphan-cleanup"
+    assert diagnostics[0]["severity"] == "warning"
+    assert "Nested guarded_exec" in diagnostics[0]["summary"]
+    assert diagnostics[0]["artifacts"] == [receipt]
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--json",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    audit = json.loads(capsys.readouterr().out)
+    nested_issue = next(
+        item
+        for item in audit["issues"]
+        if item["signal_id"] == "audit-nested-memory-guard-orphan-cleanup"
+    )
+    assert nested_issue["artifacts"] == [receipt]
+
+
 def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3966,6 +4068,10 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
         "\n".join(
             [
                 "F.",
+                "[FAIL] tests\\differential\\stdlib\\sys_metadata_intrinsics.py "
+                "(native) mismatch: stdout mismatch; exit code ref=1 cand=0",
+                "  CPython stdout: ''",
+                "  Molt    stdout: 'ok\\n'",
                 "memory_guard: timeout after 900.00s; terminated tracked process tree to prevent orphaned Molt subprocesses: killed_at=2026-07-02T20:04:56Z elapsed=901.44s child_pid=33900",
                 "memory_guard: orphaned child processes detected after command exit; terminated tracked process groups to prevent accumulation: killed_at=2026-07-02T20:04:56Z elapsed=901.44s pgids=18104 reason=direct child exited while descendants were still live",
             ]
@@ -4018,6 +4124,9 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
     assert "pytest_phase=call" in diagnostics[0]["evidence"]
     assert f"Inspect {nodeid} once" in diagnostics[0]["next_action"]
     assert diagnostics[0]["artifacts"] == [str(summary_path), str(log_path)]
+    assert "molt-diff-output-mismatch" not in {
+        item["signal_id"] for item in diagnostics
+    }
 
 
 def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
@@ -4708,6 +4817,88 @@ def test_proof_queue_diagnoses_partial_module_publication(
         in diagnostics[0]["scopes"]
     )
     assert "runtime/molt-runtime/src/builtins/module_table.rs" in diagnostics[0][
+        "scopes"
+    ]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
+def test_proof_queue_diagnoses_molt_diff_stdout_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "molt-diff-stdout.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="molt-diff-stdout-run",
+        logical_id="molt-diff-stdout",
+        reason="prove molt_diff stdout mismatch diagnosis",
+        command=[
+            sys.executable,
+            "tests/molt_diff.py",
+            "--jobs",
+            "1",
+            "tests/differential/stdlib/sys_encoding_basic.py",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:r6-sys-stat-py312",
+        scopes=[
+            "tests/molt_diff.py",
+            "tests/differential/stdlib/sys_encoding_basic.py",
+        ],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "molt-diff-stdout.memory_guard.json",
+    )
+    log_path.write_text(
+        "[RUN] tests\\differential\\stdlib\\sys_encoding_basic.py\n"
+        "Testing tests\\differential\\stdlib\\sys_encoding_basic.py against python...\n"
+        "[FAIL] tests\\differential\\stdlib\\sys_encoding_basic.py "
+        "(native) mismatch: stdout mismatch\n"
+        "  CPython stdout: 'utf-8\\nutf-8\\nsurrogatepass\\nTrue\\nTrue\\n'\n"
+        "  Molt    stdout: 'utf-8\\nutf-8\\nsurrogateescape\\nTrue\\nTrue\\n'\n"
+        "  CPython return: 0 stderr: ''\n"
+        "  Molt    return: 0 stderr: ''\n"
+        "proof_queue finished status=failed exit_code=1 elapsed=365.719s\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "molt-diff-stdout-run", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "molt-diff-stdout-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "molt-diff-output-mismatch"
+    assert diagnostics[0]["severity"] == "error"
+    assert "sys_encoding_basic.py" in diagnostics[0]["summary"]
+    assert "stdout mismatch" in diagnostics[0]["summary"]
+    assert "surrogatepass" in diagnostics[0]["evidence"]
+    assert "surrogateescape" in diagnostics[0]["evidence"]
+    assert "tests/differential/stdlib/sys_encoding_basic.py" in diagnostics[0][
         "scopes"
     ]
     assert "unclassified-failed-proof" not in {
