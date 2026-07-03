@@ -316,6 +316,16 @@ def _validated_termination_report(
     return report
 
 
+def _validated_termination_reports(
+    reports: Sequence[object],
+    *,
+    caller: str,
+) -> tuple[GuardTerminationReport, ...]:
+    return tuple(
+        _validated_termination_report(report, caller=caller) for report in reports
+    )
+
+
 _terminate_watched_processes_facade = terminate_watched_processes
 
 
@@ -1309,8 +1319,18 @@ def run_guarded(
                     sampler=sampler,
                     grace=0.25,
                 )
-                termination_reports.extend(tracked_orphans.termination_reports)
-                termination_reports.extend(repo_orphans.termination_reports)
+                termination_reports.extend(
+                    _validated_termination_reports(
+                        tracked_orphans.termination_reports,
+                        caller="cleanup_tracked_orphans",
+                    )
+                )
+                termination_reports.extend(
+                    _validated_termination_reports(
+                        repo_orphans.termination_reports,
+                        caller="cleanup_repo_scoped_orphans_since_baseline",
+                    )
+                )
                 orphaned_process_groups = tuple(
                     sorted(
                         {

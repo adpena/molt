@@ -47,6 +47,14 @@ def test_termination_report_validator_rejects_fake_drift() -> None:
         )
 
 
+def test_termination_report_batch_validator_rejects_fake_drift() -> None:
+    with pytest.raises(TypeError, match="must return GuardTerminationReport"):
+        memory_guard._validated_termination_reports(
+            (_guard_termination_report(), None),
+            caller="cleanup_tracked_orphans",
+        )
+
+
 def test_parse_process_table_keeps_commands_with_spaces() -> None:
     samples = memory_guard.parse_process_table(
         """
