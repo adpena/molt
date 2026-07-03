@@ -695,7 +695,11 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     last = _last_nonempty_log_line(path)
     if last:
         lines[-1] = f"{lines[-1]} last={last}"
-    pytest_line = _pytest_current_status_line(row["summary_json"])
+    pytest_line = (
+        _pytest_current_status_line(row["summary_json"])
+        if _row_command_mentions_pytest(row)
+        else None
+    )
     if pytest_line:
         lines.append(pytest_line)
     child_runner_line = _memory_guard_child_runner_status_line(row["summary_json"])

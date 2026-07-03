@@ -909,6 +909,69 @@ def test_proof_queue_status_shows_active_pytest_current_test(
     assert f"pytest_current={nodeid} phase=setup" in out
 
 
+def test_proof_queue_status_hides_pytest_current_for_non_pytest_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    current_path = tmp_path / "pytest-current.json"
+    log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "pytest": {
+                    "current_test_file": {
+                        "missing": True,
+                        "path": str(current_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="show non-pytest rows do not inherit pytest custody noise",
+        command=[sys.executable, "tests/molt_diff.py", "--jobs", "1"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:r6",
+        scopes=[],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "status",
+                "--recent",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert f"log={log_path}" in out
+    assert "pytest_current=" not in out
+    assert str(current_path) not in out
+
+
 def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
