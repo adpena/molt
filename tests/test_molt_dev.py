@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -62,6 +61,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import dirty_tree_policy  # noqa: E402
+from molt_dev_common import _run_fast_captured_command  # noqa: E402
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "molt_dev_gates.toml"
@@ -92,26 +92,12 @@ def drv():
 def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = None):
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            cwd=REPO_ROOT,
-            env=env,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            timeout=30.0,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        proc = subprocess.CompletedProcess(
-            ["git", "-C", str(repo), *args],
-            124,
-            stdout,
-            f"{stderr.rstrip()}\ngit fixture command timed out after 30.0s\n",
-        )
+    proc = _run_fast_captured_command(
+        ["git", "-C", str(repo), *args],
+        cwd=REPO_ROOT,
+        env=env,
+        input_text=input_text,
+    )
     if check and proc.returncode != 0:
         raise AssertionError(
             f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr}"
@@ -145,14 +131,11 @@ def origin_and_clone(tmp_path):
     driver acts on; origin is the upstream the push lands in.
     """
     origin = tmp_path / "origin.git"
-    origin.mkdir()
-    _git(origin, "init", "-q", "--bare", "-b", "main")
 
     seed = tmp_path / "seed"
     _init_repo(seed)
     _commit_file(seed, "README.md", "seed\n", "seed: initial commit")
-    _git(seed, "remote", "add", "origin", str(origin))
-    _git(seed, "push", "-q", "origin", "main")
+    _git(tmp_path, "clone", "--bare", "-q", str(seed), str(origin))
 
     work = tmp_path / "work"
     _git(tmp_path, "clone", "-q", str(origin), str(work))
