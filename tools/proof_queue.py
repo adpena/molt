@@ -425,6 +425,31 @@ def _memory_guard_child_runner_status_line(summary_json: object) -> str | None:
     return f"  guard_child={evidence}"
 
 
+def _memory_guard_child_descendant_status_line(summary_json: object) -> str | None:
+    child = _summary_child_process(summary_json)
+    if child is None:
+        return None
+    child_pid = child.get("pid")
+    if not isinstance(child_pid, int) or child_pid <= 0:
+        return None
+    if not _is_guard_command(child.get("command")):
+        return None
+    try:
+        from tools import memory_guard
+
+        samples = memory_guard.sample_processes()
+        descendants = memory_guard.descendant_pids(samples, child_pid)
+    except Exception:
+        return None
+    if not descendants:
+        return None
+    line = f"  guard_descendants={len(descendants)}"
+    sample_evidence = _descendant_sample_evidence(samples, descendants)
+    if sample_evidence is not None:
+        line += f" {sample_evidence}"
+    return line
+
+
 def _descendant_sample_evidence(
     samples: Mapping[int, object],
     descendants: set[int],
@@ -774,6 +799,11 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     child_runner_line = _memory_guard_child_runner_status_line(row["summary_json"])
     if child_runner_line:
         lines.append(child_runner_line)
+    child_descendant_line = _memory_guard_child_descendant_status_line(
+        row["summary_json"]
+    )
+    if child_descendant_line:
+        lines.append(child_descendant_line)
     return lines
 
 
