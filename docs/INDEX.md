@@ -67,6 +67,8 @@ the source of truth.
 - Generator fusion and deforestation routing: [design/generator_fusion.md](design/generator_fusion.md)
 - Frontend hot-pass profiling contract and first Rust candidate:
   [design/foundation/44b_frontend_hot_pass_profile.md](design/foundation/44b_frontend_hot_pass_profile.md)
+- Import bedrock PR2 one-store cutover map:
+  [design/foundation/69a_import_bedrock_pr2_sys_modules_view_cutover.md](design/foundation/69a_import_bedrock_pr2_sys_modules_view_cutover.md)
 
 ## Workspace Guides
 
