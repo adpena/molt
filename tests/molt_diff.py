@@ -37,6 +37,7 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
     memory_guard,
     process_sentinel,
     resource_pressure,
+    target_python_runtime,
 )
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
@@ -77,6 +78,9 @@ except Exception:  # pragma: no cover - non-posix fallback
     fcntl = None
 
 
+PythonCommand = str | Sequence[str]
+
+
 def _resolve_python_exe(python_exe: str) -> str:
     if not python_exe:
         return sys.executable
@@ -88,6 +92,30 @@ def _resolve_python_exe(python_exe: str) -> str:
         if base_exe and Path(base_exe).exists():
             return base_exe
     return python_exe
+
+
+def _resolve_python_command(python_exe: PythonCommand) -> tuple[str, ...]:
+    if isinstance(python_exe, str):
+        return (_resolve_python_exe(python_exe),)
+    command = tuple(str(part) for part in python_exe if str(part))
+    return command or (sys.executable,)
+
+
+def _python_command_display(python_exe: PythonCommand) -> str:
+    return " ".join(_resolve_python_command(python_exe))
+
+
+def _resolve_diff_python_command(python_version: str | None) -> tuple[str, ...]:
+    if not python_version:
+        return (sys.executable,)
+    target_python = target_python_runtime.parse_target_python_version(python_version)
+    return tuple(
+        target_python_runtime.resolve_target_python_command(
+            target_python,
+            override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
+            cwd=_repo_root(),
+        )
+    )
 
 
 def _metadata_probe_timeout_sec() -> float:
@@ -299,9 +327,9 @@ def _parse_version(value: str) -> tuple[int, int] | None:
 
 
 @lru_cache(maxsize=None)
-def _python_exe_version(python_exe: str) -> tuple[int, int] | None:
+def _python_command_version(command: tuple[str, ...]) -> tuple[int, int] | None:
     result = _run_metadata_probe(
-        [python_exe, "-c", "import sys; print(sys.version_info[:2])"]
+        [*command, "-c", "import sys; print(sys.version_info[:2])"]
     )
     if result is None:
         return None
@@ -320,7 +348,7 @@ def _python_exe_version(python_exe: str) -> tuple[int, int] | None:
 
 
 @lru_cache(maxsize=None)
-def _molt_sys_env_for_python_exe(python_exe: str) -> dict[str, str]:
+def _molt_sys_env_for_python_command(command: tuple[str, ...]) -> dict[str, str]:
     """Derive Molt sys/version environment from the CPython under test.
 
     Differential runs compare Molt output against a chosen CPython version
@@ -328,7 +356,7 @@ def _molt_sys_env_for_python_exe(python_exe: str) -> dict[str, str]:
     configured to match the CPython baseline version for that run.
     """
 
-    if not python_exe:
+    if not command:
         return {}
     code = (
         "import json,sys;"
@@ -339,7 +367,7 @@ def _molt_sys_env_for_python_exe(python_exe: str) -> dict[str, str]:
         "'version_info':[vi.major,vi.minor,vi.micro,vi.releaselevel,vi.serial]"
         "}))"
     )
-    result = _run_metadata_probe([python_exe, "-c", code])
+    result = _run_metadata_probe([*command, "-c", code])
     if result is None:
         return {}
     if result.returncode != 0:
@@ -376,6 +404,14 @@ def _molt_sys_env_for_python_exe(python_exe: str) -> dict[str, str]:
     if isinstance(version, str) and version:
         env["MOLT_SYS_VERSION"] = version
     return env
+
+
+def _python_exe_version(python_exe: PythonCommand) -> tuple[int, int] | None:
+    return _python_command_version(_resolve_python_command(python_exe))
+
+
+def _molt_sys_env_for_python_exe(python_exe: PythonCommand) -> dict[str, str]:
+    return _molt_sys_env_for_python_command(_resolve_python_command(python_exe))
 
 
 def _host_platform_tags() -> set[str]:
@@ -2101,7 +2137,7 @@ def _open_log_file(path: Path | None):
 
 def _diff_worker(
     file_path: str,
-    python_exe: str,
+    python_exe: PythonCommand,
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
 ) -> dict[str, str]:
@@ -2158,7 +2194,7 @@ class _TeeStream(io.TextIOBase):
 
 def _diff_run_single(
     file_path: str,
-    python_exe: str,
+    python_exe: PythonCommand,
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
 ) -> dict[str, str]:
@@ -2908,7 +2944,7 @@ def _run_batch_compile_build(
 
 
 def run_cpython(file_path, python_exe=sys.executable):
-    python_exe = _resolve_python_exe(python_exe)
+    python_command = _resolve_python_command(python_exe)
     _apply_memory_limit()
     env = os.environ.copy()
     # Keep CPython baseline path resolution aligned with the Molt build/run env.
@@ -3048,7 +3084,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
     timeout = _diff_timeout()
     try:
         result = _run_subprocess(
-            [python_exe, "-c", bootstrap, file_path],
+            [*python_command, "-c", bootstrap, file_path],
             env=env,
             timeout=timeout,
         )
@@ -4105,7 +4141,7 @@ def _record_backend_result(
 
 def diff_test(
     file_path,
-    python_exe=sys.executable,
+    python_exe: PythonCommand = sys.executable,
     build_profile: str = "dev",
     targets: tuple[str, ...] = ("native",),
 ):
@@ -4168,7 +4204,7 @@ def diff_test(
         stdout_mode = (meta.get("stdout", ["exact"])[0]).lower()
         stderr_mode = (meta.get("stderr", ["ignore"])[0]).lower()
 
-        print(f"Testing {file_path} against {python_exe}...")
+        print(f"Testing {file_path} against {_python_command_display(python_exe)}...")
         cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
 
         def _finalize_status(raw_status: str) -> str:
@@ -4309,7 +4345,7 @@ def diff_test(
 
 def run_diff(
     target: Path | Sequence[Path],
-    python_exe: str,
+    python_exe: PythonCommand,
     build_profile: str = "dev",
     *,
     targets: tuple[str, ...] = ("native",),
@@ -4617,7 +4653,7 @@ def run_diff(
         "skipped": skipped,
         "failed_files": failed_files,
         "skipped_files": skipped_files,
-        "python_exe": python_exe,
+        "python_exe": _python_command_display(python_exe),
         "jobs": jobs,
         "run_id": run_id,
         "config": {
@@ -4802,9 +4838,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    python_exe = sys.executable
-    if args.python_version:
-        python_exe = f"python{args.python_version}"
+    python_exe = _resolve_diff_python_command(args.python_version)
     if args.stdlib_profile is not None:
         os.environ["MOLT_DIFF_STDLIB_PROFILE"] = args.stdlib_profile
     build_profile = args.build_profile or _diff_build_profile()
