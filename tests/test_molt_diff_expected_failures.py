@@ -230,6 +230,68 @@ def test_rss_display_status_normalizes_raw_ok_without_lookup() -> None:
     assert resolved == "pass"
 
 
+def test_run_diff_serial_emits_run_line_before_file_work(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_diff_module()
+    case = tmp_path / "case.py"
+    case.write_text("print('ok')\n", encoding="utf-8")
+    config = module._DiffMemoryGuardConfig(
+        max_process_kb=30_000,
+        max_tree_kb=40_000,
+        global_kb=100_000,
+        poll_interval=0.01,
+    )
+    calls: list[str] = []
+
+    class _FakeSuiteContext:
+        def start_repo_sentinel(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(module, "_ensure_diff_run_lock", lambda: None)
+    monkeypatch.setattr(module, "_prune_orphan_diff_workers", lambda: None)
+    monkeypatch.setattr(module, "_prune_orphan_build_helpers", lambda: None)
+    monkeypatch.setattr(module, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(module, "_prune_stale_build_locks", lambda: None)
+    monkeypatch.setattr(module, "_collect_test_files_multi", lambda _target: [case])
+    monkeypatch.setattr(module, "_diff_run_id", lambda: "serial-run-line")
+    monkeypatch.setattr(module, "_diff_memory_guard_config", lambda: config)
+    monkeypatch.setattr(module, "_prepare_memory_guard_run", lambda _config: None)
+    monkeypatch.setattr(
+        module, "_constrain_jobs_for_memory_guard", lambda jobs, *, config: jobs
+    )
+    monkeypatch.setattr(
+        module.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        staticmethod(lambda *_args, **_kwargs: _FakeSuiteContext()),
+    )
+    monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda _env=None: object())
+    monkeypatch.setattr(module, "_order_test_files", lambda files, _jobs: list(files))
+
+    def _fake_run_single(file_path, *_args, **_kwargs):
+        calls.append(file_path)
+        return {"path": file_path, "status": "pass", "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(module, "_diff_run_single", _fake_run_single)
+    monkeypatch.setattr(module, "_memory_guard_trip_message", lambda: None)
+    monkeypatch.setattr(module, "_top_rss_entries", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(module, "_aggregate_rss_metrics", lambda _run_id: {})
+    monkeypatch.setattr(module, "_print_rss_top", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_emit_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_memory_guard_scheduler_per_job_gb", lambda _config: 0.1)
+    monkeypatch.setattr(module, "_config_payload", lambda _config: {})
+
+    module.run_diff(
+        [case],
+        sys.executable,
+        jobs=1,
+        failures_output=tmp_path / "failures.txt",
+    )
+
+    assert calls == [str(case)]
+    assert f"[RUN] {case}" in capsys.readouterr().out
+
+
 def test_diff_memory_guard_config_clamps_implausible_global_limit(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
