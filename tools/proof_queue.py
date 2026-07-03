@@ -149,6 +149,9 @@ MOLT_DIFF_FAIL_RE = re.compile(
     r"(?P<detail>[^\r\n]+)"
 )
 PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
+NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX = (
+    "tests/test_native_import_bootstrap_regressions.py::"
+)
 PYTEST_ERROR_RE = re.compile(
     r"(?m)^ERROR\s+(?P<nodeid>\S+)(?:\s+-\s+(?P<detail>[^\r\n]+))?"
 )
@@ -2070,21 +2073,51 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
 
     match = PYTEST_FAILED_RE.search(log_tail)
     if match is not None:
+        nodeid = match.group("nodeid")
         assertion = PYTEST_ASSERTION_RE.search(log_tail)
         detail = assertion.group("error") if assertion is not None else match.group(0)
-        diagnostics.append(
-            _diagnostic(
-                signal_id="pytest-failure",
-                severity="error",
-                summary=f"Pytest proof failed at {match.group('nodeid')}.",
-                evidence=detail,
-                next_action=(
-                    "Fix the failing test or the changed contract it protects, "
-                    "then rerun the same focused queue lane."
-                ),
-                scopes=("tests/",),
+        if nodeid.startswith(NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX):
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="native-call-lane-pytest-failure",
+                    severity="error",
+                    summary=(
+                        "Native call-lane proof failed at "
+                        f"{nodeid}; this lane is owned by the R1 integrator."
+                    ),
+                    evidence=detail,
+                    next_action=(
+                        "Route this row to the native call-lane owner. Do not patch "
+                        "call/function.rs, fc/modules.rs, class_init.rs, containers, "
+                        "exceptions, object/mod.rs, or the native import regression "
+                        "test from an unrelated Codex lane."
+                    ),
+                    scopes=(
+                        "tests/test_native_import_bootstrap_regressions.py",
+                        "runtime/molt-runtime/src/call/function.rs",
+                        "runtime/molt-backend-native/src/native_backend/"
+                        "function_compiler/fc/modules.rs",
+                        "runtime/molt-runtime/src/call/class_init.rs",
+                        "runtime/molt-runtime/src/builtins/containers.rs",
+                        "runtime/molt-runtime/src/builtins/exceptions.rs",
+                        "runtime/molt-runtime/src/object/mod.rs",
+                    ),
+                )
             )
-        )
+        else:
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="pytest-failure",
+                    severity="error",
+                    summary=f"Pytest proof failed at {nodeid}.",
+                    evidence=detail,
+                    next_action=(
+                        "Fix the failing test or the changed contract it protects, "
+                        "then rerun the same focused queue lane."
+                    ),
+                    scopes=("tests/",),
+                )
+            )
 
     match = PYTHON_EXCEPTION_RE.search(log_tail)
     if match is not None and not diagnostics:
