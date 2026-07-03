@@ -3,9 +3,40 @@
 use crate::abi_types::{
     Py_TPFLAGS_READY, Py_ssize_t, PyMethodDef, PyObject, PyType_Spec, PyTypeObject,
 };
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::ptr;
+
+static ABI_LOCAL_TYPES: Lazy<Mutex<HashMap<u32, usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_cpython_abi_type_canonicalize(
+    kind: u32,
+    type_obj: *mut PyTypeObject,
+) -> *mut PyTypeObject {
+    if kind == 0 || type_obj.is_null() {
+        return ptr::null_mut();
+    }
+
+    let mut guard = ABI_LOCAL_TYPES.lock();
+    if let Some(canonical) = guard.get(&kind) {
+        return *canonical as *mut PyTypeObject;
+    }
+
+    let mut canonical: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    unsafe {
+        ptr::copy_nonoverlapping(type_obj, canonical.as_mut(), 1);
+        if canonical.ob_base.ob_base.ob_type.is_null() {
+            canonical.ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
+        }
+    }
+    let canonical = Box::into_raw(canonical);
+    guard.insert(kind, canonical as usize);
+    canonical
+}
 
 /// Mark a type as ready for use.
 /// In Molt's bridge, static type objects are pre-initialized; heap types

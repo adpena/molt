@@ -33,7 +33,13 @@ typedef long double npy_longdouble;
 typedef Py_ssize_t npy_intp;
 typedef size_t npy_uintp;
 
-#define _MOLT_NUMPY_OBJECT_HEAD PyObject *ob_base
+#ifdef MOLT_CPYTHON_ABI
+#define _MOLT_NUMPY_PUBLIC_C_HEAP 0
+#define _MOLT_NUMPY_OBJECT_HEAD PyObject_HEAD
+#else
+#define _MOLT_NUMPY_PUBLIC_C_HEAP 1
+#define _MOLT_NUMPY_OBJECT_HEAD _MoltCHeapObject ob_base
+#endif
 
 typedef struct PyArray_Descr {
     _MOLT_NUMPY_OBJECT_HEAD;

@@ -2,6 +2,11 @@
 
 use super::*;
 
+static C_HEAP_OBJECTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+static C_HEAP_TYPES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, usize>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_c_api_version() -> u32 {
     MOLT_C_API_VERSION
@@ -48,6 +53,64 @@ pub extern "C" fn molt_handle_decref(handle: MoltHandle) {
     crate::with_gil_entry_nopanic!(_py, {
         dec_ref_bits(_py, handle);
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_c_heap_register(ptr: usize) -> i32 {
+    if ptr == 0 {
+        return -1;
+    }
+    C_HEAP_OBJECTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(ptr);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_c_heap_unregister(ptr: usize) -> i32 {
+    if ptr == 0 {
+        return -1;
+    }
+    C_HEAP_OBJECTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&ptr);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_c_heap_contains(ptr: usize) -> i32 {
+    if ptr == 0 {
+        return 0;
+    }
+    if C_HEAP_OBJECTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&ptr)
+    {
+        1
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize {
+    if kind == 0 || ptr == 0 {
+        return 0;
+    }
+    let canonical = {
+        let mut guard = C_HEAP_TYPES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard.entry(kind).or_insert(ptr)
+    };
+    C_HEAP_OBJECTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(canonical);
+    canonical
 }
 
 #[unsafe(no_mangle)]
@@ -1359,28 +1422,13 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         if out_view.is_null() {
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
-        let storage = match unsafe {
-            crate::object::memoryview::TypedStridedStorage::from_object_bits(_py, obj_bits)
-        } {
-            Ok(storage) => storage,
-            Err(crate::object::memoryview::TypedStridedStorageError::ReleasedMemoryView) => {
-                let _ = crate::object::memoryview::raise_released_memoryview::<u64>(_py);
-                return -1;
-            }
-            Err(_) => return -1,
-        };
-        let (owner_bits, base_bits) =
-            match crate::object::memoryview::retain_storage_refs(_py, &storage) {
-                Ok(bits) => bits,
-                Err(()) => return -1,
-            };
-        let Some(export) = crate::object::memoryview::MoltBufferView::owned_from_typed_storage(
-            &storage, owner_bits, base_bits,
-        ) else {
-            crate::object::memoryview::release_buffer_refs(_py, owner_bits, base_bits);
-            return raise_i32(_py, "BufferError", "invalid buffer descriptor");
-        };
+        let mut export = MoltBufferView::default();
+        if unsafe { molt_buffer_export(obj_bits, &mut export as *mut MoltBufferView) } != 0 {
+            return -1;
+        }
+        inc_ref_bits(_py, obj_bits);
         unsafe {
+            export.owner = obj_bits;
             *out_view = export;
         }
         0
@@ -1399,6 +1447,7 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
             }
             (*view).data = std::ptr::null_mut();
             (*view).len = 0;
+            (*view).backing_capacity = 0;
             (*view).readonly = 1;
             (*view).ndim = 1;
             (*view).itemsize = 1;
@@ -1431,9 +1480,26 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             return raise_exception::<u64>(_py, "TypeError", "buffer view cannot be null");
         }
         let view = unsafe { &*view };
-        if view.validated_compact_shape_len().is_none() {
-            return raise_exception::<u64>(_py, "BufferError", "invalid buffer descriptor");
+        if view.data.is_null() && view.len != 0 {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "buffer descriptor has no data pointer",
+            );
         }
+        if view.ndim as usize > MOLT_BUFFER_MAX_NDIM {
+            return raise_exception::<u64>(_py, "BufferError", "buffer ndim exceeds Molt limit");
+        }
+        if view.itemsize == 0 {
+            return raise_exception::<u64>(_py, "BufferError", "buffer itemsize cannot be zero");
+        }
+        let Ok(backing_capacity) = usize::try_from(view.backing_capacity) else {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "buffer backing capacity exceeds Molt limit",
+            );
+        };
         let ndim = view.ndim as usize;
         let shape = view.shape[..ndim].to_vec();
         let strides = view.strides[..ndim].to_vec();
@@ -1448,19 +1514,52 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             return none_bits();
         }
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
-        let storage = crate::object::memoryview::TypedStridedStorage::new_with_owner(
+        let storage = crate::object::memoryview::TypedStridedStorage::new(
             view.data,
             view.readonly != 0,
             view.itemsize as usize,
             view.offset,
             view.base,
-            view.owner,
             format_bits,
             shape,
             strides,
         );
         let out_ptr = match storage {
-            Some(storage) => crate::object::builders::alloc_memoryview_from_storage(_py, storage),
+            Some(storage) => {
+                let valid = if view.base != 0 {
+                    unsafe {
+                        let base = crate::object::obj_from_bits(view.base);
+                        base.as_ptr()
+                            .and_then(|base_ptr| {
+                                crate::object::memoryview::bytes_like_slice_raw(base_ptr)
+                            })
+                            .map(|base_slice| {
+                                let data_matches_base = if view.data.is_null() {
+                                    storage.span_len == 0
+                                } else if storage.offset < 0 {
+                                    false
+                                } else {
+                                    usize::try_from(storage.offset)
+                                        .ok()
+                                        .filter(|&offset| offset <= base_slice.len())
+                                        .map(|offset| {
+                                            base_slice.as_ptr().add(offset).cast_mut() == view.data
+                                        })
+                                        .unwrap_or(false)
+                                };
+                                data_matches_base && storage.fits_in_base_len(base_slice.len())
+                            })
+                            .unwrap_or(false)
+                    }
+                } else {
+                    storage.fits_in_backing_len(backing_capacity)
+                };
+                if valid {
+                    crate::object::builders::alloc_memoryview_from_storage(_py, storage)
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
             None => std::ptr::null_mut(),
         };
         dec_ref_bits(_py, format_bits);

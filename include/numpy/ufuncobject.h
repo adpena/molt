@@ -7,7 +7,10 @@
 extern "C" {
 #endif
 
-#define PyUFunc_Type PyArray_Type
+static inline void _molt_numpy_ufunc_dealloc(PyObject *obj);
+static inline PyTypeObject *_molt_numpy_ufunc_type(void);
+
+#define PyUFunc_Type (*_molt_numpy_ufunc_type())
 
 typedef void (*PyUFuncGenericFunction)(
     char **args,
@@ -75,9 +78,52 @@ typedef struct PyUFunc_LoopSlot {
 #define UFUNC_OBJ_ISOBJECT 1
 #define UFUNC_OBJ_NEEDS_API 2
 
-#define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
+#define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyUFunc_Type)
 
 static void *PyUFunc_API[1] = {NULL};
+
+static inline PyTypeObject *_molt_numpy_ufunc_type(void) {
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+    static _MoltCHeapObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_UFUNC_TYPE);
+#else
+    static PyTypeObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_abi_local_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_UFUNC_TYPE,
+        "numpy.ufunc",
+        (Py_ssize_t)sizeof(PyUFuncObject),
+        _molt_numpy_ufunc_dealloc);
+#endif
+}
+
+static inline void _molt_numpy_ufunc_dealloc(PyObject *obj) {
+    PyUFuncObject *ufunc = (PyUFuncObject *)obj;
+    if (ufunc == NULL) {
+        return;
+    }
+    if (ufunc->identity_value != NULL) {
+        Py_DECREF(ufunc->identity_value);
+        ufunc->identity_value = NULL;
+    }
+    PyMem_Free(ufunc);
+}
+
+static inline void _molt_numpy_ufunc_init_header(PyUFuncObject *ufunc) {
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+    _molt_c_heap_init(
+        &ufunc->ob_base,
+        _MOLT_NUMPY_C_HEAP_UFUNC,
+        _molt_numpy_ufunc_type(),
+        _molt_numpy_ufunc_dealloc);
+#else
+    ufunc->ob_refcnt = 1;
+    ufunc->ob_type = _molt_numpy_ufunc_type();
+#endif
+}
 
 static inline void _molt_numpy_ufunc_noop_loop(
     char **args,
@@ -145,7 +191,7 @@ static inline PyObject *PyUFunc_FromFuncAndDataAndSignatureAndIdentity(
     if (ufunc == NULL) {
         return NULL;
     }
-    ufunc->ob_base = (PyObject *)&PyUFunc_Type;
+    _molt_numpy_ufunc_init_header(ufunc);
     ufunc->nin = nin;
     ufunc->nout = nout;
     ufunc->nargs = nin + nout;

@@ -466,6 +466,7 @@ pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
 pub struct BufferExport {
     pub ptr: u64,
     pub len: u64,
+    pub backing_capacity: u64,
     pub readonly: u32,
     pub ndim: u32,
     pub itemsize: u64,
@@ -484,6 +485,7 @@ impl Default for BufferExport {
         Self {
             ptr: 0,
             len: 0,
+            backing_capacity: 0,
             readonly: 1,
             ndim: 1,
             itemsize: 1,

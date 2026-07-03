@@ -2,18 +2,21 @@
 
 use crate::abi_types::{
     Py_buffer, PyBUF_ANY_CONTIGUOUS, PyBUF_C_CONTIGUOUS, PyBUF_F_CONTIGUOUS, PyBUF_FORMAT,
-    PyBUF_ND, PyBUF_SIMPLE, PyBUF_STRIDES, PyBUF_WRITABLE, PyExc_BufferError, PyExc_TypeError,
-    PyObject,
+    PyBUF_ND, PyBUF_STRIDES, PyBUF_WRITABLE, PyExc_BufferError, PyExc_TypeError, PyObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::{MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, MoltBufferView, hooks_or_stubs};
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::sync::{LazyLock, Mutex};
 
 const PYBUF_C_CONTIGUOUS_BIT: c_int = PyBUF_C_CONTIGUOUS & !PyBUF_STRIDES;
 const PYBUF_F_CONTIGUOUS_BIT: c_int = PyBUF_F_CONTIGUOUS & !PyBUF_STRIDES;
 const PYBUF_ANY_CONTIGUOUS_BIT: c_int = PyBUF_ANY_CONTIGUOUS & !PyBUF_STRIDES;
+static BUFFER_INTERNAL_REGISTRY: LazyLock<Mutex<HashSet<usize>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 unsafe fn set_buffer_error(message: &'static [u8]) {
     unsafe {
@@ -36,6 +39,26 @@ enum BufferReleaseKind {
 struct BufferInternal {
     release_kind: BufferReleaseKind,
     descriptor: MoltBufferView,
+}
+
+fn register_buffer_internal(ptr: *mut BufferInternal) {
+    if let Ok(mut registry) = BUFFER_INTERNAL_REGISTRY.lock() {
+        registry.insert(ptr as usize);
+    }
+}
+
+fn unregister_buffer_internal(ptr: *mut std::ffi::c_void) -> bool {
+    if let Ok(mut registry) = BUFFER_INTERNAL_REGISTRY.lock() {
+        return registry.remove(&(ptr as usize));
+    }
+    false
+}
+
+fn is_registered_buffer_internal(ptr: *mut std::ffi::c_void) -> bool {
+    if let Ok(registry) = BUFFER_INTERNAL_REGISTRY.lock() {
+        return registry.contains(&(ptr as usize));
+    }
+    false
 }
 
 impl BufferInternal {
@@ -63,6 +86,7 @@ fn raw_1d_descriptor(
     let mut descriptor = MoltBufferView::default();
     descriptor.data = buf.cast();
     descriptor.len = len as u64;
+    descriptor.backing_capacity = len as u64;
     descriptor.readonly = u32::from(readonly != 0);
     descriptor.ndim = 1;
     descriptor.itemsize = 1;
@@ -85,18 +109,21 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
     if info.buf.is_null() && info.len != 0 {
         return Err(());
     }
-    let ndim = info.ndim as usize;
-    if ndim > MOLT_BUFFER_MAX_NDIM {
+    if !info.suboffsets.is_null() {
         return Err(());
     }
-    if ndim == 0 && (!info.shape.is_null() || !info.strides.is_null() || !info.suboffsets.is_null())
-    {
+    if !info.internal.is_null() && is_registered_buffer_internal(info.internal) {
+        return Ok(unsafe { (*info.internal.cast::<BufferInternal>()).descriptor });
+    }
+    let ndim = info.ndim as usize;
+    if ndim > MOLT_BUFFER_MAX_NDIM {
         return Err(());
     }
 
     let mut descriptor = MoltBufferView::default();
     descriptor.data = info.buf.cast();
     descriptor.len = info.len as u64;
+    descriptor.backing_capacity = info.len as u64;
     descriptor.readonly = u32::from(info.readonly != 0);
     descriptor.ndim = ndim as u32;
     descriptor.itemsize = info.itemsize as u64;
@@ -110,7 +137,7 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
     };
 
     if ndim == 0 {
-        // Scalar buffers have no shape or stride arrays.
+        // Scalar buffers preserve CPython's zero-rank descriptor shape.
     } else if !info.shape.is_null() {
         for i in 0..ndim {
             let dim = unsafe { *info.shape.add(i) };
@@ -127,7 +154,7 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
     }
 
     if ndim == 0 {
-        // Scalar buffers have no shape or stride arrays.
+        // Scalar buffers have no stride entries.
     } else if !info.strides.is_null() {
         for i in 0..ndim {
             descriptor.strides[i] = unsafe { *info.strides.add(i) };
@@ -137,12 +164,31 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
         for i in (0..ndim).rev() {
             descriptor.strides[i] = stride;
             let dim = descriptor.shape[i].max(1);
-            stride = stride.saturating_mul(dim);
+            stride = stride.checked_mul(dim).ok_or(())?;
         }
+    }
+    let mut probe = Py_buffer {
+        buf: descriptor.data.cast(),
+        obj: ptr::null_mut(),
+        len: descriptor.len as isize,
+        itemsize: descriptor.itemsize as isize,
+        readonly: descriptor.readonly as c_int,
+        ndim: descriptor.ndim as c_int,
+        format: ptr::null_mut(),
+        shape: descriptor.shape.as_mut_ptr(),
+        strides: descriptor.strides.as_mut_ptr(),
+        suboffsets: ptr::null_mut(),
+        internal: ptr::null_mut(),
+    };
+    if unsafe { !pybuffer_is_c_contiguous(&raw mut probe) } {
+        return Err(());
     }
 
     if !info.format.is_null() {
         let bytes = unsafe { CStr::from_ptr(info.format) }.to_bytes();
+        if bytes.len() >= MOLT_BUFFER_FORMAT_CAP {
+            return Err(());
+        }
         let copy_len = bytes.len().min(MOLT_BUFFER_FORMAT_CAP.saturating_sub(1));
         descriptor.format = [0; MOLT_BUFFER_FORMAT_CAP];
         descriptor.format[..copy_len].copy_from_slice(&bytes[..copy_len]);
@@ -177,12 +223,12 @@ unsafe fn apply_molt_view(
         } else {
             ptr::null_mut()
         };
-        (*view).shape = if descriptor.ndim != 0 && (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0 {
+        (*view).shape = if (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0 {
             descriptor.shape.as_mut_ptr()
         } else {
             ptr::null_mut()
         };
-        (*view).strides = if descriptor.ndim != 0 && (flags & PyBUF_STRIDES) != 0 {
+        (*view).strides = if (flags & PyBUF_STRIDES) != 0 {
             descriptor.strides.as_mut_ptr()
         } else {
             ptr::null_mut()
@@ -198,14 +244,17 @@ unsafe fn install_buffer_internal(
     flags: c_int,
 ) -> c_int {
     unsafe {
+        let descriptor_ok = descriptor_satisfies_flags(&internal.descriptor, flags);
         apply_molt_view(view, obj, &mut internal.descriptor, flags);
-        (*view).internal = Box::into_raw(internal).cast();
+        let internal_ptr = Box::into_raw(internal);
+        register_buffer_internal(internal_ptr);
+        (*view).internal = internal_ptr.cast();
         if !obj.is_null() {
             crate::api::refcount::Py_INCREF(obj);
         }
-        if !pybuffer_satisfies_flags(view, flags) {
+        if !descriptor_ok || !pybuffer_satisfies_flags(view, flags) {
             PyBuffer_Release(view);
-            set_buffer_error(b"requested contiguous buffer is not available\0");
+            set_buffer_error(b"non-contiguous buffers require PyBUF_STRIDES\0");
             return -1;
         }
     }
@@ -213,7 +262,7 @@ unsafe fn install_buffer_internal(
 }
 
 unsafe fn pybuffer_is_c_contiguous(view: *const Py_buffer) -> bool {
-    if view.is_null() || unsafe { (*view).ndim } <= 1 {
+    if view.is_null() || unsafe { (*view).ndim } == 0 {
         return true;
     }
     if unsafe { (*view).shape.is_null() || (*view).strides.is_null() } {
@@ -227,13 +276,16 @@ unsafe fn pybuffer_is_c_contiguous(view: *const Py_buffer) -> bool {
         if dim > 1 && stride != expected {
             return false;
         }
-        expected = expected.saturating_mul(dim.max(1));
+        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
+            return false;
+        };
+        expected = next_expected;
     }
     true
 }
 
 unsafe fn pybuffer_is_f_contiguous(view: *const Py_buffer) -> bool {
-    if view.is_null() || unsafe { (*view).ndim } <= 1 {
+    if view.is_null() || unsafe { (*view).ndim } == 0 {
         return true;
     }
     if unsafe { (*view).shape.is_null() || (*view).strides.is_null() } {
@@ -247,7 +299,79 @@ unsafe fn pybuffer_is_f_contiguous(view: *const Py_buffer) -> bool {
         if dim > 1 && stride != expected {
             return false;
         }
-        expected = expected.saturating_mul(dim.max(1));
+        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
+            return false;
+        };
+        expected = next_expected;
+    }
+    true
+}
+
+fn descriptor_is_c_contiguous(descriptor: &MoltBufferView) -> bool {
+    if descriptor.ndim == 0 {
+        return true;
+    }
+    let ndim = descriptor.ndim as usize;
+    if ndim > MOLT_BUFFER_MAX_NDIM {
+        return false;
+    }
+    let Ok(mut expected) = isize::try_from(descriptor.itemsize.max(1)) else {
+        return false;
+    };
+    for i in (0..ndim).rev() {
+        let dim = descriptor.shape[i];
+        let stride = descriptor.strides[i];
+        if dim > 1 && stride != expected {
+            return false;
+        }
+        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
+            return false;
+        };
+        expected = next_expected;
+    }
+    true
+}
+
+fn descriptor_is_f_contiguous(descriptor: &MoltBufferView) -> bool {
+    if descriptor.ndim == 0 {
+        return true;
+    }
+    let ndim = descriptor.ndim as usize;
+    if ndim > MOLT_BUFFER_MAX_NDIM {
+        return false;
+    }
+    let Ok(mut expected) = isize::try_from(descriptor.itemsize.max(1)) else {
+        return false;
+    };
+    for i in 0..ndim {
+        let dim = descriptor.shape[i];
+        let stride = descriptor.strides[i];
+        if dim > 1 && stride != expected {
+            return false;
+        }
+        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
+            return false;
+        };
+        expected = next_expected;
+    }
+    true
+}
+
+fn descriptor_satisfies_flags(descriptor: &MoltBufferView, flags: c_int) -> bool {
+    if (flags & PyBUF_STRIDES) == 0 && !descriptor_is_c_contiguous(descriptor) {
+        return false;
+    }
+    if (flags & PYBUF_C_CONTIGUOUS_BIT) != 0 && !descriptor_is_c_contiguous(descriptor) {
+        return false;
+    }
+    if (flags & PYBUF_F_CONTIGUOUS_BIT) != 0 && !descriptor_is_f_contiguous(descriptor) {
+        return false;
+    }
+    if (flags & PYBUF_ANY_CONTIGUOUS_BIT) != 0
+        && !descriptor_is_c_contiguous(descriptor)
+        && !descriptor_is_f_contiguous(descriptor)
+    {
+        return false;
     }
     true
 }
@@ -291,20 +415,25 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         }
     };
     let hooks = hooks_or_stubs();
-    let mut owned = Box::new(MoltBufferView::default());
-    if unsafe { (hooks.buffer_acquire)(bits, owned.as_mut() as *mut MoltBufferView) } != 0 {
+    let mut descriptor = MoltBufferView::default();
+    if unsafe { (hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView) } != 0 {
         unsafe { set_buffer_error(b"object does not export a buffer\0") };
         return -1;
     }
-    if (flags & PyBUF_WRITABLE) != 0 && owned.readonly != 0 {
+    if (flags & PyBUF_WRITABLE) != 0 && descriptor.readonly != 0 {
         unsafe {
-            let _ = (hooks.buffer_release)(owned.as_mut() as *mut MoltBufferView);
+            let _ = (hooks.buffer_release)(&mut descriptor as *mut MoltBufferView);
             set_buffer_error(b"writable buffer requested for readonly object\0");
         }
         return -1;
     }
     if unsafe {
-        install_buffer_internal(view, obj, Box::new(BufferInternal::runtime(*owned)), flags)
+        install_buffer_internal(
+            view,
+            obj,
+            Box::new(BufferInternal::runtime(descriptor)),
+            flags,
+        )
     } != 0
     {
         return -1;
@@ -318,15 +447,15 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
         return;
     }
     unsafe {
-        if !(*view).internal.is_null() {
+        if !(*view).internal.is_null() && unregister_buffer_internal((*view).internal) {
             let mut internal = Box::from_raw((*view).internal.cast::<BufferInternal>());
             if internal.release_kind == BufferReleaseKind::Runtime {
                 let _ = (hooks_or_stubs().buffer_release)(
                     &mut internal.descriptor as *mut MoltBufferView,
                 );
             }
-            (*view).internal = ptr::null_mut();
         }
+        (*view).internal = ptr::null_mut();
         if !(*view).obj.is_null() {
             crate::api::refcount::Py_DECREF((*view).obj);
             (*view).obj = ptr::null_mut();
@@ -340,9 +469,15 @@ pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
     if obj.is_null() {
         return 0;
     }
-    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
-    if unsafe { PyObject_GetBuffer(obj, &mut view, PyBUF_SIMPLE) } == 0 {
-        unsafe { PyBuffer_Release(&mut view) };
+    let Some(bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(obj) else {
+        return 0;
+    };
+    let hooks = hooks_or_stubs();
+    let mut descriptor = MoltBufferView::default();
+    if unsafe { (hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView) } == 0 {
+        unsafe {
+            let _ = (hooks.buffer_release)(&mut descriptor as *mut MoltBufferView);
+        }
         return 1;
     }
     unsafe { crate::api::errors::PyErr_Clear() };
