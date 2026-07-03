@@ -32,11 +32,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import os
-import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,7 +53,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools import harness_memory_guard  # noqa: E402
+from tools import harness_memory_guard, target_python_runtime  # noqa: E402
 
 _SRC_DIR = _REPO_ROOT / "src"
 if str(_SRC_DIR) not in sys.path:
@@ -69,11 +66,6 @@ from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
 _DEFAULT_JOBS = int(os.environ.get("MOLT_TV_JOBS", "4"))
-_PYTHON_VERSION_PROBE = (
-    "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}', end='')"
-)
-
-
 def _artifact_root(env: Mapping[str, str] | None = None) -> Path:
     """Return the canonical artifact root for translation validation."""
     env_view = os.environ if env is None else env
@@ -118,108 +110,13 @@ def _resolve_target_python(
     )
 
 
-def _target_python_command_candidates(
-    target_python: molt_cli.TargetPythonVersion,
-    *,
-    override: str | None,
-) -> list[list[str]]:
-    """Return explicit candidate commands for a target CPython minor."""
-    if override is not None and override.strip():
-        explicit = override.strip()
-        if Path(explicit).expanduser().exists():
-            return [[explicit]]
-        parsed = shlex.split(explicit, posix=os.name != "nt")
-        return [parsed if parsed else [explicit]]
-    candidates: list[list[str]] = []
-    if os.name == "nt":
-        candidates.append(["py", f"-{target_python.short}"])
-    candidates.append([f"python{target_python.short}"])
-    return candidates
-
-
-def _verify_target_python_command(
-    command: list[str],
-    *,
-    target_python: molt_cli.TargetPythonVersion,
-    env: Mapping[str, str],
-) -> tuple[bool, str]:
-    probe_env = dict(env)
-    probe_env["PYTHONHASHSEED"] = "0"
-    stdout, stderr, rc = _run_subprocess(
-        [*command, "-c", _PYTHON_VERSION_PROBE],
-        timeout=10,
-        env=probe_env,
-        cwd=_REPO_ROOT,
-    )
-    if rc != 0:
-        detail = (stderr or stdout).strip()
-        return False, detail or f"returncode={rc}"
-    actual = stdout.strip()
-    if actual != target_python.short:
-        return False, f"reported Python {actual or '<empty>'}"
-    return True, ""
-
-
-@functools.lru_cache(maxsize=16)
-def _target_python_command_cached(
-    target_python_short: str,
-    override: str,
-) -> tuple[str, ...]:
-    target_python = molt_cli._parse_target_python_version(target_python_short)
-    env = os.environ.copy()
-    failures: list[str] = []
-    if not override:
-        uv = shutil.which("uv")
-        if uv is not None:
-            stdout, stderr, rc = _run_subprocess(
-                [uv, "python", "find", target_python.short],
-                timeout=10,
-                env=env,
-                cwd=_REPO_ROOT,
-            )
-            if rc == 0 and stdout.strip():
-                candidate = [stdout.splitlines()[0].strip()]
-                ok, detail = _verify_target_python_command(
-                    candidate,
-                    target_python=target_python,
-                    env=env,
-                )
-                if ok:
-                    return tuple(candidate)
-                failures.append(f"{' '.join(candidate)}: {detail}")
-            else:
-                detail = (stderr or stdout).strip()
-                failures.append(
-                    f"{uv} python find {target_python.short}: "
-                    f"{detail or f'returncode={rc}'}"
-                )
-    for candidate in _target_python_command_candidates(
-        target_python,
-        override=override or None,
-    ):
-        ok, detail = _verify_target_python_command(
-            candidate,
-            target_python=target_python,
-            env=env,
-        )
-        if ok:
-            return tuple(candidate)
-        failures.append(f"{' '.join(candidate)}: {detail}")
-    attempted = "; ".join(failures) if failures else "no candidates"
-    raise RuntimeError(
-        f"no verified CPython {target_python.short} command available for "
-        f"translation validation ({attempted})"
-    )
-
-
 def _target_python_command(
     target_python: molt_cli.TargetPythonVersion,
 ) -> list[str]:
-    return list(
-        _target_python_command_cached(
-            target_python.short,
-            os.environ.get("MOLT_TV_PYTHON", "").strip(),
-        )
+    return target_python_runtime.resolve_target_python_command(
+        target_python,
+        override=os.environ.get("MOLT_TV_PYTHON", "").strip() or None,
+        cwd=_REPO_ROOT,
     )
 
 

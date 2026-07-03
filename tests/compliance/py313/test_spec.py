@@ -5,12 +5,12 @@ Tests cover version-specific semantics introduced in CPython 3.13.
 """
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from tools import target_python_runtime
 from molt.dx import development_artifact_env
 from tests.compliance.process_guard import run_compliance_process
 
@@ -35,40 +35,25 @@ def _molt_build_env() -> dict[str, str]:
     return env
 
 
-def _python_for(min_version: tuple[int, int]) -> str:
+def _python_for(min_version: tuple[int, int]) -> list[str]:
     """Return a Python executable that satisfies `min_version`.
 
-    Falls back through known interpreter paths so a 3.13/3.14-only feature
-    test can run on a host whose `sys.executable` is older.
+    Shared command custody keeps this cross-platform: Unix `python3.13`,
+    Windows `py -3.13`, uv-managed interpreters, and explicit overrides are all
+    verified before use.
     """
-    if sys.version_info >= min_version:
-        return sys.executable
-    for candidate in (
-        "/opt/homebrew/opt/python@3.14/bin/python3.14",
-        "/opt/homebrew/opt/python@3.13/bin/python3.13",
-        "/usr/local/bin/python3.14",
-        "/usr/local/bin/python3.13",
-    ):
-        if Path(candidate).exists():
-            try:
-                ver = run_compliance_process(
-                    [candidate, "-c", "import sys; print(sys.version_info[:2])"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                ).stdout.strip()
-                if ver and eval(ver) >= min_version:
-                    return candidate
-            except Exception:  # noqa: BLE001
-                continue
-    return sys.executable
+    return target_python_runtime.python_command_for_min_version(
+        min_version,
+        override=os.environ.get("MOLT_COMPLIANCE_PYTHON", "").strip() or None,
+        cwd=MOLT_DIR,
+    )
 
 
 def _compile_and_run(
     python_source: str, *, min_version: tuple[int, int] = (3, 12)
 ) -> str:
     """Compile Python source via molt CLI (native target), run binary, return stdout."""
-    python_exe = _python_for(min_version)
+    python_cmd = _python_for(min_version)
     with tempfile.TemporaryDirectory() as tmp:
         src_path = Path(tmp) / "test_input.py"
         src_path.write_text(python_source)
@@ -78,7 +63,7 @@ def _compile_and_run(
 
         build = run_compliance_process(
             [
-                python_exe,
+                *python_cmd,
                 "-m",
                 "molt.cli",
                 "build",
@@ -120,9 +105,9 @@ def _compile_and_run(
 
 def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
     """Get CPython reference output."""
-    python_exe = _python_for(min_version)
+    python_cmd = _python_for(min_version)
     result = run_compliance_process(
-        [python_exe, "-c", source],
+        [*python_cmd, "-c", source],
         capture_output=True,
         text=True,
         timeout=10,
