@@ -333,7 +333,11 @@ For active pytest rows, `status` prints `pytest_current=<nodeid> phase=<phase>`
 when the memory-guard summary has a live marker. If the marker file is still
 missing while the queue log is quiet, `diagnose` must classify the row as
 `running-pytest-current-test-missing`; treat that as pre-test or collection
-opacity. When the evidence also names
+opacity. If the evidence includes `last_pytest_progress=...`, pytest has
+started and the defect is current-test custody opacity after progress, not
+startup opacity; inspect the pytest guard plugin/env wiring once, then rerun
+with a focused selector only if the row does not finish. When the evidence also
+names
 `child_process=windows_memory_guard_child_runner`, the visible child is the
 Windows child-limit runner; inspect the descendant uv/cache/startup command
 once, then rerun with a focused selector instead of interrupting through Codex
