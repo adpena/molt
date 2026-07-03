@@ -2116,7 +2116,7 @@ def _emit_line(
     echo: bool = True,
 ) -> None:
     if echo:
-        print(line)
+        print(line, flush=True)
     if log_handle is not None:
         log_handle.write(line + "\n")
         log_handle.flush()
@@ -4440,6 +4440,7 @@ def run_diff(
         with _open_log_file(log_file) as log_handle:
             with _open_log_file(log_aggregate) as aggregate_handle:
                 for file_path in test_files:
+                    _emit_line(f"[RUN] {file_path}", log_handle, echo=True)
                     payload = _diff_run_single(
                         str(file_path), python_exe, build_profile, targets
                     )
