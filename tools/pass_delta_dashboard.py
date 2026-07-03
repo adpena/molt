@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-PASS_DELTA_SCHEMA_VERSION = 1
+PASS_DELTA_SCHEMA_VERSION = 2
 PASS_DELTA_KIND = "molt_tir_pass_delta"
 DASHBOARD_KIND = "molt_tir_pass_delta_dashboard"
 
@@ -164,8 +164,8 @@ def validate_record(record: Mapping[str, Any], *, source: str = "<record>") -> N
         "total_changes",
     ):
         _nonnegative_int(stats, key, source=f"{source}.stats")
-    _mapping(record, "before", source=source)
-    _mapping(record, "after", source=source)
+    _fact_profile(record, "before", source=source)
+    _fact_profile(record, "after", source=source)
     delta = _mapping(record, "delta", source=source)
     for key in SIGNAL_FIELDS:
         _nonnegative_int(delta, key, source=f"{source}.delta")
@@ -300,6 +300,25 @@ def _mapping(
     if not isinstance(value, Mapping):
         raise PassDeltaError(f"{source}: {key} must be an object")
     return value
+
+
+def _fact_profile(
+    mapping: Mapping[str, Any], key: str, *, source: str = "<record>"
+) -> Mapping[str, Any]:
+    profile = _mapping(mapping, key, source=source)
+    value_reprs = profile.get("value_reprs")
+    if not isinstance(value_reprs, Mapping):
+        raise PassDeltaError(f"{source}: {key}.value_reprs must be an object")
+    for value_id, repr_name in value_reprs.items():
+        if not isinstance(value_id, str) or not value_id:
+            raise PassDeltaError(
+                f"{source}: {key}.value_reprs keys must be non-empty strings"
+            )
+        if not isinstance(repr_name, str) or not repr_name:
+            raise PassDeltaError(
+                f"{source}: {key}.value_reprs.{value_id} must be a non-empty string"
+            )
+    return profile
 
 
 def _str(mapping: Mapping[str, Any], key: str, *, source: str = "<record>") -> str:
