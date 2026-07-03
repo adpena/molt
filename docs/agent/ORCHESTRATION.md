@@ -118,6 +118,46 @@ per-crate clippy gate, then cherry-picked. Do renames when the touched crate has
 no other in-flight lane (coordinate on this board). Do NOT interleave a rename
 with a semantic change in the same commit — rename-only diffs must stay reviewable.
 
+## 🔥 RIP-IT-ALL-UP DECOMPOSITION ROADMAP (operator 2026-07-03: "rip it all up")
+
+Aggressive scope, careful execution. EVERY god-crate gets an owner and a
+build-verified, contract-gated cut. Current sizes (hand-written `.rs`, excl
+generated):
+- **molt-runtime 286,672** (THE god-crate) — the core/object extraction is the
+  KEYSTONE, BLOCKED until buffer lane 2 quiesces in `object/**`. It is actively
+  LANDING now (c798e4833 typed strided buffer custody, 83a8a154b import bedrock
+  PR1), so the unblock is APPROACHING. The moment `object/**` is quiet: sever the
+  7 object→builtins back-edges → extract `molt-runtime-core` (object model) →
+  carve `builtins` (134k) → `molt-runtime-builtins`. This is the cut that ends
+  the ~2160s witness rebuild. Orchestrator signals when it opens.
+- **molt-passes 82,871** — DISJOINT, unblocked. Rip into pass-family sub-modules/
+  crates (value_range already split by a lane; keep going: the other large TIR
+  passes). → CODEX LANE A.
+- **molt-backend-native 67,194** — DISJOINT from the wasm witness. Rip into
+  lowering-stage modules/sub-crates. → ORCHESTRATOR SUBAGENT (next free slot).
+- **molt-gpu 36,117** — rip the render/ + tensor_runtime clusters into sub-modules;
+  also the destination for the BLOCKED 11,925-line builtins/gpu cluster (post-core).
+  → CODEX LANE B (coordinate w/ codex-doc71).
+- **molt-backend-wasm 27,205** — partial (molt_type_new touched dynamic.rs); rip
+  the NON-dynamic god-files only. → CODEX LANE C (do not touch call_ops/dynamic.rs).
+- **molt-runtime-tk 20,588** — a STDLIB crate that is itself a god-crate. Rip it.
+- **molt-tir 19,835 · molt-backend-luau 18,161 · molt-runtime-serial 17,546** —
+  mid-size, decomposable as capacity frees.
+- **tools/proof_queue.py** — ORCHESTRATOR SUBAGENT in flight (hot build-custody;
+  honest decomposition, no baseline mask).
+
+GATES (every cut, non-negotiable): build-verified (leaf `cargo check` + `clippy
+-D warnings` + queued god-crate check); `tools/canonicalization_contract.py
+--check` green; `tools/structural_audit.py --check` must IMPROVE — NEVER
+`--update-baseline` to hide debt; STRICT move-only diffs; exact-pathspec commits;
+ISOLATED worktrees off current origin/main (or session base, then orchestrator
+reconciles); orchestrator cherry-picks. `git worktree list` BEFORE claiming —
+lanes hold uncommitted WIP (three collisions caught this session).
+
+FANOUT: orchestrator holds ONE subagent (operator constraint) + delegates the
+rest to Codex. Codex — claim a DISJOINT god-crate above, rip it end-to-end, ping
+to cherry-pick. Do not idle; do not duplicate; do not break a hot tool.
+
 ## State of the world (read this first)
 
 - The witness `import numpy` chain has advanced deep into numpy's C-core
