@@ -63,6 +63,12 @@ fallback, no fake symbols, upstream source only through package custody.
   callable resolver, `_nd_image.molt.wasm` manifest callable_exports.
   Acceptance: alias_probe's EDT/gaussian/label chain returns correct
   values. Depends: R0.1.
+  RESOLVED 2026-07-03 on origin/main by 3b0ca4a80: the from-import form
+  `from nativepkg.ndimage import distance_transform_edt;
+  distance_transform_edt(x)` now lowers to `invoke_ffi` when the import binding
+  is live. Conditional/evicted imports still route through `module_get_global`
+  and `call_bind`, preserving CPython LOAD_GLOBAL semantics. Evidence:
+  `tests/test_frontend_ir_alias_ops.py` passed 33/33 and pins both paths.
 - R0.4 Acceptance lane: `uv run --active --project . --python 3.12 python
   tools/proof_queue.py pact-witness-acceptance --detach --timeout 7200`.
   Evidence: run ID, `candidate_outputs.npz` produced by Molt WASM,
