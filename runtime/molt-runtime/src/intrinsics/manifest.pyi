@@ -447,38 +447,7 @@ def molt_compileall_compile_dir(dir: str, maxlevels: int) -> bool: ...
 def molt_compileall_compile_path(
     paths: Any, skip_curdir: bool, maxlevels: int
 ) -> bool: ...
-def molt_stat_constants() -> tuple[
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-    int,
-]: ...
+def molt_stat_constants() -> tuple[int, ...]: ...
 def molt_stat_ifmt(mode: int) -> int: ...
 def molt_stat_imode(mode: int) -> int: ...
 def molt_stat_isdir(mode: int) -> bool: ...

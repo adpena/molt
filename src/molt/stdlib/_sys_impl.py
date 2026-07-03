@@ -100,7 +100,6 @@ __all__ = [
     "version_info",
     "hexversion",
     "api_version",
-    "abiflags",
     "flags",
     "implementation",
     "breakpointhook",
@@ -735,6 +734,15 @@ _platform_val = _MOLT_SYS_PLATFORM()
 platform = _platform_val if isinstance(_platform_val, str) else "wasm32"
 
 
+def _sys_abiflags_is_available(platform_name: str) -> bool:
+    return not platform_name.startswith("win")
+
+
+_SYS_ABIFLAGS_AVAILABLE = _sys_abiflags_is_available(platform)
+if _SYS_ABIFLAGS_AVAILABLE:
+    __all__.insert(__all__.index("flags"), "abiflags")
+
+
 def _try_str_intrinsic(fn: object, fallback: str) -> str:
     """Call *fn*() and return its value when it is a str, else *fallback*."""
     try:
@@ -785,7 +793,9 @@ def _init_metadata():
     _rvi = tuple(raw_version_info)
     hexversion_value = _try_int_intrinsic(_MOLT_SYS_HEXVERSION, 0x030C00F0)
     api_version_value = _try_int_intrinsic(_MOLT_SYS_API_VERSION, 0)
-    abiflags_value = _try_str_intrinsic(_MOLT_SYS_ABIFLAGS, "")
+    abiflags_value = ""
+    if _SYS_ABIFLAGS_AVAILABLE:
+        abiflags_value = _try_str_intrinsic(_MOLT_SYS_ABIFLAGS, "")
     implementation_value = _implementation_namespace_type()(
         "molt", "molt-312", _rvi, hexversion_value
     )
@@ -869,7 +879,10 @@ def _init_metadata():
     g["version_info"] = _version_info_tuple_type()(_rvi)
     g["hexversion"] = hexversion_value
     g["api_version"] = api_version_value
-    g["abiflags"] = abiflags_value
+    if _SYS_ABIFLAGS_AVAILABLE:
+        g["abiflags"] = abiflags_value
+    else:
+        g.pop("abiflags", None)
     g["implementation"] = implementation_value
     g["flags"] = _flags_tuple_type()(flags_values)
     g["path"] = []
@@ -894,13 +907,11 @@ def _init_metadata():
     g["builtin_module_names"] = ()
 
 
-_METADATA_NAMES = frozenset(
-    {
+_metadata_names = [
         "version",
         "version_info",
         "hexversion",
         "api_version",
-        "abiflags",
         "implementation",
         "flags",
         "maxsize",
@@ -919,8 +930,10 @@ _METADATA_NAMES = frozenset(
         "copyright",
         "stdlib_module_names",
         "builtin_module_names",
-    }
-)
+]
+if _SYS_ABIFLAGS_AVAILABLE:
+    _metadata_names.append("abiflags")
+_METADATA_NAMES = frozenset(_metadata_names)
 _metadata_initialized = False
 
 

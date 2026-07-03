@@ -220,7 +220,6 @@ __all__ = [
     "version_info",
     "hexversion",
     "api_version",
-    "abiflags",
     "flags",
     "implementation",
     "breakpointhook",
@@ -790,6 +789,15 @@ _platform_val = _BOOT_SYS_PLATFORM()
 platform = _platform_val if isinstance(_platform_val, str) else "wasm32"
 
 
+def _sys_abiflags_is_available(platform_name: str) -> bool:
+    return not platform_name.startswith("win")
+
+
+_SYS_ABIFLAGS_AVAILABLE = _sys_abiflags_is_available(platform)
+if _SYS_ABIFLAGS_AVAILABLE:
+    __all__.insert(__all__.index("flags"), "abiflags")
+
+
 def _try_str_intrinsic(fn: object, fallback: str) -> str:
     """Call *fn*() and return its value when it is a str, else *fallback*."""
     try:
@@ -839,6 +847,8 @@ def _init_metadata():
     hexversion_value = _MOLT_SYS_HEXVERSION() or 0x030C00F0
     api_version_value = 0
     abiflags_value = ""
+    if _SYS_ABIFLAGS_AVAILABLE:
+        abiflags_value = _try_str_intrinsic(_MOLT_SYS_ABIFLAGS, "")
     implementation_value = _ImplementationNamespace(
         "molt", "molt-312", version_values, hexversion_value
     )
@@ -899,7 +909,10 @@ def _init_metadata():
     g["version_info"] = _VersionInfoTuple(version_values)
     g["hexversion"] = hexversion_value
     g["api_version"] = api_version_value
-    g["abiflags"] = abiflags_value
+    if _SYS_ABIFLAGS_AVAILABLE:
+        g["abiflags"] = abiflags_value
+    else:
+        g.pop("abiflags", None)
     g["implementation"] = implementation_value
     g["flags"] = _FlagsTuple(flags_values)
     g["path"] = []
