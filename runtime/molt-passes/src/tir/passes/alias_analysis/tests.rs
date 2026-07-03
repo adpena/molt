@@ -2,7 +2,7 @@ use super::*;
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrDict, Dialect, TirOp};
+use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
