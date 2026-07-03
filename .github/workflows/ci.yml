@@ -200,6 +200,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Check molt-runtime builds under full features (P0 break guard)
+        # Fast, explicit guard: molt-runtime under its DEFAULT features
+        # (stdlib_full -> gpu/graphlib/memoryview) is the surface where recent
+        # multi-lane breaks stacked up invisibly (dangling re-exports after crate
+        # extractions, forgotten callers after an API unify, a merge-reverted
+        # lib.rs). Narrow per-lane feature builds miss these; this fails fast.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo check -p molt-runtime
+
       - name: Build
         run: |
           mkdir -p logs
