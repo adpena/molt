@@ -16,7 +16,7 @@ import sys
 import time
 import tomllib
 import traceback
-from typing import Sequence
+from typing import Mapping, Sequence
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -631,6 +631,8 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     try:
         stat = path.stat()
     except OSError:
+        if row["status"] == "queued":
+            return [f"  log={path} (queued; proof command not launched yet)"]
         return [f"  log={path} (missing)"]
     age = _format_duration(max(0.0, time.time() - stat.st_mtime))
     lines = [f"  log={path}", f"  last_log_age={age}"]
@@ -2460,6 +2462,46 @@ def _write_failed_run_log(
             print(line, file=log)
 
 
+def _write_queued_submission_log(
+    log_path: Path,
+    *,
+    run_id: str,
+    logical_id: str,
+    reason: str,
+    repo_root: Path,
+    command: list[str],
+    resource_family: str,
+    contention_key: str,
+    scopes: Sequence[str],
+    env_overrides: Mapping[str, str],
+    depends_on: Sequence[str],
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    append = log_path.exists() and log_path.stat().st_size > 0
+    with log_path.open("a" if append else "w", encoding="utf-8") as log:
+        if append:
+            print("\n--- proof_queue queued submission ---", file=log)
+        print(f"proof_queue run_id={run_id}", file=log)
+        print("status=queued", file=log)
+        print(f"logical_id={logical_id}", file=log)
+        print(f"reason={reason}", file=log)
+        print(f"cwd={repo_root}", file=log)
+        print(f"resource_family={resource_family}", file=log)
+        print(f"contention_key={contention_key}", file=log)
+        print(f"command={shlex.join(command)}", file=log)
+        if scopes:
+            print(f"scopes={json.dumps(list(scopes), sort_keys=True)}", file=log)
+        if env_overrides:
+            print(
+                f"env_overrides={json.dumps(dict(env_overrides), sort_keys=True)}",
+                file=log,
+            )
+        if depends_on:
+            print(f"depends_on={json.dumps(list(depends_on), sort_keys=True)}", file=log)
+        print("", file=log)
+        print("No proof command has launched for this queued row.", file=log)
+
+
 def _append_queue_infra_log(
     log_path: Path,
     *,
@@ -3162,14 +3204,6 @@ def _queue_one(
             phase="submission metadata",
         )
         return rc, run_id
-    if initial_notes or depends_on:
-        _try_write_marimo_notebook(
-            args,
-            conn,
-            run_id,
-            log_path=log_path,
-            phase="submission projection",
-        )
     policy_error = (
         policy_error
         or _proof_command_policy_error(command)
@@ -3188,6 +3222,27 @@ def _queue_one(
             policy_error=policy_error,
         )
         return rc, run_id
+    _write_queued_submission_log(
+        log_path,
+        run_id=run_id,
+        logical_id=logical_id,
+        reason=reason,
+        repo_root=repo_root,
+        command=command,
+        resource_family=resource_family,
+        contention_key=contention_key,
+        scopes=scopes,
+        env_overrides=env_overrides,
+        depends_on=depends_on or [],
+    )
+    if initial_notes or depends_on:
+        _try_write_marimo_notebook(
+            args,
+            conn,
+            run_id,
+            log_path=log_path,
+            phase="submission projection",
+        )
     print(f"queued {run_id}")
     return 0, run_id
 
@@ -3935,6 +3990,19 @@ def _cmd_submit(args: argparse.Namespace) -> int:
                 exc=exc,
                 phase="submission metadata",
             )
+        _write_queued_submission_log(
+            log_path,
+            run_id=run_id,
+            logical_id=str(item["logical_id"]),
+            reason=str(item["reason"]),
+            repo_root=_repo_root(args),
+            command=list(item["command"]),
+            resource_family=str(item["resource_family"]),
+            contention_key=str(item["contention_key"]),
+            scopes=list(item["scope"]),
+            env_overrides=dict(item["env_overrides"]),
+            depends_on=[str(dependency) for dependency in item["depends_on"]],
+        )
         if item["initial_notes"] or item["depends_on"]:
             _try_write_marimo_notebook(
                 args,
@@ -4508,6 +4576,8 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         try:
             stat = Path(row["log_path"]).stat()
         except OSError:
+            if row["status"] == "queued":
+                continue
             issues.append(
                 _audit_issue(
                     signal_id="audit-active-log-missing",
