@@ -2064,6 +2064,73 @@ def test_proof_queue_named_lane_can_detach_runner(
     assert [note["body"] for note in _notes(db)][-1:] == ["detached queue launch smoke"]
 
 
+def test_proof_queue_named_lane_can_queue_without_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    def fail_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, run_id, timeout
+        raise AssertionError("--queue-only must not launch a detached runner")
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fail_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "r6-target-version-parity",
+            "--python-version",
+            "3.12",
+            "--queue-only",
+            "--note",
+            "queue-only R6 parking smoke",
+        ]
+    )
+
+    rows = _rows(db)
+    assert rc == 0
+    assert len(rows) == 1
+    assert rows[0]["status"] == "queued"
+    assert rows[0]["logical_id"] == "r6-target-version-parity-py312"
+    assert rows[0]["contention_key"] == "python:r6-target-version-py312"
+    command = json.loads(rows[0]["command_json"])
+    assert command[command.index("--python-version") + 1] == "3.12"
+    assert [note["body"] for note in _notes(db)][-1:] == [
+        "queue-only R6 parking smoke"
+    ]
+
+
+def test_proof_queue_named_lane_rejects_queue_only_with_detach(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    with pytest.raises(SystemExit) as exc:
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "r6-target-version-parity",
+                "--queue-only",
+                "--detach",
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert not db.exists()
+
+
 def test_proof_queue_windows_launchers_hide_console(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
