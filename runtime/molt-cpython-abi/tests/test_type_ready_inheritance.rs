@@ -1,0 +1,248 @@
+//! PyType_Ready static-type readiness contract, exercised against the exact
+//! shape numpy's `setup_scalartypes` relies on: a multi-level `tp_base` chain
+//! of statically declared types, each with `tp_methods`/`tp_getset` tables, made
+//! ready in leaf-to-root order via repeated `PyType_Ready` calls.
+//!
+//! These tests are the fast (`cargo test -p molt-lang-cpython-abi`, no wasm)
+//! reproduction of the numpy `_multiarray_umath_exec` failure: the scalar
+//! ArrType hierarchy (`PyGenericArrType_Type` -> `PyNumberArrType_Type` ->
+//! `PyIntegerArrType_Type` -> ...) is readied with `SINGLE_INHERIT`, which sets
+//! `tp_base` then calls `PyType_Ready` trusting it to (1) default a missing base
+//! to `object`, (2) inherit every unset slot from the base, (3) build `tp_dict`
+//! populated from `tp_methods`/`tp_getset`/`tp_members`, and (4) compute
+//! `tp_mro`. A `PyType_Ready` that skips (2)-(4) leaves the derived types
+//! half-initialized and later attribute access fails opaquely.
+
+#![allow(non_snake_case)]
+
+use molt_cpython_abi::abi_types::*;
+use std::os::raw::{c_char, c_int};
+use std::ptr;
+
+fn init() {
+    molt_cpython_abi::bridge::molt_cpython_abi_init();
+}
+
+unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
+    unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(tp) }
+}
+
+/// A trivial C method used to populate a `tp_methods` table.
+unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
+    let none = &raw mut Py_None;
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(none) };
+    none
+}
+
+fn method_def(name: &'static [u8]) -> PyMethodDef {
+    assert_eq!(
+        *name.last().unwrap(),
+        0,
+        "method name must be NUL-terminated"
+    );
+    PyMethodDef {
+        ml_name: name.as_ptr() as *const c_char,
+        ml_meth: Some(dummy_method),
+        ml_flags: METH_VARARGS,
+        ml_doc: ptr::null(),
+    }
+}
+
+/// Sentinel-terminated method table (mirrors numpy's `{NULL, NULL, 0, NULL}`).
+fn method_sentinel() -> PyMethodDef {
+    PyMethodDef {
+        ml_name: ptr::null(),
+        ml_meth: None,
+        ml_flags: 0,
+        ml_doc: ptr::null(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (1) Missing tp_base defaults to object.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ready_defaults_missing_base_to_object() {
+    init();
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"root_scalar".as_ptr();
+    assert!(tp.tp_base.is_null());
+    let rc = unsafe { ready(&mut tp) };
+    assert_eq!(
+        rc, 0,
+        "PyType_Ready must succeed for a base-less static type"
+    );
+    let object = &raw mut PyBaseObject_Type;
+    assert_eq!(
+        tp.tp_base, object,
+        "a static type with no tp_base must inherit object as its base"
+    );
+    assert_ne!(tp.tp_flags & Py_TPFLAGS_READY, 0);
+}
+
+// ---------------------------------------------------------------------------
+// (2) Slot inheritance down a multi-level chain (numpy SINGLE_INHERIT).
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" fn base_hash(_o: *mut PyObject) -> Py_hash_t {
+    42
+}
+
+type HashFn = unsafe extern "C" fn(*mut PyObject) -> Py_hash_t;
+
+fn hash_addr(h: Option<HashFn>) -> usize {
+    h.map(|f| f as HashFn as usize).unwrap_or(0)
+}
+
+fn base_hash_addr() -> usize {
+    (base_hash as HashFn) as usize
+}
+
+#[test]
+fn ready_inherits_slots_through_single_inherit_chain() {
+    init();
+
+    // Root: defines tp_hash and an opaque tp_as_number table; readied first.
+    let mut number_methods: [u8; 256] = [0; 256];
+    let number_methods_ptr = number_methods.as_mut_ptr() as *mut std::os::raw::c_void;
+    let mut generic: PyTypeObject = unsafe { std::mem::zeroed() };
+    generic.tp_name = c"generic".as_ptr();
+    generic.tp_basicsize = 32;
+    generic.tp_hash = Some(base_hash);
+    generic.tp_as_number = number_methods_ptr;
+    assert_eq!(unsafe { ready(&mut generic) }, 0);
+
+    // Child: numpy sets only tp_base then readies. Everything else must inherit.
+    let mut number: PyTypeObject = unsafe { std::mem::zeroed() };
+    number.tp_name = c"number".as_ptr();
+    number.tp_base = &mut generic;
+    assert_eq!(unsafe { ready(&mut number) }, 0);
+    assert_eq!(
+        hash_addr(number.tp_hash),
+        base_hash_addr(),
+        "tp_hash must inherit"
+    );
+    assert_eq!(
+        number.tp_as_number, number_methods_ptr,
+        "tp_as_number sub-struct pointer must inherit"
+    );
+    assert_eq!(
+        number.tp_basicsize, 32,
+        "tp_basicsize must inherit from base when unset"
+    );
+
+    // Grandchild: two levels deep, still inherits the root's slots.
+    let mut integer: PyTypeObject = unsafe { std::mem::zeroed() };
+    integer.tp_name = c"integer".as_ptr();
+    integer.tp_base = &mut number;
+    assert_eq!(unsafe { ready(&mut integer) }, 0);
+    assert_eq!(
+        hash_addr(integer.tp_hash),
+        base_hash_addr(),
+        "tp_hash must inherit transitively down the chain"
+    );
+    assert_eq!(integer.tp_as_number, number_methods_ptr);
+}
+
+// ---------------------------------------------------------------------------
+// (3) tp_dict is built and populated from tp_methods.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ready_populates_tp_dict_from_methods() {
+    init();
+    let mut methods = [
+        method_def(b"reduce\0"),
+        method_def(b"item\0"),
+        method_sentinel(),
+    ];
+    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.tp_name = c"scalar_with_methods".as_ptr();
+    tp.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    tp.tp_methods = methods.as_mut_ptr();
+
+    assert_eq!(unsafe { ready(&mut tp) }, 0);
+    // PyType_Ready must create tp_dict for a type with methods. (Retrieval of the
+    // stored descriptors routes through the runtime dict bridge, so value-level
+    // assertions live in the runtime-linked differential path, not this pure
+    // cpython-abi unit test; here we prove the dict is created and population
+    // does not error.)
+    assert!(
+        !tp.tp_dict.is_null(),
+        "PyType_Ready must create tp_dict for a type with methods"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (4) tp_mro is computed for single inheritance.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ready_computes_single_inheritance_mro() {
+    init();
+    let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
+    base.tp_name = c"mro_base".as_ptr();
+    assert_eq!(unsafe { ready(&mut base) }, 0);
+
+    let mut derived: PyTypeObject = unsafe { std::mem::zeroed() };
+    derived.tp_name = c"mro_derived".as_ptr();
+    derived.tp_base = &mut base;
+    assert_eq!(unsafe { ready(&mut derived) }, 0);
+
+    assert!(
+        !derived.tp_mro.is_null(),
+        "PyType_Ready must compute tp_mro"
+    );
+    // MRO for single inheritance is [derived, base, object]; at minimum it must
+    // start with the type itself and contain the base.
+    let mro = derived.tp_mro;
+    let len = unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(mro) };
+    assert!(len >= 2, "single-inheritance MRO has at least [self, base]");
+    let first = unsafe { molt_cpython_abi::api::sequences::PyTuple_GetItem(mro, 0) };
+    assert_eq!(
+        first,
+        (&mut derived as *mut PyTypeObject).cast::<PyObject>(),
+        "MRO[0] must be the type itself"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// _PyType_Lookup walks the derived type's MRO (structure verified without the
+// runtime dict bridge: the derived MRO must include the base whose tp_dict holds
+// the inherited method; descriptor retrieval routes through the runtime bridge).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_lookup_walks_derived_mro_including_base() {
+    init();
+    let mut methods = [method_def(b"shared\0"), method_sentinel()];
+    let mut base: PyTypeObject = unsafe { std::mem::zeroed() };
+    base.tp_name = c"lookup_base".as_ptr();
+    base.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+    base.tp_methods = methods.as_mut_ptr();
+    assert_eq!(unsafe { ready(&mut base) }, 0);
+    assert!(!base.tp_dict.is_null(), "base must have a created tp_dict");
+
+    let mut derived: PyTypeObject = unsafe { std::mem::zeroed() };
+    derived.tp_name = c"lookup_derived".as_ptr();
+    derived.tp_base = &mut base;
+    assert_eq!(unsafe { ready(&mut derived) }, 0);
+
+    // The derived MRO must contain the base type so _PyType_Lookup's MRO walk
+    // reaches the base's tp_dict.
+    let mro = derived.tp_mro;
+    assert!(!mro.is_null());
+    let n = unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(mro) };
+    let mut saw_base = false;
+    for i in 0..n {
+        let entry = unsafe { molt_cpython_abi::api::sequences::PyTuple_GetItem(mro, i) };
+        if entry == (&mut base as *mut PyTypeObject).cast::<PyObject>() {
+            saw_base = true;
+        }
+    }
+    assert!(
+        saw_base,
+        "derived MRO must include the base so _PyType_Lookup can reach inherited methods"
+    );
+}
