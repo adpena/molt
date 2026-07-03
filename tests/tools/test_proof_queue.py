@@ -4088,6 +4088,26 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
         in audit_out
     )
 
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "status",
+                "--recent",
+                "1",
+            ]
+        )
+        == 0
+    )
+    status_out = capsys.readouterr().out
+    assert "diagnosis=native-call-lane-memory-guard-timeout" in status_out
+    assert f"artifacts={summary_path}, {log_path}" in status_out
+
 
 def test_proof_queue_diagnoses_pytest_assertion_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]

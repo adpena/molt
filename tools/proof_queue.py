@@ -2445,6 +2445,16 @@ def _diagnostic_artifacts(diagnostics: Sequence[dict[str, object]]) -> list[str]
     return [str(path) for path in artifacts]
 
 
+def _print_status_diagnostics(row: sqlite3.Row) -> None:
+    diagnostics = _run_diagnostics(row)
+    diagnostic_summary = _format_diagnostic_summary(diagnostics)
+    if diagnostic_summary:
+        print(f"  diagnosis={diagnostic_summary}")
+    artifacts = _diagnostic_artifacts(diagnostics)
+    if artifacts:
+        print(f"  artifacts={', '.join(artifacts)}")
+
+
 def _diagnosis_note_body(row: sqlite3.Row, diagnostics: list[dict[str, object]]) -> str:
     if diagnostics:
         first = diagnostics[0]
@@ -4489,9 +4499,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         )
         if dag_summary:
             print(dag_summary)
-        diagnostic_summary = _format_diagnostic_summary(_run_diagnostics(row))
-        if diagnostic_summary:
-            print(f"  diagnosis={diagnostic_summary}")
+        _print_status_diagnostics(row)
         for line in _active_log_status(row):
             print(line)
     print("recent:")
@@ -4511,9 +4519,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         )
         if dag_summary:
             print(dag_summary)
-        diagnostic_summary = _format_diagnostic_summary(_run_diagnostics(row))
-        if diagnostic_summary:
-            print(f"  diagnosis={diagnostic_summary}")
+        _print_status_diagnostics(row)
     return 0
 
 
