@@ -363,26 +363,107 @@ add a differential/native test of `type(name, bases, dict)` construction. This
 blocks numpy import (upstream of witness lanes 1-3 below) — TOP witness
 priority.
 
-**OPERATOR DIRECTIVE 2026-07-03 — GOD-FILE/GOD-CRATE DECOMPOSITION (high
-priority, PARALLEL to witness).** World-class OSS separation of concerns:
-execute the doc-21 decomposition program's PENDING moves. The god-crate is
-`molt-runtime` (~346k lines); `molt-backend-wasm` (~88k) and `molt-passes`
-(~82k) are next. Rules: (a) run `tools/structural_audit.py` first to get the
-CURRENT RED god-files/crates over the ratchet (the ratchet only moves DOWN —
-never re-baseline to green); (b) pick the highest-leverage PENDING move from
-docs/design/foundation/21b/21e/21f (crate splits) or 21c/21d (Python
-frontend/cli package splits — cli.py, frontend/__init__.py) that is DISJOINT
-from the active witness lanes — do NOT touch `runtime/molt-cpython-abi/**`
-(numpy-exec subagent) or `runtime/molt-runtime/src/object/**` +
-`builtins/module_table.rs` + `builtins/array_mod.rs` (buffer lane 2); (c)
-STRICT move-only diff: keep moved files as pure renames, widen `pub` PRECISELY
-(never blanket `pub(crate)→pub`), gate on a byte-identical corpus build +
-0-warning + lib tests + symbol identity (per 21f execution specs); (d) work in
-an ISOLATED worktree, commit small per-move by exact pathspec, ping the
-orchestrator to cherry-pick to main; (e) new crates are born UNGATED — add the
-per-crate clippy gate to ci.yml + molt_dev_gates.toml in the SAME move. This
-is R5b; it is the permanent fix for the ~2160s god-crate wasm rebuild that
-throttles the witness confirmation loop.
+**OPERATOR P0 DIRECTIVE 2026-07-03 — GOD-FILE/GOD-CRATE DECOMPOSITION (TOP
+PRIORITY, co-equal with the witness — under NON-NEGOTIABLE OPERATOR AUTHORITY
+above).** Operator's words, binding and quoted: *"break up all god files and
+crates as a P0 priority because that is a dev velocity murderer that is
+intolerable and unacceptable and offensive."* This is the #1 standing
+structural obligation until the god-crate is gone. Do not let it stall behind
+other lanes; it advances every arc.
+
+DECOMPOSITION AXIS (operator directive 2026-07-03 — SUPERSEDES ad-hoc,
+size-based splits). Mirror CPython's own layering, which is ALSO the correct
+axis for Rust's crate + incremental-compilation model. The existing leaf crates
+(molt-runtime-tk/-serial/-http/-math/-regex/-path/-collections/-stringprep) were
+carved ad hoc ("super random") — they are in fact the STDLIB layer, just
+un-systematized. Mirror the LAYERING, not CPython's internal file organization
+(molt is AOT: no ceval, its own Repr). Layers, bottom-up:
+
+  1. CORE / PRIMITIVES (`molt-runtime-core`) — the object model: Repr, handles,
+     refcount, arena, type/metatype machinery, the primitive object protocol
+     (arith/compare/subscript/attr), core exceptions, AND the compiler
+     INTRINSICS (the `molt_*` lowering targets in `intrinsics/` — these ARE core
+     primitives the backend lowers to; NOTE: molt's "intrinsics" = compiler
+     runtime ops, NOT CPython Lib/ — do not use the word for the stdlib layer).
+     = CPython Objects/ + core Python/. Depends on nothing above; everything
+     depends on it. Extracts FIRST (foundation).
+  2. BUILTINS (`molt-runtime-builtins`) — ONLY the always-available builtin
+     namespace: builtin functions (print/len/range/iter/sorted…) + the wiring of
+     builtin types. = CPython bltinmodule.c. Depends on core.
+  3. STDLIB (`molt-stdlib-*` family, one crate per cohesive module/group) — the
+     stdlib MODULE implementations: json, io, codecs, datetime, functools,
+     itertools, asyncio, os/platform, inspect, ast, enum, contextlib, textwrap,
+     pickle … PLUS the already-extracted math/regex/path/http/collections/
+     stringprep/tk. = CPython Modules/ + Lib/. Editing `json` must recompile
+     ONLY json. REGULARIZE the random existing crates into this family under one
+     `molt-stdlib-*` convention; STOP adding ad-hoc ones.
+  4. THIRD-PARTY / EXTENSIONS (`molt-cpython-abi` + per-extension custody) — the
+     CPython C-API/ABI surface + source-recompiled extension staging (numpy
+     _multiarray_umath, scipy ndimage). = CPython third-party C extensions.
+     Already a separate crate; the witness lives here. Keep it a leaf the layers
+     above consume.
+
+SHARP CONSEQUENCE (measured 2026-07-03): the 134,526-line `builtins/` module is
+a CONFLATION of layers 2+3 — true builtins (functions.rs, classes.rs,
+exceptions.rs, frames.rs, callable.rs, containers.rs) tangled with stdlib
+modules (codecs.rs, io.rs, functools.rs, inspect.rs, ast.rs, asyncio_*.rs,
+enum_ext.rs, contextlib.rs, textwrap, tokenize.rs, pickle …) AND misfiled GPU
+code (gpu*.rs, tensor_runtime.rs → belongs in molt-gpu). Carving builtins/ along
+CPython's line — stdlib modules OUT to `molt-stdlib-*`, GPU OUT to molt-gpu,
+true builtins staying in `molt-runtime-builtins` — IS the decomposition. THE
+MECHANISM ALREADY EXISTS: 20+ `*_bridge.rs` (math/regex/path/http/collections/
+crypto/compression/difflib/xml/zoneinfo…) show the leaf-crate + thin-bridge
+pattern; this arc SYSTEMATIZES it across the remaining stdlib, it does not invent
+it. The 7 `object→builtins` back-edges are the same story: object references
+bits misfiled in builtins that are really CORE — sever by moving them DOWN into
+`molt-runtime-core`.
+
+MEASURED SEAMS (hand-written `.rs`, excl. generated): `molt-runtime` 288,834 —
+`builtins` 134,526 · `object` 67,516 · `async_rt` 33,679 · `call` 12,458 ·
+`c_api` 9,892 · `concurrency` 5,834. Other god-crates: `molt-passes` 82,871 ·
+`molt-backend-native` 67,233 · `molt-gpu` 36,117.
+
+LAYERING LAW (order is not optional): crates cannot be cyclic. CORE extracts
+first; nothing that touches the object model can extract above it until it does
+(extracting async_rt while object is still in molt-runtime → molt-runtime ↔
+molt-runtime-async cycle). EXCEPTION: a stdlib module that is PURE COMPUTATION
+on primitives (bytes/str/int — e.g. codecs, difflib, textwrap, fnmatch,
+graphlib) extracts NOW as a leaf via the bridge pattern (marshals through the
+bridge; no dependency on core). Object-manipulating stdlib (json/io/pickle)
+waits for core. Foundation-first for everything object-coupled.
+
+SEQUENCED PLAN (respecting active witness lanes):
+- **QUEUED — the build-speed win, fires when buffer lane 2 lands.** CORE/object
+  (`object/**` + `builtins/module_table.rs` + `array_mod.rs`) is OWNED by buffer
+  lane 2 RIGHT NOW — DO NOT touch. On its landing the orchestrator signals; arc
+  = sever the 7 back-edges → extract `molt-runtime-core` → carve the
+  object-coupled stdlib + true builtins apart → `molt-runtime-builtins`. That
+  carve is the cut that ENDS the ~2160s witness rebuild.
+- **NOW — decompose the OTHER god-crates (disjoint from every witness lane).**
+  `molt-passes` (82k) and `molt-backend-native` (67k) split along pass-family /
+  lowering-stage seams (21b/21e/21f). Do NOT touch
+  `molt-backend-wasm/.../call_ops/dynamic.rs` (molt_type_new subagent) or
+  `molt-cpython-abi/**` (numpy-exec subagent).
+- **NOW — carve PURE-COMPUTATION stdlib leaves out of `builtins/`** into
+  `molt-stdlib-*` via the established bridge pattern, cleanest first (codecs,
+  difflib already partly bridged, textwrap, fnmatch, graphlib, tokenize),
+  disjoint from witness lanes. Each: leaf crate + thin bridge, byte-identical
+  gate, per-crate clippy gate.
+- **ALSO NOW — within-crate god-FILE splits (readability + pre-staging).**
+  `async_rt/scheduler.rs` (3853), `concurrency/locks.rs` (3702),
+  `async_rt/channels.rs` (3482) — module-split only; pre-stages the
+  async_rt/concurrency crate extraction that follows core.
+
+DISCIPLINE (binding): (a) `tools/structural_audit.py` FIRST — ratchet only moves
+DOWN; (b) STRICT move-only diff, pure renames, widen `pub` PRECISELY (never
+blanket `pub(crate)→pub`), gate on a byte-identical corpus build + 0-warning +
+lib tests + symbol identity (21f specs); (c) ISOLATED worktree, commit small
+per-move by EXACT pathspec, ping the orchestrator to cherry-pick; (d) new crates
+born UNGATED — add the per-crate clippy gate to ci.yml + molt_dev_gates.toml in
+the SAME move; (e) generated files (`wasm_abi_generated/**`,
+`intrinsics/generated.rs`, `op_kinds_generated.rs`, `import_metadata.rs`) OWNED
+BY THEIR GENERATORS — never hand-split; fix the generator/authority. This is
+R5b: the permanent fix for the ~2160s god-crate wasm rebuild.
 
 1. **WITNESS: scipy.ndimage executable ABI dispatch** (goal's named aperture):
    `distance_transform_edt`, `gaussian_filter`, `label`, `maximum_filter`,
