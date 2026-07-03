@@ -2805,7 +2805,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     assert rows[0]["contention_key"] == "cargo:molt-runtime"
     assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
     command = json.loads(rows[0]["command_json"])
-    assert command[:8] == [
+    assert command[:9] == [
         "uv",
         "run",
         "--active",
@@ -2813,9 +2813,10 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         ".",
         "--python",
         "3.12",
+        "--no-sync",
         "python",
     ]
-    assert command[8:14] == [
+    assert command[9:15] == [
         "tools/guarded_exec.py",
         "--prefix",
         "MOLT_TEST_SUITE",
@@ -2823,7 +2824,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "cargo",
         "test",
     ]
-    assert command[14:16] == ["-p", "molt-runtime"]
+    assert command[15:17] == ["-p", "molt-runtime"]
     assert command[-1] == "--lib"
     assert [note["body"] for note in _notes(db)] == ["canonical cargo proof lane smoke"]
 

@@ -3186,9 +3186,13 @@ def _env_overrides_from_spec(raw: object) -> dict[str, str]:
 
 
 def _uv_active_python_command(
-    *args: str, with_packages: list[str] | None = None
+    *args: str,
+    with_packages: list[str] | None = None,
+    no_sync: bool = False,
 ) -> list[str]:
     command = ["uv", "run", "--active", "--project", ".", "--python", "3.12"]
+    if no_sync:
+        command.append("--no-sync")
     for package in with_packages or []:
         command.extend(["--with", package])
     command.append("python")
@@ -3216,6 +3220,7 @@ def _canonical_cargo_proof_command(cargo_args: list[str]) -> list[str]:
         "--",
         "cargo",
         *args,
+        no_sync=True,
     )
 
 
