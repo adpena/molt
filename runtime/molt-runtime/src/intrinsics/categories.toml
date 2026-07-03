@@ -258,6 +258,22 @@ feature_prefixes = [
     "re_escape",
     "re_split",
     "re_sub",
+    # Byte-matching primitives moved into molt-runtime-regex.
+    "re_literal_matches",
+    "re_literal_advance",
+    "re_any_advance",
+    "re_char_in_range",
+    "re_category_matches",
+    "re_anchor_matches",
+    "re_group_is_set",
+    "re_group_capture",
+    "re_group_values",
+    "re_backref_advance",
+    "re_backref_group_advance",
+    "re_apply_scoped_flags",
+    "re_charclass_matches",
+    "re_charclass_advance",
+    "re_expand_replacement",
 ]
 [stdlib.ipaddress]
 prefixes = ["ipaddress_"]

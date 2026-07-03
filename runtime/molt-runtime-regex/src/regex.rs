@@ -52,6 +52,8 @@ mod compile_api;
 mod execute;
 #[path = "regex/execute_api.rs"]
 mod execute_api;
+#[path = "regex/functions_re.rs"]
+mod functions_re;
 #[path = "regex/ir.rs"]
 mod ir;
 #[path = "regex/lookaround.rs"]
@@ -81,6 +83,8 @@ use execute::*;
 #[allow(unused_imports)]
 use execute_api::*;
 #[allow(unused_imports)]
+use functions_re::*;
+#[allow(unused_imports)]
 use ir::*;
 #[allow(unused_imports)]
 use lookaround::*;
@@ -99,6 +103,13 @@ use verbose_backref::*;
 
 pub use compile_api::{molt_re_compile, molt_re_pattern_info};
 pub use execute_api::{molt_re_execute, molt_re_finditer_collect};
+pub use functions_re::{
+    molt_re_anchor_matches, molt_re_any_advance, molt_re_apply_scoped_flags,
+    molt_re_backref_advance, molt_re_backref_group_advance, molt_re_category_matches,
+    molt_re_char_in_range, molt_re_charclass_advance, molt_re_charclass_matches,
+    molt_re_expand_replacement, molt_re_group_capture, molt_re_group_is_set, molt_re_group_values,
+    molt_re_literal_advance, molt_re_literal_matches,
+};
 pub use lookaround::{
     molt_re_negative_lookahead, molt_re_negative_lookbehind, molt_re_positive_lookahead,
     molt_re_positive_lookbehind,
