@@ -5,7 +5,7 @@
 //! one JSONL record per pass. Product IR, pass order, analysis invalidation, and
 //! verification behavior are unchanged when the observer is disabled or enabled.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ use super::values::ValueId;
 use crate::debug_artifacts;
 use crate::repr::Repr;
 
-pub(crate) const PASS_DELTA_SCHEMA_VERSION: u32 = 1;
+pub(crate) const PASS_DELTA_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) fn emit_enabled() -> bool {
     std::env::var("MOLT_EMIT_PASS_DELTA").as_deref() == Ok("1")
@@ -35,6 +35,7 @@ pub(crate) struct FactProfile {
     pub ops: usize,
     pub typed_values: usize,
     pub repr_counts: BTreeMap<String, usize>,
+    pub value_reprs: BTreeMap<String, String>,
     pub op_counts: BTreeMap<String, usize>,
     pub box_ops: usize,
     pub unbox_ops: usize,
@@ -60,6 +61,7 @@ impl FactProfile {
             ops: 0,
             typed_values: 0,
             repr_counts: BTreeMap::new(),
+            value_reprs: BTreeMap::new(),
             op_counts: BTreeMap::new(),
             box_ops: 0,
             unbox_ops: 0,
@@ -78,9 +80,13 @@ impl FactProfile {
             heap_alloc_ops: 0,
         };
 
+        let value_range = crate::representation_facts::value_range_for(func);
+        let repr_by_value =
+            crate::representation_facts::repr_by_value_for(func, Some(&value_range));
+
         let mut seen_values = BTreeSet::new();
         for (&id, ty) in &func.value_types {
-            profile.note_value(id, ty, &mut seen_values);
+            profile.note_value(id, ty, &repr_by_value, &mut seen_values);
         }
 
         let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
@@ -90,7 +96,7 @@ impl FactProfile {
                 continue;
             };
             for arg in &block.args {
-                profile.note_value(arg.id, &arg.ty, &mut seen_values);
+                profile.note_value(arg.id, &arg.ty, &repr_by_value, &mut seen_values);
             }
             for op in &block.ops {
                 profile.note_op(func, op);
@@ -100,13 +106,24 @@ impl FactProfile {
         profile
     }
 
-    fn note_value(&mut self, id: ValueId, ty: &TirType, seen_values: &mut BTreeSet<ValueId>) {
+    fn note_value(
+        &mut self,
+        id: ValueId,
+        ty: &TirType,
+        repr_by_value: &HashMap<ValueId, Repr>,
+        seen_values: &mut BTreeSet<ValueId>,
+    ) {
         if !seen_values.insert(id) {
             return;
         }
         self.typed_values += 1;
-        let repr = format!("{:?}", Repr::default_for(ty));
-        *self.repr_counts.entry(repr).or_default() += 1;
+        let repr = repr_by_value
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| Repr::default_for(ty));
+        let repr_name = format!("{repr:?}");
+        self.value_reprs.insert(id.0.to_string(), repr_name.clone());
+        *self.repr_counts.entry(repr_name).or_default() += 1;
     }
 
     fn note_op(&mut self, func: &TirFunction, op: &TirOp) {
@@ -499,6 +516,18 @@ mod tests {
         assert_eq!(profile.exception_events, 1);
         assert_eq!(profile.repr_counts.get("DynBox"), Some(&2));
         assert_eq!(profile.repr_counts.get("MaybeBigInt"), Some(&2));
+        assert_eq!(
+            profile.value_reprs.get("0").map(String::as_str),
+            Some("MaybeBigInt")
+        );
+        assert_eq!(
+            profile.value_reprs.get("1").map(String::as_str),
+            Some("DynBox")
+        );
+        assert_eq!(
+            profile.value_reprs.get("3").map(String::as_str),
+            Some("MaybeBigInt")
+        );
     }
 
     #[test]

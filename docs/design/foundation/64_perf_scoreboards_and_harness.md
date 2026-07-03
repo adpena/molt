@@ -455,12 +455,16 @@ Complete the derived-attribution stack the STRUCTURAL_AUDIT_BOARD routes:
 - `tools/pass_delta_dashboard.py`: consumes the per-pass IR-fact delta emitted by
   `MOLT_EMIT_PASS_DELTA=1` from `runtime/molt-passes/src/tir/pass_delta.rs` at the TIR
   pass-manager seam. The JSONL schema records explicit host OS/architecture/family/
-  pointer width, target/profile, before/after fact profiles, and deltas for lost `Repr`
+  pointer width, target/profile, before/after fact profiles, value-keyed
+  `value_reprs` sampled from `representation_facts.rs`, and deltas for lost `Repr`
   values, boxes, generic/runtime-helper calls, RC events, exception events, guards, and
   heap allocations. The opcode-category membership is generated from `op_kinds.toml`
-  (`opcode_pass_delta_facts_table`), not hand-classified in the observer. The default
-  artifact is `tmp/molt-backend/tir/pass_delta.jsonl`; `MOLT_PASS_DELTA_PATH` may point
-  at a specific artifact. It is diagnostic-only and never alters product output
+  (`opcode_pass_delta_facts_table`), not hand-classified in the observer. The same
+  JSONL feeds `tools/translation_validator.py --pass-delta-jsonl`, which is the R3a
+  proof-order gate for surviving `ValueId`s: raw-carrier proof may be added, but it may
+  not silently disappear or drift across scalar families. The default artifact is
+  `tmp/molt-backend/tir/pass_delta.jsonl`; `MOLT_PASS_DELTA_PATH` may point at a
+  specific artifact. It is diagnostic-only and never alters product output
   (Bootstrap/zero-workaround safe: it is a pure observer).
 - `tools/perf_causality.py`: the existing first rung consumes #76 cycle-profile rows
   (`in_binary_top` / `top_symbols`), owns deterministic `hot-symbol-pattern → fact_class`

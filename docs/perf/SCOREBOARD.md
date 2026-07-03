@@ -467,9 +467,14 @@ those secondary inputs override the primary attribution class.
 by `tools/pass_delta_dashboard.py`: one JSONL row per pass with explicit host
 OS/architecture/pointer-width, target/profile, before/after fact profiles, and
 the deltas for lost representation values, added boxes, generic/runtime-helper
-calls, RC events, exception events, guards, and heap allocations. By default the
-diagnostic feed is written under `tmp/molt-backend/tir/pass_delta.jsonl`; set
-`MOLT_PASS_DELTA_PATH` to direct it to a specific artifact path.
+calls, RC events, exception events, guards, and heap allocations. Schema v2 also
+records `before.value_reprs` and `after.value_reprs`, the value-keyed Repr facts
+sampled from `representation_facts.rs`; `tools/translation_validator.py
+--pass-delta-jsonl` uses that feed as the R3a proof-order gate so surviving
+`ValueId`s cannot silently lose raw-carrier proof or drift across scalar
+families. By default the diagnostic feed is written under
+`tmp/molt-backend/tir/pass_delta.jsonl`; set `MOLT_PASS_DELTA_PATH` to direct it
+to a specific artifact path.
 
 The unified CI driver includes this as the required Tier 1
 `perf-scoreboard-contract` check: it runs `tests/tools/test_perf_causality.py`,

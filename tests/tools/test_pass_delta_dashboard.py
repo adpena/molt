@@ -48,7 +48,7 @@ def _delta(**overrides):
 
 def _record(function: str, pass_name: str, **delta_overrides):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "molt_tir_pass_delta",
         "function": function,
         "pass": pass_name,
@@ -69,8 +69,8 @@ def _record(function: str, pass_name: str, **delta_overrides):
             "facts_changed": 0,
             "total_changes": 0,
         },
-        "before": {"ops": 1},
-        "after": {"ops": 1},
+        "before": {"ops": 1, "value_reprs": {"0": "MaybeBigInt"}},
+        "after": {"ops": 1, "value_reprs": {"0": "RawI64Safe"}},
         "delta": _delta(**delta_overrides),
     }
 
@@ -128,6 +128,18 @@ def test_load_records_validates_schema(tmp_path: Path) -> None:
     )
 
     with pytest.raises(dashboard.PassDeltaError, match="schema_version"):
+        dashboard.load_records(path)
+
+
+def test_load_records_rejects_stale_fact_profiles_without_value_reprs(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pass_delta.jsonl"
+    stale = _record("fn", "pass")
+    del stale["before"]["value_reprs"]
+    path.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+
+    with pytest.raises(dashboard.PassDeltaError, match="before.value_reprs"):
         dashboard.load_records(path)
 
 

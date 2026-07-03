@@ -218,6 +218,58 @@ class TestValidateDCE:
 
 
 # ---------------------------------------------------------------------------
+# check_repr_lattice_monotonic
+# ---------------------------------------------------------------------------
+
+
+class TestCheckReprLatticeMonotonic:
+    def test_raw_promotion_passes(self):
+        before = {"value_reprs": {"0": "MaybeBigInt", "1": "DynBox"}}
+        after = {"value_reprs": {"0": "RawI64Safe", "1": "RawI64FullDeopt"}}
+
+        r = TranslationValidator.check_repr_lattice_monotonic(before, after)
+
+        assert r.passed
+
+    def test_synthetic_repr_downgrade_fails(self):
+        before = {"value_reprs": {"7": "RawI64Safe"}}
+        after = {"value_reprs": {"7": "MaybeBigInt"}}
+
+        r = TranslationValidator.check_repr_lattice_monotonic(before, after)
+
+        assert not r.passed
+        assert r.check == "repr_lattice_monotonic"
+        assert "7: RawI64Safe->MaybeBigInt" in r.detail
+
+    def test_missing_value_reprs_fails_closed(self):
+        before = {"repr_counts": {"RawI64Safe": 1}}
+        after = {"value_reprs": {"7": "RawI64Safe"}}
+
+        r = TranslationValidator.check_repr_lattice_monotonic(before, after)
+
+        assert not r.passed
+        assert "before.value_reprs" in r.detail
+
+    def test_pass_delta_record_runs_repr_gate(self):
+        report = self.tv.validate_pass_delta_record(
+            {
+                "function": "hot_loop",
+                "pass": "bce",
+                "before": {"value_reprs": {"3": "RawI64FullDeopt"}},
+                "after": {"value_reprs": {"3": "RawI64Safe"}},
+            }
+        )
+
+        assert not report.passed
+        assert report.function == "hot_loop"
+        assert report.pass_name == "bce"
+        assert report.checks[0].check == "repr_lattice_monotonic"
+
+    def setup_method(self):
+        self.tv = TranslationValidator()
+
+
+# ---------------------------------------------------------------------------
 # validate_dump_directory (integration with fixtures)
 # ---------------------------------------------------------------------------
 
