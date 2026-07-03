@@ -178,33 +178,33 @@ impl CudaRenderer {
         }
 
         for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
-            if let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos] {
-                if *prior_idx < op_idx {
-                    let prior_op = &kernel.ops[*prior_idx];
-                    if prior_op.op() == PrimitiveOp::Mul {
-                        let a = match &prior_op.srcs()[0] {
-                            FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-                            }
-                            FusedSrc::Op(p) => format!("v{}", p),
-                            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-                        };
-                        let b = match &prior_op.srcs()[1] {
-                            FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-                            }
-                            FusedSrc::Op(p) => format!("v{}", p),
-                            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-                        };
-                        let c = match &op.srcs()[add_src_pos] {
-                            FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-                            }
-                            FusedSrc::Op(p) => format!("v{}", p),
-                            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-                        };
-                        return Some((a, b, c));
-                    }
+            if let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos]
+                && *prior_idx < op_idx
+            {
+                let prior_op = &kernel.ops[*prior_idx];
+                if prior_op.op() == PrimitiveOp::Mul {
+                    let a = match &prior_op.srcs()[0] {
+                        FusedSrc::Buf(buf_idx) => {
+                            Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+                        }
+                        FusedSrc::Op(p) => format!("v{}", p),
+                        FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
+                    };
+                    let b = match &prior_op.srcs()[1] {
+                        FusedSrc::Buf(buf_idx) => {
+                            Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+                        }
+                        FusedSrc::Op(p) => format!("v{}", p),
+                        FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
+                    };
+                    let c = match &op.srcs()[add_src_pos] {
+                        FusedSrc::Buf(buf_idx) => {
+                            Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+                        }
+                        FusedSrc::Op(p) => format!("v{}", p),
+                        FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
+                    };
+                    return Some((a, b, c));
                 }
             }
         }
