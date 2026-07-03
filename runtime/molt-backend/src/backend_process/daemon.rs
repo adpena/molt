@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(unix)]
+use std::time::Instant;
+
+#[cfg(unix)]
 pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
     use std::os::unix::net::UnixListener;
 
