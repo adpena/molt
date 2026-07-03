@@ -3921,6 +3921,8 @@ def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
         == 1
     )
     output = capsys.readouterr().out
+    assert "classified_failed=1" in output
+    assert "diagnostics: memory-guard-timeout=1" in output
     assert "audit-memory-guard-timeout run=stale-timeout" in output
 
 
