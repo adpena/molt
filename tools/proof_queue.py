@@ -131,6 +131,7 @@ PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
 PYTEST_ERROR_RE = re.compile(
     r"(?m)^ERROR\s+(?P<nodeid>\S+)(?:\s+-\s+(?P<detail>[^\r\n]+))?"
 )
+PYTEST_PROGRESS_LINE_RE = re.compile(r"^[.FEfsxX]+(?:\s+\[\s*\d+%\])?$")
 PYTEST_ASSERTION_RE = re.compile(r"(?m)^E\s+(?P<error>AssertionError[^\r\n]*)")
 PYTEST_EXCEPTION_LINE_RE = re.compile(
     r"(?m)^E\s+(?P<error>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):[^\r\n]*)"
@@ -156,6 +157,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
         "queue-infra-warning",
         "memory-guard-orphan-cleanup",
         "queue-policy-rejection",
+        "running-pytest-current-test-missing",
     }
 )
 FRONTIER_SUPERSEDING_EDGE_KINDS = frozenset({"reruns", "supersedes"})
@@ -375,7 +377,8 @@ def _running_pytest_current_test_missing_diagnostic(
         return None
     if not _row_command_mentions_pytest(row):
         return None
-    log_age_s = _log_age_seconds(Path(row["log_path"]))
+    log_path = Path(row["log_path"])
+    log_age_s = _log_age_seconds(log_path)
     if (
         log_age_s is None
         or log_age_s < RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
@@ -390,21 +393,45 @@ def _running_pytest_current_test_missing_diagnostic(
         evidence_parts.append(child_runner)
     evidence_parts.append(evidence)
     evidence_parts.append(f"last_log_age={_format_duration(log_age_s)}")
-    evidence = " ".join(evidence_parts)
-    return _diagnostic(
-        signal_id="running-pytest-current-test-missing",
-        severity="infra",
-        summary=(
+    last_log_line = _last_nonempty_log_line(log_path)
+    pytest_progress = (
+        last_log_line
+        if last_log_line is not None
+        and PYTEST_PROGRESS_LINE_RE.fullmatch(last_log_line.strip()) is not None
+        else None
+    )
+    if pytest_progress is not None:
+        evidence_parts.append(f"last_pytest_progress={pytest_progress}")
+        summary = (
+            "Running pytest proof emitted progress output but has no current-test "
+            "marker."
+        )
+        next_action = (
+            "Treat this as current-test custody opacity after pytest started, "
+            "not collection/startup opacity. Inspect pytest guard plugin/env "
+            "wiring once, then rerun with a focused selector if the row does not "
+            "finish; do not interrupt via Codex stdin."
+        )
+    else:
+        if last_log_line:
+            evidence_parts.append(f"last_log={last_log_line}")
+        summary = (
             "Running pytest proof has no current-test marker while its queue log "
             "is quiet."
-        ),
-        evidence=evidence,
-        next_action=(
+        )
+        next_action = (
             "Treat this as pre-test or collection/startup opacity. Inspect the "
             "pytest startup path, uv/cache contention, or Windows memory-guard "
             "child-runner descendant once, then rerun with a first-failure or "
             "collection-focused proof; do not interrupt via Codex stdin."
-        ),
+        )
+    evidence = " ".join(evidence_parts)
+    return _diagnostic(
+        signal_id="running-pytest-current-test-missing",
+        severity="infra",
+        summary=summary,
+        evidence=evidence,
+        next_action=next_action,
         scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
         artifacts=(str(row["summary_json"]), str(row["log_path"])),
     )
@@ -4022,6 +4049,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
     frontier_failures: list[dict[str, object]] = []
     diagnostic_counts: dict[str, int] = {}
     classified_failed_runs = 0
+    superseded_archaeology_runs = 0
 
     active_by_key: dict[str, list[str]] = {}
     for row in rows:
@@ -4054,6 +4082,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             status not in RUNNING and not args.all and _frontier_superseded(dag)
         )
         if superseded_terminal_row:
+            superseded_archaeology_runs += 1
             continue
 
         diagnostics = _run_diagnostics(row)
@@ -4239,6 +4268,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
     return {
         "scanned_runs": len(rows),
         "active_runs": sum(1 for row in rows if row["status"] in RUNNING),
+        "superseded_archaeology_runs": superseded_archaeology_runs,
         "classified_failed_runs": classified_failed_runs,
         "frontier_failures": frontier_failures,
         "diagnostic_counts": {
@@ -4263,6 +4293,11 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             f"classified_failed={payload['classified_failed_runs']} "
             f"issues={len(payload['issues'])}"
         )
+        if payload["superseded_archaeology_runs"]:
+            print(
+                "archaeology: "
+                f"superseded_terminal={payload['superseded_archaeology_runs']}"
+            )
         diagnostics = payload["diagnostic_counts"]
         if diagnostics:
             print(
