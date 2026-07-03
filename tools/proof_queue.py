@@ -178,6 +178,12 @@ MEMORY_GUARD_TIMEOUT_RE = re.compile(
     r"memory_guard: timeout after (?P<timeout>[0-9.]+)s; "
     r"(?P<detail>[^\r\n]+)"
 )
+MEMORY_GUARD_CARGO_QUARANTINE_RE = re.compile(
+    r"memory_guard: quarantined Cargo incremental state after "
+    r"(?P<reason>[^:]+): "
+    r"(?P<detail>[^\r\n]*\breceipt=(?P<receipt>.*?)(?: errors=\d+)?)"
+    r"(?=\r?\n|$)"
+)
 AUDIT_ERROR_DIAGNOSTICS = frozenset(
     {
         "memory-guard-summary-incomplete",
@@ -2207,6 +2213,13 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
 
     match = MEMORY_GUARD_ORPHANED_RE.search(log_tail)
     if match is not None:
+        quarantine_match = MEMORY_GUARD_CARGO_QUARANTINE_RE.search(log_tail)
+        evidence = match.group(0)
+        artifacts: tuple[str, ...] = ()
+        if quarantine_match is not None:
+            receipt = quarantine_match.group("receipt").strip()
+            evidence += f" cargo_quarantine_receipt={receipt}"
+            artifacts = (receipt,)
         diagnostics.append(
             _diagnostic(
                 signal_id="memory-guard-orphan-cleanup",
@@ -2215,7 +2228,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "Memory guard cleaned up orphaned child processes after the "
                     "proof command exited."
                 ),
-                evidence=match.group(0),
+                evidence=evidence,
                 next_action=(
                     "Preserve the proof result, then harden the child process "
                     "lifecycle or run intentional warm daemons inside a suite "
@@ -2226,6 +2239,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "tools/guarded_exec.py",
                     "tools/proof_queue.py",
                 ),
+                artifacts=artifacts,
             )
         )
 
@@ -4632,6 +4646,7 @@ def _audit_issue(
     next_action: str,
     run_id: str | None = None,
     evidence: str = "",
+    artifacts: Sequence[str] = (),
 ) -> dict[str, object]:
     return {
         "signal_id": signal_id,
@@ -4640,6 +4655,7 @@ def _audit_issue(
         "summary": summary,
         "evidence": _shorten(evidence, 320),
         "next_action": next_action,
+        "artifacts": list(artifacts),
     }
 
 
@@ -4826,6 +4842,11 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                         summary=str(item["summary"]),
                         evidence=str(item["evidence"]),
                         next_action=str(item["next_action"]),
+                        artifacts=[
+                            str(path) for path in item.get("artifacts", [])
+                        ]
+                        if isinstance(item.get("artifacts"), list)
+                        else (),
                     )
                 )
             elif severity == "unknown" and signal_id != "unclassified-failed-proof":
@@ -5048,6 +5069,9 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             )
             if issue["evidence"]:
                 print(f"  evidence: {issue['evidence']}")
+            artifacts = issue.get("artifacts", [])
+            if artifacts:
+                print(f"  artifacts: {', '.join(str(path) for path in artifacts)}")
             print(f"  next: {issue['next_action']}")
         if args.errors_only:
             hidden_warnings = len(raw_issues) - len(issues_source)
