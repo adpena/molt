@@ -1503,6 +1503,31 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
     assert "+2 more" in out
     assert "Do not prune or interrupt" in out
 
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "status",
+                "--recent",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    status_out = capsys.readouterr().out
+    assert "guard_descendants=5" in status_out
+    assert "descendant_samples=" in status_out
+    assert "conhost.exe" not in status_out
+    assert f"{work_pid}:uv run --active" in status_out
+    assert f"{compile_pid}:rustc --crate-name molt_runtime" in status_out
+    assert "+2 more" in status_out
+
 
 def test_proof_queue_diagnoses_stale_running_launch_summary(
     tmp_path: Path,
