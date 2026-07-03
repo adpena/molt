@@ -20,6 +20,10 @@ scoreboard that refuses any performance, size, startup, or compatibility claim
 without live evidence. This document is an implementation contract: every
 outcome below must be reducible to one authority, one lowering path, one
 artifact/proof path, and one release scoreboard row before support is claimed.
+Any future design, PR, benchmark report, or partnership handoff that claims
+WASM, WebGPU, WebNN, BLAS/LAPACK/GSL, typed-storage, or browser acceleration
+support must either cite the concrete row that satisfies this contract or state
+that the support is not yet claimed.
 
 ## End State
 
@@ -102,6 +106,27 @@ handoff claims it:
   raw lane cannot hide another lane silently falling back to boxed runtime calls.
 - Negative proof: synthetic violations that fail closed when a feature,
   symbol, provider, license, target capability, or lifetime contract is absent.
+
+An outcome row is green only when all of the following are true:
+
+- The live implementation path exists on `origin/main` and is reproducible from
+  a checked-in command, proof-queue lane, or CI job without local machine state.
+- The old duplicate lane, boxed fallback, profile-name shortcut, or manual
+  inspection step it replaces has been deleted or converted into a thin
+  diagnostic boundary over the new authority.
+- Native, WASM, browser, and provider-specific differences are expressed as
+  target-feature rows and version/platform gates, not as scattered conditional
+  logic in backend or packaging code.
+- The deterministic lane remains CPython-exact for the verified subset. Any
+  relaxed, approximate, provider, or GPU tier has an explicit opt-in flag,
+  tolerance policy, and scoreboard annotation.
+- The row has at least one negative fixture that proves missing reachability,
+  target support, ABI symbol, storage lifetime, provider license, or oracle
+  evidence fails closed with a precise diagnostic.
+- A handoff reader can follow the evidence from source input to frontend facts,
+  IR facts, lowering, linked artifact, browser or native execution, parity
+  oracle, size/startup/perf measurements, and final scoreboard verdict without
+  redoing manual archaeology.
 
 ## Standards And Features To Track
 
@@ -314,6 +339,26 @@ Every exit row must record:
   missing lifetime custody reappears.
 - Scoreboard row: startup, size, throughput, memory, allocation, host-call,
   import-retention, and browser/provider result where applicable.
+
+Exit rows use only these statuses:
+
+- `PASS`: all authority, lowering, artifact, parity, negative, performance,
+  startup, size, and platform evidence exists for the exact claimed row.
+- `FAIL`: evidence exists and disproves the claim, including parity drift,
+  retained boxed fallbacks, broad reachability, size/startup regression, or
+  missing target/provider behavior.
+- `BLOCKED`: a named upstream dependency, platform feature, toolchain gap, or
+  architecture dependency prevents the row from running; the row must still name
+  the command that will become authoritative when unblocked.
+- `UNSUPPORTED`: the target/profile/provider combination is intentionally not
+  supported and fails closed through the target feature manifest with a precise
+  diagnostic.
+
+There is no partial-green state. A row expires back to `FAIL` or `BLOCKED`
+until rerun whenever the authority file, generator, target feature manifest,
+toolchain pin, runtime import surface, package custody manifest, benchmark
+input, parity oracle, or browser/provider version changes. Release and
+partnership handoff summaries may cite only non-expired `PASS` rows.
 
 1. Target feature manifest:
    `native`, `wasm-server`, `wasm-browser`, `wasm-edge`,
