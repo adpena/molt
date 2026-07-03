@@ -9,6 +9,11 @@ not supersede `docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md`,
 `docs/spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md`, or
 `docs/architecture/gpu-primitive-stack.md`.
 
+The obligation is the 100-year plan shape: portable semantic truth first,
+capability-gated lowering second, target-specific acceleration third, and a
+scoreboard that refuses any performance, size, startup, or compatibility claim
+without live evidence.
+
 ## End State
 
 Molt's performance stack is a capability-gated lowering system, not a set of
@@ -28,6 +33,44 @@ profile names:
 5. Every optimization claim has an opcode/artifact/profiling gate: generated
    feature manifest, import closure, host-call count, binary size, startup,
    throughput, allocation count, and parity oracle.
+
+## 100-Year Outcomes
+
+These are not stretch goals. They are the long-horizon invariants this plan must
+keep making easier to satisfy:
+
+1. One semantic authority feeds every backend. Python version/platform facts,
+   representation facts, dtype/shape/stride facts, target features, and package
+   custody flow through generated/shared authorities, never through backend-local
+   reclassification.
+2. Profiles describe deployment envelopes only. Tree shaking, deforestation,
+   symbol reachability, native artifact admission, and hot-path lowering are
+   structural compiler behavior, not profile-name tricks.
+3. Deterministic CPython parity is the default lane. Relaxed SIMD, approximate
+   GPU math, f16, vendor BLAS, and provider-specific kernels are opt-in
+   acceleration tiers with explicit error budgets and oracle rows.
+4. The hot numeric path has no accidental object traffic. Proven scalar and
+   vector lanes carry raw values through frontend, TIR, passes, backend, and
+   runtime boundaries; boxes are introduced only at semantic escape points.
+5. Browser execution is a first-class target, not a demo. WASM, WebGPU, WebNN,
+   JS Promise Integration, Component Model, and WASI adoption all pass through
+   the same artifact, parity, startup, and size gates as native.
+6. Ecosystem support compounds through primitives. NumPy, SciPy, tinygrad, GSL,
+   BLAS, LAPACK, Arrow, and DLPack support must expand by improving ABI/C-API,
+   buffer, capsule, typed storage, module-state, and artifact custody, not by
+   package-specific rewrites.
+7. Artifact size and startup only ratchet down for claimed workloads. Every
+   retained runtime import, table slot, native object, generated table, custom
+   section, and package root must be justified by reachability evidence.
+8. Tooling eliminates repeated manual inspection. Every recurring
+   wasm-objdump/grep/WGSL/browser-profiler step becomes a one-command inspector
+   with compact verdicts, machine-readable evidence, and proof-queue custody.
+9. Deployment is boring and portable. Windows, macOS, Linux, browsers, workers,
+   edge runtimes, and native hosts all resolve pinned toolchains and feature
+   contracts through checked-in configuration.
+10. A support claim means a green scoreboard row. If parity, performance,
+    startup, binary size, browser behavior, or provider acceleration is not
+    measured and version/platform-gated, it is not claimed support.
 
 ## Standards And Features To Track
 
@@ -96,6 +139,25 @@ The July 2026 reality is that WASI 0.3.0 has shipped. The plan must move from
 - Stream and caller-supplied-buffer work in WASI 0.3 aligns directly with Molt's
   zero-copy buffer and package artifact goals.
 
+### Proposal Watchlist
+
+The WebAssembly proposal map should be treated as an input to Molt's target
+feature manifest, not as ad hoc release trivia:
+
+- Threads and JS Promise Integration are Phase 4 work and should be modeled as
+  near-term server/browser capability rows.
+- Wide arithmetic, compact imports, custom page sizes, stack switching, ESM
+  integration, and related Phase 3 work should be tracked now because each can
+  remove boxed helpers, import-section bloat, continuation trampolines, or host
+  glue when the toolchain proves support.
+- Memory control, flexible vectors, half precision, shared-everything threads,
+  reference-typed strings, profiles, and type imports remain watchlist features.
+  They must not enter a claimed fast path until validation, runtime support,
+  size/startup impact, and parity gates exist.
+- WebAssembly features with host-dependent behavior enter only through an
+  explicit non-deterministic tier. The default CPython-parity lane cannot depend
+  on engine-chosen numeric behavior.
+
 ## WebGPU And WebNN
 
 WebGPU is the browser GPU compute authority for Molt kernels. WebNN is a
@@ -154,6 +216,12 @@ test/fallback baselines.
   and batched kernels as canonical primitive families with target-specific
   implementations below one fact authority.
 
+GSL-specific outcome: Molt should be able to compile/link a user-admitted GSL
+closure when licensing and target constraints are satisfied, but Molt's runtime
+must not vendor GPL GSL code or hide unsupported GSL behavior behind Python
+shims. The reusable deliverable is C ABI/source artifact custody plus typed
+buffer interop for the reachable symbols.
+
 ## Tensor And Buffer Interchange
 
 The typed strided storage primitive is the keystone for ecosystem support.
@@ -190,6 +258,81 @@ Every repeated WASM/WebGPU diagnosis should become a one-command tool:
 - Wasmtime host startup work should use precompiled modules, pooling allocator,
   copy-on-write heap images, and `InstancePre` where the embedding supports
   them.
+
+## Rigorous Exit Criteria
+
+This plan is complete only when these gates exist and pass on the claimed
+target/profile rows. Any missing row is a fail-closed non-claim, not a partial
+success.
+
+1. Target feature manifest:
+   `native`, `wasm-server`, `wasm-browser`, `wasm-edge`,
+   `wasm-browser-webgpu`, and `wasm-browser-webnn` rows declare scalar WASM,
+   simd128, relaxed SIMD, EH, tail calls, memory64, threads/atomics, WasmGC,
+   JSPI, Component Model/WASI, WebGPU, WebNN, f16, subgroups, timestamp-query,
+   provider BLAS/LAPACK/GSL, and unsupported-reason diagnostics.
+2. Reachability and deforestation:
+   the artifact inspector proves every retained import, export, table slot,
+   runtime feature, static native object, source root, and generated table is
+   reachable from user code. Whole package/library images fail unless the user
+   program genuinely reaches them.
+3. Scalar WASM lowering:
+   proven-typed integer and float loops emit native WASM scalar opcodes and do
+   not retain boxed numeric runtime calls. The proof records opcode histograms,
+   host-call counts, allocation counts, and parity against CPython.
+4. SIMD lowering:
+   vectorizable kernels emit `v128`/simd128 instructions under deterministic
+   gates. Relaxed SIMD is rejected from deterministic lanes and accepted only
+   with explicit target, oracle tolerance, and scoreboard annotation.
+5. WasmGC profile:
+   closed-layout object classes may use GC structs/arrays only after validation
+   proves layout, lifetime, nullability, type checks, startup, size, and parity.
+   Dynamic Python objects stay on the runtime-owned representation unless facts
+   prove a safe GC lowering.
+6. WASI/Component Model:
+   WIT worlds are generated from Molt interface authority. Component adoption
+   must prove import closure does not widen, hot-path throughput does not
+   regress, async semantics remain CPython-compatible, and zero-copy stream or
+   caller-supplied-buffer behavior is measured where claimed.
+7. WebGPU:
+   real browser execution passes parity for each claimed kernel family. The row
+   records adapter, limits, features, WGSL validation, workgroup/subgroup/f16
+   use, timestamp-query availability, dispatch time, copy counts, and fail-closed
+   fallback behavior. A JavaScript-only fake dispatcher is CI scaffolding, never
+   acceptance for a WebGPU claim.
+8. WebNN:
+   only whole recognized inference graphs enter WebNN. Admission records
+   operator set, dtype, layout, precision, device, parity oracle, and fallback
+   row. General NumPy/SciPy/tinygrad calls cannot silently route through WebNN.
+9. BLAS/LAPACK/GSL:
+   native rows name the provider and symbol closure; WASM rows use source-
+   recompiled reachable objects only; license metadata is enforced; performance
+   claims compare CPython/NumPy/SciPy plus provider baselines where applicable.
+10. Typed storage interchange:
+    buffer protocol, memoryview, ndarray/tensor construction, DLPack, Arrow C
+    Data/Device, WebGPU buffers, and native ABI calls project from one storage
+    authority with owner/base/lifetime/release tests and resize/export guards.
+11. Startup and size:
+    raw, stripped, gzip, and brotli size; cold/warm compile; cold/warm
+    instantiate; first call; and retained imports all have ratchets per
+    profile. A regression requires an explicit accepted scoreboard delta.
+12. Cross-platform proof:
+    Windows, macOS, and Linux rows run under pinned checked-in toolchain
+    contracts. Unsupported platform/architecture combinations fail with precise
+    diagnostics keyed to the target feature manifest.
+13. Browser E2E:
+    the browser path runs in a real browser or browser-equivalent automation,
+    not only Node. It verifies artifact loading, manifest interpretation,
+    runtime imports, table/callable exports, typed-array or buffer transfer,
+    exception propagation, and result parity.
+14. Observability:
+    `molt wasm inspect`, `molt wasm diff`, and `molt wasm prove` or their exact
+    successors produce compact verdicts and durable evidence paths. Manual
+    wasm-objdump/grep evidence is insufficient after the tool exists.
+15. Release scoreboard:
+    R8 scoreboards compare against CPython, PyPy, Codon, and provider libraries
+    where meaningful. Faster-than-CPython claims are removed unless the green
+    row exists for the exact benchmark, target, profile, and platform.
 
 ## Scoreboard Rows
 
@@ -247,14 +390,17 @@ Each target/profile row must record:
   `https://github.com/WebAssembly/half-precision`,
   `https://github.com/WebAssembly/wide-arithmetic`
 - WASI roadmap:
-  `https://wasi.dev/roadmap`
+  `https://wasi.dev/roadmap`,
+  `https://github.com/WebAssembly/WASI/releases/tag/v0.3.0`
 - Component Model and WIT:
   `https://component-model.bytecodealliance.org/`,
+  `https://component-model.bytecodealliance.org/design/wit.html`,
   `https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md`
 - WebGPU and WGSL:
   `https://www.w3.org/TR/webgpu/`,
   `https://gpuweb.github.io/gpuweb/explainer/`,
-  `https://www.w3.org/TR/WGSL/`
+  `https://www.w3.org/TR/WGSL/`,
+  `https://github.com/gpuweb/gpuweb/blob/main/proposals/subgroups.md`
 - WebNN:
   `https://www.w3.org/TR/webnn/`
 - Python buffer protocol:
@@ -271,4 +417,5 @@ Each target/profile row must record:
 - wasm-tools, Binaryen, and Wasmtime startup:
   `https://github.com/bytecodealliance/wasm-tools`,
   `https://github.com/WebAssembly/binaryen`,
-  `https://docs.wasmtime.dev/examples-fast-instantiation.html`
+  `https://docs.wasmtime.dev/examples-fast-instantiation.html`,
+  `https://docs.wasmtime.dev/api/wasmtime/struct.PoolingAllocationConfig.html`
