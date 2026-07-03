@@ -17,3 +17,7 @@ rust-backend = []
 [[test]]
 name = "rust_transpiler_preview"
 required-features = ["rust-backend"]
+
+[[test]]
+name = "megafn_source_snapshot"
+required-features = ["rust-backend"]

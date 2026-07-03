@@ -1,5 +1,5 @@
 use super::*;
-use crate::{FunctionIR, SimpleIR};
+use crate::{FunctionIR, OpIR, SimpleIR};
 
 #[test]
 fn compile_keeps_annotation_functions_when_referenced() {
