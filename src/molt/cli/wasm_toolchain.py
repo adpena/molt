@@ -126,6 +126,29 @@ def rustup_installed_targets(root: Path | None = None) -> tuple[str, ...] | None
     return tuple(result.stdout.split())
 
 
+def _rustlib_target_dir_installed(target_triple: str, root: Path | None) -> bool:
+    """Lock-free ground truth for an installed rustup target.
+
+    `rustup target list` contends on the rustup lock and has returned empty
+    output under concurrent cargo/rustup lanes, producing false "target
+    missing" build failures for targets that are installed. The installed
+    standard library lives at
+    ``$RUSTUP_HOME/toolchains/<channel>-*/lib/rustlib/<triple>`` — a plain
+    directory probe that no lock can lie about.
+    """
+    rustup_home = os.environ.get("RUSTUP_HOME", "").strip()
+    home = Path(rustup_home).expanduser() if rustup_home else Path.home() / ".rustup"
+    toolchains = home / "toolchains"
+    if not toolchains.is_dir():
+        return False
+    contract = rust_toolchain_contract(root)
+    pattern = f"{contract.channel}-*" if contract.channel else "*"
+    for toolchain_dir in toolchains.glob(pattern):
+        if (toolchain_dir / "lib" / "rustlib" / target_triple).is_dir():
+            return True
+    return False
+
+
 def ensure_rustup_target(
     target_triple: str, warnings: list[str], *, root: Path | None = None
 ) -> bool:
@@ -133,6 +156,12 @@ def ensure_rustup_target(
     if not rustup_path:
         warnings.append(f"rustup not found; cannot ensure target {target_triple}")
         return False
+    # Filesystem ground truth first: the rustup CLI query contends on the
+    # rustup lock under concurrent lanes and has returned empty output for
+    # installed targets, failing witness builds with a false "target
+    # missing". The rustlib directory probe cannot be starved by a lock.
+    if _rustlib_target_dir_installed(target_triple, root):
+        return True
     try:
         installed = rustup_installed_targets(root)
     except RustToolchainContractError as exc:
