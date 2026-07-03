@@ -321,6 +321,16 @@ def _resolve_build_entry(
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
     )
+    if module_root_resolution.missing_env_roots:
+        missing = ", ".join(module_root_resolution.missing_env_roots)
+        return None, _fail(
+            "MOLT_MODULE_ROOTS names module roots that do not exist on this "
+            f"host: {missing}. Explicit module roots are build inputs; fix or "
+            "remove the missing entries (on Windows the paths must be "
+            "Windows-style, e.g. C:/..., not POSIX-style /c/...).",
+            json_output,
+            command=command,
+        )
     module_roots = list(module_root_resolution.roots)
     external_module_roots = tuple(module_root_resolution.external_roots)
     source_path: Path | None = None
@@ -897,6 +907,7 @@ def _resolve_module_root_resolution(
         "yes",
         "on",
     }
+    missing_env_roots: list[str] = []
     extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
     if extra_roots:
         for entry in extra_roots.split(os.pathsep):
@@ -908,6 +919,8 @@ def _resolve_module_root_resolution(
             )
             if entry_path.exists():
                 add_root(entry_path, external=True)
+            else:
+                missing_env_roots.append(entry)
     # Deferred import: env_paths and build_inputs are both reachable during
     # molt.cli package initialization in an order where env_paths is still
     # partially initialized when build_inputs is first imported (a true import
@@ -955,7 +968,11 @@ def _resolve_module_root_resolution(
         for root in dict.fromkeys(external_roots)
         if root in roots and root not in internal_roots
     )
-    return _ModuleRootResolution(roots=roots, external_roots=external)
+    return _ModuleRootResolution(
+        roots=roots,
+        external_roots=external,
+        missing_env_roots=tuple(missing_env_roots),
+    )
 
 
 def _resolve_module_roots(
