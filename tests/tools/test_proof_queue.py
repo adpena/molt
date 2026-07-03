@@ -1393,7 +1393,10 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
     log_path = tmp_path / "active.log"
     summary_path = tmp_path / "active.memory_guard.json"
     child_pid = 432_100
+    conhost_pid = 432_099
     work_pid = 432_101
+    compile_pid = 432_102
+    linker_pid = 432_103
     log_path.write_text(
         "proof_queue run_id=active-run\n"
         "memory_guard_command='python tools/memory_guard.py -- cargo test'\n",
@@ -1417,9 +1420,40 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
         encoding="utf-8",
     )
     monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == child_pid)
-    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
     monkeypatch.setattr(
-        memory_guard, "descendant_pids", lambda samples, pid: {work_pid}
+        memory_guard,
+        "sample_processes",
+        lambda: {
+            conhost_pid: memory_guard.ProcessSample(
+                pid=conhost_pid,
+                ppid=child_pid,
+                rss_kb=256,
+                command="C:\\Windows\\System32\\conhost.exe",
+            ),
+            work_pid: memory_guard.ProcessSample(
+                pid=work_pid,
+                ppid=child_pid,
+                rss_kb=2048,
+                command="uv run --active --project . --python 3.12 pytest tests/example.py",
+            ),
+            compile_pid: memory_guard.ProcessSample(
+                pid=compile_pid,
+                ppid=work_pid,
+                rss_kb=4096,
+                command="rustc --crate-name molt_runtime very long command that will be shortened",
+            ),
+            linker_pid: memory_guard.ProcessSample(
+                pid=linker_pid,
+                ppid=work_pid,
+                rss_kb=1024,
+                command="link.exe /OUT:molt.exe",
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        memory_guard,
+        "descendant_pids",
+        lambda samples, pid: {conhost_pid, work_pid, compile_pid, linker_pid, 432_104},
     )
     conn = proof_queue._connect(db)
     proof_queue._insert_run(
@@ -1461,7 +1495,12 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
 
     out = capsys.readouterr().out
     assert "running-proof-log-stale-live-child" in out
-    assert "descendants=1" in out
+    assert "descendants=5" in out
+    assert "descendant_samples=" in out
+    assert "conhost.exe" not in out
+    assert f"{work_pid}:uv run --active" in out
+    assert f"{compile_pid}:rustc --crate-name molt_runtime" in out
+    assert "+2 more" in out
     assert "Do not prune or interrupt" in out
 
 
