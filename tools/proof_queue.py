@@ -4117,6 +4117,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     rc = 0
     for row in rows:
         payload = _row_to_payload(row)
+        if args.detach:
+            pid, runner_log = _launch_detached_runner(
+                args,
+                run_id=str(payload["run_id"]),
+                timeout=args.timeout,
+            )
+            print(f"detached {payload['run_id']} runner_pid={pid}")
+            print(f"runner_log: {runner_log}")
+            continue
         rc = _run_one(
             args,
             logical_id=str(payload["logical_id"]),
@@ -5121,6 +5130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--limit", type=int, default=1)
     run_p.add_argument("--run-id")
     run_p.add_argument("--timeout", type=float, default=1200.0)
+    run_p.add_argument("--detach", action="store_true")
     run_p.set_defaults(func=_cmd_run)
 
     status_p = sub.add_parser("status", help="show active and recent proof runs")
