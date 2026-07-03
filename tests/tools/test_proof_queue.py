@@ -1367,6 +1367,7 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     summary_path = tmp_path / "failed.memory_guard.json"
     log_path.write_text(
         "proof_queue run_id=failed-run\n"
+        "error[E0308]: synthetic compiler failure masked by custody loss\n"
         "proof_queue finished status=failed exit_code=15 elapsed=18.812s\n",
         encoding="utf-8",
     )
@@ -1376,6 +1377,7 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
                 "status": "child_running",
                 "returncode": None,
                 "recorded_at": "2026-07-02T20:47:16Z",
+                "repro": {"limits": {"timeout_s": 3600.0}},
                 "child_process": {
                     "pid": 22_068,
                     "command": [
@@ -1408,7 +1410,13 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
         kind="submission",
         author="codex",
     )
-    proof_queue._update_run(conn, "failed-run", status="failed", returncode=15)
+    proof_queue._update_run(
+        conn,
+        "failed-run",
+        status="failed",
+        returncode=15,
+        elapsed_s=18.812,
+    )
 
     assert (
         proof_queue.main(
@@ -1429,6 +1437,14 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     out = capsys.readouterr().out
     assert "memory-guard-summary-incomplete" in out
     assert "summary_status=child_running" in out
+    assert "row_elapsed=18.8s" in out
+    assert "configured_timeout=1.0h" in out
+    assert "child_process=memory_guard_child_process pid=22068" in out
+    assert "last_log=proof_queue finished status=failed exit_code=15" in out
+    assert "rust-compiler-error" in out
+    assert out.index("memory-guard-summary-incomplete") < out.index(
+        "rust-compiler-error"
+    )
     assert "queue-custody incomplete" in out
     assert "unclassified-failed-proof" not in out
 
@@ -1449,6 +1465,7 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     )
     out = capsys.readouterr().out
     assert "audit-memory-guard-summary-incomplete run=failed-run" in out
+    assert "frontier:" not in out
     assert "audit-unclassified-failure" not in out
 
 
@@ -1582,6 +1599,87 @@ def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
     assert "diagnosis=running-proof-launch-summary-stale" in out
     assert str(summary_path) in out
     assert str(log_path) in out
+    assert "pruned=1" in out
+    assert _rows(db)[0]["status"] == "stale"
+
+
+def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    guard_pid = 99_001
+    child_pid = 99_101
+    log_path.write_text(
+        "proof_queue run_id=active-run\n"
+        "memory_guard_command='python tools/memory_guard.py -- pytest tests'\n",
+        encoding="utf-8",
+    )
+    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "returncode": None,
+                "child_process": {
+                    "pid": child_pid,
+                    "command": [
+                        sys.executable,
+                        str(proof_queue.ROOT / "tools" / "memory_guard.py"),
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == guard_pid)
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="prove prune terminalizes dead nested guard child",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="proof-queue-dx",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        guard_pid=guard_pid,
+        started_at=proof_queue._utc_now(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "stale active-run" in out
+    assert "diagnosis=running-proof-child-missing" in out
+    assert f"child_pid={child_pid}" in out
     assert "pruned=1" in out
     assert _rows(db)[0]["status"] == "stale"
 
