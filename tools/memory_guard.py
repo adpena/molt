@@ -32,6 +32,25 @@ DEFAULT_INCIDENT_SUMMARY_KEEP = 32
 SAMPLE_COST_PACING_FACTOR = 2.0
 
 
+def _platform_detail_no_subprocess() -> str:
+    if sys.platform == "win32":
+        try:
+            version = sys.getwindowsversion()
+        except AttributeError:
+            return "Windows"
+        detail = f"Windows-{version.major}.{version.minor}.{version.build}"
+        service_pack = getattr(version, "service_pack", "")
+        if service_pack:
+            detail += f"-{str(service_pack).replace(' ', '-')}"
+        return detail
+    uname = platform.uname()
+    return "-".join(
+        str(part).replace(" ", "_")
+        for part in (uname.system, uname.release, uname.version)
+        if part
+    )
+
+
 def paced_poll_interval(poll_interval: float, last_sample_cost_s: float) -> float:
     """Return the next guard poll wait, paced by the last sampling cost.
 
@@ -129,6 +148,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     _windows_process_needs_full_command_line as _windows_process_needs_full_command_line,
     _windows_process_snapshot_rows_hard_timeout as _windows_process_snapshot_rows_hard_timeout,
     _windows_process_snapshot_rows as _windows_process_snapshot_rows,
+    windows_process_handle_rss_kb as windows_process_handle_rss_kb,
 )
 from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
@@ -953,6 +973,20 @@ def run_guarded(
         limit_at_violation: ResolvedMemoryLimits | None = None
         peak: RssViolation | None = None
         peak_total: RssViolation | None = None
+        launch_rss_kb = windows_process_handle_rss_kb(getattr(proc, "_handle", None))
+        if launch_rss_kb is not None and launch_rss_kb > 0:
+            peak = RssViolation(
+                pid=proc.pid,
+                rss_kb=launch_rss_kb,
+                command=" ".join(command),
+                scope="process_handle",
+            )
+            peak_total = RssViolation(
+                pid=proc.pid,
+                rss_kb=launch_rss_kb,
+                command="process tree aggregate from direct child process handle",
+                scope="process_tree_handle",
+            )
         timed_out = False
         tracker = ProcessTreeTracker(proc.pid)
         child_exit_usage: ChildExitResourceUsage | None = None
@@ -1667,7 +1701,7 @@ def repro_context_payload(
         python_executable=sys.executable,
         python_version=sys.version.split()[0],
         platform_name=sys.platform,
-        platform_detail=platform.platform(),
+        platform_detail=_platform_detail_no_subprocess(),
         machine=platform.machine(),
         sample_pgid=_sample_pgid,
         is_host_control_plane_process=is_host_control_plane_process,
