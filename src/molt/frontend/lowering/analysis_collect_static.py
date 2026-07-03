@@ -579,6 +579,21 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_Lambda(self, node: ast.Lambda) -> None:
                 return
 
+            def visit_Import(self, node: ast.Import) -> None:
+                # CPython's symbol table binds the imported name in the current
+                # scope: `import a.b` binds `a`, `import a.b as x` binds `x`.
+                # A conditionally-executed import therefore makes the name a
+                # branch binding that the module-scope flush/evict in visit_If
+                # must reconcile, exactly like `x = ...`.
+                for alias in node.names:
+                    self.names.add(alias.asname or alias.name.split(".", 1)[0])
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    self.names.add(alias.asname or alias.name)
+
         collector = AssignCollector()
         for stmt in nodes:
             collector.visit(stmt)
@@ -684,6 +699,20 @@ class AnalysisCollectStaticMixin(_MixinBase):
 
             def visit_Lambda(self, node: ast.Lambda) -> None:
                 return
+
+            def visit_Import(self, node: ast.Import) -> None:
+                # See `_collect_assigned_names`: imports bind names in the
+                # current scope (CPython symbol table parity), so a
+                # conditionally (re)imported name is an ordered binding of the
+                # enclosing function/module for co_varnames and flush/evict.
+                for alias in node.names:
+                    self._add(alias.asname or alias.name.split(".", 1)[0])
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    self._add(alias.asname or alias.name)
 
         collector = AssignCollector()
         for stmt in nodes:

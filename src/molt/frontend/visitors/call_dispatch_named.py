@@ -257,6 +257,31 @@ class CallNamedDispatchMixin(_MixinBase):
             ):
                 func_symbol = self._function_symbol_for_reference(func_id)
                 target_info = MoltValue(func_id, type_hint=f"Func:{func_symbol}")
+            imported_binding_is_live = imported_from is not None and (
+                self.current_func_name != "molt_main"
+                or func_id not in self.module_global_mutations
+                or target_info is not None
+            )
+            if imported_binding_is_live:
+                target_module = self._normalize_allowlist_module(imported_from)
+                if target_module is None:
+                    target_module = imported_from
+                original_attr = self._imported_attr_name(func_id)
+                lowered_handle_ctor = self._try_emit_intrinsic_handle_class_constructor(
+                    target_module,
+                    original_attr,
+                    node,
+                )
+                if lowered_handle_ctor is not None:
+                    return lowered_handle_ctor
+                lowered_imported_call = self._try_emit_imported_named_call(
+                    node,
+                    func_id=func_id,
+                    imported_from=imported_from,
+                    needs_bind=needs_bind,
+                )
+                if lowered_imported_call is not CALL_NOT_HANDLED:
+                    return lowered_imported_call
             if (
                 self.current_func_name == "molt_main"
                 and func_id in self.module_global_mutations
@@ -278,26 +303,6 @@ class CallNamedDispatchMixin(_MixinBase):
             )
             if lowered_wrapper_intrinsic is not None:
                 return lowered_wrapper_intrinsic
-            if imported_from:
-                target_module = self._normalize_allowlist_module(imported_from)
-                if target_module is None:
-                    target_module = imported_from
-                original_attr = self._imported_attr_name(func_id)
-                lowered_handle_ctor = self._try_emit_intrinsic_handle_class_constructor(
-                    target_module,
-                    original_attr,
-                    node,
-                )
-                if lowered_handle_ctor is not None:
-                    return lowered_handle_ctor
-                lowered_imported_call = self._try_emit_imported_named_call(
-                    node,
-                    func_id=func_id,
-                    imported_from=imported_from,
-                    needs_bind=needs_bind,
-                )
-                if lowered_imported_call is not CALL_NOT_HANDLED:
-                    return lowered_imported_call
             if func_id in {"BaseExceptionGroup", "ExceptionGroup"}:
                 if node.keywords:
                     self._bridge_fallback(
