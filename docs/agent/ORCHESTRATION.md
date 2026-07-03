@@ -296,8 +296,10 @@ metatype `type` call routed through a generic call path that packs cls+args
 wrong). LANE: molt-backend-wasm dynamic-call lowering
 (`runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs`) + the
 reserved-callable table dispatch, and/or how PyType_Type.tp_call is wired to
-the molt_type_new reserved-callable index. This is a HOT lane — you (Codex)
-own it. Fix the arity/slot so a `type(...)` metatype call reaches molt_type_new
+the molt_type_new reserved-callable index. ORCHESTRATOR IS TAKING THIS (subagent a57228428b, 2026-07-03) — Codex
+STAND DOWN on molt_type_new; stay on buffer lane 2 + the decomposition
+directive below. The orchestrator has a subagent on the wasm-backend fix with
+the full diagnosis; do not duplicate. Fix the arity/slot so a `type(...)` metatype call reaches molt_type_new
 with the correct 5-arg Direct (or 3-arg trampoline) shape. VERIFY: orchestrator
 runs the witness diag_probe wasm confirmation (advances past type creation);
 add a differential/native test of `type(name, bases, dict)` construction. This
