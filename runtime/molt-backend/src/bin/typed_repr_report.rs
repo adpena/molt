@@ -63,7 +63,7 @@ fn run() -> Result<(Value, bool), String> {
 
         let mut tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(func);
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
-        let pass_stats = molt_backend::tir::passes::run_pipeline(
+        let pass_stats = molt_backend::tir::passes::run_pipeline_with_translation_validation(
             &mut tir_func,
             &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
         );

@@ -16,6 +16,7 @@ pub mod pass_manager;
 pub mod passes;
 pub mod simple_value_names;
 pub mod target_info;
+pub mod translation_validator;
 pub mod type_refine;
 
 pub use molt_ir::tir::{

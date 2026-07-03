@@ -109,6 +109,16 @@ pub fn run_pipeline(
     super::pass_manager::build_default_pipeline(tti.clone()).run(func)
 }
 
+/// Run the full TIR optimization pipeline with the R3a translation validator
+/// forced on. This is the fuzzer/test entry point for the same invariant that
+/// `MOLT_CHECK_TIR_TRANSLATION=1` enables in env-driven `molt-check` runs.
+pub fn run_pipeline_with_translation_validation(
+    func: &mut super::function::TirFunction,
+    tti: &super::target_info::TargetInfo,
+) -> Vec<PassStats> {
+    super::pass_manager::build_default_pipeline(tti.clone()).run_with_translation_validation(func)
+}
+
 /// Run the RC drop-insertion phase (design 20) on a single function: the
 /// `drop_insertion` + `refcount_elim_post` passes, run as a SEPARATE terminal
 /// phase AFTER all per-function optimization and all module-level transforms.
