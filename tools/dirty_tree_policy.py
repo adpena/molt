@@ -12,6 +12,7 @@ _KEYED_WASM_RUNTIME_PIN_GLOB = f"wasm/molt_runtime*.wasm.{_SHA256_HEX_GLOB}.sha2
 DEFAULT_DIRTY_TREE_IGNORE_GLOBS = (
     "wasm/molt_runtime.wasm.sha256",
     "wasm/molt_runtime_reloc.wasm.sha256",
+    "wasm/molt_runtime_reloc.wasm.wasm-release.sha256",
     _KEYED_WASM_RUNTIME_PIN_GLOB,
 )
 
