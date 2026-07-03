@@ -3985,6 +3985,83 @@ def test_proof_queue_diagnoses_pytest_assertion_failure(
     assert "unexpected rescan" in str(diagnostics[0]["evidence"])
 
 
+def test_proof_queue_routes_native_import_bootstrap_pytest_failure_to_r1_owner(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "native-import-bootstrap.log"
+    nodeid = (
+        "tests/test_native_import_bootstrap_regressions.py::"
+        "test_native_imported_module_dunder_getattr_handles_missing_attr"
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="native-import-bootstrap-run",
+        logical_id="indirect-call-trampoline-fix-e2e-shard",
+        reason="prove native call-lane pytest failures route to the lane owner",
+        command=[
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_native_import_bootstrap_regressions.py",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="native-import-regression",
+        scopes=["tests/test_native_import_bootstrap_regressions.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "native-import-bootstrap.memory_guard.json",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                f"FAILED {nodeid}",
+                "E   AssertionError: SystemError: module id out of range",
+                "1 failed, 146 passed",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "native-import-bootstrap-run", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "native-import-bootstrap-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "native-call-lane-pytest-failure"
+    assert diagnostics[0]["severity"] == "error"
+    assert "R1 integrator" in diagnostics[0]["summary"]
+    assert "module id out of range" in diagnostics[0]["evidence"]
+    assert "Route this row to the native call-lane owner" in diagnostics[0][
+        "next_action"
+    ]
+    assert "runtime/molt-runtime/src/call/function.rs" in diagnostics[0]["scopes"]
+    assert "pytest-failure" not in {item["signal_id"] for item in diagnostics}
+
+
 def test_proof_queue_diagnoses_cold_single_cargo_proof_policy_refusal(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
