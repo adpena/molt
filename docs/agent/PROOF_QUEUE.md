@@ -30,9 +30,12 @@ changed contract, then return to structural work.
 Cargo proofs use the queue-native `cargo` subcommand. Do not submit raw
 `cargo ...` through `exec`, the TOML DSL, shell backgrounding, or a Codex-held
 interactive session. The cargo lane builds the canonical command envelope:
-active uv, `tools/guarded_exec.py --prefix MOLT_TEST_SUITE`, queue contention,
-memory guard, timeout, logs, optional detached runner, and a Cargo contention
-key inferred from `-p/--package` when one is present.
+active uv with `--no-sync` for the internal runner,
+`tools/guarded_exec.py --prefix MOLT_TEST_SUITE`, queue contention, memory
+guard, timeout, logs, optional detached runner, and a Cargo contention key
+inferred from `-p/--package` when one is present. A cargo row that spends its
+proof budget rebuilding or syncing the Python project before Cargo starts is a
+queue DX regression.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py cargo `
