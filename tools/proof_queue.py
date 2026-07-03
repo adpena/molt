@@ -3348,6 +3348,21 @@ _PROOF_COMMAND_SUBCOMMANDS = frozenset({"exec", "cargo"})
 _GLOBAL_OPTIONS_WITH_VALUES = frozenset(
     {"--db", "--logs-root", "--notebooks-root", "--repo-root"}
 )
+_PROOF_COMMAND_OPTIONS_WITH_VALUES = frozenset(
+    {
+        "--id",
+        "--reason",
+        "--resource-family",
+        "--contention-key",
+        "--scope",
+        "--env",
+        "--note",
+        "--depends-on",
+        "--edge-kind",
+        "--edge-note",
+        "--timeout",
+    }
+)
 _HELP_OPTIONS = frozenset({"-h", "--help"})
 
 
@@ -3391,7 +3406,22 @@ def _split_proof_command_argv(
 
 def _proof_command_help_requested(raw: list[str]) -> bool:
     before_delimiter, _command = _command_after_dash(raw)
-    return any(token in _HELP_OPTIONS for token in before_delimiter[1:])
+    index = 1
+    while index < len(before_delimiter):
+        token = before_delimiter[index]
+        if token in _HELP_OPTIONS:
+            return True
+        if token in _PROOF_COMMAND_OPTIONS_WITH_VALUES:
+            index += 2
+            continue
+        if any(
+            token.startswith(f"{option}=")
+            for option in _PROOF_COMMAND_OPTIONS_WITH_VALUES
+        ):
+            index += 1
+            continue
+        index += 1
+    return False
 
 
 def _reject_pre_delimiter_remainder(

@@ -64,7 +64,9 @@ For `exec` and `cargo`, the `--` delimiter before the proof command is
 mandatory. The queue rejects any positional token before that delimiter because
 it means shell quoting likely broke a metadata value such as `--reason` or
 `--note`; running anyway would silently drop scope, contention, notes, detach
-mode, or timeout authority.
+mode, or timeout authority. `exec --help` and `cargo --help` are parser help
+and do not require a delimiter; `--help` after `--` remains an argument to the
+proof command.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
@@ -372,9 +374,14 @@ supersede edges retire older frontier failures from that block once a child row
 exists, so audit points agents at the current boundary instead of replaying
 stale failures. Default audit also treats superseded terminal rows as
 archaeology and omits their old queue-debt issues from exit status and human
-triage; use `--all` when you intentionally want complete historical debt. The
-issue wall is capped by default; use `--max-issues 0`, `--json`, or `--output`
-for the full machine-readable handoff.
+triage; the human summary prints `archaeology: superseded_terminal=N` and the
+JSON payload exposes `superseded_archaeology_runs` when rows are retired this
+way. Use `--all` when you intentionally want complete historical debt. Active
+pytest rows that have gone quiet before writing a current-test marker surface as
+`audit-running-pytest-current-test-missing` warnings, so collection/startup
+opacity does not masquerade as a healthy queue. The issue wall is capped by
+default; use `--max-issues 0`, `--json`, or `--output` for the full
+machine-readable handoff.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
