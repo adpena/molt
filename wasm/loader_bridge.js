@@ -333,6 +333,8 @@
         return 'f32';
       case 0x7c:
         return 'f64';
+      case 0x7b:
+        return 'v128';
       case 0x6f:
         return 'externref';
       case 0x70:
