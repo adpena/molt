@@ -1,3 +1,7 @@
+use super::emit_helpers::{
+    arg0, args2, is_assignable_var, out_var, rust_clone, rust_slot_key, rust_string_literal,
+    rust_stub_marker, rust_value, var_ref,
+};
 use super::{RustBackend, rust_ident};
 use crate::OpIR;
 use std::collections::BTreeSet;
@@ -1840,78 +1844,4 @@ impl RustBackend {
             }
         }
     }
-}
-
-fn rust_value(name: &str) -> String {
-    if name.is_empty() || name == "none" || name == "_" {
-        "MoltValue::None".to_string()
-    } else {
-        rust_ident(name)
-    }
-}
-
-fn rust_clone(name: &str) -> String {
-    if name.is_empty() || name == "none" || name == "_" {
-        "MoltValue::None".to_string()
-    } else {
-        format!("{}.clone()", rust_ident(name))
-    }
-}
-
-fn rust_slot_key(offset: i64) -> String {
-    format!("MoltValue::Str(\"__slot_{offset}\".to_string())")
-}
-
-fn is_assignable_var(name: &str) -> bool {
-    !(name.is_empty() || name == "_" || name == "none")
-}
-
-fn out_var(op: &OpIR) -> String {
-    rust_ident(op.out.as_deref().unwrap_or("_"))
-}
-
-fn var_ref(op: &OpIR) -> String {
-    rust_ident(op.var.as_deref().unwrap_or("_"))
-}
-
-fn arg0(op: &OpIR) -> String {
-    op.args
-        .as_deref()
-        .and_then(|a| a.first())
-        .map(|s| rust_value(s))
-        .unwrap_or_else(|| "MoltValue::None".to_string())
-}
-
-fn args2(op: &OpIR) -> (String, String) {
-    let args = op.args.as_deref().unwrap_or(&[]);
-    let a = args
-        .first()
-        .map(|s| rust_value(s))
-        .unwrap_or_else(|| "MoltValue::None".to_string());
-    let b = args
-        .get(1)
-        .map(|s| rust_value(s))
-        .unwrap_or_else(|| "MoltValue::None".to_string());
-    (a, b)
-}
-
-fn rust_stub_marker(op: &OpIR, reason: impl Into<String>) -> String {
-    let mut detail = format!("MOLT_STUB: {}: {}", op.kind, reason.into());
-    if let Some(out) = op.out.as_deref().filter(|out| !out.is_empty()) {
-        detail.push_str(&format!(" -> `{out}`"));
-    }
-    if let Some(args) = op.args.as_ref().filter(|args| !args.is_empty()) {
-        detail.push_str(&format!(" args=({})", args.join(", ")));
-    }
-    detail
-}
-
-fn rust_string_literal(s: &str) -> String {
-    let escaped = s
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t");
-    format!("\"{escaped}\"")
 }
