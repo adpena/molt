@@ -3517,6 +3517,13 @@ def _queue_one(
 ) -> tuple[int, str | None]:
     if not command:
         raise SystemExit("proof command is empty")
+    if not initial_notes:
+        print(
+            "queued proof submissions require at least one append-only note; "
+            "pass --note or use a named lane with built-in notes",
+            file=sys.stderr,
+        )
+        return 2, None
     db = _db_path(args)
     logs_root = _logs_root(args)
     repo_root = _repo_root(args)
