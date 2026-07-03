@@ -18117,9 +18117,29 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
         "export const loadMoltBrowserKernel = async () => ({});\n",
         encoding="utf-8",
     )
+    browser_gpu_dispatch = wasm_root / "browser_gpu_dispatch.js"
+    browser_gpu_dispatch.write_text(
+        "export const createBrowserGpuHost = () => ({});\n",
+        encoding="utf-8",
+    )
+    browser_gpu_worker = wasm_root / "browser_gpu_worker.js"
+    browser_gpu_worker.write_text(
+        "export const dispatchBrowserGpuKernel = async () => ({});\n",
+        encoding="utf-8",
+    )
+    browser_target_features = wasm_root / "browser_target_features.js"
+    browser_target_features.write_text(
+        "export const assertBrowserTargetFeatureContract = () => {};\n",
+        encoding="utf-8",
+    )
     loader_bridge = wasm_root / "loader_bridge.js"
     loader_bridge.write_text(
         "globalThis.MoltWasmLoaderBridge = {};\n",
+        encoding="utf-8",
+    )
+    target_feature_manifest = wasm_root / "target_feature_manifest.json"
+    target_feature_manifest.write_text(
+        '{"schema_version":1,"targets":[],"features":[]}\n',
         encoding="utf-8",
     )
 
@@ -18364,9 +18384,12 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
-        del path
         if module_name == "molt_runtime":
             return {"alloc", "molt_fast_list_append"}
+        if module_name == "env" and path.name == "molt_runtime.wasm":
+            return {"molt_gpu_webgpu_dispatch_host", "molt_log_host"}
+        if module_name == "env":
+            return {"molt_log_host"}
         return set()
 
     monkeypatch.setattr(
@@ -18448,6 +18471,30 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         bundle_manifest = json.loads(tar.extractfile("__manifest__.json").read())
     assert bundle_manifest["files"]
     manifest = json.loads((output_wasm.parent / "manifest.json").read_text())
+    assert (output_wasm.parent / "browser_gpu_dispatch.js").exists()
+    assert (output_wasm.parent / "browser_gpu_worker.js").exists()
+    assert (output_wasm.parent / "browser_target_features.js").exists()
+    assert manifest["assets"]["browser_gpu_dispatch"]["path"] == (
+        "browser_gpu_dispatch.js"
+    )
+    assert manifest["assets"]["browser_gpu_worker"]["path"] == "browser_gpu_worker.js"
+    assert manifest["assets"]["browser_target_features"]["path"] == (
+        "browser_target_features.js"
+    )
+    target_feature_asset = manifest["assets"]["target_feature_manifest"]
+    assert target_feature_asset["path"] == "target_feature_manifest.json"
+    assert len(target_feature_asset["sha256"]) == 64
+    assert (output_wasm.parent / target_feature_asset["path"]).exists()
+    target_features = manifest["target_features"]
+    assert target_features["authority"] == "target_feature_manifest"
+    assert target_features["profile"] == "wasm-browser-webgpu"
+    assert target_features["manifest_asset"] == target_feature_asset
+    assert target_features["required_host_imports"]["webgpu"] == [
+        "molt_gpu_webgpu_dispatch_host"
+    ]
+    assert target_features["browser_probes"]["webgpu"]["required"] is True
+    assert "webgpu.api" in target_features["gated_features"]
+    assert "webnn.graph" in target_features["excluded_features"]
     assert manifest["assets"]["bundle"]["path"] == "bundle.tar"
     assert manifest["assets"]["bundle"]["file_count"] == len(bundle_manifest["files"])
     native_callables = manifest["abi"]["browser_embed"]["native_callables"]

@@ -456,7 +456,13 @@ the implementation. For forward-looking priorities, use
   authority (`wasm/browser_embed.js`) and its typed-array
   `loadMoltBrowserKernel(...)` ABI loader. The full browser process host
   (`wasm/browser_host.js`) still owns program execution and host capability
-  shims, but it no longer carries a duplicate typed-array kernel entrypoint. The
+  shims, and both browser paths now share `wasm/browser_gpu_dispatch.js` for
+  `molt_gpu_webgpu_dispatch_host` instead of leaving the embed on a local stub.
+  Split-runtime browser packages also publish
+  `wasm/target_feature_manifest.json` and select their generated
+  `target_features` profile from app host imports (`wasm-browser-webgpu` when
+  the WebGPU dispatch host is required). The full host no longer carries a
+  duplicate typed-array kernel entrypoint. The
   active contract is
   `docs/spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md`; generated
   split-runtime embed artifacts must keep using generated WASM ABI facts.

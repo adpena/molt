@@ -1,4 +1,9 @@
 import './loader_bridge.js';
+import {
+  assertBrowserTargetFeatureContract,
+  parsedImportsRequireWebGpuDispatch,
+} from './browser_target_features.js';
+import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
 
 const ENOSYS = 38;
 const EINVAL = 22;
@@ -1019,11 +1024,13 @@ const buildMinimalWasi = (state, logFn) => {
   });
 };
 
-const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
+const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
+  const logFn = options.log || null;
   const stubI32 = () => -ENOSYS;
   const stubI64 = () => -BigInt(ENOSYS);
   const stubZero = () => 0;
   const stubZeroI64 = () => 0n;
+  const gpuHost = createBrowserGpuHost(state, options);
   const sharedTableBase = manifest?.wasm_table_base ?? null;
   const tableLayout = browserAbi.tableLayout;
   const appTableRefSignatures = manifest?.abi?.table_refs?.app || {};
@@ -1190,7 +1197,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, logFn) => {
     molt_process_close_stdin_host: stubI32,
     molt_process_stdio_host: stubI32,
     molt_process_host_poll: stubZero,
-    molt_gpu_webgpu_dispatch_host: stubI32,
+    molt_gpu_webgpu_dispatch_host: gpuHost.gpuWebGpuDispatchHost,
     molt_time_timezone_host: stubZeroI64,
     molt_time_local_offset_host: stubZeroI64,
     molt_time_tzname_host: (_which, _bufPtr, _bufCap, outLenPtr) => {
@@ -1301,6 +1308,10 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   ]);
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);
+  assertBrowserTargetFeatureContract(
+    manifest,
+    parsedImportsRequireWebGpuDispatch(appImports, runtimeImports),
+  );
   const memoryLimits = mergeLimits(appImports.memory, runtimeImports.memory, 'memory');
   const tableLimits = mergeLimits(appImports.table, runtimeImports.table, 'table');
   const memory = makeMemory(memoryLimits, manifest.shared_memory_initial_pages);
@@ -1327,7 +1338,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     },
     table,
   };
-  const env = buildMinimalEnv(state, manifest, browserAbi, options.log || null);
+  const env = buildMinimalEnv(state, manifest, browserAbi, options);
   const runtimeWasi = buildMinimalWasi(state, options.log || null);
   const appWasi = buildMinimalWasi(appHostState, options.log || null);
   const runtimeModule = await WebAssembly.compile(runtimeBytes);

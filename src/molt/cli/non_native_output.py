@@ -21,6 +21,10 @@ from molt.cli.atomic_io import (
     _atomic_write_text,
     _remove_file_or_tree,
 )
+from molt.cli.browser_target_features import (
+    TARGET_FEATURE_MANIFEST_ASSET_NAME,
+    browser_target_feature_metadata,
+)
 from molt.cli.build_results import _write_link_fingerprint_if_needed
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import _stage_external_package_native_artifacts_for_build
@@ -73,6 +77,18 @@ _BUNDLE_EXCLUDED_NATIVE_SUFFIXES = {
     ".so",
     ".wasm",
 }
+
+
+def _file_asset(path: Path, asset_path: str) -> dict[str, object]:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            h.update(chunk)
+    return {
+        "path": asset_path,
+        "size": path.stat().st_size,
+        "sha256": h.hexdigest(),
+    }
 
 
 class _ExternalStaticBundleFile(TypedDict):
@@ -941,10 +957,27 @@ def _prepare_non_native_build_result(
             rt_wasm = split_dir / "molt_runtime.wasm"
             manifest = split_dir / "manifest.json"
             browser_embed_src = molt_root / "wasm" / "browser_embed.js"
+            browser_gpu_dispatch_src = molt_root / "wasm" / "browser_gpu_dispatch.js"
+            browser_gpu_worker_src = molt_root / "wasm" / "browser_gpu_worker.js"
+            browser_target_features_src = (
+                molt_root / "wasm" / "browser_target_features.js"
+            )
             loader_bridge_src = molt_root / "wasm" / "loader_bridge.js"
+            target_feature_manifest_src = (
+                molt_root / "wasm" / TARGET_FEATURE_MANIFEST_ASSET_NAME
+            )
             try:
                 browser_embed_size = browser_embed_src.stat().st_size
+                browser_gpu_dispatch_size = browser_gpu_dispatch_src.stat().st_size
+                browser_gpu_worker_size = browser_gpu_worker_src.stat().st_size
+                browser_target_features_size = (
+                    browser_target_features_src.stat().st_size
+                )
                 loader_bridge_size = loader_bridge_src.stat().st_size
+                target_feature_manifest_asset = _file_asset(
+                    target_feature_manifest_src,
+                    TARGET_FEATURE_MANIFEST_ASSET_NAME,
+                )
             except OSError as exc:
                 return None, _fail(
                     f"Missing split-runtime browser embed loader support: {exc}",
@@ -969,6 +1002,11 @@ def _prepare_non_native_build_result(
             )
             app_native_callable_import_names = _collect_wasm_module_import_names(
                 app_wasm, "molt_native"
+            )
+            app_env_import_names = _collect_wasm_module_import_names(app_wasm, "env")
+            runtime_env_import_names = _collect_wasm_module_import_names(rt_wasm, "env")
+            browser_host_import_names = (
+                app_env_import_names | runtime_env_import_names
             )
             app_runtime_export_signatures = _runtime_export_signatures_for_imports(
                 rt_wasm, app_runtime_import_names
@@ -1055,11 +1093,28 @@ def _prepare_non_native_build_result(
                     "path": "browser_embed.js",
                     "size": browser_embed_size,
                 },
+                "browser_gpu_dispatch": {
+                    "path": "browser_gpu_dispatch.js",
+                    "size": browser_gpu_dispatch_size,
+                },
+                "browser_gpu_worker": {
+                    "path": "browser_gpu_worker.js",
+                    "size": browser_gpu_worker_size,
+                },
+                "browser_target_features": {
+                    "path": "browser_target_features.js",
+                    "size": browser_target_features_size,
+                },
                 "loader_bridge": {
                     "path": "loader_bridge.js",
                     "size": loader_bridge_size,
                 },
+                "target_feature_manifest": target_feature_manifest_asset,
             }
+            target_features = browser_target_feature_metadata(
+                browser_host_import_names=browser_host_import_names,
+                manifest_asset=target_feature_manifest_asset,
+            )
             manifest_data: dict[str, Any] = {
                 "version": 2,
                 "mode": "split-runtime",
@@ -1094,6 +1149,7 @@ def _prepare_non_native_build_result(
                     },
                 },
                 "assets": assets,
+                "target_features": target_features,
                 "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
@@ -1143,12 +1199,56 @@ def _prepare_non_native_build_result(
                     json_output,
                     command="build",
                 )
+            browser_gpu_dispatch_dst = split_dir / "browser_gpu_dispatch.js"
+            try:
+                _atomic_copy_file(browser_gpu_dispatch_src, browser_gpu_dispatch_dst)
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime browser WebGPU dispatch support: {exc}",
+                    json_output,
+                    command="build",
+                )
+            browser_gpu_worker_dst = split_dir / "browser_gpu_worker.js"
+            try:
+                _atomic_copy_file(browser_gpu_worker_src, browser_gpu_worker_dst)
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime browser WebGPU worker support: {exc}",
+                    json_output,
+                    command="build",
+                )
+            browser_target_features_dst = split_dir / "browser_target_features.js"
+            try:
+                _atomic_copy_file(
+                    browser_target_features_src,
+                    browser_target_features_dst,
+                )
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime browser target-feature support: {exc}",
+                    json_output,
+                    command="build",
+                )
             loader_bridge_dst = split_dir / "loader_bridge.js"
             try:
                 _atomic_copy_file(loader_bridge_src, loader_bridge_dst)
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime browser embed loader support: {exc}",
+                    json_output,
+                    command="build",
+                )
+            target_feature_manifest_dst = (
+                split_dir / TARGET_FEATURE_MANIFEST_ASSET_NAME
+            )
+            try:
+                _atomic_copy_file(
+                    target_feature_manifest_src,
+                    target_feature_manifest_dst,
+                )
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime target feature manifest: {exc}",
                     json_output,
                     command="build",
                 )

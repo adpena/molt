@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +45,241 @@ def _browser_embed_forward_package_dir(root: Path, env: dict[str, str]) -> Path:
         / repo_key
         / lane
         / "browser_embed_forward"
+    )
+
+
+def _wasm_u32(value: int) -> bytes:
+    if value < 0:
+        raise ValueError(value)
+    out = bytearray()
+    remaining = value
+    while True:
+        byte = remaining & 0x7F
+        remaining >>= 7
+        out.append(byte | 0x80 if remaining else byte)
+        if not remaining:
+            return bytes(out)
+
+
+def _wasm_sleb(value: int) -> bytes:
+    out = bytearray()
+    remaining = value
+    while True:
+        byte = remaining & 0x7F
+        remaining >>= 7
+        done = (remaining == 0 and (byte & 0x40) == 0) or (
+            remaining == -1 and (byte & 0x40) != 0
+        )
+        out.append(byte if done else byte | 0x80)
+        if done:
+            return bytes(out)
+
+
+def _wasm_str(text: str) -> bytes:
+    data = text.encode("utf-8")
+    return _wasm_u32(len(data)) + data
+
+
+def _wasm_vec(items: list[bytes]) -> bytes:
+    return _wasm_u32(len(items)) + b"".join(items)
+
+
+def _wasm_section(section_id: int, payload: bytes) -> bytes:
+    return bytes([section_id]) + _wasm_u32(len(payload)) + payload
+
+
+def _wasm_func_type(params: list[int], results: list[int]) -> bytes:
+    return bytes([0x60]) + _wasm_vec([bytes([param]) for param in params]) + _wasm_vec(
+        [bytes([result]) for result in results]
+    )
+
+
+def _wasm_import_func(module: str, name: str, type_index: int) -> bytes:
+    return _wasm_str(module) + _wasm_str(name) + bytes([0x00]) + _wasm_u32(type_index)
+
+
+def _wasm_import_memory(module: str, name: str, min_pages: int) -> bytes:
+    return (
+        _wasm_str(module)
+        + _wasm_str(name)
+        + bytes([0x02, 0x00])
+        + _wasm_u32(min_pages)
+    )
+
+
+def _wasm_export(name: str, kind: int, index: int) -> bytes:
+    return _wasm_str(name) + bytes([kind]) + _wasm_u32(index)
+
+
+def _wasm_i32_const(value: int) -> bytes:
+    return bytes([0x41]) + _wasm_sleb(value)
+
+
+def _wasm_i64_const(value: int) -> bytes:
+    return bytes([0x42]) + _wasm_sleb(value)
+
+
+def _wasm_data_segment(offset: int, payload: bytes) -> bytes:
+    offset_expr = _wasm_i32_const(offset) + bytes([0x0B])
+    return bytes([0x00]) + offset_expr + _wasm_u32(len(payload)) + payload
+
+
+def _minimal_wasm_module() -> bytes:
+    return b"\x00asm\x01\x00\x00\x00"
+
+
+def _webgpu_embed_manifest() -> dict[str, object]:
+    return {
+        "version": 2,
+        "mode": "split-runtime",
+        "shared_memory_initial_pages": 1,
+        "shared_table_initial": 1,
+        "wasm_table_base": None,
+        "abi": {
+            "browser_embed": {
+                "call_indirect_imports": ["molt_call_indirect0"],
+                "runtime_import_fallbacks": {},
+                "reserved_runtime_callables": [],
+                "table_layout": {
+                    "legacy_table_base": 256,
+                    "reserved_runtime_callable_base": 33,
+                    "reserved_runtime_callable_count": 0,
+                },
+            },
+            "runtime_imports": {
+                "module": "molt_runtime",
+                "names": [],
+                "signatures": {},
+                "result_kinds": {},
+                "export_names": {},
+                "runtime_export_signatures": {},
+            },
+            "table_refs": {"app": {}, "runtime": {}},
+        },
+        "modules": {
+            "app": {"path": "app.wasm"},
+            "runtime": {"path": "molt_runtime.wasm"},
+        },
+        "target_features": {
+            "authority": "target_feature_manifest",
+            "profile": "wasm-browser-webgpu",
+            "required_host_imports": {
+                "webgpu": ["molt_gpu_webgpu_dispatch_host"],
+            },
+            "browser_probes": {
+                "webgpu": {
+                    "required": True,
+                },
+            },
+        },
+    }
+
+
+def _build_webgpu_dispatch_app_wasm() -> tuple[bytes, dict[str, int]]:
+    layout = {
+        "source_ptr": 64,
+        "entry_ptr": 256,
+        "input_ptr": 1024,
+        "output_ptr": 2048,
+        "launch_ptr": 4096,
+        "err_ptr": 8192,
+        "err_cap": 128,
+        "out_err_len_ptr": 8320,
+    }
+    source = b"@compute @workgroup_size(4) fn main() {}"
+    entry = b"main"
+    input_payload = struct.pack("<ff", 1.5, -2.0)
+    launch = json.dumps(
+        {
+            "bindings": [
+                {
+                    "binding": 0,
+                    "name": "input",
+                    "access": "read",
+                    "ptr": layout["input_ptr"],
+                    "len": len(input_payload),
+                },
+                {
+                    "binding": 1,
+                    "name": "output",
+                    "access": "read_write",
+                    "ptr": layout["output_ptr"],
+                    "len": len(input_payload),
+                },
+            ]
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    layout["source_len"] = len(source)
+    layout["entry_len"] = len(entry)
+    layout["launch_len"] = len(launch)
+
+    i32 = 0x7F
+    i64 = 0x7E
+    dispatch_type = _wasm_func_type(
+        [i32, i32, i32, i32, i32, i32, i64, i64, i32, i32, i32],
+        [i32],
+    )
+    run_type = _wasm_func_type([], [i32])
+    type_section = _wasm_section(1, _wasm_vec([dispatch_type, run_type]))
+    import_section = _wasm_section(
+        2,
+        _wasm_vec(
+            [
+                _wasm_import_func("env", "molt_gpu_webgpu_dispatch_host", 0),
+                _wasm_import_memory("env", "memory", 1),
+            ]
+        ),
+    )
+    function_section = _wasm_section(3, _wasm_vec([_wasm_u32(1)]))
+    export_section = _wasm_section(
+        7,
+        _wasm_vec(
+            [
+                _wasm_export("run_gpu", 0x00, 1),
+                _wasm_export("memory", 0x02, 0),
+            ]
+        ),
+    )
+    instructions = b"".join(
+        [
+            _wasm_i32_const(layout["source_ptr"]),
+            _wasm_i32_const(layout["source_len"]),
+            _wasm_i32_const(layout["entry_ptr"]),
+            _wasm_i32_const(layout["entry_len"]),
+            _wasm_i32_const(layout["launch_ptr"]),
+            _wasm_i32_const(layout["launch_len"]),
+            _wasm_i64_const(2),
+            _wasm_i64_const(4),
+            _wasm_i32_const(layout["err_ptr"]),
+            _wasm_i32_const(layout["err_cap"]),
+            _wasm_i32_const(layout["out_err_len_ptr"]),
+            bytes([0x10]) + _wasm_u32(0),
+            bytes([0x0B]),
+        ]
+    )
+    body = _wasm_u32(0) + instructions
+    code_section = _wasm_section(10, _wasm_vec([_wasm_u32(len(body)) + body]))
+    data_section = _wasm_section(
+        11,
+        _wasm_vec(
+            [
+                _wasm_data_segment(layout["source_ptr"], source),
+                _wasm_data_segment(layout["entry_ptr"], entry),
+                _wasm_data_segment(layout["input_ptr"], input_payload),
+                _wasm_data_segment(layout["launch_ptr"], launch),
+            ]
+        ),
+    )
+    return (
+        _minimal_wasm_module()
+        + type_section
+        + import_section
+        + function_section
+        + export_section
+        + code_section
+        + data_section,
+        layout,
     )
 
 
@@ -176,6 +412,159 @@ class _StaticDirHandler(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+
+def test_browser_embed_routes_webgpu_import_through_shared_dispatch_host(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser WebGPU embed import test")
+
+    root = Path(__file__).resolve().parents[1]
+    package_dir = tmp_path / "webgpu_embed"
+    package_dir.mkdir()
+    app_wasm, layout = _build_webgpu_dispatch_app_wasm()
+    (package_dir / "app.wasm").write_bytes(app_wasm)
+    (package_dir / "molt_runtime.wasm").write_bytes(_minimal_wasm_module())
+    manifest = _webgpu_embed_manifest()
+    (package_dir / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    handler = type("_WebGpuEmbedHandler", (_StaticDirHandler,), {"root": package_dir})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}/"
+        embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+        script = tmp_path / "run_webgpu_embed_import.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltBrowserEmbed }} from {embed_uri!r};
+
+const manifest = {json.dumps(manifest, sort_keys=True)};
+const layout = {json.dumps(layout, sort_keys=True)};
+const dispatches = [];
+const embed = await loadMoltBrowserEmbed({{
+  baseUrl: {base_url!r},
+  manifest,
+  gpuKernelDispatcher: {{
+    dispatchKernel(request) {{
+      dispatches.push({{
+        source: request.source,
+        entry: request.entry,
+        grid: request.grid,
+        workgroupSize: request.workgroupSize,
+        bindingNames: request.bindings.map((binding) => binding.name),
+      }});
+      const input = request.bindings.find((binding) => binding.name === 'input').bytes;
+      const output = request.bindings.find((binding) => binding.name === 'output').bytes;
+      const inView = new DataView(input.buffer, input.byteOffset, input.byteLength);
+      const outView = new DataView(output.buffer, output.byteOffset, output.byteLength);
+      outView.setFloat32(0, inView.getFloat32(0, true) * 3, true);
+      outView.setFloat32(4, inView.getFloat32(4, true) * 3, true);
+    }},
+  }},
+}});
+const rc = embed.appInstance.exports.run_gpu();
+const view = new DataView(embed.memory.buffer);
+console.log(JSON.stringify({{
+  rc,
+  errLen: view.getUint32(layout.out_err_len_ptr, true),
+  output: [
+    view.getFloat32(layout.output_ptr, true),
+    view.getFloat32(layout.output_ptr + 4, true),
+  ],
+  dispatches,
+}}));
+""".lstrip(),
+            encoding="utf-8",
+        )
+        run = _run_wasm_test_process(
+            ["node", str(script)],
+            cwd=root,
+            env=os.environ,
+            timeout=30,
+        )
+        assert run.returncode == 0, run.stderr
+        assert json.loads(run.stdout) == {
+            "rc": 0,
+            "errLen": 0,
+            "output": [4.5, -6.0],
+            "dispatches": [
+                {
+                    "source": "@compute @workgroup_size(4) fn main() {}",
+                    "entry": "main",
+                    "grid": 2,
+                    "workgroupSize": 4,
+                    "bindingNames": ["input", "output"],
+                }
+            ],
+        }
+    finally:
+        server.shutdown()
+
+
+def test_browser_embed_rejects_webgpu_target_feature_manifest_drift(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser WebGPU target-feature drift test")
+
+    root = Path(__file__).resolve().parents[1]
+    package_dir = tmp_path / "webgpu_embed_bad_manifest"
+    package_dir.mkdir()
+    app_wasm, _layout = _build_webgpu_dispatch_app_wasm()
+    (package_dir / "app.wasm").write_bytes(app_wasm)
+    (package_dir / "molt_runtime.wasm").write_bytes(_minimal_wasm_module())
+    manifest = _webgpu_embed_manifest()
+    assert isinstance(manifest["target_features"], dict)
+    manifest["target_features"]["profile"] = "wasm-browser"
+    (package_dir / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    handler = type(
+        "_WebGpuBadManifestHandler",
+        (_StaticDirHandler,),
+        {"root": package_dir},
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}/"
+        embed_uri = (root / "wasm" / "browser_embed.js").as_uri()
+        script = tmp_path / "run_webgpu_bad_manifest.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltBrowserEmbed }} from {embed_uri!r};
+
+try {{
+  await loadMoltBrowserEmbed({{
+    baseUrl: {base_url!r},
+    manifest: {json.dumps(manifest, sort_keys=True)},
+  }});
+  console.log('unexpected-ok');
+}} catch (err) {{
+  console.log(String(err.message || err));
+}}
+""".lstrip(),
+            encoding="utf-8",
+        )
+        run = _run_wasm_test_process(
+            ["node", str(script)],
+            cwd=root,
+            env=os.environ,
+            timeout=30,
+        )
+        assert run.returncode == 0, run.stderr
+        assert "target_features.profile must be wasm-browser-webgpu" in run.stdout
+    finally:
+        server.shutdown()
 
 
 def test_browser_embed_forward_f32_native_callable_import_adapter(
@@ -689,10 +1078,39 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert (out_dir / "molt_runtime.wasm").exists()
     assert (out_dir / "manifest.json").exists()
     assert (out_dir / "browser_embed.js").exists()
+    assert (out_dir / "browser_gpu_dispatch.js").exists()
+    assert (out_dir / "browser_gpu_worker.js").exists()
+    assert (out_dir / "browser_target_features.js").exists()
     assert (out_dir / "loader_bridge.js").exists()
+    assert (out_dir / "target_feature_manifest.json").exists()
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["assets"]["browser_embed"]["path"] == "browser_embed.js"
+    assert manifest["assets"]["browser_gpu_dispatch"]["path"] == "browser_gpu_dispatch.js"
+    assert manifest["assets"]["browser_gpu_dispatch"]["size"] == (
+        out_dir / "browser_gpu_dispatch.js"
+    ).stat().st_size
+    assert manifest["assets"]["browser_gpu_worker"]["path"] == "browser_gpu_worker.js"
+    assert manifest["assets"]["browser_gpu_worker"]["size"] == (
+        out_dir / "browser_gpu_worker.js"
+    ).stat().st_size
+    assert (
+        manifest["assets"]["browser_target_features"]["path"]
+        == "browser_target_features.js"
+    )
+    assert manifest["assets"]["browser_target_features"]["size"] == (
+        out_dir / "browser_target_features.js"
+    ).stat().st_size
     assert manifest["assets"]["loader_bridge"]["path"] == "loader_bridge.js"
+    target_feature_asset = manifest["assets"]["target_feature_manifest"]
+    assert target_feature_asset["path"] == "target_feature_manifest.json"
+    assert (
+        target_feature_asset["size"]
+        == (out_dir / "target_feature_manifest.json").stat().st_size
+    )
+    assert len(target_feature_asset["sha256"]) == 64
+    assert manifest["target_features"]["authority"] == "target_feature_manifest"
+    assert manifest["target_features"]["profile"] == "wasm-browser"
+    assert manifest["target_features"]["manifest_asset"] == target_feature_asset
     browser_abi = manifest["abi"]["browser_embed"]
     assert browser_abi["call_indirect_imports"] == [
         f"molt_call_indirect{arity}" for arity in range(14)

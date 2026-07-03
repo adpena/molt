@@ -14,6 +14,39 @@ from molt.dx import development_artifact_env
 from tests.wasm_linked_runner import _run_wasm_test_process
 
 
+_VECTOR_ADD_GPU_PROGRAM = (
+    "import molt.gpu as gpu\n"
+    "\n"
+    "@gpu.kernel\n"
+    "def vector_add(a, b, c, n):\n"
+    "    tid = gpu.thread_id()\n"
+    "    if tid < n:\n"
+    "        c[tid] = a[tid] + b[tid]\n"
+    "\n"
+    "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
+    "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
+    "c = gpu.alloc(4, float)\n"
+    "vector_add[1, 4](a, b, c, 4)\n"
+    "print(gpu.from_device(c))\n"
+)
+
+
+def _write_vector_add_gpu_program(path: Path) -> None:
+    path.write_text(_VECTOR_ADD_GPU_PROGRAM, encoding="utf-8")
+
+
+def _compiled_gpu_build_timeout() -> float:
+    raw = os.environ.get("MOLT_WASM_BROWSER_GPU_BUILD_TIMEOUT")
+    if raw is None:
+        return 2400.0
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise AssertionError(
+            "MOLT_WASM_BROWSER_GPU_BUILD_TIMEOUT must be a numeric seconds value"
+        ) from exc
+
+
 def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     tmp_path: Path,
 ) -> None:
@@ -24,22 +57,7 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_gpu.py"
-    src.write_text(
-        "import molt.gpu as gpu\n"
-        "\n"
-        "@gpu.kernel\n"
-        "def vector_add(a, b, c, n):\n"
-        "    tid = gpu.thread_id()\n"
-        "    if tid < n:\n"
-        "        c[tid] = a[tid] + b[tid]\n"
-        "\n"
-        "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
-        "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
-        "c = gpu.alloc(4, float)\n"
-        "vector_add[1, 4](a, b, c, 4)\n"
-        "print(gpu.from_device(c))\n",
-        encoding="utf-8",
-    )
+    _write_vector_add_gpu_program(src)
 
     build_env = development_artifact_env(
         root,
@@ -121,6 +139,180 @@ const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, b
 const host = await loadMoltWasm({{
   wasmUrl: `${{baseUrl}}/output.wasm`,
   runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  preferLinked: false,
+  env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
+  gpuKernelDispatcher: {{
+    dispatchKernel(request) {{
+      fakeState.dispatchCount += 1;
+      fakeState.shaderCount += 1;
+      const a = request.bindings.find((binding) => binding.binding === 0).bytes;
+      const b = request.bindings.find((binding) => binding.binding === 1).bytes;
+      const c = request.bindings.find((binding) => binding.binding === 2).bytes;
+      const n = readI32(request.bindings.find((binding) => binding.binding === 3).bytes, 0);
+      const workgroupSizeMatch = request.source.match(/@workgroup_size\\((\\d+)\\)/);
+      const workgroupSize = workgroupSizeMatch ? Number(workgroupSizeMatch[1]) : 1;
+      const totalThreads = Number(request.grid) * workgroupSize;
+      for (let tid = 0; tid < totalThreads && tid < n; tid += 1) {{
+        writeF32(c, tid, readF32(a, tid) + readF32(b, tid));
+      }}
+    }},
+  }},
+}});
+host.run();
+console.log(JSON.stringify(fakeState));
+""".lstrip(),
+            encoding="utf-8",
+        )
+        run = _run_wasm_test_process(
+            ["node", str(script)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert run.returncode == 0, run.stderr
+        lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
+        assert lines[0] == "[11.0, 22.0, 33.0, 44.0]"
+        assert json.loads(lines[1]) == {"dispatchCount": 1, "shaderCount": 1}
+    finally:
+        server.shutdown()
+
+
+def test_browser_host_split_runtime_compiled_gpu_kernel_uses_webgpu_dispatch(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser host GPU split-runtime test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser host GPU split-runtime test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_host_split_gpu.py"
+    _write_vector_add_gpu_program(src)
+
+    build_env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="browser-gpu-host",
+        session_id="test-browser-split-webgpu",
+        create_dirs=True,
+    )
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env["MOLT_SESSION_ID"] = "test-browser-split-webgpu"
+    build_env["MOLT_BACKEND_DAEMON"] = "0"
+    build = _run_wasm_test_process(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--wasm-profile",
+            "pure",
+            "--type-hints",
+            "ignore",
+            "--split-runtime",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+        timeout=_compiled_gpu_build_timeout(),
+    )
+    assert build.returncode == 0, build.stderr
+
+    app_wasm = tmp_path / "app.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    manifest_path = tmp_path / "manifest.json"
+    assert app_wasm.exists()
+    assert runtime_wasm.exists()
+    assert manifest_path.exists()
+    assert (tmp_path / "browser_gpu_dispatch.js").exists()
+    assert (tmp_path / "browser_gpu_worker.js").exists()
+    assert (tmp_path / "browser_target_features.js").exists()
+    assert (tmp_path / "target_feature_manifest.json").exists()
+
+    import molt.wasm_artifact as wasm_artifact
+
+    runtime_env_imports = wasm_artifact._collect_wasm_module_import_names(
+        runtime_wasm,
+        "env",
+    )
+    assert "molt_gpu_webgpu_dispatch_host" in runtime_env_imports
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["target_features"]["profile"] == "wasm-browser-webgpu"
+    assert manifest["target_features"]["required_host_imports"]["webgpu"] == [
+        "molt_gpu_webgpu_dispatch_host"
+    ]
+    assert manifest["target_features"]["browser_probes"]["webgpu"]["required"] is True
+    assert manifest["assets"]["browser_gpu_dispatch"]["path"] == (
+        "browser_gpu_dispatch.js"
+    )
+    assert manifest["assets"]["browser_gpu_worker"]["path"] == "browser_gpu_worker.js"
+    assert (
+        manifest["assets"]["browser_target_features"]["path"]
+        == "browser_target_features.js"
+    )
+
+    class _WasmHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            files = {
+                "/app.wasm": app_wasm,
+                "/molt_runtime.wasm": runtime_wasm,
+                "/manifest.json": manifest_path,
+            }
+            payload_path = files.get(path)
+            if payload_path is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            payload = payload_path.read_bytes()
+            self.send_response(200)
+            content_type = (
+                "application/wasm"
+                if payload_path.suffix == ".wasm"
+                else "application/json"
+            )
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WasmHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+        script = tmp_path / "run_browser_split_gpu.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltWasm }} from {browser_host_uri!r};
+
+const baseUrl = {base_url!r};
+const fakeState = {{ dispatchCount: 0, shaderCount: 0 }};
+
+const readF32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(index * 4, true);
+const writeF32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setFloat32(index * 4, value, true);
+const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
+
+const host = await loadMoltWasm({{
+  wasmUrl: `${{baseUrl}}/app.wasm`,
+  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  manifestUrl: `${{baseUrl}}/manifest.json`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
   gpuKernelDispatcher: {{

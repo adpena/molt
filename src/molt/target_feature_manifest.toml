@@ -1,0 +1,1196 @@
+schema_version = 1
+
+[meta]
+source_doc = "docs/design/foundation/71_wasm_webgpu_numeric_acceleration.md"
+authority = "target_feature_manifest"
+description = "Target/profile feature ceilings and probe-gated acceleration facts."
+
+[[feature]]
+id = "native.scalar"
+domain = "native"
+tier = "scalar"
+determinism = "deterministic"
+description = "Native scalar machine instructions for proven typed scalar paths."
+
+[[feature]]
+id = "native.vector"
+domain = "native"
+tier = "vector"
+determinism = "deterministic"
+description = "Native vector instruction lowering for proven vectorizable kernels."
+
+[[feature]]
+id = "native.threads"
+domain = "native"
+tier = "parallel"
+determinism = "deterministic"
+description = "Native threading and atomics under platform/runtime support."
+
+[[feature]]
+id = "numeric.blas"
+domain = "external_numeric"
+tier = "blas"
+determinism = "external_numeric"
+description = "BLAS symbol closure through provider libraries or source-recompiled target custody."
+
+[[feature]]
+id = "numeric.lapack"
+domain = "external_numeric"
+tier = "lapack"
+determinism = "external_numeric"
+description = "LAPACK symbol closure through provider libraries or source-recompiled target custody."
+
+[[feature]]
+id = "numeric.gsl"
+domain = "external_numeric"
+tier = "gsl"
+determinism = "external_numeric"
+description = "GSL symbol closure with explicit license and per-target source/artifact custody."
+
+[[feature]]
+id = "tensor.typed_strided_storage"
+domain = "tensor"
+tier = "storage"
+determinism = "deterministic"
+description = "One dtype/shape/stride/offset/owner/device storage identity projected into target APIs."
+
+[[feature]]
+id = "wasm.mvp"
+domain = "wasm"
+tier = "core"
+determinism = "deterministic"
+description = "Baseline WebAssembly core module support."
+
+[[feature]]
+id = "wasm.multi_value"
+domain = "wasm"
+tier = "core"
+determinism = "deterministic"
+description = "Multi-value returns for small tuple/error-value internal ABI results."
+
+[[feature]]
+id = "wasm.tail_call"
+domain = "wasm"
+tier = "core"
+determinism = "deterministic"
+description = "Tail-call proposal lowering for tail-position control flow."
+
+[[feature]]
+id = "wasm.exception_handling"
+domain = "wasm"
+tier = "core"
+determinism = "deterministic"
+description = "WASM exception handling for Python unwind traffic."
+
+[[feature]]
+id = "wasm.memory64"
+domain = "wasm"
+tier = "memory"
+determinism = "deterministic"
+description = "64-bit linear-memory and table indexes for large-memory profiles."
+
+[[feature]]
+id = "wasm.threads"
+domain = "wasm"
+tier = "parallel"
+determinism = "deterministic"
+description = "Shared-memory threading support."
+
+[[feature]]
+id = "wasm.atomics"
+domain = "wasm"
+tier = "parallel"
+determinism = "deterministic"
+description = "WASM atomics for shared-memory profiles."
+
+[[feature]]
+id = "wasm.simd128"
+domain = "wasm"
+tier = "vector"
+determinism = "deterministic"
+description = "Deterministic v128 SIMD lane for numeric kernels."
+
+[[feature]]
+id = "wasm.relaxed_simd"
+domain = "wasm"
+tier = "vector"
+determinism = "non_bit_exact"
+description = "Relaxed SIMD speed tier; not allowed in bit-exact parity lanes."
+
+[[feature]]
+id = "wasm.flexible_vectors"
+domain = "wasm"
+tier = "vector"
+determinism = "deterministic"
+description = "Flexible vector proposal tracking."
+
+[[feature]]
+id = "wasm.half_precision"
+domain = "wasm"
+tier = "numeric"
+determinism = "deterministic"
+description = "Half-precision proposal tracking."
+
+[[feature]]
+id = "wasm.wide_arithmetic"
+domain = "wasm"
+tier = "numeric"
+determinism = "deterministic"
+description = "Wide arithmetic proposal tracking for int/hash/crypto lowering."
+
+[[feature]]
+id = "wasm.gc"
+domain = "wasm"
+tier = "object_layout"
+determinism = "deterministic"
+description = "WasmGC closed-layout object profile."
+
+[[feature]]
+id = "wasm.reference_types"
+domain = "wasm"
+tier = "object_layout"
+determinism = "deterministic"
+description = "Reference types used with GC/object-layout profiles."
+
+[[feature]]
+id = "wasm.js_promise_integration"
+domain = "wasm"
+tier = "host_async"
+determinism = "host_capability"
+description = "JS Promise Integration for naturally async browser host calls."
+
+[[feature]]
+id = "wasi.preview1"
+domain = "wasi"
+tier = "host_abi"
+determinism = "deterministic"
+description = "WASI preview1 style host interface for current wasm-server lanes."
+
+[[feature]]
+id = "wasi.component_model"
+domain = "wasi"
+tier = "host_abi"
+determinism = "deterministic"
+description = "Component Model/WIT interface authority."
+
+[[feature]]
+id = "wasi.async_0_3"
+domain = "wasi"
+tier = "host_async"
+determinism = "deterministic"
+description = "WASI 0.3 async func, stream, and future primitives."
+
+[[feature]]
+id = "webgpu.api"
+domain = "webgpu"
+tier = "gpu"
+determinism = "device_dependent"
+description = "Browser WebGPU API availability through navigator.gpu and adapter/device probes."
+
+[feature.browser_probe]
+kind = "webgpu_api"
+api = "navigator.gpu"
+adapter = "navigator.gpu.requestAdapter()"
+device = "adapter.requestDevice()"
+
+[[feature]]
+id = "webgpu.wgsl_storage_buffers"
+domain = "webgpu"
+tier = "gpu"
+determinism = "deterministic"
+description = "WGSL storage-buffer compute pipeline support."
+
+[feature.browser_probe]
+kind = "adapter_limits_and_shader_validation"
+adapter_limits = ["maxStorageBufferBindingSize"]
+
+[[feature]]
+id = "webgpu.workgroup_memory"
+domain = "webgpu"
+tier = "gpu"
+determinism = "deterministic"
+description = "WGSL workgroup memory support."
+
+[feature.browser_probe]
+kind = "adapter_limits_and_shader_validation"
+adapter_limits = [
+  "maxComputeInvocationsPerWorkgroup",
+  "maxComputeWorkgroupSizeX",
+  "maxComputeWorkgroupSizeY",
+  "maxComputeWorkgroupSizeZ",
+  "maxComputeWorkgroupStorageSize",
+]
+
+[[feature]]
+id = "webgpu.atomics"
+domain = "webgpu"
+tier = "gpu"
+determinism = "deterministic"
+description = "WebGPU/WGSL atomic operation support."
+
+[feature.browser_probe]
+kind = "shader_validation"
+
+[[feature]]
+id = "webgpu.f16"
+domain = "webgpu"
+tier = "gpu"
+determinism = "deterministic"
+description = "WebGPU shader-f16 feature."
+
+[feature.browser_probe]
+kind = "adapter_feature"
+adapter_feature = "shader-f16"
+
+[[feature]]
+id = "webgpu.subgroups"
+domain = "webgpu"
+tier = "gpu"
+determinism = "deterministic"
+description = "WebGPU subgroup operation support."
+
+[feature.browser_probe]
+kind = "adapter_feature"
+adapter_feature = "subgroups"
+
+[[feature]]
+id = "webgpu.timestamp_queries"
+domain = "webgpu"
+tier = "observability"
+determinism = "observability"
+description = "Timestamp query observability; never a semantic fact."
+
+[feature.browser_probe]
+kind = "adapter_feature"
+adapter_feature = "timestamp-query"
+observability = true
+
+[[feature]]
+id = "webnn.graph"
+domain = "webnn"
+tier = "nn_graph"
+determinism = "device_dependent"
+description = "WebNN graph execution for admitted inference subgraphs."
+
+[feature.browser_probe]
+kind = "webnn_api"
+api = "navigator.ml"
+context = "navigator.ml.createContext()"
+
+[[target]]
+id = "native"
+display_name = "Native"
+family = "native"
+target_triple = "host"
+artifact_kind = "native_executable"
+description = "Host-native target with provider libraries admitted through platform custody."
+
+[[target.feature]]
+id = "native.scalar"
+support = "baseline"
+gate = "target_triple"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "native.vector"
+support = "gated"
+gate = "host_cpu_feature_probe"
+fallback = "scalar_native"
+
+[[target.feature]]
+id = "native.threads"
+support = "gated"
+gate = "platform_thread_support"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "numeric.blas"
+support = "gated"
+gate = "provider_library_manifest"
+fallback = "reference_or_fail_closed"
+
+[[target.feature]]
+id = "numeric.lapack"
+support = "gated"
+gate = "provider_library_manifest"
+fallback = "reference_or_fail_closed"
+
+[[target.feature]]
+id = "numeric.gsl"
+support = "gated"
+gate = "license_and_provider_library_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "tensor.typed_strided_storage"
+support = "baseline"
+gate = "storage_authority"
+fallback = "fail_closed"
+
+[[target]]
+id = "wasm-server"
+display_name = "WASM server"
+family = "wasm"
+target_triple = "wasm32-wasip1"
+artifact_kind = "wasm_module"
+description = "Server-hosted WASM module with raw WASI imports unless component linking proves better."
+
+[[target.feature]]
+id = "wasm.mvp"
+support = "baseline"
+gate = "wasm_validation"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "wasi.preview1"
+support = "baseline"
+gate = "host_imports"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "wasm.multi_value"
+support = "gated"
+gate = "toolchain_and_runtime_probe"
+fallback = "single_value_abi"
+
+[[target.feature]]
+id = "wasm.simd128"
+support = "gated"
+gate = "target_feature_probe"
+fallback = "scalar_wasm"
+
+[[target.feature]]
+id = "wasm.relaxed_simd"
+support = "gated"
+gate = "explicit_non_bit_exact_profile"
+fallback = "deterministic_simd_or_scalar"
+
+[[target.feature]]
+id = "wasm.flexible_vectors"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "simd128_or_scalar_wasm"
+
+[[target.feature]]
+id = "wasm.half_precision"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "f32_or_f64_kernel"
+
+[[target.feature]]
+id = "wasm.wide_arithmetic"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "checked_scalar_helpers"
+
+[[target.feature]]
+id = "wasm.tail_call"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "ordinary_call"
+
+[[target.feature]]
+id = "wasm.exception_handling"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "runtime_exception_calls"
+
+[[target.feature]]
+id = "wasm.memory64"
+support = "tracked"
+gate = "program_address_space_requirement"
+fallback = "memory32"
+
+[[target.feature]]
+id = "wasm.threads"
+support = "gated"
+gate = "host_shared_memory_support"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.atomics"
+support = "gated"
+gate = "host_shared_memory_support"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.gc"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "runtime_object_layout"
+
+[[target.feature]]
+id = "wasm.reference_types"
+support = "tracked"
+gate = "target_feature_probe"
+fallback = "linear_memory_handles"
+
+[[target.feature]]
+id = "wasm.js_promise_integration"
+support = "excluded"
+gate = "browser_host_feature"
+fallback = "sync_host_imports"
+
+[[target.feature]]
+id = "wasi.component_model"
+support = "tracked"
+gate = "wit_world_and_overhead_evidence"
+fallback = "raw_imports"
+
+[[target.feature]]
+id = "wasi.async_0_3"
+support = "tracked"
+gate = "component_model_overhead_evidence"
+fallback = "sync_raw_imports"
+
+[[target.feature]]
+id = "webgpu.api"
+support = "excluded"
+gate = "browser_webgpu_profile"
+fallback = "cpu_wasm_or_native_gpu_profile"
+
+[[target.feature]]
+id = "webnn.graph"
+support = "excluded"
+gate = "browser_webnn_profile"
+fallback = "cpu_wasm_or_webgpu_profile"
+
+[[target.feature]]
+id = "numeric.blas"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.lapack"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.gsl"
+support = "tracked"
+gate = "license_and_source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "tensor.typed_strided_storage"
+support = "baseline"
+gate = "storage_authority"
+fallback = "fail_closed"
+
+[[target]]
+id = "wasm-browser"
+display_name = "WASM browser"
+family = "wasm-browser"
+target_triple = "wasm32-wasip1"
+artifact_kind = "browser_wasm_bundle"
+description = "Browser WASM bundle without GPU/NN graph acceleration."
+
+[[target.feature]]
+id = "wasm.mvp"
+support = "baseline"
+gate = "browser_wasm_validation"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "wasm.multi_value"
+support = "gated"
+gate = "browser_feature_probe"
+fallback = "single_value_abi"
+
+[[target.feature]]
+id = "wasm.simd128"
+support = "gated"
+gate = "browser_feature_probe"
+fallback = "scalar_wasm"
+
+[[target.feature]]
+id = "wasm.relaxed_simd"
+support = "gated"
+gate = "explicit_non_bit_exact_profile"
+fallback = "deterministic_simd_or_scalar"
+
+[[target.feature]]
+id = "wasm.flexible_vectors"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "simd128_or_scalar_wasm"
+
+[[target.feature]]
+id = "wasm.half_precision"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "f32_or_f64_kernel"
+
+[[target.feature]]
+id = "wasm.wide_arithmetic"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "checked_scalar_helpers"
+
+[[target.feature]]
+id = "wasm.tail_call"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "ordinary_call"
+
+[[target.feature]]
+id = "wasm.exception_handling"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "runtime_exception_calls"
+
+[[target.feature]]
+id = "wasm.memory64"
+support = "tracked"
+gate = "program_address_space_requirement"
+fallback = "memory32"
+
+[[target.feature]]
+id = "wasm.threads"
+support = "gated"
+gate = "browser_shared_memory_and_cross_origin_isolation"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.atomics"
+support = "gated"
+gate = "browser_shared_memory_and_cross_origin_isolation"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.gc"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "runtime_object_layout"
+
+[[target.feature]]
+id = "wasm.reference_types"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "linear_memory_handles"
+
+[[target.feature]]
+id = "wasm.js_promise_integration"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "host_callback_bridge"
+
+[[target.feature]]
+id = "wasi.preview1"
+support = "excluded"
+gate = "browser_host_import_model"
+fallback = "browser_host_shim"
+
+[[target.feature]]
+id = "wasi.component_model"
+support = "tracked"
+gate = "browser_component_model_probe"
+fallback = "raw_js_imports"
+
+[[target.feature]]
+id = "wasi.async_0_3"
+support = "tracked"
+gate = "browser_component_model_overhead_evidence"
+fallback = "sync_raw_imports"
+
+[[target.feature]]
+id = "webgpu.api"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.wgsl_storage_buffers"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.workgroup_memory"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.atomics"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.f16"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.subgroups"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.timestamp_queries"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webnn.graph"
+support = "excluded"
+gate = "separate_webnn_profile"
+fallback = "use_wasm-browser-webnn"
+
+[[target.feature]]
+id = "numeric.blas"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.lapack"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.gsl"
+support = "tracked"
+gate = "license_and_source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "tensor.typed_strided_storage"
+support = "baseline"
+gate = "storage_authority"
+fallback = "fail_closed"
+
+[[target]]
+id = "wasm-edge"
+display_name = "WASM edge"
+family = "wasm-edge"
+target_triple = "wasm32-wasip1"
+artifact_kind = "edge_wasm_bundle"
+description = "Edge-worker WASM bundle with explicit host capability imports."
+
+[[target.feature]]
+id = "wasm.mvp"
+support = "baseline"
+gate = "edge_runtime_validation"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "wasi.preview1"
+support = "gated"
+gate = "edge_runtime_imports"
+fallback = "edge_host_shim"
+
+[[target.feature]]
+id = "wasm.multi_value"
+support = "gated"
+gate = "edge_runtime_feature_probe"
+fallback = "single_value_abi"
+
+[[target.feature]]
+id = "wasm.simd128"
+support = "gated"
+gate = "edge_runtime_feature_probe"
+fallback = "scalar_wasm"
+
+[[target.feature]]
+id = "wasm.relaxed_simd"
+support = "gated"
+gate = "explicit_non_bit_exact_profile"
+fallback = "deterministic_simd_or_scalar"
+
+[[target.feature]]
+id = "wasm.flexible_vectors"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "simd128_or_scalar_wasm"
+
+[[target.feature]]
+id = "wasm.half_precision"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "f32_or_f64_kernel"
+
+[[target.feature]]
+id = "wasm.wide_arithmetic"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "checked_scalar_helpers"
+
+[[target.feature]]
+id = "wasm.tail_call"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "ordinary_call"
+
+[[target.feature]]
+id = "wasm.exception_handling"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "runtime_exception_calls"
+
+[[target.feature]]
+id = "wasm.memory64"
+support = "tracked"
+gate = "program_address_space_requirement"
+fallback = "memory32"
+
+[[target.feature]]
+id = "wasm.threads"
+support = "gated"
+gate = "edge_runtime_shared_memory_support"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.atomics"
+support = "gated"
+gate = "edge_runtime_shared_memory_support"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.gc"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "runtime_object_layout"
+
+[[target.feature]]
+id = "wasm.reference_types"
+support = "tracked"
+gate = "edge_runtime_feature_probe"
+fallback = "linear_memory_handles"
+
+[[target.feature]]
+id = "wasm.js_promise_integration"
+support = "tracked"
+gate = "edge_runtime_host_async_probe"
+fallback = "host_callback_bridge"
+
+[[target.feature]]
+id = "wasi.component_model"
+support = "tracked"
+gate = "wit_world_and_overhead_evidence"
+fallback = "raw_imports"
+
+[[target.feature]]
+id = "wasi.async_0_3"
+support = "tracked"
+gate = "component_model_overhead_evidence"
+fallback = "sync_raw_imports"
+
+[[target.feature]]
+id = "webgpu.api"
+support = "excluded"
+gate = "browser_webgpu_profile"
+fallback = "cpu_wasm_or_native_gpu_profile"
+
+[[target.feature]]
+id = "webnn.graph"
+support = "excluded"
+gate = "browser_webnn_profile"
+fallback = "cpu_wasm_or_webgpu_profile"
+
+[[target.feature]]
+id = "numeric.blas"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.lapack"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.gsl"
+support = "tracked"
+gate = "license_and_source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "tensor.typed_strided_storage"
+support = "baseline"
+gate = "storage_authority"
+fallback = "fail_closed"
+
+[[target]]
+id = "wasm-browser-webgpu"
+display_name = "WASM browser WebGPU"
+family = "wasm-browser"
+target_triple = "wasm32-wasip1"
+artifact_kind = "browser_wasm_webgpu_bundle"
+description = "Browser WASM bundle with WebGPU compute dispatch for admitted tensor kernels."
+
+[[target.feature]]
+id = "wasm.mvp"
+support = "baseline"
+gate = "browser_wasm_validation"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "wasm.simd128"
+support = "gated"
+gate = "browser_feature_probe"
+fallback = "scalar_wasm"
+
+[[target.feature]]
+id = "wasm.multi_value"
+support = "gated"
+gate = "browser_feature_probe"
+fallback = "single_value_abi"
+
+[[target.feature]]
+id = "wasm.relaxed_simd"
+support = "gated"
+gate = "explicit_non_bit_exact_profile"
+fallback = "deterministic_simd_or_scalar"
+
+[[target.feature]]
+id = "wasm.flexible_vectors"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "simd128_or_scalar_wasm"
+
+[[target.feature]]
+id = "wasm.half_precision"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "f32_or_f64_kernel"
+
+[[target.feature]]
+id = "wasm.wide_arithmetic"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "checked_scalar_helpers"
+
+[[target.feature]]
+id = "wasm.tail_call"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "ordinary_call"
+
+[[target.feature]]
+id = "wasm.exception_handling"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "runtime_exception_calls"
+
+[[target.feature]]
+id = "wasm.memory64"
+support = "tracked"
+gate = "program_address_space_requirement"
+fallback = "memory32"
+
+[[target.feature]]
+id = "wasm.threads"
+support = "gated"
+gate = "browser_shared_memory_and_cross_origin_isolation"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.atomics"
+support = "gated"
+gate = "browser_shared_memory_and_cross_origin_isolation"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.gc"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "runtime_object_layout"
+
+[[target.feature]]
+id = "wasm.reference_types"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "linear_memory_handles"
+
+[[target.feature]]
+id = "wasm.js_promise_integration"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "host_callback_bridge"
+
+[[target.feature]]
+id = "wasi.preview1"
+support = "excluded"
+gate = "browser_host_import_model"
+fallback = "browser_host_shim"
+
+[[target.feature]]
+id = "wasi.component_model"
+support = "tracked"
+gate = "browser_component_model_probe"
+fallback = "raw_js_imports"
+
+[[target.feature]]
+id = "wasi.async_0_3"
+support = "tracked"
+gate = "browser_component_model_overhead_evidence"
+fallback = "sync_raw_imports"
+
+[[target.feature]]
+id = "webgpu.api"
+support = "gated"
+gate = "navigator_gpu_and_adapter_probe"
+fallback = "cpu_wasm_or_fail_closed"
+
+[[target.feature]]
+id = "webgpu.wgsl_storage_buffers"
+support = "gated"
+gate = "adapter_limits_and_shader_validation"
+fallback = "cpu_wasm_or_fail_closed"
+
+[[target.feature]]
+id = "webgpu.workgroup_memory"
+support = "gated"
+gate = "adapter_limits_and_shader_validation"
+fallback = "lower_tier_kernel_or_fail_closed"
+
+[[target.feature]]
+id = "webgpu.atomics"
+support = "gated"
+gate = "shader_validation"
+fallback = "non_atomic_kernel_or_fail_closed"
+
+[[target.feature]]
+id = "webgpu.f16"
+support = "gated"
+gate = "adapter_feature_probe"
+fallback = "f32_kernel"
+
+[[target.feature]]
+id = "webgpu.subgroups"
+support = "tracked"
+gate = "adapter_feature_probe"
+fallback = "workgroup_kernel"
+
+[[target.feature]]
+id = "webgpu.timestamp_queries"
+support = "gated"
+gate = "adapter_feature_probe"
+fallback = "no_timestamp_observability"
+
+[[target.feature]]
+id = "webnn.graph"
+support = "excluded"
+gate = "separate_webnn_profile"
+fallback = "use_wasm-browser-webnn"
+
+[[target.feature]]
+id = "numeric.blas"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.lapack"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.gsl"
+support = "tracked"
+gate = "license_and_source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "tensor.typed_strided_storage"
+support = "baseline"
+gate = "storage_authority"
+fallback = "fail_closed"
+
+[[target]]
+id = "wasm-browser-webnn"
+display_name = "WASM browser WebNN"
+family = "wasm-browser"
+target_triple = "wasm32-wasip1"
+artifact_kind = "browser_wasm_webnn_bundle"
+description = "Browser WASM bundle with WebNN graph dispatch for admitted inference subgraphs."
+
+[[target.feature]]
+id = "wasm.mvp"
+support = "baseline"
+gate = "browser_wasm_validation"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "wasm.simd128"
+support = "gated"
+gate = "browser_feature_probe"
+fallback = "scalar_wasm"
+
+[[target.feature]]
+id = "wasm.multi_value"
+support = "gated"
+gate = "browser_feature_probe"
+fallback = "single_value_abi"
+
+[[target.feature]]
+id = "wasm.relaxed_simd"
+support = "gated"
+gate = "explicit_non_bit_exact_profile"
+fallback = "deterministic_simd_or_scalar"
+
+[[target.feature]]
+id = "wasm.flexible_vectors"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "simd128_or_scalar_wasm"
+
+[[target.feature]]
+id = "wasm.half_precision"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "f32_or_f64_kernel"
+
+[[target.feature]]
+id = "wasm.wide_arithmetic"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "checked_scalar_helpers"
+
+[[target.feature]]
+id = "wasm.tail_call"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "ordinary_call"
+
+[[target.feature]]
+id = "wasm.exception_handling"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "runtime_exception_calls"
+
+[[target.feature]]
+id = "wasm.memory64"
+support = "tracked"
+gate = "program_address_space_requirement"
+fallback = "memory32"
+
+[[target.feature]]
+id = "wasm.threads"
+support = "gated"
+gate = "browser_shared_memory_and_cross_origin_isolation"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.atomics"
+support = "gated"
+gate = "browser_shared_memory_and_cross_origin_isolation"
+fallback = "single_thread"
+
+[[target.feature]]
+id = "wasm.gc"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "runtime_object_layout"
+
+[[target.feature]]
+id = "wasm.reference_types"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "linear_memory_handles"
+
+[[target.feature]]
+id = "wasm.js_promise_integration"
+support = "tracked"
+gate = "browser_feature_probe"
+fallback = "host_callback_bridge"
+
+[[target.feature]]
+id = "wasi.preview1"
+support = "excluded"
+gate = "browser_host_import_model"
+fallback = "browser_host_shim"
+
+[[target.feature]]
+id = "wasi.component_model"
+support = "tracked"
+gate = "browser_component_model_probe"
+fallback = "raw_js_imports"
+
+[[target.feature]]
+id = "wasi.async_0_3"
+support = "tracked"
+gate = "browser_component_model_overhead_evidence"
+fallback = "sync_raw_imports"
+
+[[target.feature]]
+id = "webnn.graph"
+support = "gated"
+gate = "webnn_graph_builder_probe"
+fallback = "cpu_wasm_webgpu_or_fail_closed"
+
+[[target.feature]]
+id = "webgpu.api"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.wgsl_storage_buffers"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.workgroup_memory"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.atomics"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.f16"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.subgroups"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "webgpu.timestamp_queries"
+support = "excluded"
+gate = "separate_webgpu_profile"
+fallback = "use_wasm-browser-webgpu"
+
+[[target.feature]]
+id = "numeric.blas"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.lapack"
+support = "tracked"
+gate = "source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "numeric.gsl"
+support = "tracked"
+gate = "license_and_source_recompiled_numeric_manifest"
+fallback = "fail_closed"
+
+[[target.feature]]
+id = "tensor.typed_strided_storage"
+support = "baseline"
+gate = "storage_authority"
+fallback = "fail_closed"
