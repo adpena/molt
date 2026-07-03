@@ -152,6 +152,16 @@ PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
 NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX = (
     "tests/test_native_import_bootstrap_regressions.py::"
 )
+NATIVE_CALL_LANE_SCOPES = (
+    "tests/test_native_import_bootstrap_regressions.py",
+    "runtime/molt-runtime/src/call/function.rs",
+    "runtime/molt-backend-native/src/native_backend/function_compiler/fc/"
+    "modules.rs",
+    "runtime/molt-runtime/src/call/class_init.rs",
+    "runtime/molt-runtime/src/builtins/containers.rs",
+    "runtime/molt-runtime/src/builtins/exceptions.rs",
+    "runtime/molt-runtime/src/object/mod.rs",
+)
 PYTEST_ERROR_RE = re.compile(
     r"(?m)^ERROR\s+(?P<nodeid>\S+)(?:\s+-\s+(?P<detail>[^\r\n]+))?"
 )
@@ -172,6 +182,7 @@ AUDIT_ERROR_DIAGNOSTICS = frozenset(
     {
         "memory-guard-summary-incomplete",
         "memory-guard-timeout",
+        "native-call-lane-memory-guard-timeout",
         "proof-log-missing",
         "queue-preexecution-failure",
     }
@@ -2092,16 +2103,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                         "exceptions, object/mod.rs, or the native import regression "
                         "test from an unrelated Codex lane."
                     ),
-                    scopes=(
-                        "tests/test_native_import_bootstrap_regressions.py",
-                        "runtime/molt-runtime/src/call/function.rs",
-                        "runtime/molt-backend-native/src/native_backend/"
-                        "function_compiler/fc/modules.rs",
-                        "runtime/molt-runtime/src/call/class_init.rs",
-                        "runtime/molt-runtime/src/builtins/containers.rs",
-                        "runtime/molt-runtime/src/builtins/exceptions.rs",
-                        "runtime/molt-runtime/src/object/mod.rs",
-                    ),
+                    scopes=NATIVE_CALL_LANE_SCOPES,
                 )
             )
         else:
@@ -2154,27 +2156,54 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             if phase is not None:
                 evidence += f" pytest_phase={phase}"
             next_action_context = f"{nodeid}"
-        diagnostics.append(
-            _diagnostic(
-                signal_id="memory-guard-timeout",
-                severity="error",
-                summary=(
-                    "Memory guard terminated the proof after "
-                    f"{match.group('timeout')}s{pytest_suffix}."
-                ),
-                evidence=evidence,
-                next_action=(
-                    "Treat this proof result as incomplete. Inspect "
-                    f"{next_action_context} once, then reshape the proof, warm the target "
-                    "dir, or raise --timeout only for intentional long-running "
-                    "work."
-                ),
-                scopes=(
-                    "tools/memory_guard.py",
-                    "tools/proof_queue.py",
-                ),
+        if (
+            pytest_context is not None
+            and nodeid.startswith(NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX)
+        ):
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="native-call-lane-memory-guard-timeout",
+                    severity="error",
+                    summary=(
+                        "Native call-lane proof timed out after "
+                        f"{match.group('timeout')}s{pytest_suffix}; this lane is "
+                        "owned by the R1 integrator."
+                    ),
+                    evidence=evidence,
+                    next_action=(
+                        "Route this timeout row to the native call-lane owner. "
+                        "Treat it as incomplete evidence and do not rerun the same "
+                        "shape unchanged from an unrelated Codex lane."
+                    ),
+                    scopes=(
+                        "tools/memory_guard.py",
+                        "tools/proof_queue.py",
+                        *NATIVE_CALL_LANE_SCOPES,
+                    ),
+                )
             )
-        )
+        else:
+            diagnostics.append(
+                _diagnostic(
+                    signal_id="memory-guard-timeout",
+                    severity="error",
+                    summary=(
+                        "Memory guard terminated the proof after "
+                        f"{match.group('timeout')}s{pytest_suffix}."
+                    ),
+                    evidence=evidence,
+                    next_action=(
+                        "Treat this proof result as incomplete. Inspect "
+                        f"{next_action_context} once, then reshape the proof, warm "
+                        "the target dir, or raise --timeout only for intentional "
+                        "long-running work."
+                    ),
+                    scopes=(
+                        "tools/memory_guard.py",
+                        "tools/proof_queue.py",
+                    ),
+                )
+            )
 
     match = MEMORY_GUARD_ORPHANED_RE.search(log_tail)
     if match is not None:
