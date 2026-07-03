@@ -13,15 +13,101 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     if tp.is_null() {
         return -1;
     }
+    let name = unsafe { (*tp).tp_name };
+    let label = if name.is_null() {
+        format!("<unnamed@{:p}>", tp)
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    crate::capi_trace::trace_call("PyType_Ready", Some(&label));
     unsafe {
-        // Set tp_base to object if not set.
-        if (*tp).tp_base.is_null() {
-            // Leave null — we don't have PyBaseObject_Type in bridge.
+        // Inherit unset slots from the base type. C extensions (numpy's scalar
+        // type hierarchy is the canonical case) set `tp_base` and then call
+        // PyType_Ready trusting it to copy the base's function slots into the
+        // child wherever the child left them null — exactly as CPython's
+        // inherit_slots does. Skipping this leaves derived types with null
+        // number/compare/hash slots and later operations fail opaquely.
+        if !(*tp).tp_base.is_null() {
+            inherit_slots_from_base(tp, (*tp).tp_base);
         }
         // Mark ready.
         (*tp).tp_flags |= Py_TPFLAGS_READY;
     }
     0
+}
+
+/// Copy the base type's slots into `tp` wherever `tp` has left them empty,
+/// mirroring the subset of CPython's `inherit_slots` that static C-extension
+/// type hierarchies depend on. Only null/zero child slots are filled, so a type
+/// that defines its own slot keeps it.
+unsafe fn inherit_slots_from_base(tp: *mut PyTypeObject, base: *mut PyTypeObject) {
+    unsafe {
+        // Sizing: a derived type that did not declare its own instance layout
+        // uses the base's.
+        if (*tp).tp_basicsize == 0 {
+            (*tp).tp_basicsize = (*base).tp_basicsize;
+        }
+        if (*tp).tp_itemsize == 0 {
+            (*tp).tp_itemsize = (*base).tp_itemsize;
+        }
+        if (*tp).tp_dictoffset == 0 {
+            (*tp).tp_dictoffset = (*base).tp_dictoffset;
+        }
+        if (*tp).tp_weaklistoffset == 0 {
+            (*tp).tp_weaklistoffset = (*base).tp_weaklistoffset;
+        }
+
+        // Function-pointer slots: inherit when the child left them None.
+        macro_rules! inherit_fn {
+            ($field:ident) => {
+                if (*tp).$field.is_none() {
+                    (*tp).$field = (*base).$field;
+                }
+            };
+        }
+        inherit_fn!(tp_dealloc);
+        inherit_fn!(tp_getattr);
+        inherit_fn!(tp_setattr);
+        inherit_fn!(tp_repr);
+        inherit_fn!(tp_hash);
+        inherit_fn!(tp_call);
+        inherit_fn!(tp_str);
+        inherit_fn!(tp_getattro);
+        inherit_fn!(tp_setattro);
+        inherit_fn!(tp_traverse);
+        inherit_fn!(tp_clear);
+        inherit_fn!(tp_richcompare);
+        inherit_fn!(tp_iter);
+        inherit_fn!(tp_iternext);
+        inherit_fn!(tp_descr_get);
+        inherit_fn!(tp_descr_set);
+        inherit_fn!(tp_init);
+        inherit_fn!(tp_alloc);
+        inherit_fn!(tp_new);
+        inherit_fn!(tp_free);
+        inherit_fn!(tp_is_gc);
+        inherit_fn!(tp_del);
+        inherit_fn!(tp_finalize);
+
+        // Raw-pointer sub-protocol tables: inherit when the child left them null.
+        macro_rules! inherit_ptr {
+            ($field:ident) => {
+                if (*tp).$field.is_null() {
+                    (*tp).$field = (*base).$field;
+                }
+            };
+        }
+        inherit_ptr!(tp_as_async);
+        inherit_ptr!(tp_as_number);
+        inherit_ptr!(tp_as_sequence);
+        inherit_ptr!(tp_as_mapping);
+        inherit_ptr!(tp_as_buffer);
+        inherit_ptr!(tp_methods);
+        inherit_ptr!(tp_members);
+        inherit_ptr!(tp_getset);
+    }
 }
 
 #[unsafe(no_mangle)]

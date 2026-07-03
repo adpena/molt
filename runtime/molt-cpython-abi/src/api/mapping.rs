@@ -35,15 +35,24 @@ pub unsafe extern "C" fn PyDict_SetItem(
     let bridge = GLOBAL_BRIDGE.lock();
     let dict_bits = match bridge.pyobj_to_handle(op) {
         Some(b) => b,
-        None => return -1,
+        None => {
+            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some("unresolved dict"));
+            return -1;
+        }
     };
     let key_bits = match bridge.pyobj_to_handle(key) {
         Some(b) => b,
-        None => return -1,
+        None => {
+            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some("unresolved key"));
+            return -1;
+        }
     };
     let val_bits = match bridge.pyobj_to_handle(value) {
         Some(b) => b,
-        None => return -1,
+        None => {
+            crate::capi_trace::record_silent_failure("PyDict_SetItem", Some("unresolved value"));
+            return -1;
+        }
     };
     drop(bridge);
     let h = hooks_or_stubs();

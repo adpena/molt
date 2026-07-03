@@ -228,9 +228,27 @@ pub unsafe extern "C" fn PyCapsule_Import(name: *const c_char, _no_block: c_int)
         return ptr::null_mut();
     }
     let key = unsafe { CStr::from_ptr(name).to_string_lossy().into_owned() };
-    CAPSULE_REGISTRY
+    crate::capi_trace::trace_call("PyCapsule_Import", Some(&key));
+    let found = CAPSULE_REGISTRY
         .lock()
         .get(&key)
         .map(|entry| entry.pointer)
-        .unwrap_or(ptr::null_mut())
+        .unwrap_or(ptr::null_mut());
+    if found.is_null() {
+        // CPython's PyCapsule_Import sets ImportError when the named capsule is
+        // not available. Returning a bare NULL is a silent failure: an extension
+        // (for example numpy's PyDateTime_IMPORT) then proceeds with a NULL API
+        // pointer and crashes later instead of failing cleanly here.
+        crate::capi_trace::record_silent_failure("PyCapsule_Import", Some(&key));
+        let message = format!("PyCapsule_Import could not import module capsule \"{key}\"");
+        if let Ok(cmessage) = std::ffi::CString::new(message) {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_ImportError,
+                    cmessage.as_ptr(),
+                );
+            }
+        }
+    }
+    found
 }
