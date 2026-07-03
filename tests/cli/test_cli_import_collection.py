@@ -7716,15 +7716,24 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
 
     ops = _frontend_main_ops_for_import_source(
         "from scipy import ndimage\n"
-        "from scipy.ndimage import distance_transform_edt, gaussian_filter\n"
+        "from scipy.ndimage import (\n"
+        "    distance_transform_edt,\n"
+        "    gaussian_filter,\n"
+        "    label,\n"
+        "    maximum_filter,\n"
+        "    minimum_filter,\n"
+        ")\n"
         "mask = 1\n"
         "a = distance_transform_edt(mask)\n"
         "b = ndimage.distance_transform_edt(mask)\n"
         "c = gaussian_filter(mask, sigma=1.5)\n"
         "d = ndimage.gaussian_filter(mask, sigma=2.0)\n"
-        "e = ndimage.maximum_filter(mask, size=15)\n"
-        "f = ndimage.minimum_filter(mask, size=11)\n"
-        "g = ndimage.label(mask)\n",
+        "e = maximum_filter(mask, size=15)\n"
+        "f = ndimage.maximum_filter(mask, size=17)\n"
+        "g = minimum_filter(mask, size=11)\n"
+        "h = ndimage.minimum_filter(mask, size=13)\n"
+        "i = label(mask)\n"
+        "j = ndimage.label(mask)\n",
         module_name="field_solve",
         parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
@@ -7736,9 +7745,9 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
     expected_counts = {
         "scipy.ndimage.distance_transform_edt": 2,
         "scipy.ndimage.gaussian_filter": 2,
-        "scipy.ndimage.maximum_filter": 1,
-        "scipy.ndimage.minimum_filter": 1,
-        "scipy.ndimage.label": 1,
+        "scipy.ndimage.maximum_filter": 2,
+        "scipy.ndimage.minimum_filter": 2,
+        "scipy.ndimage.label": 2,
     }
     invoke_ops_by_export = {
         name: [
@@ -7760,8 +7769,8 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
             assert invoke_op["native_callable_abi"] == spec["abi"]
             assert "native_callable_symbol" not in invoke_op
             assert len(invoke_op["args"]) == 2
-    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 4
-    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 4
+    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 6
+    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 6
     assert all(op.get("kind") != "call_bind" for op in ops)
     assert all(op.get("kind") != "call_indirect" for op in ops)
     assert all(
