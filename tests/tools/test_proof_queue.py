@@ -2103,6 +2103,10 @@ def test_proof_queue_named_lane_can_queue_without_runner(
     assert rows[0]["status"] == "queued"
     assert rows[0]["logical_id"] == "r6-target-version-parity-py312"
     assert rows[0]["contention_key"] == "python:r6-target-version-py312"
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "status=queued" in log_text
+    assert "logical_id=r6-target-version-parity-py312" in log_text
+    assert "No proof command has launched for this queued row." in log_text
     command = json.loads(rows[0]["command_json"])
     assert command[command.index("--python-version") + 1] == "3.12"
     assert [note["body"] for note in _notes(db)][-1:] == [
@@ -2133,6 +2137,56 @@ def test_proof_queue_named_lane_rejects_queue_only_with_detach(
 
     assert exc.value.code == 2
     assert not db.exists()
+
+
+def test_proof_queue_queued_missing_log_is_not_running_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "r6-target-version-parity",
+                "--queue-only",
+            ]
+        )
+        == 0
+    )
+    row = _rows(db)[0]
+    Path(row["log_path"]).unlink()
+
+    assert proof_queue._active_log_status(row) == [
+        f"  log={Path(row['log_path'])} (queued; proof command not launched yet)"
+    ]
+    capsys.readouterr()
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--json",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert all(
+        issue["signal_id"] != "audit-active-log-missing"
+        for issue in payload["issues"]
+    )
 
 
 def test_proof_queue_windows_launchers_hide_console(
@@ -2561,6 +2615,12 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(tmp_path: Path) -> 
         )
         == 0
     )
+    rows = _rows(db)
+    queued_log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert "status=queued" in queued_log_text
+    assert "logical_id=queued-proof" in queued_log_text
+    assert "env_overrides=" in queued_log_text
+    assert "No proof command has launched for this queued row." in queued_log_text
     assert (
         proof_queue.main(
             [
