@@ -3,62 +3,77 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_literal_matches" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_literal_matches",
             crate::molt_re_literal_matches as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_literal_advance" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_literal_advance",
             crate::molt_re_literal_advance as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_any_advance" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_any_advance",
             crate::molt_re_any_advance as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_char_in_range" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_char_in_range",
             crate::molt_re_char_in_range as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_category_matches" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_category_matches",
             crate::molt_re_category_matches as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_anchor_matches" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_anchor_matches",
             crate::molt_re_anchor_matches as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_group_is_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_group_is_set",
             crate::molt_re_group_is_set as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_backref_advance" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_backref_advance",
             crate::molt_re_backref_advance as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_backref_group_advance" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_backref_group_advance",
             crate::molt_re_backref_group_advance as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_apply_scoped_flags" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_apply_scoped_flags",
             crate::molt_re_apply_scoped_flags as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_group_capture" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_group_capture",
             crate::molt_re_group_capture as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_charclass_matches" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_charclass_matches",
             crate::molt_re_charclass_matches as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_charclass_advance" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_charclass_advance",
             crate::molt_re_charclass_advance as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_group_values" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_group_values",
             crate::molt_re_group_values as *const (),
         )),
+        #[cfg(feature = "stdlib_regex")]
         "molt_re_expand_replacement" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_re_expand_replacement",
             crate::molt_re_expand_replacement as *const (),
