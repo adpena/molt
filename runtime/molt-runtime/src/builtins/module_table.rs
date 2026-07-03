@@ -1008,6 +1008,7 @@ mod tests {
 
     static INIT_RUNS: TestCounter = TestCounter::new(0);
     static CYCLE_OBSERVED_PARTIAL: TestCounter = TestCounter::new(0);
+    static EXT_FAIL_RUNS: TestCounter = TestCounter::new(0);
 
     fn publish_test_module(name: &str) -> u64 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -1036,6 +1037,18 @@ mod tests {
     extern "C" fn init_g4_fail() -> u64 {
         crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(_py, "ValueError", "g4 init failure")
+        })
+    }
+
+    extern "C" fn init_g4_z_static_ext_fail() -> u64 {
+        EXT_FAIL_RUNS.fetch_add(1, Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(_py, {
+            raise_exception::<u64>(
+                _py,
+                "ImportError",
+                "g4_z_static_ext_fail: static-link PyModuleDef Py_mod_exec slot \
+                 returned non-zero",
+            )
         })
     }
 
@@ -1125,13 +1138,14 @@ mod tests {
             // Ids are declaration positions (rows pre-sorted; the builder
             // asserts the order): 0 g4_alias, 1 g4_cycle_a, 2 g4_cycle_b,
             // 3 g4_fail, 4 g4_noinit, 5 g4_pkg, 6 g4_pkg.sub, 7 g4_src,
-            // 8 g4_target, 9 g4_tomb, 10 g4_tomb_ext.
+            // 8 g4_target, 9 g4_tomb, 10 g4_tomb_ext,
+            // 11 g4_z_static_ext_fail.
             let mut builder = BlobBuilder::new();
             builder
                 .row("g4_alias", 0, None, Some(8), MODULE_KIND_ALIAS, 0)
                 .row(
                     "g4_cycle_a",
-                    init_g4_cycle_a as usize as u64,
+                    init_g4_cycle_a as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1139,7 +1153,7 @@ mod tests {
                 )
                 .row(
                     "g4_cycle_b",
-                    init_g4_cycle_b as usize as u64,
+                    init_g4_cycle_b as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1147,7 +1161,7 @@ mod tests {
                 )
                 .row(
                     "g4_fail",
-                    init_g4_fail as usize as u64,
+                    init_g4_fail as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1156,7 +1170,7 @@ mod tests {
                 .row("g4_noinit", 0, None, None, MODULE_KIND_SOURCE, 0)
                 .row(
                     "g4_pkg",
-                    init_g4_pkg as usize as u64,
+                    init_g4_pkg as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1164,7 +1178,7 @@ mod tests {
                 )
                 .row(
                     "g4_pkg.sub",
-                    init_g4_pkg_sub as usize as u64,
+                    init_g4_pkg_sub as *const () as usize as u64,
                     Some(5),
                     None,
                     MODULE_KIND_SOURCE,
@@ -1172,7 +1186,7 @@ mod tests {
                 )
                 .row(
                     "g4_src",
-                    init_g4_src as usize as u64,
+                    init_g4_src as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1180,7 +1194,7 @@ mod tests {
                 )
                 .row(
                     "g4_target",
-                    init_g4_target as usize as u64,
+                    init_g4_target as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1188,7 +1202,7 @@ mod tests {
                 )
                 .row(
                     "g4_tomb",
-                    init_g4_tomb as usize as u64,
+                    init_g4_tomb as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_SOURCE,
@@ -1196,11 +1210,19 @@ mod tests {
                 )
                 .row(
                     "g4_tomb_ext",
-                    init_g4_tomb_ext as usize as u64,
+                    init_g4_tomb_ext as *const () as usize as u64,
                     None,
                     None,
                     MODULE_KIND_EXTENSION,
                     MODULE_FLAG_REINIT_RESURRECT,
+                )
+                .row(
+                    "g4_z_static_ext_fail",
+                    init_g4_z_static_ext_fail as *const () as usize as u64,
+                    None,
+                    None,
+                    MODULE_KIND_EXTENSION,
+                    0,
                 );
             let blob: &'static [u8] = Box::leak(builder.build().into_boxed_slice());
             assert_eq!(molt_module_registry_install(blob.as_ptr()), 0);
@@ -1258,6 +1280,42 @@ mod tests {
             assert!(is_none_bits(retry));
             let text = pending_exception_text(_py);
             assert!(text.contains("g4 init failure"), "{text}");
+
+            // ── Static-extension failure unwind: Initializing → Uninit ──
+            let ext_fail_id = test_registry_id("g4_z_static_ext_fail");
+            let ext_runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
+            let ext_failed = module_ensure(_py, ext_fail_id);
+            assert!(is_none_bits(ext_failed));
+            let text = pending_exception_text(_py);
+            assert!(text.contains("ImportError"), "{text}");
+            assert!(
+                text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
+                "{text}"
+            );
+            let table = module_table(_py).expect("table");
+            assert_eq!(
+                table.states[ext_fail_id as usize].load(Ordering::Acquire),
+                STATE_UNINIT,
+                "failed static extension init must unwind out of Initializing"
+            );
+            assert_eq!(
+                table.owners[ext_fail_id as usize].load(Ordering::Acquire),
+                0,
+                "failed static extension init must release its ensure owner"
+            );
+            let ext_retry = module_ensure(_py, ext_fail_id);
+            assert!(is_none_bits(ext_retry));
+            let text = pending_exception_text(_py);
+            assert!(
+                text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
+                "{text}"
+            );
+            assert_eq!(
+                EXT_FAIL_RUNS.load(Ordering::SeqCst),
+                ext_runs_before + 2,
+                "retry after failed static extension init must re-enter ensure, not \
+                 observe a wedged Initializing row"
+            );
 
             // ── Same-thread cycle: partial module visible (I6, row 5.4) ──
             let observed = CYCLE_OBSERVED_PARTIAL.load(Ordering::SeqCst);
@@ -1366,6 +1424,53 @@ mod tests {
             let missing = isolate_import_dispatch(_py, "g4_not_a_module");
             assert!(is_none_bits(missing));
             assert!(!exception_pending(_py));
+        });
+    }
+
+    #[test]
+    fn r0_static_extension_init_failure_unwinds_initializing() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear();
+
+            let ext_fail_id = test_registry_id("g4_z_static_ext_fail");
+            let runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
+            let failed = module_ensure(_py, ext_fail_id);
+            assert!(is_none_bits(failed));
+            let text = pending_exception_text(_py);
+            assert!(
+                text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
+                "{text}"
+            );
+
+            let table = module_table(_py).expect("table");
+            assert_eq!(
+                table.states[ext_fail_id as usize].load(Ordering::Acquire),
+                STATE_UNINIT,
+                "failed static extension init must unwind the module row"
+            );
+            assert_eq!(
+                table.owners[ext_fail_id as usize].load(Ordering::Acquire),
+                0,
+                "failed static extension init must release the ensure owner"
+            );
+
+            let retry = module_ensure(_py, ext_fail_id);
+            assert!(is_none_bits(retry));
+            let text = pending_exception_text(_py);
+            assert!(
+                text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
+                "{text}"
+            );
+            assert_eq!(
+                EXT_FAIL_RUNS.load(Ordering::SeqCst),
+                runs_before + 2,
+                "retry must re-enter the extension init path instead of observing \
+                 a wedged Initializing row"
+            );
         });
     }
 
