@@ -372,6 +372,46 @@ def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
         assert invoke_op["source_line"] == 2
 
 
+def test_conditional_native_callable_import_stays_module_global_call() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "direct_symbol",
+                "abi": "molt.forward_f32_v1",
+                "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            }
+        },
+        fallback_policy="bridge",
+    )
+    gen.visit(
+        ast.parse(
+            "if flag:\n"
+            "    from nativepkg.ndimage import distance_transform_edt\n"
+            "value = distance_transform_edt(data)\n"
+        )
+    )
+    ops = next(
+        fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
+    )
+
+    assert [op for op in ops if op["kind"] == "invoke_ffi"] == []
+    call_bind_ops = [op for op in ops if op["kind"] == "call_bind"]
+    assert len(call_bind_ops) == 1
+    consts = _const_str_map(ops)
+    post_if_ops = ops[
+        next(i for i, op in enumerate(ops) if op["kind"] == "end_if") + 1 :
+    ]
+    assert any(
+        op["kind"] == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "distance_transform_edt"
+        for op in post_if_ops
+    )
+
+
 def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"nativepkg", "nativepkg.ndimage"},
@@ -460,3 +500,102 @@ def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
     assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
     assert "native_callable_symbol" not in invoke_op
     assert invoke_op["source_line"] == 2
+
+
+def _molt_main_ops(src: str) -> list[dict]:
+    ir = compile_to_tir(src)
+    main = next(fn for fn in ir["functions"] if fn.get("name") == "molt_main")
+    return main["ops"]
+
+
+def _const_str_map(ops: list[dict]) -> dict[str, str]:
+    return {
+        op["out"]: op["s_value"]
+        for op in ops
+        if op.get("kind") == "const_str" and "out" in op
+    }
+
+
+def _defined_before(ops: list[dict], target_index: int) -> set[str]:
+    """SSA values defined by ops strictly before target_index that are NOT
+    produced inside an if/end_if region (i.e. defined on the fall-through
+    path)."""
+    defined: set[str] = set()
+    depth = 0
+    for op in ops[:target_index]:
+        kind = op.get("kind")
+        if kind == "if":
+            depth += 1
+        elif kind == "end_if":
+            depth = max(0, depth - 1)
+        out = op.get("out")
+        if depth == 0 and isinstance(out, str) and out != "none":
+            defined.add(out)
+    return defined
+
+
+def test_conditional_reimport_reads_global_not_branch_local() -> None:
+    # A name imported unconditionally, then conditionally re-imported, then
+    # read AFTER the branch must be read through MODULE_GET_GLOBAL, never
+    # through the SSA value produced by the branch-local import, which is
+    # undefined on the fall-through path (an uninitialised NaN-box sentinel
+    # that reads as None and, when iterated, spins forever). This was the
+    # numpy `_core/__init__.py` witness wedge: `import sys` in the except
+    # handler, a conditional re-import, then `major, minor, *_ =
+    # sys.version_info`.
+    ops = _molt_main_ops(
+        "import sys\n"
+        "if len(sys.argv) > 100000:\n"
+        "    import sys\n"
+        "print(type(sys).__name__)\n"
+    )
+    consts = _const_str_map(ops)
+    end_if_index = next(
+        i for i, op in enumerate(ops) if op.get("kind") == "end_if"
+    )
+    post = ops[end_if_index + 1 :]
+
+    # The post-branch read of `sys` is a module_get_global for 'sys'.
+    global_reads = [
+        op
+        for op in post
+        if op.get("kind") == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1]) == "sys"
+    ]
+    assert global_reads, (
+        "post-branch sys read must route through module_get_global; "
+        f"post ops: {[op.get('kind') for op in post]}"
+    )
+
+    # And the value feeding type_of() must be defined on the fall-through
+    # path (i.e. the module_get_global result), never a branch-local SSA
+    # value.
+    type_of_ops = [op for op in post if op.get("kind") == "type_of"]
+    assert type_of_ops
+    fallthrough = _defined_before(ops, len(ops))
+    for top in type_of_ops:
+        arg = (top.get("args") or [None])[0]
+        assert arg in fallthrough, (
+            f"type_of reads {arg!r} which is not defined on the fall-through "
+            "path (branch-local leak)"
+        )
+
+
+def test_collect_assigned_names_includes_import_bindings() -> None:
+    # Root-cause unit check: the binding collector must treat imports as
+    # scope bindings exactly like CPython's symbol table, so visit_If's
+    # module-scope flush/evict reconciles a conditionally (re)imported name.
+    gen = SimpleTIRGenerator()
+    body = ast.parse(
+        "import sys\n"
+        "import a.b.c\n"
+        "import d.e as f\n"
+        "from g import h, i as j\n"
+        "from k import *\n"
+    ).body
+    assigned = gen._collect_assigned_names(body)
+    assert {"sys", "a", "f", "h", "j"} <= assigned
+    # `*` binds no specific name; the dotted `a.b.c` binds only the head.
+    assert "b" not in assigned and "c" not in assigned and "*" not in assigned
+    ordered = gen._collect_assigned_names_ordered(body)
+    assert set(ordered) >= {"sys", "a", "f", "h", "j"}
