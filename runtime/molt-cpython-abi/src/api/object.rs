@@ -63,7 +63,46 @@ pub unsafe extern "C" fn PyObject_GetAttr(
     {
         return unsafe { getattro(o, attr_name) };
     }
+    // No lookup path resolved the attribute; honor CPython's contract that a
+    // failed PyObject_GetAttr sets AttributeError rather than returning a bare
+    // NULL that leaves an extension's error check with nothing pending.
+    unsafe { attribute_error_missing_obj(o, attr_name) };
     ptr::null_mut()
+}
+
+/// Set `AttributeError` for a missing attribute named by a `str` object,
+/// mirroring [`attribute_error_missing`] for the `PyObject_GetAttr` path.
+/// No-op when an exception is already pending.
+unsafe fn attribute_error_missing_obj(o: *mut PyObject, attr_name: *mut PyObject) {
+    let attr = unsafe { attr_name_lossy(attr_name) };
+    crate::capi_trace::record_silent_failure("PyObject_GetAttr", Some(&attr));
+    if exception_already_pending() {
+        return;
+    }
+    let type_name = unsafe { type_name_lossy(o) };
+    let message = format!("'{type_name}' object has no attribute '{attr}'");
+    if let Ok(cmessage) = std::ffi::CString::new(message) {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_AttributeError,
+                cmessage.as_ptr(),
+            );
+        }
+    }
+}
+
+/// Best-effort UTF-8 rendering of a `str` attribute-name object for diagnostics.
+unsafe fn attr_name_lossy(attr_name: *mut PyObject) -> String {
+    if attr_name.is_null() {
+        return "?".to_string();
+    }
+    let mut size: crate::abi_types::Py_ssize_t = 0;
+    let ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8AndSize(attr_name, &mut size) };
+    if ptr.is_null() || size < 0 {
+        return "?".to_string();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) };
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[unsafe(no_mangle)]
@@ -106,7 +145,63 @@ pub unsafe extern "C" fn PyObject_GetAttrString(
             return result;
         }
     }
+    // Attribute not found on any lookup path. CPython's contract is that a
+    // failed PyObject_GetAttrString always sets AttributeError; a bare NULL here
+    // is a silent failure that leaves an extension's `return -1` with no pending
+    // exception. Set the honest exception and record the site for diagnostics.
+    unsafe { attribute_error_missing(o, attr_name) };
     ptr::null_mut()
+}
+
+/// True when an exception is already pending in either the C-API thread-local
+/// store or the runtime's own exception slot. A failing lookup path that finds
+/// a pending exception must not overwrite it with a synthetic one — the pending
+/// exception is the real error.
+fn exception_already_pending() -> bool {
+    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        return true;
+    }
+    unsafe { (hooks_or_stubs().exception_pending)() != 0 }
+}
+
+/// Set `AttributeError` for a missing attribute named by a C string, matching
+/// CPython's `PyObject_GetAttrString` failure contract, and record the site in
+/// the C-API silent-failure tracer. No-op when an exception is already pending.
+unsafe fn attribute_error_missing(o: *mut PyObject, attr_name: *const c_char) {
+    let attr = unsafe { std::ffi::CStr::from_ptr(attr_name) }.to_string_lossy();
+    crate::capi_trace::record_silent_failure("PyObject_GetAttrString", Some(&attr));
+    if exception_already_pending() {
+        return;
+    }
+    let type_name = unsafe { type_name_lossy(o) };
+    let message = format!("'{type_name}' object has no attribute '{attr}'");
+    if let Ok(cmessage) = std::ffi::CString::new(message) {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_AttributeError,
+                cmessage.as_ptr(),
+            );
+        }
+    }
+}
+
+/// Best-effort type name for an object, for diagnostic messages. Falls back to
+/// "object" when the type or its `tp_name` is unavailable.
+unsafe fn type_name_lossy(o: *mut PyObject) -> String {
+    if o.is_null() {
+        return "object".to_string();
+    }
+    let tp = unsafe { (*o).ob_type };
+    if tp.is_null() {
+        return "object".to_string();
+    }
+    let name = unsafe { (*tp).tp_name };
+    if name.is_null() {
+        return "object".to_string();
+    }
+    unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[unsafe(no_mangle)]
@@ -1070,6 +1165,22 @@ pub unsafe extern "C" fn PyObject_Call(
         && let Some(call) = unsafe { (*tp).tp_call }
     {
         return unsafe { call(callable, args, kwargs) };
+    }
+    // No tp_call slot: the object is not callable through this path. CPython
+    // raises TypeError here; a bare NULL is a silent failure that strands an
+    // extension's error check with no pending exception.
+    let type_name = unsafe { type_name_lossy(callable) };
+    crate::capi_trace::record_silent_failure("PyObject_Call", Some(&type_name));
+    if !exception_already_pending() {
+        let message = format!("'{type_name}' object is not callable");
+        if let Ok(cmessage) = std::ffi::CString::new(message) {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_TypeError,
+                    cmessage.as_ptr(),
+                );
+            }
+        }
     }
     ptr::null_mut()
 }

@@ -36,6 +36,14 @@ fn set_module_system_error_if_clear(message: impl AsRef<str>) {
     if unsafe { (h.exception_pending)() } != 0 {
         return;
     }
+    // No exception was set anywhere, so an extension returned a failure
+    // sentinel without honoring the C-API contract. If a Molt C-API recorded a
+    // silent failure on this thread, name it: it pinpoints the exact call the
+    // extension's exec sequence tripped on instead of the opaque generic text.
+    let message = match crate::capi_trace::take_last_silent_failure() {
+        Some(site) => format!("{} (last silent C-API failure: {site})", message.as_ref()),
+        None => message.as_ref().to_string(),
+    };
     set_module_system_error(message);
 }
 
@@ -128,6 +136,7 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     let h = hooks::hooks_or_stubs();
     let dict_bits = unsafe { (h.module_get_dict)(module_bits) };
     if dict_bits == 0 {
+        crate::capi_trace::record_silent_failure("PyModule_GetDict", None);
         return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(dict_bits) }
@@ -365,7 +374,13 @@ unsafe fn module_from_def_and_slots(
                     }
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
-                    if exec(module) != 0 {
+                    crate::capi_trace::trace_call("Py_mod_exec:enter", None);
+                    let exec_rc = exec(module);
+                    crate::capi_trace::trace_call(
+                        "Py_mod_exec:return",
+                        Some(if exec_rc == 0 { "ok" } else { "nonzero" }),
+                    );
+                    if exec_rc != 0 {
                         set_module_system_error_if_clear(
                             "Py_mod_exec slot returned non-zero without setting an exception",
                         );
