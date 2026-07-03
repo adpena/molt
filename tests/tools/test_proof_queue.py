@@ -2138,6 +2138,65 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
 
 
+def test_proof_queue_run_id_can_detach_existing_queued_row(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id, marker in (("queued-a", "A"), ("queued-b", "B")):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=f"run {marker}",
+            command=[sys.executable, "-c", f"print('{marker}')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{marker}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: dict[str, object] = {}
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        launched["run_id"] = run_id
+        launched["timeout"] = timeout
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--run-id",
+            "queued-b",
+            "--timeout",
+            "42",
+            "--detach",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    stdout = capsys.readouterr().out
+    assert rc == 0
+    assert launched == {"run_id": "queued-b", "timeout": 42.0}
+    assert rows["queued-a"]["status"] == "queued"
+    assert rows["queued-b"]["status"] == "queued"
+    assert not (logs / "queued-b.log").exists()
+    assert "detached queued-b runner_pid=12345" in stdout
+    assert f"runner_log: {logs / 'queued-b.runner.log'}" in stdout
+
+
 def test_proof_queue_named_lane_can_detach_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
