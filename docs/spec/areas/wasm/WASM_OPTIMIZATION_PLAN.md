@@ -133,9 +133,16 @@ The host links against WASI Preview 1 (`wasi_snapshot_preview1`) and exposes 22 
 | Pipes | `subprocess` | Custom `molt_process_*` host imports |
 | Locale | `locale` module | Host-side `num_format::SystemLocale` |
 
-### 2.3 WASI Preview 2 Migration Plan
+### 2.3 WASI Preview 2/3 Migration Plan
 
-Wasmtime 41.0.3 uses WASI P1. WASI 0.2 (Preview 2) has been stable since January 2024 and WASI 0.3 is expected around February 2026 with native async support.
+Wasmtime 41.0.3 uses WASI P1. WASI 0.2 (Preview 2) has been stable since January 2024.
+
+Research update, 2026-07-03: WASI 0.3.0 has shipped. The live WASI roadmap
+states that it was released on 2026-06-11, adds native async Component Model
+support (`async func`, `stream<T>`, and `future<T>`), and is available in
+Wasmtime 43+ and jco. Treat this as an adoption gate, not a future placeholder.
+The broader WASM/WebGPU/numeric acceleration obligations are tracked in
+`docs/design/foundation/71_wasm_webgpu_numeric_acceleration.md`.
 
 Migration path (aligned with spec 0400 Section 13):
 1. **Phase 1 (current)**: Raw `Linker::func_wrap()` imports with WASI P1.
