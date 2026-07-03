@@ -12,7 +12,9 @@ not supersede `docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md`,
 The obligation is the 100-year plan shape: portable semantic truth first,
 capability-gated lowering second, target-specific acceleration third, and a
 scoreboard that refuses any performance, size, startup, or compatibility claim
-without live evidence.
+without live evidence. This document is an implementation contract: every
+outcome below must be reducible to one authority, one lowering path, one
+artifact/proof path, and one release scoreboard row before support is claimed.
 
 ## End State
 
@@ -34,10 +36,11 @@ profile names:
    feature manifest, import closure, host-call count, binary size, startup,
    throughput, allocation count, and parity oracle.
 
-## 100-Year Outcomes
+## 100-Year Plan Outcomes
 
 These are not stretch goals. They are the long-horizon invariants this plan must
-keep making easier to satisfy:
+keep making easier to satisfy, and they are the non-negotiable outcome shape for
+R4, R7, and R8 work:
 
 1. One semantic authority feeds every backend. Python version/platform facts,
    representation facts, dtype/shape/stride facts, target features, and package
@@ -71,6 +74,23 @@ keep making easier to satisfy:
 10. A support claim means a green scoreboard row. If parity, performance,
     startup, binary size, browser behavior, or provider acceleration is not
     measured and version/platform-gated, it is not claimed support.
+
+Each outcome must carry an evidence ledger before a release or partnership
+handoff claims it:
+
+- Authority: the generated/shared source of truth that owns the semantic fact,
+  target capability, package artifact, or storage/lifetime invariant.
+- Lowering proof: the exact frontend, TIR, pass, backend, runtime, and package
+  custody path that consumes that authority without a duplicate lane.
+- Artifact proof: hashes, import/export closure, opcode histogram, retained
+  runtime features, native objects, package roots, and generated tables.
+- Parity proof: CPython >=3.12 oracle result with TargetPythonVersion and
+  platform gates, plus explicit tolerances only for opt-in approximate tiers.
+- Performance proof: startup, size, memory, allocation, copy count, host-call
+  count, and throughput rows against CPython and the relevant provider
+  baseline.
+- Negative proof: synthetic violations that fail closed when a feature,
+  symbol, provider, license, target capability, or lifetime contract is absent.
 
 ## Standards And Features To Track
 
@@ -263,7 +283,26 @@ Every repeated WASM/WebGPU diagnosis should become a one-command tool:
 
 This plan is complete only when these gates exist and pass on the claimed
 target/profile rows. Any missing row is a fail-closed non-claim, not a partial
-success.
+success. A gate is not considered present because a document describes it; it is
+present only when the repo contains the command, generated authority, expected
+machine-readable evidence, and a negative test proving the gate fails on the
+class of violation it is meant to prevent.
+
+Every exit row must record:
+
+- Command: the exact proof-queue lane, CI job, or deterministic local command
+  that produces the evidence.
+- Inputs: source file, target profile, Python version, OS/arch, feature
+  manifest row, package/root manifest, and provider selection.
+- Outputs: log path, artifact path, artifact hash, compact verdict, and
+  machine-readable evidence file.
+- Oracle: CPython or provider parity source, tolerance policy, and
+  version/platform gate.
+- Regression guard: the synthetic violation or fixture that fails if duplicate
+  authority, boxed fallback, broad reachability, unsupported target behavior, or
+  missing lifetime custody reappears.
+- Scoreboard row: startup, size, throughput, memory, allocation, host-call,
+  import-retention, and browser/provider result where applicable.
 
 1. Target feature manifest:
    `native`, `wasm-server`, `wasm-browser`, `wasm-edge`,
