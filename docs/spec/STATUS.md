@@ -1362,7 +1362,17 @@ the implementation. For forward-looking priorities, use
   green at 447 scanned source files, 1,258 required symbols, 1,258 supported,
   zero missing, and zero fail-fast. The strict SciPy `c_api_probe` lane is green
   at 592 scanned source files, 321 required symbols, 321 supported, zero
-  missing, and zero fail-fast. Friend-suite metrics now exclude custody/scan
+  missing, and zero fail-fast. The buffer descriptor lane now uses
+  `MoltBufferView` v2 as the shared public-header, compiled-ABI, runtime, and
+  HTTP-bridge layout, with `backing_capacity` plus base/offset validation as
+  the authority for importing strided memoryviews. Public and compiled
+  `PyObject_GetBuffer` fail closed for non-contiguous requests without stride
+  metadata, exported memoryviews refresh through runtime descriptor export
+  instead of a stale `Py_buffer` slot, NumPy array admission copies through
+  checked dtype, shape, stride, and alignment helpers, and non-owned NumPy
+  arrays cannot grow their backing storage on resize. This improves
+  ndarray/buffer custody but is still not a green no-host NumPy import proof.
+  Friend-suite metrics now exclude custody/scan
   runners from speedup math, and git-suite custody rejects ignored checkout
   artifacts in addition to dirty or wrong-ref trees. The Molt workload lane is
   expected to fail until no-host source-recompiled extension package build and

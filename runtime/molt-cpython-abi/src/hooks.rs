@@ -22,6 +22,7 @@ pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
 pub struct MoltBufferView {
     pub data: *mut u8,
     pub len: u64,
+    pub backing_capacity: u64,
     pub readonly: u32,
     pub ndim: u32,
     pub itemsize: u64,
@@ -40,6 +41,7 @@ impl Default for MoltBufferView {
         Self {
             data: std::ptr::null_mut(),
             len: 0,
+            backing_capacity: 0,
             readonly: 1,
             ndim: 1,
             itemsize: 1,

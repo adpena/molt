@@ -5,9 +5,10 @@
 
 use molt_cpython_abi::abi_types::Py_NotImplementedSentinel;
 use molt_cpython_abi::abi_types::{
-    METH_NOARGS, METH_O, Py_OptimizeFlag, Py_buffer, PyBUF_FORMAT, PyBUF_STRIDES, PyMethodDef,
-    PyMutex, PyObject,
+    METH_NOARGS, METH_O, Py_OptimizeFlag, Py_buffer, PyBUF_FORMAT, PyBUF_READ, PyBUF_STRIDES,
+    PyBUF_WRITE, PyMethodDef, PyMutex, PyObject,
 };
+use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::ptr;
 
@@ -54,7 +55,9 @@ fn test_object_str_returns_string() {
 fn test_memoryview_from_memory_has_type_and_null_base() {
     init();
     let mut byte = b'x' as c_char;
-    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromMemory(&mut byte, 1, 0) };
+    let view = unsafe {
+        molt_cpython_abi::api::memory::PyMemoryView_FromMemory(&mut byte, 1, PyBUF_WRITE)
+    };
     assert!(!view.is_null());
     assert_eq!(
         unsafe { molt_cpython_abi::api::memory::PyMemoryView_Check(view) },
@@ -78,8 +81,9 @@ fn test_memoryview_from_memory_has_type_and_null_base() {
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(same_view) };
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
 
-    let empty_view =
-        unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromMemory(ptr::null_mut(), 0, 0) };
+    let empty_view = unsafe {
+        molt_cpython_abi::api::memory::PyMemoryView_FromMemory(ptr::null_mut(), 0, PyBUF_READ)
+    };
     assert!(!empty_view.is_null());
     let empty_buffer =
         unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(empty_view) };
@@ -132,44 +136,103 @@ fn test_memoryview_from_buffer_copies_descriptor_without_sharing_release() {
 }
 
 #[test]
-fn test_memoryview_from_scalar_buffer_keeps_ndim_zero() {
+fn test_memoryview_from_buffer_rejects_indirect_suboffsets() {
     init();
-    let mut byte = b'x';
-    let format = b"B\0";
+    let mut bytes = [1_u8, 2, 3, 4];
+    let mut shape = [bytes.len() as isize];
+    let mut strides = [1isize];
+    let mut suboffsets = [0isize];
+    let mut format = [b'B' as c_char, 0];
     let mut info: Py_buffer = unsafe { std::mem::zeroed() };
-    info.buf = (&mut byte as *mut u8).cast();
-    info.obj = ptr::null_mut();
-    info.len = 1;
+    info.buf = bytes.as_mut_ptr().cast();
+    info.len = bytes.len() as isize;
     info.itemsize = 1;
-    info.readonly = 0;
+    info.readonly = 1;
+    info.ndim = 1;
+    info.format = format.as_mut_ptr();
+    info.shape = shape.as_mut_ptr();
+    info.strides = strides.as_mut_ptr();
+    info.suboffsets = suboffsets.as_mut_ptr();
+
+    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
+    assert!(view.is_null());
+}
+
+#[test]
+fn test_memoryview_from_buffer_preserves_zero_dimensional_descriptor() {
+    init();
+    let mut bytes = [0_u8; 8];
+    let mut format = [b'd' as c_char, 0];
+    let mut info: Py_buffer = unsafe { std::mem::zeroed() };
+    info.buf = bytes.as_mut_ptr().cast();
+    info.len = bytes.len() as isize;
+    info.itemsize = bytes.len() as isize;
+    info.readonly = 1;
     info.ndim = 0;
-    info.format = format.as_ptr().cast::<c_char>().cast_mut();
-    info.shape = ptr::null_mut();
-    info.strides = ptr::null_mut();
-    info.suboffsets = ptr::null_mut();
+    info.format = format.as_mut_ptr();
 
     let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
     assert!(!view.is_null());
     let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
     assert!(!buffer.is_null());
-    assert_eq!(unsafe { (*buffer).buf }, (&mut byte as *mut u8).cast());
-    assert_eq!(unsafe { (*buffer).len }, 1);
-    assert_eq!(unsafe { (*buffer).itemsize }, 1);
     assert_eq!(unsafe { (*buffer).ndim }, 0);
-    assert!(unsafe { (*buffer).shape }.is_null());
-    assert!(unsafe { (*buffer).strides }.is_null());
-    assert!(!unsafe { (*buffer).format }.is_null());
-    unsafe {
-        assert_eq!(*(*buffer).format as u8, b'B');
-        molt_cpython_abi::api::refcount::Py_DECREF(view);
-    }
+    assert_eq!(unsafe { (*buffer).len }, bytes.len() as isize);
+    assert_eq!(unsafe { (*buffer).itemsize }, bytes.len() as isize);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+}
 
-    let mut suboffset = 0isize;
-    info.suboffsets = (&mut suboffset as *mut isize).cast();
-    let invalid_view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
-    assert!(invalid_view.is_null());
-    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
-    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+#[test]
+fn test_memoryview_from_buffer_ignores_foreign_private_internal_pointer() {
+    init();
+    let mut bytes = [1_u8, 2, 3, 4];
+    let mut shape = [bytes.len() as isize];
+    let mut strides = [1isize];
+    let mut format = [b'B' as c_char, 0];
+    let mut info: Py_buffer = unsafe { std::mem::zeroed() };
+    info.buf = bytes.as_mut_ptr().cast();
+    info.len = bytes.len() as isize;
+    info.itemsize = 1;
+    info.readonly = 1;
+    info.ndim = 1;
+    info.format = format.as_mut_ptr();
+    info.shape = shape.as_mut_ptr();
+    info.strides = strides.as_mut_ptr();
+    info.internal = 1usize as *mut c_void;
+
+    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromBuffer(&mut info) };
+    assert!(!view.is_null());
+    let buffer = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(view) };
+    assert!(!buffer.is_null());
+    assert_ne!(unsafe { (*buffer).internal }, info.internal);
+    assert_eq!(unsafe { (*buffer).len }, bytes.len() as isize);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(view) };
+}
+
+#[test]
+fn test_one_dimensional_gapped_buffer_is_not_contiguous() {
+    init();
+    let mut bytes = [1_u8, 2, 3, 4, 5, 6];
+    let mut shape = [3isize];
+    let mut strides = [2isize];
+    let mut format = [b'B' as c_char, 0];
+    let mut info: Py_buffer = unsafe { std::mem::zeroed() };
+    info.buf = bytes.as_mut_ptr().cast();
+    info.len = 3;
+    info.itemsize = 1;
+    info.readonly = 1;
+    info.ndim = 1;
+    info.format = format.as_mut_ptr();
+    info.shape = shape.as_mut_ptr();
+    info.strides = strides.as_mut_ptr();
+
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::buffer::PyBuffer_IsContiguous(&info, b'C' as c_char) },
+        0
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::buffer::PyBuffer_IsContiguous(&info, b'F' as c_char) },
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------

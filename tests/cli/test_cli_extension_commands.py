@@ -11,7 +11,11 @@ import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import commands as cli_commands
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
-from molt.cli.extension_manifest import _manifest_support_file_payloads
+from molt.cli.extension_manifest import (
+    _CURRENT_MOLT_C_API_VERSION,
+    _default_molt_c_api_version,
+    _manifest_support_file_payloads,
+)
 from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 import pytest
@@ -166,7 +170,7 @@ def _write_extension_project(
                 'module = "demoext"',
                 'sources = ["src/demoext.c"]',
                 'capabilities = ["fs.read"]',
-                'molt_c_api_version = "1"',
+                'molt_c_api_version = "2"',
                 *(extension_extra_lines or []),
                 "",
             ]
@@ -1105,9 +1109,9 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
     assert manifest_path.exists()
     manifest = json.loads(manifest_path.read_text())
     assert manifest["wheel"] == wheel_path.name
-    assert manifest["molt_c_api_version"] == "1"
+    assert manifest["molt_c_api_version"] == "2"
     assert manifest["capabilities"] == ["fs.read"]
-    assert manifest["abi_tag"] == "molt_abi1"
+    assert manifest["abi_tag"] == "molt_abi2"
     assert manifest["loader_kind"] == "libmolt_source"
     assert manifest["init_symbol"] == "PyInit_demoext"
     assert manifest["runtime_linkage"] == "host_resolved"
@@ -1117,6 +1121,19 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         names = set(zf.namelist())
         assert "extension_manifest.json" in names
         assert manifest["extension"] in names
+
+
+def test_default_molt_c_api_version_fallback_tracks_current_contract(tmp_path: Path) -> None:
+    assert _default_molt_c_api_version(tmp_path / "missing-root") == _CURRENT_MOLT_C_API_VERSION
+
+    root = tmp_path / "bad-root"
+    (root / "include" / "molt").mkdir(parents=True)
+    (root / "include" / "molt" / "molt.h").write_text(
+        "#define NOT_THE_VERSION 1\n",
+        encoding="utf-8",
+    )
+
+    assert _default_molt_c_api_version(root) == _CURRENT_MOLT_C_API_VERSION
 
 
 def test_extension_build_emits_public_exports_in_manifest(
@@ -3238,10 +3255,28 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
                 "    return rc;",
                 "}",
                 "",
+                "static int full_buffer_flag_descriptor(PyObject *obj) {",
+                "    Py_buffer view;",
+                "    int rc = PyObject_GetBuffer(obj, &view, PyBUF_FULL_RO);",
+                "    if (rc == 0) {",
+                "        PyBuffer_Release(&view);",
+                "    }",
+                "    rc = PyObject_GetBuffer(obj, &view, PyBUF_RECORDS_RO);",
+                "    if (rc == 0) {",
+                "        PyBuffer_Release(&view);",
+                "    }",
+                "    rc = PyObject_GetBuffer(obj, &view, PyBUF_CONTIG_RO);",
+                "    if (rc == 0) {",
+                "        PyBuffer_Release(&view);",
+                "    }",
+                "    return 0;",
+                "}",
+                "",
                 "static int memoryview_descriptor(PyObject *obj, char *data) {",
                 "    Py_buffer view;",
                 "    PyObject *from_object;",
                 "    PyObject *from_memory;",
+                "    PyObject *readonly_memory;",
                 "    PyObject *from_buffer;",
                 "    Py_buffer *exported;",
                 "    PyObject *base;",
@@ -3249,23 +3284,90 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
                 "        return -1;",
                 "    }",
                 "    from_object = PyMemoryView_FromObject(obj);",
-                "    from_memory = PyMemoryView_FromMemory(data, 4, PyBUF_WRITABLE);",
+                "    from_memory = PyMemoryView_FromMemory(data, 4, PyBUF_WRITE);",
+                "    readonly_memory = PyMemoryView_FromMemory(data, 4, PyBUF_READ);",
                 "    from_buffer = PyMemoryView_FromBuffer(&view);",
+                "    if (from_object == NULL || from_memory == NULL || readonly_memory == NULL || from_buffer == NULL) {",
+                "        return -2;",
+                "    }",
                 "    exported = PyMemoryView_GET_BUFFER(from_buffer);",
                 "    base = PyMemoryView_GET_BASE(from_buffer);",
+                "    if (exported == NULL) {",
+                "        return -3;",
+                "    }",
                 "    (void)PyMemoryView_Check(from_object);",
                 "    (void)from_memory;",
+                "    (void)readonly_memory;",
                 "    (void)exported;",
                 "    (void)base;",
                 "    PyBuffer_Release(&view);",
                 "    return 0;",
                 "}",
                 "",
+                "static int memoryview_2d_compact_descriptor(char *data) {",
+                "    Py_buffer view;",
+                "    Py_ssize_t shape[2] = {2, 2};",
+                "    PyObject *from_buffer;",
+                "    memset(&view, 0, sizeof(view));",
+                "    view.buf = data;",
+                "    view.len = 4;",
+                "    view.itemsize = 1;",
+                "    view.readonly = 1;",
+                "    view.ndim = 2;",
+                "    view.shape = shape;",
+                "    view.strides = NULL;",
+                "    view.format = \"B\";",
+                "    from_buffer = PyMemoryView_FromBuffer(&view);",
+                "    if (from_buffer == NULL) {",
+                "        return -1;",
+                "    }",
+                "    return 0;",
+                "}",
+                "",
+                "static int memoryview_scalar_descriptor(char *data) {",
+                "    Py_buffer view;",
+                "    PyObject *from_buffer;",
+                "    Py_buffer *exported;",
+                "    memset(&view, 0, sizeof(view));",
+                "    view.buf = data;",
+                "    view.len = 8;",
+                "    view.itemsize = 8;",
+                "    view.readonly = 1;",
+                "    view.ndim = 0;",
+                "    view.shape = NULL;",
+                "    view.strides = NULL;",
+                "    view.format = \"d\";",
+                "    from_buffer = PyMemoryView_FromBuffer(&view);",
+                "    if (from_buffer == NULL) {",
+                "        return -1;",
+                "    }",
+                "    exported = PyMemoryView_GET_BUFFER(from_buffer);",
+                "    if (exported == NULL || exported->ndim != 0) {",
+                "        return -2;",
+                "    }",
+                "    return 0;",
+                "}",
+                "",
                 "int main(void) {",
                 "    char data[4] = {0, 1, 2, 3};",
-                "    (void)getbuffer_descriptor;",
-                "    (void)memoryview_descriptor;",
-                "    (void)PyObject_CheckBuffer(NULL);",
+                "    if (getbuffer_descriptor(NULL) != 0) {",
+                "        return -1;",
+                "    }",
+                "    if (memoryview_descriptor(NULL, data) != 0) {",
+                "        return -2;",
+                "    }",
+                "    if (PyObject_CheckBuffer(NULL) != 0) {",
+                "        return -3;",
+                "    }",
+                "    if (memoryview_2d_compact_descriptor(data) != 0) {",
+                "        return -4;",
+                "    }",
+                "    if (full_buffer_flag_descriptor(NULL) != 0) {",
+                "        return -5;",
+                "    }",
+                "    if (memoryview_scalar_descriptor(data) != 0) {",
+                "        return -6;",
+                "    }",
                 "    return fillinfo_descriptor(data);",
                 "}",
                 "",
@@ -3423,6 +3525,15 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "",
                 "static int numpy_smoke(PyObject *obj) {",
                 "    PyArrayObject *arr = (PyArrayObject *)obj;",
+                "    char raw[32];",
+                "    Py_buffer view;",
+                "    PyArrayObject *from_buffer;",
+                "    PyArrayObject *strided;",
+                "    PyArrayObject *copy;",
+                "    PyArrayObject *cast;",
+                "    PyArrayObject *scalar;",
+                "    npy_intp dims2[2] = {2, 2};",
+                "    npy_intp bad_strides[2] = {1, 2};",
                 "    PyArray_Descr *descr = PyArray_DescrFromType(NPY_INT);",
                 "    PyArray_Descr *scalar_descr = PyArray_DescrFromScalar(obj);",
                 "    npy_intp nd = PyArray_NDIM(arr);",
@@ -3431,6 +3542,25 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
                 "    int is_scalar = PyArray_CheckScalar(obj);",
                 "    int is_datetime = PyArray_ISDATETIME(arr);",
                 "    PyObject *from_any = PyArray_FromAny(obj, PyArray_DescrFromType(NPY_UBYTE), 1, 2, NPY_ARRAY_C_CONTIGUOUS, NULL);",
+                "    memset(&view, 0, sizeof(view));",
+                "    view.buf = raw + 1;",
+                "    view.len = 16;",
+                "    view.itemsize = 8;",
+                "    view.readonly = 0;",
+                "    view.ndim = 1;",
+                "    view.format = \"<d\";",
+                "    from_buffer = (PyArrayObject *)PyArray_FromAny((PyObject *)&view, NULL, 0, 1, 0, NULL);",
+                "    strided = (PyArrayObject *)PyArray_NewFromDescr(&PyArray_Type, PyArray_DescrFromType(NPY_UBYTE), 2, dims2, bad_strides, raw, NPY_ARRAY_C_CONTIGUOUS, NULL);",
+                "    copy = strided != NULL ? (PyArrayObject *)PyArray_NewCopy(strided, NPY_CORDER) : NULL;",
+                "    cast = strided != NULL ? (PyArrayObject *)PyArray_Cast(strided, NPY_INT) : NULL;",
+                "    scalar = (PyArrayObject *)PyArray_Empty(0, NULL, PyArray_DescrFromType(NPY_DOUBLE), 0);",
+                "    (void)from_buffer;",
+                "    (void)copy;",
+                "    (void)cast;",
+                "    (void)scalar;",
+                "    (void)PyArray_malloc_aligned(8);",
+                "    (void)PyArray_realloc_aligned(NULL, 16);",
+                "    (void)PyArray_calloc_aligned(2, 8);",
                 "    import_array1(-1);",
                 "    (void)from_any;",
                 "    if (descr != NULL) {",
