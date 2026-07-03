@@ -274,6 +274,36 @@ native_callable_exports fixtures — `test_cli_import_collection.py`
 native-callable tests pass today). Do NOT touch the numpy exec / cpython-abi
 lane the subagent owns.
 
+**CRITICAL-PATH WITNESS BLOCKER — `molt_type_new` reserved-callable arity
+(2026-07-03, diagnosed, needs Codex wasm-backend owner).** numpy import now
+advances THROUGH PyType_Ready + PyCFunction method population (all landed) and
+fails at TYPE CREATION: `molt_call_indirect4 reserved runtime trampoline
+molt_type_new expects closure, argv, argc; got 4 args` (idx 2536/2558,
+trampoline range). FULL DIAGNOSIS: `molt_type_new`
+(runtime/molt-runtime/src/builtins/types/class_model.rs:127) takes 5 args
+`(cls_bits, name_bits, bases_bits, namespace_bits, kwargs_bits)` — it's the
+`type(name, bases, dict)` metatype construction, invoked when numpy's C exec
+calls `type(...)` (via PyObject_Call → PyType_Type.tp_call → the reserved
+callable). Reserved callables occupy TWO table slots (loader_bridge.js:699-711):
+a Direct slot (5 direct args) and a Trampoline slot (3 args: `0, argv_ptr, 5`).
+molt_type_new is registered arity=5, dispatch=Direct
+(wasm_callables_generated.rs:78; runtime_callables.rs:21312 `"molt_type_new" =>
+Some(5)`). THE BUG: the dispatch that routes `type(...)`/tp_call to
+molt_type_new emitted `molt_call_indirect4` (4 args) landing on the TRAMPOLINE
+slot — wrong for both slots (trampoline needs `indirect3(0, argv, 5)`; Direct
+needs `indirect5`). The arity was miscounted to 4 (dropped one of the 5, or the
+metatype `type` call routed through a generic call path that packs cls+args
+wrong). LANE: molt-backend-wasm dynamic-call lowering
+(`runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs`) + the
+reserved-callable table dispatch, and/or how PyType_Type.tp_call is wired to
+the molt_type_new reserved-callable index. This is a HOT lane — you (Codex)
+own it. Fix the arity/slot so a `type(...)` metatype call reaches molt_type_new
+with the correct 5-arg Direct (or 3-arg trampoline) shape. VERIFY: orchestrator
+runs the witness diag_probe wasm confirmation (advances past type creation);
+add a differential/native test of `type(name, bases, dict)` construction. This
+blocks numpy import (upstream of witness lanes 1-3 below) — TOP witness
+priority.
+
 **OPERATOR DIRECTIVE 2026-07-03 — GOD-FILE/GOD-CRATE DECOMPOSITION (high
 priority, PARALLEL to witness).** World-class OSS separation of concerns:
 execute the doc-21 decomposition program's PENDING moves. The god-crate is
