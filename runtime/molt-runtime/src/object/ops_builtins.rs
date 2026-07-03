@@ -3607,13 +3607,12 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     if end < start {
                         let stride = memoryview_stride(ptr);
                         let data = memoryview_data(ptr);
-                        let storage = TypedStridedStorage::new_with_owner(
+                        let storage = TypedStridedStorage::new(
                             data,
                             memoryview_readonly(ptr),
                             memoryview_itemsize(ptr),
                             0,
                             memoryview_base_bits(ptr),
-                            memoryview_owner_bits(ptr),
                             memoryview_format_bits(ptr),
                             vec![0],
                             vec![stride],
@@ -3638,13 +3637,12 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     } else {
                         base_data.add(byte_offset as usize)
                     };
-                    let storage = TypedStridedStorage::new_with_owner(
+                    let storage = TypedStridedStorage::new(
                         data,
                         memoryview_readonly(ptr),
                         memoryview_itemsize(ptr),
                         0,
                         memoryview_base_bits(ptr),
-                        memoryview_owner_bits(ptr),
                         memoryview_format_bits(ptr),
                         vec![new_len as isize],
                         vec![stride],

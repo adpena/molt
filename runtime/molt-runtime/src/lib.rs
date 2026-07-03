@@ -55,6 +55,7 @@ mod bridge;
     feature = "stdlib_compression",
     feature = "stdlib_crypto",
     feature = "stdlib_difflib",
+    feature = "stdlib_graphlib",
     feature = "stdlib_http",
     feature = "stdlib_ipaddress",
     feature = "stdlib_logging_ext",
@@ -80,6 +81,8 @@ mod constants;
 mod crypto_bridge;
 #[cfg(feature = "stdlib_difflib")]
 mod difflib_bridge;
+#[cfg(feature = "stdlib_graphlib")]
+mod graphlib_bridge;
 #[cfg(feature = "stdlib_http")]
 mod http_bridge;
 #[cfg(feature = "stdlib_ipaddress")]
@@ -113,6 +116,8 @@ pub use molt_runtime_compression;
 pub use molt_runtime_crypto;
 #[cfg(feature = "stdlib_difflib")]
 pub use molt_runtime_difflib;
+#[cfg(feature = "stdlib_graphlib")]
+pub use molt_runtime_graphlib;
 #[cfg(feature = "stdlib_http")]
 pub use molt_runtime_http;
 #[cfg(feature = "stdlib_ipaddress")]
@@ -490,7 +495,8 @@ pub use crate::builtins::functions_re::*;
 pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;
-pub use crate::builtins::graphlib::*;
+#[cfg(feature = "stdlib_graphlib")]
+pub use molt_runtime_graphlib::graphlib::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
