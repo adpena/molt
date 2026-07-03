@@ -189,6 +189,9 @@ feature = "stdlib_serial"
 [stdlib.difflib]
 prefixes = ["difflib_"]
 feature = "stdlib_difflib"
+[stdlib.graphlib]
+prefixes = ["graphlib_"]
+feature = "stdlib_graphlib"
 [stdlib.xml_etree]
 prefixes = ["xml_"]
 feature = "stdlib_xml"

@@ -42,7 +42,6 @@ pub(crate) mod gpu;
 pub(crate) mod gpu_backend;
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) mod gpu_primitives;
-pub(crate) mod graphlib;
 pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;

@@ -1,8 +1,17 @@
-use crate::{
-    MoltObject, PyToken, alloc_dict_with_pairs, alloc_list, alloc_tuple, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, exception_pending, obj_from_bits, opaque_handle_bits,
-    ptr_from_bits, raise_exception, string_obj_to_owned, to_i64,
+//! Intrinsics for the `graphlib` stdlib module.
+//!
+//! Implements `graphlib.TopologicalSorter`: incremental construction
+//! (`add`/`prepare`), the ready/done work-queue protocol
+//! (`get_ready`/`done`/`is_active`), and the batch `static_order()` iterator.
+//! Cycle detection follows CPython's DFS with an explicit stack so a
+//! `CycleError` surfaces the offending path.
+
+use crate::bridge::{
+    alloc_dict_with_pairs, alloc_list, alloc_tuple, dec_ref_bits, dict_get_in_place,
+    dict_set_in_place, exception_pending, inc_ref_bits, object_type_id, raise_exception, seq_vec_ref,
+    string_obj_to_owned, to_i64,
 };
+use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +35,7 @@ struct GraphState {
 }
 
 impl GraphState {
-    fn new(_py: &PyToken<'_>) -> Option<Self> {
+    fn new(_py: &PyToken) -> Option<Self> {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             return None;
@@ -41,7 +50,7 @@ impl GraphState {
         })
     }
 
-    fn clear_refs(&mut self, _py: &PyToken<'_>) {
+    fn clear_refs(&mut self, _py: &PyToken) {
         if self.freed {
             return;
         }
@@ -57,7 +66,7 @@ impl GraphState {
         obj_from_bits(self.node_map_bits).as_ptr()
     }
 
-    fn lookup_node_index(&self, _py: &PyToken<'_>, node_bits: u64) -> Result<Option<usize>, u64> {
+    fn lookup_node_index(&self, _py: &PyToken, node_bits: u64) -> Result<Option<usize>, u64> {
         let dict_ptr = self
             .node_map_ptr()
             .ok_or_else(|| raise_exception::<u64>(_py, "RuntimeError", "graph state lost"))?;
@@ -85,7 +94,7 @@ impl GraphState {
         Ok(Some(idx as usize))
     }
 
-    fn get_or_create_index(&mut self, _py: &PyToken<'_>, node_bits: u64) -> Result<usize, u64> {
+    fn get_or_create_index(&mut self, _py: &PyToken, node_bits: u64) -> Result<usize, u64> {
         if let Some(idx) = self.lookup_node_index(_py, node_bits)? {
             return Ok(idx);
         }
@@ -98,7 +107,7 @@ impl GraphState {
             npredecessors: 0,
             successors: Vec::new(),
         });
-        crate::inc_ref_bits(_py, node_bits);
+        inc_ref_bits(_py, node_bits);
         let idx_bits = MoltObject::from_int(idx as i64).bits();
         unsafe {
             dict_set_in_place(_py, dict_ptr, node_bits, idx_bits);
@@ -118,7 +127,7 @@ struct GraphHandle {
 }
 
 impl GraphHandle {
-    fn new(_py: &PyToken<'_>) -> Option<Self> {
+    fn new(_py: &PyToken) -> Option<Self> {
         GraphState::new(_py).map(|state| Self {
             state: Mutex::new(state),
         })
@@ -138,8 +147,8 @@ fn graph_from_bits(bits: u64) -> Option<Arc<GraphHandle>> {
     }
 }
 
-fn node_repr(_py: &PyToken<'_>, node_bits: u64) -> Result<String, u64> {
-    let repr_bits = crate::molt_repr_from_obj(node_bits);
+fn node_repr(_py: &PyToken, node_bits: u64) -> Result<String, u64> {
+    let repr_bits = molt_runtime_core::rt_repr(node_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -149,7 +158,7 @@ fn node_repr(_py: &PyToken<'_>, node_bits: u64) -> Result<String, u64> {
     Ok(repr)
 }
 
-fn build_cycle_list(_py: &PyToken<'_>, nodes: &[NodeInfo], cycle: &[usize]) -> u64 {
+fn build_cycle_list(_py: &PyToken, nodes: &[NodeInfo], cycle: &[usize]) -> u64 {
     let mut out_bits = Vec::with_capacity(cycle.len());
     for &idx in cycle {
         out_bits.push(nodes[idx].node_bits);
@@ -203,7 +212,7 @@ fn find_cycle(nodes: &[NodeInfo]) -> Option<Vec<usize>> {
     None
 }
 
-fn prepare_graph(_py: &PyToken<'_>, state: &mut GraphState) -> Result<Option<Vec<usize>>, u64> {
+fn prepare_graph(_py: &PyToken, state: &mut GraphState) -> Result<Option<Vec<usize>>, u64> {
     if state.ready_nodes.is_some() {
         return Err(raise_exception::<_>(
             _py,
@@ -227,7 +236,7 @@ fn prepare_graph(_py: &PyToken<'_>, state: &mut GraphState) -> Result<Option<Vec
     Ok(find_cycle(&state.nodes))
 }
 
-fn graph_ready_tuple(_py: &PyToken<'_>, ready: &[usize], nodes: &[NodeInfo]) -> u64 {
+fn graph_ready_tuple(_py: &PyToken, ready: &[usize], nodes: &[NodeInfo]) -> u64 {
     let mut out = Vec::with_capacity(ready.len());
     for &idx in ready {
         out.push(nodes[idx].node_bits);
@@ -238,7 +247,7 @@ fn graph_ready_tuple(_py: &PyToken<'_>, ready: &[usize], nodes: &[NodeInfo]) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = GraphHandle::new(_py) else {
             return MoltObject::none().bits();
         };
@@ -250,7 +259,7 @@ pub extern "C" fn molt_graphlib_new() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -273,11 +282,11 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
             None => return raise_exception::<_>(_py, "TypeError", "predecessors must be a tuple"),
         };
         unsafe {
-            let type_id = crate::object_type_id(preds_ptr);
-            if type_id != crate::TYPE_ID_TUPLE && type_id != crate::TYPE_ID_LIST {
+            let type_id = object_type_id(preds_ptr);
+            if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "predecessors must be a tuple");
             }
-            let elems = crate::seq_vec_ref(preds_ptr);
+            let elems = seq_vec_ref(preds_ptr);
             let pred_count = elems.len();
             if pred_count > 0 {
                 state.nodes[node_idx].npredecessors += pred_count as i64;
@@ -296,7 +305,7 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -314,7 +323,7 @@ pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -338,7 +347,7 @@ pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -352,7 +361,7 @@ pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -369,11 +378,11 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
             None => return raise_exception::<_>(_py, "TypeError", "nodes must be a tuple"),
         };
         unsafe {
-            let type_id = crate::object_type_id(nodes_ptr);
-            if type_id != crate::TYPE_ID_TUPLE && type_id != crate::TYPE_ID_LIST {
+            let type_id = object_type_id(nodes_ptr);
+            if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
                 return raise_exception::<_>(_py, "TypeError", "nodes must be a tuple");
             }
-            let elems = crate::seq_vec_ref(nodes_ptr);
+            let elems = seq_vec_ref(nodes_ptr);
             for &node_bits in elems.iter() {
                 let node_idx = match state.lookup_node_index(_py, node_bits) {
                     Ok(Some(idx)) => idx,
@@ -426,7 +435,7 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
         };
@@ -499,7 +508,7 @@ pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_graphlib_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
         if ptr.is_null() {
             return MoltObject::none().bits();

@@ -14,6 +14,7 @@ members = [
     "molt-runtime-path",
     "molt-runtime-text",
     "molt-runtime-difflib",
+    "molt-runtime-graphlib",
     "molt-runtime-logging",
     "molt-runtime-http",
     "molt-runtime-xml",

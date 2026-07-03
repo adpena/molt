@@ -35,6 +35,10 @@ DIFFLIB_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-runtime-difflib/src/intrinsics_generated"
 )
 DIFFLIB_LEAF_RESOLVER_INDEX = DIFFLIB_LEAF_RESOLVERS_DIR / "mod.rs"
+GRAPHLIB_LEAF_RESOLVERS_DIR = (
+    ROOT / "runtime/molt-runtime-graphlib/src/intrinsics_generated"
+)
+GRAPHLIB_LEAF_RESOLVER_INDEX = GRAPHLIB_LEAF_RESOLVERS_DIR / "mod.rs"
 IPADDRESS_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-runtime-ipaddress/src/intrinsics_generated"
 )
@@ -131,6 +135,14 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": "molt_runtime_difflib::intrinsics_generated::difflib_resolver",
         "symbol_path_prefix": "molt_runtime_difflib::difflib",
         "function_path_prefix": "crate::difflib",
+    },
+    "graphlib": {
+        "output": GRAPHLIB_LEAF_RESOLVERS_DIR / "graphlib_resolver.rs",
+        "module_index": GRAPHLIB_LEAF_RESOLVER_INDEX,
+        "crate_path": "molt_runtime_graphlib",
+        "crate_resolver_path": "molt_runtime_graphlib::intrinsics_generated::graphlib_resolver",
+        "symbol_path_prefix": "molt_runtime_graphlib::graphlib",
+        "function_path_prefix": "crate::graphlib",
     },
     "ipaddress": {
         "output": IPADDRESS_LEAF_RESOLVERS_DIR / "ipaddress_resolver.rs",
@@ -664,7 +676,6 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_pkgutil_", "pkgutil"),
     ("molt_stat_", "stat"),
     ("molt_fcntl_", "fcntl"),
-    ("molt_graphlib_", "graphlib"),
     ("molt_punycode_", "punycode"),
     ("molt_this_", "this"),
     ("molt_wsgiref_", "wsgiref"),
