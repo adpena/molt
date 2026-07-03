@@ -273,7 +273,7 @@ pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
 pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
 #[cfg(feature = "molt_gpu_primitives")]
-pub use crate::builtins::gpu_primitives::{
+pub use molt_gpu::primitives_ffi::{
     molt_gpu_prim_binary, molt_gpu_prim_cast, molt_gpu_prim_contiguous,
     molt_gpu_prim_create_tensor, molt_gpu_prim_create_tensor_raw, molt_gpu_prim_device,
     molt_gpu_prim_dtype, molt_gpu_prim_expand, molt_gpu_prim_flip, molt_gpu_prim_free,
