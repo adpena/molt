@@ -43,37 +43,37 @@ uv run --active --project . --python 3.12 python tools\frontend_hot_pass_profile
 ```
 
 Artifact:
-`logs/frontend_profile/profile_20260703T024706Z/frontend_hot_pass_profile.json`
+`logs/frontend_profile/profile_20260703T040000Z/frontend_hot_pass_profile.json`
 
-Revision: `b188a55137f1e48a29826885970c2f07c93cfead`
+Revision: `be516cbfffc5fff66016d9e114222bada3c757c5`
 
-Corpus: 17/17 pass, total frontend elapsed `32623.8123 ms`.
+Corpus: 17/17 pass, total frontend elapsed `16744.9423 ms`.
 
 | rank | pass | total_ms | p95_ms | attempted | accepted | degraded | sources |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | cse | 16743.460801 | 671.6759 | 104 | 16 | 6 | 17 |
-| 2 | sccp_edge_thread | 4090.8857 | 149.2093 | 88 | 0 | 0 | 17 |
-| 3 | prune | 1967.3465 | 61.2928 | 88 | 0 | 0 | 17 |
-| 4 | cfg_precanonicalize | 1566.337201 | 143.6485 | 66 | 11 | 0 | 17 |
-| 5 | verifier | 1003.404401 | 45.612 | 88 | 82 | 0 | 17 |
-| 6 | post_cse_dce | 863.5984 | 30.526 | 98 | 0 | 0 | 17 |
+| 1 | cse | 9069.268501 | 406.5868 | 104 | 16 | 6 | 17 |
+| 2 | sccp_edge_thread | 2202.972001 | 64.9468 | 88 | 0 | 0 | 17 |
+| 3 | prune | 1081.582 | 31.8031 | 88 | 0 | 0 | 17 |
+| 4 | cfg_precanonicalize | 642.540901 | 30.4069 | 66 | 11 | 0 | 17 |
+| 5 | post_cse_dce | 392.688399 | 11.0554 | 98 | 0 | 0 | 17 |
+| 6 | verifier | 386.2955 | 10.8068 | 88 | 82 | 0 | 17 |
 
 Top shared frontend functions:
 
 | rank | function | cumulative_ms | self_ms | calls |
 | --- | --- | ---: | ---: | ---: |
-| 1 | `serialization.py:to_json` | 31669.3485 | 12.6555 | 17 |
-| 2 | `serialization.py:map_ops_to_json` | 31642.4024 | 88.0999 | 65 |
-| 3 | `midend_pipeline.py:_run_ir_midend_passes` | 31231.2671 | 2.3347 | 65 |
-| 4 | `midend_pipeline.py:_canonicalize_control_aware_ops` | 30882.376 | 126.4755 | 63 |
-| 5 | `midend_pipeline.py:_canonicalize_control_aware_ops_impl` | 30314.296 | 462.2095 | 66 |
-| 6 | `midend_pipeline.py:_run_cse_canonicalization_round` | 15969.1435 | 2517.9606 | 96 |
-| 7 | `midend_dataflow.py:_compute_sccp` | 7061.2609 | 1695.159 | 362 |
-| 8 | `cfg_analysis.py:build_cfg` | 5811.3707 | 66.9352 | 1874 |
-| 9 | `midend_canonicalization.py:_canonicalization_state_signature` | 4205.7366 | 1788.1338 | 183664 |
-| 10 | `midend_canonicalization.py:_canonicalize_block_with_state` | 3401.6662 | 1159.6708 | 40620 |
-| 11 | `midend_dataflow.py:merge_states` | 2980.9108 | 1179.5993 | 18098 |
-| 12 | `cfg_analysis.py:_compute_dominators` | 2373.4608 | 958.1581 | 518 |
+| 1 | `serialization.py:to_json` | 16229.6115 | 4.7577 | 17 |
+| 2 | `serialization.py:map_ops_to_json` | 16218.6006 | 37.8592 | 65 |
+| 3 | `midend_pipeline.py:_run_ir_midend_passes` | 16013.384 | 1.0108 | 65 |
+| 4 | `midend_pipeline.py:_canonicalize_control_aware_ops` | 15852.9405 | 37.8923 | 63 |
+| 5 | `midend_pipeline.py:_canonicalize_control_aware_ops_impl` | 15627.265 | 131.9977 | 66 |
+| 6 | `midend_pipeline.py:_run_cse_canonicalization_round` | 8577.8273 | 1135.597 | 87 |
+| 7 | `midend_dataflow.py:_compute_sccp` | 3909.9811 | 775.8275 | 362 |
+| 8 | `cfg_analysis.py:build_cfg` | 2555.3446 | 19.3495 | 1874 |
+| 9 | `midend_canonicalization.py:_canonicalization_state_signature` | 2309.6402 | 964.8826 | 183664 |
+| 10 | `midend_canonicalization.py:_canonicalize_block_with_state` | 2115.6591 | 669.5027 | 40620 |
+| 11 | `midend_dataflow.py:merge_states` | 1767.2555 | 675.9499 | 18098 |
+| 12 | `cfg_analysis.py:_compute_dominators` | 1020.1767 | 403.5319 | 589 |
 
 ## First Rust Candidate
 
