@@ -195,10 +195,27 @@ impl PassManager {
         self.run_inner(func, verify_analysis)
     }
 
+    /// Run the pipeline with the `molt-check` TIR translation validator forced
+    /// on, independent of process-global env. Fuzzers and tests use this path
+    /// to exercise the same pass-seam invariant that the JSONL validation lane
+    /// consumes.
+    pub fn run_with_translation_validation(&self, func: &mut TirFunction) -> Vec<PassStats> {
+        self.run_inner_with_options(func, false, true)
+    }
+
     /// Pipeline body with the per-pass analysis self-check explicitly
     /// controlled (rather than read from the process-global env), so tests can
     /// force it on deterministically without racing other parallel tests.
     fn run_inner(&self, func: &mut TirFunction, verify_analysis: bool) -> Vec<PassStats> {
+        self.run_inner_with_options(func, verify_analysis, false)
+    }
+
+    fn run_inner_with_options(
+        &self,
+        func: &mut TirFunction,
+        verify_analysis: bool,
+        force_translation_validation: bool,
+    ) -> Vec<PassStats> {
         // Snapshot BEFORE any mutation so unchanged pipelines lower the
         // original IR structurally without pass-induced metadata drift.
         let snapshot = func.clone();
@@ -212,8 +229,11 @@ impl PassManager {
         }
 
         let emit_pass_delta = super::pass_delta::emit_enabled();
+        let validate_translation =
+            force_translation_validation || super::translation_validator::enabled();
+        let capture_pass_facts = emit_pass_delta || validate_translation;
         let mut pass_delta_before =
-            emit_pass_delta.then(|| super::pass_delta::FactProfile::capture(func));
+            capture_pass_facts.then(|| super::pass_delta::FactProfile::capture(func));
 
         let mut am = AnalysisManager::new();
 
@@ -267,15 +287,29 @@ impl PassManager {
 
             if let Some(before) = before_delta {
                 let after = super::pass_delta::FactProfile::capture(func);
-                super::pass_delta::emit_pass_delta(
-                    func,
-                    p.name(),
-                    mutation_class,
-                    &self.target_info,
-                    &stat,
-                    &before,
-                    &after,
-                );
+                let translation_validation =
+                    super::translation_validator::validate_repr_lattice_monotonic(
+                        &before.value_reprs,
+                        &after.value_reprs,
+                    );
+                if emit_pass_delta {
+                    super::pass_delta::emit_pass_delta(
+                        func,
+                        p.name(),
+                        mutation_class,
+                        &self.target_info,
+                        &stat,
+                        &before,
+                        &after,
+                        &translation_validation,
+                    );
+                }
+                if validate_translation && !translation_validation.passed {
+                    panic!(
+                        "{}",
+                        translation_validation.panic_message(&func.name, p.name())
+                    );
+                }
                 pass_delta_before = Some(after);
             }
 

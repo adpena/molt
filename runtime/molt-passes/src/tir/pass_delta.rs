@@ -18,6 +18,7 @@ use super::ops::TirOp;
 use super::pass_manager::Mutates;
 use super::passes::PassStats;
 use super::target_info::TargetInfo;
+use super::translation_validator::TranslationValidation;
 use super::types::TirType;
 use super::values::ValueId;
 use crate::debug_artifacts;
@@ -341,6 +342,7 @@ struct PassDeltaRecord<'a> {
     stats: PassStatsRecord<'a>,
     before: &'a FactProfile,
     after: &'a FactProfile,
+    translation_validation: &'a TranslationValidation,
     delta: FactDelta,
 }
 
@@ -352,6 +354,7 @@ pub(crate) fn emit_pass_delta(
     stats: &PassStats,
     before: &FactProfile,
     after: &FactProfile,
+    translation_validation: &TranslationValidation,
 ) {
     let record = PassDeltaRecord {
         schema_version: PASS_DELTA_SCHEMA_VERSION,
@@ -364,6 +367,7 @@ pub(crate) fn emit_pass_delta(
         stats: PassStatsRecord::from_stats(stats),
         before,
         after,
+        translation_validation,
         delta: FactDelta::between(before, after),
     };
 
@@ -459,7 +463,7 @@ fn negative_counts(delta: &BTreeMap<String, isize>) -> BTreeMap<String, usize> {
 mod tests {
     use super::*;
     use crate::tir::blocks::Terminator;
-    use crate::tir::ops::{AttrDict, Dialect, OpCode};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode};
     use crate::tir::target_info::TargetInfo;
 
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
@@ -496,6 +500,46 @@ mod tests {
         ];
         block.terminator = Terminator::Return {
             values: vec![unboxed],
+        };
+        func
+    }
+
+    fn const_i64_function() -> TirFunction {
+        let mut func = TirFunction::new("repr_const_i64".into(), vec![], TirType::I64);
+        let value = func.fresh_value();
+        func.value_types.insert(value, TirType::I64);
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(1));
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops = vec![TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![value],
+            attrs,
+            source_span: None,
+        }];
+        block.terminator = Terminator::Return {
+            values: vec![value],
+        };
+        func
+    }
+
+    fn opaque_i64_function() -> TirFunction {
+        let mut func = TirFunction::new("repr_opaque_i64".into(), vec![], TirType::I64);
+        let value = func.fresh_value();
+        func.value_types.insert(value, TirType::I64);
+        let block = func.blocks.get_mut(&func.entry_block).unwrap();
+        block.ops = vec![TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![],
+            results: vec![value],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }];
+        block.terminator = Terminator::Return {
+            values: vec![value],
         };
         func
     }
@@ -554,10 +598,41 @@ mod tests {
     }
 
     #[test]
+    fn translation_validation_catches_carrier_widening_drift_from_ir_profiles() {
+        let before = FactProfile::capture(&const_i64_function());
+        let after = FactProfile::capture(&opaque_i64_function());
+
+        assert_eq!(
+            before.value_reprs.get("0").map(String::as_str),
+            Some("RawI64Safe")
+        );
+        assert_eq!(
+            after.value_reprs.get("0").map(String::as_str),
+            Some("MaybeBigInt")
+        );
+
+        let validation = crate::tir::translation_validator::validate_repr_lattice_monotonic(
+            &before.value_reprs,
+            &after.value_reprs,
+        );
+
+        assert!(!validation.passed);
+        assert_eq!(validation.violations.len(), 1);
+        assert_eq!(validation.violations[0].value_id, "0");
+        assert_eq!(validation.violations[0].before, "RawI64Safe");
+        assert_eq!(validation.violations[0].after, "MaybeBigInt");
+    }
+
+    #[test]
     fn pass_delta_record_serializes_host_and_target_context() {
         let func = fixture_function();
         let before = FactProfile::capture(&func);
         let after = before.clone();
+        let translation_validation =
+            crate::tir::translation_validator::validate_repr_lattice_monotonic(
+                &before.value_reprs,
+                &after.value_reprs,
+            );
         let stats = PassStats {
             name: "noop",
             ..PassStats::default()
@@ -573,12 +648,18 @@ mod tests {
             stats: PassStatsRecord::from_stats(&stats),
             before: &before,
             after: &after,
+            translation_validation: &translation_validation,
             delta: FactDelta::between(&before, &after),
         };
 
         let encoded = serde_json::to_value(record).expect("record serializes");
         assert_eq!(encoded["schema_version"], PASS_DELTA_SCHEMA_VERSION);
         assert_eq!(encoded["kind"], "molt_tir_pass_delta");
+        assert_eq!(
+            encoded["translation_validation"]["check"],
+            "repr_lattice_monotonic"
+        );
+        assert_eq!(encoded["translation_validation"]["passed"], true);
         assert_eq!(encoded["host"]["os"], std::env::consts::OS);
         assert_eq!(encoded["host"]["arch"], std::env::consts::ARCH);
         assert_eq!(encoded["target"]["target"], "NativeCranelift");

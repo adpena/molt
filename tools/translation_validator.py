@@ -462,6 +462,59 @@ class TranslationValidator:
             )
         return CheckResult(check="repr_lattice_monotonic", passed=True)
 
+    @staticmethod
+    def check_rust_translation_validation(
+        validation: Mapping[str, Any],
+    ) -> CheckResult:
+        """Consume the Rust-owned TIR translation-validation verdict.
+
+        New pass-delta rows carry this verdict directly. The Python checker
+        still has a legacy fallback for older rows, but it is no longer the
+        authority for the R3a proof-order rule when Rust emitted a verdict.
+        """
+        check = validation.get("check")
+        if not isinstance(check, str) or not check:
+            return CheckResult(
+                check="translation_validation",
+                passed=False,
+                detail="translation_validation.check missing or not a string",
+            )
+        passed = validation.get("passed")
+        if not isinstance(passed, bool):
+            return CheckResult(
+                check=check,
+                passed=False,
+                detail="translation_validation.passed missing or not a bool",
+            )
+        violations = validation.get("violations")
+        if not isinstance(violations, list):
+            return CheckResult(
+                check=check,
+                passed=False,
+                detail="translation_validation.violations missing or not a list",
+            )
+        if passed:
+            return CheckResult(check=check, passed=True)
+
+        details: list[str] = []
+        for violation in violations[:10]:
+            if not isinstance(violation, Mapping):
+                details.append(repr(violation))
+                continue
+            value_id = violation.get("value_id", "?")
+            before = violation.get("before", "?")
+            after = violation.get("after", "?")
+            reason = violation.get("reason", "")
+            details.append(f"{value_id}: {before}->{after} {reason}".strip())
+        return CheckResult(
+            check=check,
+            passed=False,
+            detail=(
+                f"{len(violations)} Repr downgrade(s) or family drift: "
+                f"{details}"
+            ),
+        )
+
     # ------------------------------------------------------------------
     # Per-pass validators
     # ------------------------------------------------------------------
@@ -714,6 +767,10 @@ class TranslationValidator:
         function_name = str(record.get("function") or "<unknown>")
         pass_name = str(record.get("pass") or "<unknown>")
         report = PassReport(function=function_name, pass_name=pass_name)
+        validation = record.get("translation_validation")
+        if isinstance(validation, Mapping):
+            report.checks.append(self.check_rust_translation_validation(validation))
+            return report
         before = record.get("before")
         after = record.get("after")
         if not isinstance(before, Mapping) or not isinstance(after, Mapping):

@@ -265,6 +265,32 @@ class TestCheckReprLatticeMonotonic:
         assert report.pass_name == "bce"
         assert report.checks[0].check == "repr_lattice_monotonic"
 
+    def test_pass_delta_record_consumes_rust_translation_verdict(self):
+        report = self.tv.validate_pass_delta_record(
+            {
+                "function": "hot_loop",
+                "pass": "copy_prop",
+                "before": {"value_reprs": {"3": "RawI64Safe"}},
+                "after": {"value_reprs": {"3": "RawI64Safe"}},
+                "translation_validation": {
+                    "check": "repr_lattice_monotonic",
+                    "passed": False,
+                    "violations": [
+                        {
+                            "value_id": "3",
+                            "before": "RawI64Safe",
+                            "after": "MaybeBigInt",
+                            "reason": "moves downward in repr proof order",
+                        }
+                    ],
+                },
+            }
+        )
+
+        assert not report.passed
+        assert report.checks[0].check == "repr_lattice_monotonic"
+        assert "3: RawI64Safe->MaybeBigInt" in report.checks[0].detail
+
     def setup_method(self):
         self.tv = TranslationValidator()
 
