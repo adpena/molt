@@ -2216,6 +2216,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                         "tools/proof_queue.py",
                         *NATIVE_CALL_LANE_SCOPES,
                     ),
+                    artifacts=(str(row["summary_json"]), str(row["log_path"])),
                 )
             )
         else:
@@ -2238,6 +2239,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                         "tools/memory_guard.py",
                         "tools/proof_queue.py",
                     ),
+                    artifacts=(str(row["summary_json"]), str(row["log_path"])),
                 )
             )
 
