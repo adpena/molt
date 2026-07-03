@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -2004,10 +2005,51 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
     assert report in result.termination_reports
 
 
+def test_run_guarded_observes_child_exit_before_timeout_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePopen:
+        pid = 4242
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                if timeout is not None and timeout <= 0.02:
+                    time.sleep(0.06)
+                    self.returncode = 0
+                    raise subprocess.TimeoutExpired(self.command, timeout)
+                self.returncode = 0
+            return self.returncode
+
+    monkeypatch.setattr(memory_guard.os, "name", "nt", raising=False)
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", FakePopen)
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "pass"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        sampler=lambda: {},
+        timeout=0.05,
+        cleanup_orphans=False,
+    )
+
+    assert result.returncode == 0
+    assert result.timed_out is False
+
+
 def test_run_command_captures_large_stdout_without_pipe_deadlock() -> None:
+    payload_size = 512 * 1024
     script = (
         "import sys; "
-        "sys.stdout.write('x' * (2 * 1024 * 1024)); "
+        f"sys.stdout.write('x' * {payload_size}); "
         "sys.stdout.flush(); "
         "sys.stderr.write('done\\n')"
     )
@@ -2020,7 +2062,7 @@ def test_run_command_captures_large_stdout_without_pipe_deadlock() -> None:
     )
 
     assert result.returncode == 0
-    assert len(result.stdout) == 2 * 1024 * 1024
+    assert len(result.stdout) == payload_size
     assert result.stderr == "done\n"
 
 

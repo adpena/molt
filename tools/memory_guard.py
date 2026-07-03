@@ -1082,6 +1082,13 @@ def run_guarded(
                 baseline_pgids = _live_process_group_ids(baseline_samples)
 
         while not guard_interrupted:
+            if os.name == "posix" and hasattr(os, "wait4"):
+                exited_usage = _poll_wait4_child(proc)
+                if exited_usage is not None:
+                    child_exit_usage = exited_usage
+                    break
+            elif proc.poll() is not None:
+                break
             now = time.monotonic()
             if guard_signal is not None:
                 samples, watched = sample_tracked_tree()
