@@ -120,6 +120,15 @@ with a semantic change in the same commit — rename-only diffs must stay review
 
 ## 🔥 RIP-IT-ALL-UP DECOMPOSITION ROADMAP (operator 2026-07-03: "rip it all up")
 
+**PRIORITY ORDER (operator 2026-07-03): BACKEND / RUNTIME-NATIVE / WASM / LLVM
+FIRST.** Rip these before anything else: `molt-backend-native` (67k, orchestrator
+subagent NOW), `molt-backend-wasm` (27k, orchestrator subagent NOW — avoid
+call_ops/dynamic.rs), `molt-backend` (16k), `molt-wasm-host` (5.7k), and the
+native/wasm lowering inside molt-runtime once the core opens. `molt-backend-mlir`
+(the LLVM/MLIR path) is only 2,710 lines — already under god-file thresholds,
+nothing to rip. Codex: claim a BACKEND crate above FIRST; molt-passes / stdlib /
+tk come after the backend set.
+
 Aggressive scope, careful execution. EVERY god-crate gets an owner and a
 build-verified, contract-gated cut. Current sizes (hand-written `.rs`, excl
 generated):
