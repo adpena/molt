@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
 DEFAULT_OUT_DIR = ROOT / "tmp" / "pact_witness_acceptance_queue"
 _STATIC_LINK_EXEC_FAILURE_RE = re.compile(
-    r"ImportError:\s+"
+    r"(?:ImportError:|Original error was:)\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_.]*):\s+"
     r"(?P<reason>static-link PyModuleDef Py_mod_exec slot returned non-zero[^\r\n]*)"
 )
