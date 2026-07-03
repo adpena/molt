@@ -331,6 +331,27 @@ from-import native-call provenance (3b0ca4a80, be516cbff).
 
 ## Proof and cargo DX rules (binding — incident: 835s cold compile for one test)
 
+- **DO NOT iterate on a full witness/wasm rebuild.** Editing `molt-cpython-abi`
+  forces the `molt-runtime` god-crate (~230k lines) to recompile to wasm every
+  cycle (~1700s+ per gap; the pact-witness-acceptance E2E lane is ~1500s). That
+  is NOT a dev loop. `molt-cpython-abi` has NO dependency on `molt-runtime`, so
+  `cargo test -p molt-cpython-abi` compiles ONLY cpython-abi (+ its deps) —
+  seconds-to-low-minutes, no god-crate rebuild. Close every CPython C-API
+  primitive (PyType_Ready slot inheritance, PyCFunction_NewEx, module exec
+  slots, buffer descriptors, number/mapping protocol) behind a
+  `runtime/molt-cpython-abi/tests/*.rs` unit test with stub hooks and iterate
+  there. Reserve a wasm rebuild for BATCH integration confirmation only.
+- **Batch C-extension-init closure via a full trace, not one-gap-per-build.**
+  One instrumented wasm build with `capi_trace.rs` (MOLT_TRACE_CAPI) captures
+  the ENTIRE C-API call sequence a numpy/scipy extension exec makes up to its
+  failure. From that + the extension source, close ALL the needed primitives in
+  the fast unit-test loop, then ONE wasm build to confirm the whole batch
+  advanced. Target ≤2-3 wasm builds to close an exec, not 20.
+- For behavior-only confirmation builds (does the import succeed?), use the
+  fastest profile that reproduces it (dev-fast: lto=off, codegen-units=256,
+  incremental) — NOT release-fast. Perf gates are separate.
+- The molt-runtime god-crate rebuild cost is the structural root; the finer-
+  crate extraction (roadmap R5b / decomposition T1) removes it permanently.
 - NEVER pay a cold crate compile for a single exact test. If your proof
   needs a compile, run the whole relevant test SHARD in that same compile.
 - Warm before you prove: prefer the shared proof-family target dir the
