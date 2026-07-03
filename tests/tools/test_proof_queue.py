@@ -2440,6 +2440,54 @@ def test_proof_queue_named_lane_can_detach_runner(
     assert [note["body"] for note in _notes(db)][-1:] == ["detached queue launch smoke"]
 
 
+def test_proof_queue_exec_detach_requires_submission_note(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    def fail_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, run_id, timeout
+        raise AssertionError("note-less detached row must not launch")
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fail_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "missing-note-detach",
+            "--reason",
+            "prove detached proof notes fail closed",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:missing-note-detach",
+            "--scope",
+            "tools/proof_queue.py",
+            "--detach",
+            "--",
+            sys.executable,
+            "-c",
+            "print('must not run')",
+        ]
+    )
+
+    assert rc == 2
+    assert not db.exists()
+    assert "queued proof submissions require at least one append-only note" in (
+        capsys.readouterr().err
+    )
+
+
 def test_proof_queue_named_lane_can_queue_without_runner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
