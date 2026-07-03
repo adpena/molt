@@ -2,39 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        "molt_graphlib_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_new",
-            crate::molt_graphlib_new as *const (),
-        )),
-        "molt_graphlib_add" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_add",
-            crate::molt_graphlib_add as *const (),
-        )),
-        "molt_graphlib_prepare" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_prepare",
-            crate::molt_graphlib_prepare as *const (),
-        )),
-        "molt_graphlib_get_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_get_ready",
-            crate::molt_graphlib_get_ready as *const (),
-        )),
-        "molt_graphlib_is_active" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_is_active",
-            crate::molt_graphlib_is_active as *const (),
-        )),
-        "molt_graphlib_done" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_done",
-            crate::molt_graphlib_done as *const (),
-        )),
-        "molt_graphlib_static_order" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_static_order",
-            crate::molt_graphlib_static_order as *const (),
-        )),
-        "molt_graphlib_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_graphlib_drop",
-            crate::molt_graphlib_drop as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_graphlib")]
+    {
+        molt_runtime_graphlib::intrinsics_generated::graphlib_resolver::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_graphlib"))]
+    {
+        let _ = symbol;
+        None
     }
 }
