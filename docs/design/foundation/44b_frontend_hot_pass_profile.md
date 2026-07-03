@@ -26,6 +26,10 @@ frontend-hot-pass-profile rc=0 sources=17 statuses={'pass': 17} json=... md=...
 
 Artifact schema:
 
+- `profile_inputs`: manifest path/hash, explicit source arguments, limit, and
+  resolved source list. The artifact must prove the corpus it measured.
+- `corpus_digest`: ordered digest of each measured source path and source hash;
+  use it to compare profile artifacts before claiming a speedup.
 - `ranked_midend_passes`: aggregate pass table from the frontend's existing
   `midend_pass_stats_by_function` authority.
 - `ranked_frontend_functions`: cProfile attribution filtered to
@@ -44,6 +48,10 @@ uv run --active --project . --python 3.12 python tools\frontend_hot_pass_profile
 
 Artifact:
 `logs/frontend_profile/profile_20260703T040000Z/frontend_hot_pass_profile.json`
+
+Corpus digest: recorded in schema `1.1+` artifacts; this historical baseline was
+generated before artifact-level corpus custody existed and is therefore pinned
+by the command, revision, corpus count, and per-source hashes in the artifact.
 
 Revision: `be516cbfffc5fff66016d9e114222bada3c757c5`
 
