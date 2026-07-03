@@ -366,8 +366,11 @@ diagnostic and issue counts first, then a `frontier:` block for the latest
 non-superseded classified product failures, then queue-debt issues. Rerun or
 supersede edges retire older frontier failures from that block once a child row
 exists, so audit points agents at the current boundary instead of replaying
-stale failures. The issue wall is capped by default; use `--max-issues 0`,
-`--json`, or `--output` for the full machine-readable handoff.
+stale failures. Default audit also treats superseded terminal rows as
+archaeology and omits their old queue-debt issues from exit status and human
+triage; use `--all` when you intentionally want complete historical debt. The
+issue wall is capped by default; use `--max-issues 0`, `--json`, or `--output`
+for the full machine-readable handoff.
 
 For runs with notes, the queue writes a deterministic marimo `.py` notebook under
 `logs/proof_queue/notebooks/RUN_ID.py` by default. The notebook is a generated
