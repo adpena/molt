@@ -33,7 +33,7 @@ performance-first C-extension compatibility without embedding CPython.
   - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
   - Public header: `include/molt/molt.h`
   - CPython-compat shim headers: `include/Python.h`, `include/molt/Python.h`
-  - Current version constant: `MOLT_C_API_VERSION = 1`
+  - Current version constant: `MOLT_C_API_VERSION = 3`
 
 ---
 
@@ -64,6 +64,14 @@ not observable through this accessor.
 - `molt_object_call`
 - `molt_object_repr`, `molt_object_str`, `molt_object_truthy`
 - `molt_object_equal`, `molt_object_not_equal`, `molt_object_contains`
+- `molt_c_heap_register`, `molt_c_heap_unregister`, `molt_c_heap_contains`
+- `molt_c_heap_type_canonicalize`
+
+`molt_c_heap_*` is the public-header C-object provenance lane. It lets
+source-compatible headers expose real C heap pointers for extension-local
+objects, while generic `Py_INCREF`/`Py_DECREF`/type checks avoid treating those
+pointers as Molt handles. Type canonicalization is keyed by explicit kind so
+header-inline type objects keep one identity across C translation units.
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
@@ -76,10 +84,18 @@ not observable through this accessor.
 - `molt_tuple_from_array`, `molt_list_from_array`, `molt_dict_from_pairs`
 
 ### 4.7 Buffer + Bytes
-- `molt_buffer_acquire`, `molt_buffer_release`
+- `molt_buffer_acquire`, `molt_buffer_export`, `molt_buffer_release`
 - `molt_bytes_from`, `molt_bytes_as_ptr`
 - `molt_string_from`, `molt_string_as_ptr`
 - `molt_bytearray_from`, `molt_bytearray_as_ptr`
+
+`MoltBufferView` is the single descriptor exchanged by the public C header,
+the compiled CPython-ABI shim, and the runtime. Non-contiguous exports must
+request stride metadata; `PyBUF_SIMPLE`/format-only requests fail closed unless
+the descriptor is C-contiguous. Unsupported or over-capacity PEP 3118 format
+metadata fails closed instead of being truncated or guessed, and base-less
+negative-stride memoryviews do not publish a buffer descriptor because their
+lower bound cannot be revalidated on import.
 
 ### 4.8 Types + Modules
 - `molt_type_ready`

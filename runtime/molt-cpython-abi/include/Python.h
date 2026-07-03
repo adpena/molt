@@ -957,6 +957,7 @@ extern int          PyType_IsSubtype    (PyTypeObject *a, PyTypeObject *b);
 extern PyObject    *PyType_GetQualName  (PyTypeObject *tp);
 extern void         PyType_Modified     (PyTypeObject *tp);
 extern PyObject    *_PyType_Lookup      (PyTypeObject *tp, PyObject *name);
+extern PyTypeObject *molt_cpython_abi_type_canonicalize(uint32_t kind, PyTypeObject *type_obj);
 extern PyObject    *PyObject_Type       (PyObject *op);
 extern int          PyObject_TypeCheck  (PyObject *op, PyTypeObject *tp);
 extern PyObject    *PyObject_Repr       (PyObject *op);

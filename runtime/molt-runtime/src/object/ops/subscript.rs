@@ -38,6 +38,49 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> b
     }
 }
 
+unsafe fn memoryview_strided_contains_byte(
+    data: *const u8,
+    len: usize,
+    stride: isize,
+    byte: u8,
+) -> Option<bool> {
+    for idx in 0..len {
+        let offset = memoryview_linear_offset(idx, stride)?;
+        if unsafe { *data.offset(offset) } == byte {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+unsafe fn memoryview_strided_contains_bytes(
+    data: *const u8,
+    len: usize,
+    stride: isize,
+    needle: &[u8],
+) -> Option<bool> {
+    if needle.is_empty() {
+        return Some(true);
+    }
+    if needle.len() > len {
+        return Some(false);
+    }
+    for start in 0..=len - needle.len() {
+        let mut matched = true;
+        for (offset_idx, &expected) in needle.iter().enumerate() {
+            let offset = memoryview_linear_offset(start + offset_idx, stride)?;
+            if unsafe { *data.offset(offset) } != expected {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -180,7 +223,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         if shape.len() != strides.len() {
                             return MoltObject::none().bits();
                         }
-                        let mut pos = 0isize;
+                        let mut indices = Vec::with_capacity(elems.len());
                         for (dim, &elem_bits) in elems.iter().enumerate() {
                             let Some(idx) = sequence_index_i64_with_type_error(
                                 _py,
@@ -199,20 +242,11 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                                 let msg = format!("index out of bounds on dimension {}", dim + 1);
                                 return raise_exception::<_>(_py, "IndexError", &msg);
                             }
-                            let Some(next_pos) =
-                                memoryview_checked_strided_add(pos, i as isize, strides[dim])
-                            else {
-                                return MoltObject::none().bits();
-                            };
-                            pos = next_pos;
+                            indices.push(i as isize);
                         }
-                        if pos < 0 {
-                            return raise_exception::<_>(
-                                _py,
-                                "IndexError",
-                                "index out of bounds on dimension 1",
-                            );
-                        }
+                        let Some(pos) = memoryview_strided_offset(&indices, strides) else {
+                            return MoltObject::none().bits();
+                        };
                         let val = memoryview_read_scalar_at(_py, data.cast_const(), pos, fmt);
                         return val.unwrap_or_else(|| MoltObject::none().bits());
                     }
@@ -229,41 +263,42 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
                         };
-                        if step < 0 {
-                            return raise_exception::<_>(
-                                _py,
-                                "NotImplementedError",
-                                "negative-stride memoryview slices are not implemented",
-                            );
-                        }
+                        let base_offset = memoryview_offset(ptr);
                         let base_stride = strides[0];
                         let itemsize = memoryview_itemsize(ptr);
-                        let Some(byte_offset) = start.checked_mul(base_stride) else {
+                        let new_len = range_len_i64(start as i64, stop as i64, step as i64);
+                        let new_len = new_len.max(0) as usize;
+                        let start_delta = if new_len == 0 {
+                            0
+                        } else {
+                            if start < 0 {
+                                return MoltObject::none().bits();
+                            }
+                            let Some(start_delta) =
+                                memoryview_linear_offset(start as usize, base_stride)
+                            else {
+                                return MoltObject::none().bits();
+                            };
+                            start_delta
+                        };
+                        let Some(new_offset) = base_offset.checked_add(start_delta) else {
                             return MoltObject::none().bits();
                         };
                         let Some(new_stride) = base_stride.checked_mul(step) else {
                             return MoltObject::none().bits();
                         };
-                        let new_len = range_len_i64(start as i64, stop as i64, step as i64);
-                        let new_len = new_len.max(0) as usize;
                         let mut new_shape = shape.to_vec();
                         let mut new_strides = strides.to_vec();
                         if !new_shape.is_empty() {
                             new_shape[0] = new_len as isize;
                             new_strides[0] = new_stride;
                         }
-                        let slice_data = if new_len == 0 {
-                            data
-                        } else {
-                            data.add(byte_offset as usize)
-                        };
-                        let storage = TypedStridedStorage::new_with_owner(
-                            slice_data,
+                        let storage = TypedStridedStorage::new(
+                            data.offset(start_delta),
                             memoryview_readonly(ptr),
                             itemsize,
-                            0,
+                            new_offset,
                             memoryview_base_bits(ptr),
-                            memoryview_owner_bits(ptr),
                             memoryview_format_bits(ptr),
                             new_shape,
                             new_strides,
@@ -303,14 +338,9 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "index out of bounds on dimension 1",
                         );
                     }
-                    let pos = (i as isize) * strides[0];
-                    if pos < 0 {
-                        return raise_exception::<_>(
-                            _py,
-                            "IndexError",
-                            "index out of bounds on dimension 1",
-                        );
-                    }
+                    let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
+                        return MoltObject::none().bits();
+                    };
                     let val = memoryview_read_scalar_at(_py, data.cast_const(), pos, fmt);
                     return val.unwrap_or_else(|| MoltObject::none().bits());
                 }
@@ -1294,7 +1324,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         if shape.len() != strides.len() {
                             return MoltObject::none().bits();
                         }
-                        let mut pos = 0isize;
+                        let mut indices = Vec::with_capacity(elems.len());
                         for (dim, &elem_bits) in elems.iter().enumerate() {
                             let Some(idx) = sequence_index_i64_with_type_error(
                                 _py,
@@ -1313,20 +1343,11 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 let msg = format!("index out of bounds on dimension {}", dim + 1);
                                 return raise_exception::<_>(_py, "IndexError", &msg);
                             }
-                            let Some(next_pos) =
-                                memoryview_checked_strided_add(pos, i as isize, strides[dim])
-                            else {
-                                return MoltObject::none().bits();
-                            };
-                            pos = next_pos;
+                            indices.push(i as isize);
                         }
-                        if pos < 0 {
-                            return raise_exception::<_>(
-                                _py,
-                                "IndexError",
-                                "index out of bounds on dimension 1",
-                            );
-                        }
+                        let Some(pos) = memoryview_strided_offset(&indices, strides) else {
+                            return MoltObject::none().bits();
+                        };
                         let ok = memoryview_write_scalar_at(_py, data, pos, fmt, val_bits);
                         if ok.is_none() {
                             return MoltObject::none().bits();
@@ -1353,15 +1374,8 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
                         };
-                        if step < 0 {
-                            return raise_exception::<_>(
-                                _py,
-                                "NotImplementedError",
-                                "negative-stride memoryview slice assignments are not implemented",
-                            );
-                        }
-                        let elem_count =
-                            range_len_i64(start as i64, stop as i64, step as i64).max(0) as usize;
+                        let indices = collect_slice_indices(start, stop, step);
+                        let elem_count = indices.len();
                         let val_obj = obj_from_bits(val_bits);
                         let src_bytes = if let Some(src_ptr) = val_obj.as_ptr() {
                             let src_type = object_type_id(src_ptr);
@@ -1419,13 +1433,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 ),
                             );
                         };
-                        let Some(expected) = elem_count.checked_mul(fmt.itemsize) else {
-                            return raise_exception::<_>(
-                                _py,
-                                "OverflowError",
-                                "memoryview assignment is too large",
-                            );
-                        };
+                        let expected = elem_count * fmt.itemsize;
                         if src_bytes.len() != expected {
                             return raise_exception::<_>(
                                 _py,
@@ -1434,29 +1442,26 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             );
                         }
                         let base_stride = strides[0];
-                        let Some(mut pos) = memoryview_checked_strided_add(0, start, base_stride)
+                        if start < 0 {
+                            return MoltObject::none().bits();
+                        }
+                        let Some(mut pos) = memoryview_linear_offset(start as usize, base_stride)
                         else {
                             return MoltObject::none().bits();
                         };
-                        let Some(step_stride) =
-                            memoryview_checked_strided_add(0, step, base_stride)
-                        else {
+                        let Some(step_stride) = base_stride.checked_mul(step) else {
                             return MoltObject::none().bits();
                         };
                         let mut idx = 0usize;
                         while idx < src_bytes.len() {
-                            let dst = std::slice::from_raw_parts_mut(
-                                data.add(pos as usize),
-                                fmt.itemsize,
-                            );
+                            let dst =
+                                std::slice::from_raw_parts_mut(data.offset(pos), fmt.itemsize);
                             dst.copy_from_slice(&src_bytes[idx..idx + fmt.itemsize]);
                             idx += fmt.itemsize;
-                            if idx < src_bytes.len() {
-                                let Some(next_pos) = pos.checked_add(step_stride) else {
-                                    return MoltObject::none().bits();
-                                };
-                                pos = next_pos;
-                            }
+                            let Some(next_pos) = pos.checked_add(step_stride) else {
+                                return MoltObject::none().bits();
+                            };
+                            pos = next_pos;
                         }
                         return obj_bits;
                     }
@@ -1486,8 +1491,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "index out of bounds on dimension 1",
                         );
                     }
-                    let Some(pos) = memoryview_checked_strided_add(0, i as isize, strides[0])
-                    else {
+                    let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
                         return MoltObject::none().bits();
                     };
                     let ok = memoryview_write_scalar_at(_py, data, pos, fmt, val_bits);
@@ -2140,23 +2144,6 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                 ),
                             );
                         }
-                        let mut out = Vec::with_capacity(len);
-                        for idx in 0..len {
-                            let Some(start) =
-                                memoryview_checked_strided_add(0, idx as isize, stride)
-                            else {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    &format!(
-                                        "a bytes-like object is required, not '{}'",
-                                        type_name(_py, item)
-                                    ),
-                                );
-                            };
-                            out.push(*data.add(start as usize));
-                        }
-                        let hay = out.as_slice();
                         if let Some(byte) = item.as_int() {
                             if !(0..=255).contains(&byte) {
                                 return raise_exception::<_>(
@@ -2165,7 +2152,14 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                     "byte must be in range(0, 256)",
                                 );
                             }
-                            let found = memchr(byte as u8, hay).is_some();
+                            let Some(found) = memoryview_strided_contains_byte(
+                                data.cast_const(),
+                                len,
+                                stride,
+                                byte as u8,
+                            ) else {
+                                return MoltObject::none().bits();
+                            };
                             return MoltObject::from_bool(found).bits();
                         }
                         if let Some(item_ptr) = item.as_ptr() {
@@ -2177,8 +2171,15 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                 if needle_bytes.is_empty() {
                                     return MoltObject::from_bool(true).bits();
                                 }
-                                let idx = bytes_find_impl(hay, needle_bytes);
-                                return MoltObject::from_bool(idx >= 0).bits();
+                                let Some(found) = memoryview_strided_contains_bytes(
+                                    data.cast_const(),
+                                    len,
+                                    stride,
+                                    needle_bytes,
+                                ) else {
+                                    return MoltObject::none().bits();
+                                };
+                                return MoltObject::from_bool(found).bits();
                             }
                         }
                         return raise_exception::<_>(

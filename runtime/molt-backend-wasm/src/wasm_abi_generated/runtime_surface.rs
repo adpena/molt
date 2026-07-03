@@ -21,6 +21,10 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_bytes_from",
     "molt_bytes_from_bytes",
     "molt_c_api_version",
+    "molt_c_heap_contains",
+    "molt_c_heap_register",
+    "molt_c_heap_type_canonicalize",
+    "molt_c_heap_unregister",
     "molt_cfunction_create_bytes",
     "molt_cfunction_create_keywords_bytes",
     "molt_py_cfunction_create_bytes",
@@ -218,6 +222,26 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
     RuntimeHostExportSignature {
         name: "molt_c_api_version",
         params: &[],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_c_heap_contains",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_c_heap_register",
+        params: &[ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_c_heap_type_canonicalize",
+        params: &[ValType::I32, ValType::I32],
+        results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_c_heap_unregister",
+        params: &[ValType::I32],
         results: &[ValType::I32],
     },
     RuntimeHostExportSignature {

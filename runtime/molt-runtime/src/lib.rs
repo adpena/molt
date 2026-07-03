@@ -55,7 +55,6 @@ mod bridge;
     feature = "stdlib_compression",
     feature = "stdlib_crypto",
     feature = "stdlib_difflib",
-    feature = "stdlib_graphlib",
     feature = "stdlib_http",
     feature = "stdlib_ipaddress",
     feature = "stdlib_logging_ext",
@@ -81,8 +80,6 @@ mod constants;
 mod crypto_bridge;
 #[cfg(feature = "stdlib_difflib")]
 mod difflib_bridge;
-#[cfg(feature = "stdlib_graphlib")]
-mod graphlib_bridge;
 #[cfg(feature = "stdlib_http")]
 mod http_bridge;
 #[cfg(feature = "stdlib_ipaddress")]
@@ -116,8 +113,6 @@ pub use molt_runtime_compression;
 pub use molt_runtime_crypto;
 #[cfg(feature = "stdlib_difflib")]
 pub use molt_runtime_difflib;
-#[cfg(feature = "stdlib_graphlib")]
-pub use molt_runtime_graphlib;
 #[cfg(feature = "stdlib_http")]
 pub use molt_runtime_http;
 #[cfg(feature = "stdlib_ipaddress")]
@@ -277,6 +272,16 @@ pub use crate::builtins::gpu::molt_gpu_tensor__zeros;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
 pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
+#[cfg(feature = "molt_gpu_primitives")]
+pub use crate::builtins::gpu_primitives::{
+    molt_gpu_prim_binary, molt_gpu_prim_cast, molt_gpu_prim_contiguous,
+    molt_gpu_prim_create_tensor, molt_gpu_prim_create_tensor_raw, molt_gpu_prim_device,
+    molt_gpu_prim_dtype, molt_gpu_prim_expand, molt_gpu_prim_flip, molt_gpu_prim_free,
+    molt_gpu_prim_nbytes, molt_gpu_prim_numel, molt_gpu_prim_pad, molt_gpu_prim_permute,
+    molt_gpu_prim_read_data_raw, molt_gpu_prim_realize, molt_gpu_prim_reduce,
+    molt_gpu_prim_reduce_all, molt_gpu_prim_reshape, molt_gpu_prim_shape, molt_gpu_prim_shrink,
+    molt_gpu_prim_ternary, molt_gpu_prim_unary, molt_gpu_prim_zeros, molt_gpu_prim_zeros_dtype,
+};
 pub use crate::builtins::strings::{molt_bytes_from_bytes, molt_string_from_bytes};
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
@@ -304,16 +309,6 @@ pub use crate::wasm_abi_exports::{
     molt_fast_str_join, molt_fast_str_lower, molt_fast_str_startswith, molt_fast_str_strip,
     molt_fast_str_upper, molt_resource_on_allocate, molt_resource_on_free, molt_scratch_alloc,
     molt_scratch_free, molt_tuple_getitem, molt_type_tag_of_bits,
-};
-#[cfg(feature = "molt_gpu_primitives")]
-pub use molt_gpu::primitives_ffi::{
-    molt_gpu_prim_binary, molt_gpu_prim_cast, molt_gpu_prim_contiguous,
-    molt_gpu_prim_create_tensor, molt_gpu_prim_create_tensor_raw, molt_gpu_prim_device,
-    molt_gpu_prim_dtype, molt_gpu_prim_expand, molt_gpu_prim_flip, molt_gpu_prim_free,
-    molt_gpu_prim_nbytes, molt_gpu_prim_numel, molt_gpu_prim_pad, molt_gpu_prim_permute,
-    molt_gpu_prim_read_data_raw, molt_gpu_prim_realize, molt_gpu_prim_reduce,
-    molt_gpu_prim_reduce_all, molt_gpu_prim_reshape, molt_gpu_prim_shape, molt_gpu_prim_shrink,
-    molt_gpu_prim_ternary, molt_gpu_prim_unary, molt_gpu_prim_zeros, molt_gpu_prim_zeros_dtype,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
@@ -495,6 +490,7 @@ pub use crate::builtins::functions_re::*;
 pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;
+pub use crate::builtins::graphlib::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
@@ -617,10 +613,10 @@ pub use crate::object::memoryview::MoltBufferView;
 pub(crate) use crate::object::memoryview::{
     BytesLikeSliceError, MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, RELEASED_MEMORYVIEW_ERROR,
     TypedStridedStorage, TypedStridedStorageError, bytes_like_slice, bytes_like_slice_checked,
-    bytes_like_slice_raw, memoryview_bytes_slice, memoryview_checked_strided_add,
-    memoryview_collect_bytes, memoryview_format_from_bits, memoryview_format_from_str,
-    memoryview_is_c_contiguous_view, memoryview_nbytes, memoryview_nbytes_big,
-    memoryview_read_scalar_at, memoryview_shape_product, memoryview_write_scalar_at,
+    bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
+    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
+    memoryview_linear_offset, memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar_at,
+    memoryview_shape_product, memoryview_strided_offset, memoryview_write_scalar_at,
     raise_released_memoryview,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -731,8 +727,6 @@ pub use molt_runtime_compression::tarfile::*;
 pub use molt_runtime_compression::zlib::*;
 #[cfg(feature = "stdlib_difflib")]
 pub use molt_runtime_difflib::difflib::*;
-#[cfg(feature = "stdlib_graphlib")]
-pub use molt_runtime_graphlib::graphlib::*;
 #[cfg(feature = "stdlib_http")]
 pub use molt_runtime_http::functions_http::*;
 #[cfg(feature = "stdlib_http")]

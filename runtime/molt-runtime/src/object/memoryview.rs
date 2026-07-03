@@ -4,12 +4,12 @@ use crate::bytearray_vec;
 use crate::libc_compat as libc;
 use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
-    TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, alloc_tuple, bigint_bits, bytes_data,
-    bytes_len, dec_ref_bits, inc_ref_bits, index_bigint_from_obj, is_truthy, memoryview_base_bits,
-    memoryview_data, memoryview_format_bits, memoryview_itemsize, memoryview_len,
-    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_released,
-    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_type_id,
-    raise_exception, string_bytes, string_len, string_obj_to_owned, to_f64,
+    TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bigint_bits, bytes_data, bytes_len,
+    index_bigint_from_obj, is_truthy, memoryview_base_bits, memoryview_data,
+    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_offset,
+    memoryview_readonly, memoryview_released, memoryview_shape, memoryview_stride,
+    memoryview_strides, obj_from_bits, object_type_id, raise_exception, string_bytes, string_len,
+    string_obj_to_owned, to_f64,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -24,6 +24,7 @@ pub(crate) const RELEASED_MEMORYVIEW_ERROR: &str =
 pub struct MoltBufferView {
     pub data: *mut u8,
     pub len: u64,
+    pub backing_capacity: u64,
     pub readonly: u32,
     pub ndim: u32,
     pub itemsize: u64,
@@ -40,6 +41,7 @@ impl Default for MoltBufferView {
         Self {
             data: std::ptr::null_mut(),
             len: 0,
+            backing_capacity: 0,
             readonly: 1,
             ndim: 1,
             itemsize: 1,
@@ -70,13 +72,11 @@ fn default_buffer_format() -> [u8; MOLT_BUFFER_FORMAT_CAP] {
     format
 }
 
-fn buffer_format_from_bytes(format: &[u8]) -> Option<[u8; MOLT_BUFFER_FORMAT_CAP]> {
-    if format.len() >= MOLT_BUFFER_FORMAT_CAP {
-        return None;
-    }
+fn buffer_format_from_bytes(format: &[u8]) -> [u8; MOLT_BUFFER_FORMAT_CAP] {
     let mut out = [0; MOLT_BUFFER_FORMAT_CAP];
-    out[..format.len()].copy_from_slice(format);
-    Some(out)
+    let count = format.len().min(MOLT_BUFFER_FORMAT_CAP.saturating_sub(1));
+    out[..count].copy_from_slice(&format[..count]);
+    out
 }
 
 pub(crate) unsafe fn memoryview_format_export_bytes(
@@ -88,8 +88,9 @@ pub(crate) unsafe fn memoryview_format_export_bytes(
         if object_type_id(ptr) != TYPE_ID_STRING {
             return None;
         }
-        let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-        buffer_format_from_bytes(bytes)
+        let len = string_len(ptr);
+        let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
+        Some(buffer_format_from_bytes(bytes))
     }
 }
 
@@ -97,11 +98,13 @@ pub(crate) unsafe fn memoryview_format_export_bytes(
 pub(crate) struct TypedStridedStorage {
     pub(crate) data: *mut u8,
     pub(crate) len: usize,
+    pub(crate) span_len: usize,
+    pub(crate) min_offset: isize,
+    pub(crate) max_end_offset: isize,
     pub(crate) readonly: bool,
     pub(crate) itemsize: usize,
     pub(crate) offset: isize,
     pub(crate) base_bits: u64,
-    pub(crate) owner_bits: u64,
     pub(crate) format_bits: u64,
     pub(crate) format: [u8; MOLT_BUFFER_FORMAT_CAP],
     pub(crate) shape: Vec<isize>,
@@ -119,63 +122,6 @@ impl TypedStridedStorage {
         shape: Vec<isize>,
         strides: Vec<isize>,
     ) -> Option<Self> {
-        Self::new_with_owner(
-            data,
-            readonly,
-            itemsize,
-            offset,
-            base_bits,
-            0,
-            format_bits,
-            shape,
-            strides,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_owner(
-        data: *mut u8,
-        readonly: bool,
-        itemsize: usize,
-        offset: isize,
-        base_bits: u64,
-        owner_bits: u64,
-        format_bits: u64,
-        shape: Vec<isize>,
-        strides: Vec<isize>,
-    ) -> Option<Self> {
-        let format = if format_bits == 0 {
-            default_buffer_format()
-        } else {
-            unsafe { memoryview_format_export_bytes(format_bits)? }
-        };
-        Self::new_with_format(
-            data,
-            readonly,
-            itemsize,
-            offset,
-            base_bits,
-            owner_bits,
-            format_bits,
-            format,
-            shape,
-            strides,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_format(
-        data: *mut u8,
-        readonly: bool,
-        itemsize: usize,
-        offset: isize,
-        base_bits: u64,
-        owner_bits: u64,
-        format_bits: u64,
-        format: [u8; MOLT_BUFFER_FORMAT_CAP],
-        shape: Vec<isize>,
-        strides: Vec<isize>,
-    ) -> Option<Self> {
         if itemsize == 0 || shape.len() != strides.len() || shape.len() > MOLT_BUFFER_MAX_NDIM {
             return None;
         }
@@ -183,29 +129,22 @@ impl TypedStridedStorage {
         if len < 0 || len > usize::MAX as i128 {
             return None;
         }
-        if offset < 0 {
-            return None;
-        }
-        if !data.is_null() && offset != 0 {
-            return None;
-        }
-        let format_itemsize = buffer_format_itemsize(&format)?;
-        if format_itemsize != itemsize {
-            return None;
-        }
-        for &stride in &strides {
-            if stride < 0 {
-                return None;
-            }
-        }
+        let bounds = memoryview_strided_bounds(shape.as_slice(), strides.as_slice(), itemsize)?;
+        let format = if format_bits == 0 {
+            default_buffer_format()
+        } else {
+            unsafe { memoryview_format_export_bytes(format_bits)? }
+        };
         Some(Self {
             data,
             len: len as usize,
+            span_len: bounds.span_len,
+            min_offset: bounds.min_offset,
+            max_end_offset: bounds.max_end_offset,
             readonly,
             itemsize,
             offset,
             base_bits,
-            owner_bits,
             format_bits,
             format,
             shape,
@@ -235,30 +174,6 @@ impl TypedStridedStorage {
         )
     }
 
-    pub(crate) fn one_dim_with_format(
-        data: *mut u8,
-        readonly: bool,
-        len: usize,
-        itemsize: usize,
-        stride: isize,
-        offset: isize,
-        base_bits: u64,
-        format: &[u8],
-    ) -> Option<Self> {
-        Self::new_with_format(
-            data,
-            readonly,
-            itemsize,
-            offset,
-            base_bits,
-            0,
-            0,
-            buffer_format_from_bytes(format)?,
-            vec![len as isize],
-            vec![stride],
-        )
-    }
-
     pub(crate) fn memoryview_len_field(&self) -> usize {
         self.shape.first().copied().unwrap_or(0).max(0) as usize
     }
@@ -267,22 +182,59 @@ impl TypedStridedStorage {
         self.strides.first().copied().unwrap_or(0)
     }
 
+    pub(crate) fn fits_in_backing_len(&self, backing_len: usize) -> bool {
+        if self.min_offset < 0 || self.max_end_offset < 0 {
+            return false;
+        }
+        usize::try_from(self.max_end_offset)
+            .map(|end| end <= backing_len)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn fits_in_base_len(&self, base_len: usize) -> bool {
+        let origin = self.offset as i128;
+        let start = match origin.checked_add(self.min_offset as i128) {
+            Some(value) => value,
+            None => return false,
+        };
+        let end = match origin.checked_add(self.max_end_offset as i128) {
+            Some(value) => value,
+            None => return false,
+        };
+        start >= 0 && end >= 0 && end <= base_len as i128
+    }
+
+    pub(crate) unsafe fn backing_capacity_len(&self) -> Option<usize> {
+        unsafe {
+            if self.base_bits != 0 {
+                let base = obj_from_bits(self.base_bits);
+                if let Some(base_ptr) = base.as_ptr()
+                    && let Some(base_slice) = bytes_like_slice_raw(base_ptr)
+                {
+                    if !self.fits_in_base_len(base_slice.len()) {
+                        return None;
+                    }
+                    let start = (self.offset as i128 + self.min_offset as i128) as usize;
+                    return Some(base_slice.len() - start);
+                }
+            }
+            Some(self.span_len)
+        }
+    }
+
     pub(crate) fn with_readonly(mut self, readonly: bool) -> Self {
         self.readonly = readonly;
         self
     }
 
-    pub(crate) unsafe fn from_object_bits(
-        _py: &PyToken<'_>,
-        obj_bits: u64,
-    ) -> Result<Self, TypedStridedStorageError> {
+    pub(crate) unsafe fn from_object_bits(obj_bits: u64) -> Result<Self, TypedStridedStorageError> {
         unsafe {
             let obj = obj_from_bits(obj_bits);
             let ptr = obj.as_ptr().ok_or(TypedStridedStorageError::NotBuffer)?;
             match object_type_id(ptr) {
                 TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => Self::from_bytes_like_ptr(obj_bits, ptr),
                 TYPE_ID_MEMORYVIEW => Self::from_memoryview_ptr(ptr),
-                _ => crate::builtins::array_mod::array_storage_from_object_bits(_py, obj_bits),
+                _ => Err(TypedStridedStorageError::NotBuffer),
             }
         }
     }
@@ -321,13 +273,12 @@ impl TypedStridedStorage {
             let strides = memoryview_strides(ptr)
                 .ok_or(TypedStridedStorageError::InvalidDescriptor)?
                 .to_vec();
-            Self::new_with_owner(
+            Self::new(
                 data,
                 memoryview_readonly(ptr),
                 memoryview_itemsize(ptr),
                 offset,
                 base_bits,
-                memoryview_owner_bits(ptr),
                 memoryview_format_bits(ptr),
                 shape,
                 strides,
@@ -337,236 +288,20 @@ impl TypedStridedStorage {
     }
 }
 
-pub(crate) fn storage_format_len(format: &[u8; MOLT_BUFFER_FORMAT_CAP]) -> usize {
-    format
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(MOLT_BUFFER_FORMAT_CAP)
-        .max(1)
-}
-
-pub(crate) fn buffer_format_itemsize(format: &[u8; MOLT_BUFFER_FORMAT_CAP]) -> Option<usize> {
-    let len = format.iter().position(|&byte| byte == 0)?;
-    if len == 0 {
-        return None;
-    }
-    let format = std::str::from_utf8(&format[..len]).ok()?;
-    memoryview_format_from_str(format).map(|fmt| fmt.itemsize)
-}
-
-fn native_c_long_itemsize() -> usize {
-    #[cfg(target_arch = "wasm32")]
-    {
-        std::mem::size_of::<crate::libc_compat::c_long>()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::mem::size_of::<std::os::raw::c_long>()
-    }
-}
-
-pub(crate) fn memoryview_strided_span(
-    shape: &[isize],
-    strides: &[isize],
-    itemsize: usize,
-) -> Option<usize> {
-    if shape.len() != strides.len() || itemsize == 0 {
-        return None;
-    }
-    if shape.is_empty() {
-        return Some(itemsize);
-    }
-    let mut max_offset = 0_i128;
-    for (&dim, &stride) in shape.iter().zip(strides.iter()) {
-        if dim < 0 {
-            return None;
-        }
-        if stride < 0 {
-            return None;
-        }
-        if dim == 0 {
-            return Some(0);
-        }
-        let extent = (dim as i128 - 1).checked_mul(stride as i128)?;
-        max_offset = max_offset.checked_add(extent.max(0))?;
-    }
-    let span = max_offset.checked_add(i128::try_from(itemsize).ok()?)?;
-    if span < 0 || span > usize::MAX as i128 {
-        return None;
-    }
-    Some(span as usize)
-}
-
-pub(crate) fn memoryview_checked_strided_add(
-    base: isize,
-    index: isize,
-    stride: isize,
-) -> Option<isize> {
-    if index < 0 || stride < 0 {
-        return None;
-    }
-    let delta = (index as i128).checked_mul(stride as i128)?;
-    let pos = (base as i128).checked_add(delta)?;
-    if pos < 0 || pos > isize::MAX as i128 {
-        return None;
-    }
-    Some(pos as isize)
-}
-
-pub(crate) fn memoryview_checked_strided_offset(
-    indices: &[isize],
-    strides: &[isize],
-) -> Option<isize> {
-    if indices.len() != strides.len() {
-        return None;
-    }
-    let mut pos = 0isize;
-    for (&idx, &stride) in indices.iter().zip(strides.iter()) {
-        pos = memoryview_checked_strided_add(pos, idx, stride)?;
-    }
-    Some(pos)
-}
-
-pub(crate) fn buffer_export_owner_bits(_py: &PyToken<'_>, base_bits: u64) -> Result<u64, ()> {
-    if base_bits == 0 {
-        return Ok(0);
-    }
-    if obj_from_bits(base_bits).is_none() {
-        return Err(());
-    }
-    match crate::builtins::array_mod::array_buffer_owner_bits(_py, base_bits) {
-        Ok(Some(owner_bits)) => Ok(owner_bits),
-        Ok(None) => {
-            inc_ref_bits(_py, base_bits);
-            Ok(base_bits)
-        }
-        Err(()) => Err(()),
-    }
-}
-
-fn retain_explicit_owner_bits(
-    _py: &PyToken<'_>,
-    owner_bits: u64,
-    base_bits: u64,
-) -> Result<u64, ()> {
-    if owner_bits == 0 {
-        return Ok(0);
-    }
-    if obj_from_bits(owner_bits).is_none() {
-        return Err(());
-    }
-    if base_bits == 0 || base_bits == owner_bits {
-        inc_ref_bits(_py, owner_bits);
-        return Ok(owner_bits);
-    }
-    if obj_from_bits(base_bits).is_none() {
-        return Err(());
-    }
-    let owner_ptr = alloc_tuple(_py, &[owner_bits, base_bits]);
-    if owner_ptr.is_null() {
-        return Err(());
-    }
-    Ok(MoltObject::from_ptr(owner_ptr).bits())
-}
-
-fn wrap_owned_owner_with_base(
-    _py: &PyToken<'_>,
-    owner_bits: u64,
-    base_bits: u64,
-) -> Result<u64, ()> {
-    if owner_bits == 0 || base_bits == 0 || owner_bits == base_bits {
-        return Ok(owner_bits);
-    }
-    if obj_from_bits(base_bits).is_none() {
-        dec_ref_bits(_py, owner_bits);
-        return Err(());
-    }
-    let owner_ptr = alloc_tuple(_py, &[owner_bits, base_bits]);
-    if owner_ptr.is_null() {
-        dec_ref_bits(_py, owner_bits);
-        return Err(());
-    }
-    dec_ref_bits(_py, owner_bits);
-    Ok(MoltObject::from_ptr(owner_ptr).bits())
-}
-
-pub(crate) fn release_buffer_refs(_py: &PyToken<'_>, owner_bits: u64, base_bits: u64) {
-    let _ = base_bits;
-    if owner_bits != 0 && !obj_from_bits(owner_bits).is_none() {
-        dec_ref_bits(_py, owner_bits);
-    }
-}
-
-pub(crate) fn retain_storage_refs(
-    _py: &PyToken<'_>,
-    storage: &TypedStridedStorage,
-) -> Result<(u64, u64), ()> {
-    let owner_bits = if storage.owner_bits != 0 {
-        retain_explicit_owner_bits(_py, storage.owner_bits, storage.base_bits)?
-    } else {
-        let owner_bits = buffer_export_owner_bits(_py, storage.base_bits)?;
-        wrap_owned_owner_with_base(_py, owner_bits, storage.base_bits)?
-    };
-    Ok((owner_bits, storage.base_bits))
-}
-
 impl MoltBufferView {
-    pub(crate) fn validated_shape_len(&self) -> Option<usize> {
-        self.validated_shape_len_with_span(false)
-    }
-
-    pub(crate) fn validated_compact_shape_len(&self) -> Option<usize> {
-        self.validated_shape_len_with_span(true)
-    }
-
-    fn validated_shape_len_with_span(&self, require_compact_span: bool) -> Option<usize> {
-        let ndim = self.ndim as usize;
-        if ndim > MOLT_BUFFER_MAX_NDIM
-            || self.readonly > 1
-            || self.itemsize == 0
-            || self.itemsize > isize::MAX as u64
-            || self.len > isize::MAX as u64
-            || self.offset < 0
-            || !self.format.contains(&0)
-        {
-            return None;
-        }
-        let len = usize::try_from(self.len).ok()?;
-        if self.data.is_null() && len != 0 {
-            return None;
-        }
-        if !self.data.is_null() && self.offset != 0 {
-            return None;
-        }
-        let itemsize = usize::try_from(self.itemsize).ok()?;
-        let format_itemsize = buffer_format_itemsize(&self.format)?;
-        if format_itemsize != itemsize {
-            return None;
-        }
-        let expected = memoryview_nbytes_big(&self.shape[..ndim], itemsize)?;
-        if expected < 0 || expected > usize::MAX as i128 {
-            return None;
-        }
-        let expected = expected as usize;
-        if expected != len {
-            return None;
-        }
-        let span = memoryview_strided_span(&self.shape[..ndim], &self.strides[..ndim], itemsize)?;
-        if require_compact_span && span > len {
-            return None;
-        }
-        Some(len)
-    }
-
-    pub(crate) fn project_typed_storage(storage: &TypedStridedStorage) -> Option<Self> {
+    pub(crate) fn from_typed_storage(storage: &TypedStridedStorage) -> Option<Self> {
         if storage.shape.len() != storage.strides.len()
             || storage.shape.len() > MOLT_BUFFER_MAX_NDIM
         {
             return None;
         }
+        if storage.base_bits == 0 && storage.min_offset < 0 {
+            return None;
+        }
         let mut out = Self {
             data: storage.data,
             len: u64::try_from(storage.len).ok()?,
+            backing_capacity: u64::try_from(unsafe { storage.backing_capacity_len()? }).ok()?,
             readonly: if storage.readonly { 1 } else { 0 },
             ndim: storage.shape.len() as u32,
             itemsize: u64::try_from(storage.itemsize).ok()?,
@@ -581,19 +316,6 @@ impl MoltBufferView {
         for (slot, value) in out.strides.iter_mut().zip(storage.strides.iter().copied()) {
             *slot = value;
         }
-        out.validated_shape_len()?;
-        Some(out)
-    }
-
-    pub(crate) fn owned_from_typed_storage(
-        storage: &TypedStridedStorage,
-        owner_bits: u64,
-        base_bits: u64,
-    ) -> Option<Self> {
-        let mut out = Self::project_typed_storage(storage)?;
-        out.owner = owner_bits;
-        out.base = base_bits;
-        out.validated_shape_len()?;
         Some(out)
     }
 }
@@ -606,10 +328,6 @@ pub(crate) fn memoryview_format_from_str(format: &str) -> Option<MemoryViewForma
     } else {
         return None;
     };
-    memoryview_format_from_code(code)
-}
-
-pub(crate) fn memoryview_format_from_code(code: u8) -> Option<MemoryViewFormat> {
     let (itemsize, kind) = match code {
         b'b' => (1, MemoryViewFormatKind::Signed),
         b'B' => (1, MemoryViewFormatKind::Unsigned),
@@ -617,8 +335,14 @@ pub(crate) fn memoryview_format_from_code(code: u8) -> Option<MemoryViewFormat> 
         b'H' => (2, MemoryViewFormatKind::Unsigned),
         b'i' => (4, MemoryViewFormatKind::Signed),
         b'I' => (4, MemoryViewFormatKind::Unsigned),
-        b'l' => (native_c_long_itemsize(), MemoryViewFormatKind::Signed),
-        b'L' => (native_c_long_itemsize(), MemoryViewFormatKind::Unsigned),
+        b'l' => (
+            std::mem::size_of::<libc::c_long>(),
+            MemoryViewFormatKind::Signed,
+        ),
+        b'L' => (
+            std::mem::size_of::<libc::c_long>(),
+            MemoryViewFormatKind::Unsigned,
+        ),
         b'q' => (8, MemoryViewFormatKind::Signed),
         b'Q' => (8, MemoryViewFormatKind::Unsigned),
         b'n' => (std::mem::size_of::<isize>(), MemoryViewFormatKind::Signed),
@@ -663,6 +387,92 @@ pub(crate) fn memoryview_nbytes_big(shape: &[isize], itemsize: usize) -> Option<
     total.checked_mul(itemsize)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct MemoryViewStridedBounds {
+    pub(crate) min_offset: isize,
+    pub(crate) max_end_offset: isize,
+    pub(crate) span_len: usize,
+}
+
+pub(crate) fn memoryview_strided_bounds(
+    shape: &[isize],
+    strides: &[isize],
+    itemsize: usize,
+) -> Option<MemoryViewStridedBounds> {
+    if itemsize == 0 || shape.len() != strides.len() {
+        return None;
+    }
+    let total = memoryview_shape_product(shape)?;
+    if total == 0 {
+        return Some(MemoryViewStridedBounds {
+            min_offset: 0,
+            max_end_offset: 0,
+            span_len: 0,
+        });
+    }
+    let mut min_offset = 0i128;
+    let mut max_offset = 0i128;
+    for (&dim, &stride) in shape.iter().zip(strides.iter()) {
+        if dim < 0 {
+            return None;
+        }
+        if dim > 1 {
+            let dim_max = (dim - 1) as i128;
+            let stride = i128::try_from(stride).ok()?;
+            let delta = dim_max.checked_mul(stride)?;
+            if delta < 0 {
+                min_offset = min_offset.checked_add(delta)?;
+            } else {
+                max_offset = max_offset.checked_add(delta)?;
+            }
+        }
+    }
+    let itemsize = i128::try_from(itemsize).ok()?;
+    let max_end_offset = max_offset.checked_add(itemsize)?;
+    let span = max_end_offset.checked_sub(min_offset)?;
+    if min_offset < isize::MIN as i128
+        || min_offset > isize::MAX as i128
+        || max_end_offset < isize::MIN as i128
+        || max_end_offset > isize::MAX as i128
+        || span < 0
+        || span > usize::MAX as i128
+    {
+        return None;
+    }
+    Some(MemoryViewStridedBounds {
+        min_offset: min_offset as isize,
+        max_end_offset: max_end_offset as isize,
+        span_len: span as usize,
+    })
+}
+
+pub(crate) fn memoryview_strided_offset(indices: &[isize], strides: &[isize]) -> Option<isize> {
+    if indices.len() != strides.len() {
+        return None;
+    }
+    let mut offset = 0i128;
+    for (&idx, &stride) in indices.iter().zip(strides.iter()) {
+        let term = i128::try_from(idx)
+            .ok()?
+            .checked_mul(i128::try_from(stride).ok()?)?;
+        offset = offset.checked_add(term)?;
+    }
+    if offset < isize::MIN as i128 || offset > isize::MAX as i128 {
+        return None;
+    }
+    Some(offset as isize)
+}
+
+pub(crate) fn memoryview_linear_offset(index: usize, stride: isize) -> Option<isize> {
+    let offset = i128::try_from(index)
+        .ok()?
+        .checked_mul(i128::try_from(stride).ok()?)?;
+    if offset < isize::MIN as i128 || offset > isize::MAX as i128 {
+        return None;
+    }
+    Some(offset as isize)
+}
+
 fn memoryview_is_c_contiguous(shape: &[isize], strides: &[isize], itemsize: usize) -> bool {
     if shape.len() != strides.len() {
         return false;
@@ -674,10 +484,10 @@ fn memoryview_is_c_contiguous(shape: &[isize], strides: &[isize], itemsize: usiz
         if dim > 1 && stride != expected {
             return false;
         }
-        let Some(next) = expected.checked_mul(dim.max(1)) else {
+        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
             return false;
         };
-        expected = next;
+        expected = next_expected;
     }
     true
 }
@@ -796,7 +606,7 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
         let itemsize = memoryview_itemsize(ptr);
         let total_bytes = memoryview_nbytes_big(shape, itemsize)
             .ok_or_else(|| "invalid memoryview size".to_string())?;
-        if total_bytes < 0 || total_bytes > usize::MAX as i128 {
+        if total_bytes < 0 {
             return Err("invalid memoryview size".to_string());
         }
         let total_bytes = total_bytes as usize;
@@ -812,7 +622,7 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
         }
         let total = memoryview_shape_product(shape)
             .ok_or_else(|| "invalid memoryview shape".to_string())?;
-        if total < 0 || total > usize::MAX as i128 {
+        if total < 0 {
             return Err("invalid memoryview shape".to_string());
         }
         let total = total as usize;
@@ -822,14 +632,11 @@ pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result
             if written >= write_bytes {
                 break;
             }
-            let pos = memoryview_checked_strided_offset(&indices, strides)
+            let pos = memoryview_strided_offset(&indices, strides)
                 .ok_or_else(|| "memoryview out of bounds".to_string())?;
-            if pos < 0 {
-                return Err("memoryview out of bounds".to_string());
-            }
             let remaining = write_bytes - written;
             let copy_len = itemsize.min(remaining);
-            let base = std::slice::from_raw_parts_mut(base_ptr.add(pos as usize), copy_len);
+            let base = std::slice::from_raw_parts_mut(base_ptr.offset(pos), copy_len);
             base.copy_from_slice(&data[written..written + copy_len]);
             written += copy_len;
             for dim in (0..indices.len()).rev() {
@@ -859,7 +666,7 @@ pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
             return None;
         }
         let nbytes = memoryview_nbytes_big(shape, memoryview_itemsize(ptr))?;
-        if nbytes < 0 || nbytes > usize::MAX as i128 {
+        if nbytes < 0 {
             return None;
         }
         let nbytes = nbytes as usize;
@@ -867,26 +674,22 @@ pub(crate) unsafe fn memoryview_collect_bytes(ptr: *mut u8) -> Option<Vec<u8>> {
         if offset < 0 {
             return None;
         }
-        let mut out = Vec::new();
-        if out.try_reserve_exact(nbytes).is_err() {
-            return None;
-        }
+        let mut out = Vec::with_capacity(nbytes);
         if memoryview_is_c_contiguous(shape, strides, memoryview_itemsize(ptr)) {
             let base = std::slice::from_raw_parts(base_ptr.cast_const(), nbytes);
             out.extend_from_slice(base);
             return Some(out);
         }
         let total = memoryview_shape_product(shape)?;
-        if total < 0 || total > usize::MAX as i128 {
+        if total < 0 {
             return None;
         }
         let total = total as usize;
         let mut indices = vec![0isize; shape.len()];
         for _ in 0..total {
-            let pos = memoryview_checked_strided_offset(&indices, strides)?;
+            let pos = memoryview_strided_offset(&indices, strides)?;
             let itemsize = memoryview_itemsize(ptr);
-            let base =
-                std::slice::from_raw_parts(base_ptr.add(pos as usize).cast_const(), itemsize);
+            let base = std::slice::from_raw_parts(base_ptr.offset(pos).cast_const(), itemsize);
             out.extend_from_slice(base);
             for axis in (0..indices.len()).rev() {
                 indices[axis] += 1;
@@ -989,10 +792,7 @@ pub(crate) unsafe fn memoryview_read_scalar_at(
     if data.is_null() {
         return None;
     }
-    if offset < 0 {
-        return None;
-    }
-    let item = unsafe { std::slice::from_raw_parts(data.add(offset as usize), fmt.itemsize) };
+    let item = unsafe { std::slice::from_raw_parts(data.offset(offset), fmt.itemsize) };
     unsafe { memoryview_read_scalar(_py, item, 0, fmt) }
 }
 
@@ -1097,27 +897,25 @@ pub(crate) unsafe fn memoryview_write_scalar(
                 }
                 if fmt.kind == MemoryViewFormatKind::Signed {
                     let val_i64 = value.to_i64().unwrap_or(0);
-                    let mut scratch = [0u8; 8];
-                    match fmt.itemsize {
-                        1 => scratch[..1].copy_from_slice(&(val_i64 as i8).to_ne_bytes()),
-                        2 => scratch[..2].copy_from_slice(&(val_i64 as i16).to_ne_bytes()),
-                        4 => scratch[..4].copy_from_slice(&(val_i64 as i32).to_ne_bytes()),
-                        8 => scratch.copy_from_slice(&val_i64.to_ne_bytes()),
+                    let bytes = match fmt.itemsize {
+                        1 => (val_i64 as i8).to_ne_bytes().to_vec(),
+                        2 => (val_i64 as i16).to_ne_bytes().to_vec(),
+                        4 => (val_i64 as i32).to_ne_bytes().to_vec(),
+                        8 => val_i64.to_ne_bytes().to_vec(),
                         _ => return None,
-                    }
-                    data[offset..offset + fmt.itemsize].copy_from_slice(&scratch[..fmt.itemsize]);
+                    };
+                    data[offset..offset + fmt.itemsize].copy_from_slice(&bytes);
                     return Some(());
                 }
                 let val_u64 = value.to_u64().unwrap_or(0);
-                let mut scratch = [0u8; 8];
-                match fmt.itemsize {
-                    1 => scratch[..1].copy_from_slice(&(val_u64 as u8).to_ne_bytes()),
-                    2 => scratch[..2].copy_from_slice(&(val_u64 as u16).to_ne_bytes()),
-                    4 => scratch[..4].copy_from_slice(&(val_u64 as u32).to_ne_bytes()),
-                    8 => scratch.copy_from_slice(&val_u64.to_ne_bytes()),
+                let bytes = match fmt.itemsize {
+                    1 => (val_u64 as u8).to_ne_bytes().to_vec(),
+                    2 => (val_u64 as u16).to_ne_bytes().to_vec(),
+                    4 => (val_u64 as u32).to_ne_bytes().to_vec(),
+                    8 => val_u64.to_ne_bytes().to_vec(),
                     _ => return None,
-                }
-                data[offset..offset + fmt.itemsize].copy_from_slice(&scratch[..fmt.itemsize]);
+                };
+                data[offset..offset + fmt.itemsize].copy_from_slice(&bytes);
                 Some(())
             }
         }
@@ -1134,10 +932,7 @@ pub(crate) unsafe fn memoryview_write_scalar_at(
     if data.is_null() {
         return None;
     }
-    if offset < 0 {
-        return None;
-    }
-    let item = unsafe { std::slice::from_raw_parts_mut(data.add(offset as usize), fmt.itemsize) };
+    let item = unsafe { std::slice::from_raw_parts_mut(data.offset(offset), fmt.itemsize) };
     unsafe { memoryview_write_scalar(_py, item, 0, fmt, val_bits) }
 }
 

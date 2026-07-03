@@ -7,6 +7,285 @@
 extern "C" {
 #endif
 
+enum {
+    _MOLT_NUMPY_C_HEAP_ARRAY = 0x4e504101u,
+    _MOLT_NUMPY_C_HEAP_DESCR = 0x4e504102u,
+    _MOLT_NUMPY_C_HEAP_DTYPE_META = 0x4e504103u,
+    _MOLT_NUMPY_C_HEAP_ITER = 0x4e504104u,
+    _MOLT_NUMPY_C_HEAP_NEIGHBORHOOD_ITER = 0x4e504105u,
+    _MOLT_NUMPY_C_HEAP_UFUNC = 0x4e504106u,
+    _MOLT_NUMPY_C_HEAP_ARRAY_TYPE = 0x4e505401u,
+    _MOLT_NUMPY_C_HEAP_DESCR_TYPE = 0x4e505402u,
+    _MOLT_NUMPY_C_HEAP_DTYPE_META_TYPE = 0x4e505403u,
+    _MOLT_NUMPY_C_HEAP_ITER_TYPE = 0x4e505404u,
+    _MOLT_NUMPY_C_HEAP_NEIGHBORHOOD_ITER_TYPE = 0x4e505405u,
+    _MOLT_NUMPY_C_HEAP_UFUNC_TYPE = 0x4e505406u
+};
+
+static inline void _molt_numpy_array_dealloc(PyObject *obj);
+static inline void _molt_numpy_descr_dealloc(PyObject *obj);
+static inline void _molt_numpy_dtype_meta_dealloc(PyObject *obj);
+static inline void _molt_numpy_iter_dealloc(PyObject *obj);
+static inline void _molt_numpy_neighborhood_iter_dealloc(PyObject *obj);
+
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+static inline PyTypeObject *_molt_numpy_public_c_heap_type(
+    _MoltCHeapObject *type_obj,
+    PyTypeObject **canonical_out,
+    uint32_t type_kind
+) {
+    if (*canonical_out == NULL) {
+        if (type_obj->magic != _MOLT_C_HEAP_MAGIC) {
+            *canonical_out = (PyTypeObject *)_molt_c_heap_static_type_init(type_obj, type_kind);
+        } else {
+            *canonical_out = (PyTypeObject *)molt_c_heap_type_canonicalize(
+                type_kind,
+                (uintptr_t)_molt_c_heap_object_from_header(type_obj));
+        }
+        if (*canonical_out == NULL) {
+            *canonical_out = (PyTypeObject *)_molt_c_heap_object_from_header(type_obj);
+        }
+    }
+    return *canonical_out;
+}
+
+static inline PyTypeObject *_molt_numpy_array_type(void) {
+    static _MoltCHeapObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_ARRAY_TYPE);
+}
+
+static inline PyTypeObject *_molt_numpy_descr_type(void) {
+    static _MoltCHeapObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_DESCR_TYPE);
+}
+
+static inline PyTypeObject *_molt_numpy_dtype_meta_type(void) {
+    static _MoltCHeapObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_public_c_heap_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_DTYPE_META_TYPE);
+}
+
+static inline PyTypeObject *_molt_numpy_iter_type(void) {
+    static _MoltCHeapObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_ITER_TYPE);
+}
+
+static inline PyTypeObject *_molt_numpy_neighborhood_iter_type(void) {
+    static _MoltCHeapObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_public_c_heap_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_NEIGHBORHOOD_ITER_TYPE);
+}
+
+static inline PyArrayObject_fields *_molt_numpy_array_fields(void *arr) {
+    return (PyArrayObject_fields *)_molt_c_heap_payload_maybe(arr);
+}
+
+static inline PyArray_Descr *_molt_numpy_descr_fields(void *descr) {
+    return (PyArray_Descr *)_molt_c_heap_payload_maybe(descr);
+}
+
+static inline PyArrayIterObject *_molt_numpy_iter_fields(void *iter) {
+    return (PyArrayIterObject *)_molt_c_heap_payload_maybe(iter);
+}
+
+static inline PyArrayMultiIterObject *_molt_numpy_multi_iter_fields(void *multi) {
+    return (PyArrayMultiIterObject *)_molt_c_heap_payload_maybe(multi);
+}
+
+static inline PyArrayNeighborhoodIterObject *_molt_numpy_neighborhood_iter_fields(void *iter) {
+    return (PyArrayNeighborhoodIterObject *)_molt_c_heap_payload_maybe(iter);
+}
+
+static inline PyArray_DTypeMeta *_molt_numpy_dtype_meta_fields(void *dtype) {
+    return (PyArray_DTypeMeta *)_molt_c_heap_payload_maybe(dtype);
+}
+
+static inline void _molt_numpy_array_init_header(PyArrayObject_fields *array_obj) {
+    _molt_c_heap_init(
+        &array_obj->ob_base,
+        _MOLT_NUMPY_C_HEAP_ARRAY,
+        _molt_numpy_array_type(),
+        _molt_numpy_array_dealloc);
+}
+
+static inline void _molt_numpy_descr_init_header(PyArray_Descr *descr) {
+    _molt_c_heap_init(
+        &descr->ob_base,
+        _MOLT_NUMPY_C_HEAP_DESCR,
+        _molt_numpy_descr_type(),
+        _molt_numpy_descr_dealloc);
+}
+
+static inline void _molt_numpy_dtype_meta_init_header(PyArray_DTypeMeta *dtype) {
+    _molt_c_heap_init(
+        &dtype->ob_base,
+        _MOLT_NUMPY_C_HEAP_DTYPE_META,
+        _molt_numpy_dtype_meta_type(),
+        _molt_numpy_dtype_meta_dealloc);
+}
+
+static inline void _molt_numpy_iter_init_header(PyArrayIterObject *iter) {
+    _molt_c_heap_init(
+        &iter->ob_base,
+        _MOLT_NUMPY_C_HEAP_ITER,
+        _molt_numpy_iter_type(),
+        _molt_numpy_iter_dealloc);
+}
+
+static inline void _molt_numpy_neighborhood_iter_init_header(PyArrayNeighborhoodIterObject *iter) {
+    _molt_c_heap_init(
+        &iter->ob_base,
+        _MOLT_NUMPY_C_HEAP_NEIGHBORHOOD_ITER,
+        _molt_numpy_neighborhood_iter_type(),
+        _molt_numpy_neighborhood_iter_dealloc);
+}
+#else
+static inline PyTypeObject *_molt_numpy_abi_local_type(
+    PyTypeObject *type_obj,
+    PyTypeObject **canonical_out,
+    uint32_t type_kind,
+    const char *name,
+    Py_ssize_t basicsize,
+    destructor dealloc
+) {
+    if (type_obj->tp_name == NULL) {
+        type_obj->ob_refcnt = _Py_IMMORTAL_REFCNT_LOCAL;
+        type_obj->ob_type = &PyType_Type;
+        type_obj->ob_size = 0;
+        type_obj->tp_name = name;
+        type_obj->tp_basicsize = basicsize;
+        type_obj->tp_itemsize = 0;
+        type_obj->tp_dealloc = dealloc;
+        type_obj->tp_flags = Py_TPFLAGS_DEFAULT;
+    }
+    if (*canonical_out == NULL) {
+        *canonical_out = molt_cpython_abi_type_canonicalize(type_kind, type_obj);
+        if (*canonical_out == NULL) {
+            *canonical_out = type_obj;
+        }
+    }
+    return *canonical_out;
+}
+
+static inline PyTypeObject *_molt_numpy_array_type(void) {
+    static PyTypeObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_abi_local_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_ARRAY_TYPE,
+        "numpy.ndarray",
+        (Py_ssize_t)sizeof(PyArrayObject_fields),
+        _molt_numpy_array_dealloc);
+}
+
+static inline PyTypeObject *_molt_numpy_descr_type(void) {
+    static PyTypeObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_abi_local_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_DESCR_TYPE,
+        "numpy.dtype",
+        (Py_ssize_t)sizeof(PyArray_Descr),
+        _molt_numpy_descr_dealloc);
+}
+
+static inline PyTypeObject *_molt_numpy_dtype_meta_type(void) {
+    static PyTypeObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_abi_local_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_DTYPE_META_TYPE,
+        "numpy.dtype_meta",
+        (Py_ssize_t)sizeof(PyArray_DTypeMeta),
+        _molt_numpy_dtype_meta_dealloc);
+}
+
+static inline PyTypeObject *_molt_numpy_iter_type(void) {
+    static PyTypeObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_abi_local_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_ITER_TYPE,
+        "numpy.flatiter",
+        (Py_ssize_t)sizeof(PyArrayIterObject),
+        _molt_numpy_iter_dealloc);
+}
+
+static inline PyTypeObject *_molt_numpy_neighborhood_iter_type(void) {
+    static PyTypeObject type_obj = {0};
+    static PyTypeObject *canonical = NULL;
+    return _molt_numpy_abi_local_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_NEIGHBORHOOD_ITER_TYPE,
+        "numpy.neighborhood_iter",
+        (Py_ssize_t)sizeof(PyArrayNeighborhoodIterObject),
+        _molt_numpy_neighborhood_iter_dealloc);
+}
+
+static inline PyArrayObject_fields *_molt_numpy_array_fields(void *arr) {
+    return (PyArrayObject_fields *)arr;
+}
+
+static inline PyArray_Descr *_molt_numpy_descr_fields(void *descr) {
+    return (PyArray_Descr *)descr;
+}
+
+static inline PyArrayIterObject *_molt_numpy_iter_fields(void *iter) {
+    return (PyArrayIterObject *)iter;
+}
+
+static inline PyArrayMultiIterObject *_molt_numpy_multi_iter_fields(void *multi) {
+    return (PyArrayMultiIterObject *)multi;
+}
+
+static inline PyArrayNeighborhoodIterObject *_molt_numpy_neighborhood_iter_fields(void *iter) {
+    return (PyArrayNeighborhoodIterObject *)iter;
+}
+
+static inline PyArray_DTypeMeta *_molt_numpy_dtype_meta_fields(void *dtype) {
+    return (PyArray_DTypeMeta *)dtype;
+}
+
+static inline void _molt_numpy_array_init_header(PyArrayObject_fields *array_obj) {
+    array_obj->ob_refcnt = 1;
+    array_obj->ob_type = _molt_numpy_array_type();
+}
+
+static inline void _molt_numpy_descr_init_header(PyArray_Descr *descr) {
+    descr->ob_refcnt = 1;
+    descr->ob_type = _molt_numpy_descr_type();
+}
+
+static inline void _molt_numpy_dtype_meta_init_header(PyArray_DTypeMeta *dtype) {
+    dtype->ob_refcnt = 1;
+    dtype->ob_type = _molt_numpy_dtype_meta_type();
+}
+
+static inline void _molt_numpy_iter_init_header(PyArrayIterObject *iter) {
+    iter->ob_refcnt = 1;
+    iter->ob_type = _molt_numpy_iter_type();
+}
+
+static inline void _molt_numpy_neighborhood_iter_init_header(PyArrayNeighborhoodIterObject *iter) {
+    iter->ob_refcnt = 1;
+    iter->ob_type = _molt_numpy_neighborhood_iter_type();
+}
+#endif
+
 static inline int _molt_numpy_unavailable_i32(const char *name) {
     PyErr_Format(
         PyExc_RuntimeError,
@@ -23,29 +302,226 @@ static inline PyObject *_molt_numpy_unavailable_obj(const char *name) {
     return NULL;
 }
 
-static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
-    npy_intp size = 1;
-    int i = 0;
-    if (array_obj == NULL || array_obj->dimensions == NULL) {
+static inline int _molt_numpy_try_multiply_nonnegative(
+    npy_intp lhs,
+    npy_intp rhs,
+    npy_intp *out
+) {
+    if (out == NULL || lhs < 0 || rhs < 0) {
+        return -1;
+    }
+    if (lhs != 0 && rhs > (npy_intp)(NPY_MAX_INTP / lhs)) {
+        return -1;
+    }
+    *out = lhs * rhs;
+    return 0;
+}
+
+static inline int _molt_numpy_checked_multiply_nonnegative(
+    npy_intp lhs,
+    npy_intp rhs,
+    npy_intp *out,
+    const char *context
+) {
+    if (_molt_numpy_try_multiply_nonnegative(lhs, rhs, out) < 0) {
+        PyErr_Format(
+            PyExc_OverflowError,
+            "%s exceeds npy_intp range",
+            context != NULL ? context : "NumPy array span");
+        return -1;
+    }
+    return 0;
+}
+
+static inline int _molt_numpy_checked_multiply_intp(
+    npy_intp lhs,
+    npy_intp rhs,
+    npy_intp *out,
+    const char *context
+) {
+    if (out == NULL) {
+        return -1;
+    }
+    if (lhs >= 0 && rhs >= 0) {
+        return _molt_numpy_checked_multiply_nonnegative(lhs, rhs, out, context);
+    }
+    if (lhs >= 0 && rhs < 0) {
+        if (lhs != 0 && rhs < (npy_intp)(NPY_MIN_INTP / lhs)) {
+            PyErr_Format(
+                PyExc_OverflowError,
+                "%s exceeds npy_intp range",
+                context != NULL ? context : "NumPy signed product");
+            return -1;
+        }
+        *out = lhs * rhs;
         return 0;
     }
-    for (i = 0; i < array_obj->nd; i++) {
-        size *= array_obj->dimensions[i];
+    if (lhs < 0 && rhs >= 0) {
+        return _molt_numpy_checked_multiply_intp(rhs, lhs, out, context);
+    }
+    if (lhs != 0 && rhs < (npy_intp)(NPY_MAX_INTP / lhs)) {
+        PyErr_Format(
+            PyExc_OverflowError,
+            "%s exceeds npy_intp range",
+            context != NULL ? context : "NumPy signed product");
+        return -1;
+    }
+    *out = lhs * rhs;
+    return 0;
+}
+
+static inline int _molt_numpy_checked_add_intp(
+    npy_intp lhs,
+    npy_intp rhs,
+    npy_intp *out,
+    const char *context
+) {
+    if (out == NULL) {
+        return -1;
+    }
+    if ((rhs > 0 && lhs > (npy_intp)(NPY_MAX_INTP - rhs))
+            || (rhs < 0 && lhs < (npy_intp)(NPY_MIN_INTP - rhs))) {
+        PyErr_Format(
+            PyExc_OverflowError,
+            "%s exceeds npy_intp range",
+            context != NULL ? context : "NumPy signed sum");
+        return -1;
+    }
+    *out = lhs + rhs;
+    return 0;
+}
+
+static inline int _molt_numpy_checked_dims_size(
+    const npy_intp *dims,
+    int nd,
+    npy_intp *out
+) {
+    npy_intp size = 1;
+    int i = 0;
+    if (out == NULL) {
+        PyErr_SetString(PyExc_SystemError, "NULL output for NumPy dimension product");
+        return -1;
+    }
+    if (nd < 0) {
+        PyErr_SetString(PyExc_ValueError, "negative number of dimensions");
+        return -1;
+    }
+    if (nd > 0 && dims == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NULL dimensions for non-scalar NumPy array");
+        return -1;
+    }
+    for (i = 0; i < nd; i++) {
+        if (dims[i] < 0) {
+            PyErr_SetString(PyExc_ValueError, "negative dimensions are not allowed");
+            return -1;
+        }
+        if (_molt_numpy_checked_multiply_nonnegative(
+                size,
+                dims[i],
+                &size,
+                "NumPy array dimension product") < 0) {
+            return -1;
+        }
+    }
+    *out = size;
+    return 0;
+}
+
+static inline int _molt_numpy_checked_nbytes_from_dims(
+    const npy_intp *dims,
+    int nd,
+    int itemsize,
+    npy_intp *element_count_out,
+    npy_intp *nbytes_out
+) {
+    npy_intp element_count = 0;
+    npy_intp element_size = itemsize > 0 ? (npy_intp)itemsize : 1;
+    npy_intp nbytes = 0;
+    if (_molt_numpy_checked_dims_size(dims, nd, &element_count) < 0) {
+        return -1;
+    }
+    if (_molt_numpy_checked_multiply_nonnegative(
+            element_count,
+            element_size,
+            &nbytes,
+            "NumPy array byte span") < 0) {
+        return -1;
+    }
+    if (element_count_out != NULL) {
+        *element_count_out = element_count;
+    }
+    if (nbytes_out != NULL) {
+        *nbytes_out = nbytes;
+    }
+    return 0;
+}
+
+static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
+    npy_intp size = 1;
+    if (array_obj == NULL) {
+        return 0;
+    }
+    if (array_obj->nd == 0) {
+        return 1;
+    }
+    if (array_obj->dimensions == NULL) {
+        return 0;
+    }
+    if (_molt_numpy_checked_dims_size(array_obj->dimensions, array_obj->nd, &size) < 0) {
+        return 0;
     }
     return size;
 }
 
-static inline void _molt_numpy_iter_next(PyArrayIterObject *iter);
-static inline void _molt_numpy_iter_reset(PyArrayIterObject *iter);
-
-static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) {
-    return _molt_builtin_type_object_borrowed(name);
+static inline int _molt_numpy_array_nbytes_checked(
+    const PyArrayObject *array_obj,
+    npy_intp *nbytes_out
+) {
+    const PyArrayObject_fields *fields;
+    int itemsize;
+    if (array_obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL NumPy array");
+        return -1;
+    }
+    fields = (const PyArrayObject_fields *)_molt_numpy_array_fields((void *)array_obj);
+    itemsize = (fields->descr != NULL)
+        ? _molt_numpy_descr_fields((void *)fields->descr)->elsize
+        : 0;
+    return _molt_numpy_checked_nbytes_from_dims(
+        fields->dimensions,
+        fields->nd,
+        itemsize,
+        NULL,
+        nbytes_out);
 }
 
-#define PyArray_Type (*_molt_numpy_builtin_type_borrowed("object"))
-#define PyArrayDescr_Type (*_molt_numpy_builtin_type_borrowed("object"))
+static inline npy_intp _molt_pyarray_nbytes(const PyArrayObject *array_obj) {
+    npy_intp nbytes = 0;
+    if (array_obj == NULL) {
+        return 0;
+    }
+    if (_molt_numpy_array_nbytes_checked(array_obj, &nbytes) < 0) {
+        return 0;
+    }
+    return nbytes;
+}
+
+static inline void _molt_numpy_iter_next(PyArrayIterObject *iter);
+static inline void _molt_numpy_iter_reset(PyArrayIterObject *iter);
+static inline void PyArray_UpdateFlags(PyArrayObject *array_obj, int flagmask);
+static inline int _molt_numpy_fill_strides(
+    npy_intp *strides_out,
+    const npy_intp *dims,
+    int nd,
+    int itemsize,
+    int is_fortran);
+static inline PyObject *PyArray_NewCopy(PyArrayObject *array_obj, NPY_ORDER order);
+static inline PyObject *PyArray_Cast(PyArrayObject *array_obj, int typenum);
+
+#define PyArray_Type (*_molt_numpy_array_type())
+#define PyArrayDescr_Type (*_molt_numpy_descr_type())
 #define PyArrayDescr_TypeFull PyArrayDescr_Type
-#define PyArrayDTypeMeta_Type (*_molt_numpy_builtin_type_borrowed("type"))
+#define PyArrayDTypeMeta_Type (*_molt_numpy_dtype_meta_type())
 #define PyGenericArrType_Type PyArray_Type
 #define PyArrayArrayConverter_Type PyArray_Type
 #define PyArrayFlags_Type PyArray_Type
@@ -54,7 +530,7 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArrayIdentityHash_Type PyArray_Type
 #define PyBoundArrayMethod_Type PyArray_Type
 #define PyArrayMapIter_Type PyArray_Type
-#define PyArrayNeighborhoodIter_Type PyArray_Type
+#define PyArrayNeighborhoodIter_Type (*_molt_numpy_neighborhood_iter_type())
 #define PyBoolArrType_Type PyArray_Type
 #define PyByteArrType_Type PyArray_Type
 #define PyUByteArrType_Type PyArray_Type
@@ -91,29 +567,37 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyCharacterArrType_Type PyArray_Type
 #define PyGenericArrType_Type PyArray_Type
 
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+#define PyArray_Check(op) _molt_c_heap_object_type_is((PyObject *)(op), &PyArray_Type)
+#else
 #define PyArray_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
-#define PyArray_CheckExact(op) PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)
+#endif
+#define PyArray_CheckExact(op) PyArray_Check(op)
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+#define PyArray_DescrCheck(op) _molt_c_heap_object_type_is((PyObject *)(op), &PyArrayDescr_Type)
+#else
 #define PyArray_DescrCheck(op) PyObject_TypeCheck((PyObject *)(op), &PyArrayDescr_Type)
+#endif
 
-#define PyArray_DATA(arr) (((PyArrayObject_fields *)(arr))->data)
-#define PyArray_BYTES(arr) (((PyArrayObject_fields *)(arr))->data)
-#define PyArray_NDIM(arr) (((PyArrayObject_fields *)(arr))->nd)
-#define PyArray_DIMS(arr) (((PyArrayObject_fields *)(arr))->dimensions)
+#define PyArray_DATA(arr) (_molt_numpy_array_fields((void *)(arr))->data)
+#define PyArray_BYTES(arr) (_molt_numpy_array_fields((void *)(arr))->data)
+#define PyArray_NDIM(arr) (_molt_numpy_array_fields((void *)(arr))->nd)
+#define PyArray_DIMS(arr) (_molt_numpy_array_fields((void *)(arr))->dimensions)
 #define PyArray_SHAPE(arr) PyArray_DIMS(arr)
-#define PyArray_STRIDES(arr) (((PyArrayObject_fields *)(arr))->strides)
-#define PyArray_STRIDE(arr, i) (((PyArrayObject_fields *)(arr))->strides[(i)])
-#define PyArray_DIM(arr, i) (((PyArrayObject_fields *)(arr))->dimensions[(i)])
-#define PyArray_DESCR(arr) (((PyArrayObject_fields *)(arr))->descr)
+#define PyArray_STRIDES(arr) (_molt_numpy_array_fields((void *)(arr))->strides)
+#define PyArray_STRIDE(arr, i) (_molt_numpy_array_fields((void *)(arr))->strides[(i)])
+#define PyArray_DIM(arr, i) (_molt_numpy_array_fields((void *)(arr))->dimensions[(i)])
+#define PyArray_DESCR(arr) (_molt_numpy_array_fields((void *)(arr))->descr)
 #define PyArray_DTYPE(arr) PyArray_DESCR(arr)
-#define PyArray_BASE(arr) (((PyArrayObject_fields *)(arr))->base)
-#define PyArray_FLAGS(arr) (((PyArrayObject_fields *)(arr))->flags)
-#define PyArray_ITEMSIZE(arr) ((PyArray_DESCR(arr) != NULL) ? PyArray_DESCR(arr)->elsize : 0)
+#define PyArray_BASE(arr) (_molt_numpy_array_fields((void *)(arr))->base)
+#define PyArray_FLAGS(arr) (_molt_numpy_array_fields((void *)(arr))->flags)
+#define PyArray_ITEMSIZE(arr) ((PyArray_DESCR(arr) != NULL) ? PyDataType_ELSIZE(PyArray_DESCR(arr)) : 0)
 #define PyArray_SIZE(arr) _molt_pyarray_size((PyArrayObject *)(arr))
-#define PyArray_NBYTES(arr) ((npy_intp)(PyArray_SIZE(arr) * (npy_intp)PyArray_ITEMSIZE(arr)))
-#define PyArray_TYPE(arr) ((PyArray_DESCR(arr) != NULL) ? PyArray_DESCR(arr)->type_num : NPY_OBJECT)
+#define PyArray_NBYTES(arr) _molt_pyarray_nbytes((PyArrayObject *)(arr))
+#define PyArray_TYPE(arr) ((PyArray_DESCR(arr) != NULL) ? _molt_numpy_descr_fields((void *)PyArray_DESCR(arr))->type_num : NPY_OBJECT)
 #define PyArray_CHKFLAGS(arr, flags) (((PyArray_FLAGS(arr)) & (flags)) == (flags))
-#define PyArray_ENABLEFLAGS(arr, flags) ((void)(((PyArrayObject_fields *)(arr))->flags |= (flags)))
-#define PyArray_CLEARFLAGS(arr, flags) ((void)(((PyArrayObject_fields *)(arr))->flags &= ~(flags)))
+#define PyArray_ENABLEFLAGS(arr, flags) ((void)(_molt_numpy_array_fields((void *)(arr))->flags |= (flags)))
+#define PyArray_CLEARFLAGS(arr, flags) ((void)(_molt_numpy_array_fields((void *)(arr))->flags &= ~(flags)))
 #define PyArray_IS_C_CONTIGUOUS(arr) (((PyArray_FLAGS(arr)) & NPY_ARRAY_C_CONTIGUOUS) != 0)
 #define PyArray_ISCONTIGUOUS(arr) PyArray_IS_C_CONTIGUOUS(arr)
 #define PyArray_ISCARRAY(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE)
@@ -124,14 +608,14 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArray_ISFARRAY_RO(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED)
 #define PyArray_ISALIGNED(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_ALIGNED)
 #define PyArray_ISWRITEABLE(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_WRITEABLE)
-#define PyArray_ISBYTESWAPPED(arr) (!PyArray_ISNBO(PyArray_DESCR(arr)->byteorder))
-#define PyArray_ISNOTSWAPPED(arr) PyArray_ISNBO(PyArray_DESCR(arr)->byteorder)
+#define PyArray_ISBYTESWAPPED(arr) (!PyArray_ISNBO(_molt_numpy_descr_fields((void *)PyArray_DESCR(arr))->byteorder))
+#define PyArray_ISNOTSWAPPED(arr) PyArray_ISNBO(_molt_numpy_descr_fields((void *)PyArray_DESCR(arr))->byteorder)
 #define PyArray_ISBEHAVED(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE)
 #define PyArray_ISBEHAVED_RO(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_ALIGNED)
 #define PyArray_ISNBO(byteorder) ((byteorder) == '=' || (byteorder) == '|')
 #define PyArray_ISDATETIME(arr) PyTypeNum_ISDATETIME(PyArray_TYPE(arr))
 #define PyArray_ISINTEGER(arr) PyTypeNum_ISINTEGER(PyArray_TYPE(arr))
-#define PyArray_HANDLER(arr) (((PyArrayObject_fields *)(arr))->mem_handler)
+#define PyArray_HANDLER(arr) (_molt_numpy_array_fields((void *)(arr))->mem_handler)
 #define PyArray_GETPTR1(arr, i) (PyArray_BYTES(arr) + ((npy_intp)(i)) * PyArray_STRIDE((arr), 0))
 #define PyArray_GETPTR2(arr, i, j) \
     (PyArray_BYTES(arr) + ((npy_intp)(i)) * PyArray_STRIDE((arr), 0) + ((npy_intp)(j)) * PyArray_STRIDE((arr), 1))
@@ -140,21 +624,84 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 #define PyArray_GETPTR4(arr, i, j, k, l) \
     (PyArray_GETPTR3((arr), (i), (j), (k)) + ((npy_intp)(l)) * PyArray_STRIDE((arr), 3))
 
-#define PyDataType_FLAGCHK(descr, flag) (((descr) != NULL) && (((descr)->flags & (flag)) == (flag)))
+#define PyDataType_FLAGCHK(descr, flag) (((descr) != NULL) && ((_molt_numpy_descr_fields((void *)(descr))->flags & (flag)) == (flag)))
 #define PyDataType_REFCHK(descr) PyDataType_FLAGCHK((descr), NPY_ITEM_REFCOUNT)
 #define PyDataType_HASFIELDS(descr) PyDataType_FLAGCHK((descr), NPY_LIST_PICKLE)
 #define PyDataType_HASSUBARRAY(descr) 0
 #define PyDataType_C_METADATA(descr) ((PyArray_DatetimeMetaData *)NULL)
-#define PyDataType_ELSIZE(descr) ((npy_intp)(((PyArray_Descr *)(descr))->elsize))
-#define PyDataType_SET_ELSIZE(descr, size) ((void)(((PyArray_Descr *)(descr))->elsize = (int)(size)))
-#define PyDataType_FLAGS(descr) ((npy_uint64)(unsigned char)(((PyArray_Descr *)(descr))->flags))
-#define PyDataType_ALIGNMENT(descr) ((npy_intp)(((PyArray_Descr *)(descr))->alignment))
+#define PyDataType_ELSIZE(descr) ((npy_intp)(_molt_numpy_descr_fields((void *)(descr))->elsize))
+#define PyDataType_SET_ELSIZE(descr, size) ((void)(_molt_numpy_descr_fields((void *)(descr))->elsize = (int)(size)))
+#define PyDataType_FLAGS(descr) ((npy_uint64)(unsigned char)(_molt_numpy_descr_fields((void *)(descr))->flags))
+#define PyDataType_ALIGNMENT(descr) ((npy_intp)(_molt_numpy_descr_fields((void *)(descr))->alignment))
 #define PyDataType_METADATA(descr) ((void)(descr), (PyObject *)NULL)
 #define PyDataType_SUBARRAY(descr) ((void)(descr), (PyArray_ArrayDescr *)NULL)
 #define PyDataType_NAMES(descr) ((void)(descr), (PyObject *)NULL)
 #define PyDataType_FIELDS(descr) ((void)(descr), Py_None)
-#define PyDataType_ISNOTSWAPPED(descr) PyArray_ISNBO(((PyArray_Descr *)(descr))->byteorder)
+#define PyDataType_ISNOTSWAPPED(descr) PyArray_ISNBO(_molt_numpy_descr_fields((void *)(descr))->byteorder)
 #define PyDataType_ISBYTESWAPPED(descr) (!PyDataType_ISNOTSWAPPED(descr))
+
+static inline void _molt_numpy_array_dealloc(PyObject *obj) {
+    PyArrayObject_fields *array_obj = (PyArrayObject_fields *)obj;
+    if (array_obj == NULL) {
+        return;
+    }
+    if (array_obj->base != NULL) {
+        Py_DECREF(array_obj->base);
+        array_obj->base = NULL;
+    }
+    if (array_obj->descr != NULL) {
+        Py_DECREF((PyObject *)array_obj->descr);
+        array_obj->descr = NULL;
+    }
+    if ((array_obj->flags & NPY_ARRAY_OWNDATA) != 0 && array_obj->data != NULL) {
+        PyMem_Free(array_obj->data);
+        array_obj->data = NULL;
+    }
+    PyMem_Free(array_obj->strides);
+    PyMem_Free(array_obj->dimensions);
+    PyMem_Free(array_obj);
+}
+
+static inline void _molt_numpy_descr_dealloc(PyObject *obj) {
+    PyArray_Descr *descr = (PyArray_Descr *)obj;
+    PyMem_Free(descr);
+}
+
+static inline void _molt_numpy_dtype_meta_dealloc(PyObject *obj) {
+    PyArray_DTypeMeta *dtype = (PyArray_DTypeMeta *)obj;
+    if (dtype == NULL) {
+        return;
+    }
+    if (dtype->singleton != NULL) {
+        Py_DECREF((PyObject *)dtype->singleton);
+        dtype->singleton = NULL;
+    }
+    PyMem_Free(dtype);
+}
+
+static inline void _molt_numpy_iter_dealloc(PyObject *obj) {
+    PyArrayIterObject *iter = (PyArrayIterObject *)obj;
+    if (iter == NULL) {
+        return;
+    }
+    if (iter->ao != NULL) {
+        Py_DECREF((PyObject *)iter->ao);
+        iter->ao = NULL;
+    }
+    PyMem_Free(iter);
+}
+
+static inline void _molt_numpy_neighborhood_iter_dealloc(PyObject *obj) {
+    PyArrayNeighborhoodIterObject *iter = (PyArrayNeighborhoodIterObject *)obj;
+    if (iter == NULL) {
+        return;
+    }
+    if (iter->ao != NULL) {
+        Py_DECREF((PyObject *)iter->ao);
+        iter->ao = NULL;
+    }
+    PyMem_Free(iter);
+}
 
 #define PyArray_malloc PyMem_Malloc
 #define PyArray_free PyMem_Free
@@ -165,31 +712,56 @@ static inline PyTypeObject *_molt_numpy_builtin_type_borrowed(const char *name) 
 
 #define NPY_MEMALIGN 16
 
+static inline int _molt_numpy_size_add_overflow(size_t lhs, size_t rhs, size_t *out) {
+    if (out == NULL || lhs > SIZE_MAX - rhs) {
+        return 1;
+    }
+    *out = lhs + rhs;
+    return 0;
+}
+
+static inline int _molt_numpy_size_mul_overflow(size_t lhs, size_t rhs, size_t *out) {
+    if (out == NULL || (lhs != 0 && rhs > SIZE_MAX / lhs)) {
+        return 1;
+    }
+    *out = lhs * rhs;
+    return 0;
+}
+
 static inline void *PyArray_realloc_aligned(void *ptr, size_t size) {
     void *allocation;
     void **aligned;
     void *base;
+    size_t old_size;
     size_t old_offset;
-    size_t offset = (size_t)NPY_MEMALIGN - 1 + sizeof(void *);
+    size_t offset = (size_t)NPY_MEMALIGN - 1 + sizeof(void *) + sizeof(size_t);
+    size_t allocation_size;
+    if (_molt_numpy_size_add_overflow(size, offset, &allocation_size)) {
+        PyErr_SetString(PyExc_MemoryError, "aligned NumPy allocation size overflow");
+        return NULL;
+    }
     if (ptr != NULL) {
         base = *(((void **)ptr) - 1);
-        allocation = PyMem_Realloc(base, size + offset);
+        old_size = *(((size_t *)ptr) - 2);
+        allocation = PyMem_Realloc(base, allocation_size);
         if (allocation == NULL) {
             return NULL;
         }
         if (allocation == base) {
+            *(((size_t *)ptr) - 2) = size;
             return ptr;
         }
         aligned = (void **)(((Py_uintptr_t)allocation + offset) & ~((Py_uintptr_t)NPY_MEMALIGN - 1));
         old_offset = (size_t)((Py_uintptr_t)ptr - (Py_uintptr_t)base);
-        memmove((void *)aligned, ((char *)allocation) + old_offset, size);
+        memmove((void *)aligned, ((char *)allocation) + old_offset, old_size < size ? old_size : size);
     } else {
-        allocation = PyMem_Malloc(size + offset);
+        allocation = PyMem_Malloc(allocation_size);
         if (allocation == NULL) {
             return NULL;
         }
         aligned = (void **)(((Py_uintptr_t)allocation + offset) & ~((Py_uintptr_t)NPY_MEMALIGN - 1));
     }
+    *(((size_t *)aligned) - 2) = size;
     *(aligned - 1) = allocation;
     return (void *)aligned;
 }
@@ -199,9 +771,15 @@ static inline void *PyArray_malloc_aligned(size_t size) {
 }
 
 static inline void *PyArray_calloc_aligned(size_t count, size_t size) {
-    void *ptr = PyArray_realloc_aligned(NULL, count * size);
+    size_t nbytes;
+    void *ptr;
+    if (_molt_numpy_size_mul_overflow(count, size, &nbytes)) {
+        PyErr_SetString(PyExc_MemoryError, "aligned NumPy calloc size overflow");
+        return NULL;
+    }
+    ptr = PyArray_realloc_aligned(NULL, nbytes);
     if (ptr != NULL) {
-        memset(ptr, 0, count * size);
+        memset(ptr, 0, nbytes);
     }
     return ptr;
 }
@@ -242,21 +820,21 @@ static inline void _molt_numpy_multi_iter_reset(PyArrayMultiIterObject *multi) {
     }
 }
 
-#define PyArray_MultiIter_DATA(iter, i) ((void *)(((PyArrayMultiIterObject *)(iter))->iters[(i)]->dataptr))
-#define PyArray_MultiIter_RESET(iter) _molt_numpy_multi_iter_reset((PyArrayMultiIterObject *)(iter))
-#define PyArray_MultiIter_NEXT(iter) _molt_numpy_multi_iter_next((PyArrayMultiIterObject *)(iter))
-#define PyArray_MultiIter_NEXTi(iter, i) _molt_numpy_iter_next(((PyArrayMultiIterObject *)(iter))->iters[(i)])
-#define PyArray_MultiIter_NOTDONE(iter) (((PyArrayMultiIterObject *)(iter))->index < ((PyArrayMultiIterObject *)(iter))->size)
-#define PyArray_MultiIter_NUMITER(iter) (((PyArrayMultiIterObject *)(iter))->numiter)
-#define PyArray_MultiIter_SIZE(iter) (((PyArrayMultiIterObject *)(iter))->size)
-#define PyArray_MultiIter_INDEX(iter) (((PyArrayMultiIterObject *)(iter))->index)
-#define PyArray_MultiIter_NDIM(iter) (((PyArrayMultiIterObject *)(iter))->nd)
-#define PyArray_MultiIter_DIMS(iter) (((PyArrayMultiIterObject *)(iter))->dimensions)
-#define PyArray_MultiIter_ITERS(iter) ((void **)(((PyArrayMultiIterObject *)(iter))->iters))
-#define PyArray_ITER_DATA(iter) (((PyArrayIterObject *)(iter))->dataptr)
-#define PyArray_ITER_NOTDONE(iter) (((PyArrayIterObject *)(iter))->index < ((PyArrayIterObject *)(iter))->size)
-#define PyArray_ITER_RESET(iter) _molt_numpy_iter_reset((PyArrayIterObject *)(iter))
-#define PyArray_ITER_NEXT(iter) _molt_numpy_iter_next((PyArrayIterObject *)(iter))
+#define PyArray_MultiIter_DATA(iter, i) ((void *)(_molt_numpy_multi_iter_fields((void *)(iter))->iters[(i)]->dataptr))
+#define PyArray_MultiIter_RESET(iter) _molt_numpy_multi_iter_reset(_molt_numpy_multi_iter_fields((void *)(iter)))
+#define PyArray_MultiIter_NEXT(iter) _molt_numpy_multi_iter_next(_molt_numpy_multi_iter_fields((void *)(iter)))
+#define PyArray_MultiIter_NEXTi(iter, i) _molt_numpy_iter_next(_molt_numpy_multi_iter_fields((void *)(iter))->iters[(i)])
+#define PyArray_MultiIter_NOTDONE(iter) (_molt_numpy_multi_iter_fields((void *)(iter))->index < _molt_numpy_multi_iter_fields((void *)(iter))->size)
+#define PyArray_MultiIter_NUMITER(iter) (_molt_numpy_multi_iter_fields((void *)(iter))->numiter)
+#define PyArray_MultiIter_SIZE(iter) (_molt_numpy_multi_iter_fields((void *)(iter))->size)
+#define PyArray_MultiIter_INDEX(iter) (_molt_numpy_multi_iter_fields((void *)(iter))->index)
+#define PyArray_MultiIter_NDIM(iter) (_molt_numpy_multi_iter_fields((void *)(iter))->nd)
+#define PyArray_MultiIter_DIMS(iter) (_molt_numpy_multi_iter_fields((void *)(iter))->dimensions)
+#define PyArray_MultiIter_ITERS(iter) ((void **)(_molt_numpy_multi_iter_fields((void *)(iter))->iters))
+#define PyArray_ITER_DATA(iter) (_molt_numpy_iter_fields((void *)(iter))->dataptr)
+#define PyArray_ITER_NOTDONE(iter) (_molt_numpy_iter_fields((void *)(iter))->index < _molt_numpy_iter_fields((void *)(iter))->size)
+#define PyArray_ITER_RESET(iter) _molt_numpy_iter_reset(_molt_numpy_iter_fields((void *)(iter)))
+#define PyArray_ITER_NEXT(iter) _molt_numpy_iter_next(_molt_numpy_iter_fields((void *)(iter)))
 #define PyArray_FORTRANIF(arr) (PyArray_ISFORTRAN(arr) ? NPY_ARRAY_F_CONTIGUOUS : 0)
 
 #define PyArray_TRIVIALLY_ITERABLE_OP_NOREAD 0
@@ -385,6 +963,7 @@ static inline PyArray_Descr *PyArray_DescrFromType(int typenum) {
     if (descr == NULL) {
         return NULL;
     }
+    _molt_numpy_descr_init_header(descr);
     descr->type_num = typenum;
     descr->elsize = _molt_numpy_descr_elsize_for_type(typenum);
     descr->alignment = descr->elsize > 0 ? descr->elsize : 1;
@@ -478,6 +1057,16 @@ static inline int PyArray_ObjectType(PyObject *op, int minimum_type) {
         : minimum_type;
 }
 
+static inline int _molt_numpy_signed_range_error(void) {
+    PyErr_SetString(PyExc_OverflowError, "Python integer is out of bounds for NumPy signed dtype");
+    return -1;
+}
+
+static inline int _molt_numpy_unsigned_range_error(void) {
+    PyErr_SetString(PyExc_OverflowError, "Python integer is out of bounds for NumPy unsigned dtype");
+    return -1;
+}
+
 static inline int _molt_numpy_store_scalar(
     PyArray_Descr *descr,
     void *ctypeptr,
@@ -495,44 +1084,76 @@ static inline int _molt_numpy_store_scalar(
             return molt_err_pending() ? -1 : 0;
         }
         case NPY_BYTE: {
-            npy_byte out = (npy_byte)PyLong_AsLongLong(value);
+            long long raw = PyLong_AsLongLong(value);
+            npy_byte out;
+            if (molt_err_pending()) return -1;
+            if (raw < SCHAR_MIN || raw > SCHAR_MAX) return _molt_numpy_signed_range_error();
+            out = (npy_byte)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_UBYTE: {
-            npy_ubyte out = (npy_ubyte)PyLong_AsUnsignedLongLong(value);
+            unsigned long long raw = PyLong_AsUnsignedLongLong(value);
+            npy_ubyte out;
+            if (molt_err_pending()) return -1;
+            if (raw > UCHAR_MAX) return _molt_numpy_unsigned_range_error();
+            out = (npy_ubyte)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_SHORT: {
-            npy_short out = (npy_short)PyLong_AsLongLong(value);
+            long long raw = PyLong_AsLongLong(value);
+            npy_short out;
+            if (molt_err_pending()) return -1;
+            if (raw < SHRT_MIN || raw > SHRT_MAX) return _molt_numpy_signed_range_error();
+            out = (npy_short)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_USHORT: {
-            npy_ushort out = (npy_ushort)PyLong_AsUnsignedLongLong(value);
+            unsigned long long raw = PyLong_AsUnsignedLongLong(value);
+            npy_ushort out;
+            if (molt_err_pending()) return -1;
+            if (raw > USHRT_MAX) return _molt_numpy_unsigned_range_error();
+            out = (npy_ushort)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_INT: {
-            npy_int out = (npy_int)PyLong_AsLongLong(value);
+            long long raw = PyLong_AsLongLong(value);
+            npy_int out;
+            if (molt_err_pending()) return -1;
+            if (raw < INT_MIN || raw > INT_MAX) return _molt_numpy_signed_range_error();
+            out = (npy_int)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_UINT: {
-            npy_uint out = (npy_uint)PyLong_AsUnsignedLongLong(value);
+            unsigned long long raw = PyLong_AsUnsignedLongLong(value);
+            npy_uint out;
+            if (molt_err_pending()) return -1;
+            if (raw > UINT_MAX) return _molt_numpy_unsigned_range_error();
+            out = (npy_uint)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_LONG: {
-            npy_long out = (npy_long)PyLong_AsLongLong(value);
+            long long raw = PyLong_AsLongLong(value);
+            npy_long out;
+            if (molt_err_pending()) return -1;
+            if (raw < LONG_MIN || raw > LONG_MAX) return _molt_numpy_signed_range_error();
+            out = (npy_long)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_ULONG: {
-            npy_ulong out = (npy_ulong)PyLong_AsUnsignedLongLong(value);
+            unsigned long long raw = PyLong_AsUnsignedLongLong(value);
+            npy_ulong out;
+            if (molt_err_pending()) return -1;
+            if (raw > ULONG_MAX) return _molt_numpy_unsigned_range_error();
+            out = (npy_ulong)raw;
             memcpy(ctypeptr, &out, sizeof(out));
-            return molt_err_pending() ? -1 : 0;
+            return 0;
         }
         case NPY_LONGLONG:
         case NPY_DATETIME:
@@ -748,8 +1369,23 @@ static inline int PyArray_FailUnlessWriteable(PyArrayObject *array_obj, const ch
     return 0;
 }
 
+static inline char _molt_numpy_pep3118_format_code(const char *format) {
+    if (format == NULL || format[0] == '\0') {
+        return 'B';
+    }
+    if (format[0] == '@'
+        || format[0] == '='
+        || format[0] == '<'
+        || format[0] == '>'
+        || format[0] == '!'
+        || format[0] == '^') {
+        return format[1] != '\0' ? format[1] : 'B';
+    }
+    return format[0];
+}
+
 static inline int _molt_numpy_typenum_from_buffer_format(const char *format, Py_ssize_t itemsize) {
-    char code = (format != NULL && format[0] != '\0') ? format[0] : 'B';
+    char code = _molt_numpy_pep3118_format_code(format);
     switch (code) {
         case '?':
             return NPY_BOOL;
@@ -780,25 +1416,73 @@ static inline int _molt_numpy_typenum_from_buffer_format(const char *format, Py_
         case 'O':
             return NPY_OBJECT;
         default:
-            return itemsize == 1 ? NPY_UBYTE : NPY_VOID;
+            return NPY_NOTYPE;
     }
+}
+
+static inline int _molt_numpy_dtype_needs_ref_transfer(PyArray_Descr *descr) {
+    return descr != NULL && (descr->type_num == NPY_OBJECT || PyDataType_REFCHK(descr));
+}
+
+static inline int _molt_numpy_reject_ref_transfer_dtype(PyArray_Descr *descr, const char *context) {
+    if (!_molt_numpy_dtype_needs_ref_transfer(descr)) {
+        return 0;
+    }
+    (void)context;
+    PyErr_SetString(PyExc_NotImplementedError, "object/refcount dtype transfer requires a refcount-aware primitive");
+    return -1;
 }
 
 static inline PyArray_Descr *_molt_numpy_descr_from_buffer(
     const Py_buffer *view,
-    PyArray_Descr *requested
+    PyArray_Descr *requested,
+    int allow_cast,
+    int *descr_owned_out
 ) {
     PyArray_Descr *descr = requested;
+    int source_typenum = _molt_numpy_typenum_from_buffer_format(view->format, view->itemsize);
+    if (descr_owned_out != NULL) {
+        *descr_owned_out = requested != NULL ? 1 : 0;
+    }
+    if (source_typenum == NPY_NOTYPE) {
+        if (descr_owned_out != NULL && *descr_owned_out) {
+            Py_DECREF((PyObject *)descr);
+            *descr_owned_out = 0;
+        }
+        PyErr_SetString(PyExc_NotImplementedError, "unsupported PEP 3118 buffer format");
+        return NULL;
+    }
     if (descr == NULL) {
-        int typenum = _molt_numpy_typenum_from_buffer_format(view->format, view->itemsize);
-        descr = PyArray_DescrFromType(typenum);
+        descr = PyArray_DescrFromType(source_typenum);
         if (descr == NULL) {
             return NULL;
         }
+        if (descr_owned_out != NULL) {
+            *descr_owned_out = 1;
+        }
+    }
+    if (_molt_numpy_reject_ref_transfer_dtype(descr, "buffer admission") < 0) {
+        if (descr_owned_out != NULL && *descr_owned_out) {
+            Py_DECREF((PyObject *)descr);
+            *descr_owned_out = 0;
+        }
+        return NULL;
     }
     if (descr->elsize > 0 && view->itemsize > 0
         && descr->elsize != (int)view->itemsize) {
+        if (descr_owned_out != NULL && *descr_owned_out) {
+            Py_DECREF((PyObject *)descr);
+            *descr_owned_out = 0;
+        }
         PyErr_SetString(PyExc_TypeError, "buffer dtype itemsize does not match requested dtype");
+        return NULL;
+    }
+    if (!allow_cast && requested != NULL && descr->type_num != source_typenum) {
+        if (descr_owned_out != NULL && *descr_owned_out) {
+            Py_DECREF((PyObject *)descr);
+            *descr_owned_out = 0;
+        }
+        PyErr_SetString(PyExc_TypeError, "buffer dtype does not match requested dtype");
         return NULL;
     }
     return descr;
@@ -818,6 +1502,95 @@ static inline int _molt_numpy_buffer_flags_from_requirements(int requirements) {
     return flags;
 }
 
+static inline int _molt_numpy_alignment_value(PyArray_Descr *descr) {
+    if (descr == NULL || descr->alignment <= 1) {
+        return 1;
+    }
+    return descr->alignment;
+}
+
+static inline int _molt_numpy_pointer_is_aligned(const void *ptr, int alignment) {
+    if (ptr == NULL || alignment <= 1) {
+        return 1;
+    }
+    return (((Py_uintptr_t)ptr) % (Py_uintptr_t)alignment) == 0;
+}
+
+static inline int _molt_numpy_array_is_aligned(PyArrayObject *array_obj) {
+    int i;
+    int alignment;
+    if (array_obj == NULL) {
+        return 0;
+    }
+    alignment = _molt_numpy_alignment_value(PyArray_DESCR(array_obj));
+    if (!_molt_numpy_pointer_is_aligned(PyArray_DATA(array_obj), alignment)) {
+        return 0;
+    }
+    if (PyArray_NDIM(array_obj) > 0 && PyArray_DIMS(array_obj) != NULL && PyArray_STRIDES(array_obj) != NULL) {
+        for (i = 0; i < PyArray_NDIM(array_obj); i++) {
+            if (PyArray_DIM(array_obj, i) > 1
+                    && (PyArray_STRIDE(array_obj, i) % (npy_intp)alignment) != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static inline int _molt_numpy_flat_dims_offset(
+    const npy_intp *dims,
+    const npy_intp *strides,
+    int nd,
+    npy_intp flat_index,
+    npy_intp *offset_out
+) {
+    int axis;
+    npy_intp offset = 0;
+    if (offset_out == NULL || flat_index < 0 || nd < 0) {
+        PyErr_SetString(PyExc_ValueError, "invalid NumPy array offset request");
+        return -1;
+    }
+    if (nd == 0) {
+        *offset_out = 0;
+        return 0;
+    }
+    if (dims == NULL || strides == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NumPy array shape/stride metadata is missing");
+        return -1;
+    }
+    for (axis = nd - 1; axis >= 0; axis--) {
+        npy_intp dim = dims[axis];
+        npy_intp coord;
+        npy_intp step;
+        if (dim < 0) {
+            PyErr_SetString(PyExc_ValueError, "negative dimensions are not allowed");
+            return -1;
+        }
+        if (dim == 0) {
+            coord = 0;
+        } else {
+            coord = flat_index % dim;
+            flat_index /= dim;
+        }
+        if (_molt_numpy_checked_multiply_intp(
+                coord,
+                strides[axis],
+                &step,
+                "NumPy strided element offset") < 0) {
+            return -1;
+        }
+        if (_molt_numpy_checked_add_intp(
+                offset,
+                step,
+                &offset,
+                "NumPy strided element offset") < 0) {
+            return -1;
+        }
+    }
+    *offset_out = offset;
+    return 0;
+}
+
 static inline PyObject *_molt_numpy_array_from_buffer_view(
     PyObject *obj,
     const Py_buffer *view,
@@ -825,60 +1598,103 @@ static inline PyObject *_molt_numpy_array_from_buffer_view(
     int requirements
 ) {
     PyArrayObject_fields *array_obj;
+    npy_intp element_count = 0;
+    npy_intp nbytes = 0;
+    npy_intp elem_index;
+    int output_fortran = (requirements & NPY_ARRAY_F_CONTIGUOUS) != 0
+        && (requirements & NPY_ARRAY_C_CONTIGUOUS) == 0;
     int i;
-    int flags = NPY_ARRAY_ALIGNED | NPY_ARRAY_NOTSWAPPED;
+    int flags = NPY_ARRAY_NOTSWAPPED | NPY_ARRAY_OWNDATA | NPY_ARRAY_WRITEABLE;
+    (void)obj;
     if (view->ndim < 0) {
+        Py_DECREF((PyObject *)descr);
         PyErr_SetString(PyExc_ValueError, "negative buffer dimension count");
+        return NULL;
+    }
+    if (view->ndim > NPY_MAXDIMS) {
+        Py_DECREF((PyObject *)descr);
+        PyErr_SetString(PyExc_ValueError, "buffer dimension count exceeds NumPy limit");
         return NULL;
     }
     array_obj = (PyArrayObject_fields *)PyMem_Calloc(1, sizeof(PyArrayObject_fields));
     if (array_obj == NULL) {
+        Py_DECREF((PyObject *)descr);
         return NULL;
     }
-    array_obj->ob_base = (PyObject *)&PyArray_Type;
+    _molt_numpy_array_init_header(array_obj);
     array_obj->nd = view->ndim;
     array_obj->descr = descr;
-    array_obj->data = (char *)view->buf;
-    if (view->readonly == 0) {
-        flags |= NPY_ARRAY_WRITEABLE;
-    }
-    if (PyBuffer_IsContiguous(view, 'C')) {
-        flags |= NPY_ARRAY_C_CONTIGUOUS;
-    }
-    if (PyBuffer_IsContiguous(view, 'F')) {
-        flags |= NPY_ARRAY_F_CONTIGUOUS;
-    }
     array_obj->flags = flags;
     if (view->ndim > 0) {
         array_obj->dimensions = (npy_intp *)PyMem_Calloc((size_t)view->ndim, sizeof(npy_intp));
         array_obj->strides = (npy_intp *)PyMem_Calloc((size_t)view->ndim, sizeof(npy_intp));
         if (array_obj->dimensions == NULL || array_obj->strides == NULL) {
-            PyMem_Free(array_obj->strides);
-            PyMem_Free(array_obj->dimensions);
-            PyMem_Free(array_obj);
+            Py_DECREF((PyObject *)array_obj);
             return NULL;
         }
         for (i = 0; i < view->ndim; i++) {
             array_obj->dimensions[i] = view->shape != NULL ? (npy_intp)view->shape[i] : 0;
-            array_obj->strides[i] = view->strides != NULL ? (npy_intp)view->strides[i] : 0;
+        }
+        if (_molt_numpy_fill_strides(
+                array_obj->strides,
+                array_obj->dimensions,
+                view->ndim,
+                descr->elsize,
+                output_fortran) < 0) {
+            Py_DECREF((PyObject *)array_obj);
+            return NULL;
         }
     }
-    if (((requirements & NPY_ARRAY_C_CONTIGUOUS) != 0
-            && (array_obj->flags & NPY_ARRAY_C_CONTIGUOUS) == 0)
-        || ((requirements & NPY_ARRAY_F_CONTIGUOUS) != 0
-            && (array_obj->flags & NPY_ARRAY_F_CONTIGUOUS) == 0)
-        || ((requirements & NPY_ARRAY_WRITEABLE) != 0
-            && (array_obj->flags & NPY_ARRAY_WRITEABLE) == 0)) {
-        PyMem_Free(array_obj->strides);
-        PyMem_Free(array_obj->dimensions);
-        PyMem_Free(array_obj);
-        PyErr_SetString(PyExc_BufferError, "buffer does not satisfy requested NumPy array requirements");
+    if (_molt_numpy_checked_nbytes_from_dims(
+            array_obj->dimensions,
+            array_obj->nd,
+            descr->elsize,
+            &element_count,
+            &nbytes) < 0) {
+        Py_DECREF((PyObject *)array_obj);
         return NULL;
     }
-    array_obj->base = obj;
-    if (obj != NULL) {
-        Py_INCREF(obj);
+    array_obj->data = (char *)PyMem_Calloc((size_t)(nbytes > 0 ? nbytes : 1), 1);
+    if (array_obj->data == NULL) {
+        Py_DECREF((PyObject *)array_obj);
+        return NULL;
     }
+    PyArray_UpdateFlags(
+        (PyArrayObject *)array_obj,
+        NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (element_count > 0 && view->buf == NULL) {
+        Py_DECREF((PyObject *)array_obj);
+        PyErr_SetString(PyExc_BufferError, "buffer data pointer must not be NULL");
+        return NULL;
+    }
+    if (element_count > 0) {
+        const npy_intp *view_shape = (const npy_intp *)view->shape;
+        const npy_intp *view_strides = (const npy_intp *)view->strides;
+        for (elem_index = 0; elem_index < element_count; elem_index++) {
+            npy_intp src_offset;
+            npy_intp dst_offset;
+            if (_molt_numpy_flat_dims_offset(
+                    view_shape,
+                    view_strides,
+                    view->ndim,
+                    elem_index,
+                    &src_offset) < 0
+                || _molt_numpy_flat_dims_offset(
+                    array_obj->dimensions,
+                    array_obj->strides,
+                    array_obj->nd,
+                    elem_index,
+                    &dst_offset) < 0) {
+                Py_DECREF((PyObject *)array_obj);
+                return NULL;
+            }
+            memcpy(
+                array_obj->data + dst_offset,
+                ((const char *)view->buf) + src_offset,
+                (size_t)descr->elsize);
+        }
+    }
+    array_obj->base = NULL;
     return (PyObject *)array_obj;
 }
 
@@ -892,31 +1708,92 @@ static inline PyObject *PyArray_FromAny(
 ) {
     Py_buffer view;
     PyArray_Descr *resolved_descr;
+    int resolved_descr_owned = 0;
+    int view_requirements;
+    int forcecast = (requirements & NPY_ARRAY_FORCECAST) != 0;
+    int target_typenum = descr != NULL ? descr->type_num : NPY_NOTYPE;
+    int needs_copy = 0;
+    NPY_ORDER copy_order = NPY_CORDER;
     PyObject *array_obj;
     (void)context;
     if (obj == NULL) {
         PyErr_SetString(PyExc_TypeError, "NULL object passed to PyArray_FromAny");
         return NULL;
     }
-    if ((requirements & (NPY_ARRAY_ENSURECOPY | NPY_ARRAY_FORCECAST)) != 0) {
-        PyErr_SetString(PyExc_NotImplementedError, "Molt NumPy buffer construction does not implement copy or cast fallback");
+    if ((requirements & (NPY_ARRAY_ENSURENOCOPY | NPY_ARRAY_WRITEBACKIFCOPY)) != 0) {
+        if (descr != NULL) {
+            Py_DECREF((PyObject *)descr);
+        }
+        PyErr_SetString(PyExc_NotImplementedError, "NumPy no-copy/writeback admission requires retained buffer lease support");
         return NULL;
     }
-    if (PyObject_GetBuffer(obj, &view, _molt_numpy_buffer_flags_from_requirements(requirements)) < 0) {
+    view_requirements = requirements
+        & ~(NPY_ARRAY_ENSURECOPY
+            | NPY_ARRAY_FORCECAST
+            | NPY_ARRAY_ENSURENOCOPY
+            | NPY_ARRAY_WRITEBACKIFCOPY
+            | NPY_ARRAY_C_CONTIGUOUS
+            | NPY_ARRAY_F_CONTIGUOUS
+            | NPY_ARRAY_WRITEABLE);
+    if (PyObject_GetBuffer(obj, &view, _molt_numpy_buffer_flags_from_requirements(view_requirements)) < 0) {
+        if (descr != NULL) {
+            Py_DECREF((PyObject *)descr);
+        }
         return NULL;
     }
     if ((min_depth > 0 && view.ndim < min_depth) || (max_depth > 0 && view.ndim > max_depth)) {
         PyBuffer_Release(&view);
+        if (descr != NULL) {
+            Py_DECREF((PyObject *)descr);
+        }
         PyErr_SetString(PyExc_ValueError, "buffer dimensionality does not satisfy requested depth");
         return NULL;
     }
-    resolved_descr = _molt_numpy_descr_from_buffer(&view, descr);
+    resolved_descr = _molt_numpy_descr_from_buffer(
+        &view,
+        forcecast ? NULL : descr,
+        forcecast,
+        &resolved_descr_owned);
     if (resolved_descr == NULL) {
         PyBuffer_Release(&view);
+        if (forcecast && descr != NULL) {
+            Py_DECREF((PyObject *)descr);
+        }
         return NULL;
     }
     array_obj = _molt_numpy_array_from_buffer_view(obj, &view, resolved_descr, requirements);
     PyBuffer_Release(&view);
+    if (array_obj == NULL) {
+        if (forcecast && descr != NULL) {
+            Py_DECREF((PyObject *)descr);
+        }
+        return NULL;
+    }
+    if (forcecast && descr != NULL) {
+        PyObject *cast_obj = PyArray_Cast((PyArrayObject *)array_obj, target_typenum);
+        Py_DECREF(array_obj);
+        Py_DECREF((PyObject *)descr);
+        array_obj = cast_obj;
+        if (array_obj == NULL) {
+            return NULL;
+        }
+    }
+    needs_copy = 0;
+    if ((requirements & NPY_ARRAY_F_CONTIGUOUS) != 0
+            && !PyArray_IS_F_CONTIGUOUS((PyArrayObject *)array_obj)) {
+        needs_copy = 1;
+        copy_order = NPY_FORTRANORDER;
+    }
+    if ((requirements & NPY_ARRAY_C_CONTIGUOUS) != 0
+            && !PyArray_IS_C_CONTIGUOUS((PyArrayObject *)array_obj)) {
+        needs_copy = 1;
+        copy_order = NPY_CORDER;
+    }
+    if (needs_copy) {
+        PyObject *copy_obj = PyArray_NewCopy((PyArrayObject *)array_obj, copy_order);
+        Py_DECREF(array_obj);
+        array_obj = copy_obj;
+    }
     return array_obj;
 }
 
@@ -1129,9 +2006,8 @@ static inline int _molt_numpy_copy_dims(
 
 static inline npy_intp _molt_numpy_dims_size(const npy_intp *dims, int nd) {
     npy_intp size = 1;
-    int i;
-    for (i = 0; i < nd; i++) {
-        size *= dims[i];
+    if (_molt_numpy_checked_dims_size(dims, nd, &size) < 0) {
+        return 0;
     }
     return size;
 }
@@ -1154,15 +2030,79 @@ static inline int _molt_numpy_fill_strides(
     }
     if (is_fortran) {
         for (i = 0; i < nd; i++) {
+            npy_intp dim = dims[i] > 0 ? dims[i] : 1;
             strides_out[i] = stride;
-            stride *= dims[i] > 0 ? dims[i] : 1;
+            if (i + 1 < nd && _molt_numpy_checked_multiply_nonnegative(
+                    stride,
+                    dim,
+                    &stride,
+                    "NumPy contiguous stride span") < 0) {
+                return -1;
+            }
         }
     } else {
         for (i = nd - 1; i >= 0; i--) {
+            npy_intp dim = dims[i] > 0 ? dims[i] : 1;
             strides_out[i] = stride;
-            stride *= dims[i] > 0 ? dims[i] : 1;
+            if (i > 0 && _molt_numpy_checked_multiply_nonnegative(
+                    stride,
+                    dim,
+                    &stride,
+                    "NumPy contiguous stride span") < 0) {
+                return -1;
+            }
         }
     }
+    return 0;
+}
+
+static inline int _molt_numpy_flat_index_offset(
+    PyArrayObject *array_obj,
+    npy_intp flat_index,
+    npy_intp *offset_out
+) {
+    int nd;
+    int axis;
+    npy_intp offset = 0;
+    if (array_obj == NULL || offset_out == NULL || flat_index < 0) {
+        PyErr_SetString(PyExc_ValueError, "invalid NumPy array offset request");
+        return -1;
+    }
+    nd = PyArray_NDIM(array_obj);
+    if (nd == 0) {
+        *offset_out = 0;
+        return 0;
+    }
+    if (PyArray_DIMS(array_obj) == NULL || PyArray_STRIDES(array_obj) == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NumPy array shape/stride metadata is missing");
+        return -1;
+    }
+    for (axis = nd - 1; axis >= 0; axis--) {
+        npy_intp dim = PyArray_DIM(array_obj, axis);
+        npy_intp coord;
+        npy_intp step;
+        if (dim <= 0) {
+            coord = 0;
+        } else {
+            coord = flat_index % dim;
+            flat_index /= dim;
+        }
+        if (_molt_numpy_checked_multiply_intp(
+                coord,
+                PyArray_STRIDE(array_obj, axis),
+                &step,
+                "NumPy strided element offset") < 0) {
+            return -1;
+        }
+        if (_molt_numpy_checked_add_intp(
+                offset,
+                step,
+                &offset,
+                "NumPy strided element offset") < 0) {
+            return -1;
+        }
+    }
+    *offset_out = offset;
     return 0;
 }
 
@@ -1177,7 +2117,7 @@ static inline PyObject *PyArray_NewFromDescr(
     PyObject *obj
 ) {
     PyArrayObject_fields *array_obj;
-    npy_intp size;
+    npy_intp nbytes;
     int i;
     int owns_data = 0;
     (void)subtype;
@@ -1193,21 +2133,21 @@ static inline PyObject *PyArray_NewFromDescr(
     }
     array_obj = (PyArrayObject_fields *)PyMem_Calloc(1, sizeof(PyArrayObject_fields));
     if (array_obj == NULL) {
+        Py_DECREF((PyObject *)descr);
         return NULL;
     }
-    array_obj->ob_base = (PyObject *)&PyArray_Type;
+    _molt_numpy_array_init_header(array_obj);
     array_obj->nd = nd;
     array_obj->descr = descr;
-    array_obj->flags = flags | NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE;
+    array_obj->flags = flags;
     if (_molt_numpy_copy_dims(&array_obj->dimensions, dims, nd) < 0) {
-        PyMem_Free(array_obj);
+        Py_DECREF((PyObject *)array_obj);
         return NULL;
     }
     if (nd > 0) {
         array_obj->strides = (npy_intp *)PyMem_Calloc((size_t)nd, sizeof(npy_intp));
         if (array_obj->strides == NULL) {
-            PyMem_Free(array_obj->dimensions);
-            PyMem_Free(array_obj);
+            Py_DECREF((PyObject *)array_obj);
             return NULL;
         }
         if (strides != NULL) {
@@ -1220,34 +2160,39 @@ static inline PyObject *PyArray_NewFromDescr(
                 nd,
                 descr->elsize,
                 (flags & NPY_ARRAY_F_CONTIGUOUS) != 0) < 0) {
-            PyMem_Free(array_obj->strides);
-            PyMem_Free(array_obj->dimensions);
-            PyMem_Free(array_obj);
+            Py_DECREF((PyObject *)array_obj);
             return NULL;
         }
     }
-    size = _molt_numpy_dims_size(array_obj->dimensions, nd);
+    if (_molt_numpy_checked_nbytes_from_dims(
+            array_obj->dimensions,
+            nd,
+            descr->elsize,
+            NULL,
+            &nbytes) < 0) {
+        Py_DECREF((PyObject *)array_obj);
+        return NULL;
+    }
     if (data != NULL) {
         array_obj->data = (char *)data;
     } else {
-        npy_intp nbytes = size * (descr->elsize > 0 ? descr->elsize : 1);
         array_obj->data = (char *)PyMem_Calloc((size_t)(nbytes > 0 ? nbytes : 1), 1);
         if (array_obj->data == NULL) {
-            PyMem_Free(array_obj->strides);
-            PyMem_Free(array_obj->dimensions);
-            PyMem_Free(array_obj);
+            Py_DECREF((PyObject *)array_obj);
             return NULL;
         }
         owns_data = 1;
     }
     if (owns_data) {
         array_obj->flags |= NPY_ARRAY_OWNDATA;
+        array_obj->flags |= NPY_ARRAY_WRITEABLE;
     }
-    if (strides == NULL) {
-        array_obj->flags |= (flags & NPY_ARRAY_F_CONTIGUOUS) != 0
-            ? NPY_ARRAY_F_CONTIGUOUS
-            : NPY_ARRAY_C_CONTIGUOUS;
+    if (_molt_numpy_array_is_aligned((PyArrayObject *)array_obj)) {
+        array_obj->flags |= NPY_ARRAY_ALIGNED;
     }
+    PyArray_UpdateFlags(
+        (PyArrayObject *)array_obj,
+        NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED);
     if (obj != NULL) {
         array_obj->base = obj;
         Py_INCREF(obj);
@@ -1266,8 +2211,15 @@ static inline PyObject *PyArray_NewFromDescrAndBase(
     PyObject *obj,
     PyObject *base
 ) {
-    (void)base;
-    return PyArray_NewFromDescr(subtype, descr, nd, dims, strides, data, flags, obj);
+    return PyArray_NewFromDescr(
+        subtype,
+        descr,
+        nd,
+        dims,
+        strides,
+        data,
+        flags,
+        base != NULL ? base : obj);
 }
 
 static inline PyObject *PyArray_NewFromDescr_int(
@@ -1308,7 +2260,12 @@ static inline PyObject *PyArray_Zeros(
 ) {
     PyObject *array_obj = PyArray_Empty(nd, dims, descr, isfortran);
     if (array_obj != NULL) {
-        memset(PyArray_DATA((PyArrayObject *)array_obj), 0, (size_t)PyArray_NBYTES((PyArrayObject *)array_obj));
+        npy_intp nbytes;
+        if (_molt_numpy_array_nbytes_checked((PyArrayObject *)array_obj, &nbytes) < 0) {
+            Py_DECREF(array_obj);
+            return NULL;
+        }
+        memset(PyArray_DATA((PyArrayObject *)array_obj), 0, (size_t)nbytes);
     }
     return array_obj;
 }
@@ -1324,7 +2281,7 @@ static inline PyObject *PyArray_Zeros(
         (dims), \
         NULL, \
         (data), \
-        NPY_ARRAY_C_CONTIGUOUS, \
+        NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_WRITEABLE, \
         NULL))
 #define PyArray_ZEROS(nd, dims, typenum, isfortran) \
     ((PyArrayObject *)PyArray_Zeros((nd), (dims), PyArray_DescrFromType((typenum)), (isfortran)))
@@ -1332,9 +2289,15 @@ static inline PyObject *PyArray_Zeros(
 static inline PyObject *PyArray_NewCopy(PyArrayObject *array_obj, NPY_ORDER order) {
     PyObject *copy_obj;
     npy_intp nbytes;
+    npy_intp count;
+    npy_intp i;
+    int itemsize;
     int is_fortran = order == NPY_FORTRANORDER;
     if (array_obj == NULL) {
         PyErr_SetString(PyExc_TypeError, "NULL array passed to PyArray_NewCopy");
+        return NULL;
+    }
+    if (_molt_numpy_reject_ref_transfer_dtype(PyArray_DESCR(array_obj), "array copy") < 0) {
         return NULL;
     }
     copy_obj = PyArray_Empty(
@@ -1345,9 +2308,32 @@ static inline PyObject *PyArray_NewCopy(PyArrayObject *array_obj, NPY_ORDER orde
     if (copy_obj == NULL) {
         return NULL;
     }
-    nbytes = PyArray_NBYTES(array_obj);
-    if (nbytes > 0) {
+    if (_molt_numpy_array_nbytes_checked(array_obj, &nbytes) < 0) {
+        Py_DECREF(copy_obj);
+        return NULL;
+    }
+    itemsize = PyArray_ITEMSIZE(array_obj);
+    count = PyArray_SIZE(array_obj);
+    if (((PyArray_IS_C_CONTIGUOUS(array_obj)
+                && PyArray_IS_C_CONTIGUOUS((PyArrayObject *)copy_obj))
+            || (PyArray_IS_F_CONTIGUOUS(array_obj)
+                && PyArray_IS_F_CONTIGUOUS((PyArrayObject *)copy_obj)))
+            && nbytes > 0) {
         memcpy(PyArray_DATA((PyArrayObject *)copy_obj), PyArray_DATA(array_obj), (size_t)nbytes);
+    } else {
+        for (i = 0; i < count; i++) {
+            npy_intp src_offset;
+            npy_intp dst_offset;
+            if (_molt_numpy_flat_index_offset(array_obj, i, &src_offset) < 0
+                    || _molt_numpy_flat_index_offset((PyArrayObject *)copy_obj, i, &dst_offset) < 0) {
+                Py_DECREF(copy_obj);
+                return NULL;
+            }
+            memcpy(
+                PyArray_DATA((PyArrayObject *)copy_obj) + dst_offset,
+                PyArray_DATA(array_obj) + src_offset,
+                (size_t)itemsize);
+        }
     }
     return copy_obj;
 }
@@ -1370,19 +2356,35 @@ static inline void PyArray_UpdateFlags(PyArrayObject *array_obj, int flagmask) {
     if (nd > 0 && PyArray_STRIDES(array_obj) != NULL && PyArray_DIMS(array_obj) != NULL) {
         expected = itemsize;
         for (i = nd - 1; i >= 0; i--) {
+            npy_intp dim = PyArray_DIM(array_obj, i) > 0 ? PyArray_DIM(array_obj, i) : 1;
             if (PyArray_DIM(array_obj, i) > 1 && PyArray_STRIDE(array_obj, i) != expected) {
                 c_contiguous = 0;
                 break;
             }
-            expected *= PyArray_DIM(array_obj, i) > 0 ? PyArray_DIM(array_obj, i) : 1;
+            if (i > 0 && _molt_numpy_checked_multiply_nonnegative(
+                    expected,
+                    dim,
+                    &expected,
+                    "NumPy contiguous flag span") < 0) {
+                c_contiguous = 0;
+                break;
+            }
         }
         expected = itemsize;
         for (i = 0; i < nd; i++) {
+            npy_intp dim = PyArray_DIM(array_obj, i) > 0 ? PyArray_DIM(array_obj, i) : 1;
             if (PyArray_DIM(array_obj, i) > 1 && PyArray_STRIDE(array_obj, i) != expected) {
                 f_contiguous = 0;
                 break;
             }
-            expected *= PyArray_DIM(array_obj, i) > 0 ? PyArray_DIM(array_obj, i) : 1;
+            if (i + 1 < nd && _molt_numpy_checked_multiply_nonnegative(
+                    expected,
+                    dim,
+                    &expected,
+                    "NumPy contiguous flag span") < 0) {
+                f_contiguous = 0;
+                break;
+            }
         }
     }
     if ((flagmask & NPY_ARRAY_C_CONTIGUOUS) != 0) {
@@ -1398,7 +2400,10 @@ static inline void PyArray_UpdateFlags(PyArrayObject *array_obj, int flagmask) {
         }
     }
     if ((flagmask & NPY_ARRAY_ALIGNED) != 0) {
-        ((PyArrayObject_fields *)array_obj)->flags |= NPY_ARRAY_ALIGNED;
+        ((PyArrayObject_fields *)array_obj)->flags &= ~NPY_ARRAY_ALIGNED;
+        if (_molt_numpy_array_is_aligned(array_obj)) {
+            ((PyArrayObject_fields *)array_obj)->flags |= NPY_ARRAY_ALIGNED;
+        }
     }
 }
 
@@ -1415,15 +2420,25 @@ static inline PyObject *PyArray_Cast(PyArrayObject *array_obj, int typenum) {
     if (out_descr == NULL) {
         return NULL;
     }
+    if (_molt_numpy_reject_ref_transfer_dtype(PyArray_DESCR(array_obj), "array cast source") < 0
+            || _molt_numpy_reject_ref_transfer_dtype(out_descr, "array cast destination") < 0) {
+        Py_DECREF((PyObject *)out_descr);
+        return NULL;
+    }
     cast_obj = PyArray_Empty(PyArray_NDIM(array_obj), PyArray_DIMS(array_obj), out_descr, 0);
     if (cast_obj == NULL) {
         return NULL;
     }
     count = PyArray_SIZE(array_obj);
     for (i = 0; i < count; i++) {
+        npy_intp offset;
+        if (_molt_numpy_flat_index_offset(array_obj, i, &offset) < 0) {
+            Py_DECREF(cast_obj);
+            return NULL;
+        }
         PyObject *scalar = _molt_numpy_load_scalar(
             PyArray_DESCR(array_obj),
-            PyArray_DATA(array_obj) + i * PyArray_ITEMSIZE(array_obj));
+            PyArray_DATA(array_obj) + offset);
         if (scalar == NULL) {
             Py_DECREF(cast_obj);
             return NULL;
@@ -1508,8 +2523,9 @@ static inline PyObject *PyArray_IterNew(PyObject *obj) {
     if (iter == NULL) {
         return NULL;
     }
-    iter->ob_base = (PyObject *)&PyArray_Type;
+    _molt_numpy_iter_init_header(iter);
     iter->ao = array_obj;
+    Py_INCREF((PyObject *)array_obj);
     iter->index = 0;
     iter->size = PyArray_SIZE(array_obj);
     iter->dataptr = PyArray_DATA(array_obj);
@@ -1529,7 +2545,12 @@ static inline void _molt_numpy_iter_next(PyArrayIterObject *iter) {
         return;
     }
     iter->index++;
-    iter->dataptr += PyArray_ITEMSIZE(iter->ao);
+    if (iter->index < iter->size) {
+        npy_intp offset;
+        if (_molt_numpy_flat_index_offset(iter->ao, iter->index, &offset) == 0) {
+            iter->dataptr = PyArray_DATA(iter->ao) + offset;
+        }
+    }
 }
 
 static inline PyObject *PyArray_IterAllButAxis(PyObject *obj, int *axis) {
@@ -1557,8 +2578,9 @@ static inline PyObject *PyArray_NeighborhoodIterNew(
     if (neighborhood == NULL) {
         return NULL;
     }
-    neighborhood->ob_base = (PyObject *)&PyArrayNeighborhoodIter_Type;
+    _molt_numpy_neighborhood_iter_init_header(neighborhood);
     neighborhood->ao = iter->ao;
+    Py_INCREF((PyObject *)iter->ao);
     neighborhood->index = 0;
     neighborhood->size = iter->size;
     neighborhood->dataptr = iter->dataptr;
@@ -1578,7 +2600,12 @@ static inline void PyArrayNeighborhoodIter_Next(PyArrayNeighborhoodIterObject *i
         return;
     }
     iter->index++;
-    iter->dataptr += PyArray_ITEMSIZE(iter->ao);
+    if (iter->index < iter->size) {
+        npy_intp offset;
+        if (_molt_numpy_flat_index_offset(iter->ao, iter->index, &offset) == 0) {
+            iter->dataptr = PyArray_DATA(iter->ao) + offset;
+        }
+    }
 }
 
 static inline int PyArrayNeighborhoodIter_Next2D(PyArrayNeighborhoodIterObject *iter) {
@@ -1654,15 +2681,24 @@ static inline int PyArray_GetDTypeTransferFunction(
     (void)aligned;
     (void)src_stride;
     (void)dst_stride;
-    (void)src_dtype;
     (void)move_references;
     if (out_loop == NULL) {
         PyErr_SetString(PyExc_ValueError, "NULL transfer loop output");
         return -1;
     }
+    if (src_dtype == NULL || dst_dtype == NULL
+        || src_dtype->type_num != dst_dtype->type_num
+        || src_dtype->elsize != dst_dtype->elsize) {
+        PyErr_SetString(PyExc_NotImplementedError, "dtype transfer requires identical source and destination descriptors");
+        return -1;
+    }
+    if (_molt_numpy_reject_ref_transfer_dtype(src_dtype, "dtype transfer source") < 0
+            || _molt_numpy_reject_ref_transfer_dtype(dst_dtype, "dtype transfer destination") < 0) {
+        return -1;
+    }
     *out_loop = _molt_numpy_strided_copy_loop;
     if (out_transferdata != NULL) {
-        int itemsize = dst_dtype != NULL ? dst_dtype->elsize : 1;
+        int itemsize = dst_dtype->elsize;
         *out_transferdata = (void *)(uintptr_t)(itemsize > 0 ? itemsize : 1);
     }
     if (out_needs_api != NULL) {
@@ -1709,8 +2745,14 @@ static inline PyArrayMethod_StridedLoop PyArray_GetStridedNumericCastFn(
     int src_type_num,
     int dst_type_num
 ) {
-    (void)src_type_num;
-    (void)dst_type_num;
+    if (src_type_num == NPY_OBJECT || dst_type_num == NPY_OBJECT) {
+        PyErr_SetString(PyExc_NotImplementedError, "object dtype cast transfer requires a refcount-aware primitive");
+        return NULL;
+    }
+    if (src_type_num != dst_type_num) {
+        PyErr_SetString(PyExc_NotImplementedError, "numeric cast transfer requires identical source and destination types");
+        return NULL;
+    }
     return PyArray_GetStridedCopyFn(aligned, src_stride, dst_stride, 0);
 }
 
@@ -1724,6 +2766,9 @@ static inline int PyArray_GetDTypeCopySwapFn(
 ) {
     if (outstransfer == NULL) {
         PyErr_SetString(PyExc_ValueError, "NULL dtype copy output");
+        return -1;
+    }
+    if (_molt_numpy_reject_ref_transfer_dtype(dtype, "dtype copy-swap") < 0) {
         return -1;
     }
     *outstransfer = PyArray_GetStridedCopyFn(
@@ -1754,13 +2799,16 @@ static inline npy_intp PyArray_TransferNDimToStrided(
 ) {
     npy_intp i;
     npy_intp src_stride = src_strides != NULL ? src_strides[0] : src_itemsize;
-    (void)ndim;
     (void)src_strides_inc;
     (void)coords;
     (void)coords_inc;
     (void)shape;
     (void)shape_inc;
     (void)cast_info;
+    if (ndim != 1) {
+        PyErr_SetString(PyExc_NotImplementedError, "N-D to strided transfer requires explicit coordinate lowering");
+        return -1;
+    }
     for (i = 0; i < count; i++) {
         memcpy(dst + i * dst_stride, src + i * src_stride, (size_t)src_itemsize);
     }
@@ -1784,13 +2832,16 @@ static inline npy_intp PyArray_TransferStridedToNDim(
 ) {
     npy_intp i;
     npy_intp dst_stride = dst_strides != NULL ? dst_strides[0] : src_itemsize;
-    (void)ndim;
     (void)dst_strides_inc;
     (void)coords;
     (void)coords_inc;
     (void)shape;
     (void)shape_inc;
     (void)cast_info;
+    if (ndim != 1) {
+        PyErr_SetString(PyExc_NotImplementedError, "strided to N-D transfer requires explicit coordinate lowering");
+        return -1;
+    }
     for (i = 0; i < count; i++) {
         memcpy(dst + i * dst_stride, src + i * src_stride, (size_t)src_itemsize);
     }
@@ -1817,13 +2868,16 @@ static inline npy_intp PyArray_TransferMaskedStridedToNDim(
     npy_intp i;
     npy_intp copied = 0;
     npy_intp dst_stride = dst_strides != NULL ? dst_strides[0] : src_itemsize;
-    (void)ndim;
     (void)dst_strides_inc;
     (void)coords;
     (void)coords_inc;
     (void)shape;
     (void)shape_inc;
     (void)cast_info;
+    if (ndim != 1) {
+        PyErr_SetString(PyExc_NotImplementedError, "masked strided to N-D transfer requires explicit coordinate lowering");
+        return -1;
+    }
     for (i = 0; i < count; i++) {
         if (mask == NULL || *(mask + i * mask_stride)) {
             memcpy(dst + i * dst_stride, src + i * src_stride, (size_t)src_itemsize);
@@ -1882,11 +2936,29 @@ static inline PyObject *PyArray_Newshape(
     NPY_ORDER order
 ) {
     int flags;
+    npy_intp current_elements = 0;
+    npy_intp new_elements = 0;
     if (self == NULL || newdims == NULL) {
         PyErr_SetString(PyExc_TypeError, "NULL argument passed to PyArray_Newshape");
         return NULL;
     }
+    if (_molt_numpy_checked_dims_size(
+            PyArray_DIMS(self),
+            PyArray_NDIM(self),
+            &current_elements) < 0
+        || _molt_numpy_checked_dims_size(newdims->ptr, newdims->len, &new_elements) < 0) {
+        return NULL;
+    }
+    if (current_elements != new_elements) {
+        PyErr_SetString(PyExc_ValueError, "cannot reshape array to a different element count");
+        return NULL;
+    }
     flags = (order == NPY_FORTRANORDER) ? NPY_ARRAY_F_CONTIGUOUS : NPY_ARRAY_C_CONTIGUOUS;
+    if ((flags == NPY_ARRAY_F_CONTIGUOUS && !PyArray_IS_F_CONTIGUOUS(self))
+        || (flags == NPY_ARRAY_C_CONTIGUOUS && !PyArray_IS_C_CONTIGUOUS(self))) {
+        PyErr_SetString(PyExc_ValueError, "cannot reshape non-contiguous array without copy");
+        return NULL;
+    }
     return PyArray_NewFromDescr(
         &PyArray_Type,
         PyArray_DESCR(self),
@@ -1932,7 +3004,30 @@ static inline PyObject *PyArray_Resize(
             return NULL;
         }
     }
-    nbytes = _molt_numpy_dims_size(new_dims, newshape->len) * PyArray_ITEMSIZE(self);
+    if (_molt_numpy_checked_nbytes_from_dims(
+            new_dims,
+            newshape->len,
+            PyArray_ITEMSIZE(self),
+            NULL,
+            &nbytes) < 0) {
+        PyMem_Free(new_strides);
+        PyMem_Free(new_dims);
+        return NULL;
+    }
+    if (!PyArray_CHKFLAGS(self, NPY_ARRAY_OWNDATA)) {
+        npy_intp current_nbytes;
+        if (_molt_numpy_array_nbytes_checked(self, &current_nbytes) < 0) {
+            PyMem_Free(new_strides);
+            PyMem_Free(new_dims);
+            return NULL;
+        }
+        if (nbytes > current_nbytes) {
+            PyMem_Free(new_strides);
+            PyMem_Free(new_dims);
+            PyErr_SetString(PyExc_ValueError, "cannot grow non-owned NumPy array backing storage");
+            return NULL;
+        }
+    }
     if (PyArray_DATA(self) != NULL && PyArray_CHKFLAGS(self, NPY_ARRAY_OWNDATA)) {
         char *new_data = (char *)PyMem_Realloc(PyArray_DATA(self), (size_t)(nbytes > 0 ? nbytes : 1));
         if (new_data == NULL) {
@@ -1947,6 +3042,9 @@ static inline PyObject *PyArray_Resize(
     ((PyArrayObject_fields *)self)->dimensions = new_dims;
     ((PyArrayObject_fields *)self)->strides = new_strides;
     ((PyArrayObject_fields *)self)->nd = newshape->len;
+    PyArray_UpdateFlags(
+        self,
+        NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED);
     Py_INCREF((PyObject *)self);
     return (PyObject *)self;
 }
@@ -1977,6 +3075,9 @@ static inline int PyArray_SetBaseObject(PyArrayObject *arr, PyObject *base) {
     if (arr == NULL) {
         PyErr_SetString(PyExc_TypeError, "NULL array passed to PyArray_SetBaseObject");
         return -1;
+    }
+    if (((PyArrayObject_fields *)arr)->base != NULL && ((PyArrayObject_fields *)arr)->base != base) {
+        Py_DECREF(((PyArrayObject_fields *)arr)->base);
     }
     ((PyArrayObject_fields *)arr)->base = base;
     return 0;
@@ -2037,10 +3138,10 @@ static inline PyArray_DTypeMeta *PyArray_DTypeFromTypeNum(int typenum) {
     if (dtype == NULL) {
         return NULL;
     }
-    dtype->ob_base = (PyObject *)&PyArrayDTypeMeta_Type;
+    _molt_numpy_dtype_meta_init_header(dtype);
     dtype->singleton = PyArray_DescrFromType(typenum);
     if (dtype->singleton == NULL) {
-        PyMem_Free(dtype);
+        Py_DECREF((PyObject *)dtype);
         return NULL;
     }
     return dtype;

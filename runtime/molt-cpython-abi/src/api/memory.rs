@@ -1,7 +1,7 @@
 //! CPython memory allocator ABI.
 
 use crate::abi_types::{
-    Py_buffer, Py_ssize_t, PyBUF_FULL_RO, PyBUF_WRITABLE, PyMemoryView_Type, PyMemoryViewObject,
+    Py_buffer, Py_ssize_t, PyBUF_FULL_RO, PyBUF_WRITE, PyMemoryView_Type, PyMemoryViewObject,
     PyObject, PyTypeObject, PyVarObject,
 };
 use std::ffi::c_void;
@@ -215,7 +215,7 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
         return std::ptr::null_mut();
     }
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
-    let readonly = (flags & PyBUF_WRITABLE == 0) as c_int;
+    let readonly = (flags & PyBUF_WRITE == 0) as c_int;
     if unsafe {
         crate::api::buffer::PyBuffer_FillInfo(
             &mut view,
@@ -223,7 +223,7 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
             mem.cast(),
             size,
             readonly,
-            PyBUF_FULL_RO | (flags & PyBUF_WRITABLE),
+            PyBUF_FULL_RO,
         )
     } != 0
     {
