@@ -64,6 +64,11 @@ WASM link commands must:
   and host-call exports required by runners;
 - use post-link table-ref materialization only after validating the output with
   runtime tests that exercise indirect calls.
+- derive WebAssembly feature flags from the selected target feature profile
+  (`wasm-mvp`, `wasm-refs`, `wasm-gc`) defined in
+  `docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md`; linkers and
+  optimizers may not infer GC/reference support from Cargo profile names,
+  browser-family assumptions, or `wasm-opt` availability.
 
 ### Post-Link Optimization
 
@@ -76,6 +81,13 @@ reproducible before/after checks:
 - size and cold-start improvements must be recorded in `bench/results/` or
   `logs/` with exact command lines.
 
+The portable `wasm-mvp` baseline keeps Binaryen GC disabled so `wasm-opt` cannot
+rewrap flattened function types into GC-only recursive type groups. A `wasm-gc`
+artifact may enable Binaryen GC only when the target contract proves runner,
+browser, and deployment-host support, and only with the same export-contract,
+size, cold-start, allocation-count, host-call-count, and throughput evidence as
+the non-GC artifact it replaces.
+
 ### Disallowed Shortcuts
 
 - No linker flags that mask undefined required symbols.
@@ -84,6 +96,9 @@ reproducible before/after checks:
 - No host-CPython fallback to compensate for missing linked behavior.
 - No treating generic `wasm-opt -O*` output as accepted without end-to-end
   Molt runner verification.
+- No enabling WasmGC or reference-types globally to work around missing lowering,
+  package custody, C/API, buffer, or import/link closure. Feature profiles must
+  expose real target capability and real IR/runtime facts.
 
 ## Current High-Value Work
 
@@ -95,3 +110,6 @@ reproducible before/after checks:
    function count, data segment count, and export count.
 4. Add regression tests for runtime table initialization and signature
    normalization before enabling any more aggressive ICF/export pruning.
+5. Add a `wasm-gc` feature-profile probe lane that validates Binaryen GC flags,
+   runner/browser support, export preservation, and measured deltas against the
+   matching `wasm-mvp` artifact before any WasmGC lowering lands.
