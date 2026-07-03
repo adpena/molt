@@ -5,160 +5,314 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-02 by the orchestrator.
+Last updated: 2026-07-02 (late) by the orchestrator.
+
+## State of the world (read this first)
+
+- The witness build lane is UNBLOCKED. The "custody regression" was a
+  git-bash/MSYS env-var path bug (POSIX `/c/...` roots exported to Windows
+  Python), not a tree regression. Fixed + fail-closed diagnostic landed
+  (603ae3154): missing explicit `MOLT_MODULE_ROOTS` entries now fail the
+  build naming the entries. Bedrock PR1 (83a8a154b) is exonerated and live.
+- The witness runtime frontier is `numpy._core._multiarray_umath` static
+  extension init: it raises, and the failure propagation wedges (R0.1).
+- The native indirect-call P0 has ONE integrator (orchestrator's subagent,
+  successor of the infra-killed one; WIP is in the shared tree — 7 files,
+  call/function.rs + fc/modules.rs + friends. Do not touch that lane).
+
+## 1000-Year End-State Roadmap (R0–R9) — the recipe
+
+This is the full path from HERE to the end state. Every item names its
+ingredients (files/authorities), its process (commands), and its acceptance
+evidence. No item may land as a partial: each is a complete subsystem cut.
+Dependency edges are explicit; anything not blocked may proceed in parallel
+subject to lane ownership. The overriding outcome bar, in order:
+(1) correctness incl. memory safety, (2) faster than CPython everywhere
+claimed — approaching/beating Codon and PyPy on numeric kernels,
+(3) CPython >=3.12 parity with version+platform gating, (4) deterministic
+small fast-start artifacts, (5) world-class agent-first DX.
+
+### R0. Pact witness kernel GREEN end-to-end (owner: orchestrator) — ACTIVE
+
+The done criterion of the current goal: `field_solve.py` from
+`collab/pact/` compiles through the live WASM/browser path, produces
+`candidate_outputs.npz`, and `check_parity.py` passes — no host-CPython
+fallback, no fake symbols, upstream source only through package custody.
+
+- R0.1 `_multiarray_umath` static init failure + propagation wedge.
+  Ingredients: `runtime/molt-runtime/src/builtins/module_table.rs` (module
+  states {Uninit, Initializing, Ready, Tombstone, Replaced};
+  `molt_module_ensure` is the ONLY transition owner), static extension init
+  path, `static_extension_init_failure.json` dossier emitted by the
+  acceptance lane. Process: `bash tools/witness_cycle.sh` (build|run|cycle)
+  with `MOLT_TRACE_IMPORT_STAGE=1`; read the dossier BEFORE any manual
+  rummaging. Two defects to close as one arc: (a) the init failure itself
+  (whatever C-API/ABI symbol or capsule the module needs — close it as a
+  reusable primitive, never a stub); (b) init failure must propagate as a
+  Python ImportError and unwind — a wedge/hang on the error path is a
+  module-state custody bug (Initializing never resolved). Acceptance:
+  `alias_probe.py` prints its numpy/scipy census and `WITNESS-CHAIN-OK`.
+- R0.2 numpy.linalg closure (eigh chain). The built artifact
+  `_umath_linalg.molt.wasm` is parked at `tmp/pact_staging_parked/`;
+  restage into the numpy seal `numpy/linalg/`, rebuild, prove
+  `numpy.linalg.eigh` executes. Depends: R0.1.
+- R0.3 scipy.ndimage executable dispatch: `distance_transform_edt`,
+  `gaussian_filter`, `label` native callable_exports must be executable ABI
+  dispatch (not import-visible-only). Ingredients: callable-table slots
+  (`module_abi/callable_table/layout.rs` slot-addressed builder), app
+  callable resolver, `_nd_image.molt.wasm` manifest callable_exports.
+  Acceptance: alias_probe's EDT/gaussian/label chain returns correct
+  values. Depends: R0.1.
+- R0.4 Acceptance lane: `uv run --active --project . --python 3.12 python
+  tools/proof_queue.py pact-witness-acceptance --detach --timeout 7200`.
+  Evidence: run ID, `candidate_outputs.npz` produced by Molt WASM,
+  `check_parity.py` PASS. Depends: R0.1–R0.3.
+- R0.5 Witness performance: time the kernel vs CPython (same inputs);
+  faster-than-CPython is part of DONE, and the number goes on the R8
+  scoreboard. Depends: R0.4.
+
+### R1. Native call-lane unification (owner: orchestrator's subagent) — ACTIVE
+
+End state: ONE call-target authority. Trampoline vs fixed-arity direct
+dispatch is a single registry decision; the borrowed-vs-consumed argument
+ownership contract is written in exactly one place and both lowering and
+runtime read it. No callsite may resolve a function's direct target where
+the trampoline target is required (the P0), and no borrowed name string may
+be dec_ref'd by the callee. Remaining known layers after the current WIP
+lands: dec_ref-of-borrowed-name; "SystemError: module id out of range".
+Gates: `tests/test_native_import_bootstrap_regressions.py`, a synthetic
+compile_func indirect-call test (E2E is release/WIP-brittle; the synthetic
+test is the durable gate), differential `python tests/molt_diff.py ... --jobs 1`.
+
+### R2. Import bedrock completion + FREEZE (owner: orchestrator; Codex preps PR2)
+
+Per `docs/design/foundation/69_import_bedrock_frozen_module_layer.md`.
+PR1 (generated ModuleRegistry + runtime ModuleTable) is LIVE.
+- PR2: sys.modules becomes a dict VIEW over the one module store; DELETE the
+  Rust mirror sync (task #14). Blocked on: R1 landing (modules.rs quiet).
+- PR3: wasm import/export/callable tables become REGISTRY PROJECTIONS
+  (generated from the same authority; `module_abi/**` is reserved for this).
+- FREEZE: wire the design's 11 invariant gates into CI; add the freeze
+  contract to CLAUDE.md + AGENTS.md ("the import/bootstrap layer changes
+  only by amending doc 69 first"); then this layer is bedrock — no
+  incremental patches ever again.
+
+### R3. Numeric raw-lane keystone (owner: orchestrator; Codex builds R3a)
+
+The single highest-leverage perf arc: molt currently BOXES loop arithmetic
+(every int/float op = NaN-box runtime call + refcount). CheckedMul peel is
+LANDED (261efc7b2) and is the pattern to generalize.
+- R3a `molt-check` TIR translation validator: Repr may only move UP the
+  lattice; built on `runtime/molt-passes/src/representation_facts.rs` +
+  `typed_repr_report.rs`. This is the drift gate that catches silent-OOB
+  class bugs (GAP-3) at IR level. Adapt existing egg/egraph_simplify.rs +
+  fuzz_tir_passes.rs infrastructure; do NOT greenfield.
+- R3b Loop-body int/float RAW-LANE specialization: native
+  iadd/imul/fadd/fdiv in loop bodies with box/unbox hoisted to loop
+  boundaries. Ingredients: `runtime/molt-passes/src/tir/scalar_carriers.rs`,
+  `value_range.rs`, the CheckedMul lowering
+  (Cranelift `smulhi`, 64-bit-exact flag; Luau conservative; WASM boxed
+  until R4a). Carrier disagreements between value_range/arith_division/
+  scalar_carriers are P0 silent-wrong-answer bugs (the loop-IV modulo class)
+  — one carrier authority, gated by R3a.
+- R3c Dynamic-IV bounds-check elimination (GAP-3): UNBLOCKED ONLY after R3a
+  can prove the widening safe (silent OOB risk if widened wrong).
+- Acceptance: spectral_norm and numeric cluster A GREEN vs CPython
+  (`python -m molt build --release`, differential harness serial), then the
+  same kernels timed vs Codon and PyPy for the R8 scoreboard.
+
+### R4. Full WASM + WebGPU lowering (binding 1000-year directive)
+
+No boxed fallbacks on proven-typed hot paths; lowering into NATIVE
+instructions and symbols.
+- R4a Numeric ops lower to native wasm instructions (i64.add, f64.mul, ...)
+  driven by the generated op_kinds authority; delete the boxed runtime-call
+  lane for proven-typed ops in the same arc. Depends: R3b (shared Repr facts).
+- R4b simd128 for vectorizable kernels (the wasm feature is already in the
+  target contract; lowering must actually emit v128 ops).
+- R4c WebGPU: `molt.gpu` (the tinygrad custody shim's target) lowers to real
+  WGSL/WebGPU dispatch. No stubs; if a kernel class isn't supported it
+  fails closed with a precise diagnostic.
+- R4d Browser embed API per `collab/pact/003_browser_single_function_embed_api.md`.
+- Standing rule: every runtime-visible WASM op keeps the synced triple
+  (ABI import + op_loop handler + #[no_mangle] export); gate
+  `test_wasm_runtime_export_no_mangle.py`; validate E2E with
+  `--target wasm --linked` + molt_diff native,wasm.
+
+### R5. Iteration-loop velocity (owner: Codex — primary lane)
+
+The compiler team's own loop is a first-class perf target. Budget: a
+one-file edit reproves in <30s native / <60s wasm-link on a warm dir.
+- R5a Extract `cpython_abi_hooks` crate per
+  `docs/design/foundation/70_molt_runtime_crate_extraction.md` (measured
+  47x: 282s→6s). Follow the doc exactly: pure move, precise pub widening,
+  per-crate clippy gate added to ci.yml + molt_dev_gates.toml. Sequence
+  AFTER R1/R2-PR2 quiet modules.rs churn.
+- R5b Further molt-runtime splits (same doc, same discipline), then the
+  21_decomposition_program T1 `molt-tir` extraction (~100k-line midend,
+  zero tir→backend edges) in a BACKEND-QUIESCENT window.
+- R5c Frontend: finish the profiling arc (task #13); produce the ranked
+  hot-pass table; lower the top passes to Rust one at a time, each with a
+  differential gate proving identical output on the conformance corpus.
+- R5d Toolchain config authority: wasm-opt/binaryen + zig + rustup target
+  preflights all resolve through checked-in contracts (rust-toolchain.toml,
+  `find_wasm_opt()`); any new tool follows the same pattern — pin → PATH →
+  MOLT_TARGET_ROOT/toolchains discovery, never ad-hoc.
+
+### R6. CPython >=3.12 parity floor (owner: Codex — continuous)
+
+Version-gated semantics keyed on the TargetPythonVersion authority (never
+silent single-version assumptions); Windows/macOS/Linux with explicit
+platform gating; all within the verified subset with honest-early
+fail-closed diagnostics outside it. Process: conformance shards through the
+proof queue; differential harness `--jobs 1`. Every parity fix lands with
+its version/platform gate expressed, not hardcoded.
+
+### R7. Ecosystem custody generalization (owner: orchestrator)
+
+Turn the numpy/scipy witness machinery into THE reusable primitives:
+- `molt extension build` (meson intro-targets + compile_commands source
+  plans; zig as the wasm C++ toolchain; PyMODINIT_FUNC extern "C") is the
+  one path for source-recompiled extensions — generalize beyond the
+  vendored-meson fork specifics.
+- Sealed-root curation (canary pruning, generated-file materialization,
+  module-exec-level AST import closure) becomes a tool with a manifest, not
+  a hand process.
+- ndarray/tensor dtype/shape/stride ownership, buffer protocol, capsules,
+  module state, extension object closure: each a shared primitive with one
+  storage home. Missing C-API/ABI symbols close as primitives or fail
+  closed with precise diagnostics — never per-package hacks.
+- Reachability redesign ("Fact B": compute_intrinsic_manifest as the
+  authority) kills the gratuitous-heavy-import class; lazy-gating imports
+  requires this first (molt is AOT — no on-demand link).
+
+### R8. Scoreboards + release gates (owner: Codex)
+
+Per docs/design/foundation 54–67: perf scoreboards run quiescent and
+classified, one row per benchmark/profile/target vs CPython AND Codon AND
+PyPy; binary-size, startup, and throughput ratchets that only tighten.
+A claimed support without a green scoreboard row is not claimed support.
+
+### R9. Polish to freeze (owner: both, at the end of each arc — not a phase to defer)
+
+God-file ratchet back to green by DECOMPOSITION (cli.py ~41k,
+function_compiler.rs ~28k, frontend/__init__.py ~27k) — never re-pinned.
+duplicate_authorities stays 0. Docs (CANONICALS/INDEX/spec/STATUS/ROADMAP)
+move in the same arc as semantics. Final recursive adversarial senior
+review before any layer is declared frozen.
+
+### Dependency spine (what blocks what)
+
+```
+R0.1 ──> R0.2, R0.3 ──> R0.4 ──> R0.5
+R1 ──> R2-PR2 ──> R2-FREEZE ──> R5a (modules.rs quiet)
+R3a ──> R3c;  R3b ──> R4a
+R7 reachability ──> any import lazy-gating
+Everything else: parallel, lane-owned.
+```
 
 ## Frozen / in-surgery — DO NOT TOUCH
 
-- **Import/bootstrap/module-state layer** (runtime module cache + import
-  transaction in `runtime/molt-runtime/src/builtins/modules.rs`,
-  `cpython_abi_hooks.rs` import/sys hooks, isolate import lowering in
-  `src/molt/cli/backend_ir.py`, `sys.modules` machinery): the bedrock
-  redesign is being implemented from
-  `docs/design/foundation/69_import_bedrock_frozen_module_layer.md` (PR1 in
-  flight). After it lands this layer is FROZEN under the design's invariant
-  gauntlet — no incremental patches, ever.
-- **`runtime/molt-backend-wasm/src/wasm/module_abi/**`**: reserved for the
-  bedrock PR3 (registry-projected tables). Poll-table deforestation is done
-  (`39c85586b`); do not reopen.
-- **Witness lane inputs**: `tmp/pact_*` seal roots, the acceptance build
-  dirs, `wasm/*.sha256` pins — orchestrator-owned.
-
-## Delegation model (operator directive 2026-07-02)
-
-- The orchestrator runs at most ONE subagent (currently: the native
-  call-dispatch integrator). All other implementation lanes are Codex's.
-- Token-efficient, agent-first tooling is a standing deliverable: every
-  repeated multi-line invocation becomes a script with a one-line compact
-  verdict (rc + stage + first error) and a log path for digging deeper.
-  `tools/witness_cycle.sh [entry] [build|run|cycle]` is the pattern: one
-  short command, one verdict line, full logs on disk.
+- **Import/bootstrap/module-state layer** (`builtins/modules.rs`,
+  `module_table.rs`, `cpython_abi_hooks.rs` import/sys hooks, isolate import
+  lowering in `src/molt/cli/backend_ir.py`): bedrock program (R2) owns it.
+- **Native call lane** (`call/function.rs`, `fc/modules.rs`,
+  `call/class_init.rs`, `builtins/containers.rs`, `builtins/exceptions.rs`,
+  `object/mod.rs`): R1 integrator owns the live WIP in the shared tree.
+- **`runtime/molt-backend-wasm/src/wasm/module_abi/**`**: reserved for R2-PR3.
+- **Witness lane inputs**: `tmp/pact_*` seal roots, acceptance build dirs,
+  `wasm/*.sha256` pins — orchestrator-owned.
 
 ## Delegated to Codex (pick up, in priority order)
 
-1. **TACTICAL: native imported-module TypeError regression.** Any compiled
-   program importing a sibling module fails at runtime with
-   `TypeError: module name must be str` (main @ aec11e1eb; minimal repro:
-   `main.py = "import guardmod"` + empty `guardmod.py`, native dev build,
-   run the binary; entry-only programs are fine). Frontend lowering is
-   verified sane (const_str name into the `__import__`-shaped call) — do
-   NOT touch the frontend. Raise sites: `builtins/modules.rs` ~759-840,
-   1959, 2124 — the runtime import entrypoint's NAME arg slot is not a str
-   at runtime, suggesting an arg-contract/ABI mismatch from the
-   import-custody rework (suspects b675ab9bc, d1014e24c, 8bda411df); also
-   rule out a stale runtime staticlib in the shared CARGO_TARGET_DIR on E:
-   (clean rebuild disambiguates). SCOPE BOUND: minimal fix at the arg
-   contract ONLY — no restructuring; the bedrock PR1 replaces this layer
-   and will rebase over you. Verify: minimal repro + `pytest
-   tests/test_native_import_bootstrap_regressions.py -k
-   "imported_module_dunder_getattr or try_guard"` all green.
-2. **Dirty-tree ignore globs for keyed wasm pins** (in progress): sidecars
-   moved to keyed pins `wasm/molt_runtime*.wasm.<64-hex>.sha256`
-   (`runtime_wasm_validation.py` authority; reader
-   `wasm_link.py::_read_runtime_integrity_pins`; writer deletes bare
-   slots). Update `tools/dirty_tree_policy.py` DEFAULT_DIRTY_TREE_IGNORE_GLOBS
-   and `tools/molt_dev.py` DEFAULT_IGNORE_GLOBS; check whether molt_dev
-   should IMPORT the policy table instead of duplicating it (single
-   authority). Extend `tests/test_molt_dev.py` fixtures to a keyed pin
-   path. Do not touch proof_queue files. Verify: `pytest
-   tests/test_molt_dev.py -q`.
-3. **Memory-guard test-fake drift** — 5 failures in
-   `tests/test_memory_guard_tool.py` on pristine HEAD guard files. Class 1
-   (sampler-failure + interrupt-snapshot tests): fakes monkeypatch
-   `terminate_watched_processes` returning None; the marker payload
-   (`memory_guard_core/payloads.py::termination_report_payload`) hits
-   AttributeError on None. Production never returns None — make the fakes
-   return real GuardTerminationReport objects (preferred) rather than
-   adding None-tolerance to the payload authority. Class 2 (two reexec
-   tests): main() reexec now passes stdout=/stderr= kwargs the
-   `fake_subprocess_run` doesn't accept — update fakes to the real call
-   signature and assert on the new kwargs. No weakened assertions.
-   Verify: `pytest tests/test_memory_guard_tool.py -q`.
-4. **Crate extraction of `cpython_abi_hooks`** per
-   `docs/design/foundation/70_molt_runtime_crate_extraction.md` — follow it
-   exactly (pure move, precise pub widening, digest/no_mangle notes,
-   per-crate gates). Acceptance: a one-line hook edit rebuilds in seconds,
-   `cargo check -p molt-runtime` + backend green, gates added to CI.
-   NOTE: coordinate with the bedrock PR1 landing — if modules.rs churn is
-   active, do this lane last.
-5. **Proof-queue DX**: your existing diagnosis-rule lane remains yours.
+1. **R5c frontend profiling completion** (task #13, in progress): deliver
+   the ranked hot-pass table with numbers, then the first Rust lowering
+   candidate with its differential gate design. Evidence: profile artifact
+   + doc update.
+2. **R3a molt-check validator**: TIR translation validation (Repr only
+   moves UP the lattice) on `typed_repr_report.rs` /
+   `representation_facts.rs`. Adapt egg/egraph_simplify.rs and
+   fuzz_tir_passes.rs; do not greenfield. Acceptance: gate fails on a
+   synthetic Repr-downgrade violation (prove it), green on main.
+3. **R2-PR2 preparation** (blocked on R1 landing — prep only, no modules.rs
+   edits): write the PR2 cutover plan against doc 69 (exact call sites that
+   read/write sys.modules, the dict-view surface, the mirror-sync deletions).
+4. **Queue custody: zombie rows / guard finalization** (task #16, your DX
+   lane): a row whose guard child dies must terminalize itself; prune-stale
+   must catch it; diagnose must classify it. You've landed parser/diagnosis
+   commits — finish the finalization gap end-to-end with a test that fakes
+   a dead guard child.
+5. **R5a crate extraction** (`cpython_abi_hooks` per doc 70) — ONLY once R1
+   + PR2 land and modules.rs is quiet; check this board before starting.
+6. **R6 conformance rotation**: keep shards green through the queue;
+   version/platform gates expressed via TargetPythonVersion authority.
 
-## Additional working rule (incident 2026-07-02)
+Done recently by Codex (verified on origin/main): keyed-pin dirty-tree
+globs (2f4ed1e88), memory-guard summary/custody DX (5a9c76ce8..08df9bd41),
+proof-queue diagnosis/help/audit DX (6a4b7db1a, 6b4c255e3, ac569b886).
 
-- Never revert or checkout files outside your lane, even transiently — an
-  in-flight fix in `module_abi/imports.rs` was wiped by out-of-lane tooling
-  and had to be re-applied. If a file you didn't edit shows up dirty, leave
-  it alone; it is another lane's live WIP.
+## Delegation model (operator directive 2026-07-02)
+
+- The orchestrator runs at most ONE subagent (currently: the R1 successor
+  integrator). All other implementation lanes are Codex's.
+- Token-efficient, agent-first tooling is a standing deliverable: every
+  repeated multi-line invocation becomes a script with a one-line compact
+  verdict (rc + stage + first error) and a log path for digging deeper.
+  `tools/witness_cycle.sh [entry] [build|run|cycle]` is the pattern.
+- Windows/MSYS rule (incident 2026-07-02, hours lost): bash scripts that
+  export paths into env vars MUST convert through `cygpath -m` — MSYS
+  converts command arguments but NOT custom env vars, and Windows Python
+  cannot resolve `/c/...`. The build now fails closed naming any missing
+  MOLT_MODULE_ROOTS entry; if you see that diagnostic, fix your script's
+  path style.
 
 ## Proof and cargo DX rules (binding — incident: 835s cold compile for one test)
 
 - NEVER pay a cold crate compile for a single exact test. If your proof
-  needs a compile, run the whole relevant test SHARD in that same compile
-  (one compile, many tests). An exact `--lib <one_test>` proof is only
-  acceptable against a warm target dir.
-- Warm before you prove: session target dirs (target/sessions/<id>) start
-  cold. Prefer the shared proof-family target dir the queue assigns per
-  contention key; if you must use a fresh session dir, run a `cargo check
-  -p <crate>` warmup FIRST while you do other work, then submit the proof.
-- Set an explicit `--timeout` matched to warm-compile reality (a warm lib
-  test proof is <120s; if your row is projected to exceed it because of a
-  cold compile, cancel your plan and re-shape, don't wait it out).
-- NEVER sit idle narrating a wait. Submit proofs with `--detach`, do other
-  lane work (or end your arc), and read the row result when it closes. A
-  turn that only tails a log is a wasted turn.
-- Batch proof rows: if you have N tests to prove across one crate, that is
-  ONE row, not N rows contending for the same contention key.
-- Env for local iteration builds: `MOLT_MEMORY_GUARD_POLL_SEC=2.0` (the
-  0.1s default guard sampling is for CI; locally it wastes a third of your
-  wall time even after the caching fix).
-- When a row's time is dominated by compile (log shows cargo compiling >60%
-  of elapsed), file ONE queue note naming the crate and move on — do not
-  re-diagnose build latency per row.
+  needs a compile, run the whole relevant test SHARD in that same compile.
+- Warm before you prove: prefer the shared proof-family target dir the
+  queue assigns per contention key; if you must use a fresh session dir,
+  run `cargo check -p <crate>` warmup FIRST, then submit the proof.
+- Set an explicit `--timeout` matched to warm-compile reality; if a row is
+  projected to blow it on a cold compile, re-shape, don't wait it out.
+- NEVER sit idle narrating a wait. Submit with `--detach`, do other lane
+  work, read the row when it closes. A turn that only tails a log is a
+  wasted turn.
+- Batch proof rows: N tests in one crate = ONE row.
+- Env for local iteration: `MOLT_MEMORY_GUARD_POLL_SEC=2.0`.
+- When a row's time is dominated by compile, file ONE queue note naming the
+  crate and move on.
 
 ## Conduct standards (binding — you are brilliant; act like it)
 
-- **Lane ownership is exclusive.** The native call-dispatch/trampoline
-  defect currently has ONE integrator (orchestrator's agent, harvesting the
-  E:/Molt/worktrees/native-import-typeerror-20260702 fix and the
-  fc/modules.rs operand fix). If you were on it: your evidence is captured;
-  STOP editing that lane and pick your next board item. Before opening any
-  file, check this board for the lane owner; two engineers fixing one
-  defect from two angles produces conflicts, not speed.
-- **Evidence beats vigil.** A poll loop is not work. The budget is: at most
-  ONE status read per 5 minutes on a row you own, ZERO on rows you don't.
-  If you catch yourself writing "still running" twice in a row, you are
-  idling — switch to a second deliverable or end the arc.
-- **Diagnosis is time-boxed.** 15 minutes per fault to form a hypothesis
-  with a bounded experiment; if the experiment needs a build, submit it
-  detached and work on something else. Never re-run a failed shape
-  unchanged ("doomed exact timeout" reruns).
-- **No unbounded filesystem scans, ever.** You have the pytest log, the
-  queue log, and the artifact manifest — derive exact paths. A recursive
-  Get-ChildItem over E:\Molt\tmp is a firable offense in this codebase; it
-  starves the builds everyone else is waiting on.
-- **Process spelunking is capped at one snapshot.** One targeted
-  Win32_Process query per incident to confirm liveness, then the queue owns
-  it. Walking a guard chain five levels deep four separate times is
-  self-harm.
+- **Lane ownership is exclusive.** Check this board's lane owner before
+  opening any file. Two engineers fixing one defect from two angles
+  produces conflicts, not speed.
+- **Evidence beats vigil.** At most ONE status read per 5 minutes on a row
+  you own, ZERO on rows you don't. Two consecutive "still running" notes
+  means you're idling — switch deliverables or end the arc.
+- **Diagnosis is time-boxed.** 15 minutes per fault to a hypothesis with a
+  bounded experiment; builds go detached while you work elsewhere. Never
+  re-run a failed shape unchanged.
+- **No unbounded filesystem scans, ever.** Derive exact paths from the
+  pytest log, queue log, or artifact manifest.
+- **Process spelunking is capped at one snapshot per incident.**
 - **Write down what you learned the moment you learn it** (queue note or
-  worktree commit message). You are forgetful across compactions; the
-  notes are your memory. A finding that lives only in your context is a
-  finding the team loses.
-- **Fix the tool when the tool wastes you twice.** The second time a queue
-  row lies to you (stale status, zombie child-runner, prune gap), the
-  defect IS the work: file it precisely on the board's queue-DX list with
-  the row ID, don't route around it forever.
-- **Side worktrees for runtime/backend edits** (as engineer A correctly
-  did): the shared checkout's cargo state is everyone's build cache; your
-  compile churn belongs in your own worktree until the arc is done.
+  commit message). A finding that lives only in your context is a finding
+  the team loses.
+- **Fix the tool when the tool wastes you twice.** The second lie from a
+  queue row makes the defect the work: file it with the row ID.
+- **Side worktrees for runtime/backend edits.** The shared checkout's cargo
+  state is everyone's build cache.
+- Never revert or checkout files outside your lane, even transiently. A
+  file you didn't edit that shows up dirty is another lane's live WIP.
 
 ## Working agreement (binding)
 
-- Keep the shared tree compile-green: `cargo check` the crates you touched
-  before any pause longer than a few minutes. Half-written states in the
-  shared checkout break every other lane's builds.
-- Regenerate generated files in the same edit as their consumers
-  (`tools/gen_wasm_abi.py` etc.); never leave a consumer referencing a
-  symbol its generated file lacks.
+- Keep the shared tree compile-green: `cargo check` touched crates before
+  any pause longer than a few minutes.
+- Regenerate generated files in the same edit as their consumers; never
+  leave a consumer referencing a symbol its generated file lacks.
 - Commit with pathspecs only (`git commit -- <files>`); never `git add -A`;
   never sweep another lane's dirty files.
 - Land small and complete: one coherent arc per commit, replaced code
@@ -166,8 +320,6 @@ Last updated: 2026-07-02 by the orchestrator.
   violation).
 - Run the gates you touched before landing; cite queue run IDs as evidence.
 - Compatibility floor: CPython >= 3.12 parity with explicit VERSION GATING
-  (semantic deltas across 3.12/3.13+ are gated variants keyed on the
-  TargetPythonVersion authority, never silent single-version assumptions),
-  and Windows/macOS/Linux support with explicit PLATFORM GATING for any
-  divergent behavior — all within the verified subset, with honest-early
-  fail-closed diagnostics outside it.
+  keyed on the TargetPythonVersion authority, and Windows/macOS/Linux with
+  explicit PLATFORM GATING — all within the verified subset, with
+  honest-early fail-closed diagnostics outside it.
