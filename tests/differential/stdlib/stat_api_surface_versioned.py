@@ -4,6 +4,7 @@ import stat
 import sys
 
 HAS_313_CONSTS = sys.version_info >= (3, 13)
+HAS_WINDOWS_CONSTS = sys.platform.startswith("win")
 VERSIONED_313_NAMES = [
     "UF_SETTABLE",
     "UF_TRACKED",
@@ -15,10 +16,19 @@ VERSIONED_313_NAMES = [
     "SF_SUPPORTED",
     "SF_SYNTHETIC",
 ]
+WINDOWS_NAMES = [
+    "IO_REPARSE_TAG_APPEXECLINK",
+    "IO_REPARSE_TAG_MOUNT_POINT",
+    "IO_REPARSE_TAG_SYMLINK",
+]
 
 for name in VERSIONED_313_NAMES:
     has = hasattr(stat, name)
     assert has == HAS_313_CONSTS, (name, has, HAS_313_CONSTS)
+
+for name in WINDOWS_NAMES:
+    has = hasattr(stat, name)
+    assert has == HAS_WINDOWS_CONSTS, (name, has, HAS_WINDOWS_CONSTS)
 
 if HAS_313_CONSTS:
     expected_313 = {
@@ -33,6 +43,15 @@ if HAS_313_CONSTS:
         "SF_SYNTHETIC": 0xC0000000,
     }
     for name, value in expected_313.items():
+        assert getattr(stat, name) == value, (name, getattr(stat, name), value)
+
+if HAS_WINDOWS_CONSTS:
+    expected_windows = {
+        "IO_REPARSE_TAG_APPEXECLINK": 0x8000001B,
+        "IO_REPARSE_TAG_MOUNT_POINT": 0xA0000003,
+        "IO_REPARSE_TAG_SYMLINK": 0xA000000C,
+    }
+    for name, value in expected_windows.items():
         assert getattr(stat, name) == value, (name, getattr(stat, name), value)
 
 # Avoid relying on dir() ordering/contents and str helper methods to keep this
@@ -57,7 +76,11 @@ upper_int_items = sorted(
     if _is_upper_const_name(name) and isinstance(value, int)
 )
 upper_int_count = len(upper_int_items)
-expected_count = 77 if HAS_313_CONSTS else 68
+expected_count = 68
+if HAS_WINDOWS_CONSTS:
+    expected_count += len(WINDOWS_NAMES)
+if HAS_313_CONSTS:
+    expected_count += len(VERSIONED_313_NAMES)
 assert upper_int_count == expected_count, (upper_int_count, expected_count)
 print("upper_int_count", upper_int_count)
 print("upper_int_items", upper_int_items)
