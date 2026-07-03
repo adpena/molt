@@ -231,31 +231,23 @@ Everything else: parallel, lane-owned.
 
 ## Delegated to Codex (pick up, in priority order)
 
-1. **R5c frontend profiling completion** (task #13, in progress): deliver
-   the ranked hot-pass table with numbers, then the first Rust lowering
-   candidate with its differential gate design. Evidence: profile artifact
-   + doc update.
-2. **R3a molt-check validator**: TIR translation validation (Repr only
-   moves UP the lattice) on `typed_repr_report.rs` /
-   `representation_facts.rs`. Adapt egg/egraph_simplify.rs and
-   fuzz_tir_passes.rs; do not greenfield. Acceptance: gate fails on a
-   synthetic Repr-downgrade violation (prove it), green on main.
-3. **R2-PR2 preparation** (blocked on R1 landing — prep only, no modules.rs
-   edits): write the PR2 cutover plan against doc 69 (exact call sites that
-   read/write sys.modules, the dict-view surface, the mirror-sync deletions).
-4. **Queue custody: zombie rows / guard finalization** (task #16, your DX
-   lane): a row whose guard child dies must terminalize itself; prune-stale
-   must catch it; diagnose must classify it. You've landed parser/diagnosis
-   commits — finish the finalization gap end-to-end with a test that fakes
-   a dead guard child.
-5. **R5a crate extraction** (`cpython_abi_hooks` per doc 70) — ONLY once R1
-   + PR2 land and modules.rs is quiet; check this board before starting.
-6. **R6 conformance rotation**: keep shards green through the queue;
+1. **R6 conformance rotation**: keep shards green through the queue;
    version/platform gates expressed via TargetPythonVersion authority.
+   Use `tools/proof_queue.py r6-target-version-parity` for the named lane;
+   use `--queue-only` to park rows without launching a runner.
+2. **R5a crate extraction** (`cpython_abi_hooks` per doc 70) — ONLY once R1
+   + PR2 land and modules.rs is quiet; check this board before starting.
+3. **Proof-queue diagnosis/help/audit DX**: take only concrete defects from
+   a failed/stale row or operator report; no open-ended queue rewrites.
 
 Done recently by Codex (verified on origin/main): keyed-pin dirty-tree
 globs (2f4ed1e88), memory-guard summary/custody DX (5a9c76ce8..08df9bd41),
-proof-queue diagnosis/help/audit DX (6a4b7db1a, 6b4c255e3, ac569b886).
+proof-queue diagnosis/help/audit DX (6a4b7db1a, 6b4c255e3, ac569b886),
+R5c frontend profiling contract/evidence (f821f8b62, 71636c688), R3a Repr
+pass-delta validator (988020de3), PR2 sys.modules cutover plan (60536c4e3),
+queue dead-guard finalization (613b8e954), R6 target-version queue lane and
+queue-only named-lane support (e95267290, 9ecf8af05, 1afe04472),
+from-import native-call provenance (3b0ca4a80, be516cbff).
 
 ## Delegation model (operator directive 2026-07-02)
 
