@@ -888,6 +888,76 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     assert "uv/cache contention" in out
 
 
+def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    current_path = tmp_path / "pytest-current.json"
+    log_path.write_text("proof_queue run_id=active-run\n.\n", encoding="utf-8")
+    stale = (
+        time.time()
+        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - 5.0
+    )
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "pytest": {
+                    "current_test_file": {
+                        "missing": True,
+                        "path": str(current_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="diagnose pytest progress without current marker",
+        command=[sys.executable, "-m", "pytest", "tests/tools/test_proof_queue.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="proof-queue",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "running-pytest-current-test-missing" in out
+    assert "emitted progress output" in out
+    assert "last_pytest_progress=." in out
+    assert "current-test custody opacity after pytest started" in out
+    assert "pre-test or collection/startup opacity" not in out
+
+
 def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
