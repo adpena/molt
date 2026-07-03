@@ -3790,6 +3790,7 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
                 "error[E0308]: mismatched types",
                 "error: could not compile `molt-runtime` (lib test) due to 1 previous error",
                 "memory_guard: orphaned child processes detected after command exit; killed_at=2026-07-01T23:21:47Z elapsed=20.83s",
+                "memory_guard: quarantined Cargo incremental state after orphaned_processes_cleaned: moved=1 target_dir=E:\\Molt\\target\\sessions\\proof-rust quarantine_dir=E:\\Molt\\target\\sessions\\proof-rust\\.molt_state\\quarantine\\cargo_incremental\\20260703-053414-pid5988-orphaned_processes_cleaned receipt=E:\\Molt target\\sessions\\proof-rust\\.molt_state\\quarantine\\cargo_incremental\\20260703-053414-pid5988-orphaned_processes_cleaned\\receipt.json errors=1",
             ]
         ),
         encoding="utf-8",
@@ -3813,8 +3814,40 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
         == 0
     )
     evidence = json.loads(capsys.readouterr().out)
+    quarantine_receipt = (
+        "E:\\Molt target\\sessions\\proof-rust\\.molt_state\\quarantine\\"
+        "cargo_incremental\\20260703-053414-pid5988-orphaned_processes_cleaned\\"
+        "receipt.json"
+    )
     signals = [item["signal_id"] for item in evidence[0]["diagnostics"]]
     assert signals[:2] == ["rust-compiler-error", "memory-guard-orphan-cleanup"]
+    orphan_diagnostic = evidence[0]["diagnostics"][1]
+    assert quarantine_receipt in orphan_diagnostic["evidence"]
+    assert orphan_diagnostic["artifacts"] == [quarantine_receipt]
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--json",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    audit = json.loads(capsys.readouterr().out)
+    orphan_issue = next(
+        item
+        for item in audit["issues"]
+        if item["signal_id"] == "audit-memory-guard-orphan-cleanup"
+    )
+    assert orphan_issue["artifacts"] == [quarantine_receipt]
 
 
 def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
