@@ -135,6 +135,17 @@ Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 outer queue memory guard instead of recursively rewrapping the test process on
 Windows.
 
+If a row was deliberately parked with `--queue-only`, launch that exact row
+later through the same custody boundary:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py run --run-id RUN_ID --detach
+```
+
+Do not reconstruct the original command, start a shell background process, or
+submit a duplicate row unless the first row is terminal and the new row records
+the rerun edge.
+
 ## Latency Discipline
 
 Treat avoidable proof latency as a bug. Before spending a heavy slot, ask

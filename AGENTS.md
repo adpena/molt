@@ -137,8 +137,11 @@ is reconciled.
   `Start-Process`, shell backgrounding, or
   Codex-held interactive sessions for proof custody. Detached launch creates a
   queued row, starts `tools/proof_queue.py run --run-id RUN_ID`, and records a
-  `*.runner.log`. WASM resource families preflight the checked-in Rust
-  toolchain contract and required Rust targets before Cargo starts.
+  `*.runner.log`. If a row was parked with `--queue-only`, launch that exact
+  row later with `tools/proof_queue.py run --run-id RUN_ID --detach`; do not
+  reconstruct the command or submit a duplicate row unless recording a real
+  rerun edge. WASM resource families preflight the checked-in Rust toolchain
+  contract and required Rust targets before Cargo starts.
 - Queue rows record a git snapshot, append-only notes, append-only acyclic proof
   DAG edges, memory-guard summaries, and deterministic marimo notebook
   projections under `logs/proof_queue/notebooks/`. Append observations with
