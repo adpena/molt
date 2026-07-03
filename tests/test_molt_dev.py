@@ -1119,16 +1119,26 @@ def _dv_ns(drv, name, state_root, *, min_age_s=0.0, as_json=True):
     )
 
 
-def _wait_rc(state: Path, timeout_s: float = 15.0) -> int:
+def _wait_done(
+    drv, capsys, name: str, state_root: Path, timeout_s: float = 90.0
+) -> dict:
     import time
 
     deadline = time.monotonic() + timeout_s
-    rc_f = state / "rc"
+    last: dict | None = None
     while time.monotonic() < deadline:
-        if rc_f.exists():
-            return int(rc_f.read_text().strip())
-        time.sleep(0.05)
-    raise AssertionError(f"rc file never appeared in {state} within {timeout_s}s")
+        _rc, verdict = _verify_json(
+            drv, capsys, _dv_ns(drv, name, state_root, min_age_s=0.0)
+        )
+        last = verdict
+        if verdict["status"] == "done":
+            return verdict
+        if verdict["status"] == "died-silent":
+            raise AssertionError(f"detached {name!r} died silently: {verdict}")
+        time.sleep(0.1)
+    raise AssertionError(
+        f"detached {name!r} never completed within {timeout_s}s; last={last}"
+    )
 
 
 def _verify_json(drv, capsys, ns) -> tuple[int, dict]:
@@ -1152,7 +1162,7 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     )
     assert rc == drv.EXIT_OK
     state = state_root / "ok-run"
-    assert _wait_rc(state) == 0
+    assert _wait_done(drv, capsys, "ok-run", state_root)["rc"] == 0
     # Unbuffered log captured the child's stdout despite daemonization.
     assert "MARKER-OUT" in (state / "run.log").read_text()
     # cmd.json records the exact argv for postmortems.
@@ -1176,7 +1186,7 @@ def test_detached_run_nonzero_rc_is_loud(drv, tmp_path, capsys):
         )
     )
     state = state_root / "fail-run"
-    assert _wait_rc(state) == 7
+    assert _wait_done(drv, capsys, "fail-run", state_root)["rc"] == 7
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "fail-run", state_root))
     assert vrc == drv.EXIT_FAIL
     assert verdict["status"] == "done" and verdict["rc"] == 7
@@ -1207,12 +1217,12 @@ def test_detached_daemon_survives_spawner_and_runs_in_new_session(
         drv, capsys, _dv_ns(drv, "sleeper", state_root, min_age_s=0.0)
     )
     assert vrc == drv.EXIT_OK and verdict["status"] == "running"
-    assert _wait_rc(state) == 0
+    assert _wait_done(drv, capsys, "sleeper", state_root)["rc"] == 0
     vrc2, verdict2 = _verify_json(drv, capsys, _dv_ns(drv, "sleeper", state_root))
     assert vrc2 == drv.EXIT_OK and verdict2["status"] == "done"
 
 
-def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path):
+def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, capsys):
     state_root = tmp_path / "detached"
     drv.cmd_detached_run(
         _dr_ns(
@@ -1239,7 +1249,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path):
             )
     # The original daemon was not harmed by the refusals.
     assert drv.probe_pid(live_pid)["alive"]
-    assert _wait_rc(state) == 0
+    assert _wait_done(drv, capsys, "dup", state_root)["rc"] == 0
     # After completion: same name still refuses WITHOUT --replace...
     with pytest.raises(drv.DriverError, match="--replace"):
         drv.cmd_detached_run(
@@ -1256,7 +1266,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path):
         )
     )
     assert rc == drv.EXIT_OK
-    assert _wait_rc(state) == 0
+    assert _wait_done(drv, capsys, "dup", state_root)["rc"] == 0
     assert "second" in (state / "run.log").read_text()
 
 
@@ -1289,7 +1299,7 @@ def test_detached_verify_too_young_is_not_trusted(drv, tmp_path, capsys):
     )
     assert vrc == drv.EXIT_FAIL
     assert verdict["status"] == "too-young"
-    assert _wait_rc(state_root / "young") == 0
+    assert _wait_done(drv, capsys, "young", state_root)["rc"] == 0
 
 
 def test_detached_run_missing_command_is_usage_error(drv, tmp_path):
@@ -1309,7 +1319,7 @@ def test_detached_run_exec_failure_records_sentinel_rc(drv, tmp_path, capsys):
         )
     )
     state = state_root / "noexec"
-    assert _wait_rc(state) == 127  # exec-failure sentinel, NOT died-silent
+    assert _wait_done(drv, capsys, "noexec", state_root)["rc"] == 127
     assert "exec failed" in (state / "run.log").read_text()
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "noexec", state_root))
     assert vrc == drv.EXIT_FAIL

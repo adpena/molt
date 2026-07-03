@@ -41,6 +41,12 @@ def _windows_hidden_creationflags() -> int:
     return flags
 
 
+def _windows_owned_child_creationflags() -> int:
+    # The worker is already detached. The command it supervises must stay owned
+    # by that worker so rc/log custody has exactly one process boundary.
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _detached_state_dir(name: str, override: str | None) -> Path:
     if not _DETACHED_NAME_RE.fullmatch(name):
         raise DriverError(
@@ -78,7 +84,7 @@ def _exec_wait_rc(
                 command,
                 env=env,
                 check=False,
-                creationflags=_windows_hidden_creationflags(),
+                creationflags=_windows_owned_child_creationflags(),
                 stdout=log_file if log_file is not None else None,
                 stderr=subprocess.STDOUT if log_file is not None else None,
             )
@@ -206,8 +212,9 @@ def _detached_worker_main(payload_path: Path) -> int:
     if os.name == "nt":
         try:
             with (state / "run.log").open("w", encoding="utf-8", buffering=1) as log:
-                _atomic_write_text(state / "sid", f"windows-process-group:{os.getpid()}")
-                _atomic_write_text(state / "pid", str(os.getpid()))
+                # The launcher owns pid/sid publication on Windows. Rewriting
+                # those identity files from the worker races readers and can
+                # turn a child exit into a false daemon-crash rc.
                 os.chdir(cwd)
                 rc = _exec_wait_rc(command, os.environ.copy(), log)
                 _atomic_write_text(state / "rc", str(rc))

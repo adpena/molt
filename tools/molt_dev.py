@@ -646,6 +646,14 @@ def _resolve_safe_run(probed_repo: Path) -> Path:
     )
 
 
+def _toolchain_probe_command(binary: Path, probe_args: list[str]) -> list[str]:
+    if os.name == "nt" and binary.suffix.lower() in {".bat", ".cmd"}:
+        comspec = os.environ.get("COMSPEC") or os.environ.get("ComSpec") or "cmd.exe"
+        quoted = subprocess.list2cmdline([str(binary), *probe_args])
+        return [comspec, "/d", "/s", "/c", f"call {quoted}"]
+    return [str(binary), *probe_args]
+
+
 def verify_toolchain(
     git: Git,
     binary: Path,
@@ -702,8 +710,7 @@ def verify_toolchain(
                     str(timeout),
                     "--quiet",
                     "--",
-                    str(binary),
-                    *probe_args,
+                    *_toolchain_probe_command(binary, probe_args),
                 ]
                 proc = _run_driver_command_bytes(
                     cmd,
@@ -1485,7 +1492,7 @@ def _cleanup_worktree(
     if force_sha is not None or has_residual_churn:
         remove_args.append("--force")
     remove_args.append(str(repo))
-    proc = _run_driver_command(
+    proc = _run_fast_captured_command(
         ["git", "-C", str(main_repo), *remove_args],
         timeout=120.0,
     )
