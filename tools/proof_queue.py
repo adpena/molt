@@ -3920,6 +3920,16 @@ def _audit_issue(
     }
 
 
+def _audit_severity_for_diagnostic(row: sqlite3.Row, signal_id: str) -> str | None:
+    if signal_id == "memory-guard-summary-incomplete" and row["status"] == "stale":
+        return "warning"
+    if signal_id in AUDIT_ERROR_DIAGNOSTICS:
+        return "error"
+    if signal_id in AUDIT_WARNING_DIAGNOSTICS:
+        return "warning"
+    return None
+
+
 def _frontier_failure(
     row: sqlite3.Row, diagnostics: list[dict[str, object]]
 ) -> dict[str, object] | None:
@@ -4072,22 +4082,12 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         for item in diagnostics:
             signal_id = str(item["signal_id"])
             severity = str(item["severity"])
-            if signal_id in AUDIT_ERROR_DIAGNOSTICS:
+            audit_severity = _audit_severity_for_diagnostic(row, signal_id)
+            if audit_severity is not None:
                 issues.append(
                     _audit_issue(
                         signal_id=f"audit-{signal_id}",
-                        severity="error",
-                        run_id=run_id,
-                        summary=str(item["summary"]),
-                        evidence=str(item["evidence"]),
-                        next_action=str(item["next_action"]),
-                    )
-                )
-            elif signal_id in AUDIT_WARNING_DIAGNOSTICS:
-                issues.append(
-                    _audit_issue(
-                        signal_id=f"audit-{signal_id}",
-                        severity="warning",
+                        severity=audit_severity,
                         run_id=run_id,
                         summary=str(item["summary"]),
                         evidence=str(item["evidence"]),
