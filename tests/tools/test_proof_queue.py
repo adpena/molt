@@ -4307,9 +4307,13 @@ def test_proof_queue_diagnoses_partial_module_publication(
         summary_json=tmp_path / "partial-module-publication.memory_guard.json",
     )
     log_path.write_text(
+        "[RUN] tests\\differential\\stdlib\\queue_shutdown_version_gate.py\n"
+        "[FAIL] tests\\differential\\stdlib\\queue_shutdown_version_gate.py "
+        "(native) mismatch: stdout mismatch; exit code ref=0 cand=1\n"
+        '  Molt    return: 1 stderr: "Traceback (most recent call last):\\n'
         "ImportError: cannot import partially initialized module "
         "'importlib.machinery' before its publication "
-        "(circular import during module allocation)\n",
+        '(circular import during module allocation)\\n"\n',
         encoding="utf-8",
     )
     proof_queue._update_run(
@@ -4337,6 +4341,17 @@ def test_proof_queue_diagnoses_partial_module_publication(
     assert diagnostics[0]["signal_id"] == "import-partial-module-publication"
     assert diagnostics[0]["severity"] == "error"
     assert "importlib.machinery" in diagnostics[0]["summary"]
+    assert (
+        "tests\\differential\\stdlib\\queue_shutdown_version_gate.py"
+        in diagnostics[0]["summary"]
+    )
+    assert "[FAIL] tests\\differential\\stdlib\\queue_shutdown_version_gate.py" in str(
+        diagnostics[0]["evidence"]
+    )
+    assert (
+        "tests\\differential\\stdlib\\queue_shutdown_version_gate.py"
+        in diagnostics[0]["scopes"]
+    )
     assert "runtime/molt-runtime/src/builtins/module_table.rs" in diagnostics[0][
         "scopes"
     ]
