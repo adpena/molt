@@ -1741,7 +1741,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 ),
                 scopes=(
                     "rust-toolchain.toml",
-                    "tools/wasm_toolchain.py",
+                    "src/molt/cli/wasm_toolchain.py",
                     "tools/proof_queue.py",
                 ),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),

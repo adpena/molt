@@ -4495,6 +4495,8 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
         str(tmp_path / "runtime-wasm-rust-target.memory_guard.json"),
         str(log_path),
     ]
+    assert "src/molt/cli/wasm_toolchain.py" in diagnostics[0]["scopes"]
+    assert "tools/wasm_toolchain.py" not in diagnostics[0]["scopes"]
     assert "python-exception" not in {item["signal_id"] for item in diagnostics}
     assert "unclassified-failed-proof" not in {
         item["signal_id"] for item in diagnostics
