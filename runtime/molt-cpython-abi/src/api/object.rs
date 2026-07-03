@@ -1741,6 +1741,48 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
     if ml.is_null() || unsafe { (*ml).ml_meth }.is_none() {
         return ptr::null_mut();
     }
+
+    // Preferred path: register the C method as a real Molt callable through the
+    // runtime, then return the *bridge-registered* PyObject view of it. This is
+    // what lets the returned object resolve back to a Molt handle via
+    // `pyobj_to_handle` — without it, `PyDict_SetItem(dict, name, func)` (the
+    // tp_dict method-population step of PyType_Ready) cannot resolve `func` and
+    // the descriptor is silently dropped. Falls back to a raw ABI-owned
+    // `PyCFunctionObject` only when no runtime is wired (pure-ABI unit tests) or
+    // the runtime rejects the method's flags.
+    let ml_ref = unsafe { &*ml };
+    if let Some(fn_ptr) = ml_ref.ml_meth {
+        let name_bytes: &[u8] = if ml_ref.ml_name.is_null() {
+            b""
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(ml_ref.ml_name) }.to_bytes()
+        };
+        let self_bits = if self_.is_null() {
+            MoltObject::none().bits()
+        } else {
+            match GLOBAL_BRIDGE.lock().pyobj_to_handle(self_) {
+                Some(bits) => bits,
+                None => unsafe { crate::bridge::read_bridge_header_bits(self_) },
+            }
+        };
+        let meth_addr = fn_ptr as *const () as usize as u64;
+        let h = hooks_or_stubs();
+        let func_bits = unsafe {
+            (h.register_c_function)(
+                meth_addr,
+                ml_ref.ml_flags,
+                self_bits,
+                name_bytes.as_ptr(),
+                name_bytes.len(),
+            )
+        };
+        if func_bits != 0 {
+            return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(func_bits) };
+        }
+    }
+
+    // Fallback: no runtime-backed callable available. Return a raw ABI-owned
+    // PyCFunctionObject so callers still get a non-null, callable-shaped object.
     unsafe {
         crate::api::refcount::Py_XINCREF(self_);
         crate::api::refcount::Py_XINCREF(module);
