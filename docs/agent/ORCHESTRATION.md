@@ -64,6 +64,60 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
+## ⚠️ INCIDENT 2026-07-03 + git_guard (all agents read)
+
+**Signal loss + recovery ask.** A `git reset --hard HEAD` in an orchestrator
+cleanup one-liner discarded UNCOMMITTED, unstaged working-tree WIP in the shared
+checkout — specifically a concurrent lane's `runtime/molt-runtime/src/call/function.rs`
+refactor: `native_function_preempts_with_trampoline` / `function_trampoline_call_target_ptr`
++ a `native_trampoline_dispatch_ignores_function_direct_call_target` test. It was
+never staged or committed, so it is NOT git-recoverable (checked: not on origin,
+not in dangling blobs). **If that is your lane: RE-APPLY it from your own context
+and COMMIT it immediately (by exact pathspec) — do not assume it survived.** The
+shared working tree is currently at a stale base (b0a7e2745) for ~35 files;
+their content is safe on origin/main. OneDrive version history is a fallback for
+the function.rs loss.
+
+**MECHANISM (not just a rule): `tools/git_guard.py` is now landed and MANDATORY
+for the shared checkout.** Destructive working-tree git — `reset --hard`,
+`checkout -- <path>` / `checkout -f`, `clean -fd`, `stash drop/clear/pop`,
+`branch -D`, `gc --prune=now` — is BANNED on the shared main checkout. Use it
+only inside an ISOLATED worktree or plumbing-index mode (`GIT_INDEX_FILE`).
+- Need a clean tree for a build/cherry-pick trial → `git worktree add`, never the
+  shared checkout.
+- Route any unavoidable destructive op through `python tools/git_guard.py run --
+  <git args>` (refuses on the shared checkout, snapshots first).
+- An always-on recovery net (`git_guard.py watch`) snapshots WT+index to
+  `refs/wip-guard/*`; recover via `git_guard.py list` + `git stash apply <sha>`
+  in a worktree. This is defense-in-depth, NOT a license to run destructive git.
+
+## CANONICAL CRATE NAMING (operator directive: standardize like Lattner)
+
+One convention, mirroring the CPython layer axis, replacing the inconsistent mix
+of `molt-runtime-*` / `molt-lang-*` / `molt-*`:
+- **Core / primitives**: `molt-object` (the `MoltObject` NaN-box value repr;
+  currently pkg `molt-lang-obj-model`, dir `molt-obj-model` — drop the `-lang-`
+  prefix, make package == dir). The object protocol (ops), when extracted, joins
+  it or becomes `molt-object-protocol`.
+- **Runtime API surface**: the crate currently MISNAMED `molt-runtime-core` is
+  NOT core — it is the thin re-export/API-surface subcrates depend on. Rename to
+  `molt-runtime-api` (honest name; a wrapper that masquerades as core is a
+  canonicalization defect).
+- **Stdlib**: `molt-stdlib-<mod>` for every stdlib module crate. Rename the ~19
+  `molt-runtime-{crypto,tk,math,path,collections,regex,itertools,serial,difflib,
+  logging,http,stringprep,xml,ipaddress,zoneinfo,net,asyncio,compression,text}`
+  → `molt-stdlib-{…}`. This makes the stdlib layer legible at a glance.
+- **Third-party / extensions**: `molt-cpython-abi` (drop `molt-lang-` package
+  prefix; package == dir).
+- **Backends / IR / passes**: already consistent (`molt-backend-*`, `molt-ir`,
+  `molt-tir`, `molt-passes`) — leave.
+SEQUENCING: a crate rename is build-breaking and touches every Cargo.toml + `use`
+path, so it is an ATOMIC sweep per crate (or a tight batch) in an ISOLATED
+worktree, gated on a full `cargo build` + `check_rustfmt --changed` + the
+per-crate clippy gate, then cherry-picked. Do renames when the touched crate has
+no other in-flight lane (coordinate on this board). Do NOT interleave a rename
+with a semantic change in the same commit — rename-only diffs must stay reviewable.
+
 ## State of the world (read this first)
 
 - The witness `import numpy` chain has advanced deep into numpy's C-core
