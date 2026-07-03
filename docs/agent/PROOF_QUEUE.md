@@ -347,7 +347,14 @@ stdin.
 If a terminal row still has only a `running` or `child_running` memory-guard
 summary with no summary return code, it must classify as
 `memory-guard-summary-incomplete`; treat that row as queue-custody incomplete
-evidence and rerun or fix the guard final-summary lifecycle.
+evidence and rerun or fix the guard final-summary lifecycle. The diagnostic
+evidence must include the row status/return code, elapsed time when known,
+configured guard timeout when present, child guard identity, recorded summary
+time, last log age, and last non-empty log line so the next agent can decide
+from `audit`/`diagnose` output without manual tailing first. This diagnostic
+dominates product-looking log matches: an incomplete guard summary must appear
+first in `diagnose` output and must suppress frontier failure promotion for
+that row.
 If the queue itself fails before launching a proof command, it must mark the row
 terminal, write the failure log, release the contention key, and classify the
 row as `queue-preexecution-failure`; that row is infrastructure evidence, not
@@ -415,8 +422,13 @@ Use `prune-stale --run-id RUN_ID` for a stale row you own. The unscoped
 after checking active ownership. Do not kill broad process families, Codex,
 Claude, renderer helpers, node-repl, shell ancestors, or ambiguous host
 control-plane processes. Each pruned row prints the deterministic diagnosis
-that justified pruning plus the memory-guard summary and queue log paths; treat
-that line as the handoff breadcrumb instead of rerunning broad status loops.
+that justified pruning, compact diagnostic evidence, and the memory-guard
+summary and queue log paths; treat that line as the handoff breadcrumb instead
+of rerunning broad status loops.
+If the queue guard process is still alive but the nested memory-guard child in
+the running summary is dead and the log is stale, `prune-stale` must still mark
+the row stale with `running-proof-child-missing`; do not keep that row active
+waiting for a child that custody already proved gone.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID

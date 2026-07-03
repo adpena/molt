@@ -561,19 +561,50 @@ def _finished_incomplete_memory_guard_diagnostic(
         return None
     if summary.get("returncode") is not None:
         return None
-    evidence = (
-        f"summary_json={row['summary_json']} row_status={row['status']} "
-        f"row_returncode={row['returncode']} summary_status={summary_status} "
-        "summary_returncode=null"
-    )
+    evidence_parts = [
+        f"row_status={row['status']}",
+        f"row_returncode={row['returncode']}",
+        f"summary_status={summary_status}",
+        "summary_returncode=null",
+    ]
+    elapsed_s = row["elapsed_s"]
+    if isinstance(elapsed_s, (int, float)):
+        evidence_parts.append(f"row_elapsed={_format_duration(float(elapsed_s))}")
+    limits = summary.get("limits")
+    repro = summary.get("repro")
+    if not isinstance(limits, dict) and isinstance(repro, dict):
+        limits = repro.get("limits")
+    if isinstance(limits, dict):
+        timeout_s = limits.get("timeout_s")
+        if isinstance(timeout_s, (int, float)):
+            evidence_parts.append(
+                f"configured_timeout={_format_duration(float(timeout_s))}"
+            )
     child = summary.get("child_process")
     if isinstance(child, dict):
-        child_pid = child.get("pid")
-        if isinstance(child_pid, int) and child_pid > 0:
-            evidence += f" child_pid={child_pid}"
+        command = child.get("command")
+        child_runner = (
+            _memory_guard_child_runner_evidence(row["summary_json"])
+            if _is_guard_command(command)
+            else None
+        )
+        if child_runner is not None:
+            evidence_parts.append(child_runner)
+        else:
+            child_pid = child.get("pid")
+            if isinstance(child_pid, int) and child_pid > 0:
+                evidence_parts.append(f"child_pid={child_pid}")
     recorded_at = summary.get("recorded_at")
     if isinstance(recorded_at, str) and recorded_at.strip():
-        evidence += f" recorded_at={recorded_at.strip()}"
+        evidence_parts.append(f"recorded_at={recorded_at.strip()}")
+    log_age_s = _log_age_seconds(Path(row["log_path"]))
+    if log_age_s is not None:
+        evidence_parts.append(f"last_log_age={_format_duration(log_age_s)}")
+    last_log_line = _last_nonempty_log_line(Path(row["log_path"]))
+    if last_log_line:
+        evidence_parts.append(f"last_log={last_log_line}")
+    evidence_parts.append(f"summary_json={row['summary_json']}")
+    evidence = " ".join(evidence_parts)
     return _diagnostic(
         signal_id="memory-guard-summary-incomplete",
         severity="infra",
@@ -1933,8 +1964,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
         )
 
     incomplete_memory_guard = _finished_incomplete_memory_guard_diagnostic(row)
-    if incomplete_memory_guard is not None and not diagnostics:
-        diagnostics.append(incomplete_memory_guard)
+    if incomplete_memory_guard is not None:
+        diagnostics.insert(0, incomplete_memory_guard)
 
     if row["status"] == "failed" and not diagnostics:
         last = _last_nonempty_log_line(Path(row["log_path"])) or ""
@@ -1961,6 +1992,12 @@ def _diagnostics_have_stale_running_signal(
         diagnostic.get("signal_id") in STALE_RUNNING_DIAGNOSTIC_IDS
         for diagnostic in diagnostics
     )
+
+
+def _diagnostics_have_signal(
+    diagnostics: Sequence[dict[str, object]], signal_id: str
+) -> bool:
+    return any(diagnostic.get("signal_id") == signal_id for diagnostic in diagnostics)
 
 
 def _format_diagnostic_summary(diagnostics: list[dict[str, object]]) -> str | None:
@@ -3925,6 +3962,10 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 "dead-guard [infra]: proof guard process is not live"
             )
         line = f"stale {row['run_id']} diagnosis={diagnostic_summary}"
+        if diagnostics:
+            evidence = diagnostics[0].get("evidence")
+            if isinstance(evidence, str) and evidence.strip():
+                line += f" evidence={_shorten(evidence, 220)}"
         artifacts = _diagnostic_artifacts(diagnostics)
         if not artifacts:
             artifacts = [str(row["summary_json"]), str(row["log_path"])]
@@ -3996,6 +4037,8 @@ def _audit_severity_for_diagnostic(row: sqlite3.Row, signal_id: str) -> str | No
 def _frontier_failure(
     row: sqlite3.Row, diagnostics: list[dict[str, object]]
 ) -> dict[str, object] | None:
+    if _diagnostics_have_signal(diagnostics, "memory-guard-summary-incomplete"):
+        return None
     for item in diagnostics:
         if str(item["severity"]) != "error":
             continue
