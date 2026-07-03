@@ -3969,6 +3969,7 @@ def test_proof_queue_diagnoses_memory_guard_timeout_before_orphan_cleanup(
     assert "test_generic_timeout_context" in diagnostics[0]["summary"]
     assert "pytest_phase=call" in diagnostics[0]["evidence"]
     assert f"Inspect {nodeid} once" in diagnostics[0]["next_action"]
+    assert diagnostics[0]["artifacts"] == [str(summary_path), str(log_path)]
 
 
 def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
@@ -4060,6 +4061,7 @@ def test_proof_queue_routes_native_import_bootstrap_timeout_to_r1_owner(
         "next_action"
     ]
     assert "runtime/molt-runtime/src/call/function.rs" in diagnostics[0]["scopes"]
+    assert diagnostics[0]["artifacts"] == [str(summary_path), str(log_path)]
     assert "memory-guard-timeout" not in {
         item["signal_id"] for item in diagnostics
     }
