@@ -108,18 +108,29 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(fh)
 
 
-def workspace_members(root: Path) -> list[Path]:
-    data = _load_toml(root / "Cargo.toml")
-    members = data.get("workspace", {}).get("members", []) or data.get("members", [])
+def _members_of(cargo_path: Path, base: Path) -> list[Path]:
+    if not cargo_path.exists():
+        return []
+    members = _load_toml(cargo_path).get("workspace", {}).get("members", [])
     out = []
     for m in members:
         # members may contain globs like "runtime/*"; expand simply.
         if "*" in m:
-            out.extend(p.parent for p in root.glob(m + "/Cargo.toml"))
+            out.extend(p.parent for p in base.glob(m + "/Cargo.toml"))
         else:
-            p = root / m
+            p = base / m
             if (p / "Cargo.toml").exists():
                 out.append(p)
+    return out
+
+
+def workspace_members(root: Path) -> list[Path]:
+    """Union members across ALL workspace roots. Molt has TWO: the repo-root
+    Cargo.toml and `runtime/Cargo.toml` (the runtime crates -- molt-runtime-*,
+    molt-obj-model, molt-cpython-abi -- are members of the LATTER). Reading only
+    the root silently mis-reports every runtime crate as a non-member."""
+    out = _members_of(root / "Cargo.toml", root)
+    out += _members_of(root / "runtime" / "Cargo.toml", root / "runtime")
     return out
 
 
