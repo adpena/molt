@@ -154,10 +154,20 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
 /// `tp_base` chain drives resolution). Returns 0 on success, -1 otherwise.
 unsafe fn compute_single_inheritance_mro(tp: *mut PyTypeObject) -> c_int {
     unsafe {
-        // Walk the base chain to collect [tp, base, ...].
+        // Walk the base chain to collect [tp, base, ...]. Bounded and
+        // cycle-guarded: a malformed extension with a self- or cyclic tp_base
+        // must fail closed rather than hang the whole module exec.
         let mut chain: Vec<*mut PyTypeObject> = Vec::new();
         let mut cur = tp;
         while !cur.is_null() {
+            if chain.contains(&cur) {
+                // Cyclic base chain — refuse rather than loop forever.
+                crate::capi_trace::record_silent_failure(
+                    "PyType_Ready",
+                    Some("cyclic tp_base chain"),
+                );
+                return -1;
+            }
             chain.push(cur);
             let base = (*cur).tp_base;
             if base == cur {
