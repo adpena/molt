@@ -130,6 +130,15 @@ RUST_COMPILER_ERROR_RE = re.compile(
 PYTHON_EXCEPTION_RE = re.compile(
     r"(?m)^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>.+)$"
 )
+SOURCE_LEASE_CHANGED_RE = re.compile(
+    r"(?m)^Failed to read module (?P<module>.*): "
+    r"Source lease for (?P<lease>.+) changed (?P<detail>[^\r\n]+)\r?$"
+)
+PARTIAL_MODULE_PUBLICATION_RE = re.compile(
+    r"ImportError: cannot import partially initialized module "
+    r"'(?P<module>[^']+)' before its publication "
+    r"\(circular import during module allocation\)"
+)
 PYTEST_FAILED_RE = re.compile(r"(?m)^FAILED\s+(?P<nodeid>\S+)")
 PYTEST_ERROR_RE = re.compile(
     r"(?m)^ERROR\s+(?P<nodeid>\S+)(?:\s+-\s+(?P<detail>[^\r\n]+))?"
@@ -1941,6 +1950,52 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = SOURCE_LEASE_CHANGED_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="source-lease-changed-during-proof",
+                severity="operator",
+                summary=(
+                    "A source file changed while the compiler was reading it; "
+                    "the proof row is contaminated evidence."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Do not interpret downstream failures from this row as the "
+                    "current product frontier. Let active edits settle, then "
+                    "rerun the same queue lane from a stable git snapshot."
+                ),
+                scopes=(
+                    match.group("module").strip(),
+                    "tools/proof_queue.py",
+                ),
+            )
+        )
+
+    match = PARTIAL_MODULE_PUBLICATION_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            _diagnostic(
+                signal_id="import-partial-module-publication",
+                severity="error",
+                summary=(
+                    "Import failed because module "
+                    f"{match.group('module')} was observed before publication."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Route this to the import/bootstrap module-state owner; do "
+                    "not patch the frozen import layer from an unrelated lane."
+                ),
+                scopes=(
+                    "runtime/molt-runtime/src/builtins/module_table.rs",
+                    "runtime/molt-runtime/src/builtins/modules.rs",
+                    "src/molt/cli/backend_ir.py",
+                ),
+            )
+        )
+
     match = PYTEST_ERROR_RE.search(log_tail)
     if match is not None:
         exception_line = PYTEST_EXCEPTION_LINE_RE.search(log_tail)
@@ -3106,6 +3161,7 @@ def _r6_target_version_parity_spec(
             normalized_version,
             "--build-profile",
             "dev",
+            "--fail-fast",
             *_R6_TARGET_VERSION_PARITY_FILES,
         ),
         "resource_family": "python",
@@ -3115,6 +3171,7 @@ def _r6_target_version_parity_spec(
             "tests/molt_diff.py",
             "src/molt/cli/target_python.py",
             "src/molt/stdlib/sys.py",
+            "src/molt/stdlib/_sys_impl.py",
             "src/molt/stdlib/stat.py",
             "src/molt/stdlib/queue.py",
             *_R6_TARGET_VERSION_PARITY_FILES,
@@ -3123,8 +3180,8 @@ def _r6_target_version_parity_spec(
         "notes": [
             "Named R6 parity lane runs sys metadata plus stdlib version-gated "
             "stat, queue shutdown, and PEP 594 removed-module fixtures with "
-            "serial differential custody; missing target interpreters fail "
-            "closed through tools/target_python_runtime.py."
+            "serial fail-fast differential custody; missing target interpreters "
+            "fail closed through tools/target_python_runtime.py."
         ],
         "timeout": timeout if timeout is not None else 900.0,
     }
