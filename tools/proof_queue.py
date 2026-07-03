@@ -68,6 +68,7 @@ DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
+DIAGNOSTIC_EVIDENCE_MAX_CHARS = 640
 STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
     {
         "running-proof-child-missing",
@@ -320,6 +321,53 @@ def _pytest_missing_current_test_file_evidence(summary_json: object) -> str | No
     return None
 
 
+def _summary_child_process(summary_json: object) -> dict[str, object] | None:
+    if not summary_json:
+        return None
+    summary = _read_json_object(Path(str(summary_json)))
+    child = summary.get("child_process")
+    return child if isinstance(child, dict) else None
+
+
+def _summary_host_platform(summary_json: object) -> str | None:
+    if not summary_json:
+        return None
+    summary = _read_json_object(Path(str(summary_json)))
+    repro = summary.get("repro")
+    if not isinstance(repro, dict):
+        return None
+    host = repro.get("host")
+    if not isinstance(host, dict):
+        return None
+    platform = host.get("platform")
+    return platform if isinstance(platform, str) and platform.strip() else None
+
+
+def _memory_guard_child_runner_evidence(summary_json: object) -> str | None:
+    child = _summary_child_process(summary_json)
+    if child is None:
+        return None
+    command = child.get("command")
+    if not _is_guard_command(command):
+        return None
+    label = (
+        "windows_memory_guard_child_runner"
+        if _summary_host_platform(summary_json) == "win32"
+        else "memory_guard_child_process"
+    )
+    pid = child.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        return f"child_process={label} pid={pid}"
+    return f"child_process={label}"
+
+
+def _memory_guard_child_runner_status_line(summary_json: object) -> str | None:
+    evidence = _memory_guard_child_runner_evidence(summary_json)
+    if evidence is None:
+        return None
+    return f"  guard_child={evidence}"
+
+
 def _running_pytest_current_test_missing_diagnostic(
     row: sqlite3.Row,
 ) -> dict[str, object] | None:
@@ -336,7 +384,13 @@ def _running_pytest_current_test_missing_diagnostic(
     evidence = _pytest_missing_current_test_file_evidence(row["summary_json"])
     if evidence is None:
         return None
-    evidence += f" last_log_age={_format_duration(log_age_s)}"
+    evidence_parts: list[str] = []
+    child_runner = _memory_guard_child_runner_evidence(row["summary_json"])
+    if child_runner is not None:
+        evidence_parts.append(child_runner)
+    evidence_parts.append(evidence)
+    evidence_parts.append(f"last_log_age={_format_duration(log_age_s)}")
+    evidence = " ".join(evidence_parts)
     return _diagnostic(
         signal_id="running-pytest-current-test-missing",
         severity="infra",
@@ -347,7 +401,8 @@ def _running_pytest_current_test_missing_diagnostic(
         evidence=evidence,
         next_action=(
             "Treat this as pre-test or collection/startup opacity. Inspect the "
-            "pytest startup path once, then rerun with a first-failure or "
+            "pytest startup path, uv/cache contention, or Windows memory-guard "
+            "child-runner descendant once, then rerun with a first-failure or "
             "collection-focused proof; do not interrupt via Codex stdin."
         ),
         scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
@@ -524,6 +579,9 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     pytest_line = _pytest_current_status_line(row["summary_json"])
     if pytest_line:
         lines.append(pytest_line)
+    child_runner_line = _memory_guard_child_runner_status_line(row["summary_json"])
+    if child_runner_line:
+        lines.append(child_runner_line)
     return lines
 
 
@@ -1255,7 +1313,7 @@ def _diagnostic(
         "signal_id": signal_id,
         "severity": severity,
         "summary": summary,
-        "evidence": _shorten(evidence, 320),
+        "evidence": _shorten(evidence, DIAGNOSTIC_EVIDENCE_MAX_CHARS),
         "next_action": next_action,
         "scopes": list(scopes),
         "artifacts": list(artifacts),
