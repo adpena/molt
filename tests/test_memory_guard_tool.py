@@ -2863,6 +2863,27 @@ def test_main_reports_incident_repro_context(
     assert repro["limits"]["max_total_rss_gb"] == pytest.approx(3.0)
 
 
+def test_repro_context_platform_detail_does_not_spawn_subprocess(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    def forbidden_platform_detail() -> str:
+        raise AssertionError("platform.platform must not run in summary emission")
+
+    monkeypatch.setattr(memory_guard.platform, "platform", forbidden_platform_detail)
+
+    repro = memory_guard.repro_context_payload(
+        command=[sys.executable, "-c", "pass"],
+        cwd=tmp_path,
+        environ={},
+    )
+
+    assert repro["host"]["platform"] == sys.platform
+    assert repro["host"]["platform_detail"]
+
+
 def test_repro_context_reads_xdist_worker_current_test_sidecars(
     tmp_path: Path,
     monkeypatch,
@@ -3408,6 +3429,35 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["child_rlimit_gb"] is None
     assert payload["orphaned_process_groups"] == []
     assert payload["incident"] is None
+
+
+def test_run_guarded_keeps_windows_handle_peak_when_sampler_misses_child(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "nt":
+        return
+    monkeypatch.setattr(
+        memory_guard,
+        "windows_process_handle_rss_kb",
+        lambda _handle: 12_345,
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "pass"],
+        max_rss_kb=1_000_000,
+        max_total_rss_kb=18 * 1024 * 1024,
+        poll_interval=0.01,
+        sampler=lambda: {},
+        timeout=5.0,
+    )
+
+    assert result.returncode == 0
+    assert result.peak is not None
+    assert result.peak.rss_kb == 12_345
+    assert result.peak.scope == "process_handle"
+    assert result.peak_total is not None
+    assert result.peak_total.rss_kb == 12_345
+    assert result.peak_total.scope == "process_tree_handle"
 
 
 def test_main_reports_orphan_cleanup_with_operator_signal(

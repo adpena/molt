@@ -121,6 +121,77 @@ def _windows_process_needs_full_command_line(exe_name: str) -> bool:
     return exe_name.strip().casefold() in WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES
 
 
+def _windows_process_memory_counters_type(ctypes_module, wintypes_module):
+    class PROCESS_MEMORY_COUNTERS(ctypes_module.Structure):
+        _fields_ = [
+            ("cb", wintypes_module.DWORD),
+            ("PageFaultCount", wintypes_module.DWORD),
+            ("PeakWorkingSetSize", ctypes_module.c_size_t),
+            ("WorkingSetSize", ctypes_module.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes_module.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes_module.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes_module.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes_module.c_size_t),
+            ("PagefileUsage", ctypes_module.c_size_t),
+            ("PeakPagefileUsage", ctypes_module.c_size_t),
+        ]
+
+    return PROCESS_MEMORY_COUNTERS
+
+
+def _windows_get_process_memory_info(
+    psapi,
+    ctypes_module,
+    wintypes_module,
+    process_memory_counters_type,
+):
+    get_process_memory_info = psapi.GetProcessMemoryInfo
+    get_process_memory_info.argtypes = [
+        wintypes_module.HANDLE,
+        ctypes_module.POINTER(process_memory_counters_type),
+        wintypes_module.DWORD,
+    ]
+    get_process_memory_info.restype = wintypes_module.BOOL
+    return get_process_memory_info
+
+
+def _working_set_rss_kb(counters) -> int:
+    return max(0, int((counters.WorkingSetSize + 1023) // 1024))
+
+
+def windows_process_handle_rss_kb(handle: object) -> int | None:
+    if os.name != "nt" or not handle:
+        return None
+    try:
+        handle_value = int(handle)
+    except (TypeError, ValueError):
+        return None
+
+    import ctypes
+    from ctypes import wintypes
+
+    process_memory_counters_type = _windows_process_memory_counters_type(
+        ctypes,
+        wintypes,
+    )
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    get_process_memory_info = _windows_get_process_memory_info(
+        psapi,
+        ctypes,
+        wintypes,
+        process_memory_counters_type,
+    )
+    counters = process_memory_counters_type()
+    counters.cb = ctypes.sizeof(process_memory_counters_type)
+    if not get_process_memory_info(
+        wintypes.HANDLE(handle_value),
+        ctypes.byref(counters),
+        counters.cb,
+    ):
+        return None
+    return _working_set_rss_kb(counters)
+
+
 def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
     ticks = (high << 32) | low
     if ticks <= 0:
@@ -160,20 +231,6 @@ def _windows_process_snapshot_rows() -> list[
             ("szExeFile", wintypes.WCHAR * 260),
         ]
 
-    class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
-        _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("PageFaultCount", wintypes.DWORD),
-            ("PeakWorkingSetSize", ctypes.c_size_t),
-            ("WorkingSetSize", ctypes.c_size_t),
-            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-            ("PagefileUsage", ctypes.c_size_t),
-            ("PeakPagefileUsage", ctypes.c_size_t),
-        ]
-
     class PROCESS_BASIC_INFORMATION(ctypes.Structure):
         _fields_ = [
             ("Reserved1", ctypes.c_void_p),
@@ -186,6 +243,10 @@ def _windows_process_snapshot_rows() -> list[
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    process_memory_counters_type = _windows_process_memory_counters_type(
+        ctypes,
+        wintypes,
+    )
     create_snapshot = kernel32.CreateToolhelp32Snapshot
     create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     create_snapshot.restype = wintypes.HANDLE
@@ -201,13 +262,12 @@ def _windows_process_snapshot_rows() -> list[
     open_process = kernel32.OpenProcess
     open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     open_process.restype = wintypes.HANDLE
-    get_process_memory_info = psapi.GetProcessMemoryInfo
-    get_process_memory_info.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
-        wintypes.DWORD,
-    ]
-    get_process_memory_info.restype = wintypes.BOOL
+    get_process_memory_info = _windows_get_process_memory_info(
+        psapi,
+        ctypes,
+        wintypes,
+        process_memory_counters_type,
+    )
     get_process_times = kernel32.GetProcessTimes
     get_process_times.argtypes = [
         wintypes.HANDLE,
@@ -366,18 +426,15 @@ def _windows_process_snapshot_rows() -> list[
                             )
                         else:
                             command = image_name or command
-                        counters = PROCESS_MEMORY_COUNTERS()
-                        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+                        counters = process_memory_counters_type()
+                        counters.cb = ctypes.sizeof(process_memory_counters_type)
                         if get_process_memory_info(
                             handle,
                             ctypes.byref(counters),
                             counters.cb,
                         ):
                             enforce_deadline("reading process memory counters")
-                            rss_kb = max(
-                                0,
-                                int((counters.WorkingSetSize + 1023) // 1024),
-                            )
+                            rss_kb = _working_set_rss_kb(counters)
                         created = wintypes.FILETIME()
                         exited = wintypes.FILETIME()
                         kernel = wintypes.FILETIME()
