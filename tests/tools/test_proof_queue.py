@@ -1282,6 +1282,9 @@ def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
 
     out = capsys.readouterr().out
     assert "stale active-run" in out
+    assert "diagnosis=running-proof-launch-summary-stale" in out
+    assert str(summary_path) in out
+    assert str(log_path) in out
     assert "pruned=1" in out
     assert _rows(db)[0]["status"] == "stale"
 
@@ -1352,6 +1355,9 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
 
     out = capsys.readouterr().out
     assert "stale target-run" in out
+    assert "diagnosis=running-proof-launch-summary-stale" in out
+    assert str(tmp_path / "target-run.memory_guard.json") in out
+    assert str(tmp_path / "target-run.log") in out
     assert "sibling-run" not in out
     assert "pruned=1" in out
     statuses = {row["run_id"]: row["status"] for row in _rows(db)}

@@ -400,7 +400,9 @@ Use `prune-stale --run-id RUN_ID` for a stale row you own. The unscoped
 `prune-stale` form is intentionally broad; reserve it for queue-wide cleanup
 after checking active ownership. Do not kill broad process families, Codex,
 Claude, renderer helpers, node-repl, shell ancestors, or ambiguous host
-control-plane processes.
+control-plane processes. Each pruned row prints the deterministic diagnosis
+that justified pruning plus the memory-guard summary and queue log paths; treat
+that line as the handoff breadcrumb instead of rerunning broad status loops.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID
