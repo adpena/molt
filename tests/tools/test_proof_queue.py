@@ -1120,7 +1120,101 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
     assert "emitted progress output" in out
     assert "last_pytest_progress=." in out
     assert "current-test custody opacity after pytest started" in out
+    assert "running-pytest-failures-observed" not in out
     assert "pre-test or collection/startup opacity" not in out
+
+
+def test_proof_queue_prioritizes_running_pytest_failure_progress(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    current_path = tmp_path / "pytest-current.json"
+    progress = "..FFF.....FF......FF..FF................"
+    log_path.write_text(f"proof_queue run_id=active-run\n{progress}\n", encoding="utf-8")
+    stale = (
+        time.time()
+        - proof_queue.RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS
+        - 5.0
+    )
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "child_running",
+                "pytest": {
+                    "current_test_file": {
+                        "missing": True,
+                        "path": str(current_path),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="diagnose pytest failure progress before final report",
+        command=[sys.executable, "-m", "pytest", "tests/tools/test_proof_queue.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="python-tests",
+        contention_key="proof-queue",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn, "active-run", status="running", started_at=proof_queue._utc_now()
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "status",
+                "--recent",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    status_out = capsys.readouterr().out
+    assert "diagnosis=running-pytest-failures-observed [warning]" in status_out
+    assert "diagnosis=running-pytest-current-test-missing [infra]" not in status_out
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+
+    diagnose_out = capsys.readouterr().out
+    assert "running-pytest-failures-observed" in diagnose_out
+    assert "last_pytest_progress=..FFF.....FF......FF..FF................" in diagnose_out
+    assert "failures=9" in diagnose_out
+    assert "errors=0" in diagnose_out
+    assert "Keep the row running for the full pytest failure report" in diagnose_out
+    assert "running-pytest-current-test-missing" in diagnose_out
 
 
 def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
