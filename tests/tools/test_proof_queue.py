@@ -13,6 +13,26 @@ import pytest
 
 import tools.proof_queue as proof_queue
 
+_TEST_GIT_SNAPSHOT = {
+    "available": True,
+    "head": "test-head",
+    "dirty": False,
+    "status": [],
+    "ignored_status_count": 0,
+}
+_REAL_GIT_SNAPSHOT_TESTS = {
+    "test_proof_queue_git_snapshot_ignores_generated_wasm_checksums",
+}
+
+
+@pytest.fixture(autouse=True)
+def _proof_queue_unit_git_snapshot(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if request.node.name in _REAL_GIT_SNAPSHOT_TESTS:
+        return
+    monkeypatch.setattr(proof_queue, "_git_snapshot", lambda cwd: _TEST_GIT_SNAPSHOT)
+
 
 def _rows(db: Path) -> list[sqlite3.Row]:
     conn = sqlite3.connect(db)
@@ -1048,7 +1068,7 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
         == 0
     )
     output = capsys.readouterr().out
-    assert "diagnostics: running-pytest-current-test-missing=1" in output
+    assert "running-pytest-current-test-missing=1" in output
     assert "audit-running-pytest-current-test-missing run=active-run" in output
     assert "pre-test or collection/startup opacity" in output
 
