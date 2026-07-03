@@ -1217,6 +1217,68 @@ def test_proof_queue_diagnoses_terminal_row_with_unfinished_guard_summary(
     assert "audit-unclassified-failure" not in out
 
 
+def test_proof_queue_audit_treats_pruned_stale_incomplete_summary_as_warning(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "stale.log"
+    summary_path = tmp_path / "stale.memory_guard.json"
+    log_path.write_text("proof_queue run_id=stale-run\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "returncode": None,
+                "child_process": {"pid": 3210},
+                "recorded_at": "2026-07-03T00:08:37Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="stale-run",
+        logical_id="stale",
+        reason="prove pruned stale rows remain visible without failing audit",
+        command=[sys.executable, "-c", "print('stale')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python-proof",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="stale-run",
+        body="test: stale row intentionally pruned after custody loss",
+        kind="finding",
+        author="codex",
+    )
+    proof_queue._update_run(conn, "stale-run", status="stale")
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "warning audit-memory-guard-summary-incomplete run=stale-run" in out
+    assert "error audit-memory-guard-summary-incomplete run=stale-run" not in out
+
+
 def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
