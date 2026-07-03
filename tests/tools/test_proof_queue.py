@@ -3824,6 +3824,106 @@ def test_proof_queue_audit_omits_superseded_frontier_failures(
     assert "run=stale-failure" not in output
 
 
+def test_proof_queue_audit_omits_superseded_queue_debt_by_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id, status in (
+        ("stale-timeout", "failed"),
+        ("rerun-child", "passed"),
+    ):
+        log_path = tmp_path / f"{run_id}.log"
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id="memory-guard-dx",
+            reason="prove superseded queue debt filtering",
+            command=[sys.executable, "-c", "print('proof')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python-tests",
+            contention_key=f"python:{run_id}",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=log_path,
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._insert_note(
+            conn,
+            run_id=run_id,
+            body="test: superseded queue debt remains archaeology, not current health",
+            kind="submission",
+            author="codex",
+        )
+        log_path.write_text(
+            (
+                "memory_guard: timeout after 300.00s; terminated tracked "
+                "process tree to prevent orphaned Molt subprocesses\n"
+            )
+            if run_id == "stale-timeout"
+            else "ok\n",
+            encoding="utf-8",
+        )
+        proof_queue._update_run(
+            conn,
+            run_id,
+            status=status,
+            returncode=0 if status == "passed" else 124,
+        )
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="stale-timeout",
+        child_run_id="rerun-child",
+        kind="reruns",
+        note="rerun retired stale timeout",
+        author="codex",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "classified_failed=0" in output
+    assert "diagnostics:" not in output
+    assert "run=stale-timeout" not in output
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--all",
+                "--no-notebook-check",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "audit-memory-guard-timeout run=stale-timeout" in output
+
+
 def test_proof_queue_audit_fails_on_unclassified_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
