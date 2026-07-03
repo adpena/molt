@@ -1359,13 +1359,28 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         if out_view.is_null() {
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
-        let mut export = MoltBufferView::default();
-        if unsafe { molt_buffer_export(obj_bits, &mut export as *mut MoltBufferView) } != 0 {
-            return -1;
-        }
-        inc_ref_bits(_py, obj_bits);
+        let storage = match unsafe {
+            crate::object::memoryview::TypedStridedStorage::from_object_bits(_py, obj_bits)
+        } {
+            Ok(storage) => storage,
+            Err(crate::object::memoryview::TypedStridedStorageError::ReleasedMemoryView) => {
+                let _ = crate::object::memoryview::raise_released_memoryview::<u64>(_py);
+                return -1;
+            }
+            Err(_) => return -1,
+        };
+        let (owner_bits, base_bits) =
+            match crate::object::memoryview::retain_storage_refs(_py, &storage) {
+                Ok(bits) => bits,
+                Err(()) => return -1,
+            };
+        let Some(export) = crate::object::memoryview::MoltBufferView::owned_from_typed_storage(
+            &storage, owner_bits, base_bits,
+        ) else {
+            crate::object::memoryview::release_buffer_refs(_py, owner_bits, base_bits);
+            return raise_i32(_py, "BufferError", "invalid buffer descriptor");
+        };
         unsafe {
-            export.owner = obj_bits;
             *out_view = export;
         }
         0
@@ -1416,18 +1431,8 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             return raise_exception::<u64>(_py, "TypeError", "buffer view cannot be null");
         }
         let view = unsafe { &*view };
-        if view.data.is_null() && view.len != 0 {
-            return raise_exception::<u64>(
-                _py,
-                "BufferError",
-                "buffer descriptor has no data pointer",
-            );
-        }
-        if view.ndim as usize > MOLT_BUFFER_MAX_NDIM {
-            return raise_exception::<u64>(_py, "BufferError", "buffer ndim exceeds Molt limit");
-        }
-        if view.itemsize == 0 {
-            return raise_exception::<u64>(_py, "BufferError", "buffer itemsize cannot be zero");
+        if view.validated_compact_shape_len().is_none() {
+            return raise_exception::<u64>(_py, "BufferError", "invalid buffer descriptor");
         }
         let ndim = view.ndim as usize;
         let shape = view.shape[..ndim].to_vec();
@@ -1443,12 +1448,13 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             return none_bits();
         }
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
-        let storage = crate::object::memoryview::TypedStridedStorage::new(
+        let storage = crate::object::memoryview::TypedStridedStorage::new_with_owner(
             view.data,
             view.readonly != 0,
             view.itemsize as usize,
             view.offset,
             view.base,
+            view.owner,
             format_bits,
             shape,
             strides,
