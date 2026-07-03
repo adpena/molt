@@ -243,10 +243,22 @@ pub extern "C" fn molt_sys_base_exec_prefix() -> u64 {
     molt_sys_prefix()
 }
 
-/// `sys.platlibdir` -> "lib" on most platforms
+/// Platform library directory name for `sys.platlibdir`.
+fn platlibdir_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "DLLs"
+    }
+    #[cfg(not(windows))]
+    {
+        "lib"
+    }
+}
+
+/// `sys.platlibdir` -> platform library directory name
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_platlibdir() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "lib") })
+    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, platlibdir_name()) })
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,6 +1252,26 @@ mod tests {
                 .ref_count
                 .load(Ordering::Relaxed)
         }
+    }
+
+    #[test]
+    fn sys_platlibdir_matches_platform_contract() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let bits = molt_sys_platlibdir();
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(bits)).as_deref(),
+                Some(platlibdir_name())
+            );
+            if cfg!(windows) {
+                assert_eq!(platlibdir_name(), "DLLs");
+            } else {
+                assert_eq!(platlibdir_name(), "lib");
+            }
+            dec_ref_bits(_py, bits);
+        });
     }
 
     #[test]

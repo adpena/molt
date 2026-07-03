@@ -64,10 +64,6 @@ def _return_utf8() -> str:
     return "utf-8"
 
 
-def _return_surrogateescape() -> str:
-    return "surrogateescape"
-
-
 def _return_false() -> bool:
     return False
 
@@ -104,6 +100,29 @@ def _return_platform_unknown() -> str:
     return "unknown"
 
 
+def _return_platform_default() -> str:
+    platform_value = _safe_intrinsic("molt_sys_platform", _return_platform_unknown)()
+    if isinstance(platform_value, str):
+        return platform_value
+    return "unknown"
+
+
+def _return_platform_is_windows() -> bool:
+    return _return_platform_default().startswith("win")
+
+
+def _return_filesystem_encode_errors_default() -> str:
+    if _return_platform_is_windows():
+        return "surrogatepass"
+    return "surrogateescape"
+
+
+def _return_platlibdir_default() -> str:
+    if _return_platform_is_windows():
+        return "DLLs"
+    return "lib"
+
+
 def _return_maxsize_default() -> int:
     return 2**63 - 1
 
@@ -114,10 +133,6 @@ def _return_maxunicode_default() -> int:
 
 def _return_little_endian() -> str:
     return "little"
-
-
-def _return_libdir_default() -> str:
-    return "lib"
 
 
 def _return_empty_frozenset() -> frozenset[object]:
@@ -327,7 +342,7 @@ _MOLT_SYS_STDIN = _lazy_intrinsic("molt_sys_stdin", None)
 _MOLT_SYS_STDOUT = _lazy_intrinsic("molt_sys_stdout", None)
 _MOLT_SYS_STDERR = _lazy_intrinsic("molt_sys_stderr", None)
 _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _lazy_intrinsic(
-    "molt_sys_getfilesystemencodeerrors", _return_surrogateescape
+    "molt_sys_getfilesystemencodeerrors", _return_filesystem_encode_errors_default
 )
 _MOLT_SYS_BOOTSTRAP_PAYLOAD = _lazy_intrinsic("molt_sys_bootstrap_payload", None)
 _MOLT_SYS_MAXSIZE = _lazy_intrinsic("molt_sys_maxsize", _return_maxsize_default)
@@ -341,7 +356,9 @@ _MOLT_SYS_BASE_PREFIX = _lazy_intrinsic("molt_sys_base_prefix", _return_empty_st
 _MOLT_SYS_BASE_EXEC_PREFIX = _lazy_intrinsic(
     "molt_sys_base_exec_prefix", _return_empty_str
 )
-_MOLT_SYS_PLATLIBDIR = _lazy_intrinsic("molt_sys_platlibdir", _return_libdir_default)
+_MOLT_SYS_PLATLIBDIR = _lazy_intrinsic(
+    "molt_sys_platlibdir", _return_platlibdir_default
+)
 _MOLT_SYS_FLOAT_INFO = _lazy_intrinsic("molt_sys_float_info", None)
 _MOLT_SYS_INT_INFO = _lazy_intrinsic("molt_sys_int_info", None)
 _MOLT_SYS_HASH_INFO = _lazy_intrinsic("molt_sys_hash_info", None)
@@ -903,6 +920,9 @@ def _init_metadata():
         )
     )
     thread_info_values = tuple(("pthread", None, None))
+    platlibdir_value = _try_str_intrinsic(
+        _MOLT_SYS_PLATLIBDIR, _return_platlibdir_default()
+    )
 
     g["version"] = version_text
     g["_raw_version_info"] = version_values
@@ -926,7 +946,7 @@ def _init_metadata():
     g["exec_prefix"] = ""
     g["base_prefix"] = ""
     g["base_exec_prefix"] = ""
-    g["platlibdir"] = "lib"
+    g["platlibdir"] = platlibdir_value
     g["float_info"] = _FloatInfoTuple(float_info_values)
     g["int_info"] = _IntInfoTuple(int_info_values)
     g["hash_info"] = _HashInfoTuple(hash_info_values)
@@ -1175,7 +1195,12 @@ __stdout__ = stdout
 __stderr__ = stderr
 _default_encoding = "utf-8"
 _fs_encoding = "utf-8"
-_fs_encode_errors = "surrogateescape"
+_fs_encode_errors_val = _MOLT_SYS_GETFILESYSTEMENCODEERRORS()
+_fs_encode_errors = (
+    _fs_encode_errors_val
+    if isinstance(_fs_encode_errors_val, str)
+    else _return_filesystem_encode_errors_default()
+)
 
 
 class asyncgen_hooks(tuple):
