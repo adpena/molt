@@ -152,14 +152,31 @@ output), not 1 per operation.
 
 ## 5. Browser Compatibility
 
-| Browser | WebGPU | Compute Shaders | Subgroups | Status |
-|---------|--------|-----------------|-----------|--------|
-| Chrome 113+ | Yes | Yes | Chrome 134+ | Full support |
-| Edge 113+ | Yes | Yes | Edge 134+ | Full support (Chromium) |
-| Safari 18+ | Yes | Yes | No | Compute works, no subgroups |
-| Firefox | Behind flag | Behind flag | No | Not production-ready |
-| Chrome Android 121+ | Yes | Yes | No | Works on Adreno/Mali GPUs |
-| Safari iOS 18+ | Yes | Yes | No | Works on A15+ chips |
+Browser names are routing hints only. The runtime authority is the adapter and
+device feature set returned by WebGPU, plus a benchmark row on the exact
+browser/OS/GPU combination. Current public availability to track:
+
+| Browser / OS | WebGPU | Compute | High-value optional features |
+|---------|--------|---------|------------------------------|
+| Chrome / Edge desktop 113+ | Yes | Yes | `shader-f16` when available; `subgroups` from Chrome/Edge 134+ on supporting adapters; timestamp queries when exposed |
+| Chrome Android 121+ | Yes on Android 12+ with supported Qualcomm/ARM GPUs | Yes | Adapter-gated `shader-f16`; subgroups only when reported |
+| Firefox 141+ Windows | Yes | Yes | Optional features are adapter-gated; do not assume subgroup/f16 |
+| Firefox 145+ macOS Tahoe 26 ARM64 | Yes | Yes | Optional features are adapter-gated |
+| Safari 26+ macOS/iOS/iPadOS/visionOS | Yes | Yes | Optional features are adapter-gated |
+| WASM-only fallback | No WebGPU | CPU/WASM SIMD | Always available when the Molt WASM runtime is supported |
+
+Feature-gating rules:
+
+- `navigator.gpu` and `requestAdapter()` only select the WebGPU path.
+- `adapter.features` and `requestDevice({ requiredFeatures })` select WGSL
+  extensions such as `shader-f16` and `subgroups`.
+- WGSL source must include the matching `enable` directive (`enable f16;`,
+  `enable subgroups;`) or shader creation fails by spec.
+- `subgroupMinSize`/`subgroupMaxSize` are part of the kernel-specialization
+  key. A kernel that assumes a fixed subgroup size must fail closed when the
+  adapter cannot prove it.
+- Timestamp queries are profiling tools, not correctness dependencies. Browser
+  privacy clamping means wall-clock harness rows remain the release metric.
 
 ### Fallback Strategy
 
@@ -182,35 +199,90 @@ a GPU adapter is available. Feature detection is synchronous
 (`navigator.gpu` exists) but adapter acquisition is async and can fail on
 systems with no discrete or integrated GPU.
 
-## 6. Implementation Phases
+## 6. 1000-Year WebGPU/WGSL Optimization Lanes
 
-### Phase 1: WebGPU Matmul PoC (This PR)
+### Phase 0: Capability Authority
+
+- Add one WebGPU capability record per browser/OS/GPU session:
+  adapter info, limits, features, subgroup range, f16 support, timestamp-query
+  support, max workgroup sizes, and shader/pipeline compilation verdicts.
+- Use that record as the sole source for kernel selection, telemetry labels,
+  and benchmark identity. No browser-name dispatch in kernels.
+- Persist the record with the same scoreboards that own binary size/startup
+  evidence.
+
+### Phase 1: Persistent-Buffer Matmul
 
 - `deploy/browser/webgpu-matmul.js`: Standalone matmul using WGSL from
   WgslRenderer.
 - Validates correctness against CPU reference implementation.
 - Benchmarks GPU vs. CPU matmul for representative sizes (512x512, 1024x1024,
   2048x2048).
+- Keeps weights and KV/cache buffers resident on the GPU; CPU readback is
+  limited to final values required by Python-visible semantics.
 
-### Phase 2: JS Import Bridge
+### Phase 2: WGSL Feature-Lowered Kernels
 
 - Define the `env.gpu_*` import table in the WASM instantiation glue.
 - Implement handle-table buffer management.
 - Wire matmul dispatch through the bridge.
 - Integration test: single transformer layer with GPU matmul.
+- Generate specialized WGSL variants for:
+  - f32 portable baseline;
+  - f16 storage/compute when `shader-f16` is proven and numerical tolerance is
+    explicitly claimed;
+  - subgroup reductions when `subgroups` is proven;
+  - workgroup-memory tiled reductions when subgroups are absent.
+- Treat dtype narrowing (`f64 -> f32`, `i64 -> i32`, `f32 -> f16`) as a typed
+  fact with an oracle, not an implicit WebGPU limitation.
 
-### Phase 3: Full Inference Pipeline
+### Phase 3: Graph Scheduler And Fusion
 
 - Pre-compile all shader pipelines on init.
 - Chain GPU dispatches within a transformer layer (no intermediate readback).
 - Progressive enhancement: detect WebGPU, fall back to CPU.
 - Benchmark end-to-end inference on target devices.
+- Fuse elementwise and reduction chains into the fewest dispatches that preserve
+  determinism and numerical contract.
+- Batch command encoding and avoid CPU/GPU synchronization inside a compiled
+  graph.
+- Use render/command bundles only when they measurably reduce CPU overhead for
+  repeated command sequences.
 
-### Phase 4: Optimization
+### Phase 4: Observability And Profiling
 
 - Tune tile sizes per GPU vendor (Adreno prefers 8x8, Apple GPU prefers
   16x16, desktop prefers 16x16 or 32x32).
-- Enable WebGPU subgroups for reduction ops where available (Chrome 134+).
+- Enable WebGPU subgroups for reduction ops where available and feature-proven.
 - Investigate `GPUBuffer` import from WASM shared memory to eliminate
   copies (speculative, no browser supports this yet).
-- Batch command encoding per Maczan 2026 for non-autoregressive workloads.
+- Record per-kernel CPU encode time, submit-to-completion wall time, readback
+  count/bytes, adapter features, shader variant, and output parity.
+- Use timestamp queries only when available; they complement but do not replace
+  wall-clock release gates.
+
+### Phase 5: Adjacent Standards To Track
+
+- WebNN for browser-native ML operator dispatch when it can share Molt's dtype,
+  shape, and buffer authority instead of becoming a parallel graph runtime.
+- WASM threads plus SharedArrayBuffer for CPU fallback parallelism, gated by
+  cross-origin isolation in browsers and by WASI-thread support outside them.
+- WASI 0.3 async streams/futures for edge/server GPU-host dispatch and
+  zero-copy-ish streaming of model/input/output buffers.
+- WebAssembly Component Model only when it reduces host ABI glue and keeps
+  Python package/extension custody explicit.
+
+## 7. Research Sources
+
+- WebGPU and WGSL Candidate Recommendation specs:
+  <https://www.w3.org/TR/webgpu/> and <https://www.w3.org/TR/WGSL/>
+- WGSL enable-extension contract for `shader-f16` and `subgroups`:
+  <https://www.w3.org/TR/WGSL/#enable-extensions-sec>
+- Chrome WebGPU subgroups availability and ML motivation:
+  <https://developer.chrome.com/blog/new-in-webgpu-134>
+- Current WebGPU browser/OS support summary:
+  <https://web.dev/blog/webgpu-supported-major-browsers>
+- Cross-origin isolation requirement for SharedArrayBuffer:
+  <https://web.dev/articles/cross-origin-isolation-guide>
+- WASI 0.3 async streams/futures roadmap:
+  <https://wasi.dev/roadmap>

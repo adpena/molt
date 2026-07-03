@@ -163,17 +163,43 @@ Migration path (aligned with spec 0400 Section 13):
 
 **UPDATE 2026-03-20:** Groundwork complete (a7b50199). Multi-value type signatures (Types 31-34) defined. detect_multi_return_candidates analysis pass identifies safe conversion candidates. Next: modify callee return sequences and call-site destructuring.
 
-### 3.2 Reference Types / GC Proposal (externref)
+### 3.2 Reference Types / WasmGC
 
-**Status**: `externref` standardized in WASM 2.0. WasmGC (struct/array types) standardized in WASM 3.0.
+**Status**: `externref` is standardized in WASM 2.0. WasmGC (struct/array
+types, array operations, casts, and `i31ref`) is the object-memory lane for
+managed languages and is now shipping in current major browsers (Chrome/Edge
+119+, Firefox 120+, Safari 18.2+). It is not yet the universal Molt baseline:
+edge providers, non-browser runners, and post-link tools still need explicit
+feature-profile validation.
 
 **Current gap**: Host objects (Python objects, class instances) are represented as NaN-boxed i64 handles. Every operation on a host object requires a host call to resolve the handle.
 
 **Optimization plan**:
-- **Phase 1**: Use `externref` for host-managed objects that never need arithmetic operations (file handles, socket handles, database connections). Avoids NaN-boxing overhead for pure-handle values.
-- **Phase 2 (long-term)**: Evaluate WasmGC for in-WASM object allocation. This would allow class instances with known layouts to live in WASM-managed GC memory rather than going through host `alloc`/`free`. Requires major architectural investment.
+- **Phase 1 - reference profile**: Use `externref` only for host-managed
+  objects that never need arithmetic operations (file handles, socket handles,
+  database connections). Avoids NaN-boxing overhead for pure-handle values and
+  keeps object semantics outside linear-memory arithmetic.
+- **Phase 2 - WasmGC profile**: Add an explicit `wasm-gc` target profile, not a
+  silent default. The profile owns target-feature selection, Binaryen flags,
+  runner/browser support probes, and artifact compatibility gates. Baseline
+  `wasm-mvp`/edge builds keep flattened function types and `--disable-gc`;
+  `wasm-gc` builds preserve recursive type groups and pass `--enable-gc` only
+  after the target contract proves support.
+- **Phase 3 - object lowering**: Lower proven closed-layout Molt objects to
+  WasmGC `struct`/`array` types through the same shape/layout facts used by the
+  native and LLVM backends. Eligible classes require sealed layout, exact field
+  offsets, no dynamic dict writes, and lifetime semantics expressible by the
+  host VM collector. Non-eligible objects keep the existing handle lane.
+- **Phase 4 - optimization loop**: Run Binaryen GC-aware optimization passes
+  and VM/browser E2E benchmarks. Gates must report size, cold start, host-call
+  count, allocation count, and throughput versus the handle baseline and CPython.
 
-**Priority**: P2 (externref), P3 (WasmGC).
+**Priority**: P2 (externref), P1 design gate for WasmGC profile authority, P2
+implementation after R3/R4 typed representation facts exist.
+
+**Non-negotiable**: WasmGC is a lowering target for proven facts, not a fallback
+for unknown Python objects. No profile may enable GC to hide missing ABI,
+buffer, import, or callable-closure work.
 
 ### 3.3 Bulk Memory Operations
 
@@ -256,6 +282,33 @@ Migration path (aligned with spec 0400 Section 13):
 - **Constraint**: Molt's GIL-equivalent serialization must be preserved. Shared memory introduces data races; atomic operations must protect all shared state.
 
 **Priority**: P3 -- host-managed threads are sufficient for current workloads.
+
+### 3.8 1000-Year Feature Lanes
+
+These lanes are part of the long-term optimization plan because they remove
+host calls, reduce artifact size, or unlock data-parallel execution. None is a
+shortcut around CPython semantics: each must be selected by a target feature
+profile and proved against the same runner/browser/deployment path that will
+ship the artifact.
+
+| Lane | Why it matters | Molt gate |
+|---|---|---|
+| Typed references + `call_ref` | Safe indirect calls without table/bounds checks; useful for callable tables and method dispatch once function identity is typed. | Generated callable facts prove the exact type; export/table contract remains stable. |
+| WasmGC `struct`/`array` storage | Host-VM lifetime for proven closed-layout objects; fewer handle lookups and fewer linear-memory allocations. | `wasm-gc` profile support probe, closed-layout shape facts, browser E2E, size/cold-start/perf delta. |
+| Custom descriptors | Potentially stores type-associated data beside engine RTT for WasmGC structs and can cut type-section/prototype startup cost. | Phase-3 proposal only; research/probe lane until at least two target engines and Binaryen/wasm-tools validate it. |
+| Memory64 + multiple memories | Large data sets, split private/instrumentation memory, separate hot data from cold package assets. | Non-web profile first; web profile respects browser memory limits and fails closed if address-size assumptions leak into ABI. |
+| Threads + shared memory | Real CPU parallelism for batch numeric kernels and source-recompiled extensions. | Cross-origin isolation or WASI-thread support proved; GIL/module-state invariants preserved; deterministic mode documented. |
+| Shared-everything threads | Future route for sharing WasmGC references and module fields across threads. | Track only as design input while proposal is unstable; no shipping dependency. |
+| WASI 0.3 async streams/futures | Native component async, stream forwarding/splicing, caller-supplied buffers, and eventual threads reduce host glue for edge/server. | Component-model ABI row with P1/P2 parity; no broad migration until host runners are version-gated. |
+| JS string builtins/reference strings | Potentially avoids copying external JS strings through linear memory for browser embeds. | Browser-only profile; exact Unicode/CPython string semantics gate before use. |
+| Relaxed SIMD and future flexible vectors | More hardware throughput for reductions and vector kernels. | Off by default in deterministic mode; enabled only with an explicit reproducibility/perf scoreboard row. |
+| Wide arithmetic and half precision | Better lowering for numeric extension code and ML kernels. | IR dtype/range facts own narrowing/widening; no silent precision loss. |
+| Compilation hints and memory control | Faster startup and more predictable memory pressure in browsers/edge hosts. | Measured startup/memory row; no semantic dependency on hints. |
+
+The active implementation order is: feature-profile authority first, then
+artifact validation, then one lowering family at a time. A feature is not
+"supported" until the support row includes binary size, cold start, memory peak,
+host-call count, and throughput against the previous Molt lane and CPython.
 
 ---
 
@@ -580,7 +633,9 @@ Molt currently uses raw wasmtime imports via `Linker::func_wrap()`. The WIT defi
 
 ### Phase 4: Advanced (P3, 6-12 months)
 
-16. **WasmGC evaluation** for in-WASM object allocation.
+16. **WasmGC target profile + object-lowering lane** for proven closed-layout
+    objects, gated against browser/runner support, Binaryen GC behavior, size,
+    cold start, host-call count, allocation count, and throughput.
 17. **Auto-vectorization** from TIR loop analysis.
 18. **Module splitting** for lazy loading.
 19. **WASI 0.3 async integration**.
@@ -627,6 +682,14 @@ Results must be recorded in `bench/results/` and summarized through the generate
 - [WASI Roadmap](https://wasi.dev/roadmap) -- WASI 0.2 stable, 0.3 targeting Feb 2026
 - [Binaryen Optimizer Cookbook](https://github.com/WebAssembly/binaryen/wiki/Optimizer-Cookbook) -- wasm-opt pass reference
 - [Binaryen GC Optimization Guidebook](https://github.com/WebAssembly/binaryen/wiki/GC-Optimization-Guidebook) -- WasmGC-specific passes
+- [WebAssembly GC MVP](https://github.com/WebAssembly/gc/blob/main/proposals/gc/MVP.md) -- struct/array/reference instruction authority
+- [Chrome WasmGC](https://developer.chrome.com/blog/wasmgc) -- Chrome/Edge 119+, Firefox 120, Safari 18.2 browser support summary
+- [Firefox 120 release notes](https://www.firefox.com/en-US/firefox/120.0/releasenotes/) -- Firefox default enablement
+- [WebKit Safari 18.2 features](https://webkit.org/blog/16301/webkit-features-in-safari-18-2/) -- Safari/WebKit default support and performance rationale
+- [WebAssembly proposals tracker](https://github.com/WebAssembly/proposals) -- standards phase authority for future lanes
+- [WebAssembly threads proposal](https://github.com/WebAssembly/threads/blob/main/proposals/threads/Overview.md) -- shared memory and atomics
+- [Shared-everything threads proposal](https://github.com/WebAssembly/shared-everything-threads/blob/main/proposals/shared-everything-threads/Overview.md) -- unstable future reference-sharing/thread lifecycle lane
+- [Custom descriptors proposal](https://github.com/WebAssembly/custom-descriptors/blob/main/proposals/custom-descriptors/Overview.md) -- WasmGC RTT/type-associated data lane
 - [Component Model Documentation](https://component-model.bytecodealliance.org/) -- Bytecode Alliance Component Model
 - [WebAssembly Feature Status](https://webassembly.org/features/) -- Proposal implementation status across engines
 - [State of WebAssembly 2025-2026](https://platform.uno/blog/the-state-of-webassembly-2025-2026/) -- Ecosystem overview
