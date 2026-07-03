@@ -127,6 +127,11 @@ MOLT_RUNTIME_INVALID_OBJECT_HEADER_RE = re.compile(
 RUST_COMPILER_ERROR_RE = re.compile(
     r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
 )
+RUNTIME_WASM_RUST_TARGET_MISSING_RE = re.compile(
+    r"(?m)^Runtime wasm build requires Rust target (?P<target>[A-Za-z0-9_-]+), "
+    r"but the active Rust toolchain does not provide it\. "
+    r"Run: (?P<command>rustup target add [^\r\n]+)\r?$"
+)
 PYTHON_EXCEPTION_RE = re.compile(
     r"(?m)^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>.+)$"
 )
@@ -1658,6 +1663,32 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "row did not reach the intended runtime assertion."
                 ),
                 scopes=("runtime/", "tools/proof_queue.py"),
+            )
+        )
+
+    match = RUNTIME_WASM_RUST_TARGET_MISSING_RE.search(log_tail)
+    if match is not None:
+        target = match.group("target")
+        diagnostics.append(
+            _diagnostic(
+                signal_id="runtime-wasm-rust-target-missing",
+                severity="infra",
+                summary=(
+                    "Runtime WASM build reached execution without Rust target "
+                    f"{target} available."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Install the checked-in Rust toolchain target, then rerun "
+                    "through the wasm proof-queue resource family. If a queued "
+                    "wasm row reaches this after preflight, fix the queue "
+                    "toolchain preflight or resource-family classification."
+                ),
+                scopes=(
+                    "rust-toolchain.toml",
+                    "tools/wasm_toolchain.py",
+                    "tools/proof_queue.py",
+                ),
             )
         )
 
