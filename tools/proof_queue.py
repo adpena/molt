@@ -75,6 +75,21 @@ DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 PROOF_QUEUE_ACTIVE_POLL_SECONDS = 2.0
 PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS = 5.0
 PROOF_QUEUE_STALE_EXIT_CODE = 2
+# SQLite busy timeout (milliseconds) for every proof-queue connection. WAL
+# serializes writers; under concurrent detached runners a contended write can
+# exceed the 5s default, so the terminal status write raised "database is
+# locked" and stranded the row 'running'. 30s covers realistic writer waits.
+PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS = 30_000
+# Bounded best-effort retry budget for a terminal/critical status write that
+# loses the busy-timeout race and still sees "database is locked".
+PROOF_QUEUE_LOCKED_WRITE_RETRIES = 8
+PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS = 0.25
+# Wall-clock ceiling on how long a row may remain 'running' before prune-stale
+# reclaims it regardless of guard liveness. A detached runner that set
+# status='running' then died before any terminal write leaves a row whose
+# guard_pid Windows may recycle to an unrelated live process; the age ceiling
+# guarantees such rows are reclaimed even when the recycled PID looks alive.
+PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS = 6 * 60 * 60.0
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
 DIAGNOSTIC_EVIDENCE_MAX_CHARS = 640
@@ -236,6 +251,19 @@ def _elapsed_since(started_at: str | None, elapsed_s: float | None = None) -> st
         started = started.replace(tzinfo=dt.UTC)
     elapsed = max(0.0, (dt.datetime.now(dt.UTC) - started).total_seconds())
     return f"{elapsed:.1f}s"
+
+
+def _running_age_seconds(started_at: str | None) -> float | None:
+    """Wall-clock seconds since ``started_at``, or None if unparseable."""
+    if not started_at:
+        return None
+    try:
+        started = dt.datetime.fromisoformat(started_at)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=dt.UTC)
+    return max(0.0, (dt.datetime.now(dt.UTC) - started).total_seconds())
 
 
 def _shorten(text: str, limit: int = 180) -> str:
@@ -840,6 +868,13 @@ def _connect(db: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # WAL serializes writers, so a slow write (e.g. the OneDrive-backed
+    # checkout under concurrent detached runners) can hold the write lock for
+    # seconds. Without a busy timeout SQLite returns SQLITE_BUSY immediately
+    # ("database is locked"), which strands the terminal status write and loses
+    # the run result. Wait up to 30s (in milliseconds per PRAGMA busy_timeout)
+    # for a contended writer before surfacing the error.
+    conn.execute(f"PRAGMA busy_timeout={PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS proof_runs (
@@ -858,6 +893,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             log_path TEXT NOT NULL,
             summary_json TEXT NOT NULL,
             guard_pid INTEGER,
+            guard_identity TEXT,
             started_at TEXT,
             finished_at TEXT,
             elapsed_s REAL
@@ -1013,6 +1049,24 @@ def _connect(db: Path) -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE proof_runs ADD COLUMN git_json TEXT NOT NULL DEFAULT '{}'"
         )
+    if "guard_identity" not in columns:
+        conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
+    # At most one RUNNING run per contention key. A partial UNIQUE index makes
+    # SQLite itself enforce the hard serialization invariant, closing the
+    # check-then-insert / transition TOCTOU where two concurrent admissions each
+    # see zero running rows and both reach status='running' (two heavy builds
+    # contending for the resource the key exists to serialize). Multiple QUEUED
+    # rows per key remain legal: dependency chains (a parent proof plus a
+    # dependent child on the same resource) submit several queued rows and the
+    # DAG plus the application-level active gate serialize which one runs.
+    # Callers handle the resulting IntegrityError as "already active".
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_running_per_contention_key
+        ON proof_runs(contention_key)
+        WHERE status = 'running'
+        """
+    )
     conn.commit()
     return conn
 
@@ -1595,6 +1649,14 @@ def _row_by_run_id(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def _row_value(row: sqlite3.Row, key: str) -> object | None:
+    """Fetch ``key`` from a row, tolerating rows without the column."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def _terminate_queue_owned_guard_process(
     proc: subprocess.Popen[str],
     log: object,
@@ -1938,15 +2000,152 @@ def _insert_run(
     conn.commit()
 
 
+def _admit_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    logical_id: str,
+    reason: str,
+    command: list[str],
+    cwd: Path,
+    resource_family: str,
+    contention_key: str,
+    scopes: list[str],
+    env_overrides: dict[str, str] | None = None,
+    git_snapshot: dict[str, object] | None = None,
+    log_path: Path,
+    summary_json: Path,
+) -> list[sqlite3.Row] | None:
+    """Atomically admit a run for its contention key.
+
+    Returns ``None`` when the run was inserted, or the list of active rows that
+    blocked admission. The active-check and the insert run inside a single
+    ``BEGIN IMMEDIATE`` transaction, which acquires the write lock up front (per
+    sqlite.org lang_transaction: IMMEDIATE starts a write transaction without
+    waiting for a write statement). That closes the check-then-insert TOCTOU: a
+    second admission for the same key blocks on the write lock, then either sees
+    the now-active row or trips the partial-unique index. Either way at most one
+    non-terminal run exists per key.
+    """
+    conn.row_factory = sqlite3.Row
+    # Serialize the check+insert against other writers. Python's sqlite3 driver
+    # would otherwise open an implicit DEFERRED transaction that takes the write
+    # lock only at the INSERT, leaving a window between our SELECT and INSERT.
+    # Close any implicit transaction first so BEGIN IMMEDIATE is legal.
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        active = list(
+            conn.execute(
+                """
+                SELECT * FROM proof_runs
+                WHERE contention_key = ? AND status IN ('queued', 'running')
+                ORDER BY started_at DESC
+                """,
+                (contention_key,),
+            )
+        )
+        if active:
+            conn.rollback()
+            return active
+        try:
+            conn.execute(
+                """
+                INSERT INTO proof_runs (
+                    run_id, logical_id, reason, status, command_json, cwd,
+                    resource_family, contention_key, scopes_json, env_json,
+                    git_json, log_path, summary_json
+                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    logical_id,
+                    reason,
+                    json.dumps(command),
+                    str(cwd),
+                    resource_family,
+                    contention_key,
+                    json.dumps(scopes),
+                    json.dumps(env_overrides or {}, sort_keys=True),
+                    json.dumps(
+                        git_snapshot
+                        if git_snapshot is not None
+                        else _git_snapshot(cwd),
+                        sort_keys=True,
+                    ),
+                    str(log_path),
+                    str(summary_json),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # A concurrent admission won the race and the partial-unique index
+            # rejected our insert. Report the active row(s) as the blocker.
+            conn.rollback()
+            return list(
+                conn.execute(
+                    """
+                    SELECT * FROM proof_runs
+                    WHERE contention_key = ? AND status IN ('queued', 'running')
+                    ORDER BY started_at DESC
+                    """,
+                    (contention_key,),
+                )
+            )
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+    return None
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message
+
+
+def _commit_with_locked_retry(conn: sqlite3.Connection) -> None:
+    """Commit, retrying briefly on 'database is locked'.
+
+    ``PRAGMA busy_timeout`` already waits for contended writers, but a terminal
+    status write that still loses the race must not strand the row 'running' or
+    lose the result. Retry a bounded number of times before re-raising so a
+    persistent lock still surfaces rather than silently discarding the write.
+    """
+    last_exc: sqlite3.OperationalError | None = None
+    for attempt in range(PROOF_QUEUE_LOCKED_WRITE_RETRIES):
+        try:
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_locked_error(exc):
+                raise
+            last_exc = exc
+            if attempt + 1 < PROOF_QUEUE_LOCKED_WRITE_RETRIES:
+                time.sleep(PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS)
+    if last_exc is not None:
+        raise last_exc
+
+
 def _update_run(conn: sqlite3.Connection, run_id: str, **values: object) -> None:
     if not values:
         return
+    # Persisting the guard PID also captures its process identity (PID +
+    # creation time) so prune-stale can detect PID reuse. Co-writing here keeps
+    # the identity authority in one place: any caller that records guard_pid
+    # gets identity binding for free, with no separate write to forget.
+    if "guard_pid" in values and "guard_identity" not in values:
+        pid = values["guard_pid"]
+        if isinstance(pid, int) and pid > 0:
+            values = {**values, "guard_identity": _process_identity(pid)}
     assignments = ", ".join(f"{key} = ?" for key in values)
     conn.execute(
         f"UPDATE proof_runs SET {assignments} WHERE run_id = ?",
         (*values.values(), run_id),
     )
-    conn.commit()
+    _commit_with_locked_retry(conn)
 
 
 def _memory_guard_command(
@@ -2813,19 +3012,10 @@ def _queue_one(
         allowed = ", ".join(sorted(EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
     _refresh_blocked_queued_runs(args, conn)
-    active = list(_active_for_key(conn, contention_key))
-    if active:
-        print(
-            f"contention key {contention_key!r} already has active run(s):",
-            file=sys.stderr,
-        )
-        for row in active:
-            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
-        return 2, None
     run_id = f"{_compact_utc()}-{_slug(logical_id)}-{uuid.uuid4().hex[:16]}"
     logs_root.mkdir(parents=True, exist_ok=True)
     log_path = logs_root / f"{run_id}.log"
-    _insert_run(
+    active = _admit_run(
         conn,
         run_id=run_id,
         logical_id=logical_id,
@@ -2839,6 +3029,14 @@ def _queue_one(
         log_path=log_path,
         summary_json=logs_root / f"{run_id}.memory_guard.json",
     )
+    if active is not None:
+        print(
+            f"contention key {contention_key!r} already has active run(s):",
+            file=sys.stderr,
+        )
+        for row in active:
+            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
+        return 2, None
     try:
         for parent_run_id in depends_on or []:
             _insert_edge(
@@ -3534,25 +3732,118 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_ERROR_ACCESS_DENIED = 5
+_STILL_ACTIVE = 259
+
+
+class _FILETIME(ctypes.Structure):
+    _fields_ = [
+        ("dwLowDateTime", ctypes.c_uint32),
+        ("dwHighDateTime", ctypes.c_uint32),
+    ]
+
+
+def _windows_process_creation_ticks(pid: int) -> int | None:
+    """Return the process creation time as 100ns ticks since 1601, or None.
+
+    ``GetProcessTimes`` fills ``lpCreationTime`` with a FILETIME (a 64-bit
+    count of 100-nanosecond units since 1601-01-01 UTC, per
+    learn.microsoft.com GetProcessTimes). Combined with the PID this uniquely
+    identifies a process across PID reuse: a recycled PID belongs to a process
+    started later, so its creation time differs.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(
+        _PROCESS_QUERY_LIMITED_INFORMATION,
+        False,
+        int(pid),
+    )
+    if not handle:
+        return None
+    try:
+        creation = _FILETIME()
+        exit_time = _FILETIME()
+        kernel_time = _FILETIME()
+        user_time = _FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return None
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_creation_ticks(pid: int) -> int | None:
+    """Best-effort process creation time (100ns ticks) for identity binding."""
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            return _windows_process_creation_ticks(pid)
+        except OSError:
+            return None
+    # POSIX: /proc/<pid>/stat field 22 (starttime) is monotonic per boot and
+    # differs across PID reuse. Fall back to None when unavailable so callers
+    # degrade to the wall-clock running-age ceiling rather than a false match.
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return None
+    # comm may contain spaces/parens; split on the last ')' to skip it safely.
+    rparen = data.rfind(b")")
+    if rparen == -1:
+        return None
+    fields = data[rparen + 2 :].split()
+    # After comm, field indices are shifted by 2 (pid, comm consumed); the
+    # 22nd overall field (starttime) is index 19 of the post-comm split.
+    if len(fields) <= 19:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _process_identity(pid: int) -> str | None:
+    """A PID+creation-time identity string, or None if it can't be determined.
+
+    Used to detect Windows PID reuse: a guard row records this at launch, and
+    prune-stale reclaims the row when the live PID's identity no longer matches
+    (the original guard exited and the OS recycled its PID to a different
+    process).
+    """
+    if pid is None or int(pid) <= 0:
+        return None
+    ticks = _process_creation_ticks(int(pid))
+    if ticks is None:
+        return None
+    return f"{os.name}:{int(pid)}:{ticks}"
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "nt":
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        process_query_limited_information = 0x1000
-        still_active = 259
         handle = kernel32.OpenProcess(
-            process_query_limited_information,
+            _PROCESS_QUERY_LIMITED_INFORMATION,
             False,
             int(pid),
         )
         if not handle:
-            return ctypes.get_last_error() == 5
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
         try:
             exit_code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return False
-            return exit_code.value == still_active
+            return exit_code.value == _STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
     try:
@@ -3560,6 +3851,33 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _guard_process_live(pid: int | None, recorded_identity: str | None) -> bool:
+    """True only when the guard PID is alive AND still the recorded process.
+
+    ``_pid_alive`` is a bare liveness probe: on Windows it cannot distinguish a
+    real exit code of 259 from STILL_ACTIVE, treats ERROR_ACCESS_DENIED as
+    alive, and — critically — reports True for whatever unrelated process now
+    owns a recycled PID. When an identity was recorded at launch we require the
+    live process to still match it, so a recycled PID no longer looks like a
+    live guard. When no identity was recorded (older row, or identity
+    unavailable) we fall back to bare liveness and rely on the running-age
+    ceiling to reclaim genuinely dead rows.
+    """
+    if pid is None:
+        return False
+    pid = int(pid)
+    if not _pid_alive(pid):
+        return False
+    if not recorded_identity:
+        return True
+    current_identity = _process_identity(pid)
+    if current_identity is None:
+        # Can't re-derive identity (e.g. access denied) but the PID is alive;
+        # treat as live so we don't falsely reclaim an active guard.
+        return True
+    return current_identity == recorded_identity
 
 
 def _cmd_prune_stale(args: argparse.Namespace) -> int:
@@ -3626,9 +3944,24 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 )
             continue
         pid = row["guard_pid"]
-        guard_alive = pid is not None and _pid_alive(int(pid))
+        recorded_identity = _row_value(row, "guard_identity")
+        recorded_identity_text = (
+            str(recorded_identity) if recorded_identity is not None else None
+        )
+        guard_alive = pid is not None and _guard_process_live(
+            int(pid), recorded_identity_text
+        )
+        running_age = _running_age_seconds(_row_value(row, "started_at"))
+        age_exceeded = (
+            running_age is not None
+            and running_age > PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS
+        )
         diagnostics = _run_diagnostics(row)
-        if guard_alive and not _diagnostics_have_stale_running_signal(diagnostics):
+        if (
+            guard_alive
+            and not age_exceeded
+            and not _diagnostics_have_stale_running_signal(diagnostics)
+        ):
             continue
         _update_run(
             conn,
@@ -3640,9 +3973,24 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         pruned += 1
         diagnostic_summary = _format_diagnostic_summary(diagnostics)
         if diagnostic_summary is None:
-            diagnostic_summary = (
-                "dead-guard [infra]: proof guard process is not live"
-            )
+            if not guard_alive and pid is not None and _pid_alive(int(pid)):
+                # PID is alive but no longer the recorded guard: Windows recycled
+                # the PID to an unrelated process while our guard was already
+                # dead.
+                diagnostic_summary = (
+                    "reused-guard-pid [infra]: guard PID belongs to a different "
+                    "process (PID reuse); original proof guard is gone"
+                )
+            elif guard_alive and age_exceeded:
+                diagnostic_summary = (
+                    "running-age-ceiling [infra]: proof exceeded the "
+                    f"{PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS:.0f}s running-age "
+                    "ceiling without a terminal write"
+                )
+            else:
+                diagnostic_summary = (
+                    "dead-guard [infra]: proof guard process is not live"
+                )
         line = f"stale {row['run_id']} diagnosis={diagnostic_summary}"
         if diagnostics:
             evidence = diagnostics[0].get("evidence")

@@ -2088,7 +2088,10 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
             command=[sys.executable, "-c", "print('active')"],
             cwd=proof_queue.ROOT,
             resource_family="python-tests",
-            contention_key="proof-queue-dx",
+            # Distinct keys per run: at most one RUNNING row may share a
+            # contention key, and this test needs both concurrently running to
+            # prove targeted pruning preserves the unselected sibling.
+            contention_key=f"proof-queue-dx-{run_id}",
             scopes=["tools/proof_queue.py"],
             log_path=log_path,
             summary_json=summary_path,
@@ -6422,3 +6425,447 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
     assert proof_queue._proof_command_policy_error(command) is None
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle / sqlite defects (PID reuse, lock stranding, contention TOCTOU).
+# ---------------------------------------------------------------------------
+
+
+def _insert_running_row(
+    db: Path,
+    tmp_path: Path,
+    *,
+    run_id: str = "active-run",
+    contention_key: str = "python:lifecycle",
+    guard_pid: int,
+    started_at: str | None = None,
+    guard_identity: object = "__auto__",
+) -> None:
+    """Insert a row already in the 'running' state with a guard PID.
+
+    ``guard_identity`` defaults to whatever ``_update_run`` captures for the
+    live ``guard_pid``; pass an explicit value (including None) to override.
+    """
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id=run_id,
+        logical_id="active",
+        reason="lifecycle regression",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key=contention_key,
+        scopes=["tools/proof_queue.py"],
+        log_path=tmp_path / f"{run_id}.log",
+        summary_json=tmp_path / f"{run_id}.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        run_id,
+        status="running",
+        started_at=started_at or proof_queue._utc_now(),
+        guard_pid=guard_pid,
+    )
+    if guard_identity != "__auto__":
+        proof_queue._update_run(conn, run_id, guard_identity=guard_identity)
+
+
+def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Defect 1: a detached runner set status='running',guard_pid=P then died.
+
+    Windows recycled P to an unrelated live process. Bare ``_pid_alive(P)`` is
+    True, so pre-fix prune-stale left the row stuck 'running' forever. The
+    identity recorded at launch no longer matches the live PID, so the reused
+    PID must not count as a live guard and the row must be reclaimed.
+    """
+    db = tmp_path / "proof_queue.sqlite3"
+    live_pid = os.getpid()
+    # Record an identity for the *original* (now-dead) guard that does not match
+    # the live process now owning that PID. This is exactly the state a launch
+    # write leaves after PID reuse.
+    _insert_running_row(
+        db,
+        tmp_path,
+        guard_pid=live_pid,
+        guard_identity=f"{os.name}:{live_pid}:0",
+    )
+    # The PID is genuinely alive (it is our own process); only identity differs.
+    assert proof_queue._pid_alive(live_pid)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "pruned=1" in out
+    assert "reused-guard-pid" in out
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+
+
+def test_prune_stale_reclaims_running_row_past_age_ceiling(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Defect 1 (age ceiling): a live guard PID must not pin a row forever.
+
+    A row whose guard PID is alive but that has been 'running' longer than the
+    wall-clock ceiling is reclaimed regardless of liveness. Pre-fix prune-stale
+    kept any row with a live guard, so a runner that wrote status='running' but
+    never a terminal row stayed stuck indefinitely.
+    """
+    db = tmp_path / "proof_queue.sqlite3"
+    live_pid = os.getpid()
+    _dt = proof_queue.dt
+    ancient_dt = _dt.datetime.now(_dt.UTC).replace(microsecond=0) - _dt.timedelta(
+        seconds=proof_queue.PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS + 60.0
+    )
+    started_at = ancient_dt.isoformat()
+    # Identity matches the live PID, so this is NOT a reuse case: the only
+    # reason to reclaim is the age ceiling.
+    _insert_running_row(
+        db,
+        tmp_path,
+        guard_pid=live_pid,
+        started_at=started_at,
+        guard_identity=proof_queue._process_identity(live_pid),
+    )
+    assert proof_queue._guard_process_live(
+        live_pid, proof_queue._process_identity(live_pid)
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "pruned=1" in out
+    assert "running-age-ceiling" in out
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+
+
+def test_prune_stale_keeps_fresh_running_row_with_matching_identity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Guard: a genuinely live, recent guard with matching identity survives."""
+    db = tmp_path / "proof_queue.sqlite3"
+    live_pid = os.getpid()
+    _insert_running_row(
+        db,
+        tmp_path,
+        guard_pid=live_pid,
+        guard_identity=proof_queue._process_identity(live_pid),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "pruned=0" in out
+    assert _rows(db)[0]["status"] == "running"
+
+
+class _LockingCommitConnection:
+    """A thin ``sqlite3.Connection`` proxy whose ``commit`` fails on a lock.
+
+    ``sqlite3.Connection.commit`` is a C method of an immutable type and cannot
+    be monkeypatched, so we wrap a real connection and control only ``commit``.
+    ``_update_run`` reaches the DB solely through ``execute`` (forwarded) and
+    ``commit`` (throttled here), which is exactly the surface under test.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, fail_times: int) -> None:
+        self._conn = conn
+        self._remaining = fail_times
+        self.commit_calls = 0
+
+    def commit(self) -> None:
+        self.commit_calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise sqlite3.OperationalError("database is locked")
+        self._conn.commit()
+
+    @property
+    def remaining(self) -> int:
+        return self._remaining
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+def test_update_run_retries_terminal_write_when_database_locked(
+    tmp_path: Path,
+) -> None:
+    """Defect 2: the terminal status write must not lose to a transient lock.
+
+    Pre-fix ``_update_run`` did a single ``conn.commit()``; a concurrent writer
+    holding the WAL write lock past the (unset) busy timeout raised
+    'database is locked', which propagated out of the terminal status write and
+    left the row stuck 'running' with the result lost. The write must retry the
+    locked commit and then persist the terminal status.
+    """
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="lock-run",
+        logical_id="active",
+        reason="lock regression",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:lock",
+        scopes=["tools/proof_queue.py"],
+        log_path=tmp_path / "lock.log",
+        summary_json=tmp_path / "lock.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn, "lock-run", status="running", started_at=proof_queue._utc_now()
+    )
+
+    # A writer that holds the lock for the first 3 commit attempts, then
+    # releases it. Without retry the first locked commit strands the row.
+    flaky = _LockingCommitConnection(conn, fail_times=3)
+    proof_queue._update_run(
+        flaky,  # type: ignore[arg-type]
+        "lock-run",
+        status="passed",
+        returncode=0,
+        finished_at=proof_queue._utc_now(),
+        elapsed_s=1.0,
+    )
+
+    assert flaky.remaining == 0  # all simulated locked attempts were consumed
+    assert flaky.commit_calls == 4  # 3 locked + 1 success
+    row = _rows(db)[0]
+    assert row["status"] == "passed"
+    assert row["returncode"] == 0
+
+
+def test_update_run_reraises_persistent_database_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A lock that never clears still surfaces rather than silently vanishing."""
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="stuck-run",
+        logical_id="active",
+        reason="persistent lock",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:stuck",
+        scopes=["tools/proof_queue.py"],
+        log_path=tmp_path / "stuck.log",
+        summary_json=tmp_path / "stuck.memory_guard.json",
+    )
+    monkeypatch.setattr(
+        proof_queue,
+        "PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS",
+        0.0,
+    )
+    # fail_times far larger than the retry budget => the lock never clears.
+    flaky = _LockingCommitConnection(conn, fail_times=10_000)
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        proof_queue._update_run(
+            flaky,  # type: ignore[arg-type]
+            "stuck-run",
+            status="running",
+        )
+    # Exactly the bounded retry budget was attempted, then it surfaced.
+    assert flaky.commit_calls == proof_queue.PROOF_QUEUE_LOCKED_WRITE_RETRIES
+
+
+def test_connect_sets_busy_timeout(tmp_path: Path) -> None:
+    """Defect 2: every connection must set a non-default busy timeout."""
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    (value,) = conn.execute("PRAGMA busy_timeout").fetchone()
+    assert value == proof_queue.PROOF_QUEUE_SQLITE_BUSY_TIMEOUT_MS
+    assert value >= 30_000
+
+
+def test_contention_key_admits_only_one_running_run(tmp_path: Path) -> None:
+    """Defect 3: two runs cannot both be 'running' for one contention key.
+
+    The partial-unique index makes SQLite enforce at-most-one RUNNING run per
+    contention key even when two admissions interleave their check and the
+    status='running' transition. Pre-fix the plain writes let both rows reach
+    'running', so two heavy builds would contend for the resource the key
+    exists to serialize. Multiple QUEUED rows per key stay legal (dependency
+    chains), so only the running->running collision is rejected.
+    """
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id in ("first-active", "second-active"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="admission",
+            command=[sys.executable, "-c", "print('x')"],
+            cwd=proof_queue.ROOT,
+            resource_family="rust",
+            contention_key="cargo:shared-target",
+            scopes=[],
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+    # Two QUEUED rows for the same key are allowed (dependency-chain pattern).
+    queued = [r for r in _rows(db) if r["status"] == "queued"]
+    assert len(queued) == 2
+
+    # The first run transitions to 'running'.
+    proof_queue._update_run(
+        conn, "first-active", status="running", started_at=proof_queue._utc_now()
+    )
+    # A second concurrent transition to 'running' for the same key must be
+    # rejected by the DB itself, independent of any application-level check.
+    with pytest.raises(sqlite3.IntegrityError):
+        proof_queue._update_run(
+            conn, "second-active", status="running", started_at=proof_queue._utc_now()
+        )
+
+    running = [r for r in _rows(db) if r["status"] == "running"]
+    assert len(running) == 1
+    assert running[0]["run_id"] == "first-active"
+
+
+def test_admit_run_atomic_gate_rejects_second_admission(tmp_path: Path) -> None:
+    """Defect 3: the BEGIN IMMEDIATE gate reports the active blocker."""
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    first = proof_queue._admit_run(
+        conn,
+        run_id="gate-first",
+        logical_id="first",
+        reason="first",
+        command=[sys.executable, "-c", "print('first')"],
+        cwd=proof_queue.ROOT,
+        resource_family="rust",
+        contention_key="cargo:gate",
+        scopes=[],
+        log_path=tmp_path / "gate-first.log",
+        summary_json=tmp_path / "gate-first.memory_guard.json",
+    )
+    assert first is None  # admitted
+
+    blocked = proof_queue._admit_run(
+        conn,
+        run_id="gate-second",
+        logical_id="second",
+        reason="second",
+        command=[sys.executable, "-c", "print('second')"],
+        cwd=proof_queue.ROOT,
+        resource_family="rust",
+        contention_key="cargo:gate",
+        scopes=[],
+        log_path=tmp_path / "gate-second.log",
+        summary_json=tmp_path / "gate-second.memory_guard.json",
+    )
+    assert blocked is not None
+    assert [r["run_id"] for r in blocked] == ["gate-first"]
+    # Only the first row exists; the rejected admission left no row behind.
+    assert [r["run_id"] for r in _rows(db)] == ["gate-first"]
+
+
+def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
+    """The partial-unique index must not block the queued->running->done path.
+
+    A single row moving queued -> running -> passed stays legal (same row), and
+    once terminal a fresh admission for the same key succeeds.
+    """
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    assert (
+        proof_queue._admit_run(
+            conn,
+            run_id="cycle-run",
+            logical_id="cycle",
+            reason="cycle",
+            command=[sys.executable, "-c", "print('cycle')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key="python:cycle",
+            scopes=[],
+            log_path=tmp_path / "cycle.log",
+            summary_json=tmp_path / "cycle.memory_guard.json",
+        )
+        is None
+    )
+    # queued -> running (same row, still non-terminal) must be allowed.
+    proof_queue._update_run(
+        conn, "cycle-run", status="running", started_at=proof_queue._utc_now()
+    )
+    # running -> passed (terminal) frees the key.
+    proof_queue._update_run(
+        conn,
+        "cycle-run",
+        status="passed",
+        returncode=0,
+        finished_at=proof_queue._utc_now(),
+    )
+    # A fresh admission for the same key now succeeds.
+    assert (
+        proof_queue._admit_run(
+            conn,
+            run_id="cycle-run-2",
+            logical_id="cycle",
+            reason="cycle again",
+            command=[sys.executable, "-c", "print('cycle2')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key="python:cycle",
+            scopes=[],
+            log_path=tmp_path / "cycle2.log",
+            summary_json=tmp_path / "cycle2.memory_guard.json",
+        )
+        is None
+    )
