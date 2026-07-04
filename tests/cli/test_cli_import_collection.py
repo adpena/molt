@@ -7715,7 +7715,7 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
     }
 
     ops = _frontend_main_ops_for_import_source(
-        "from scipy import ndimage\n"
+        "import scipy.ndimage as ndi\n"
         "from scipy.ndimage import (\n"
         "    distance_transform_edt,\n"
         "    gaussian_filter,\n"
@@ -7725,15 +7725,15 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
         ")\n"
         "mask = 1\n"
         "a = distance_transform_edt(mask)\n"
-        "b = ndimage.distance_transform_edt(mask)\n"
+        "b = ndi.distance_transform_edt(mask)\n"
         "c = gaussian_filter(mask, sigma=1.5)\n"
-        "d = ndimage.gaussian_filter(mask, sigma=2.0)\n"
+        "d = ndi.gaussian_filter(mask, sigma=2.0)\n"
         "e = maximum_filter(mask, size=15)\n"
-        "f = ndimage.maximum_filter(mask, size=17)\n"
+        "f = ndi.maximum_filter(mask, size=17)\n"
         "g = minimum_filter(mask, size=11)\n"
-        "h = ndimage.minimum_filter(mask, size=13)\n"
+        "h = ndi.minimum_filter(mask, size=13)\n"
         "i = label(mask)\n"
-        "j = ndimage.label(mask)\n",
+        "j = ndi.label(mask)\n",
         module_name="field_solve",
         parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
