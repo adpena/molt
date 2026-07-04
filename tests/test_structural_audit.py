@@ -50,6 +50,33 @@ def test_baseline_exists():
     )
 
 
+def test_iter_source_files_prunes_excluded_directories_before_descent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "live.rs").write_text("fn live() {}\n", encoding="utf-8")
+    venv = runtime / ".venv"
+    venv.mkdir()
+    (venv / "ignored.rs").write_text("fn ignored() {}\n", encoding="utf-8")
+
+    real_iterdir = Path.iterdir
+
+    def guarded_iterdir(path: Path):
+        if path == venv:
+            raise AssertionError("structural_audit descended into excluded .venv")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+
+    files = [
+        path.relative_to(tmp_path).as_posix()
+        for path in SA._iter_source_files(tmp_path, (".rs",))
+    ]
+
+    assert files == ["runtime/live.rs"]
+
+
 def test_structural_debt_does_not_exceed_baseline():
     """The CI ratchet, as a pytest. Every metric may only go DOWN."""
     findings = SA.run_all(ROOT)
