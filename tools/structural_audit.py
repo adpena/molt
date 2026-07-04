@@ -146,18 +146,34 @@ def _is_generated(path: Path) -> bool:
     return bool(_GENERATED_FILE_MARKER_RE.search(head))
 
 
+def _iter_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    out: list[Path] = []
+    stack = [base]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = sorted(current.iterdir(), key=lambda path: path.name)
+        except OSError:
+            continue
+        dirs: list[Path] = []
+        for path in entries:
+            if _is_excluded(path, root):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                dirs.append(path)
+            elif path.is_file() and path.suffix in suffixes:
+                out.append(path)
+        stack.extend(reversed(dirs))
+    return out
+
+
 def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     out: list[Path] = []
     for sub in _SOURCE_ROOTS:
         base = root / sub
         if not base.is_dir():
             continue
-        for path in base.rglob("*"):
-            if not path.is_file() or path.suffix not in suffixes:
-                continue
-            if _is_excluded(path, root):
-                continue
-            out.append(path)
+        out.extend(_iter_pruned_files(base, root, suffixes))
     return sorted(out, key=lambda path: path.relative_to(root).as_posix())
 
 
@@ -1473,7 +1489,7 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     ]
     base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
     if base.is_dir():
-        targets.extend(sorted(base.rglob("*.rs")))
+        targets.extend(_iter_pruned_files(base, root, (".rs",)))
 
     findings: list[Finding] = []
     for path in targets:
