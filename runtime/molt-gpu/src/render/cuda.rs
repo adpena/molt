@@ -11,9 +11,8 @@ use crate::ops::PrimitiveOp;
 use crate::render::indexing::{
     IndexDialect, render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype,
 };
-use crate::render::{
-    BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer, detect_fma_pattern,
-};
+use crate::render::source_expr::{self, SourceExprRenderer};
+use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 
 /// CUDA C renderer for all 26 primitive ops.
 pub struct CudaRenderer;
@@ -106,19 +105,19 @@ impl CudaRenderer {
         }
     }
 
-    fn render_src(src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
-        match src {
-            FusedSrc::Buf(buf_idx) => {
-                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-            }
-            FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
-            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-        }
+    fn render_src(&self, src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
+        source_expr::render_src(self, src, kernel, idx_var)
     }
 
     /// Render a single op expression.
-    fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
-        let src = |i: usize| -> String { Self::render_src(&op.srcs()[i], kernel, idx_var) };
+    fn render_op(
+        &self,
+        op: &FusedOp,
+        _op_idx: usize,
+        kernel: &FusedKernel,
+        idx_var: &str,
+    ) -> String {
+        let src = |i: usize| -> String { self.render_src(&op.srcs()[i], kernel, idx_var) };
 
         let dst_type = op.dst_dtype().cuda_type();
 
@@ -167,18 +166,28 @@ impl CudaRenderer {
     /// Detect FMA pattern: ADD(MUL(a, b), c) or ADD(c, MUL(a, b)).
     /// Returns Some((a_expr, b_expr, c_expr)) if the pattern matches.
     fn detect_fma(
+        &self,
         op: &FusedOp,
         op_idx: usize,
         kernel: &FusedKernel,
         idx_var: &str,
     ) -> Option<(String, String, String)> {
-        let pattern = detect_fma_pattern(op, op_idx, kernel, op.dst_dtype().is_float())?;
-        let prior_op = &kernel.ops[pattern.mul_op_idx];
-        Some((
-            Self::render_src(&prior_op.srcs()[0], kernel, idx_var),
-            Self::render_src(&prior_op.srcs()[1], kernel, idx_var),
-            Self::render_src(&op.srcs()[pattern.add_src_pos], kernel, idx_var),
-        ))
+        source_expr::detect_fma(self, op, op_idx, kernel, idx_var, DType::is_float)
+    }
+}
+
+impl SourceExprRenderer for CudaRenderer {
+    fn render_source_buf_read(
+        &self,
+        binding_idx: usize,
+        binding: &crate::render::BufferBinding,
+        idx_var: &str,
+    ) -> String {
+        Self::render_buf_read(binding_idx, binding, idx_var)
+    }
+
+    fn format_source_const(&self, val: f64, dtype: DType) -> String {
+        Self::format_const(val, dtype)
     }
 }
 
@@ -245,10 +254,10 @@ impl Renderer for CudaRenderer {
 
             for (i, op) in kernel.ops.iter().enumerate() {
                 let dtype_str = op.dst_dtype().cuda_type();
-                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel, "eidx") {
+                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel, "eidx") {
                     format!("fmaf({}, {}, {})", a, b, c)
                 } else {
-                    Self::render_op(op, i, kernel, "eidx")
+                    self.render_op(op, i, kernel, "eidx")
                 };
                 writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
             }
@@ -258,10 +267,10 @@ impl Renderer for CudaRenderer {
         } else if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
                 let dtype_str = op.dst_dtype().cuda_type();
-                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel, "gid") {
+                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel, "gid") {
                     format!("fmaf({}, {}, {})", a, b, c)
                 } else {
-                    Self::render_op(op, i, kernel, "gid")
+                    self.render_op(op, i, kernel, "gid")
                 };
                 writeln!(out, "    {} v{} = {};", dtype_str, i, expr).unwrap();
             }
@@ -310,11 +319,11 @@ impl Renderer for CudaRenderer {
                 for i in 0..reduce_idx {
                     let op = &kernel.ops[i];
                     let dtype_str = op.dst_dtype().cuda_type();
-                    let expr = Self::render_op(op, i, kernel, "eidx");
+                    let expr = self.render_op(op, i, kernel, "eidx");
                     writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
                 }
 
-                let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                let src_expr = self.render_src(reduce_src, kernel, "eidx");
                 match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
                         writeln!(out, "        acc += {};", src_expr).unwrap()
@@ -339,7 +348,7 @@ impl Renderer for CudaRenderer {
                 )
                 .unwrap();
                 writeln!(out, "        unsigned int eidx = {};", reduce_index).unwrap();
-                let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                let src_expr = self.render_src(reduce_src, kernel, "eidx");
                 match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
                         writeln!(out, "        acc += {};", src_expr).unwrap()
@@ -364,7 +373,7 @@ impl Renderer for CudaRenderer {
             for i in (reduce_idx + 1)..kernel.ops.len() {
                 let op = &kernel.ops[i];
                 let dtype_str = op.dst_dtype().cuda_type();
-                let expr = Self::render_op(op, i, kernel, "gid");
+                let expr = self.render_op(op, i, kernel, "gid");
                 writeln!(out, "    {} v{} = {};", dtype_str, i, expr).unwrap();
             }
 
