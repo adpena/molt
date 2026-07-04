@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import molt.dx as dx
@@ -443,3 +444,76 @@ def test_dx_project_dx_env_uses_same_key_authority(tmp_path: Path) -> None:
     assert tuple(key for key in DX_ENV_KEYS if key in env)
     assert env["MOLT_EXT_ROOT"] == str(project_root.resolve())
     assert env["SCCACHE_DIR"] == str(project_root.resolve() / ".sccache")
+
+
+def test_default_windows_artifact_roots_selects_only_preferred_label(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # Label-only selection: the APDataStore-labeled volume is the ONLY default
+    # candidate; a non-preferred (legacy E:) volume is EXCLUDED, not merely
+    # ranked behind — the drive-letter-order fallback is deleted, not layered.
+    apdatastore = tmp_path / "apdatastore"
+    legacy = tmp_path / "legacy"
+    apdatastore.mkdir()
+    legacy.mkdir()
+    labels = {apdatastore: "APDataStore", legacy: "BAT00_01"}
+    monkeypatch.setattr(dx, "_windows_drive_roots", lambda: (apdatastore, legacy))
+    monkeypatch.setattr(dx, "_windows_volume_label", lambda root: labels.get(root))
+
+    roots = dx._default_windows_external_artifact_roots()
+
+    assert roots == (apdatastore / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME,)
+
+
+def test_default_toolchain_root_is_sibling_of_artifact_dir(tmp_path: Path) -> None:
+    molt_root = tmp_path / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    assert dx._default_toolchain_root_for_artifact_root(molt_root) == (
+        tmp_path / dx.DEFAULT_TARGET_ROOT_DIRNAME
+    )
+    other = tmp_path / "custom-root"
+    assert dx._default_toolchain_root_for_artifact_root(other) == (
+        other / dx.DEFAULT_TARGET_ROOT_DIRNAME
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive-letter rehoming is Windows-only")
+def test_should_rehome_offvolume_toolchain_root(monkeypatch) -> None:
+    monkeypatch.setattr(dx.os, "name", "nt")
+    assert dx._should_rehome_toolchain_root(r"E:\molt-target", Path(r"D:\Molt"), {})
+    # Same volume as the artifact root: keep it.
+    assert not dx._should_rehome_toolchain_root(r"D:\molt-target", Path(r"D:\Molt"), {})
+    # Explicit operator opt-out preserves an intentional off-volume root.
+    assert not dx._should_rehome_toolchain_root(
+        r"E:\molt-target", Path(r"D:\Molt"), {"MOLT_PRESERVE_TARGET_ROOT": "1"}
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive-letter rehoming is Windows-only")
+def test_canonical_env_rehomes_stale_target_root_and_adds_ruff_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    repo_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(
+        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+    )
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
+
+    env = RunContext(
+        repo_root, session_prefix="test", prefer_external_artifacts=True
+    ).canonical_env(
+        {"MOLT_EXTERNAL_MIN_FREE_GB": "0", "MOLT_TARGET_ROOT": r"E:\molt-target"},
+        create_dirs=True,
+    )
+
+    resolved = external_root.resolve()
+    # A stale off-volume E:\molt-target is rehomed onto the selected artifact
+    # volume's sibling toolchain root — the legacy fallback is not honored.
+    assert env["MOLT_TARGET_ROOT"] == str(
+        resolved.parent / dx.DEFAULT_TARGET_ROOT_DIRNAME
+    )
+    assert env["RUFF_CACHE_DIR"] == str(resolved / ".ruff-cache")
