@@ -285,6 +285,27 @@ def test_python_stub_surface_probe_counts_stubs_and_notimplemented(
     )
 
 
+def test_python_stub_surface_probe_ignores_detector_pattern_literals(
+    tmp_path: Path,
+):
+    tools = tmp_path / "tools"
+    tools.mkdir(parents=True)
+    (tools / "structural_audit.py").write_text(
+        "import re\n"
+        "_INTRINSIC_FIRST_STUB_RE = re.compile(\n"
+        '    r"not fully lowered yet; only an intrinsic-first stub is available|"\n'
+        '    r"intrinsic-first (?:top-level )?stdlib .*stub|"\n'
+        '    r"stub-only for now",\n'
+        "    re.IGNORECASE,\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_python_stub_surfaces(tmp_path)
+
+    assert findings == []
+
+
 def test_rust_stub_surface_probe_counts_live_stubs_not_tests(tmp_path: Path):
     rust = tmp_path / "runtime" / "molt-backend-rust" / "src" / "rust"
     rust.mkdir(parents=True)
