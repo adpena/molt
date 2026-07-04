@@ -869,14 +869,14 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
                             }
                         },
                     };
-                    if !archive.name.is_empty() {
-                        if let Err(e) = std::fs::write(&archive.name, &final_data) {
-                            return raise_exception(
-                                _py,
-                                "OSError",
-                                &format!("cannot write '{0}': {e}", archive.name),
-                            );
-                        }
+                    if !archive.name.is_empty()
+                        && let Err(e) = std::fs::write(&archive.name, &final_data)
+                    {
+                        return raise_exception(
+                            _py,
+                            "OSError",
+                            &format!("cannot write '{0}': {e}", archive.name),
+                        );
                     }
                 }
                 ArchiveMode::Read => {} // nothing to flush
@@ -919,14 +919,15 @@ pub extern "C" fn molt_tarfile_is_tarfile(name_bits: u64) -> u64 {
                     }
                 }
                 // Bzip2 magic.
-                if data.len() >= 3 && &data[0..3] == b"BZh" {
-                    if let Ok(inner) = decompress_bzip2(&data) {
-                        if inner.len() >= 262 {
-                            let magic = &inner[257..263];
-                            return magic == b"ustar\0" || magic == b"ustar ";
-                        }
-                        return inner.len() >= BLOCK_SIZE;
+                if data.len() >= 3
+                    && &data[0..3] == b"BZh"
+                    && let Ok(inner) = decompress_bzip2(&data)
+                {
+                    if inner.len() >= 262 {
+                        let magic = &inner[257..263];
+                        return magic == b"ustar\0" || magic == b"ustar ";
                     }
+                    return inner.len() >= BLOCK_SIZE;
                 }
                 // Raw tar: check that the first block looks like a header
                 // (non-null name and valid checksum structure).
