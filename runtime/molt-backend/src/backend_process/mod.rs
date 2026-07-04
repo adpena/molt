@@ -12,6 +12,10 @@ mod native_batch;
 mod protocol;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib_cache;
+#[cfg(feature = "native-backend")]
+mod shared_stdlib_partition;
+#[cfg(feature = "native-backend")]
+mod shared_stdlib_store;
 
 #[cfg(any(unix, test))]
 pub(crate) use cache::*;
@@ -25,3 +29,7 @@ pub(crate) use native_batch::*;
 pub(crate) use protocol::*;
 #[cfg(feature = "native-backend")]
 pub(crate) use shared_stdlib_cache::*;
+#[cfg(feature = "native-backend")]
+pub(crate) use shared_stdlib_partition::*;
+#[cfg(feature = "native-backend")]
+pub(crate) use shared_stdlib_store::*;
