@@ -32,6 +32,12 @@ pub type PyDescrGetFunc =
 pub type PyDescrSetFunc =
     unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int;
 
+/// `PyGetSetDef` getter: `PyObject *(*getter)(PyObject *self, void *closure)`.
+/// Mirrors CPython `Include/descrobject.h`.
+pub type getter = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> *mut PyObject;
+/// `PyGetSetDef` setter: `int (*setter)(PyObject *self, PyObject *value, void *closure)`.
+pub type setter = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut c_void) -> c_int;
+
 /// Opaque reference-counted object header.
 ///
 /// Every `PyObject*` points to a struct whose first two fields are
@@ -333,6 +339,75 @@ pub struct PyMethodDef {
     pub ml_flags: c_int,
     pub ml_doc: *const c_char,
 }
+
+/// `tp_getset` array entry — computed attribute descriptor definition.
+/// Layout is byte-identical to CPython 3.12 `PyGetSetDef`
+/// (`Include/descrobject.h`): `{name, get, set, doc, closure}`. Static C
+/// extensions (every numpy type with a `tp_getset` table) declare these
+/// statically and rely on `PyType_Ready` to turn each into a `getset_descriptor`
+/// stored in `tp_dict`.
+#[repr(C)]
+pub struct PyGetSetDef {
+    pub name: *const c_char,
+    pub get: Option<getter>,
+    pub set: Option<setter>,
+    pub doc: *const c_char,
+    pub closure: *mut c_void,
+}
+
+unsafe impl Send for PyGetSetDef {}
+unsafe impl Sync for PyGetSetDef {}
+
+/// `tp_members` array entry — struct-member attribute descriptor definition.
+/// Layout is byte-identical to CPython 3.12 `PyMemberDef`
+/// (`Include/descrobject.h`): `{name, type, offset, flags, doc}`.
+#[repr(C)]
+pub struct PyMemberDef {
+    pub name: *const c_char,
+    pub type_: c_int,
+    pub offset: Py_ssize_t,
+    pub flags: c_int,
+    pub doc: *const c_char,
+}
+
+unsafe impl Send for PyMemberDef {}
+unsafe impl Sync for PyMemberDef {}
+
+/// Common descriptor header — CPython `PyDescrObject` (`PyDescr_COMMON`).
+/// Every descriptor (getset, member, method) embeds this as its first field so
+/// `d_type`/`d_name` are readable through a common `PyDescrObject*` view.
+#[repr(C)]
+pub struct PyDescrObject {
+    pub ob_base: PyObject,
+    /// Type the descriptor belongs to (owned reference).
+    pub d_type: *mut PyTypeObject,
+    /// Attribute name as an interned `str` object (owned reference).
+    pub d_name: *mut PyObject,
+    /// Qualified name (unused by the subset numpy needs; kept for layout parity).
+    pub d_qualname: *mut PyObject,
+}
+
+/// `getset_descriptor` object — CPython `PyGetSetDescrObject`. Holds a borrowed
+/// pointer to the caller's static `PyGetSetDef` (which must outlive the type).
+#[repr(C)]
+pub struct PyGetSetDescrObject {
+    pub d_common: PyDescrObject,
+    pub d_getset: *mut PyGetSetDef,
+}
+
+unsafe impl Send for PyGetSetDescrObject {}
+unsafe impl Sync for PyGetSetDescrObject {}
+
+/// `member_descriptor` object — CPython `PyMemberDescrObject`. Holds a borrowed
+/// pointer to the caller's static `PyMemberDef`.
+#[repr(C)]
+pub struct PyMemberDescrObject {
+    pub d_common: PyDescrObject,
+    pub d_member: *mut PyMemberDef,
+}
+
+unsafe impl Send for PyMemberDescrObject {}
+unsafe impl Sync for PyMemberDescrObject {}
 
 /// Module definition — used by `PyModuleDef_Init`.
 #[repr(C)]
