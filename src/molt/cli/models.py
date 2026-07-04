@@ -728,9 +728,7 @@ class _ExternalPackageNativeArtifact:
             "path": str(self.path),
             "manifest_path": str(self.manifest_path),
             "runtime_python_imports": list(self.runtime_python_imports),
-            "runtime_python_import_modules": list(
-                self.runtime_python_import_modules
-            ),
+            "runtime_python_import_modules": list(self.runtime_python_import_modules),
             "extension_sha256": self.extension_sha256,
             "manifest_sha256": self.manifest_sha256,
             "capabilities": list(self.capabilities),
@@ -1117,9 +1115,13 @@ class _ExternalPackageNativeArtifactPlan:
         )
 
     @staticmethod
-    def _name_reaches_provider(requested_name: str, provider_name: str) -> bool:
-        return requested_name == provider_name or requested_name.startswith(
-            provider_name + "."
+    def _requested_import_reaches_provider(
+        requested_name: str, provider_name: str
+    ) -> bool:
+        return (
+            requested_name == provider_name
+            or requested_name.startswith(provider_name + ".")
+            or provider_name.startswith(requested_name + ".")
         )
 
     def with_reachable_imports(
@@ -1145,7 +1147,7 @@ class _ExternalPackageNativeArtifactPlan:
                 *(export.qualified_name for export in artifact.callable_exports),
             )
             if any(
-                self._name_reaches_provider(requested_name, provider_name)
+                self._requested_import_reaches_provider(requested_name, provider_name)
                 for requested_name in requested
                 for provider_name in providers
             ):
