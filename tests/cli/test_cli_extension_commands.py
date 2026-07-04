@@ -2518,6 +2518,133 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     )
 
 
+def _minimal_static_extension_manifest(
+    *,
+    artifact_dir: Path,
+    molt_c_api_version: str,
+    abi_tag: str,
+) -> tuple[dict, Path]:
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__multiarray_umath")
+    artifact_path = artifact_dir / "_multiarray_umath.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "name": "numpy-probe",
+        "version": "0.1.0",
+        "module": "numpy._core._multiarray_umath",
+        "molt_c_api_version": molt_c_api_version,
+        "abi_tag": abi_tag,
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__multiarray_umath",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "numpy/_core/_multiarray_umath.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__multiarray_umath",
+            "init_symbol_owner": "0_multiarray.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "object": "0_multiarray.o",
+                    "source_sha256": extension_sha256,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__multiarray_umath"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    return manifest, artifact_path
+
+
+def test_extension_seal_restamps_stale_abi_to_current_runtime(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    # A root sealed against an older runtime must not propagate its stale ABI
+    # label. Seal is the custody boundary that admits a recompiled artifact into
+    # the current runtime, so it re-stamps molt_c_api_version / abi_tag from the
+    # runtime header authority rather than copying the build-time label through.
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "numpy" / "_core"
+    artifact_dir.mkdir(parents=True)
+    (source_root / "numpy" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    manifest, _artifact = _minimal_static_extension_manifest(
+        artifact_dir=artifact_dir,
+        molt_c_api_version="1",
+        abi_tag="molt_abi1",
+    )
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sealed_root = tmp_path / "sealed"
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(sealed_root),
+        python_export=["numpy"],
+        json_output=True,
+        verbose=False,
+    )
+    assert rc == 0
+    capsys.readouterr()
+
+    expected_major = _default_molt_c_api_version(ROOT).split(".", 1)[0]
+    for manifest_rel in (
+        "extension_manifest.json",
+        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
+    ):
+        sealed_manifest = json.loads(
+            (sealed_root / manifest_rel).read_text(encoding="utf-8")
+        )
+        assert sealed_manifest["molt_c_api_version"] == _CURRENT_MOLT_C_API_VERSION
+        assert sealed_manifest["abi_tag"] == f"molt_abi{expected_major}"
+
+
+def test_extension_seal_fails_closed_on_future_abi(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    # An artifact recorded at a newer major ABI than the current runtime is a
+    # genuine mismatch: seal must refuse to re-stamp it downward and fail closed.
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "numpy" / "_core"
+    artifact_dir.mkdir(parents=True)
+    (source_root / "numpy" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    future_major = int(_default_molt_c_api_version(ROOT).split(".", 1)[0]) + 1
+    manifest, _artifact = _minimal_static_extension_manifest(
+        artifact_dir=artifact_dir,
+        molt_c_api_version=str(future_major),
+        abi_tag=f"molt_abi{future_major}",
+    )
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(tmp_path / "sealed"),
+        python_export=["numpy"],
+        json_output=False,
+        verbose=False,
+    )
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "newer than the current runtime" in captured.err
+
+
 def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
     tmp_path: Path,
     capsys,

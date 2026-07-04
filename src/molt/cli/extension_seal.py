@@ -9,12 +9,15 @@ from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.extension_manifest import (
     ExtensionSupportFile,
+    _default_molt_c_api_version,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
     _manifest_support_file_payloads,
     _validate_extension_manifest,
 )
+from molt.cli.project_roots import _find_molt_root
 from molt.cli.external_native import (
+    _manifest_has_sealed_extension_custody,
     _validate_module_attr_callable_export_custody,
 )
 from molt.cli.file_hashing import _sha256_file
@@ -22,6 +25,7 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
+    source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_source_path,
     source_extension_manifest_required_capsule_imports_by_source,
 )
@@ -314,13 +318,23 @@ def _canonicalize_object_closure_source_capsule_requirements(
     *,
     manifest_path: Path,
 ) -> list[str]:
+    # A re-seal of an already-sealed root deliberately lacks its build-generated
+    # sources; scan the resolvable subset and preserve declared capsules rather
+    # than nullifying, mirroring the build-time admission authority in
+    # external_native._validate_manifest_source_capsule_requirements.
+    allow_missing_sources = _manifest_has_sealed_extension_custody(manifest)
     by_source, errors = source_extension_manifest_required_capsule_imports_by_source(
         manifest,
         manifest_path=manifest_path,
+        allow_missing_sources=allow_missing_sources,
     )
-    if errors:
+    if errors and not (
+        allow_missing_sources
+        and source_extension_manifest_errors_are_missing_sources(errors)
+    ):
         return errors
-    assert by_source is not None
+    if by_source is None:
+        return errors
     if not by_source:
         return []
     object_closure = manifest.get("object_closure")
@@ -351,7 +365,10 @@ def _canonicalize_object_closure_source_capsule_requirements(
                 else None
             ),
         )
-        if source_errors:
+        if source_errors and not (
+            allow_missing_sources
+            and source_extension_manifest_errors_are_missing_sources(source_errors)
+        ):
             return source_errors
         if source_path is None:
             continue
@@ -361,6 +378,50 @@ def _canonicalize_object_closure_source_capsule_requirements(
         item_capsules = _string_set(item.get("required_capsules"))
         item_capsules.update(imports_by_capsule)
         item["required_capsules"] = sorted(item_capsules)
+    return []
+
+
+def _restamp_current_runtime_abi(
+    sealed_manifest: dict[str, Any],
+    *,
+    molt_root: Path,
+) -> list[str]:
+    """Stamp the sealed manifest with the current runtime's C-API version.
+
+    Seal is the custody boundary that admits a recompiled native artifact into
+    the current runtime. The runtime header ``MOLT_C_API_VERSION`` is the single
+    authority for the ABI the artifact will link against, so the sealed manifest
+    must carry that version rather than propagating a stale build-time label.
+
+    The Molt extension ABI is a monotonically forward-compatible stable core
+    (opaque ``MoltHandle`` object model plus additively-versioned ``molt_*``
+    runtime symbols), so an artifact recorded at an older major ABI is
+    admissible under a newer runtime. An artifact recorded at a *newer* major
+    ABI than the current runtime is a genuine mismatch and fails closed.
+    """
+    current = _default_molt_c_api_version(molt_root)
+    try:
+        current_major = int(current.split(".", 1)[0])
+    except (ValueError, IndexError):
+        return [f"cannot determine current runtime C-API major from {current!r}"]
+    manifest_abi = sealed_manifest.get("molt_c_api_version")
+    if isinstance(manifest_abi, str) and manifest_abi.strip():
+        try:
+            manifest_major = int(manifest_abi.strip().split(".", 1)[0])
+        except ValueError:
+            return [
+                "cannot determine manifest C-API major from "
+                f"{manifest_abi!r} before sealing to current runtime ABI"
+            ]
+        if manifest_major > current_major:
+            return [
+                "extension manifest requires C-API major "
+                f"{manifest_major}, newer than the current runtime "
+                f"{current_major}; rebuild the extension against this runtime "
+                "before sealing"
+            ]
+    sealed_manifest["molt_c_api_version"] = current
+    sealed_manifest["abi_tag"] = f"molt_abi{current_major}"
     return []
 
 
@@ -524,6 +585,16 @@ def extension_seal(
         )
 
     sealed_manifest = dict(manifest)
+    abi_restamp_errors = _restamp_current_runtime_abi(
+        sealed_manifest,
+        molt_root=_find_molt_root(manifest_path.parent, Path.cwd()),
+    )
+    if abi_restamp_errors:
+        return _fail(
+            "; ".join(abi_restamp_errors),
+            json_output,
+            command="extension-seal",
+        )
     _canonicalize_object_closure_c_api_requirements(sealed_manifest)
     source_capsule_errors = _canonicalize_object_closure_source_capsule_requirements(
         sealed_manifest,
