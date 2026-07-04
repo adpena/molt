@@ -82,6 +82,34 @@ class CallReductionMixin(_MixinBase):
         if tuple_target_names is not None:
             self.comp_shadow_locals.update(tuple_target_names)
 
+        # Counted-range fast path: when the sole `for` clause iterates a
+        # `range(...)` with a simple `Name` target and no `if` filters, lower
+        # the loop through the SAME counted-index shape a top-level
+        # `for x in range(...)` loop uses so the loop variable is an int-typed
+        # counted value (`ScalarKind::Int` -> `RawI64Safe` in
+        # `representation_plan`) and `x*x` plus the accumulator raw-lane instead
+        # of routing every element through the boxed `iter_next` protocol.
+        # Int-bounded constant-step ranges take the pure `loop_index_start` lane
+        # (no range object); every other lowerable `range(...)` counts over a
+        # materialized range object via `INDEX`, exactly as `_emit_index_loop`
+        # does for the statement form. `if`-filtered, tuple-target, and
+        # non-`range` generators fall through to the generic iter path below.
+        counted_range = None
+        if not comp.ifs and tuple_target_names is None:
+            counted_range = self._counted_range_args_for_genexpr(comp.iter)
+
+        if counted_range is not None:
+            return self._finish_counted_range_sum_genexpr(
+                genexpr,
+                target_name,
+                user_target_names,
+                counted_range,
+                saved_locals,
+                saved_boxed,
+                saved_boxed_hints,
+                outer_comp_shadow_locals,
+            )
+
         iterable_val = self.visit(comp.iter)
         if iterable_val is None:
             self.comp_shadow_locals = outer_comp_shadow_locals
@@ -216,6 +244,40 @@ class CallReductionMixin(_MixinBase):
         finally:
             self.current_ops = saved_ops
 
+        return self._finish_sum_genexpr_accumulator(
+            body_ops,
+            acc_slot=acc_slot,
+            seen_slot=seen_slot,
+            acc_is_float=acc_is_float,
+            acc_load_hint=acc_load_hint,
+            user_target_names=user_target_names,
+            saved_boxed=saved_boxed,
+            saved_boxed_hints=saved_boxed_hints,
+            outer_comp_shadow_locals=outer_comp_shadow_locals,
+        )
+
+    def _finish_sum_genexpr_accumulator(
+        self,
+        body_ops: list[MoltOp],
+        *,
+        acc_slot: str,
+        seen_slot: str,
+        acc_is_float: bool,
+        acc_load_hint: str,
+        user_target_names: list[str],
+        saved_boxed: dict[str, MoltValue | None],
+        saved_boxed_hints: dict[str, str | None],
+        outer_comp_shadow_locals: set[str],
+    ) -> MoltValue:
+        """Seed the accumulator, splice the buffered loop, and yield the result.
+
+        Shared preheader/epilogue for both the generic iter-protocol lowering
+        and the counted-range fast path: the accumulator seed's dynamic type
+        must be chosen from the ALREADY-visited element type (carried in
+        ``acc_is_float``) and must physically precede ``loop_start`` so the
+        loop-carried ``store_var``/``load_var`` phi is type-uniform. ``body_ops``
+        is the buffered loop body captured with that constraint in mind.
+        """
         # Preheader: seed the accumulator slot with the element-matched zero.
         if acc_is_float:
             seed_val = MoltValue(self.next_var(), type_hint="float")
@@ -271,6 +333,208 @@ class CallReductionMixin(_MixinBase):
                 self.boxed_local_hints.pop(name, None)
         self.comp_shadow_locals = outer_comp_shadow_locals
         return result
+
+    def _counted_range_args_for_genexpr(
+        self, iter_node: ast.expr
+    ) -> tuple[MoltValue, MoltValue, MoltValue, int | None] | None:
+        """Return counted-range loop args for a `range(...)` genexpr iterable.
+
+        Yields ``(start, stop, step, step_const)`` when ``iter_node`` is a
+        ``range(...)`` call whose args lower to integer carriers. ``step_const``
+        is the compile-time-known integer step when the whole call is
+        ``lowerable`` (all bounds int-typed) and the step is a nonzero constant
+        — the precondition for the pure ``loop_index_start`` counted-index shape
+        (no range object). Otherwise ``step_const`` is ``None``: the loop still
+        counts over a materialized ``range`` object via ``INDEX`` at a counted
+        index (an int-typed element that raw-lanes), delegating every range
+        semantic — empty ranges, negative/zero step (``ValueError``),
+        start/stop/step math — to the runtime range object, exactly as a
+        top-level ``for x in range(...)`` loop does through ``_emit_index_loop``.
+
+        Returns ``None`` (fall back to the generic iter-protocol path) only for
+        a non-``range`` iterable. ``start``/``stop``/``step`` carrier CONSTs are
+        emitted into the current (preheader) op stream as a side effect, exactly
+        as the top-level ``for``-loop range lowering parses its args.
+        """
+        range_args = self._parse_range_call(iter_node)
+        if range_args is None:
+            return None
+        start_val, stop_val, step_val, lowerable = range_args
+        step_const: int | None = None
+        if lowerable:
+            const = self.const_ints.get(step_val.name)
+            if const is not None and const != 0:
+                step_const = const
+        return start_val, stop_val, step_val, step_const
+
+    def _finish_counted_range_sum_genexpr(
+        self,
+        genexpr: ast.GeneratorExp | ast.ListComp,
+        target_name: str,
+        user_target_names: list[str],
+        counted_range: tuple[MoltValue, MoltValue, MoltValue, int | None],
+        saved_locals: dict[str, MoltValue | None],
+        saved_boxed: dict[str, MoltValue | None],
+        saved_boxed_hints: dict[str, str | None],
+        outer_comp_shadow_locals: set[str],
+    ) -> MoltValue:
+        """Lower `sum(<elt> for x in range(...))` through a counted-index loop.
+
+        The loop variable ``x`` is an int-typed counted index — either the
+        ``loop_index_start`` result directly (pure counted lane, when the step
+        is a compile-time-known nonzero constant over int bounds) or ``INDEX``
+        into a materialized ``range`` object at a counted position (the generic
+        range lane, mirroring the top-level ``for``-loop ``_emit_index_loop``).
+        Either way ``x`` carries ``ScalarKind::Int``, so the element expression
+        and the ``load_var``/``add``/``store_var`` accumulator raw-lane. The
+        empty-range result is the accumulator seed (int ``0``, matching
+        ``sum(range(0)) == 0``); a float element seeds ``0.0`` with a ``seen``
+        flag so an empty range still yields int ``0`` per CPython.
+        """
+        start, stop, step, step_const = counted_range
+
+        # The generic range lane materializes the range object in the preheader
+        # before the loop is buffered. RANGE_NEW faithfully raises ValueError on
+        # a zero step (`range() arg 3 must not be zero`); route that pending
+        # exception to the function handler IMMEDIATELY — before LEN and the
+        # loop — so the error surfaces exactly as CPython's `range(...)` call
+        # does, never after a spurious iteration over an invalid range.
+        range_obj: MoltValue | None = None
+        if step_const is None:
+            range_obj = self._emit_range_obj_from_args(start, stop, step)
+            self._emit_raise_if_pending()
+            length = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LEN", args=[range_obj], result=length))
+            zero = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+            one = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one))
+
+        acc_slot = f"__molt_sum_acc_{self.next_var()}"
+        seen_slot = f"__molt_sum_seen_{self.next_var()}"
+
+        # Buffer the loop body so the visited element's true result type selects
+        # the accumulator seed type BEFORE the preheader seed is emitted (the
+        # seed must physically precede loop_start for a type-uniform phi). The
+        # range preheader ops (arg CONSTs, RANGE_NEW/LEN) were already emitted
+        # above; only the loop itself is buffered here.
+        saved_ops = self.current_ops
+        body_ops: list[MoltOp] = []
+        self.current_ops = body_ops
+        acc_is_float = False
+        acc_load_hint = "int"
+        try:
+            with self._suppress_check_exception(emit_on_exit=False):
+                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+                idx = MoltValue(self.next_var(), type_hint="int")
+                if step_const is not None:
+                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
+                    cond = MoltValue(self.next_var(), type_hint="bool")
+                    if step_const > 0:
+                        self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
+                    else:
+                        self.emit(MoltOp(kind="LT", args=[stop, idx], result=cond))
+                    item = idx
+                else:
+                    assert range_obj is not None
+                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
+                    cond = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_FALSE",
+                        args=[cond],
+                        result=MoltValue("none"),
+                    )
+                )
+                if step_const is None:
+                    assert range_obj is not None
+                    item = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="INDEX", args=[range_obj, idx], result=item))
+            # Bind the comprehension target to the int-typed counted value. `x`
+            # is a raw i64 (loop_index_start result, or an int-hinted INDEX into
+            # the range), so the element expression and accumulator raw-lane.
+            self.locals[target_name] = item
+            self._store_comprehension_local_value(target_name, item)
+            # `range_loop_stack` carries the (index, step) pair the top-level
+            # range loop publishes, keeping the counted-loop optimizer facts
+            # (e.g. `range(len(seq))` index reuse) identical to the statement
+            # form while the element expression is visited. The generic lane
+            # advances the index by 1 (it counts positions into the range), the
+            # pure lane by the range step.
+            self.range_loop_stack.append((idx, step if step_const is not None else one))
+            try:
+                value = self.visit(genexpr.elt)
+            finally:
+                self.range_loop_stack.pop()
+            if value is None:
+                raise NotImplementedError("Unsupported sum generator expression")
+
+            # Accumulator result type, relative to an int-0 seed.
+            int_seed_probe = MoltValue("", type_hint="int")
+            acc_hint = self._sum_add_result_hint(int_seed_probe, cast(MoltValue, value))
+            acc_is_float = acc_hint == "float"
+            acc_load_hint = acc_hint if acc_hint in {"int", "float"} else "Any"
+
+            acc_val = MoltValue(self.next_var(), type_hint=acc_load_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=acc_val,
+                    metadata={"var": acc_slot},
+                )
+            )
+            acc_next = MoltValue(self.next_var(), type_hint=acc_hint)
+            self.emit(MoltOp(kind="ADD", args=[acc_val, value], result=acc_next))
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[acc_next],
+                    result=MoltValue("none"),
+                    metadata={"var": acc_slot},
+                )
+            )
+            if acc_is_float:
+                seen_true = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=seen_true))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_VAR",
+                        args=[seen_true],
+                        result=MoltValue("none"),
+                        metadata={"var": seen_slot},
+                    )
+                )
+            for name in user_target_names:
+                prior = saved_locals.get(name)
+                if prior is not None:
+                    self.locals[name] = prior
+                else:
+                    self.locals.pop(name, None)
+            with self._suppress_check_exception(emit_on_exit=False):
+                advance = step if step_const is not None else one
+                next_idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx, advance], result=next_idx))
+                self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+                self.emit(
+                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        finally:
+            self.current_ops = saved_ops
+
+        return self._finish_sum_genexpr_accumulator(
+            body_ops,
+            acc_slot=acc_slot,
+            seen_slot=seen_slot,
+            acc_is_float=acc_is_float,
+            acc_load_hint=acc_load_hint,
+            user_target_names=user_target_names,
+            saved_boxed=saved_boxed,
+            saved_boxed_hints=saved_boxed_hints,
+            outer_comp_shadow_locals=outer_comp_shadow_locals,
+        )
 
     def _emit_sum_float_result_with_empty_int(
         self, acc_slot: str, seen_slot: str
