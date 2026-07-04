@@ -180,6 +180,7 @@ fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
     ))
 }
 
+mod arith_codegen_snapshot;
 mod cleanup;
 mod codegen_regressions;
 mod compile_pipeline;
