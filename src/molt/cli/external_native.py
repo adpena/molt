@@ -1143,25 +1143,34 @@ def _validate_external_package_native_artifact(
     abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
     provided_capsules = _manifest_str_tuple(manifest, "provided_capsules")
     required_capsules = _manifest_object_closure_required_capsules(manifest)
-    errors.extend(
-        f"{package}: {error}"
-        for error in _validate_manifest_source_capsule_requirements(
-            manifest,
-            manifest_path=manifest_path,
-        )
+    capsule_requirement_errors = _validate_manifest_source_capsule_requirements(
+        manifest,
+        manifest_path=manifest_path,
     )
-    runtime_python_imports, runtime_python_import_errors = (
-        source_extension_manifest_runtime_python_imports(
-            manifest,
-            manifest_path=manifest_path,
+    errors.extend(f"{package}: {error}" for error in capsule_requirement_errors)
+    if capsule_requirement_errors:
+        # The capsule-requirement check is the single authority for manifest
+        # source-path resolution and checksum integrity. When it has already
+        # rejected the source set, the runtime-import scan below would only
+        # re-derive (and re-report) the identical source-resolution failure, so
+        # skip it: the artifact is rejected regardless and its runtime imports
+        # are unused once errors are present.
+        runtime_python_imports: tuple[str, ...] = ()
+    else:
+        runtime_python_imports, runtime_python_import_errors = (
+            source_extension_manifest_runtime_python_imports(
+                manifest,
+                manifest_path=manifest_path,
+            )
         )
-    )
-    if runtime_python_import_errors and not (
-        source_extension_manifest_errors_are_missing_sources(
-            runtime_python_import_errors
-        )
-    ):
-        errors.extend(f"{package}: {error}" for error in runtime_python_import_errors)
+        if runtime_python_import_errors and not (
+            source_extension_manifest_errors_are_missing_sources(
+                runtime_python_import_errors
+            )
+        ):
+            errors.extend(
+                f"{package}: {error}" for error in runtime_python_import_errors
+            )
     python_exports = _manifest_dotted_name_tuple(
         manifest,
         "python_exports",

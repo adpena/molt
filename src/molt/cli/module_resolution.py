@@ -229,15 +229,19 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
     return _resolve_module_path_parts(tuple(module_name.split(".")), roots)
 
 
+def _case_exact_dir_entries_fresh(dir_text: str) -> frozenset[str]:
+    try:
+        return frozenset(entry.name for entry in os.scandir(dir_text))
+    except OSError:
+        return frozenset()
+
+
 @functools.lru_cache(maxsize=65536)
 def _case_exact_dir_entries_cached(
     dir_text: str, mtime_ns: int, size: int
 ) -> frozenset[str]:
     del mtime_ns, size
-    try:
-        return frozenset(entry.name for entry in os.scandir(dir_text))
-    except OSError:
-        return frozenset()
+    return _case_exact_dir_entries_fresh(dir_text)
 
 
 def _case_exact_dir_entries(dir_text: str) -> frozenset[str]:
@@ -254,7 +258,19 @@ def _case_exact_file_under(root_text: str, rel_parts: tuple[str, ...]) -> bool:
     current = root_text
     for part in rel_parts:
         if part not in _case_exact_dir_entries(current):
-            return False
+            # The stat-keyed listing cache is invalidated on (mtime, size),
+            # which is unsound on filesystems whose directory metadata does not
+            # advance when an entry is added within the timestamp resolution
+            # (Windows/NTFS reports directory size 0 and coarse mtime). A stale
+            # empty/partial listing must never cause a freshly written module or
+            # manifest to be reported absent, so re-verify a miss against the
+            # live directory before failing. A genuine absence costs one extra
+            # stat; a stale-cache miss is corrected from a fresh scan.
+            child = os.path.join(current, part)
+            if not os.path.exists(child):
+                return False
+            if part not in _case_exact_dir_entries_fresh(current):
+                return False
         current = os.path.join(current, part)
     return os.path.isfile(current)
 
