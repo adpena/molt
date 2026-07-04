@@ -502,6 +502,65 @@ def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
     assert invoke_op["source_line"] == 2
 
 
+def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_ffi() -> (
+    None
+):
+    """Pin the exact Pact Kernel A witness dispatch form.
+
+    ``collab/pact/pact_witness_kernel/field_solve.py`` imports the SciPy ndimage
+    entry points with ``from scipy.ndimage import distance_transform_edt`` and then
+    calls the *bare* name ``distance_transform_edt(inside)``. The sealed
+    ``scipy.ndimage`` extension publishes that entry as a ``module_attr`` callable
+    export with the ``molt.object_call_v1`` ABI (provider ``scipy.ndimage._morphology``).
+    The bare-import call form must route through the native callable export the same
+    way the ``ndi.distance_transform_edt(...)`` attribute form does; otherwise the
+    exit-criterion witness fails closed with a non-allowlisted-function diagnostic at
+    ``molt build``.
+    """
+    gen = SimpleTIRGenerator(
+        known_modules={"scipy", "scipy.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "scipy.ndimage.distance_transform_edt": {
+                "module": "scipy.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "module_attr",
+                "abi": "molt.object_call_v1",
+            }
+        },
+        fallback_policy="bridge",
+    )
+
+    gen.visit(
+        ast.parse(
+            "from scipy.ndimage import distance_transform_edt\n"
+            "value = distance_transform_edt(inside)\n"
+        )
+    )
+    ir = gen.to_json()
+    invoke_ops = [
+        op for fn in ir["functions"] for op in fn["ops"] if op["kind"] == "invoke_ffi"
+    ]
+
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    # module_attr dispatch loads the module attribute handle plus the payload arg.
+    assert len(invoke_op["args"]) == 2
+    assert invoke_op["native_callable_export"] == (
+        "scipy.ndimage.distance_transform_edt"
+    )
+    assert invoke_op["native_callable_binding"] == "module_attr"
+    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
+    assert "native_callable_symbol" not in invoke_op
+    assert invoke_op["source_line"] == 2
+    # The witness call must never degrade to a dynamic bound/bridge call.
+    assert not any(
+        op["kind"] == "call_bind"
+        for fn in ir["functions"]
+        for op in fn["ops"]
+    )
+
+
 def _molt_main_ops(src: str) -> list[dict]:
     ir = compile_to_tir(src)
     main = next(fn for fn in ir["functions"] if fn.get("name") == "molt_main")
