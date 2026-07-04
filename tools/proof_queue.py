@@ -1666,7 +1666,7 @@ def _git_snapshot(cwd: Path) -> dict[str, object]:
     head = run_git("rev-parse", "HEAD")
     if head.returncode != 0:
         return {"available": False}
-    status = run_git("status", "--short")
+    status = run_git("status", "--short", "--untracked-files=all")
     status_lines = status.stdout.splitlines() if status.returncode == 0 else []
     filtered_status, ignored_status = filter_status_lines(
         status_lines,

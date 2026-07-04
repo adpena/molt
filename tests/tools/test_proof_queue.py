@@ -23,6 +23,7 @@ _TEST_GIT_SNAPSHOT = {
 }
 _REAL_GIT_SNAPSHOT_TESTS = {
     "test_proof_queue_git_snapshot_ignores_generated_wasm_checksums",
+    "test_proof_queue_git_snapshot_expands_untracked_directories",
 }
 
 
@@ -199,6 +200,39 @@ def test_proof_queue_git_snapshot_ignores_generated_wasm_checksums(
     snapshot = proof_queue._git_snapshot(tmp_path)
     assert snapshot["dirty"] is True
     assert any("src/app.py" in line for line in snapshot["status"])
+
+
+def test_proof_queue_git_snapshot_expands_untracked_directories(
+    tmp_path: Path,
+) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test User")
+    (tmp_path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "init")
+
+    split_dir = tmp_path / "src" / "split"
+    split_dir.mkdir(parents=True)
+    (split_dir / "mod.rs").write_text("mod child;\n", encoding="utf-8")
+    (split_dir / "child.rs").write_text("fn child() {}\n", encoding="utf-8")
+
+    snapshot = proof_queue._git_snapshot(tmp_path)
+
+    assert snapshot["dirty"] is True
+    assert "?? src/split/" not in snapshot["status"]
+    assert any("src/split/mod.rs" in line for line in snapshot["status"])
+    assert any("src/split/child.rs" in line for line in snapshot["status"])
 
 
 def test_proof_queue_exec_records_passed_run(
