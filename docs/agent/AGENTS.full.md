@@ -621,7 +621,7 @@ Read these first instead of rediscovering project structure:
   selected artifact root. Default Cargo output is session-scoped as
   `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
-- DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). Windows defaults probe non-`C:` drive roots (`D:\Molt`, `E:\Molt`, ...); POSIX defaults are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
+- DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). Windows defaults probe non-`C:` drive roots and prefer the volume labeled `APDataStore` (`D:\Molt` on this workstation, the dedicated artifact SSD) ahead of other drives (`E:\Molt`, legacy) by volume label; POSIX defaults are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
 - `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` is an explicit emergency override for
   developer machines only. Do not set it in normal agent work, CI, proof lanes,
   or benchmark runs.
@@ -646,7 +646,12 @@ Read these first instead of rediscovering project structure:
 - Branches and worktrees are allowed when they accelerate non-colliding
   implementation, recovery, or swarm work. Name them clearly, keep them based on
   current `main`, and converge useful changes back without preserving legacy
-  compatibility lanes.
+  compatibility lanes. On this Windows workstation place maintainer/agent
+  worktrees under `D:\Molt\worktrees` (APDataStore, the fast dedicated artifact
+  SSD), never `E:\Molt\worktrees` (legacy/contended) or `C:` (near-full).
+  APDataStore is exFAT and records no ownership, so after `git worktree add` run
+  `git config --global --add safe.directory <worktree-path>` or git aborts with
+  "detected dubious ownership".
 
 ## Crash Recovery Structural Stability Mode (Non-Negotiable)
 - This mode stabilizes the control plane whenever Codex, Claude, the desktop
