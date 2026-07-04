@@ -13,6 +13,7 @@ pub mod msl;
 #[cfg(feature = "metal4")]
 pub mod msl4;
 pub mod opencl;
+pub(crate) mod source_expr;
 pub mod wgsl;
 
 use crate::dtype::DType;
