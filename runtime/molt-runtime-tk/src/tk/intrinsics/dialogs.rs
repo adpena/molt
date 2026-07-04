@@ -1,6 +1,8 @@
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::super::args::clear_last_error;
 use super::super::args::{
-    clear_last_error, get_string_arg, get_string_arg_allow_none, parse_optional_f64_arg,
-    parse_optional_i64_arg, raise_tcl_for_handle,
+    get_string_arg, get_string_arg_allow_none, parse_optional_f64_arg, parse_optional_i64_arg,
+    raise_tcl_for_handle,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::callbacks::next_after_token;

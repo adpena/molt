@@ -18,6 +18,7 @@ use super::super::state::{
 use super::super::tcl::TclObj;
 use crate::bridge::{dec_ref_bits, inc_ref_bits, is_truthy, raise_exception_u64, to_i64};
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
+use std::collections::HashSet;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tk_after(app_bits: u64, delay_ms_bits: u64, callback_bits: u64) -> u64 {

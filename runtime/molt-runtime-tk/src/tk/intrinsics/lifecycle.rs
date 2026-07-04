@@ -9,13 +9,14 @@ use super::super::native::{build_native_tk_app, eval_tcl_without_gil, option_use
 use super::super::parsing::{
     alloc_tuple_bits, alloc_tuple_from_strings, parse_bool_text, parse_tcl_script_commands,
 };
+#[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
+use super::super::state::TkAppState;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::state::raise_tcl_error;
 use super::super::state::{
-    TK_DONT_WAIT_FLAG, TkAppState, TkOperation, alloc_string_bits, app_mut_from_registry,
-    app_tcl_error_locked, clear_widget_refs, drop_app_state_refs, parse_app_handle,
-    raise_invalid_handle_error, require_tk_app_new, require_tk_operation, tk_gate_state,
-    tk_registry,
+    TK_DONT_WAIT_FLAG, TkOperation, alloc_string_bits, app_mut_from_registry, app_tcl_error_locked,
+    clear_widget_refs, drop_app_state_refs, parse_app_handle, raise_invalid_handle_error,
+    require_tk_app_new, require_tk_operation, tk_gate_state, tk_registry,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::tcl::TclObj;
