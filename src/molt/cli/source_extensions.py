@@ -1676,14 +1676,35 @@ def source_extension_manifest_required_capsule_imports_by_source(
     manifest: Mapping[str, Any],
     *,
     manifest_path: Path,
+    allow_missing_sources: bool = False,
 ) -> tuple[dict[Path, dict[str, tuple[str, ...]]] | None, list[str]]:
+    """Map each resolvable manifest source to its required capsule imports.
+
+    ``allow_missing_sources`` mirrors the source-path resolver: a sealed root
+    deliberately omits build-generated sources, so a re-derivation over an
+    already-sealed manifest scans the resolvable subset and surfaces the missing
+    entries as diagnostics rather than nullifying the capsule scan. Any
+    non-missing error class still nullifies.
+    """
     sources, source_errors = _source_extension_manifest_source_paths(
         manifest,
         manifest_path=manifest_path,
+        allow_missing_sources=allow_missing_sources,
     )
-    if source_errors:
+    non_missing_errors = [
+        error
+        for error in source_errors
+        if not error.startswith(_SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX)
+    ]
+    if non_missing_errors:
         return None, source_errors
-    assert sources is not None
+    if sources is None:
+        return None, source_errors
+    missing_diagnostics = [
+        error
+        for error in source_errors
+        if error.startswith(_SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX)
+    ]
     by_source: dict[Path, dict[str, tuple[str, ...]]] = {}
     for source_path in sources:
         try:
@@ -1696,7 +1717,7 @@ def source_extension_manifest_required_capsule_imports_by_source(
         required = source_extension_required_capsule_imports(source_text)
         if required:
             by_source[source_path] = required
-    return by_source, []
+    return by_source, missing_diagnostics
 
 
 def source_extension_manifest_runtime_python_imports(
