@@ -5,6 +5,7 @@ use super::super::callbacks::{
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::dialogs::app_interp_eval_list;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::native::{register_tcl_callback_proc, unregister_tcl_callback_proc};
 use super::super::state::{
     TK_FILE_EVENT_EXCEPTION, TK_FILE_EVENT_READABLE, TK_FILE_EVENT_WRITABLE, TkFileHandlerCommand,

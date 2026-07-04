@@ -7,7 +7,9 @@ use super::super::callbacks::{
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::native::eval_tcl_without_gil;
-use super::super::native::{register_tcl_callback_proc, unregister_tcl_callback_proc};
+use super::super::native::register_tcl_callback_proc;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+use super::super::native::unregister_tcl_callback_proc;
 #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
 use super::super::state::TkEvent;
 use super::super::state::{

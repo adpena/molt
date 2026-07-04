@@ -15,6 +15,9 @@ impl WasiSysroot {
         self.include_dir.as_deref()
     }
 
+    // Used by molt-runtime/build.rs; dead in the molt-cpython-abi build script
+    // that also `include!`s this shared module.
+    #[allow(dead_code)]
     pub fn lib_dir(&self, preferred_target: &str) -> PathBuf {
         self.lib_dir
             .clone()
@@ -78,10 +81,10 @@ fn normalize_wasi_sysroot(path: PathBuf) -> Option<WasiSysroot> {
         return Some(layout);
     }
     let mut roots = vec![path.clone()];
-    if path.file_name().and_then(|name| name.to_str()) == Some("include") {
-        if let Some(parent) = path.parent() {
-            roots.push(parent.to_path_buf());
-        }
+    if path.file_name().and_then(|name| name.to_str()) == Some("include")
+        && let Some(parent) = path.parent()
+    {
+        roots.push(parent.to_path_buf());
     }
     for root in roots {
         for target in WASI_TARGET_INCLUDE_DIRS {
