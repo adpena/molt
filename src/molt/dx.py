@@ -19,12 +19,14 @@ CANONICAL_ROOT_ENV_KEYS = (
     "MOLT_EXT_ROOT",
     "CARGO_TARGET_DIR",
     "MOLT_DIFF_CARGO_TARGET_DIR",
+    "MOLT_TARGET_ROOT",
     "MOLT_CACHE",
     "MOLT_DIFF_ROOT",
     "MOLT_DIFF_TMPDIR",
     "UV_CACHE_DIR",
     "UV_PROJECT_ENVIRONMENT",
     "PIP_CACHE_DIR",
+    "RUFF_CACHE_DIR",
     "PYTHONPYCACHEPREFIX",
     "TMPDIR",
     "TMP",
@@ -50,6 +52,16 @@ DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/APDataStore/Molt",
 )
 DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME = "Molt"
+# The maintainer/agent artifact volume is selected by VOLUME LABEL, never by
+# drive-letter order — the legacy letter-order scan silently picked E:\Molt
+# (the contended legacy drive). There is exactly one preferred label here; the
+# explicit MOLT_EXTERNAL_ARTIFACT_ROOTS override is the escape hatch for any
+# other volume. Add labels here rather than reintroducing a letter fallback.
+DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS = ("APDataStore",)
+# Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the selected
+# artifact volume so MOLT_TARGET_ROOT follows the one root authority instead of
+# stranding a legacy E:\molt-target.
+DEFAULT_TARGET_ROOT_DIRNAME = "molt-target"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
@@ -181,12 +193,100 @@ def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]
 
 
 def _default_windows_external_artifact_roots() -> tuple[Path, ...]:
+    """Artifact roots on volumes whose LABEL is in the preferred set.
+
+    Selection is by volume label only. The legacy drive-letter-order scan is
+    deleted: it silently returned ``E:\\Molt`` (the contended legacy volume)
+    ahead of the intended APDataStore SSD whenever the labels went unchecked. A
+    volume without a preferred label is not a default candidate; attach the
+    APDataStore volume or set MOLT_EXTERNAL_ARTIFACT_ROOTS explicitly.
+    """
+    preferred_labels = {
+        label.casefold() for label in DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS
+    }
+    roots: list[Path] = []
+    for drive_root in _windows_drive_roots():
+        label = _windows_volume_label(drive_root)
+        if label is not None and label.casefold() in preferred_labels:
+            roots.append(drive_root / DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME)
+    return _dedupe_paths(roots)
+
+
+def _windows_drive_roots() -> tuple[Path, ...]:
     roots: list[Path] = []
     for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
         drive_root = Path(f"{letter}:\\")
         if drive_root.exists():
-            roots.append(drive_root / DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME)
+            roots.append(drive_root)
     return tuple(roots)
+
+
+def _windows_volume_label(drive_root: Path) -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        label = ctypes.create_unicode_buffer(261)
+        fs_name = ctypes.create_unicode_buffer(261)
+        serial = ctypes.c_ulong()
+        max_component_len = ctypes.c_ulong()
+        flags = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(
+            str(drive_root),
+            label,
+            len(label),
+            ctypes.byref(serial),
+            ctypes.byref(max_component_len),
+            ctypes.byref(flags),
+            fs_name,
+            len(fs_name),
+        )
+    except (AttributeError, OSError, ValueError):
+        return None
+    return label.value if ok else None
+
+
+def _path_drive(path: Path) -> str:
+    return path.drive.upper()
+
+
+def _default_toolchain_root_for_artifact_root(artifact_root: Path) -> Path:
+    """Toolchain root (MOLT_TARGET_ROOT) derived from the artifact root's VOLUME.
+
+    ``D:\\Molt`` -> ``D:\\molt-target`` (sibling of the artifact dir, where the
+    wasi-sysroot/binaryen/zig toolchains already live) so MOLT_TARGET_ROOT
+    follows the one root authority onto the same SSD instead of stranding a
+    legacy ``E:\\molt-target``.
+    """
+    if (
+        artifact_root.name.casefold()
+        == DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME.casefold()
+    ):
+        parent = artifact_root.parent
+        if parent != artifact_root:
+            return parent / DEFAULT_TARGET_ROOT_DIRNAME
+    return artifact_root / DEFAULT_TARGET_ROOT_DIRNAME
+
+
+def _should_rehome_toolchain_root(
+    raw: str,
+    artifact_root: Path,
+    env: Mapping[str, str],
+) -> bool:
+    """True when an inherited MOLT_TARGET_ROOT sits on a different volume than
+    the selected artifact root — e.g. a stale ``E:\\molt-target`` while the
+    authority chose ``D:\\Molt``. Rehoming deletes that legacy fallback rather
+    than honoring it; set ``MOLT_PRESERVE_TARGET_ROOT=1`` to keep an intentional
+    off-volume toolchain root.
+    """
+    if _env_bool(env, ("MOLT_PRESERVE_TARGET_ROOT",), default=False):
+        return False
+    if os.name != "nt":
+        return False
+    target_drive = _path_drive(Path(raw).expanduser())
+    artifact_drive = _path_drive(artifact_root)
+    return bool(target_drive and artifact_drive) and target_drive != artifact_drive
 
 
 def _requires_external_artifacts(
@@ -559,6 +659,17 @@ class RunContext:
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
         install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
+        install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
+        # MOLT_TARGET_ROOT (wasi-sysroot/binaryen/zig toolchains) flows through
+        # the one root authority: derive it from the selected artifact volume,
+        # and rehome a stale off-volume inherit (a legacy E:\molt-target) onto
+        # that volume rather than honoring the legacy fallback.
+        default_toolchain_root = _default_toolchain_root_for_artifact_root(ext_root)
+        raw_target_root = env.get("MOLT_TARGET_ROOT")
+        if not raw_target_root or _should_rehome_toolchain_root(
+            raw_target_root, ext_root, env
+        ):
+            env["MOLT_TARGET_ROOT"] = str(default_toolchain_root)
         install_default("PYTHONPYCACHEPREFIX", ext_root / "tmp" / "pycache")
         install_default("TMPDIR", ext_root / "tmp")
         install_default("TMP", env["TMPDIR"])
