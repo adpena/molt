@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 from pathlib import Path
 
 import molt.cli as cli
@@ -75,3 +76,38 @@ def test_stdlib_root_path_is_package_local_not_cwd(
         stdlib_root / "importlib" / "__init__.py"
     )
     assert not stdlib_root.is_relative_to(tmp_path)
+
+
+def test_case_exact_file_recovers_from_stale_dir_entry_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A freshly written file must never be reported absent by a stale listing.
+
+    ``_case_exact_dir_entries`` is memoised on the directory ``(mtime_ns, size)``
+    stat key, which does not advance on filesystems where directory metadata is
+    unchanged when an entry is added within the timestamp resolution
+    (Windows/NTFS reports directory size 0 and coarse mtime). A stale empty
+    listing would otherwise short-circuit resolution to ``False`` and silently
+    drop a just-staged module/manifest. ``_case_exact_file_under`` must re-verify
+    a miss against the live directory. Simulate the stale cache directly so the
+    guarantee holds on every platform, not only where the mtime is coarse.
+    """
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    module_path = package_dir / "mod.py"
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
+    package_dir_text = os.fspath(package_dir)
+
+    real_entries = module_resolution._case_exact_dir_entries
+
+    def _stale_entries(dir_text: str) -> frozenset[str]:
+        if dir_text == package_dir_text:
+            return frozenset()
+        return real_entries(dir_text)
+
+    monkeypatch.setattr(
+        module_resolution, "_case_exact_dir_entries", _stale_entries
+    )
+
+    assert module_resolution._case_exact_file(module_path)
