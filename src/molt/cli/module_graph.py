@@ -892,6 +892,19 @@ def _missing_native_support_artifact_imports(
             for package in native_packages
         ):
             continue
+        if _native_support_artifact_source_candidates(
+            native_artifact_plan=native_artifact_plan,
+            module_name=import_name,
+        ):
+            # A genuine native submodule whose upstream native source
+            # (.pyx/.c/.cpp) is present but carries no compiled artifact or
+            # source-graph custody must fail closed as a missing artifact, even
+            # when its parent package init is a full-body runtime-import
+            # provider. The attribute exemptions below would otherwise silently
+            # treat an uncustodied native module as a re-exported attribute and
+            # drop it from the reachability check.
+            missing.append(import_name)
+            continue
         parent = import_name.rsplit(".", 1)[0] if "." in import_name else ""
         if parent and parent in runtime_import_modules:
             # The parent is a runtime-import custody module compiled with
