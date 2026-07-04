@@ -5,7 +5,7 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-03 by the orchestrator.
+Last updated: 2026-07-04 by the orchestrator.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
@@ -118,25 +118,33 @@ per-crate clippy gate, then cherry-picked. Do renames when the touched crate has
 no other in-flight lane (coordinate on this board). Do NOT interleave a rename
 with a semantic change in the same commit — rename-only diffs must stay reviewable.
 
-## 🚨 P0 BROKEN MAIN (2026-07-03): molt-runtime does not compile under full features
+## ✅ P0 BROKEN MAIN (2026-07-03): RESOLVED — molt-runtime compiles + gate landed
 
-Two independent lane breaks landed without a full-feature molt-runtime build:
-1. **gpu_primitives re-export** — codex-doc71's a8d4897df moved builtins/gpu_primitives.rs
-   into molt-gpu but left a dangling `pub use crate::builtins::gpu_primitives` in
-   lib.rs:276. **FIXED by orchestrator (4a8c603a1)** — repointed to molt_gpu::primitives_ffi.
-2. **memoryview descriptor — BUFFER LANE MUST FIX NOW.** `95f1966c1 "Unify memoryview
-   buffer descriptor authority"` REMOVED `memoryview_format_from_code`, `one_dim_with_format`,
-   `new_with_format` from object/memoryview.rs, but `builtins/array_mod.rs` (lines 22, 98, 537)
-   still calls them → E0432, molt-runtime fails to build under default/full features (the
-   witness + every full build). The unpushed buffer worktree befadadb1 has a reconciled
-   memoryview.rs; the fix is to update array_mod.rs's 3 callers to the new unified
-   MemoryViewFormatKind API (or re-land the removed fns). Orchestrator will NOT hand-fix this
-   (buffer-lane territory + unified-API domain knowledge + risk of trampling befadadb1).
-   **Buffer lane: reconcile array_mod.rs ↔ object/memoryview.rs and push immediately.**
+Both breaks are fixed on origin/main and a recurrence gate is in place (verified
+2026-07-04: all four commits are ancestors of origin/main; the broken callers and
+dangling re-export are gone; the witness lanes build molt-runtime green):
+1. **gpu_primitives re-export** — FIXED (4a8c603a1): repointed lib.rs to
+   `molt_gpu::primitives_ffi`. origin lib.rs no longer references
+   `crate::builtins::gpu_primitives`.
+2. **memoryview descriptor** — FIXED (array_mod.rs c1414d9cf + ops_builtins.rs/
+   graphlib 7b5382c66): array_mod.rs no longer calls the removed
+   `memoryview_format_from_code`/`one_dim_with_format`/`new_with_format` (E0432
+   source gone); callers moved to the unified format-bits/base-bits API mirroring
+   ops_memoryview.rs.
 
-SYSTEMIC GAP: molt-runtime changes are landing without a full-feature `cargo check -p
-molt-runtime` gate, so breaks accumulate on main undetected (non-build gates pass atop a
-broken compiler). Every lane touching molt-runtime MUST run a full-feature build before landing.
+SYSTEMIC GAP CLOSED: the full-feature `cargo check -p molt-runtime` gate now runs
+in CI (aa948db77), so a molt-runtime break can no longer accumulate atop passing
+non-build gates. Every lane touching molt-runtime must still run a full-feature
+build before landing, but CI is now the backstop.
+
+BUILD-LEAK PREVENTION (2026-07-04, all lanes benefit): the memory-pressure /
+orphaned-build-process class is now closed at the source. `tools/win_job.py` +
+`memory_guard.run_guarded` wire every guarded build into a Windows Job Object with
+`KILL_ON_JOB_CLOSE` (a5aae5056), so a build subtree dies the instant its guard
+dies — no more orphaned cargo/rustc/link/tail reserving GB (hit 42 GB / 98% on
+2026-07-03). `tools/orphan_reaper.py watch` (01f07a1f1) is the standing sweep net
+for builds that bypass the guard. Route builds through the queue; never leave
+`cargo | tail` in a lane.
 
 ## 🔥 RIP-IT-ALL-UP DECOMPOSITION ROADMAP (operator 2026-07-03: "rip it all up")
 
@@ -169,11 +177,26 @@ generated):
   → CODEX LANE B (coordinate w/ codex-doc71).
 - **molt-backend-wasm 27,205** — partial (molt_type_new touched dynamic.rs); rip
   the NON-dynamic god-files only. → CODEX LANE C (do not touch call_ops/dynamic.rs).
-- **molt-runtime-tk 20,588** — a STDLIB crate that is itself a god-crate. Rip it.
+- **molt-runtime-tk 20,588** — ✅ LANDED (orchestrator, 68b2d895a + 06e4f9347):
+  move-only split of the two biggest tk god-files (`callback_intrinsics.rs` 1426 →
+  timers/traces/tkwait/binds/filehandlers/event_subst; `intrinsics.rs` 1272 →
+  lifecycle/dialogs). Byte-identical bodies; 42 extern-C symbols preserved
+  identical; cargo check + clippy green. Residual tk god-files
+  (`ttk_treeview.rs`, `ttk.rs`) are single-mega-function files — NOT move-only;
+  need internal helper extraction, deferred.
 - **molt-tir 19,835 · molt-backend-luau 18,161 · molt-runtime-serial 17,546** —
   mid-size, decomposable as capacity frees.
-- **tools/proof_queue.py** — ORCHESTRATOR SUBAGENT in flight (hot build-custody;
-  honest decomposition, no baseline mask).
+- **runtime/molt-runtime/src/builtins/functions_pickle/binary.rs 3378** — 🔧
+  ORCHESTRATOR SUBAGENT IN FLIGHT (rip-pickle-binary-20260704): move-only split
+  of the pickle binary-protocol god-file (67 independent fns, cohesive, off the
+  witness/buffer/import critical path). CLAIMED — Codex do not touch
+  functions_pickle/**.
+- **tools/proof_queue.py** — ✅ DONE (f94f3a4f9): decomposed 5760 → 4457 lines,
+  the 3 god-regions (`_run_diagnostics`/`_run_one`/`_build_parser`) extracted into
+  modules; kitchen_sink ratchet CLEARED (score 0, is_god False on origin), no
+  baseline mask. NOTE: a stale session-base working tree still shows the old 5760
+  version — verify structural_audit against a clean origin worktree, not the
+  shared checkout (see Proof/DX rules).
 
 GATES (every cut, non-negotiable): build-verified (leaf `cargo check` + `clippy
 -D warnings` + queued god-crate check); `tools/canonicalization_contract.py
