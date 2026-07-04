@@ -3014,8 +3014,12 @@ def test_extension_seal_publishes_provider_module_support_source(
     )
     assert errors == []
     assert plan is not None
+    # The callable-host package init (scipy.ndimage) is part of the native
+    # package-init support closure: its __init__.py is compiled so the sealed
+    # provider callable can be published on the package. See the closure arc in
+    # test_entry_native_package_import_compiles_package_init_closure.
     assert plan.support_source_module_names() == frozenset(
-        {"scipy.ndimage._morphology"}
+        {"scipy.ndimage._morphology", "scipy.ndimage"}
     )
 
     alias_root = tmp_path / "sealed_alias"

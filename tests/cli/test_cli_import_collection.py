@@ -1598,7 +1598,12 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     }
     provider = by_module["nativepkg.core._multiarray_umath"]
     assert provider.runtime_python_imports == ("math",)
+    # The exported package root (python_exports=["nativepkg"]) joins the native
+    # runtime-import/support closure so its __init__.py is compiled to host the
+    # exports, alongside the modules the C source dynamically imports. See
+    # test_entry_native_package_import_compiles_package_init_closure.
     assert provider.runtime_python_import_modules == (
+        "nativepkg",
         "nativepkg._internal",
         "nativepkg.exceptions",
     )
@@ -4514,8 +4519,12 @@ def test_external_native_artifact_plan_publishes_support_source_module_attr(
 
     assert errors == []
     assert plan is not None
+    # The callable-host package init (nativepkg.ndimage) is part of the native
+    # package-init support closure: its __init__.py is compiled so the provider
+    # callable can be published on the package. See the closure arc in
+    # test_entry_native_package_import_compiles_package_init_closure.
     assert plan.support_source_module_names() == frozenset(
-        {"nativepkg.ndimage._filters"}
+        {"nativepkg.ndimage._filters", "nativepkg.ndimage"}
     )
     assert plan.native_callable_exports_by_qualified_name() == {
         "nativepkg.ndimage.gaussian_filter": {
