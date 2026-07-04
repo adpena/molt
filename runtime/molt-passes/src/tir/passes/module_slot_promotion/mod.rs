@@ -53,8 +53,6 @@
 //!   loop (LCSSA would be needed; refused instead).
 //! * **State machines**: functions containing generator/async ops are skipped.
 
-use std::collections::HashMap;
-
 use crate::tir::dominators::{
     CfgEdgePolicy, build_pred_map_with, compute_idoms_with,
 };

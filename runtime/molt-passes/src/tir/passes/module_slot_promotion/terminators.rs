@@ -26,10 +26,6 @@ pub(super) fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
     }
 }
 
-/// Run promotion over every function in `module`. Returns the names of the
-/// functions whose bodies changed (the caller re-optimizes + back-converts
-/// exactly these, mirroring the inliner's `changed_functions` contract).
-
 pub(super) fn terminator_uses(term: &Terminator, set: &HashSet<ValueId>) -> bool {
     match term {
         Terminator::Branch { args, .. } => args.iter().any(|v| set.contains(v)),
