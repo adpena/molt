@@ -417,6 +417,7 @@ pub extern "C" fn molt_cpython_abi_init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         unsafe { crate::abi_types::init_static_types() };
+        unsafe { crate::api::typeobj::init_descriptor_slots() };
         init_tag_table();
     });
 }

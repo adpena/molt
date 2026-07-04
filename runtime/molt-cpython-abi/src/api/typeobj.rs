@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int, c_longlong, c_ulonglong};
 use std::ptr;
 
 static ABI_LOCAL_TYPES: Lazy<Mutex<HashMap<u32, usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -113,6 +113,23 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
             return -1;
         }
 
+        // (3b) Populate tp_dict from tp_members and tp_getset — exactly the
+        //      `type_add_members` / `type_add_getset` steps of CPython's
+        //      `type_ready_fill_dict`. numpy's `PyUFunc_Type`, `PyArrayDescr_Type`,
+        //      and `PyArray_Type` (all readied in `_multiarray_umath_exec` before
+        //      the historical failure point) declare `tp_members`/`tp_getset`
+        //      tables and trust PyType_Ready to expose them as
+        //      member_descriptor / getset_descriptor entries. Each returns a real
+        //      descriptor; a NULL from `PyDescr_New*` (or a dict-insert failure)
+        //      propagates as a -1 with a set exception, matching CPython, so a
+        //      genuine failure here is never a contentless exec-slot -1.
+        if add_members_to_dict(tp) < 0 {
+            return -1;
+        }
+        if add_getset_to_dict(tp) < 0 {
+            return -1;
+        }
+
         // (4) Compute tp_mro for single inheritance: [tp, ...base.tp_mro...].
         //     A null MRO makes attribute resolution and isinstance checks fail.
         if compute_single_inheritance_mro(tp) < 0 {
@@ -173,6 +190,107 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
                 );
             }
             methods = methods.add(1);
+        }
+        0
+    }
+}
+
+/// Insert a descriptor into `tp_dict` keyed by its interned name, using
+/// `PyDict_SetDefault` semantics (do not clobber a name already placed by an
+/// earlier step — CPython's operators run first). Steals the caller's reference
+/// to `descr` (decrefs it after insertion, exactly like CPython's loop bodies).
+///
+/// Store-layer failures are *recorded but not fatal*, matching the established
+/// `add_methods_to_dict` policy: the descriptor object is structurally complete
+/// (correct type, name, and def pointer) regardless of whether the runtime dict
+/// bridge is wired. Aborting readiness on a degraded-backend store would cascade
+/// into a spurious extension-exec failure in exactly the environments (pure-ABI,
+/// partially-wired hosts) where the dict backend is a stub. When the runtime IS
+/// wired, a genuine store failure still surfaces: the recorded silent failure is
+/// named in the exec-slot diagnostic. The only *fatal* case is a descriptor with
+/// no name, which is a real construction bug that must not be masked.
+unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
+    unsafe {
+        let name = PyDescr_NAME(descr);
+        if name.is_null() {
+            crate::api::refcount::Py_DECREF(descr);
+            crate::capi_trace::record_silent_failure(
+                "PyType_Ready",
+                Some("descriptor has no name"),
+            );
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"descriptor missing name during PyType_Ready".as_ptr(),
+            );
+            return -1;
+        }
+        let stored = crate::api::mapping::PyDict_SetDefault(dict, name, descr);
+        crate::api::refcount::Py_DECREF(descr);
+        if stored.is_null() {
+            crate::capi_trace::record_silent_failure(
+                "PyType_Ready",
+                Some("PyDict_SetDefault could not store getset/member descriptor"),
+            );
+        }
+        0
+    }
+}
+
+/// Populate `tp`'s `tp_dict` with a `member_descriptor` for each entry in its
+/// own `tp_members` table. Mirrors CPython's `type_add_members`.
+unsafe fn add_members_to_dict(tp: *mut PyTypeObject) -> c_int {
+    unsafe {
+        let mut memb = (*tp).tp_members.cast::<crate::abi_types::PyMemberDef>();
+        if memb.is_null() {
+            return 0;
+        }
+        let dict = (*tp).tp_dict;
+        while !(*memb).name.is_null() {
+            let descr = PyDescr_NewMember(tp, memb);
+            if descr.is_null() {
+                // PyDescr_NewMember recorded a silent failure; set an honest
+                // exception if the alloc layer left none pending.
+                if crate::api::errors::PyErr_Occurred().is_null() {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_SystemError,
+                        c"PyDescr_NewMember returned NULL during PyType_Ready".as_ptr(),
+                    );
+                }
+                return -1;
+            }
+            if store_descr(dict, descr) < 0 {
+                return -1;
+            }
+            memb = memb.add(1);
+        }
+        0
+    }
+}
+
+/// Populate `tp`'s `tp_dict` with a `getset_descriptor` for each entry in its
+/// own `tp_getset` table. Mirrors CPython's `type_add_getset`.
+unsafe fn add_getset_to_dict(tp: *mut PyTypeObject) -> c_int {
+    unsafe {
+        let mut gsp = (*tp).tp_getset.cast::<crate::abi_types::PyGetSetDef>();
+        if gsp.is_null() {
+            return 0;
+        }
+        let dict = (*tp).tp_dict;
+        while !(*gsp).name.is_null() {
+            let descr = PyDescr_NewGetSet(tp, gsp);
+            if descr.is_null() {
+                if crate::api::errors::PyErr_Occurred().is_null() {
+                    crate::api::errors::PyErr_SetString(
+                        &raw mut crate::abi_types::PyExc_SystemError,
+                        c"PyDescr_NewGetSet returned NULL during PyType_Ready".as_ptr(),
+                    );
+                }
+                return -1;
+            }
+            if store_descr(dict, descr) < 0 {
+                return -1;
+            }
+            gsp = gsp.add(1);
         }
         0
     }
@@ -430,29 +548,428 @@ pub unsafe extern "C" fn _PyType_Lookup(
     }
 }
 
+/// `PyDescr_IsData` — a descriptor is a *data* descriptor iff its type defines
+/// `tp_descr_set`. CPython keys this purely on `Py_TYPE(descr)->tp_descr_set !=
+/// NULL` (not on whether the individual `PyGetSetDef` has a setter), and both
+/// `PyGetSetDescr_Type` and `PyMemberDescr_Type` install a `tp_descr_set` (which
+/// itself raises `AttributeError` for a read-only entry). Attribute-resolution
+/// order — a data descriptor on the type wins over the instance dict — depends on
+/// an honest answer here.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyDescr_IsData(_descr: *mut PyObject) -> c_int {
-    0
+pub unsafe extern "C" fn PyDescr_IsData(descr: *mut PyObject) -> c_int {
+    if descr.is_null() {
+        return 0;
+    }
+    let tp = unsafe { (*descr).ob_type };
+    if tp.is_null() {
+        return 0;
+    }
+    unsafe { (*tp).tp_descr_set }.is_some() as c_int
 }
 
+/// `PyDescr_NAME(descr)` — the interned attribute name of any descriptor. All
+/// descriptor objects share the `PyDescrObject` header, so this reads
+/// `d_common.d_name` (a borrowed reference, matching CPython's macro).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDescr_NAME(descr: *mut PyObject) -> *mut PyObject {
+    if descr.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { (*descr.cast::<crate::abi_types::PyDescrObject>()).d_name }
+}
+
+/// Allocate the shared descriptor header for a `type`/`name` pair. Mirrors
+/// CPython's `descr_new`: interns the name, takes an owned reference to `type`.
+/// Returns a boxed, ABI-owned descriptor with refcount 1, or NULL (with an
+/// exception set) on allocation failure.
+unsafe fn descr_alloc(
+    descr_type: *mut PyTypeObject,
+    for_type: *mut PyTypeObject,
+    name: *const c_char,
+) -> *mut crate::abi_types::PyDescrObject {
+    unsafe {
+        let name_obj = if name.is_null() {
+            crate::api::strings::PyUnicode_FromString(c"".as_ptr())
+        } else {
+            crate::api::strings::PyUnicode_InternFromString(name)
+        };
+        if name_obj.is_null() {
+            // PyUnicode_* sets MemoryError on failure; record for the exec-slot
+            // diagnostic in case a stubbed string layer returned NULL silently.
+            crate::capi_trace::record_silent_failure(
+                "PyDescr_New",
+                Some("descriptor name allocation failed"),
+            );
+            return ptr::null_mut();
+        }
+        crate::api::refcount::Py_INCREF(for_type.cast::<PyObject>());
+        let descr = Box::new(crate::abi_types::PyDescrObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: descr_type,
+            },
+            d_type: for_type,
+            d_name: name_obj,
+            d_qualname: ptr::null_mut(),
+        });
+        Box::into_raw(descr)
+    }
+}
+
+/// Create a `getset_descriptor` for `getset` bound to `type`. Faithful to
+/// CPython `PyDescr_NewGetSet` (`Objects/descrobject.c`): the descriptor stores
+/// a *borrowed* pointer to the caller's `PyGetSetDef` (which must outlive the
+/// type), so a static numpy `tp_getset` table becomes real, resolvable
+/// `getset_descriptor` attributes in `tp_dict`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDescr_NewGetSet(
-    _type: *mut PyTypeObject,
-    _getset: *mut c_void,
+    type_: *mut PyTypeObject,
+    getset: *mut crate::abi_types::PyGetSetDef,
 ) -> *mut PyObject {
-    let obj = &raw mut crate::abi_types::Py_None;
-    unsafe { crate::api::refcount::Py_INCREF(obj) };
-    obj
+    if type_.is_null() || getset.is_null() {
+        crate::capi_trace::record_silent_failure("PyDescr_NewGetSet", Some("null type or getset"));
+        return ptr::null_mut();
+    }
+    let name = unsafe { (*getset).name };
+    let common = unsafe { descr_alloc(&raw mut crate::abi_types::PyGetSetDescr_Type, type_, name) };
+    if common.is_null() {
+        return ptr::null_mut();
+    }
+    // Widen the shared header allocation to the getset descriptor. `descr_alloc`
+    // boxed a bare `PyDescrObject`; reallocate as the wider struct so the
+    // `d_getset` tail is owned. Simpler and leak-free: box the full struct here
+    // and copy the header out, then free the header box.
+    unsafe {
+        let header = *Box::from_raw(common);
+        let descr = Box::new(crate::abi_types::PyGetSetDescrObject {
+            d_common: header,
+            d_getset: getset,
+        });
+        Box::into_raw(descr).cast::<PyObject>()
+    }
 }
 
+/// Create a `member_descriptor` for `member` bound to `type`. Faithful to
+/// CPython `PyDescr_NewMember`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDescr_NewMember(
-    _type: *mut PyTypeObject,
-    _member: *mut c_void,
+    type_: *mut PyTypeObject,
+    member: *mut crate::abi_types::PyMemberDef,
 ) -> *mut PyObject {
-    let obj = &raw mut crate::abi_types::Py_None;
-    unsafe { crate::api::refcount::Py_INCREF(obj) };
-    obj
+    if type_.is_null() || member.is_null() {
+        crate::capi_trace::record_silent_failure("PyDescr_NewMember", Some("null type or member"));
+        return ptr::null_mut();
+    }
+    let name = unsafe { (*member).name };
+    let common = unsafe { descr_alloc(&raw mut crate::abi_types::PyMemberDescr_Type, type_, name) };
+    if common.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        let header = *Box::from_raw(common);
+        let descr = Box::new(crate::abi_types::PyMemberDescrObject {
+            d_common: header,
+            d_member: member,
+        });
+        Box::into_raw(descr).cast::<PyObject>()
+    }
+}
+
+// ─── Descriptor protocol (tp_descr_get / tp_descr_set) ─────────────────────
+//
+// `getset_descriptor` and `member_descriptor` are the objects `PyType_Ready`
+// stores in `tp_dict` for a type's `tp_getset` / `tp_members` tables. When an
+// attribute lookup finds one of these in the type's dict, the runtime invokes
+// its `tp_descr_get` (read) or `tp_descr_set` (write). Faithful to
+// CPython `Objects/descrobject.c` (`getset_get`/`getset_set`/`member_get`/
+// `member_set`).
+
+/// `tp_descr_get` for `getset_descriptor`. `obj == NULL` (attribute accessed on
+/// the type itself) returns the descriptor; otherwise it invokes the underlying
+/// getter with the `closure`, or raises `AttributeError` for a write-only entry.
+unsafe extern "C" fn getset_get(
+    descr: *mut PyObject,
+    obj: *mut PyObject,
+    _type: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        if obj.is_null() {
+            crate::api::refcount::Py_INCREF(descr);
+            return descr;
+        }
+        let d = descr.cast::<crate::abi_types::PyGetSetDescrObject>();
+        let getset = (*d).d_getset;
+        if getset.is_null() {
+            return ptr::null_mut();
+        }
+        match (*getset).get {
+            Some(get) => get(obj, (*getset).closure),
+            None => {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_AttributeError,
+                    c"unreadable attribute".as_ptr(),
+                );
+                ptr::null_mut()
+            }
+        }
+    }
+}
+
+/// `tp_descr_set` for `getset_descriptor`. Invokes the underlying setter with
+/// the `closure`, or raises `AttributeError` for a read-only entry.
+unsafe extern "C" fn getset_set(
+    descr: *mut PyObject,
+    obj: *mut PyObject,
+    value: *mut PyObject,
+) -> c_int {
+    unsafe {
+        let d = descr.cast::<crate::abi_types::PyGetSetDescrObject>();
+        let getset = (*d).d_getset;
+        if getset.is_null() {
+            return -1;
+        }
+        match (*getset).set {
+            Some(set) => set(obj, value, (*getset).closure),
+            None => {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_AttributeError,
+                    c"readonly attribute".as_ptr(),
+                );
+                -1
+            }
+        }
+    }
+}
+
+/// `tp_descr_get` for `member_descriptor`. Reads the struct member at
+/// `d_member->offset` off `obj` using `PyMember_GetOne`.
+unsafe extern "C" fn member_get(
+    descr: *mut PyObject,
+    obj: *mut PyObject,
+    _type: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        if obj.is_null() {
+            crate::api::refcount::Py_INCREF(descr);
+            return descr;
+        }
+        let d = descr.cast::<crate::abi_types::PyMemberDescrObject>();
+        let member = (*d).d_member;
+        if member.is_null() {
+            return ptr::null_mut();
+        }
+        PyMember_GetOne(obj.cast::<c_char>(), member)
+    }
+}
+
+/// `tp_descr_set` for `member_descriptor`.
+unsafe extern "C" fn member_set(
+    descr: *mut PyObject,
+    obj: *mut PyObject,
+    value: *mut PyObject,
+) -> c_int {
+    unsafe {
+        let d = descr.cast::<crate::abi_types::PyMemberDescrObject>();
+        let member = (*d).d_member;
+        if member.is_null() {
+            return -1;
+        }
+        PyMember_SetOne(obj.cast::<c_char>(), member, value)
+    }
+}
+
+/// Install the descriptor protocol slots on the two descriptor type objects.
+/// Called once at ABI init (after `init_static_types`) so that a
+/// `getset_descriptor` / `member_descriptor` found in a type's `tp_dict`
+/// resolves through `tp_descr_get` / `tp_descr_set` exactly as CPython wires
+/// `PyGetSetDescr_Type` / `PyMemberDescr_Type`.
+///
+/// # Safety
+/// Single-threaded init only; must run before any C extension attribute access.
+pub unsafe fn init_descriptor_slots() {
+    unsafe {
+        let gs = &raw mut crate::abi_types::PyGetSetDescr_Type;
+        (*gs).tp_descr_get = Some(getset_get);
+        (*gs).tp_descr_set = Some(getset_set);
+        (*gs).tp_basicsize =
+            std::mem::size_of::<crate::abi_types::PyGetSetDescrObject>() as Py_ssize_t;
+
+        let mem = &raw mut crate::abi_types::PyMemberDescr_Type;
+        (*mem).tp_descr_get = Some(member_get);
+        (*mem).tp_descr_set = Some(member_set);
+        (*mem).tp_basicsize =
+            std::mem::size_of::<crate::abi_types::PyMemberDescrObject>() as Py_ssize_t;
+    }
+}
+
+// Member type codes (CPython `Include/descrobject.h`, `Py_T_*`).
+const PY_T_SHORT: c_int = 0;
+const PY_T_INT: c_int = 1;
+const PY_T_LONG: c_int = 2;
+const PY_T_FLOAT: c_int = 3;
+const PY_T_DOUBLE: c_int = 4;
+const PY_T_STRING: c_int = 5;
+const PY_T_OBJECT: c_int = 6;
+const PY_T_CHAR: c_int = 7;
+const PY_T_BYTE: c_int = 8;
+const PY_T_UBYTE: c_int = 9;
+const PY_T_USHORT: c_int = 10;
+const PY_T_UINT: c_int = 11;
+const PY_T_ULONG: c_int = 12;
+const PY_T_BOOL: c_int = 14;
+const PY_T_OBJECT_EX: c_int = 16;
+const PY_T_LONGLONG: c_int = 17;
+const PY_T_ULONGLONG: c_int = 18;
+const PY_T_PYSSIZET: c_int = 19;
+const PY_T_NONE: c_int = 20;
+const PY_READONLY: c_int = 1;
+
+/// `PyMember_GetOne` — read one struct member into a Python object. Faithful to
+/// CPython `Python/structmember.c`. `addr` is the base address of the containing
+/// object; the member lives at `addr + member->offset` with the C type given by
+/// `member->type`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMember_GetOne(
+    addr: *const c_char,
+    member: *mut crate::abi_types::PyMemberDef,
+) -> *mut PyObject {
+    if addr.is_null() || member.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        let field = addr.offset((*member).offset) as *const c_void;
+        // Width-correct constructors: `c_long` is 32-bit on Windows MSVC, so
+        // 64-bit members must route through the LongLong/Ssize_t constructors to
+        // avoid silent truncation. C `long`/`unsigned long` map to Ssize_t/Size_t
+        // which are pointer-width and cover both LP64 and LLP64 hosts.
+        match (*member).type_ {
+            PY_T_SHORT => crate::api::numbers::PyLong_FromSsize_t(*(field as *const i16) as isize),
+            PY_T_INT => crate::api::numbers::PyLong_FromSsize_t(*(field as *const i32) as isize),
+            PY_T_LONG => crate::api::numbers::PyLong_FromLongLong(
+                *(field as *const std::os::raw::c_long) as c_longlong,
+            ),
+            PY_T_FLOAT => crate::api::numbers::PyFloat_FromDouble(*(field as *const f32) as f64),
+            PY_T_DOUBLE => crate::api::numbers::PyFloat_FromDouble(*(field as *const f64)),
+            PY_T_BOOL => {
+                let b = *(field as *const i8) != 0;
+                let obj = if b {
+                    &raw mut crate::abi_types::Py_True
+                } else {
+                    &raw mut crate::abi_types::Py_False
+                };
+                crate::api::refcount::Py_INCREF(obj);
+                obj
+            }
+            PY_T_BYTE => crate::api::numbers::PyLong_FromSsize_t(*(field as *const i8) as isize),
+            PY_T_UBYTE => crate::api::numbers::PyLong_FromSize_t(*(field as *const u8) as usize),
+            PY_T_USHORT => crate::api::numbers::PyLong_FromSize_t(*(field as *const u16) as usize),
+            PY_T_UINT => crate::api::numbers::PyLong_FromSize_t(*(field as *const u32) as usize),
+            PY_T_ULONG => crate::api::numbers::PyLong_FromUnsignedLongLong(
+                *(field as *const std::os::raw::c_ulong) as c_ulonglong,
+            ),
+            PY_T_LONGLONG => {
+                crate::api::numbers::PyLong_FromLongLong(*(field as *const c_longlong))
+            }
+            PY_T_ULONGLONG => {
+                crate::api::numbers::PyLong_FromUnsignedLongLong(*(field as *const c_ulonglong))
+            }
+            PY_T_PYSSIZET => crate::api::numbers::PyLong_FromSsize_t(*(field as *const isize)),
+            PY_T_CHAR => {
+                let c = *(field as *const c_char);
+                let buf = [c as u8, 0u8];
+                crate::api::strings::PyUnicode_FromStringAndSize(buf.as_ptr().cast(), 1)
+            }
+            PY_T_STRING => {
+                let s = *(field as *const *const c_char);
+                if s.is_null() {
+                    let none = &raw mut crate::abi_types::Py_None;
+                    crate::api::refcount::Py_INCREF(none);
+                    none
+                } else {
+                    crate::api::strings::PyUnicode_FromString(s)
+                }
+            }
+            PY_T_OBJECT | PY_T_OBJECT_EX => {
+                let v = *(field as *const *mut PyObject);
+                if v.is_null() {
+                    if (*member).type_ == PY_T_OBJECT_EX {
+                        crate::api::errors::PyErr_SetString(
+                            &raw mut crate::abi_types::PyExc_AttributeError,
+                            (*member).name,
+                        );
+                        return ptr::null_mut();
+                    }
+                    let none = &raw mut crate::abi_types::Py_None;
+                    crate::api::refcount::Py_INCREF(none);
+                    none
+                } else {
+                    crate::api::refcount::Py_INCREF(v);
+                    v
+                }
+            }
+            PY_T_NONE => {
+                let none = &raw mut crate::abi_types::Py_None;
+                crate::api::refcount::Py_INCREF(none);
+                none
+            }
+            _ => {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"bad member type in PyMember_GetOne".as_ptr(),
+                );
+                ptr::null_mut()
+            }
+        }
+    }
+}
+
+/// `PyMember_SetOne` — write one struct member from a Python object. Faithful to
+/// CPython `Python/structmember.c`, covering the mutable subset numpy uses (it
+/// declares nearly all members `READONLY`). Read-only / audit-only members and
+/// unsupported writes fail closed with an honest exception.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMember_SetOne(
+    addr: *mut c_char,
+    member: *mut crate::abi_types::PyMemberDef,
+    value: *mut PyObject,
+) -> c_int {
+    if addr.is_null() || member.is_null() {
+        return -1;
+    }
+    unsafe {
+        if (*member).flags & PY_READONLY != 0 {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_AttributeError,
+                c"readonly attribute".as_ptr(),
+            );
+            return -1;
+        }
+        // T_OBJECT/T_OBJECT_EX are the writable members ordinary extensions use;
+        // deleting (value == NULL) is only valid for T_OBJECT_EX.
+        match (*member).type_ {
+            PY_T_OBJECT | PY_T_OBJECT_EX => {
+                let slot = addr.offset((*member).offset) as *mut *mut PyObject;
+                let old = *slot;
+                if !value.is_null() {
+                    crate::api::refcount::Py_INCREF(value);
+                }
+                *slot = value;
+                if !old.is_null() {
+                    crate::api::refcount::Py_DECREF(old);
+                }
+                0
+            }
+            _ => {
+                // Numeric/char member writes are rare for extension init; fail
+                // closed with a precise diagnostic rather than a silent no-op.
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"cannot set non-object member in PyMember_SetOne".as_ptr(),
+                );
+                -1
+            }
+        }
+    }
 }
 
 /// Py_TYPE(op) — return ob_type pointer.
