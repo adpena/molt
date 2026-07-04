@@ -237,6 +237,55 @@ FANOUT: orchestrator holds ONE subagent (operator constraint) + delegates the
 rest to Codex. Codex — claim a DISJOINT god-crate above, rip it end-to-end, ping
 to cherry-pick. Do not idle; do not duplicate; do not break a hot tool.
 
+## 🧭 APPARATUS TRACK — interpretable + self-improving (operator 2026-07-04)
+
+Plan: `docs/design/foundation/72_interpretable_self_improving_apparatus.md`.
+Make the orchestration control plane (proof_queue, gates, memory, board) an
+interpretable-by-construction, self-improving apparatus — grounded in Rudin
+(interpretability over black-box scores), Daubechies (multi-resolution), and
+Schmidhuber (compression progress as the intrinsic-reward signal + Gödel-machine
+"enforce only once proven"). Guardrail (`instrumental-serves-outcomes`): this
+serves the 100-year OUTCOMES only by making the apparatus learn faster; it never
+displaces compiler outcome work.
+
+MATURE REFERENCE = the **pact / comma-lab** apparatus (Tailscale `primary`,
+`~/Projects/pact`, 1.25M LOC; memories `pact-apparatus-reference`,
+`pact-triality-architecture`). Two patterns to port:
+- **Gate catalog + STRICT-flip lifecycle** (pact `src/tac/preflight.py`, ~295
+  STRICT gates). Each gate is a dated, interpretable bug-class rule that
+  observes → proves the tree clean → STRICT-flips to enforce @0. Molt: consolidate
+  structural_audit / canonicalization_contract / op_family / check_*.py toward one
+  catalog authority with dated provenance + STRICT-flip.
+- **The triality — DAG ↔ DSL ↔ equations.** A finding is "known" only when it has
+  all three AND they agree; drift = forgetting (pact `triality_drift_detector.py`).
+  Molt's nascent triality: op_kinds.toml + representation_facts + perf-keystone
+  laws (**equations**) ↔ generated gates + build/proof commands (**DSL**) ↔
+  proof-queue history + board + git (**DAG**). op_family (dispatch↔handler drift)
+  is a triality-drift-detector in miniature.
+
+BUILD ORDER (doc 72 §"Concrete integrations"):
+1. **Compression-progress ledger** — ✅ v1 LANDED (`tools/apparatus_ledger.py`):
+   scans the proof-queue run history, normalizes failures to signatures, reports
+   COMPRESSION DEBT (recurring-uncompressed failure-mass share) + the CURIOSITY
+   QUEUE (surprises ranked recurrence×cost = the next diagnosis rules to write).
+   First run: 93.7% debt, 5 recurring signatures carry 269/287 failures — but the
+   top signatures are the generic proof_queue WRAPPER line (`finished
+   status=failed exit_code=1`), i.e. the queue log buries the inner rust/python
+   error. NEXT: refine the extractor to dig past the wrapper to the real error;
+   then wire the ledger's curiosity queue into the diagnosis-rule authoring flow.
+2. **Interpretability contract** — every apparatus decision emits a named rule
+   with evidence + next_action; flag black-box thresholds (extends
+   canonicalization_contract.py).
+3. **Rule-falsifiability contract** — every new diagnosis rule / gate lands with a
+   positive fixture AND a negative control (the `world-class-rigor-no-fakes` "prove
+   the gate fails on a synthetic violation" made a gate).
+4. **Molt triality-drift-detector** — a fact/optimization is "known" only with an
+   equation + a gate + a proof row, all agreeing.
+
+LANE: orchestrator-owned (apparatus is a hot shared tool set). Codex — do NOT
+edit proof_queue.py / structural_audit.py / canonicalization_contract.py /
+apparatus_ledger.py under this track without a board assignment; flag ideas here.
+
 ## State of the world (read this first)
 
 - The witness `import numpy` chain has advanced deep into numpy's C-core
