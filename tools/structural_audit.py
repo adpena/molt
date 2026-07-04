@@ -1157,20 +1157,66 @@ def _python_raise_is_notimplemented(node: ast.Raise) -> bool:
     return False
 
 
+def _python_string_constants(node: ast.AST | None) -> list[ast.Constant]:
+    if node is None:
+        return []
+    return [
+        child
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    ]
+
+
+def _python_intrinsic_stub_surface_hit(tree: ast.Module) -> ImplementationGapHit | None:
+    hits: list[ImplementationGapHit] = []
+    if tree.body:
+        first = tree.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+            and _INTRINSIC_FIRST_STUB_RE.search(first.value.value)
+        ):
+            hits.append(
+                ImplementationGapHit(
+                    line=getattr(first, "lineno", 1),
+                    marker="intrinsic-first stub",
+                )
+            )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise):
+            continue
+        for string_node in _python_string_constants(node.exc):
+            if _INTRINSIC_FIRST_STUB_RE.search(str(string_node.value)):
+                hits.append(
+                    ImplementationGapHit(
+                        line=getattr(string_node, "lineno", getattr(node, "lineno", 1)),
+                        marker="intrinsic-first stub",
+                    )
+                )
+                break
+    if not hits:
+        return None
+    return sorted(hits, key=lambda hit: (hit.line, hit.marker))[0]
+
+
 def _python_stub_surface_hits(path: Path, text: str) -> list[ImplementationGapHit]:
     hits: list[ImplementationGapHit] = []
-    first_stub_match = _INTRINSIC_FIRST_STUB_RE.search(text)
-    if first_stub_match is not None:
-        hits.append(
-            ImplementationGapHit(
-                line=_line_of_offset(text, first_stub_match.start()),
-                marker="intrinsic-first stub",
-            )
-        )
     try:
         tree = ast.parse(text)
     except SyntaxError:
+        first_stub_match = _INTRINSIC_FIRST_STUB_RE.search(text)
+        if first_stub_match is not None:
+            hits.append(
+                ImplementationGapHit(
+                    line=_line_of_offset(text, first_stub_match.start()),
+                    marker="intrinsic-first stub",
+                )
+            )
         return hits
+    intrinsic_stub_hit = _python_intrinsic_stub_surface_hit(tree)
+    if intrinsic_stub_hit is not None:
+        hits.append(intrinsic_stub_hit)
     for node in ast.walk(tree):
         if isinstance(node, ast.Raise) and _python_raise_is_notimplemented(node):
             hits.append(
