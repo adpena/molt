@@ -79,6 +79,13 @@ is reconciled.
   `E:`, or hand-copy artifacts to work around it. Treat `Failed to publish
   backend cache output` under `D:\Molt` as a DX defect to diagnose through the
   cache authority; treat `E:\Molt`/`E:\molt-target` as legacy/fallback evidence.
+- APDataStore accumulates per-session cargo targets, pytest temproots, dated
+  scratch, and orphaned worktrees; `tools/molt_ssd_janitor.py` reclaims them
+  (dry-run by default; `--apply`; scoped to the artifact root; age-gated; it
+  never touches registered git worktrees, the current session, or paths
+  modified within `--min-idle-hours`). A daily Windows scheduled task runs the
+  safe classes; run `--all` (adds stale `cargo-target-*`) manually to reclaim
+  more. Do not hand-`rm` under `D:\Molt` — route through the janitor.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`.
 - Pact Kernel A acceptance must use the named queue lane
   `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
