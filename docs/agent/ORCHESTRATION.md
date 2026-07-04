@@ -137,6 +137,18 @@ in CI (aa948db77), so a molt-runtime break can no longer accumulate atop passing
 non-build gates. Every lane touching molt-runtime must still run a full-feature
 build before landing, but CI is now the backstop.
 
+⚠️ MOLT-RUNTIME CLIPPY GATE (`clippy --all-targets -p molt-runtime -- -D warnings`)
+is RED on pre-existing debt in **molt-cpython-abi/src/api/** — the WITNESS LANE's
+territory. Remaining errors (2026-07-04): `buffer.rs:86-87,123-124`
+field_reassign_with_default; `buffer.rs:529` match→unwrap_or_default;
+`imports.rs:111` collapsible_if; `strings.rs:454` let_and_return.
+**cpython-abi lane owner: fix these in your next arc** (you edit buffer.rs anyway);
+they block the clippy gate for every molt-runtime decomposition lane. The
+orchestrator already cleared the other 5 (e4710c05a): 2 tk-split import-gating
+regressions (filehandlers/timers) + 3 peripheral (wasi_sysroot lib_dir dead_code +
+let-chain collapses in wasi_sysroot/tarfile). Do NOT let another lane touch
+molt-cpython-abi/src/api/** — hot witness lane.
+
 BUILD-LEAK PREVENTION (2026-07-04, all lanes benefit): the memory-pressure /
 orphaned-build-process class is now closed at the source. `tools/win_job.py` +
 `memory_guard.run_guarded` wire every guarded build into a Windows Job Object with
@@ -186,11 +198,12 @@ generated):
   need internal helper extraction, deferred.
 - **molt-tir 19,835 · molt-backend-luau 18,161 · molt-runtime-serial 17,546** —
   mid-size, decomposable as capacity frees.
-- **runtime/molt-runtime/src/builtins/functions_pickle/binary.rs 3378** — 🔧
-  ORCHESTRATOR SUBAGENT IN FLIGHT (rip-pickle-binary-20260704): move-only split
-  of the pickle binary-protocol god-file (67 independent fns, cohesive, off the
-  witness/buffer/import critical path). CLAIMED — Codex do not touch
-  functions_pickle/**.
+- **runtime/molt-runtime/src/builtins/functions_pickle/binary.rs 3378** — ✅
+  LANDED (840f76ab7): move-only split into binary/{consts,state,read,dump,load,
+  entry}.rs + mod.rs; byte-identical bodies (3375 lines reconstruct exactly),
+  4 extern-C entrypoints preserved, cargo check rc=0, clippy-clean, kitchen_sink
+  score 568→0. Only the ~950-line load VM (`molt_pickle_loads_core`) stays whole
+  in entry.rs (one function, move-only forbids splitting it).
 - **tools/proof_queue.py** — ✅ DONE (f94f3a4f9): decomposed 5760 → 4457 lines,
   the 3 god-regions (`_run_diagnostics`/`_run_one`/`_build_parser`) extracted into
   modules; kitchen_sink ratchet CLEARED (score 0, is_god False on origin), no
