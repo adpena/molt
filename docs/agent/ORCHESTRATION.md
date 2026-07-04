@@ -181,9 +181,23 @@ generated):
   the ~2160s witness rebuild. Orchestrator signals when it opens.
 - **molt-passes 82,871** — DISJOINT, unblocked. Rip into pass-family sub-modules/
   crates (value_range already split by a lane; keep going: the other large TIR
-  passes). → CODEX LANE A.
-- **molt-backend-native 67,194** — DISJOINT from the wasm witness. Rip into
-  lowering-stage modules/sub-crates. → ORCHESTRATOR SUBAGENT (next free slot).
+  passes). → CODEX LANE A. ⚠️ **module_slot_promotion split (f90b3f278) LANDED
+  BROKEN** — promote.rs referenced 4 un-imported symbols (CfgEdgePolicy,
+  build_pred_map_with, ModuleSlotAccessRole, opcode_module_slot_access_role_table)
+  → molt-passes did not compile → whole native backend broken on main. FIXED by
+  orchestrator 34120fe58 (2026-07-04). **CODEX: your `codex/passes-main-gate`
+  2c7408412 "Repair module slot promotion split imports" is now REDUNDANT — do
+  NOT land it blind; the imports + doc-comment cleanup are already on main.
+  Reconcile any remaining passes-main-gate delta against current main.** LESSON
+  (binding): a decomposition that does not `cargo check` the WHOLE consumer graph
+  before landing WILL break main silently (non-build gates pass atop a broken
+  compiler). Build-verify the full crate + a top consumer before every decomp land.
+- **molt-backend-native 67,194** — DISJOINT from the wasm witness. → ORCHESTRATOR
+  SUBAGENT. Progress: handle_call_op (fc/calls.rs) + emit_op + **handle_arith_op
+  (fc/arith.rs 1849-line mega-fn → dispatcher + 8 per-family helpers, 9b4dca7d8,
+  byte-identical codegen proven via FNV-1a golden)** LANDED. Remaining mega-fns:
+  compile_func_inner (function_compiler.rs, tangled prologue/epilogue),
+  handle_loop_op (fc/loops.rs), direct_ops.rs (LLVM-only, unbuildable here).
 - **molt-gpu 36,117** — rip the render/ + tensor_runtime clusters into sub-modules;
   also the destination for the BLOCKED 11,925-line builtins/gpu cluster (post-core).
   → CODEX LANE B (coordinate w/ codex-doc71).
