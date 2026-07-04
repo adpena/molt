@@ -1,5 +1,8 @@
-use super::*;
+use super::super::WasmFrameLocals;
+use crate::OpIR;
 use crate::wasm_binary::emit_call;
+use crate::wasm_import_tracking::TrackedImportIds;
+use wasm_encoder::Function;
 use wasm_encoder::Instruction;
 
 pub(super) fn emit_local_slot_op(
