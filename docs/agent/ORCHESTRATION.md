@@ -294,9 +294,19 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
   longer flattened), Py_BuildValue list/dict/char units (920956c86, numpy
   cleared it), static-extension init unwind (300c6e907), and the first batch
   of numpy-exec CPython C-API primitives + silent-failure tracer
-  (4ce56305d, capi_trace.rs). Current frontier: numpy `_multiarray_umath_exec`
-  returns -1 inside `setup_scalartypes` — a chain of C-API primitive gaps
-  being closed one decisive-trace at a time.
+  (4ce56305d, capi_trace.rs). **UPDATE 2026-07-04: the numpy-exec frontier has
+  MOVED OUT of the numpy C-API lane.** The `_multiarray_umath` exec -1 is no
+  longer reproducible; the last documented `PyType_Ready` gap — static
+  `tp_members`/`tp_getset` tables ignored + `PyDescr_NewGetSet`/`NewMember` as
+  Py_None stubs on numpy's readied types (PyArrayDescr_Type/PyArray_Type/
+  PyUFunc_Type) — is CLOSED (**af9c050df**: real descriptors + descriptor
+  protocol + honest exceptions + 7 tests, independently reproduced rc=0). A
+  numpy-only probe now compiles app+numpy to a 30MB output.wasm. **The
+  EXIT-CRITERION FRONTIER is now UPSTREAM in the FRONTEND:** the witness fails at
+  `molt build` with `call to non-allowlisted function 'distance_transform_edt'`
+  (scipy.ndimage) at `field_solve.py:55` — this is the **CODEX ndimage lane**,
+  now the TOP exit-criterion blocker. To keep advancing numpy-exec independently,
+  the numpy-only probe isolates the CPython-ABI frontier past the ndimage gate.
 - LANE OWNERSHIP right now: numpy-exec C-API primitive closure = orchestrator's
   ONE subagent (owns runtime/molt-cpython-abi/src/api/*, lib.rs, capi_trace.rs,
   the exec/PyType_Ready/PyCFunction path). Buffer/ndarray/dtype/shape/stride/
