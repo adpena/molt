@@ -43,9 +43,21 @@ _NORMALIZERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b\d{3,}\b"), "<n>"),                       # long bare integers
 )
 
+# The SPECIFIC inner error we want (rust/python/link/guard), most-specific first.
 _ERROR_HINT = re.compile(
-    r"(?:^|\W)(error\[?[A-Z]?\d*\]?|panicked|assertion|failed|FAILED|exception|"
-    r"could not compile|linker|undefined reference|timeout|OOM|killed)",
+    r"error\[E\d+\]|error\[[A-Z]+\d+\]|thread '.*?' panicked|panicked at|"
+    r"could not compile|undefined reference|unresolved import|cannot find|"
+    r"\w+Error:|\w+Exception|AssertionError|assert(?:ion)? .*failed|"
+    r"E\s{2,}assert|LNK\d+|fatal error|SIGSEGV|SIGABRT|memory-guard: .*(?:timeout|rss)",
+    re.I,
+)
+
+# proof_queue / guard WRAPPER boilerplate — the generic outer envelope, NOT the
+# actual failure. Skipping it is what makes a signature specific + actionable.
+_WRAPPER = re.compile(
+    r"^\s*(?:proof_queue|memory_guard|guarded_exec|orphan_reaper)\b|"
+    r"finished status=|CARGO_EXIT_CODE=|^=+ |returncode=|"
+    r"elapsed=|last_log_age=|running-|--- error count ---|^\s*\d+\s*$",
     re.I,
 )
 
@@ -58,7 +70,9 @@ def _normalize(line: str) -> str:
 
 
 def _signature(log_path: str) -> str | None:
-    """The most error-like normalized line near the tail of a run log."""
+    """The most-specific inner error near the tail, digging PAST the proof_queue
+    wrapper boilerplate (which otherwise collapses every failure to the same
+    generic ``finished status=failed`` line)."""
     p = Path(log_path)
     if not p.is_absolute():
         p = ROOT / log_path
@@ -68,11 +82,15 @@ def _signature(log_path: str) -> str | None:
         return None
     if not lines:
         return None
-    tail = lines[-40:]
+    body = [ln for ln in lines if not _WRAPPER.search(ln)]
+    tail = body[-60:] if body else lines[-60:]
+    # Prefer a specific inner error, scanning from the tail up.
     for ln in reversed(tail):
         if _ERROR_HINT.search(ln):
             return _normalize(ln)
-    return _normalize(tail[-1])
+    # No specific error found: fall back to the last non-wrapper line so the
+    # signature at least reflects the real command context, not the envelope.
+    return _normalize(tail[-1]) if tail else None
 
 
 @dataclass
