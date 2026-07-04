@@ -6,7 +6,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{ModuleSlotAccessRole, opcode_module_slot_access_role_table};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
@@ -616,5 +618,3 @@ fn alloc_store_back_ops(
     }
     ops
 }
-
-/// Rewrite every value operand in `term` through `f`.
