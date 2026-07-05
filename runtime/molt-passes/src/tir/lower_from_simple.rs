@@ -4,8 +4,14 @@
 //! into a single `lower_to_tir` entry point.
 
 mod pre_ssa;
+mod type_inference;
 
 use self::pre_ssa::{rewrite_cell_locals_to_store_load, rewrite_loop_index_to_store_load};
+#[cfg(test)]
+use self::type_inference::string_to_tir_type;
+use self::type_inference::{
+    infer_return_type, param_string_to_tir_type, propagate_arithmetic_types,
+};
 use std::collections::HashMap;
 
 use crate::ir::FunctionIR;
@@ -16,7 +22,6 @@ use super::function::{TirFunction, TirModule};
 use super::op_kinds_generated::opcode_sets_exception_handling_table;
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::types::TirType;
-use super::values::ValueId;
 
 /// Lift every **non-extern** `FunctionIR` in `functions` to TIR and assemble a
 /// [`TirModule`] for the whole-program module phase (the E1 inliner). Returns the
@@ -378,97 +383,6 @@ fn detect_loop_cond_blocks(ir: &FunctionIR, cfg: &CFG) -> HashMap<BlockId, Block
         }
     }
     loop_cond_blocks
-}
-
-/// Forward type propagation for scalar return-relevant operation results.
-///
-/// Parameter signatures are seeded before this pass, so the same canonical
-/// scalar result inference used by TIR refinement can derive return contracts
-/// from typed parameters, constants, and prior propagation. Container and
-/// aggregate types are deliberately left to the full refinement pipeline after
-/// TIR construction so this pre-assembly pass cannot duplicate richer type
-/// lattice behavior.
-/// This runs iteratively until no new types are discovered.
-fn propagate_arithmetic_types(blocks: &[TirBlock], types: &mut HashMap<ValueId, TirType>) {
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for block in blocks {
-            for op in &block.ops {
-                if op.results.is_empty() {
-                    continue;
-                }
-                let result_id = op.results[0];
-                // Skip if already typed
-                if types.get(&result_id).is_some_and(|t| *t != TirType::DynBox) {
-                    continue;
-                }
-
-                let operand_types: Vec<TirType> = op
-                    .operands
-                    .iter()
-                    .map(|id| types.get(id).cloned().unwrap_or(TirType::DynBox))
-                    .collect();
-                if let Some(inferred) = super::type_refine::infer_scalar_return_result_type(
-                    op.opcode,
-                    &operand_types,
-                    Some(&op.attrs),
-                ) {
-                    types.insert(result_id, inferred);
-                    changed = true;
-                }
-            }
-        }
-    }
-}
-
-/// Convert a string type annotation to a `TirType`.
-fn string_to_tir_type(s: &str) -> TirType {
-    match s {
-        "int" | "i64" => TirType::I64,
-        "float" | "f64" => TirType::F64,
-        _ => match TirType::from_type_hint(s) {
-            TirType::UserClass(_) => TirType::DynBox,
-            ty => ty,
-        },
-    }
-}
-
-fn param_string_to_tir_type(s: &str) -> TirType {
-    match s {
-        "i64" => TirType::DynBox,
-        _ => string_to_tir_type(s),
-    }
-}
-
-/// Infer the function return type by examining all Return terminators.
-/// Uses a lattice meet to combine multiple return types.
-fn infer_return_type(blocks: &[TirBlock], types: &HashMap<ValueId, TirType>) -> TirType {
-    use super::blocks::Terminator;
-
-    let mut result_type: Option<TirType> = None;
-
-    for block in blocks {
-        if let Terminator::Return { values } = &block.terminator {
-            let ret_ty = if values.is_empty() {
-                TirType::None
-            } else {
-                // Use the type of the first return value.
-                values
-                    .first()
-                    .and_then(|vid| types.get(vid))
-                    .cloned()
-                    .unwrap_or(TirType::DynBox)
-            };
-
-            result_type = Some(match result_type {
-                None => ret_ty,
-                Some(existing) => existing.meet(&ret_ty),
-            });
-        }
-    }
-
-    result_type.unwrap_or(TirType::None)
 }
 
 // Use shared is_structural from parent module (ensures SSA and lower_from_simple
