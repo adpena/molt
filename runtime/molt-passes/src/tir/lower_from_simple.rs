@@ -3,9 +3,11 @@
 //! Chains together CFG extraction, SSA conversion, and TIR function assembly
 //! into a single `lower_to_tir` entry point.
 
+mod loop_structure;
 mod pre_ssa;
 mod type_inference;
 
+use self::loop_structure::{detect_loop_cond_blocks, detect_loop_structure};
 use self::pre_ssa::{rewrite_cell_locals_to_store_load, rewrite_loop_index_to_store_load};
 #[cfg(test)]
 use self::type_inference::string_to_tir_type;
@@ -16,7 +18,7 @@ use std::collections::HashMap;
 
 use crate::ir::FunctionIR;
 
-use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
+use super::blocks::{BlockId, TirBlock};
 use super::cfg::CFG;
 use super::function::{TirFunction, TirModule};
 use super::op_kinds_generated::opcode_sets_exception_handling_table;
@@ -235,7 +237,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     }
 
     // Detect loop structural roles from the original SimpleIR ops.
-    let (loop_roles, loop_pairs, loop_break_kinds) = detect_loop_structure(ir, cfg, &block_map);
+    let (loop_roles, loop_pairs, loop_break_kinds) = detect_loop_structure(ir, cfg);
     let loop_cond_blocks = detect_loop_cond_blocks(ir, cfg);
 
     TirFunction {
@@ -273,116 +275,6 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         loop_break_kinds,
         loop_cond_blocks,
     }
-}
-
-/// Scan the original SimpleIR ops and CFG to detect which TIR blocks correspond
-/// to `loop_start` and `loop_end` structural markers, which loop-end pairs with
-/// each header, and what the original loop-break polarity was.
-fn detect_loop_structure(
-    ir: &FunctionIR,
-    cfg: &CFG,
-    _block_map: &HashMap<BlockId, TirBlock>,
-) -> (
-    HashMap<BlockId, LoopRole>,
-    HashMap<BlockId, BlockId>,
-    HashMap<BlockId, LoopBreakKind>,
-) {
-    let mut roles = HashMap::new();
-    let mut loop_pairs = HashMap::new();
-    let mut loop_break_kinds = HashMap::new();
-    let block_containing = |op_idx: usize| -> Option<BlockId> {
-        cfg.blocks
-            .iter()
-            .position(|bb| bb.start_op <= op_idx && op_idx < bb.end_op)
-            .map(|bid| BlockId(bid as u32))
-    };
-    for (bid, bb) in cfg.blocks.iter().enumerate() {
-        if bb.start_op >= ir.ops.len() {
-            continue;
-        }
-        let first_kind = ir.ops[bb.start_op].kind.as_str();
-        match first_kind {
-            "loop_start" => {
-                roles.insert(BlockId(bid as u32), LoopRole::LoopHeader);
-            }
-            "loop_end" => {
-                roles.insert(BlockId(bid as u32), LoopRole::LoopEnd);
-            }
-            _ => {}
-        }
-    }
-    let mut loop_stack: Vec<(usize, BlockId)> = Vec::new();
-    for (op_idx, op) in ir.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" => {
-                if let Some(header_bid) = block_containing(op_idx) {
-                    loop_stack.push((op_idx, header_bid));
-                }
-            }
-            "loop_end" => {
-                let Some((header_op_idx, header_bid)) = loop_stack.pop() else {
-                    continue;
-                };
-                let Some(end_bid) = block_containing(op_idx) else {
-                    continue;
-                };
-                loop_pairs.insert(header_bid, end_bid);
-
-                let mut nested_depth = 0usize;
-                for inner_idx in (header_op_idx + 1)..op_idx {
-                    match ir.ops[inner_idx].kind.as_str() {
-                        "loop_start" => nested_depth += 1,
-                        "loop_end" => nested_depth = nested_depth.saturating_sub(1),
-                        "loop_break_if_true" if nested_depth == 0 => {
-                            loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfTrue);
-                            break;
-                        }
-                        "loop_break_if_false" if nested_depth == 0 => {
-                            loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfFalse);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (roles, loop_pairs, loop_break_kinds)
-}
-
-fn detect_loop_cond_blocks(ir: &FunctionIR, cfg: &CFG) -> HashMap<BlockId, BlockId> {
-    let mut loop_cond_blocks = HashMap::new();
-    let block_containing = |op_idx: usize| -> Option<BlockId> {
-        cfg.blocks
-            .iter()
-            .position(|bb| bb.start_op <= op_idx && op_idx < bb.end_op)
-            .map(|bid| BlockId(bid as u32))
-    };
-    let mut loop_stack: Vec<(usize, BlockId)> = Vec::new();
-    for (op_idx, op) in ir.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" => {
-                if let Some(header_bid) = block_containing(op_idx) {
-                    loop_stack.push((op_idx, header_bid));
-                }
-            }
-            "loop_end" => {
-                loop_stack.pop();
-            }
-            "loop_break_if_true" | "loop_break_if_false" => {
-                let Some((_, header_bid)) = loop_stack.last().copied() else {
-                    continue;
-                };
-                let Some(cond_bid) = block_containing(op_idx) else {
-                    continue;
-                };
-                loop_cond_blocks.entry(header_bid).or_insert(cond_bid);
-            }
-            _ => {}
-        }
-    }
-    loop_cond_blocks
 }
 
 // Use shared is_structural from parent module (ensures SSA and lower_from_simple
