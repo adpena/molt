@@ -33,7 +33,7 @@ performance-first C-extension compatibility without embedding CPython.
   - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
   - Public header: `include/molt/molt.h`
   - CPython-compat shim headers: `include/Python.h`, `include/molt/Python.h`
-  - Current version constant: `MOLT_C_API_VERSION = 3`
+  - Current version constant: `MOLT_C_API_VERSION = 4`
 
 ---
 
@@ -66,12 +66,18 @@ not observable through this accessor.
 - `molt_object_equal`, `molt_object_not_equal`, `molt_object_contains`
 - `molt_c_heap_register`, `molt_c_heap_unregister`, `molt_c_heap_contains`
 - `molt_c_heap_type_canonicalize`
+- `molt_c_heap_register_buffer_exporter`, `molt_c_heap_register_buffer_releaser`
+- `molt_c_heap_export_buffer`, `molt_c_heap_release_buffer`
 
 `molt_c_heap_*` is the public-header C-object provenance lane. It lets
 source-compatible headers expose real C heap pointers for extension-local
 objects, while generic `Py_INCREF`/`Py_DECREF`/type checks avoid treating those
 pointers as Molt handles. Type canonicalization is keyed by explicit kind so
 header-inline type objects keep one identity across C translation units.
+Buffer exporter/releaser hooks make C-heap objects first-class buffer owners:
+the public header must release a C-heap buffer through the same object-kind hook
+that exported it, and runtime validation rejects forged or out-of-bounds
+descriptors before the view crosses the ABI.
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`

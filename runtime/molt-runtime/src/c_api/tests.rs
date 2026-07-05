@@ -4604,3 +4604,236 @@ fn c_api_unicode_extended() {
         dec_ref_bits(_py, s);
     });
 }
+
+#[repr(C)]
+struct FakeCHeapHeader {
+    magic: u64,
+    refcnt: u32,
+    kind: u32,
+    type_ptr: usize,
+    dealloc: usize,
+}
+
+const FAKE_C_HEAP_MAGIC: u64 = 0x4d4f_4c54_434f_424a;
+const FAKE_C_HEAP_BUFFER_KIND: u32 = 0x5151_4101;
+const FAKE_C_HEAP_BUFFER_TYPE_KIND: u32 = 0x5151_5401;
+const FAKE_C_HEAP_INVALID_KIND: u32 = 0x5151_4102;
+const FAKE_C_HEAP_INVALID_TYPE_KIND: u32 = 0x5151_5402;
+static FAKE_C_HEAP_BUFFER_DATA: [u8; 4] = [1, 2, 3, 4];
+static FAKE_C_HEAP_EXPORTS: AtomicUsize = AtomicUsize::new(0);
+static FAKE_C_HEAP_RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn fake_c_heap_buffer_export(_ptr: usize, out_view: *mut MoltBufferView) -> i32 {
+    if out_view.is_null() {
+        return -1;
+    }
+    unsafe {
+        *out_view = MoltBufferView::default();
+        (*out_view).data = FAKE_C_HEAP_BUFFER_DATA.as_ptr().cast_mut();
+        (*out_view).len = FAKE_C_HEAP_BUFFER_DATA.len() as u64;
+        (*out_view).backing_capacity = FAKE_C_HEAP_BUFFER_DATA.len() as u64;
+        (*out_view).readonly = 1;
+        (*out_view).ndim = 1;
+        (*out_view).itemsize = 1;
+        (*out_view).shape[0] = FAKE_C_HEAP_BUFFER_DATA.len() as isize;
+        (*out_view).strides[0] = 1;
+    }
+    FAKE_C_HEAP_EXPORTS.fetch_add(1, Ordering::SeqCst);
+    0
+}
+
+unsafe extern "C" fn fake_c_heap_buffer_export_alt(
+    _ptr: usize,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    if !out_view.is_null() {
+        unsafe {
+            *out_view = MoltBufferView::default();
+        }
+    }
+    -1
+}
+
+unsafe extern "C" fn fake_c_heap_invalid_buffer_export(
+    _ptr: usize,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    if out_view.is_null() {
+        return -1;
+    }
+    unsafe {
+        *out_view = MoltBufferView::default();
+        (*out_view).data = FAKE_C_HEAP_BUFFER_DATA.as_ptr().cast_mut();
+        (*out_view).len = FAKE_C_HEAP_BUFFER_DATA.len() as u64;
+        (*out_view).backing_capacity = 1;
+        (*out_view).readonly = 1;
+        (*out_view).ndim = 1;
+        (*out_view).itemsize = 1;
+        (*out_view).shape[0] = FAKE_C_HEAP_BUFFER_DATA.len() as isize;
+        (*out_view).strides[0] = 1;
+    }
+    0
+}
+
+unsafe extern "C" fn fake_c_heap_buffer_release(_ptr: usize, view: *mut MoltBufferView) -> i32 {
+    if view.is_null() {
+        return -1;
+    }
+    unsafe {
+        *view = MoltBufferView::default();
+    }
+    FAKE_C_HEAP_RELEASES.fetch_add(1, Ordering::SeqCst);
+    0
+}
+
+#[test]
+fn c_heap_buffer_hooks_require_releaser_and_stable_registration() {
+    let _guard = CApiTestGuard::new();
+    FAKE_C_HEAP_EXPORTS.store(0, Ordering::SeqCst);
+    FAKE_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
+    let mut type_obj = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: u32::MAX,
+        kind: FAKE_C_HEAP_BUFFER_TYPE_KIND,
+        type_ptr: 0,
+        dealloc: 0,
+    };
+    type_obj.type_ptr = (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let mut object = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: 1,
+        kind: FAKE_C_HEAP_BUFFER_KIND,
+        type_ptr: (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize,
+        dealloc: 0,
+    };
+    let type_ptr = (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let object_ptr = (&mut object as *mut FakeCHeapHeader).cast::<()>() as usize;
+
+    assert_eq!(molt_c_heap_register(type_ptr), 0);
+    assert_eq!(molt_c_heap_register(object_ptr), 0);
+    assert_eq!(
+        molt_c_heap_register_buffer_releaser(
+            FAKE_C_HEAP_BUFFER_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_release),
+        ),
+        -1
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_exporter(
+            FAKE_C_HEAP_BUFFER_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_export),
+        ),
+        0
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_exporter(
+            FAKE_C_HEAP_BUFFER_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_export),
+        ),
+        0
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_exporter(
+            FAKE_C_HEAP_BUFFER_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_export_alt),
+        ),
+        -1
+    );
+
+    let mut view = MoltBufferView::default();
+    assert_eq!(
+        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        -1
+    );
+    assert_eq!(
+        unsafe { molt_c_heap_release_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        -1
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_releaser(
+            FAKE_C_HEAP_BUFFER_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_release),
+        ),
+        0
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_releaser(
+            FAKE_C_HEAP_BUFFER_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_release),
+        ),
+        0
+    );
+    assert_eq!(
+        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        0
+    );
+    assert_eq!(view.len, FAKE_C_HEAP_BUFFER_DATA.len() as u64);
+    assert_eq!(FAKE_C_HEAP_EXPORTS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        unsafe { molt_c_heap_release_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        0
+    );
+    assert_eq!(view.len, 0);
+    assert_eq!(FAKE_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
+
+    let _ = molt_c_heap_unregister(object_ptr);
+    let _ = molt_c_heap_unregister(type_ptr);
+}
+
+#[test]
+fn c_heap_buffer_export_releases_invalid_descriptors() {
+    let _guard = CApiTestGuard::new();
+    FAKE_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
+    let mut type_obj = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: u32::MAX,
+        kind: FAKE_C_HEAP_INVALID_TYPE_KIND,
+        type_ptr: 0,
+        dealloc: 0,
+    };
+    type_obj.type_ptr = (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let mut object = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: 1,
+        kind: FAKE_C_HEAP_INVALID_KIND,
+        type_ptr: (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize,
+        dealloc: 0,
+    };
+    let type_ptr = (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let object_ptr = (&mut object as *mut FakeCHeapHeader).cast::<()>() as usize;
+
+    assert_eq!(molt_c_heap_register(type_ptr), 0);
+    assert_eq!(molt_c_heap_register(object_ptr), 0);
+    assert_eq!(
+        molt_c_heap_register_buffer_exporter(
+            FAKE_C_HEAP_INVALID_KIND,
+            type_ptr,
+            Some(fake_c_heap_invalid_buffer_export),
+        ),
+        0
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_releaser(
+            FAKE_C_HEAP_INVALID_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_release),
+        ),
+        0
+    );
+    let mut view = MoltBufferView::default();
+    assert_eq!(
+        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        -1
+    );
+    assert_eq!(view.len, 0);
+    assert_eq!(FAKE_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
+
+    let _ = molt_c_heap_unregister(object_ptr);
+    let _ = molt_c_heap_unregister(type_ptr);
+}

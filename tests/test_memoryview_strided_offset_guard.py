@@ -24,6 +24,7 @@ CPYTHON_ABI_TYPES_PATH = ROOT / "runtime/molt-cpython-abi/src/abi_types.rs"
 CPYTHON_ABI_BUFFER_PATH = ROOT / "runtime/molt-cpython-abi/src/api/buffer.rs"
 HTTP_BRIDGE_PATH = ROOT / "runtime/molt-runtime-http/src/bridge.rs"
 NUMPY_HEADER_PATH = ROOT / "include/numpy/ndarrayobject.h"
+NUMPY_TYPES_HEADER_PATH = ROOT / "include/numpy/ndarraytypes.h"
 NUMPY_UFUNC_HEADER_PATH = ROOT / "include/numpy/ufuncobject.h"
 
 MOLT_BUFFER_VIEW_FIELDS = [
@@ -99,7 +100,9 @@ def _c_molt_buffer_fields(source: str) -> list[str]:
 
 
 def _rust_molt_buffer_fields(source: str) -> list[str]:
-    match = re.search(r"pub\s+struct\s+MoltBufferView\s*\{(?P<body>.*?)\n\}", source, re.S)
+    match = re.search(
+        r"pub\s+struct\s+MoltBufferView\s*\{(?P<body>.*?)\n\}", source, re.S
+    )
     assert match is not None, "Rust MoltBufferView struct is missing"
     fields: list[str] = []
     for raw_line in match.group("body").splitlines():
@@ -132,7 +135,9 @@ def _rust_const_value(source: str, name: str) -> int:
 def test_memoryview_offsets_use_checked_stride_primitives() -> None:
     offenders: list[str] = []
     for path in MEMORYVIEW_OFFSET_FILES:
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             if any(pattern.search(line) for pattern in FORBIDDEN_RAW_STRIDE_PATTERNS):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()}")
 
@@ -144,9 +149,9 @@ def test_memoryview_offsets_use_checked_stride_primitives() -> None:
 
 
 def test_memoryview_contains_uses_strided_search_without_materializing_view() -> None:
-    subscript_source = (ROOT / "runtime/molt-runtime/src/object/ops/subscript.rs").read_text(
-        encoding="utf-8"
-    )
+    subscript_source = (
+        ROOT / "runtime/molt-runtime/src/object/ops/subscript.rs"
+    ).read_text(encoding="utf-8")
     contains_body = _rust_function_body(subscript_source, "molt_contains")
 
     assert "unsafe fn memoryview_strided_contains_byte" in subscript_source
@@ -167,21 +172,127 @@ def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
     assert _c_molt_buffer_fields(header_source) == MOLT_BUFFER_VIEW_FIELDS
     assert _rust_molt_buffer_fields(runtime_source) == MOLT_BUFFER_VIEW_FIELDS
     assert _rust_molt_buffer_fields(cpython_abi_source) == MOLT_BUFFER_VIEW_FIELDS
-    assert _canonical_buffer_fields(
-        _rust_molt_buffer_fields(http_bridge_source.replace("BufferExport", "MoltBufferView"))
-    ) == MOLT_BUFFER_VIEW_FIELDS
-    assert _c_define_value(header_source, "MOLT_C_API_VERSION") == 3
-    assert _rust_const_value(c_api_source, "MOLT_C_API_VERSION") == 3
-    assert "int32_t molt_buffer_export(MoltHandle obj_bits, MoltBufferView *out_view);" in header_source
-    assert '#define molt_buffer_export ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_export"))' in header_source
+    assert (
+        _canonical_buffer_fields(
+            _rust_molt_buffer_fields(
+                http_bridge_source.replace("BufferExport", "MoltBufferView")
+            )
+        )
+        == MOLT_BUFFER_VIEW_FIELDS
+    )
+    assert _c_define_value(header_source, "MOLT_C_API_VERSION") == 4
+    assert _rust_const_value(c_api_source, "MOLT_C_API_VERSION") == 4
+    assert (
+        "int32_t molt_buffer_export(MoltHandle obj_bits, MoltBufferView *out_view);"
+        in header_source
+    )
+    assert (
+        '#define molt_buffer_export ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_export"))'
+        in header_source
+    )
+    assert (
+        "typedef int32_t (*MoltCHeapBufferExporter)(uintptr_t ptr, MoltBufferView *out_view);"
+        in header_source
+    )
+    assert (
+        "typedef int32_t (*MoltCHeapBufferReleaser)(uintptr_t ptr, MoltBufferView *view);"
+        in header_source
+    )
     assert "int32_t molt_c_heap_register(uintptr_t ptr);" in header_source
     assert "int32_t molt_c_heap_unregister(uintptr_t ptr);" in header_source
     assert "int32_t molt_c_heap_contains(uintptr_t ptr);" in header_source
-    assert "uintptr_t molt_c_heap_type_canonicalize(uint32_t kind, uintptr_t ptr);" in header_source
-    assert "pub extern \"C\" fn molt_c_heap_register(ptr: usize) -> i32" in c_api_symbols_source
-    assert "pub extern \"C\" fn molt_c_heap_unregister(ptr: usize) -> i32" in c_api_symbols_source
-    assert "pub extern \"C\" fn molt_c_heap_contains(ptr: usize) -> i32" in c_api_symbols_source
-    assert "pub extern \"C\" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize" in c_api_symbols_source
+    assert (
+        "uintptr_t molt_c_heap_type_canonicalize(uint32_t kind, uintptr_t ptr);"
+        in header_source
+    )
+    assert (
+        "int32_t molt_c_heap_register_buffer_exporter(uint32_t kind, uintptr_t type_ptr,"
+        in header_source
+    )
+    assert (
+        "int32_t molt_c_heap_register_buffer_releaser(uint32_t kind, uintptr_t type_ptr,"
+        in header_source
+    )
+    assert (
+        "int32_t molt_c_heap_export_buffer(uintptr_t ptr, MoltBufferView *out_view);"
+        in header_source
+    )
+    assert (
+        "int32_t molt_c_heap_release_buffer(uintptr_t ptr, MoltBufferView *view);"
+        in header_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_register(ptr: usize) -> i32'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_unregister(ptr: usize) -> i32'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_contains(ptr: usize) -> i32'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_register_buffer_exporter('
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_register_buffer_releaser('
+        in c_api_symbols_source
+    )
+    assert 'pub unsafe extern "C" fn molt_c_heap_export_buffer(' in c_api_symbols_source
+    assert (
+        'pub unsafe extern "C" fn molt_c_heap_release_buffer(' in c_api_symbols_source
+    )
+
+    c_heap_export_body = _rust_function_body(
+        c_api_symbols_source, "molt_c_heap_export_buffer"
+    )
+    c_heap_release_body = _rust_function_body(
+        c_api_symbols_source, "molt_c_heap_release_buffer"
+    )
+    c_heap_valid_body = _rust_function_body(
+        c_api_symbols_source, "c_heap_buffer_view_is_valid"
+    )
+    assert "TypedStridedStorage::new" in c_heap_valid_body
+    assert "storage.len == len" in c_heap_valid_body
+    assert "storage.fits_in_backing_len(backing_capacity)" in c_heap_valid_body
+    assert "(entry.exporter)(ptr, out_view)" in c_heap_export_body
+    assert "let Some(releaser) = entry.releaser" in c_heap_export_body
+    assert "*out_view = MoltBufferView::default()" in c_heap_export_body
+    assert "Some(releaser) => unsafe { releaser(ptr, view) }" in c_heap_release_body
+
+
+def test_public_python_h_routes_c_heap_buffers_through_export_owner() -> None:
+    header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
+    getbuffer_body = _function_body(header_source, "PyObject_GetBuffer")
+    release_helper_body = _function_body(
+        header_source, "_molt_pybuffer_release_exported_view"
+    )
+    check_body = _function_body(header_source, "PyObject_CheckBuffer")
+
+    assert (
+        "molt_c_heap_export_buffer((uintptr_t)obj, &view->_molt_view)" in getbuffer_body
+    )
+    assert (
+        "molt_buffer_acquire(_molt_py_handle_unchecked(obj), &view->_molt_view)"
+        in getbuffer_body
+    )
+    assert (
+        "molt_c_heap_release_buffer((uintptr_t)obj, &view->_molt_view)"
+        in release_helper_body
+    )
+    assert "molt_buffer_release(&view->_molt_view)" in release_helper_body
+    assert "_molt_pybuffer_release_exported_view(obj, view)" in getbuffer_body
+    assert "molt_c_heap_export_buffer((uintptr_t)obj, &tmp) == 0" in check_body
+    assert "molt_c_heap_release_buffer((uintptr_t)obj, &tmp)" in check_body
+    assert "molt_buffer_release(&tmp)" in check_body
+    assert "_molt_pybuffer_release_exported_view(obj, &view)" not in check_body
 
 
 def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
@@ -217,7 +328,9 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     assert "storage.fits_in_backing_len(backing_len)" not in from_buffer_body
 
 
-def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> None:
+def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> (
+    None
+):
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     body = _function_body(header_source, "PyMemoryView_FromBuffer")
 
@@ -229,9 +342,17 @@ def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_on
     assert "trusted_molt_view = info->internal == &info->_molt_view" in body
     assert "ndim = info->ndim" in body
     assert "info->ndim > 0 ? info->ndim : 1" not in body
-    assert "view.backing_capacity = trusted_molt_view ? info->_molt_view.backing_capacity : view.len" in body
+    assert (
+        "view.backing_capacity = trusted_molt_view ? info->_molt_view.backing_capacity : view.len"
+        in body
+    )
     assert "view.offset = trusted_molt_view ? info->_molt_view.offset : 0" in body
-    assert "PyBuffer_FillContiguousStrides((int)ndim, view.shape, view.strides, (int)view.itemsize, 'C')" in body
+    assert "_molt_c_heap_object_is(info->obj)" in body
+    assert "return _molt_c_heap_memoryview_from_object(info->obj)" in body
+    assert (
+        "PyBuffer_FillContiguousStrides((int)ndim, view.shape, view.strides, (int)view.itemsize, 'C')"
+        in body
+    )
     assert "strided foreign buffer requires runtime backing capacity" in body
     assert "? info->_molt_view.base" in body
     assert ": (info->obj != NULL ? _molt_py_handle(info->obj) : 0)" in body
@@ -285,9 +406,9 @@ def test_compiled_abi_rejects_indirect_pybuffer_topology() -> None:
     assert "is_registered_buffer_internal(info.internal)" in descriptor_body
     assert "(*info.internal.cast::<BufferInternal>()).descriptor" in descriptor_body
     assert "descriptor.backing_capacity = info.len as u64" in descriptor_body
-    assert descriptor_body.find("(*info.internal.cast::<BufferInternal>()).descriptor") < descriptor_body.find(
-        "descriptor.backing_capacity = info.len as u64"
-    )
+    assert descriptor_body.find(
+        "(*info.internal.cast::<BufferInternal>()).descriptor"
+    ) < descriptor_body.find("descriptor.backing_capacity = info.len as u64")
     assert "let ndim = info.ndim as usize" in descriptor_body
     assert "info.ndim == 0" not in descriptor_body
     assert "!pybuffer_is_c_contiguous" in descriptor_body
@@ -309,14 +430,22 @@ def test_buffer_support_probe_does_not_require_simple_contiguity() -> None:
     compiled_body = _rust_function_body(abi_buffer_source, "PyObject_CheckBuffer")
 
     assert "MoltBufferView tmp" in public_body
-    assert "molt_buffer_acquire(_molt_py_handle(obj), &tmp)" in public_body
-    assert "molt_buffer_release(&tmp)" in public_body
+    assert "molt_buffer_acquire(_molt_py_handle_unchecked(obj), &tmp)" in public_body
+    assert "molt_c_heap_export_buffer((uintptr_t)obj, &tmp) == 0" in public_body
+    assert "molt_c_heap_release_buffer((uintptr_t)obj, &tmp)" in public_body
+    assert "_molt_pybuffer_release_exported_view(obj, &view)" not in public_body
     assert "PyBUF_SIMPLE" not in public_body
     assert "PyObject_GetBuffer" not in public_body
 
     assert "let mut descriptor = MoltBufferView::default()" in compiled_body
-    assert "(hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView)" in compiled_body
-    assert "(hooks.buffer_release)(&mut descriptor as *mut MoltBufferView)" in compiled_body
+    assert (
+        "(hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView)"
+        in compiled_body
+    )
+    assert (
+        "(hooks.buffer_release)(&mut descriptor as *mut MoltBufferView)"
+        in compiled_body
+    )
     assert "PyBUF_SIMPLE" not in compiled_body
     assert "PyObject_GetBuffer" not in compiled_body
 
@@ -325,19 +454,31 @@ def test_noncontiguous_buffers_require_stride_metadata() -> None:
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     abi_buffer_source = CPYTHON_ABI_BUFFER_PATH.read_text(encoding="utf-8")
 
-    public_descriptor_body = _function_body(header_source, "_molt_pybuffer_descriptor_satisfies_flags")
+    public_descriptor_body = _function_body(
+        header_source, "_molt_pybuffer_descriptor_satisfies_flags"
+    )
     public_getbuffer_body = _function_body(header_source, "PyObject_GetBuffer")
-    compiled_descriptor_body = _rust_function_body(abi_buffer_source, "descriptor_satisfies_flags")
-    compiled_install_body = _rust_function_body(abi_buffer_source, "install_buffer_internal")
+    compiled_descriptor_body = _rust_function_body(
+        abi_buffer_source, "descriptor_satisfies_flags"
+    )
+    compiled_install_body = _rust_function_body(
+        abi_buffer_source, "install_buffer_internal"
+    )
 
     assert "(flags & PyBUF_STRIDES) == 0" in public_descriptor_body
     assert "!_molt_buffer_view_is_c_contiguous(view)" in public_descriptor_body
-    assert "_molt_pybuffer_descriptor_satisfies_flags(&view->_molt_view, flags)" in public_getbuffer_body
+    assert (
+        "_molt_pybuffer_descriptor_satisfies_flags(&view->_molt_view, flags)"
+        in public_getbuffer_body
+    )
     assert "non-contiguous buffers require PyBUF_STRIDES" in public_getbuffer_body
 
     assert "(flags & PyBUF_STRIDES) == 0" in compiled_descriptor_body
     assert "!descriptor_is_c_contiguous(descriptor)" in compiled_descriptor_body
-    assert "descriptor_satisfies_flags(&internal.descriptor, flags)" in compiled_install_body
+    assert (
+        "descriptor_satisfies_flags(&internal.descriptor, flags)"
+        in compiled_install_body
+    )
     assert "non-contiguous buffers require PyBUF_STRIDES" in compiled_install_body
 
 
@@ -346,7 +487,9 @@ def test_buffer_format_metadata_fails_closed_instead_of_truncating() -> None:
     abi_buffer_source = CPYTHON_ABI_BUFFER_PATH.read_text(encoding="utf-8")
 
     public_memoryview_body = _function_body(header_source, "PyMemoryView_FromBuffer")
-    compiled_descriptor_body = _rust_function_body(abi_buffer_source, "descriptor_from_pybuffer")
+    compiled_descriptor_body = _rust_function_body(
+        abi_buffer_source, "descriptor_from_pybuffer"
+    )
 
     assert "size_t cap = MOLT_BUFFER_FORMAT_CAP - 1u" in public_memoryview_body
     assert "n > cap" in public_memoryview_body
@@ -359,19 +502,41 @@ def test_buffer_format_metadata_fails_closed_instead_of_truncating() -> None:
 
 def test_public_python_h_memoryview_get_buffer_has_per_object_cache() -> None:
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
+    from_object_body = _function_body(header_source, "PyMemoryView_FromObject")
+    from_buffer_body = _function_body(header_source, "PyMemoryView_FromBuffer")
+    check_body = _function_body(header_source, "PyMemoryView_Check")
     get_buffer_body = _function_body(header_source, "PyMemoryView_GET_BUFFER")
+    get_base_body = _function_body(header_source, "PyMemoryView_GET_BASE")
     cache_body = _function_body(header_source, "_molt_memoryview_export_cache_get")
     refresh_body = _function_body(header_source, "_molt_memoryview_export_refresh")
 
+    assert "_MOLT_C_HEAP_MEMORYVIEW" in header_source
+    assert "_MOLT_C_HEAP_MEMORYVIEW_TYPE" in header_source
+    assert "typedef struct _MoltCHeapMemoryView" in header_source
+    assert "_molt_c_heap_memoryview_from_object(obj)" in from_object_body
+    assert "molt_memoryview_new(_molt_py_handle(obj))" in from_object_body
+    assert "return _molt_c_heap_memoryview_from_object(info->obj)" in from_buffer_body
+    assert "_molt_c_heap_memoryview_buffer_export" in header_source
+    assert "_molt_c_heap_memoryview_buffer_release" in header_source
+    assert "_molt_c_heap_memoryview_check(op)" in check_body
+    assert "_molt_c_heap_memoryview_check(mview)" in get_buffer_body
+    assert "return &_molt_c_heap_memoryview_fields(mview)->view" in get_buffer_body
+    assert "return _molt_c_heap_memoryview_fields(mview)->view.obj" in get_base_body
     assert "_molt_memoryview_export_slot(" not in header_source
     assert "typedef struct _molt_memoryview_export_slot" in header_source
     assert "#define _MOLT_MEMORYVIEW_EXPORT_SLOT_COUNT 64u" in header_source
-    assert "static inline _MoltMemoryViewExportSlot *_molt_memoryview_export_slots" in header_source
+    assert (
+        "static inline _MoltMemoryViewExportSlot *_molt_memoryview_export_slots"
+        in header_source
+    )
     assert "static inline size_t *_molt_memoryview_export_next_slot" in header_source
     assert "slots[i].mview == mview" in cache_body
     assert "PyMem_Calloc" not in cache_body
     assert "PyObject_GetBuffer" not in cache_body
-    assert "molt_buffer_export(_molt_py_handle(slot->mview), &slot->view._molt_view)" in refresh_body
+    assert (
+        "molt_buffer_export(_molt_py_handle(slot->mview), &slot->view._molt_view)"
+        in refresh_body
+    )
     assert "slot->view.internal = &slot->view._molt_view" in refresh_body
     assert "slot->view.obj = NULL" in refresh_body
     assert "PyBuffer_Release" not in get_buffer_body
@@ -408,17 +573,84 @@ def test_public_and_compiled_contiguity_reject_one_dimensional_gaps() -> None:
 
     compiled_c = _rust_function_body(abi_source, "pybuffer_is_c_contiguous")
     compiled_f = _rust_function_body(abi_source, "pybuffer_is_f_contiguous")
-    assert "(*view).ndim } == 0" in compiled_c or "(*view).ndim } == 0" in compiled_c.replace("\n", " ")
+    assert (
+        "(*view).ndim } == 0" in compiled_c
+        or "(*view).ndim } == 0" in compiled_c.replace("\n", " ")
+    )
     assert "(*view).ndim } <= 1" not in compiled_c.replace("\n", " ")
-    assert "(*view).ndim } == 0" in compiled_f or "(*view).ndim } == 0" in compiled_f.replace("\n", " ")
+    assert (
+        "(*view).ndim } == 0" in compiled_f
+        or "(*view).ndim } == 0" in compiled_f.replace("\n", " ")
+    )
     assert "(*view).ndim } <= 1" not in compiled_f.replace("\n", " ")
+
+
+def test_numpy_public_c_heap_ndarray_buffer_leases_are_slot_owned() -> None:
+    source = NUMPY_HEADER_PATH.read_text(encoding="utf-8")
+    types_source = NUMPY_TYPES_HEADER_PATH.read_text(encoding="utf-8")
+
+    ensure_body = _function_body(source, "_molt_numpy_array_ensure_buffer_hooks")
+    export_body = _function_body(source, "_molt_numpy_array_buffer_export")
+    record_body = _function_body(source, "_molt_numpy_array_buffer_lease_record")
+    consume_body = _function_body(source, "_molt_numpy_array_buffer_lease_consume")
+    release_body = _function_body(source, "_molt_numpy_array_buffer_release")
+    update_flags_body = _function_body(source, "PyArray_UpdateFlags")
+    resize_body = _function_body(source, "PyArray_Resize")
+    dealloc_body = _function_body(source, "_molt_numpy_array_dealloc")
+    span_body = _function_body(source, "_molt_numpy_strided_span_from_dims")
+
+    assert "typedef struct _MoltNumpyBufferLease" in types_source
+    assert "const MoltBufferView *slot;" in types_source
+    assert "MoltBufferView view;" in types_source
+    assert "uint64_t buffer_exports;" in types_source
+    assert "_MoltNumpyBufferLease *buffer_leases;" in types_source
+    assert "molt_c_heap_register_buffer_exporter" in ensure_body
+    assert "molt_c_heap_register_buffer_releaser" in ensure_body
+    assert "_molt_numpy_array_buffer_export" in ensure_body
+    assert "_molt_numpy_array_buffer_release" in ensure_body
+    assert "_molt_numpy_buffer_format_for_typenum" in source
+    assert "_molt_numpy_strided_span_from_dims(" in export_body
+    assert (
+        "non-owned ndarray data requires retained backing custody before buffer export"
+        in export_body
+    )
+    assert "out_view->owner = 0" in export_body
+    assert "out_view->base = 0" in export_body
+    assert "_molt_numpy_array_buffer_lease_record(array_obj, out_view)" in export_body
+    assert "array_obj->buffer_exports++" in export_body
+    assert "lease->slot = view" in record_body
+    assert "lease->view = *view" in record_body
+    assert "lease->next = array_obj->buffer_leases" in record_body
+    assert "if (lease->slot == view)" in consume_body
+    assert "array_obj->buffer_exports--" in release_body
+    assert "memset(view, 0, sizeof(*view))" in release_body
+    assert "_molt_numpy_array_can_mutate_metadata" in source
+    assert (
+        '_molt_numpy_array_can_mutate_metadata((PyArrayObject_fields *)array_obj, "PyArray_UpdateFlags")'
+        in update_flags_body
+    )
+    assert "cannot resize ndarray with active buffer exports" in resize_body
+    assert "ndarray dealloc with active buffer exports" in dealloc_body
+    assert "ndarray dealloc with dangling buffer leases" in dealloc_body
+    assert "_molt_numpy_checked_multiply_intp" in span_body
+    assert "_molt_numpy_checked_add_intp" in span_body
+    assert (
+        "#define PyArray_ENABLEFLAGS(arr, flags) _molt_numpy_array_enableflags"
+        in source
+    )
+    assert (
+        "#define PyArray_CLEARFLAGS(arr, flags) _molt_numpy_array_clearflags" in source
+    )
 
 
 def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() -> None:
     source = NUMPY_HEADER_PATH.read_text(encoding="utf-8")
     python_header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
 
-    assert "#define PyArray_NBYTES(arr) _molt_pyarray_nbytes((PyArrayObject *)(arr))" in source
+    assert (
+        "#define PyArray_NBYTES(arr) _molt_pyarray_nbytes((PyArrayObject *)(arr))"
+        in source
+    )
     assert "static inline int _molt_numpy_checked_nbytes_from_dims" in source
     assert "static inline int _molt_numpy_flat_index_offset" in source
     assert "static inline int _molt_numpy_array_is_aligned" in source
@@ -429,10 +661,14 @@ def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() 
     assert "molt_c_heap_contains((uintptr_t)obj)" in python_header_source
     assert "molt_c_heap_register((uintptr_t)header)" in python_header_source
     assert "molt_c_heap_unregister((uintptr_t)header)" in python_header_source
-    assert "molt_c_heap_type_canonicalize(kind, (uintptr_t)header)" in python_header_source
+    assert (
+        "molt_c_heap_type_canonicalize(kind, (uintptr_t)header)" in python_header_source
+    )
     assert "return header->type == type;" in python_header_source
     assert "header->type == (PyTypeObject *)obj" in python_header_source
-    assert "static inline int _molt_c_heap_object_is_type_object" in python_header_source
+    assert (
+        "static inline int _molt_c_heap_object_is_type_object" in python_header_source
+    )
     assert "_molt_c_heap_object_is_type_object(obj)" in python_header_source
     assert "header->kind == type_header->kind" not in python_header_source
     assert "#define PyArray_Type (*_molt_numpy_array_type())" in source
@@ -450,8 +686,14 @@ def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() 
     assert "molt_c_heap_type_canonicalize(\n                type_kind," in source
     assert "molt_cpython_abi_type_canonicalize(type_kind, type_obj)" in source
     assert "PyTypeObject **canonical_out" in source
-    assert "_molt_numpy_abi_local_type(\n        &type_obj,\n        &canonical,\n        _MOLT_NUMPY_C_HEAP_ARRAY_TYPE" in source
-    assert "_molt_numpy_abi_local_type(\n        &type_obj,\n        &canonical,\n        _MOLT_NUMPY_C_HEAP_DESCR_TYPE" in source
+    assert (
+        "_molt_numpy_abi_local_type(\n        &type_obj,\n        &canonical,\n        _MOLT_NUMPY_C_HEAP_ARRAY_TYPE"
+        in source
+    )
+    assert (
+        "_molt_numpy_abi_local_type(\n        &type_obj,\n        &canonical,\n        _MOLT_NUMPY_C_HEAP_DESCR_TYPE"
+        in source
+    )
     assert "_molt_numpy_descr_init_header(descr)" in source
     assert "_molt_numpy_array_init_header(array_obj)" in source
     assert "_molt_numpy_dtype_meta_init_header(dtype)" in source
@@ -487,9 +729,14 @@ def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() 
     assert "unsupported PEP 3118 buffer format" in descr_body
     assert "*descr_owned_out = 1" in descr_body
     assert "Py_DECREF((PyObject *)descr)" in descr_body
-    assert "!allow_cast && requested != NULL && descr->type_num != source_typenum" in descr_body
+    assert (
+        "!allow_cast && requested != NULL && descr->type_num != source_typenum"
+        in descr_body
+    )
     assert "buffer dtype does not match requested dtype" in descr_body
-    assert "_molt_numpy_reject_ref_transfer_dtype(descr, \"buffer admission\")" in descr_body
+    assert (
+        '_molt_numpy_reject_ref_transfer_dtype(descr, "buffer admission")' in descr_body
+    )
     assert "resolved_descr_owned" in from_any_body
     assert "PyMem_Free(resolved_descr)" not in from_any_body
     assert "NPY_ARRAY_FORCECAST" in from_any_body
@@ -500,19 +747,40 @@ def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() 
     assert "PyArray_Cast((PyArrayObject *)array_obj, target_typenum)" in from_any_body
     assert "NPY_ARRAY_ENSURENOCOPY | NPY_ARRAY_WRITEBACKIFCOPY" in from_any_body
     assert "retained buffer lease support" in from_any_body
-    assert "NPY_ARRAY_ENSURECOPY" not in from_any_body.split("NPY_ARRAY_FORCECAST", 1)[0]
+    assert (
+        "NPY_ARRAY_ENSURECOPY" not in from_any_body.split("NPY_ARRAY_FORCECAST", 1)[0]
+    )
     assert "view_requirements = requirements" in from_any_body
-    assert "NPY_ARRAY_FORCECAST" in from_any_body.split("view_requirements = requirements", 1)[1]
-    assert "NPY_ARRAY_ENSURENOCOPY" in from_any_body.split("view_requirements = requirements", 1)[1]
-    assert "NPY_ARRAY_WRITEBACKIFCOPY" in from_any_body.split("view_requirements = requirements", 1)[1]
+    assert (
+        "NPY_ARRAY_FORCECAST"
+        in from_any_body.split("view_requirements = requirements", 1)[1]
+    )
+    assert (
+        "NPY_ARRAY_ENSURENOCOPY"
+        in from_any_body.split("view_requirements = requirements", 1)[1]
+    )
+    assert (
+        "NPY_ARRAY_WRITEBACKIFCOPY"
+        in from_any_body.split("view_requirements = requirements", 1)[1]
+    )
     assert "NPY_ARRAY_C_CONTIGUOUS" in from_any_body
     assert "NPY_ARRAY_F_CONTIGUOUS" in from_any_body
     assert "NPY_ARRAY_WRITEABLE" in from_any_body
-    assert "_molt_numpy_buffer_flags_from_requirements(view_requirements)" in from_any_body
-    assert "_molt_numpy_array_from_buffer_view(obj, &view, resolved_descr, requirements)" in from_any_body
-    assert "_molt_numpy_array_from_buffer_view(obj, &view, resolved_descr, view_requirements)" not in from_any_body
+    assert (
+        "_molt_numpy_buffer_flags_from_requirements(view_requirements)" in from_any_body
+    )
+    assert (
+        "_molt_numpy_array_from_buffer_view(obj, &view, resolved_descr, requirements)"
+        in from_any_body
+    )
+    assert (
+        "_molt_numpy_array_from_buffer_view(obj, &view, resolved_descr, view_requirements)"
+        not in from_any_body
+    )
     assert "needs_copy = 0" in from_any_body
-    assert "needs_copy = (requirements & NPY_ARRAY_ENSURECOPY) != 0" not in from_any_body
+    assert (
+        "needs_copy = (requirements & NPY_ARRAY_ENSURECOPY) != 0" not in from_any_body
+    )
     assert "PyArray_NewCopy((PyArrayObject *)array_obj, copy_order)" in from_any_body
     assert "Py_DECREF(array_obj)" in from_any_body
     assert "NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_WRITEABLE" in source
@@ -569,18 +837,41 @@ def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() 
     assert "_molt_numpy_flat_index_offset(iter->ao" in neighborhood_body
     assert "src_dtype->type_num != dst_dtype->type_num" in dtype_transfer_body
     assert "src_dtype->elsize != dst_dtype->elsize" in dtype_transfer_body
-    assert "dtype transfer requires identical source and destination descriptors" in dtype_transfer_body
-    assert "_molt_numpy_reject_ref_transfer_dtype(src_dtype, \"dtype transfer source\")" in dtype_transfer_body
-    assert "_molt_numpy_reject_ref_transfer_dtype(dst_dtype, \"dtype transfer destination\")" in dtype_transfer_body
+    assert (
+        "dtype transfer requires identical source and destination descriptors"
+        in dtype_transfer_body
+    )
+    assert (
+        '_molt_numpy_reject_ref_transfer_dtype(src_dtype, "dtype transfer source")'
+        in dtype_transfer_body
+    )
+    assert (
+        '_molt_numpy_reject_ref_transfer_dtype(dst_dtype, "dtype transfer destination")'
+        in dtype_transfer_body
+    )
     assert "src_type_num != dst_type_num" in numeric_cast_body
-    assert "numeric cast transfer requires identical source and destination types" in numeric_cast_body
-    assert "src_type_num == NPY_OBJECT || dst_type_num == NPY_OBJECT" in numeric_cast_body
+    assert (
+        "numeric cast transfer requires identical source and destination types"
+        in numeric_cast_body
+    )
+    assert (
+        "src_type_num == NPY_OBJECT || dst_type_num == NPY_OBJECT" in numeric_cast_body
+    )
     assert "ndim != 1" in transfer_nd_body
-    assert "N-D to strided transfer requires explicit coordinate lowering" in transfer_nd_body
+    assert (
+        "N-D to strided transfer requires explicit coordinate lowering"
+        in transfer_nd_body
+    )
     assert "ndim != 1" in transfer_to_nd_body
-    assert "strided to N-D transfer requires explicit coordinate lowering" in transfer_to_nd_body
+    assert (
+        "strided to N-D transfer requires explicit coordinate lowering"
+        in transfer_to_nd_body
+    )
     assert "ndim != 1" in transfer_masked_body
-    assert "masked strided to N-D transfer requires explicit coordinate lowering" in transfer_masked_body
+    assert (
+        "masked strided to N-D transfer requires explicit coordinate lowering"
+        in transfer_masked_body
+    )
 
     iter_new_body = _function_body(source, "PyArray_IterNew")
     neighborhood_new_body = _function_body(source, "PyArray_NeighborhoodIterNew")
@@ -595,19 +886,30 @@ def test_numpy_ndarray_span_stride_and_alignment_use_shared_checked_authority() 
 
     ufunc_source = NUMPY_UFUNC_HEADER_PATH.read_text(encoding="utf-8")
     assert "#define PyUFunc_Type (*_molt_numpy_ufunc_type())" in ufunc_source
-    assert "#define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyUFunc_Type)" in ufunc_source
+    assert (
+        "#define PyUFunc_Check(op) PyObject_TypeCheck((PyObject *)(op), &PyUFunc_Type)"
+        in ufunc_source
+    )
     assert "#define PyUFunc_Type PyArray_Type" not in ufunc_source
     assert "PyObject_TypeCheck((PyObject *)(op), &PyArray_Type)" not in ufunc_source
     assert "static inline PyTypeObject *_molt_numpy_ufunc_type(void)" in ufunc_source
-    assert "_molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_UFUNC_TYPE)" in ufunc_source
+    assert (
+        "_molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_UFUNC_TYPE)"
+        in ufunc_source
+    )
     assert "_MOLT_NUMPY_C_HEAP_UFUNC,\n        _molt_numpy_ufunc_type()" in ufunc_source
-    assert "_molt_numpy_abi_local_type(\n        &type_obj,\n        &canonical,\n        _MOLT_NUMPY_C_HEAP_UFUNC_TYPE" in ufunc_source
+    assert (
+        "_molt_numpy_abi_local_type(\n        &type_obj,\n        &canonical,\n        _MOLT_NUMPY_C_HEAP_UFUNC_TYPE"
+        in ufunc_source
+    )
     assert '"numpy.ufunc"' in ufunc_source
     assert "ufunc->ob_refcnt = 1" in ufunc_source
     assert "ufunc->ob_type = _molt_numpy_ufunc_type()" in ufunc_source
 
 
-def test_numpy_abi_local_types_are_canonical_across_translation_units(tmp_path: Path) -> None:
+def test_numpy_abi_local_types_are_canonical_across_translation_units(
+    tmp_path: Path,
+) -> None:
     clang = shutil.which("clang")
     if clang is None:
         raise AssertionError("clang is required for the NumPy ABI cross-TU type proof")
@@ -615,7 +917,9 @@ def test_numpy_abi_local_types_are_canonical_across_translation_units(tmp_path: 
     tu_a = tmp_path / "numpy_abi_tu_a.c"
     tu_b = tmp_path / "numpy_abi_tu_b.c"
     main = tmp_path / "numpy_abi_main.c"
-    exe = tmp_path / ("numpy_abi_cross_tu.exe" if shutil.which("cmd") else "numpy_abi_cross_tu")
+    exe = tmp_path / (
+        "numpy_abi_cross_tu.exe" if shutil.which("cmd") else "numpy_abi_cross_tu"
+    )
 
     tu_a.write_text(
         "\n".join(
@@ -745,10 +1049,10 @@ def test_numpy_abi_local_types_are_canonical_across_translation_units(tmp_path: 
                 "int main(void) {",
                 "    PyType_Type.ob_refcnt = _Py_IMMORTAL_REFCNT_LOCAL;",
                 "    PyType_Type.ob_type = &PyType_Type;",
-                "    PyType_Type.tp_name = \"type\";",
+                '    PyType_Type.tp_name = "type";',
                 "    PyBaseObject_Type.ob_refcnt = _Py_IMMORTAL_REFCNT_LOCAL;",
                 "    PyBaseObject_Type.ob_type = &PyType_Type;",
-                "    PyBaseObject_Type.tp_name = \"object\";",
+                '    PyBaseObject_Type.tp_name = "object";',
                 "    return tu_b_verify();",
                 "}",
                 "",
@@ -778,18 +1082,26 @@ def test_numpy_abi_local_types_are_canonical_across_translation_units(tmp_path: 
     assert result.returncode == 0, result.stderr
 
     run = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
-    assert run.returncode == 0, f"cross-TU NumPy ABI type proof failed rc={run.returncode}"
+    assert run.returncode == 0, (
+        f"cross-TU NumPy ABI type proof failed rc={run.returncode}"
+    )
 
 
-def test_numpy_public_c_heap_types_are_canonical_across_translation_units(tmp_path: Path) -> None:
+def test_numpy_public_c_heap_types_are_canonical_across_translation_units(
+    tmp_path: Path,
+) -> None:
     clang = shutil.which("clang")
     if clang is None:
-        raise AssertionError("clang is required for the NumPy public cross-TU type proof")
+        raise AssertionError(
+            "clang is required for the NumPy public cross-TU type proof"
+        )
 
     tu_a = tmp_path / "numpy_public_tu_a.c"
     tu_b = tmp_path / "numpy_public_tu_b.c"
     main = tmp_path / "numpy_public_main.c"
-    exe = tmp_path / ("numpy_public_cross_tu.exe" if shutil.which("cmd") else "numpy_public_cross_tu")
+    exe = tmp_path / (
+        "numpy_public_cross_tu.exe" if shutil.which("cmd") else "numpy_public_cross_tu"
+    )
 
     tu_a.write_text(
         "\n".join(
@@ -922,6 +1234,18 @@ def test_numpy_public_c_heap_types_are_canonical_across_translation_units(tmp_pa
                 "    remember_registered(ptr);",
                 "    return ptr;",
                 "}",
+                "int32_t molt_c_heap_register_buffer_exporter(uint32_t kind, uintptr_t type_ptr, MoltCHeapBufferExporter exporter) {",
+                "    (void)kind; (void)type_ptr; return exporter == NULL ? -1 : 0;",
+                "}",
+                "int32_t molt_c_heap_register_buffer_releaser(uint32_t kind, uintptr_t type_ptr, MoltCHeapBufferReleaser releaser) {",
+                "    (void)kind; (void)type_ptr; return releaser == NULL ? -1 : 0;",
+                "}",
+                "int32_t molt_c_heap_export_buffer(uintptr_t ptr, MoltBufferView *out_view) {",
+                "    (void)ptr; (void)out_view; return -1;",
+                "}",
+                "int32_t molt_c_heap_release_buffer(uintptr_t ptr, MoltBufferView *view) {",
+                "    (void)ptr; (void)view; return -1;",
+                "}",
                 "",
                 "MoltHandle molt_none(void) { return 1; }",
                 "MoltHandle molt_string_from(const uint8_t *ptr, uint64_t len) { (void)ptr; (void)len; return 2; }",
@@ -984,4 +1308,6 @@ def test_numpy_public_c_heap_types_are_canonical_across_translation_units(tmp_pa
     assert result.returncode == 0, result.stderr
 
     run = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
-    assert run.returncode == 0, f"public cross-TU NumPy type proof failed rc={run.returncode}"
+    assert run.returncode == 0, (
+        f"public cross-TU NumPy type proof failed rc={run.returncode}"
+    )
