@@ -188,6 +188,30 @@ def test_github_workflows_use_current_setup_uv_release() -> None:
         )
 
 
+def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> None:
+    workflow_text = _read(".github/workflows/proof-queue-portability.yml")
+
+    assert "name: Proof Queue Portability" in workflow_text
+    assert "os: [ubuntu-latest, macos-14, windows-2022]" in workflow_text
+    assert "fail-fast: false" in workflow_text
+    assert "python-version-file: \".python-version\"" in workflow_text
+    assert "uv sync --frozen --group dev" in workflow_text
+    assert (
+        "uv run python -m pytest -q tests/test_molt_queue_cli.py "
+        "tests/tools/test_proof_queue.py"
+    ) in workflow_text
+    for path in (
+        ".github/workflows/proof-queue-portability.yml",
+        "src/molt/cli/queue_cli.py",
+        "tools/process_spawn.py",
+        "tools/proof_queue.py",
+        "tools/proof_queue_pkg/**",
+        "tests/test_molt_queue_cli.py",
+        "tests/tools/test_proof_queue.py",
+    ):
+        assert path in workflow_text
+
+
 def test_pre_commit_hooks_are_read_only_by_default() -> None:
     default_python = _default_python_version()
     pre_commit_text = _read(".pre-commit-config.yaml")
