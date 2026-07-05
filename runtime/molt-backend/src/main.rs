@@ -108,60 +108,7 @@ fn main() -> io::Result<()> {
     // TIR optimization is mandatory. Invalid roundtrips are fatal compiler
     // bugs and must be debugged through dumps/verifier evidence, not by
     // bypassing typed IR.
-
-    // Hard memory guard: set rlimit on virtual memory to prevent OOM
-    // from crashing the entire machine. The default scales with host memory
-    // so large TIR-enabled stdlib builds do not trip an artificially tiny cap.
-    #[cfg(unix)]
-    {
-        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_backend_max_rss_gb);
-        let max_bytes = max_gb * 1024 * 1024 * 1024;
-        unsafe {
-            let rlim = libc::rlimit {
-                rlim_cur: max_bytes,
-                rlim_max: max_bytes,
-            };
-            if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
-                // Silently ignore on macOS (Apple Silicon). MOLT_DEBUG_RLIMIT=1 to warn.
-                if std::env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1") {
-                    eprintln!(
-                        "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB). OOM guard not active."
-                    );
-                }
-            }
-        }
-    }
-
-    // Windows memory guard: use job objects to limit working set.
-    // Less effective than Unix RLIMIT_AS but prevents unbounded growth.
-    #[cfg(windows)]
-    {
-        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_backend_max_rss_gb);
-        let max_bytes = max_gb * 1024 * 1024 * 1024;
-        unsafe {
-            use windows_sys::Win32::System::JobObjects::*;
-            use windows_sys::Win32::System::Threading::*;
-            let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
-            if !job.is_null() {
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-                info.ProcessMemoryLimit = max_bytes as usize;
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const _,
-                    core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-                AssignProcessToJobObject(job, GetCurrentProcess());
-            }
-        }
-    }
+    install_process_memory_guard();
 
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--features") {
