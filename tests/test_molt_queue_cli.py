@@ -68,6 +68,55 @@ def test_molt_queue_invokes_proof_queue_without_shell(
     ]
 
 
+def test_molt_queue_preserves_hostile_paths_and_args_without_shell(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo_root = tmp_path / "Molt Root With Spaces & Symbols"
+    script = repo_root / "tools" / "proof_queue.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append({"command": command, "cwd": cwd})
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: repo_root)
+    monkeypatch.setattr(queue_cli.subprocess, "run", fake_run)
+
+    rc = queue_cli.handle_queue_command(
+        argparse.Namespace(
+            queue_args=[
+                "exec",
+                "--reason",
+                "portable argv: spaces & pipes | dollars $HOME %TEMP%",
+                "--",
+                sys.executable,
+                "-c",
+                "print('queue argv ok')",
+            ]
+        )
+    )
+
+    assert rc == 0
+    assert calls == [
+        {
+            "command": [
+                sys.executable,
+                str(script),
+                "exec",
+                "--reason",
+                "portable argv: spaces & pipes | dollars $HOME %TEMP%",
+                "--",
+                sys.executable,
+                "-c",
+                "print('queue argv ok')",
+            ],
+            "cwd": repo_root,
+        }
+    ]
+
+
 def test_molt_queue_queue_size_sets_portable_env(monkeypatch, tmp_path: Path) -> None:
     script = tmp_path / "tools" / "proof_queue.py"
     script.parent.mkdir()
@@ -98,6 +147,33 @@ def test_molt_queue_queue_size_sets_portable_env(monkeypatch, tmp_path: Path) ->
     assert cwd == tmp_path
     assert env is not None
     assert env[queue_cli.PROOF_QUEUE_SIZE_ENV] == "3"
+
+
+def test_molt_queue_queue_size_is_child_env_only(monkeypatch, tmp_path: Path) -> None:
+    script = tmp_path / "tools" / "proof_queue.py"
+    script.parent.mkdir()
+    script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    calls: list[dict[str, str] | None] = []
+
+    def fake_run(
+        command: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(env)
+        del cwd
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setenv(queue_cli.PROOF_QUEUE_SIZE_ENV, "99")
+    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(queue_cli.subprocess, "run", fake_run)
+
+    rc = queue_cli.handle_queue_command(
+        argparse.Namespace(queue_size="3", queue_args=["run", "--detach"])
+    )
+
+    assert rc == 0
+    assert calls[0] is not None
+    assert calls[0][queue_cli.PROOF_QUEUE_SIZE_ENV] == "3"
+    assert queue_cli.os.environ[queue_cli.PROOF_QUEUE_SIZE_ENV] == "99"
 
 
 def test_molt_queue_rejects_duplicate_queue_size_authority(
