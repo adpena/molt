@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 from contextlib import contextmanager
-import errno
 import functools
 import hashlib
 import json
@@ -15,7 +14,11 @@ from typing import Any, Collection, Iterator, Mapping, Sequence, cast
 import uuid
 
 from molt.cli.artifact_state import _artifact_state_path
-from molt.cli.atomic_io import _atomic_link_or_copy_file, _atomic_write_json
+from molt.cli.atomic_io import (
+    _atomic_link_or_copy_file,
+    _atomic_write_json,
+    _link_failure_wants_copy,
+)
 from molt.cli.build_locks import (
     _acquire_file_lock,
     _parse_lock_timeout,
@@ -308,6 +311,12 @@ def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
         _release_file_lock(handle)
 
 
+def _immutable_publish_lock_name(dst: Path) -> str:
+    """Stable per-destination lock name for the no-hard-link copy-publish path."""
+    digest = hashlib.sha256(str(dst.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"immutable-publish-{digest}"
+
+
 def _publish_immutable_backend_cache_artifact(
     src: Path,
     dst: Path,
@@ -331,13 +340,7 @@ def _publish_immutable_backend_cache_artifact(
         try:
             os.link(src, tmp_path)
         except OSError as exc:
-            if exc.errno not in {
-                errno.EXDEV,
-                errno.EPERM,
-                errno.EACCES,
-                errno.ENOTSUP,
-                errno.ENOENT,
-            }:
+            if not _link_failure_wants_copy(exc):
                 raise
             shutil.copyfile(src, tmp_path)
             with contextlib.suppress(OSError):
@@ -353,18 +356,27 @@ def _publish_immutable_backend_cache_artifact(
             )
             return src
         except OSError as exc:
-            if exc.errno in {
-                errno.EXDEV,
-                errno.EPERM,
-                errno.EACCES,
-                errno.ENOTSUP,
-            }:
-                warnings.append(
-                    "Immutable cache publish skipped because no-clobber link "
-                    f"is unavailable for {dst}: {exc}"
-                )
-                return src
-            raise
+            if not _link_failure_wants_copy(exc):
+                raise
+            # No hard links here (exFAT/FAT on the artifact SSD): publish via a
+            # lock-guarded atomic rename so the backend cache still POPULATES
+            # rather than silently disabling itself on the primary build volume.
+            # The immutable cache is key-addressed, so the lock + existence
+            # re-check preserves the no-clobber contract (a peer that already
+            # published wins) and os.replace of a fully-staged tmp is atomic for
+            # readers.
+            with _shared_cache_lock(
+                _immutable_publish_lock_name(dst), cache_root=dst.parent
+            ):
+                if dst.exists():
+                    if _is_valid_cached_backend_artifact(dst, is_wasm=is_wasm):
+                        return dst
+                    warnings.append(
+                        "Ignoring invalid existing immutable cache artifact; "
+                        f"cleanup owns removal: {dst}"
+                    )
+                    return src
+                os.replace(tmp_path, dst)
         return dst
     finally:
         with contextlib.suppress(OSError):

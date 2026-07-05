@@ -102,6 +102,19 @@ def _rewrite_preserving_mtime(
     os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
 
 
+# exFAT (the APDataStore artifact SSD where pytest tmp lives) cannot represent
+# timestamps before the 1980 FAT epoch, so os.utime with a ~1970 time raises
+# WinError 87. Shift artificial "old" mtimes above the epoch, preserving their
+# relative order, so retention / rebuild-detection tests run on exFAT.
+_EXFAT_EPOCH_NS = 315_532_800 * 1_000_000_000  # 1980-01-01 UTC in nanoseconds
+
+
+def _set_stale_mtime(path: Path, *, ns_offset: int = 0) -> None:
+    """Set an artificially OLD but exFAT-valid mtime (>= the 1980 FAT epoch)."""
+    stamp = _EXFAT_EPOCH_NS + ns_offset
+    os.utime(path, ns=(stamp, stamp))
+
+
 def _clear_molt_home_caches() -> None:
     cli._default_molt_cache_cached.cache_clear()
     cli._default_molt_home_cached.cache_clear()
@@ -11289,9 +11302,9 @@ def test_backend_daemon_binary_is_newer_prefers_explicit_cargo_target_dir(
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "explicit-target"))
-    os.utime(backend_bin, (1, 1))
-    os.utime(pid_path, (2, 2))
-    os.utime(explicit_runtime, (3, 3))
+    _set_stale_mtime(backend_bin, ns_offset=1_000_000_000)
+    _set_stale_mtime(pid_path, ns_offset=2_000_000_000)
+    _set_stale_mtime(explicit_runtime, ns_offset=3_000_000_000)
 
     assert cli._backend_daemon_binary_is_newer(backend_bin, pid_path) is True
 
@@ -11316,8 +11329,8 @@ def test_validate_shared_stdlib_cache_contract_ignores_runtime_mtime_for_retenti
         "_remove_shared_stdlib_cache_artifacts",
         lambda path: removed.append(path),
     )
-    os.utime(stdlib_object, (2, 2))
-    os.utime(explicit_runtime, (3, 3))
+    _set_stale_mtime(stdlib_object, ns_offset=2_000_000_000)
+    _set_stale_mtime(explicit_runtime, ns_offset=3_000_000_000)
 
     cli._validate_shared_stdlib_cache_contract(stdlib_object, project_root)
 
@@ -19824,7 +19837,7 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     runtime_source = tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs"
     runtime_source.parent.mkdir(parents=True, exist_ok=True)
     runtime_source.write_text("// runtime source\n", encoding="utf-8")
-    os.utime(runtime_source, ns=(1, 1))
+    _set_stale_mtime(runtime_source)
     cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
     cargo_runtime.write_bytes(b"\0asm\x01\0\0\0runtime")
     fingerprint = {
@@ -19929,7 +19942,7 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     runtime_source = tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs"
     runtime_source.parent.mkdir(parents=True, exist_ok=True)
     runtime_source.write_text("// runtime source\n", encoding="utf-8")
-    os.utime(runtime_source, ns=(1, 1))
+    _set_stale_mtime(runtime_source)
     staticlib.parent.mkdir(parents=True, exist_ok=True)
     staticlib.write_bytes(b"!<arch>\nprebuilt")
     fingerprint = {
@@ -20666,7 +20679,7 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
     backend_source = tmp_path / "runtime" / "molt-backend" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True, exist_ok=True)
     backend_source.write_text("// backend source\n", encoding="utf-8")
-    os.utime(backend_source, (1.0, 1.0))
+    _set_stale_mtime(backend_source)
     cargo_output.parent.mkdir(parents=True, exist_ok=True)
     cargo_output.write_text(
         "#!/bin/sh\n"
@@ -23674,14 +23687,14 @@ def test_backend_daemon_config_digest_tracks_backend_freshness(
         backend_bin=backend_bin,
         target_triple=None,
     )
-    os.utime(backend_src, ns=(3_000_000_000, 3_000_000_000))
+    _set_stale_mtime(backend_src, ns_offset=3_000_000_000)
     digest_b = cli._backend_daemon_config_digest(
         project_root,
         "dev-fast",
         backend_bin=backend_bin,
         target_triple=None,
     )
-    os.utime(runtime_lib, ns=(4_000_000_000, 4_000_000_000))
+    _set_stale_mtime(runtime_lib, ns_offset=4_000_000_000)
     digest_c = cli._backend_daemon_config_digest(
         project_root,
         "dev-fast",

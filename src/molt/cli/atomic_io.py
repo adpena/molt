@@ -126,6 +126,28 @@ def _atomic_copy_file(src: Path, dst: Path, *, codesign: bool = False) -> None:
                 tmp_path.unlink()
 
 
+# os.link is only an optimization over copying. When it fails because hard
+# links are unavailable for this (src, dst) pair we must fall back to a byte
+# copy: cross-device (EXDEV), permission (EPERM/EACCES), or a filesystem without
+# hard-link support. exFAT/FAT on Windows — the APDataStore build SSD — reject
+# os.link with ERROR_INVALID_FUNCTION (winerror 1 -> errno EINVAL 22), which is
+# NONE of the classic POSIX link errnos, so it must be recognized explicitly or
+# every freshly staged artifact is dropped on the artifact volume. Verified on
+# D: (exFAT): errno=22, winerror=1.
+_LINK_COPY_FALLBACK_ERRNOS = frozenset(
+    {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP, errno.EINVAL, errno.ENOENT}
+)
+# ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED / ERROR_INVALID_PARAMETER.
+_LINK_COPY_FALLBACK_WINERRORS = frozenset({1, 50, 87})
+
+
+def _link_failure_wants_copy(exc: OSError) -> bool:
+    """True when an ``os.link`` OSError means "no hard links here — copy instead"."""
+    if exc.errno in _LINK_COPY_FALLBACK_ERRNOS:
+        return True
+    return getattr(exc, "winerror", None) in _LINK_COPY_FALLBACK_WINERRORS
+
+
 def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
@@ -139,13 +161,7 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
                 if exc.errno != errno.ENOENT:
                     raise
         except OSError as exc:
-            if exc.errno not in {
-                errno.EXDEV,
-                errno.EPERM,
-                errno.EACCES,
-                errno.ENOTSUP,
-                errno.ENOENT,
-            }:
+            if not _link_failure_wants_copy(exc):
                 raise
         shutil.copyfile(src, tmp_path)
         tmp_path.replace(dst)
