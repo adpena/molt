@@ -36,7 +36,7 @@ proof rows against legacy `E:\Molt` or `E:\molt-target` roots. In PowerShell,
 refresh the local shell before expensive rows:
 
 ```powershell
-Invoke-Expression (uv run --active --project . --python 3.12 python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)
+uv run --active --project . --python 3.12 --no-sync python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell | Out-String | Invoke-Expression
 ```
 
 RunContext drops stale inherited `E:\Molt` derived roots plus
