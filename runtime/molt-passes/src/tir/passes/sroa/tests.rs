@@ -1,10 +1,14 @@
 //! Unit tests for the SROA pass. See the module docs for the soundness model.
 
-use super::*;
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{Terminator, TirBlock};
-use crate::tir::ops::{AttrDict, AttrValue, Dialect};
+use crate::tir::function::TirFunction;
+use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::passes::PassStats;
 use crate::tir::types::TirType;
+use crate::tir::values::ValueId;
+
+use super::run;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
