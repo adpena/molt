@@ -27,6 +27,17 @@ static inline void _molt_numpy_descr_dealloc(PyObject *obj);
 static inline void _molt_numpy_dtype_meta_dealloc(PyObject *obj);
 static inline void _molt_numpy_iter_dealloc(PyObject *obj);
 static inline void _molt_numpy_neighborhood_iter_dealloc(PyObject *obj);
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+static inline int _molt_numpy_array_buffer_export(uintptr_t ptr, MoltBufferView *out_view);
+static inline int _molt_numpy_array_buffer_release(uintptr_t ptr, MoltBufferView *view);
+static inline int _molt_numpy_array_ensure_buffer_hooks(PyTypeObject *array_type);
+static inline int _molt_numpy_array_buffer_lease_record(
+    PyArrayObject_fields *array_obj,
+    const MoltBufferView *view);
+static inline int _molt_numpy_array_buffer_lease_consume(
+    PyArrayObject_fields *array_obj,
+    const MoltBufferView *view);
+#endif
 
 #if _MOLT_NUMPY_PUBLIC_C_HEAP
 static inline PyTypeObject *_molt_numpy_public_c_heap_type(
@@ -52,7 +63,17 @@ static inline PyTypeObject *_molt_numpy_public_c_heap_type(
 static inline PyTypeObject *_molt_numpy_array_type(void) {
     static _MoltCHeapObject type_obj = {0};
     static PyTypeObject *canonical = NULL;
-    return _molt_numpy_public_c_heap_type(&type_obj, &canonical, _MOLT_NUMPY_C_HEAP_ARRAY_TYPE);
+    PyTypeObject *array_type = _molt_numpy_public_c_heap_type(
+        &type_obj,
+        &canonical,
+        _MOLT_NUMPY_C_HEAP_ARRAY_TYPE);
+    if (array_type == NULL) {
+        return NULL;
+    }
+    if (_molt_numpy_array_ensure_buffer_hooks(array_type) != 0) {
+        return NULL;
+    }
+    return array_type;
 }
 
 static inline PyTypeObject *_molt_numpy_descr_type(void) {
@@ -107,6 +128,29 @@ static inline PyArrayNeighborhoodIterObject *_molt_numpy_neighborhood_iter_field
 
 static inline PyArray_DTypeMeta *_molt_numpy_dtype_meta_fields(void *dtype) {
     return (PyArray_DTypeMeta *)_molt_c_heap_payload_maybe(dtype);
+}
+
+static inline int _molt_numpy_array_ensure_buffer_hooks(PyTypeObject *array_type) {
+    static PyTypeObject *registered_array_type = NULL;
+    if (registered_array_type == array_type) {
+        return 0;
+    }
+    if (molt_c_heap_register_buffer_exporter(
+            _MOLT_NUMPY_C_HEAP_ARRAY,
+            (uintptr_t)array_type,
+            _molt_numpy_array_buffer_export) != 0) {
+        PyErr_SetString(PyExc_BufferError, "failed to register ndarray buffer exporter");
+        return -1;
+    }
+    if (molt_c_heap_register_buffer_releaser(
+            _MOLT_NUMPY_C_HEAP_ARRAY,
+            (uintptr_t)array_type,
+            _molt_numpy_array_buffer_release) != 0) {
+        PyErr_SetString(PyExc_BufferError, "failed to register ndarray buffer releaser");
+        return -1;
+    }
+    registered_array_type = array_type;
+    return 0;
 }
 
 static inline void _molt_numpy_array_init_header(PyArrayObject_fields *array_obj) {
@@ -456,6 +500,77 @@ static inline int _molt_numpy_checked_nbytes_from_dims(
     return 0;
 }
 
+static inline int _molt_numpy_strided_span_from_dims(
+    const npy_intp *dims,
+    const npy_intp *strides,
+    int nd,
+    int itemsize,
+    npy_intp *min_offset_out,
+    npy_intp *max_end_out
+) {
+    npy_intp min_offset = 0;
+    npy_intp max_offset = 0;
+    npy_intp max_end = 0;
+    int i;
+    if (min_offset_out == NULL || max_end_out == NULL || nd < 0 || itemsize <= 0) {
+        PyErr_SetString(PyExc_ValueError, "invalid NumPy strided span descriptor");
+        return -1;
+    }
+    if (nd == 0) {
+        *min_offset_out = 0;
+        *max_end_out = (npy_intp)itemsize;
+        return 0;
+    }
+    if (dims == NULL || strides == NULL) {
+        PyErr_SetString(PyExc_ValueError, "NumPy strided span requires dimensions and strides");
+        return -1;
+    }
+    for (i = 0; i < nd; i++) {
+        npy_intp step;
+        if (dims[i] < 0) {
+            PyErr_SetString(PyExc_ValueError, "negative dimensions are not allowed");
+            return -1;
+        }
+        if (dims[i] == 0) {
+            *min_offset_out = 0;
+            *max_end_out = 0;
+            return 0;
+        }
+        if (_molt_numpy_checked_multiply_intp(
+                dims[i] - 1,
+                strides[i],
+                &step,
+                "NumPy strided backing span") < 0) {
+            return -1;
+        }
+        if (step < 0) {
+            if (_molt_numpy_checked_add_intp(
+                    min_offset,
+                    step,
+                    &min_offset,
+                    "NumPy strided backing span") < 0) {
+                return -1;
+            }
+        } else if (_molt_numpy_checked_add_intp(
+                max_offset,
+                step,
+                &max_offset,
+                "NumPy strided backing span") < 0) {
+            return -1;
+        }
+    }
+    if (_molt_numpy_checked_add_intp(
+            max_offset,
+            (npy_intp)itemsize,
+            &max_end,
+            "NumPy strided backing span") < 0) {
+        return -1;
+    }
+    *min_offset_out = min_offset;
+    *max_end_out = max_end;
+    return 0;
+}
+
 static inline npy_intp _molt_pyarray_size(const PyArrayObject *array_obj) {
     npy_intp size = 1;
     if (array_obj == NULL) {
@@ -579,6 +694,38 @@ static inline PyObject *PyArray_Cast(PyArrayObject *array_obj, int typenum);
 #define PyArray_DescrCheck(op) PyObject_TypeCheck((PyObject *)(op), &PyArrayDescr_Type)
 #endif
 
+static inline int _molt_numpy_array_can_mutate_metadata(
+    PyArrayObject_fields *array_obj,
+    const char *operation
+) {
+    (void)operation;
+    if (array_obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "NULL ndarray metadata mutation");
+        return 0;
+    }
+    if (array_obj->buffer_exports != 0) {
+        PyErr_SetString(PyExc_BufferError, "cannot mutate ndarray metadata with active buffer exports");
+        return 0;
+    }
+    return 1;
+}
+
+static inline void _molt_numpy_array_enableflags(PyArrayObject *arr, int flags) {
+    PyArrayObject_fields *array_obj = _molt_numpy_array_fields((void *)arr);
+    if (!_molt_numpy_array_can_mutate_metadata(array_obj, "PyArray_ENABLEFLAGS")) {
+        return;
+    }
+    array_obj->flags |= flags;
+}
+
+static inline void _molt_numpy_array_clearflags(PyArrayObject *arr, int flags) {
+    PyArrayObject_fields *array_obj = _molt_numpy_array_fields((void *)arr);
+    if (!_molt_numpy_array_can_mutate_metadata(array_obj, "PyArray_CLEARFLAGS")) {
+        return;
+    }
+    array_obj->flags &= ~flags;
+}
+
 #define PyArray_DATA(arr) (_molt_numpy_array_fields((void *)(arr))->data)
 #define PyArray_BYTES(arr) (_molt_numpy_array_fields((void *)(arr))->data)
 #define PyArray_NDIM(arr) (_molt_numpy_array_fields((void *)(arr))->nd)
@@ -596,8 +743,8 @@ static inline PyObject *PyArray_Cast(PyArrayObject *array_obj, int typenum);
 #define PyArray_NBYTES(arr) _molt_pyarray_nbytes((PyArrayObject *)(arr))
 #define PyArray_TYPE(arr) ((PyArray_DESCR(arr) != NULL) ? _molt_numpy_descr_fields((void *)PyArray_DESCR(arr))->type_num : NPY_OBJECT)
 #define PyArray_CHKFLAGS(arr, flags) (((PyArray_FLAGS(arr)) & (flags)) == (flags))
-#define PyArray_ENABLEFLAGS(arr, flags) ((void)(_molt_numpy_array_fields((void *)(arr))->flags |= (flags)))
-#define PyArray_CLEARFLAGS(arr, flags) ((void)(_molt_numpy_array_fields((void *)(arr))->flags &= ~(flags)))
+#define PyArray_ENABLEFLAGS(arr, flags) _molt_numpy_array_enableflags((PyArrayObject *)(arr), (flags))
+#define PyArray_CLEARFLAGS(arr, flags) _molt_numpy_array_clearflags((PyArrayObject *)(arr), (flags))
 #define PyArray_IS_C_CONTIGUOUS(arr) (((PyArray_FLAGS(arr)) & NPY_ARRAY_C_CONTIGUOUS) != 0)
 #define PyArray_ISCONTIGUOUS(arr) PyArray_IS_C_CONTIGUOUS(arr)
 #define PyArray_ISCARRAY(arr) PyArray_CHKFLAGS((arr), NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED | NPY_ARRAY_WRITEABLE)
@@ -645,6 +792,18 @@ static inline void _molt_numpy_array_dealloc(PyObject *obj) {
     if (array_obj == NULL) {
         return;
     }
+    if (array_obj->buffer_exports != 0) {
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+        _molt_c_heap_fatal("ndarray dealloc with active buffer exports");
+#else
+        abort();
+#endif
+    }
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+    if (array_obj->buffer_leases != NULL) {
+        _molt_c_heap_fatal("ndarray dealloc with dangling buffer leases");
+    }
+#endif
     if (array_obj->base != NULL) {
         Py_DECREF(array_obj->base);
         array_obj->base = NULL;
@@ -1432,6 +1591,208 @@ static inline int _molt_numpy_reject_ref_transfer_dtype(PyArray_Descr *descr, co
     PyErr_SetString(PyExc_NotImplementedError, "object/refcount dtype transfer requires a refcount-aware primitive");
     return -1;
 }
+
+static inline const char *_molt_numpy_buffer_format_for_typenum(int typenum) {
+    switch (typenum) {
+        case NPY_BOOL:
+            return "?";
+        case NPY_BYTE:
+            return "b";
+        case NPY_UBYTE:
+            return "B";
+        case NPY_SHORT:
+            return "h";
+        case NPY_USHORT:
+            return "H";
+        case NPY_INT:
+            return "i";
+        case NPY_UINT:
+            return "I";
+        case NPY_LONG:
+            return "l";
+        case NPY_ULONG:
+            return "L";
+        case NPY_LONGLONG:
+            return "q";
+        case NPY_ULONGLONG:
+            return "Q";
+        case NPY_FLOAT:
+            return "f";
+        case NPY_DOUBLE:
+            return "d";
+        default:
+            return NULL;
+    }
+}
+
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+static inline void _molt_numpy_copy_molt_buffer_format(
+    char out[MOLT_BUFFER_FORMAT_CAP],
+    const char *format
+) {
+    size_t i = 0;
+    if (out == NULL) {
+        return;
+    }
+    if (format == NULL || format[0] == '\0') {
+        format = "B";
+    }
+    while (i + 1u < MOLT_BUFFER_FORMAT_CAP && format[i] != '\0') {
+        out[i] = format[i];
+        i++;
+    }
+    out[i] = '\0';
+    for (i++; i < MOLT_BUFFER_FORMAT_CAP; i++) {
+        out[i] = '\0';
+    }
+}
+
+static inline int _molt_numpy_array_buffer_export(uintptr_t ptr, MoltBufferView *out_view) {
+    PyArrayObject_fields *array_obj;
+    PyArray_Descr *descr;
+    const char *format;
+    npy_intp logical_nbytes = 0;
+    npy_intp min_offset = 0;
+    npy_intp max_end = 0;
+    int i;
+    if (ptr == 0 || out_view == NULL) {
+        return -1;
+    }
+    if (!PyArray_Check((PyObject *)ptr)) {
+        return -1;
+    }
+    array_obj = _molt_numpy_array_fields((void *)ptr);
+    descr = array_obj->descr;
+    if (_molt_numpy_reject_ref_transfer_dtype(descr, "array buffer export") < 0) {
+        return -1;
+    }
+    if (!PyArray_CHKFLAGS((PyArrayObject *)array_obj, NPY_ARRAY_OWNDATA)) {
+        PyErr_SetString(PyExc_BufferError, "non-owned ndarray data requires retained backing custody before buffer export");
+        return -1;
+    }
+    if (array_obj->nd < 0 || array_obj->nd > (int)MOLT_BUFFER_MAX_NDIM || descr == NULL
+            || descr->elsize <= 0) {
+        PyErr_SetString(PyExc_BufferError, "invalid ndarray buffer descriptor");
+        return -1;
+    }
+    format = _molt_numpy_buffer_format_for_typenum(descr->type_num);
+    if (format == NULL) {
+        PyErr_SetString(PyExc_NotImplementedError, "ndarray dtype cannot be exported as a buffer");
+        return -1;
+    }
+    if (_molt_numpy_checked_nbytes_from_dims(
+            array_obj->dimensions,
+            array_obj->nd,
+            descr->elsize,
+            NULL,
+            &logical_nbytes) < 0
+        || _molt_numpy_strided_span_from_dims(
+            array_obj->dimensions,
+            array_obj->strides,
+            array_obj->nd,
+            descr->elsize,
+            &min_offset,
+            &max_end) < 0) {
+        return -1;
+    }
+    if (min_offset < 0 || max_end > logical_nbytes) {
+        PyErr_SetString(PyExc_BufferError, "ndarray strides exceed owned backing span");
+        return -1;
+    }
+    if (array_obj->data == NULL && logical_nbytes != 0) {
+        PyErr_SetString(PyExc_BufferError, "ndarray buffer data pointer is NULL");
+        return -1;
+    }
+    memset(out_view, 0, sizeof(*out_view));
+    out_view->data = (uint8_t *)array_obj->data;
+    out_view->len = (uint64_t)logical_nbytes;
+    out_view->backing_capacity = (uint64_t)logical_nbytes;
+    out_view->readonly = (array_obj->flags & NPY_ARRAY_WRITEABLE) != 0 ? 0u : 1u;
+    out_view->ndim = (uint32_t)array_obj->nd;
+    out_view->itemsize = (uint64_t)descr->elsize;
+    out_view->offset = 0;
+    out_view->owner = 0;
+    out_view->base = 0;
+    for (i = 0; i < array_obj->nd; i++) {
+        out_view->shape[i] = array_obj->dimensions[i];
+        out_view->strides[i] = array_obj->strides[i];
+    }
+    _molt_numpy_copy_molt_buffer_format(out_view->format, format);
+    if (array_obj->buffer_exports == UINT64_MAX) {
+        memset(out_view, 0, sizeof(*out_view));
+        PyErr_SetString(PyExc_BufferError, "ndarray active buffer export count overflow");
+        return -1;
+    }
+    if (_molt_numpy_array_buffer_lease_record(array_obj, out_view) != 0) {
+        memset(out_view, 0, sizeof(*out_view));
+        return -1;
+    }
+    array_obj->buffer_exports++;
+    return 0;
+}
+
+static inline int _molt_numpy_array_buffer_lease_record(
+    PyArrayObject_fields *array_obj,
+    const MoltBufferView *view
+) {
+    _MoltNumpyBufferLease *lease;
+    if (array_obj == NULL || view == NULL) {
+        return -1;
+    }
+    lease = (_MoltNumpyBufferLease *)PyMem_Calloc(1, sizeof(_MoltNumpyBufferLease));
+    if (lease == NULL) {
+        PyErr_NoMemory();
+        return -1;
+    }
+    lease->slot = view;
+    lease->view = *view;
+    lease->next = array_obj->buffer_leases;
+    array_obj->buffer_leases = lease;
+    return 0;
+}
+
+static inline int _molt_numpy_array_buffer_lease_consume(
+    PyArrayObject_fields *array_obj,
+    const MoltBufferView *view
+) {
+    _MoltNumpyBufferLease **prev;
+    _MoltNumpyBufferLease *lease;
+    if (array_obj == NULL || view == NULL) {
+        return -1;
+    }
+    prev = &array_obj->buffer_leases;
+    while (*prev != NULL) {
+        lease = *prev;
+        if (lease->slot == view) {
+            *prev = lease->next;
+            PyMem_Free(lease);
+            return 0;
+        }
+        prev = &lease->next;
+    }
+    return -1;
+}
+
+static inline int _molt_numpy_array_buffer_release(uintptr_t ptr, MoltBufferView *view) {
+    PyArrayObject_fields *array_obj;
+    if (ptr == 0 || view == NULL) {
+        return -1;
+    }
+    if (!PyArray_Check((PyObject *)ptr)) {
+        return -1;
+    }
+    array_obj = _molt_numpy_array_fields((void *)ptr);
+    if (array_obj->buffer_exports == 0) {
+        return -1;
+    }
+    if (_molt_numpy_array_buffer_lease_consume(array_obj, view) != 0) {
+        return -1;
+    }
+    array_obj->buffer_exports--;
+    memset(view, 0, sizeof(*view));
+    return 0;
+}
+#endif
 
 static inline PyArray_Descr *_molt_numpy_descr_from_buffer(
     const Py_buffer *view,
@@ -2982,6 +3343,10 @@ static inline PyObject *PyArray_Resize(
     (void)refcheck;
     if (self == NULL || newshape == NULL) {
         PyErr_SetString(PyExc_TypeError, "NULL argument passed to PyArray_Resize");
+        return NULL;
+    }
+    if (((PyArrayObject_fields *)self)->buffer_exports != 0) {
+        PyErr_SetString(PyExc_BufferError, "cannot resize ndarray with active buffer exports");
         return NULL;
     }
     if (_molt_numpy_copy_dims(&new_dims, newshape->ptr, newshape->len) < 0) {

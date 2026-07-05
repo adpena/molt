@@ -53,6 +53,14 @@ typedef struct PyArray_Descr {
     int alignment;
 } PyArray_Descr;
 
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+typedef struct _MoltNumpyBufferLease {
+    const MoltBufferView *slot;
+    MoltBufferView view;
+    struct _MoltNumpyBufferLease *next;
+} _MoltNumpyBufferLease;
+#endif
+
 typedef struct PyArrayObject_fields {
     _MOLT_NUMPY_OBJECT_HEAD;
     char *data;
@@ -63,6 +71,10 @@ typedef struct PyArrayObject_fields {
     PyArray_Descr *descr;
     int flags;
     PyObject *mem_handler;
+    uint64_t buffer_exports;
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
+    _MoltNumpyBufferLease *buffer_leases;
+#endif
 } PyArrayObject_fields;
 
 typedef PyArrayObject_fields PyArrayObject;
