@@ -43,6 +43,33 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     # Don't require command; show help when no args (like `go` with no args).
     subparsers = parser.add_subparsers(dest="command", title="commands")
 
+    queue_parser = subparsers.add_parser(
+        "queue",
+        add_help=False,
+        prefix_chars="+",
+        help="Inspect and run queued Molt proof work",
+        description=(
+            "Inspect and run queued Molt proof work. This is the canonical CLI "
+            "front door for tools/proof_queue.py; queue state, logs, DAG notes, "
+            "contention keys, and OS process custody remain owned by the proof "
+            "queue authority."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  molt queue status\n"
+            "  molt queue --help\n"
+            "  molt queue run --jobs 2 --detach\n"
+            "  molt queue native-molt-run --detach tmp/probe.py\n"
+            "  molt queue --db logs/proof_queue/proof_queue.sqlite3 status\n"
+        ),
+    )
+    queue_parser.add_argument(
+        "queue_args",
+        nargs=argparse.REMAINDER,
+        help="proof-queue arguments (default: status)",
+    )
+
     build_parser = subparsers.add_parser(
         "build",
         help="Build a Python program",

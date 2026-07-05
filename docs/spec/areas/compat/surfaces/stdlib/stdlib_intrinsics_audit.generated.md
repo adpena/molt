@@ -11,8 +11,8 @@
 ## Progress Summary (Generated)
 - Total audited modules: `920`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `875`
-- `intrinsic-support`: `3`
+- `intrinsic-partial`: `874`
+- `intrinsic-support`: `4`
 - `policy-gate`: `1`
 - `probe-only`: `0`
 - `python-only`: `0`
@@ -209,7 +209,6 @@
 - `_struct`
 - `_suggestions`
 - `_symtable`
-- `_sys_impl`
 - `_sysconfig`
 - `_thread`
 - `_threading_local`
@@ -984,6 +983,7 @@
 
 ### Intrinsic-owned private support fragments
 - `_pyio_text`
+- `asyncio._debug`
 - `unittest._mock_autospec`
 - `unittest._mock_patch`
 
