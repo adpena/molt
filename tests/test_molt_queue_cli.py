@@ -56,6 +56,53 @@ def test_molt_queue_invokes_proof_queue_without_shell(
     ]
 
 
+def test_molt_queue_strips_separator_and_preserves_argv(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "tools" / "proof_queue.py"
+    script.parent.mkdir()
+    script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(
+        queue_cli.subprocess,
+        "run",
+        lambda command, *, cwd: calls.append(command)
+        or subprocess.CompletedProcess(command, 0),
+    )
+
+    rc = queue_cli.handle_queue_command(
+        SimpleNamespace(
+            queue_args=[
+                "--",
+                "exec",
+                "--reason",
+                "portable queue argv",
+                "--",
+                sys.executable,
+                "-c",
+                "print('ok')",
+            ]
+        )
+    )
+
+    assert rc == 0
+    assert calls == [
+        [
+            sys.executable,
+            str(script),
+            "exec",
+            "--reason",
+            "portable queue argv",
+            "--",
+            sys.executable,
+            "-c",
+            "print('ok')",
+        ]
+    ]
+
+
 def test_molt_queue_defaults_to_quickstart(monkeypatch, tmp_path: Path) -> None:
     script = tmp_path / "tools" / "proof_queue.py"
     script.parent.mkdir()
