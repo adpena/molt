@@ -158,11 +158,15 @@ The source checkout also exposes a shell-free convenience front door. Prefer
 this for interactive use because it is the portable command surface:
 
 ```shell
-molt queue run --detach --queue-size 3
+molt queue --queue-size 3 run --detach
 ```
 
 `molt queue ...` forwards to `tools/proof_queue.py` using Python argv lists, not
-a shell. It is the same command syntax on Windows, macOS, and Linux, and it must
+a shell. The top-level `--queue-size N` is a portable per-invocation shorthand
+for `MOLT_PROOF_QUEUE_SIZE=N`; it avoids PowerShell/Bash/Fish-specific
+environment syntax while leaving scheduling and validation in
+`tools/proof_queue.py`. Use either that shorthand or `run --queue-size N`, not
+both. The command surface is the same on Windows, macOS, and Linux, and it must
 not be replaced with PowerShell-specific launch wrappers, POSIX backgrounding,
 or shell-quoted command reconstruction. Raw `uv run ... tools/proof_queue.py`
 examples below remain source-checkout diagnostics and CI/bootstrap forms; they
