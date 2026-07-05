@@ -2403,6 +2403,134 @@ def test_proof_queue_run_id_can_detach_existing_queued_row(
     assert f"runner_log: {logs / 'queued-b.runner.log'}" in stdout
 
 
+def test_proof_queue_run_jobs_detaches_multiple_ready_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id in ("queued-a", "queued-b"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=f"run {run_id}",
+            command=[sys.executable, "-c", "print('ok')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: list[tuple[str, float]] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args
+        launched.append((run_id, timeout))
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+                "--jobs",
+                "2",
+                "--timeout",
+                "42",
+                "--detach",
+            ]
+        )
+        == 0
+    )
+
+    assert launched == [("queued-a", 42.0), ("queued-b", 42.0)]
+
+
+def test_proof_queue_detached_runner_uses_shared_spawn_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    logs = tmp_path / "runs"
+    observed: dict[str, object] = {}
+
+    def fake_process_group_kwargs(
+        *,
+        windows: bool | None = None,
+        subprocess_module: object,
+    ) -> dict[str, object]:
+        observed["windows"] = windows
+        observed["subprocess_module"] = subprocess_module
+        return {"creationflags": 1234}
+
+    class FakePopen:
+        pid = 4321
+
+        def __init__(self, command: list[str], **kwargs: object) -> None:
+            observed["command"] = command
+            observed["kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        proof_queue, "detached_process_group_kwargs", fake_process_group_kwargs
+    )
+    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+
+    args = SimpleNamespace(
+        db=tmp_path / "proof_queue.sqlite3",
+        logs_root=logs,
+        notebooks_root=None,
+        repo_root=proof_queue.ROOT,
+    )
+    pid, runner_log = proof_queue._launch_detached_runner(
+        args,
+        run_id="queued-a",
+        timeout=42,
+    )
+
+    kwargs = observed["kwargs"]
+    assert pid == 4321
+    assert runner_log == logs / "queued-a.runner.log"
+    assert observed["command"][:2] == [
+        sys.executable,
+        str(Path(proof_queue.__file__).resolve()),
+    ]
+    assert observed["windows"] == (os.name == "nt")
+    assert observed["subprocess_module"] is proof_queue.subprocess
+    assert kwargs["cwd"] == proof_queue.ROOT
+    assert kwargs["stdin"] is proof_queue.subprocess.DEVNULL
+    assert kwargs["stdout"].name == str(runner_log)
+    assert kwargs["stderr"] is proof_queue.subprocess.STDOUT
+    assert kwargs["creationflags"] == 1234
+    assert "shell" not in kwargs
+    assert "powershell" not in " ".join(observed["command"]).lower()
+
+
+def test_proof_queue_run_jobs_rejects_non_positive_size(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="--jobs/--limit"):
+        proof_queue.main(
+            [
+                "--db",
+                str(tmp_path / "proof_queue.sqlite3"),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+                "--jobs",
+                "0",
+            ]
+        )
+
+
 def test_proof_queue_named_lane_can_detach_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -6250,7 +6378,7 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
         "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in command
     )
     assert "tools/target_python_runtime.py" in spec["scopes"]
-    assert "src/molt/stdlib/_sys_impl.py" in spec["scopes"]
+    assert "src/molt/stdlib/sys.py" in spec["scopes"]
     assert "src/molt/stdlib/queue.py" in spec["scopes"]
     assert any("serial fail-fast differential custody" in note for note in spec["notes"])
     assert any("Selected R6 fixtures:" in note for note in spec["notes"])
@@ -6309,6 +6437,47 @@ def test_proof_queue_r6_target_version_parity_uses_target_tag() -> None:
     assert spec["logical_id"] == "r6-target-version-parity-py313"
     assert spec["contention_key"] == "python:r6-target-version-py313"
     assert command[command.index("--python-version") + 1] == "3.13"
+
+
+def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
+    entry = tmp_path / "tmp" / "probe.py"
+    entry.parent.mkdir()
+    entry.write_text("print('ok')\n", encoding="utf-8")
+
+    spec = proof_queue._native_molt_run_spec(
+        "tmp/probe.py",
+        script_args=["--", "--flag"],
+        repo_root=tmp_path,
+    )
+
+    assert spec["logical_id"].startswith("native-molt-run-tmp-probe-py-")
+    assert spec["resource_family"] == "python-native"
+    assert spec["contention_key"] == "python:native-molt-run:tmp-probe-py"
+    command = list(spec["command"])
+    assert command[:9] == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "python",
+    ]
+    assert command[9:13] == ["-m", "molt.cli", "run", "tmp/probe.py"]
+    assert command[-1] == "--flag"
+    assert spec["scopes"] == ["tmp/probe.py"]
+    assert any("foreground Codex control plane" in note for note in spec["notes"])
+    assert proof_queue._proof_command_policy_error(command) is None
+
+
+def test_proof_queue_native_molt_run_rejects_outside_repo(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}_outside_probe.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="must live under repo root"):
+        proof_queue._native_molt_run_spec(str(outside), repo_root=tmp_path)
 
 
 def test_proof_queue_r6_target_version_parity_print_spec(

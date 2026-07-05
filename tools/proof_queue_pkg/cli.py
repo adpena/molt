@@ -11,8 +11,9 @@ import argparse
 from tools.proof_queue_pkg import pq
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog=prog,
         description="Submit, run, and inspect Molt proof lanes with contention limits."
     )
     parser.add_argument("--db")
@@ -87,7 +88,17 @@ def _build_parser() -> argparse.ArgumentParser:
     submit_p.set_defaults(func=pq._cmd_submit)
 
     run_p = sub.add_parser("run", help="run queued proof specs")
-    run_p.add_argument("--limit", type=int, default=1)
+    run_p.add_argument(
+        "--limit",
+        "--jobs",
+        dest="limit",
+        type=int,
+        default=1,
+        help=(
+            "maximum ready queued rows to run or detach in this worker call; "
+            "--jobs is the preferred operator spelling"
+        ),
+    )
     run_p.add_argument("--run-id")
     run_p.add_argument("--timeout", type=float, default=1200.0)
     run_p.add_argument("--detach", action="store_true")
@@ -264,4 +275,24 @@ def _build_parser() -> argparse.ArgumentParser:
         note_help="append submission context to the R6 parity run",
     )
     r6_parity_p.set_defaults(func=pq._cmd_r6_target_version_parity)
+
+    native_run_p = sub.add_parser(
+        "native-molt-run",
+        help="queue a native `molt run` entrypoint probe",
+        description=(
+            "queue a native `molt run` entrypoint probe with canonical uv, "
+            "memory-guard, log, DAG, and contention custody"
+        ),
+    )
+    pq._add_named_lane_args(
+        native_run_p,
+        note_help="append submission context to the native Molt run",
+    )
+    native_run_p.add_argument("entry", help="repo-local Python entrypoint to run")
+    native_run_p.add_argument(
+        "script_args",
+        nargs=argparse.REMAINDER,
+        help="arguments passed to the entrypoint (use -- to separate)",
+    )
+    native_run_p.set_defaults(func=pq._cmd_native_molt_run)
     return parser
