@@ -1,4 +1,22 @@
-use super::*;
+use std::fs::File;
+use std::io;
+use std::path::Path;
+use std::sync::Arc;
+
+#[cfg(feature = "wasm-backend")]
+use molt_backend::{WasmBackend, WasmCompileOptions};
+
+use super::super::io_limits::{write_cached_output, write_output};
+#[cfg(feature = "native-backend")]
+use super::super::native_batch::compile_native_application_object_to_path;
+#[cfg(feature = "native-backend")]
+use super::super::shared_stdlib_cache::{
+    NativeStdlibCachePrepare, prepare_native_application_object,
+};
+use super::{
+    DaemonCache, DaemonJobRequest, DaemonJobResponse, daemon_memory_cache_allowed_for_job,
+    insert_daemon_cache_entries, maybe_cache_output_file,
+};
 
 #[cfg(any(unix, test))]
 pub(crate) fn backend_ir_document_from_json_path(

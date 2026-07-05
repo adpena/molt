@@ -1,4 +1,18 @@
-use super::*;
+use std::io;
+use std::path::Path;
+
+use molt_backend::SimpleIR;
+
+use super::super::io_limits::ensure_output_parent_dir;
+use super::super::native_batch::NativeApplicationObjectOptions;
+use super::{
+    compile_stdlib_cache_object, prune_and_partition_native_stdlib,
+    publish_shared_stdlib_cache_object, read_stdlib_cache_key, read_stdlib_cache_manifest,
+    read_stdlib_cache_partition_manifest, remove_shared_stdlib_cache_artifacts,
+    shared_stdlib_cache_matches, shared_stdlib_partition_manifest,
+    shared_stdlib_split_function_names, stdlib_cache_count_sidecar_path,
+    stdlib_cache_temp_publish_path, validate_shared_stdlib_partition,
+};
 
 pub(crate) struct NativeStdlibCachePrepare<'a> {
     pub(crate) target_triple: Option<&'a str>,

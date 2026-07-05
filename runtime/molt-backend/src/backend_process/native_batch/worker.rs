@@ -1,4 +1,11 @@
-use super::*;
+use std::io;
+use std::path::Path;
+
+use molt_backend::SimpleBackend;
+
+use super::super::io_limits::{read_json_artifact, write_output_path};
+use super::batching::{NativeBatchModuleMetadata, NativeBatchObjectJob};
+use super::temp::preserve_native_batch_worker_failure_artifacts;
 
 pub(crate) fn compile_native_batch_object_job(
     job: NativeBatchObjectJob,

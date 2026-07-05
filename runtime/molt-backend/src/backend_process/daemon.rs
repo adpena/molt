@@ -1,5 +1,3 @@
-use super::*;
-
 #[cfg(any(unix, test))]
 mod cache;
 #[cfg(any(unix, test))]
