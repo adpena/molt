@@ -129,10 +129,40 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witne
 ```
 
 Detached submission creates a queued row, starts a queue-owned runner for that
-exact run ID, and prints both the run ID and `*.runner.log`. The runner then
-uses `tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
-queued row. WASM resource families also preflight the checked-in Rust toolchain
-contract and install/check required Rust targets before Cargo starts.
+exact run ID, marks the row `dispatched`, and prints both the run ID and
+`*.runner.log`. The runner then uses
+`tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
+queued row. `dispatched` is active queue custody: it consumes queue capacity and
+prevents duplicate launch until the runner claims the row as `running` or
+`prune-stale` reclaims an expired handoff. WASM resource families also preflight
+the checked-in Rust toolchain contract and install/check required Rust targets
+before Cargo starts.
+
+Use the queue-size scheduler instead of launching several detached rows by hand:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py run `
+  --detach `
+  --queue-size 3
+```
+
+`--queue-size N` is the maximum number of concurrently `dispatched` or
+`running` rows across all contention keys. The default is `1`; set
+`MOLT_PROOF_QUEUE_SIZE=N` for a shell/session default. `run --detach` defaults
+its launch limit to the queue size, while `--limit` remains a per-invocation cap.
+The scheduler skips rows whose contention key is already active or already
+selected in the same batch, so increasing queue size only admits independent
+work.
+
+The source checkout also exposes a shell-free convenience front door:
+
+```powershell
+molt queue run --detach --queue-size 3
+```
+
+`molt queue ...` forwards to `tools/proof_queue.py` using Python argv lists, not
+a shell. It is the same command syntax on Windows, macOS, and Linux, and it must
+not be replaced with PowerShell-specific launch wrappers.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on

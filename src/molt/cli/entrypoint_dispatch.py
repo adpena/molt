@@ -33,6 +33,7 @@ from molt.cli.native_toolchain import _run_bolt_post_link
 from molt.cli.output import fail as _fail
 from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
+from molt.cli.queue_cli import handle_queue_command
 from molt.cli.target_python import _parse_target_python_version
 from molt.cli.setup_readiness import doctor, setup
 from molt.cli.toolchain_validation import update_repo, validate
@@ -76,6 +77,9 @@ def _dispatch_entrypoint_command(
 
     if args.command == "debug":
         return _debug_helpers._handle_debug_command(args)
+
+    if args.command == "queue":
+        return handle_queue_command(args)
 
     if args.command == "build":
         target = args.target or build_cfg.get("target") or "native"

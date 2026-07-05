@@ -43,7 +43,12 @@ from tools.dirty_tree_policy import (  # noqa: E402
     filter_status_lines,
 )
 
-RUNNING = {"queued", "running"}
+RUNNING = {"queued", "dispatched", "running"}
+ACTIVE_SQL_STATUSES = "'queued', 'dispatched', 'running'"
+ACTIVE_OR_STALE_SQL_STATUSES = "'queued', 'dispatched', 'running', 'stale'"
+DETACHED_READY_STATUSES = {"queued", "dispatched"}
+PROOF_QUEUE_SIZE_ENV = "MOLT_PROOF_QUEUE_SIZE"
+DEFAULT_PROOF_QUEUE_SIZE = 1
 NOTE_KIND_DESCRIPTIONS = {
     "submission": "note captured when the run is submitted",
     "change": "source, config, artifact, or environment change being proved",
@@ -73,6 +78,7 @@ MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 PROOF_QUEUE_ACTIVE_POLL_SECONDS = 2.0
+PROOF_QUEUE_DISPATCH_STALE_SECONDS = 120.0
 PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS = 5.0
 PROOF_QUEUE_STALE_EXIT_CODE = 2
 # SQLite busy timeout (milliseconds) for every proof-queue connection. WAL
@@ -230,7 +236,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
 )
 FRONTIER_SUPERSEDING_EDGE_KINDS = frozenset({"reruns", "supersedes"})
 FRONTIER_SUPERSEDING_CHILD_STATUSES = frozenset(
-    {"queued", "running", "passed", "failed"}
+    {"queued", "dispatched", "running", "passed", "failed"}
 )
 
 
@@ -822,6 +828,8 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     except OSError:
         if row["status"] == "queued":
             return [f"  log={path} (queued; proof command not launched yet)"]
+        if row["status"] == "dispatched":
+            return [f"  log={path} (dispatched; waiting for detached runner)"]
         return [f"  log={path} (missing)"]
     age = _format_duration(max(0.0, time.time() - stat.st_mtime))
     lines = [f"  log={path}", f"  last_log_age={age}"]
@@ -861,6 +869,34 @@ def _proof_session_id(resource_family: str, contention_key: str) -> str:
     family = _slug(resource_family)[:10]
     label = _slug(contention_key)[:8]
     return f"proof-{family}-{digest}-{label}"
+
+
+def _positive_int(value: object, *, source: str) -> int:
+    try:
+        result = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{source} must be a positive integer, got {value!r}") from exc
+    if result < 1:
+        raise SystemExit(f"{source} must be a positive integer, got {value!r}")
+    return result
+
+
+def _configured_queue_size(value: int | None = None) -> int:
+    if value is not None:
+        return _positive_int(value, source="--queue-size")
+    raw = os.environ.get(PROOF_QUEUE_SIZE_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_PROOF_QUEUE_SIZE
+    return _positive_int(raw, source=PROOF_QUEUE_SIZE_ENV)
+
+
+def _configured_run_limit(args: argparse.Namespace, *, queue_size: int) -> int:
+    raw_limit = getattr(args, "limit", None)
+    if raw_limit is not None:
+        return _positive_int(raw_limit, source="--limit")
+    if getattr(args, "detach", False):
+        return queue_size
+    return 1
 
 
 def _connect(db: Path) -> sqlite3.Connection:
@@ -1051,7 +1087,7 @@ def _connect(db: Path) -> sqlite3.Connection:
         )
     if "guard_identity" not in columns:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
-    # At most one RUNNING run per contention key. A partial UNIQUE index makes
+    # At most one active launched run per contention key. A partial UNIQUE index makes
     # SQLite itself enforce the hard serialization invariant, closing the
     # check-then-insert / transition TOCTOU where two concurrent admissions each
     # see zero running rows and both reach status='running' (two heavy builds
@@ -1065,6 +1101,13 @@ def _connect(db: Path) -> sqlite3.Connection:
         CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_running_per_contention_key
         ON proof_runs(contention_key)
         WHERE status = 'running'
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_launched_per_contention_key
+        ON proof_runs(contention_key)
+        WHERE status IN ('dispatched', 'running')
         """
     )
     conn.commit()
@@ -1814,12 +1857,25 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return list(
         conn.execute(
-            """
+            f"""
             SELECT * FROM proof_runs
-            WHERE contention_key = ? AND status IN ('queued', 'running')
+            WHERE contention_key = ? AND status IN ({ACTIVE_SQL_STATUSES})
             ORDER BY started_at DESC
             """,
             (key,),
+        )
+    )
+
+
+def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM proof_runs
+            WHERE status IN ('dispatched', 'running')
+            ORDER BY started_at DESC
+            """
         )
     )
 
@@ -2038,9 +2094,9 @@ def _admit_run(
     try:
         active = list(
             conn.execute(
-                """
+                f"""
                 SELECT * FROM proof_runs
-                WHERE contention_key = ? AND status IN ('queued', 'running')
+                WHERE contention_key = ? AND status IN ({ACTIVE_SQL_STATUSES})
                 ORDER BY started_at DESC
                 """,
                 (contention_key,),
@@ -2084,9 +2140,9 @@ def _admit_run(
             conn.rollback()
             return list(
                 conn.execute(
-                    """
+                    f"""
                     SELECT * FROM proof_runs
-                    WHERE contention_key = ? AND status IN ('queued', 'running')
+                    WHERE contention_key = ? AND status IN ({ACTIVE_SQL_STATUSES})
                     ORDER BY started_at DESC
                     """,
                     (contention_key,),
@@ -2930,8 +2986,10 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         )
         if rc != 0 or run_id is None:
             return rc
-        pid, runner_log = _launch_detached_runner(
+        conn = _connect(_db_path(args))
+        pid, runner_log = _dispatch_detached_runner(
             args,
+            conn,
             run_id=run_id,
             timeout=float(runnable["timeout"]),
         )
@@ -3160,6 +3218,38 @@ def _launch_detached_runner(
     return proc.pid, runner_log
 
 
+def _dispatch_detached_runner(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    timeout: float,
+) -> tuple[int, Path]:
+    _update_run(conn, run_id, status="dispatched", started_at=_utc_now())
+    try:
+        pid, runner_log = _launch_detached_runner(args, run_id=run_id, timeout=timeout)
+    except Exception:
+        _update_run(
+            conn,
+            run_id,
+            status="failed",
+            returncode=2,
+            finished_at=_utc_now(),
+            elapsed_s=0.0,
+        )
+        raise
+    row = _row_by_run_id(conn, run_id)
+    if row is not None:
+        log_path = Path(str(row["log_path"]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            print("\n--- proof_queue detached dispatch ---", file=log)
+            print("status=dispatched", file=log)
+            print(f"runner_pid={pid}", file=log)
+            print(f"runner_log={runner_log}", file=log)
+    return pid, runner_log
+
+
 def _queued_command_process_kwargs() -> dict[str, object]:
     return hidden_windows_process_group_kwargs(
         windows=os.name == "nt",
@@ -3343,8 +3433,10 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         )
         if rc != 0 or run_id is None:
             return rc
-        pid, runner_log = _launch_detached_runner(
+        conn = _connect(_db_path(args))
+        pid, runner_log = _dispatch_detached_runner(
             args,
+            conn,
             run_id=run_id,
             timeout=args.timeout,
         )
@@ -3407,8 +3499,10 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
         )
         if rc != 0 or run_id is None:
             return rc
-        pid, runner_log = _launch_detached_runner(
+        conn = _connect(_db_path(args))
+        pid, runner_log = _dispatch_detached_runner(
             args,
+            conn,
             run_id=run_id,
             timeout=args.timeout,
         )
@@ -3600,6 +3694,14 @@ def _cmd_submit(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
+    queue_size = _configured_queue_size(getattr(args, "queue_size", None))
+    run_limit = _configured_run_limit(args, queue_size=queue_size)
+    active_running = _active_running_rows(conn)
+    active_keys = {
+        str(row["contention_key"])
+        for row in active_running
+        if not (args.run_id is not None and row["run_id"] == args.run_id)
+    }
     if args.run_id:
         selected = conn.execute(
             "SELECT * FROM proof_runs WHERE run_id = ?",
@@ -3607,23 +3709,50 @@ def _cmd_run(args: argparse.Namespace) -> int:
         ).fetchone()
         if selected is None:
             raise SystemExit(f"unknown proof run {args.run_id!r}")
-        if selected["status"] != "queued":
+        allowed_statuses = {"queued"} if args.detach else DETACHED_READY_STATUSES
+        if selected["status"] not in allowed_statuses:
+            allowed = ", ".join(sorted(allowed_statuses))
             raise SystemExit(
-                f"proof run {args.run_id!r} is {selected['status']}, not queued"
+                f"proof run {args.run_id!r} is {selected['status']}, not {allowed}"
             )
         queued = [selected]
+        selection_limit = 1
     else:
         queued = list(
             conn.execute(
                 "SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid"
             )
         )
+        available_slots = max(0, queue_size - len(active_running))
+        if available_slots <= 0:
+            print(
+                f"queue capacity full running={len(active_running)} "
+                f"queue_size={queue_size}"
+            )
+            selection_limit = 0
+        elif args.detach:
+            selection_limit = min(run_limit, available_slots)
+        else:
+            selection_limit = run_limit
     rows = []
+    selected_detached_keys = set(active_keys)
     for row in queued:
+        contention_key = str(row["contention_key"])
+        if contention_key in active_keys:
+            print(f"waiting {row['run_id']} contention_key={contention_key} active")
+            continue
+        if args.detach and contention_key in selected_detached_keys:
+            print(
+                f"waiting {row['run_id']} contention_key={contention_key} "
+                "already selected"
+            )
+            continue
         state, blockers = _dependency_state(conn, row["run_id"])
         if state == "ready":
             rows.append(row)
-            if args.run_id or len(rows) >= args.limit:
+            if args.detach:
+                selected_detached_keys.add(contention_key)
+            if args.run_id or len(rows) >= selection_limit:
                 break
             continue
         blocker_summary = _blocker_summary(blockers)
@@ -3641,8 +3770,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for row in rows:
         payload = _row_to_payload(row)
         if args.detach:
-            pid, runner_log = _launch_detached_runner(
+            pid, runner_log = _dispatch_detached_runner(
                 args,
+                conn,
                 run_id=str(payload["run_id"]),
                 timeout=args.timeout,
             )
@@ -3678,12 +3808,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
     _refresh_blocked_queued_runs(args, conn)
     active = list(
         conn.execute(
-            "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
+            f"SELECT * FROM proof_runs WHERE status IN ({ACTIVE_SQL_STATUSES}) "
+            "ORDER BY started_at"
         )
     )
     recent = list(
         conn.execute(
-            "SELECT * FROM proof_runs WHERE status NOT IN ('queued', 'running') ORDER BY finished_at DESC LIMIT ?",
+            f"SELECT * FROM proof_runs WHERE status NOT IN ({ACTIVE_SQL_STATUSES}) "
+            "ORDER BY finished_at DESC LIMIT ?",
             (args.recent,),
         )
     )
@@ -3905,7 +4037,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         rows = list(
             conn.execute(
                 "SELECT * FROM proof_runs "
-                "WHERE status IN ('queued', 'running', 'stale') "
+                f"WHERE status IN ({ACTIVE_OR_STALE_SQL_STATUSES}) "
                 f"AND run_id IN ({placeholders}) "
                 "ORDER BY started_at",
                 run_ids,
@@ -3915,13 +4047,20 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         rows = list(
             conn.execute(
                 "SELECT * FROM proof_runs "
-                "WHERE status IN ('queued', 'running') ORDER BY started_at"
+                f"WHERE status IN ({ACTIVE_SQL_STATUSES}) ORDER BY started_at"
             )
         )
     pruned = 0
     for row in rows:
         if row["status"] == "queued":
             continue
+        if row["status"] == "dispatched":
+            dispatch_age = _running_age_seconds(_row_value(row, "started_at"))
+            if (
+                dispatch_age is None
+                or dispatch_age < PROOF_QUEUE_DISPATCH_STALE_SECONDS
+            ):
+                continue
         if row["status"] == "stale":
             if row["returncode"] is None:
                 _update_run(
@@ -4108,13 +4247,15 @@ def _audit_rows(
     conn.row_factory = sqlite3.Row
     active = list(
         conn.execute(
-            "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
+            f"SELECT * FROM proof_runs WHERE status IN ({ACTIVE_SQL_STATUSES}) "
+            "ORDER BY started_at"
         )
     )
     if args.all:
         historical = list(
             conn.execute(
-                "SELECT * FROM proof_runs WHERE status NOT IN ('queued', 'running') ORDER BY rowid DESC"
+                f"SELECT * FROM proof_runs WHERE status NOT IN ({ACTIVE_SQL_STATUSES}) "
+                "ORDER BY rowid DESC"
             )
         )
     else:
@@ -4122,7 +4263,7 @@ def _audit_rows(
             conn.execute(
                 """
                 SELECT * FROM proof_runs
-                WHERE status NOT IN ('queued', 'running')
+                WHERE status NOT IN ('queued', 'dispatched', 'running')
                 ORDER BY rowid DESC
                 LIMIT ?
                 """,
@@ -4648,6 +4789,8 @@ def _cmd_notebook(args: argparse.Namespace) -> int:
 def _cmd_quickstart(args: argparse.Namespace) -> int:
     del args
     print(
+        "molt queue status\n"
+        "molt queue run --detach --queue-size 3\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo "
         '--id focused-cargo-proof --reason "why this proves the Rust contract" '
