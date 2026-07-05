@@ -172,15 +172,19 @@ The scheduler skips rows whose contention key is already active or already
 selected in the same batch, so increasing queue size only admits independent
 work.
 
-The source checkout also exposes a shell-free convenience front door:
+The source checkout also exposes a shell-free convenience front door. Prefer
+this for interactive use because it is the portable command surface:
 
-```powershell
+```shell
 molt queue run --detach --queue-size 3
 ```
 
 `molt queue ...` forwards to `tools/proof_queue.py` using Python argv lists, not
 a shell. It is the same command syntax on Windows, macOS, and Linux, and it must
-not be replaced with PowerShell-specific launch wrappers.
+not be replaced with PowerShell-specific launch wrappers, POSIX backgrounding,
+or shell-quoted command reconstruction. Raw `uv run ... tools/proof_queue.py`
+examples below remain source-checkout diagnostics and CI/bootstrap forms; they
+are not a second queue authority.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on
