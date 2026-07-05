@@ -45,6 +45,7 @@ from tools.dirty_tree_policy import (  # noqa: E402
 
 RUNNING = {"queued", "dispatched", "running"}
 ACTIVE_SQL_STATUSES = "'queued', 'dispatched', 'running'"
+LAUNCHED_SQL_STATUSES = "'dispatched', 'running'"
 ACTIVE_OR_STALE_SQL_STATUSES = "'queued', 'dispatched', 'running', 'stale'"
 DETACHED_READY_STATUSES = {"queued", "dispatched"}
 PROOF_QUEUE_SIZE_ENV = "MOLT_PROOF_QUEUE_SIZE"
@@ -1859,7 +1860,7 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
         conn.execute(
             f"""
             SELECT * FROM proof_runs
-            WHERE contention_key = ? AND status IN ({ACTIVE_SQL_STATUSES})
+            WHERE contention_key = ? AND status IN ({LAUNCHED_SQL_STATUSES})
             ORDER BY started_at DESC
             """,
             (key,),
@@ -1871,9 +1872,9 @@ def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return list(
         conn.execute(
-            """
+            f"""
             SELECT * FROM proof_runs
-            WHERE status IN ('dispatched', 'running')
+            WHERE status IN ({LAUNCHED_SQL_STATUSES})
             ORDER BY started_at DESC
             """
         )
@@ -2072,86 +2073,48 @@ def _admit_run(
     log_path: Path,
     summary_json: Path,
 ) -> list[sqlite3.Row] | None:
-    """Atomically admit a run for its contention key.
+    """Atomically insert a queued run.
 
-    Returns ``None`` when the run was inserted, or the list of active rows that
-    blocked admission. The active-check and the insert run inside a single
-    ``BEGIN IMMEDIATE`` transaction, which acquires the write lock up front (per
-    sqlite.org lang_transaction: IMMEDIATE starts a write transaction without
-    waiting for a write statement). That closes the check-then-insert TOCTOU: a
-    second admission for the same key blocks on the write lock, then either sees
-    the now-active row or trips the partial-unique index. Either way at most one
-    non-terminal run exists per key.
+    Queued rows are wait-list state, not resource custody. Multiple queued rows
+    may share a contention key so dependency chains and follow-up proofs can be
+    parked while earlier work is still running. The launch path owns the
+    dispatched/running contention and capacity checks.
     """
     conn.row_factory = sqlite3.Row
-    # Serialize the check+insert against other writers. Python's sqlite3 driver
-    # would otherwise open an implicit DEFERRED transaction that takes the write
-    # lock only at the INSERT, leaving a window between our SELECT and INSERT.
-    # Close any implicit transaction first so BEGIN IMMEDIATE is legal.
     if conn.in_transaction:
         conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        active = list(
-            conn.execute(
-                f"""
-                SELECT * FROM proof_runs
-                WHERE contention_key = ? AND status IN ({ACTIVE_SQL_STATUSES})
-                ORDER BY started_at DESC
-                """,
-                (contention_key,),
-            )
-        )
-        if active:
-            conn.rollback()
-            return active
-        try:
-            conn.execute(
-                """
-                INSERT INTO proof_runs (
-                    run_id, logical_id, reason, status, command_json, cwd,
-                    resource_family, contention_key, scopes_json, env_json,
-                    git_json, log_path, summary_json
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    logical_id,
-                    reason,
-                    json.dumps(command),
-                    str(cwd),
-                    resource_family,
-                    contention_key,
-                    json.dumps(scopes),
-                    json.dumps(env_overrides or {}, sort_keys=True),
-                    json.dumps(
-                        git_snapshot
-                        if git_snapshot is not None
-                        else _git_snapshot(cwd),
-                        sort_keys=True,
-                    ),
-                    str(log_path),
-                    str(summary_json),
+        conn.execute(
+            """
+            INSERT INTO proof_runs (
+                run_id, logical_id, reason, status, command_json, cwd,
+                resource_family, contention_key, scopes_json, env_json,
+                git_json, log_path, summary_json
+            ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                logical_id,
+                reason,
+                json.dumps(command),
+                str(cwd),
+                resource_family,
+                contention_key,
+                json.dumps(scopes),
+                json.dumps(env_overrides or {}, sort_keys=True),
+                json.dumps(
+                    git_snapshot if git_snapshot is not None else _git_snapshot(cwd),
+                    sort_keys=True,
                 ),
-            )
-        except sqlite3.IntegrityError:
-            # A concurrent admission won the race and the partial-unique index
-            # rejected our insert. Report the active row(s) as the blocker.
-            conn.rollback()
-            return list(
-                conn.execute(
-                    f"""
-                    SELECT * FROM proof_runs
-                    WHERE contention_key = ? AND status IN ({ACTIVE_SQL_STATUSES})
-                    ORDER BY started_at DESC
-                    """,
-                    (contention_key,),
-                )
-            )
+                str(log_path),
+                str(summary_json),
+            ),
+        )
     except BaseException:
         conn.rollback()
         raise
-    conn.commit()
+    _commit_with_locked_retry(conn)
     return None
 
 
@@ -2991,12 +2954,15 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         if rc != 0 or run_id is None:
             return rc
         conn = _connect(_db_path(args))
-        pid, runner_log = _dispatch_detached_runner(
+        dispatch = _dispatch_detached_runner(
             args,
             conn,
             run_id=run_id,
             timeout=float(runnable["timeout"]),
         )
+        if dispatch is None:
+            return 0
+        pid, runner_log = dispatch
         print(f"detached {run_id} runner_pid={pid}")
         print(f"runner_log: {runner_log}")
         return 0
@@ -3222,14 +3188,97 @@ def _launch_detached_runner(
     return proc.pid, runner_log
 
 
+def _claim_detached_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    queue_size: int,
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Atomically move one queued row into launched custody."""
+    conn.row_factory = sqlite3.Row
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT * FROM proof_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            raise SystemExit(f"unknown proof run {run_id!r}")
+        if row["status"] != "queued":
+            conn.rollback()
+            return None, f"proof run {run_id!r} is {row['status']}, not queued"
+
+        active_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM proof_runs "
+                f"WHERE status IN ({LAUNCHED_SQL_STATUSES})"
+            ).fetchone()[0]
+        )
+        if active_count >= queue_size:
+            conn.rollback()
+            return (
+                None,
+                f"queue capacity full active={active_count} queue_size={queue_size}",
+            )
+
+        active_for_key = list(
+            conn.execute(
+                f"""
+                SELECT * FROM proof_runs
+                WHERE contention_key = ? AND status IN ({LAUNCHED_SQL_STATUSES})
+                ORDER BY started_at DESC
+                """,
+                (row["contention_key"],),
+            )
+        )
+        if active_for_key:
+            conn.rollback()
+            return (
+                None,
+                f"waiting {run_id} contention_key={row['contention_key']} active",
+            )
+
+        now = _utc_now()
+        updated = conn.execute(
+            """
+            UPDATE proof_runs
+            SET status = 'dispatched', started_at = ?
+            WHERE run_id = ? AND status = 'queued'
+            """,
+            (now, run_id),
+        )
+        if updated.rowcount != 1:
+            conn.rollback()
+            return None, f"proof run {run_id!r} was claimed by another scheduler"
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return None, f"proof run {run_id!r} could not be claimed atomically"
+    except BaseException:
+        conn.rollback()
+        raise
+    _commit_with_locked_retry(conn)
+    return _row_by_run_id(conn, run_id), None
+
+
 def _dispatch_detached_runner(
     args: argparse.Namespace,
     conn: sqlite3.Connection,
     *,
     run_id: str,
     timeout: float,
-) -> tuple[int, Path]:
-    _update_run(conn, run_id, status="dispatched", started_at=_utc_now())
+) -> tuple[int, Path] | None:
+    claimed, skip_reason = _claim_detached_run(
+        conn,
+        run_id,
+        queue_size=_configured_queue_size(getattr(args, "queue_size", None)),
+    )
+    if claimed is None:
+        if skip_reason:
+            print(skip_reason)
+        return None
     try:
         pid, runner_log = _launch_detached_runner(args, run_id=run_id, timeout=timeout)
     except Exception:
@@ -3438,12 +3487,15 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         if rc != 0 or run_id is None:
             return rc
         conn = _connect(_db_path(args))
-        pid, runner_log = _dispatch_detached_runner(
+        dispatch = _dispatch_detached_runner(
             args,
             conn,
             run_id=run_id,
             timeout=args.timeout,
         )
+        if dispatch is None:
+            return 0
+        pid, runner_log = dispatch
         print(f"detached {run_id} runner_pid={pid}")
         print(f"runner_log: {runner_log}")
         return 0
@@ -3504,12 +3556,15 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
         if rc != 0 or run_id is None:
             return rc
         conn = _connect(_db_path(args))
-        pid, runner_log = _dispatch_detached_runner(
+        dispatch = _dispatch_detached_runner(
             args,
             conn,
             run_id=run_id,
             timeout=args.timeout,
         )
+        if dispatch is None:
+            return 0
+        pid, runner_log = dispatch
         print(f"detached {run_id} runner_pid={pid}")
         print(f"runner_log: {runner_log}")
         return 0
@@ -3730,7 +3785,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         available_slots = max(0, queue_size - len(active_running))
         if available_slots <= 0:
             print(
-                f"queue capacity full running={len(active_running)} "
+                f"queue capacity full active={len(active_running)} "
                 f"queue_size={queue_size}"
             )
             selection_limit = 0
@@ -3740,7 +3795,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             selection_limit = run_limit
     rows = []
     selected_detached_keys = set(active_keys)
-    for row in queued:
+    candidate_rows = queued if selection_limit > 0 else []
+    for row in candidate_rows:
         contention_key = str(row["contention_key"])
         if contention_key in active_keys:
             print(f"waiting {row['run_id']} contention_key={contention_key} active")
@@ -3774,12 +3830,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for row in rows:
         payload = _row_to_payload(row)
         if args.detach:
-            pid, runner_log = _dispatch_detached_runner(
+            dispatch = _dispatch_detached_runner(
                 args,
                 conn,
                 run_id=str(payload["run_id"]),
                 timeout=args.timeout,
             )
+            if dispatch is None:
+                continue
+            pid, runner_log = dispatch
             print(f"detached {payload['run_id']} runner_pid={pid}")
             print(f"runner_log: {runner_log}")
             continue
@@ -4065,6 +4124,24 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 or dispatch_age < PROOF_QUEUE_DISPATCH_STALE_SECONDS
             ):
                 continue
+            _update_run(
+                conn,
+                row["run_id"],
+                status="stale",
+                returncode=PROOF_QUEUE_STALE_EXIT_CODE,
+                finished_at=_utc_now(),
+            )
+            pruned += 1
+            runner_log = Path(str(row["log_path"])).with_name(
+                f"{row['run_id']}.runner.log"
+            )
+            print(
+                f"stale {row['run_id']} diagnosis=dispatch-handoff-expired "
+                "[infra]: detached runner did not claim the dispatched row "
+                f"within {PROOF_QUEUE_DISPATCH_STALE_SECONDS:.0f}s "
+                f"artifacts={runner_log}, {row['log_path']}"
+            )
+            continue
         if row["status"] == "stale":
             if row["returncode"] is None:
                 _update_run(
