@@ -148,6 +148,15 @@ MOLT_RUNTIME_INVALID_OBJECT_HEADER_RE = re.compile(
 RUST_COMPILER_ERROR_RE = re.compile(
     r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
 )
+RUST_TEST_RESULT_FAILED_RE = re.compile(
+    r"(?m)^test result: FAILED\.(?P<detail>[^\r\n]*)"
+)
+RUST_CARGO_TEST_FAILED_RE = re.compile(
+    r"(?m)^error: test failed, to rerun pass `(?P<rerun>[^`]+)`"
+)
+RUST_FAILED_TEST_LINE_RE = re.compile(
+    r"(?m)^test (?P<name>[A-Za-z0-9_:<>_.-]+) \.\.\. FAILED\r?$"
+)
 RUNTIME_WASM_RUST_TARGET_MISSING_RE = re.compile(
     r"(?m)^Runtime wasm build requires Rust target (?P<target>[A-Za-z0-9_-]+), "
     r"but the active Rust toolchain does not provide it\. "
@@ -179,8 +188,7 @@ NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX = (
 NATIVE_CALL_LANE_SCOPES = (
     "tests/test_native_import_bootstrap_regressions.py",
     "runtime/molt-runtime/src/call/function.rs",
-    "runtime/molt-backend-native/src/native_backend/function_compiler/fc/"
-    "modules.rs",
+    "runtime/molt-backend-native/src/native_backend/function_compiler/fc/modules.rs",
     "runtime/molt-runtime/src/call/class_init.rs",
     "runtime/molt-runtime/src/builtins/containers.rs",
     "runtime/molt-runtime/src/builtins/exceptions.rs",
@@ -334,7 +342,8 @@ def _is_guard_command(command: object) -> bool:
     if not isinstance(command, list):
         return False
     return any(
-        isinstance(part, str) and part.replace("\\", "/").endswith("tools/memory_guard.py")
+        isinstance(part, str)
+        and part.replace("\\", "/").endswith("tools/memory_guard.py")
         for part in command
     )
 
@@ -383,7 +392,9 @@ def _pytest_current_status_line(summary_json: object) -> str | None:
                 return f"  pytest_current=missing path={path}"
             error = current_test_file.get("error")
             if isinstance(error, str) and error.strip():
-                return f"  pytest_current=unreadable error={_shorten(error.strip(), 120)}"
+                return (
+                    f"  pytest_current=unreadable error={_shorten(error.strip(), 120)}"
+                )
         current = pytest_section.get("current_test")
         if isinstance(current, str) and current.strip():
             return f"  pytest_current={current.strip()}"
@@ -508,7 +519,11 @@ def _descendant_sample_evidence(
             break
     if not snippets:
         return None
-    suffix = "" if len(descendants) <= len(snippets) else f" +{len(descendants) - len(snippets)} more"
+    suffix = (
+        ""
+        if len(descendants) <= len(snippets)
+        else f" +{len(descendants) - len(snippets)} more"
+    )
     return "descendant_samples=" + "; ".join(snippets) + suffix
 
 
@@ -545,8 +560,7 @@ def _running_pytest_failures_observed_diagnostic(
         signal_id="running-pytest-failures-observed",
         severity="warning",
         summary=(
-            "Running pytest proof has already emitted failure/error progress "
-            "markers."
+            "Running pytest proof has already emitted failure/error progress markers."
         ),
         evidence=" ".join(evidence_parts),
         next_action=(
@@ -671,7 +685,9 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
             f"summary_json={row['summary_json']} child_pid={child_pid} "
             f"last_log_age={_format_duration(log_age_s)}"
         )
-        summary_text = "Running proof row's nested memory guard child is no longer live."
+        summary_text = (
+            "Running proof row's nested memory guard child is no longer live."
+        )
     else:
         try:
             from tools import memory_guard
@@ -1624,8 +1640,6 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
     return None
 
 
-
-
 def _diagnostics_have_stale_running_signal(
     diagnostics: Sequence[dict[str, object]],
 ) -> bool:
@@ -1751,8 +1765,7 @@ def _wait_for_guard_completion_or_stale(
             guard_rc = _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
             if guard_rc is not None:
                 print(
-                    "proof_queue stale terminalization guard_exit_code="
-                    f"{guard_rc}",
+                    f"proof_queue stale terminalization guard_exit_code={guard_rc}",
                     file=log,
                     flush=True,
                 )
@@ -1934,9 +1947,7 @@ def _refresh_blocked_queued_runs(
     else:
         rows = list(
             conn.execute(
-                "SELECT * FROM proof_runs "
-                "WHERE status = 'queued' "
-                "ORDER BY rowid"
+                "SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid"
             )
         )
     blocked_count = 0
@@ -2288,7 +2299,9 @@ def _write_queued_submission_log(
                 file=log,
             )
         if depends_on:
-            print(f"depends_on={json.dumps(list(depends_on), sort_keys=True)}", file=log)
+            print(
+                f"depends_on={json.dumps(list(depends_on), sort_keys=True)}", file=log
+            )
         print("", file=log)
         print("No proof command has launched for this queued row.", file=log)
 
@@ -3210,8 +3223,6 @@ def _record_policy_rejection(
             phase="policy rejection projection",
         )
     return 2
-
-
 
 
 def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
@@ -4202,10 +4213,13 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
             diagnostic_counts[signal_id] = diagnostic_counts.get(signal_id, 0) + 1
 
         if status == "failed":
-            if any(
-                str(item["signal_id"]) == "unclassified-failed-proof"
-                for item in diagnostics
-            ) and not superseded_terminal_row:
+            if (
+                any(
+                    str(item["signal_id"]) == "unclassified-failed-proof"
+                    for item in diagnostics
+                )
+                and not superseded_terminal_row
+            ):
                 issues.append(
                     _audit_issue(
                         signal_id="audit-unclassified-failure",
@@ -4239,9 +4253,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
                         summary=str(item["summary"]),
                         evidence=str(item["evidence"]),
                         next_action=str(item["next_action"]),
-                        artifacts=[
-                            str(path) for path in item.get("artifacts", [])
-                        ]
+                        artifacts=[str(path) for path in item.get("artifacts", [])]
                         if isinstance(item.get("artifacts"), list)
                         else (),
                     )
@@ -4456,9 +4468,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
             else:
                 print("- no queue health issues")
         max_issues = max(0, int(args.max_issues))
-        issues = (
-            issues_source if max_issues == 0 else issues_source[:max_issues]
-        )
+        issues = issues_source if max_issues == 0 else issues_source[:max_issues]
         for issue in issues:
             run = f" run={issue['run_id']}" if issue.get("run_id") else ""
             print(
@@ -4750,8 +4760,6 @@ def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> 
     )
     execution.add_argument("--detach", action="store_true")
     parser.add_argument("--print-spec", action="store_true")
-
-
 
 
 # --- decomposed proof_queue regions (kept importable in this namespace) ---

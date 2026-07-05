@@ -159,8 +159,50 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    rust_test_result = pq.RUST_TEST_RESULT_FAILED_RE.search(log_tail)
+    rust_cargo_test_failed = pq.RUST_CARGO_TEST_FAILED_RE.search(log_tail)
+    if rust_test_result is not None or rust_cargo_test_failed is not None:
+        failed_tests = tuple(
+            dict.fromkeys(
+                match.group("name")
+                for match in pq.RUST_FAILED_TEST_LINE_RE.finditer(log_tail)
+            )
+        )
+        evidence_parts: list[str] = []
+        if rust_test_result is not None:
+            evidence_parts.append(rust_test_result.group(0))
+        if rust_cargo_test_failed is not None:
+            evidence_parts.append(rust_cargo_test_failed.group(0))
+        if failed_tests:
+            listed = ", ".join(failed_tests[:5])
+            if len(failed_tests) > 5:
+                listed += f", ... (+{len(failed_tests) - 5} more)"
+            evidence_parts.append(f"failed_tests={listed}")
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="rust-test-failure",
+                severity="error",
+                summary=(
+                    "Rust proof compiled and reached test execution, but "
+                    f"cargo test reported {len(failed_tests) or 'failed'} "
+                    "test failure(s)."
+                ),
+                evidence=" ".join(evidence_parts),
+                next_action=(
+                    "Fix the failing Rust test or the product contract it protects, "
+                    "then rerun the same queue lane. This row reached test "
+                    "execution; do not classify it as a compiler failure."
+                ),
+                scopes=("runtime/", "tools/proof_queue.py"),
+            )
+        )
+
     match = pq.RUST_COMPILER_ERROR_RE.search(log_tail)
-    if match is not None:
+    if (
+        match is not None
+        and rust_test_result is None
+        and rust_cargo_test_failed is None
+    ):
         code = match.group("code") or "rustc"
         message = match.group("message").strip()
         diagnostics.append(
@@ -686,9 +728,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             if phase is not None:
                 evidence += f" pytest_phase={phase}"
             next_action_context = f"{nodeid}"
-        if (
-            pytest_context is not None
-            and nodeid.startswith(pq.NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX)
+        if pytest_context is not None and nodeid.startswith(
+            pq.NATIVE_IMPORT_BOOTSTRAP_NODE_PREFIX
         ):
             diagnostics.append(
                 pq._diagnostic(
@@ -747,8 +788,7 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             evidence += f" cargo_quarantine_receipt={receipt}"
             artifacts = (receipt,)
         nested_guard = (
-            "guarded_exec:" in log_tail
-            or "MOLT_TEST_SUITE guarded command" in log_tail
+            "guarded_exec:" in log_tail or "MOLT_TEST_SUITE guarded command" in log_tail
         )
         diagnostics.append(
             pq._diagnostic(
