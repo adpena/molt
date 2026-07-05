@@ -127,6 +127,9 @@ QUEUE_COLD_SINGLE_CARGO_PROOF_RE = re.compile(
     r"proof queue refuses cold-prone single-test Cargo proofs "
     r"\('(?P<filter>[^']+)' under --lib\)"
 )
+PACT_WITNESS_FIXTURE_MISSING_RE = re.compile(
+    r"missing Pact fixture:\s+(?P<path>[^\r\n]+)"
+)
 NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
     r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
 )
@@ -2724,10 +2727,12 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
+            with_packages=["numpy==1.26.4", "scipy==1.17.1"],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
+            "collab/pact/pact_witness_kernel/make_fixture.py",
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
             "wasm/browser_embed.js",
@@ -2746,6 +2751,7 @@ def _pact_witness_acceptance_spec(
         "notes": [
             "Named Pact acceptance auto-admits conventional manifest-led "
             "NumPy/SciPy staging roots when present, builds field_solve.py, "
+            "regenerates the fixture/reference oracle in the run directory, "
             "runs the WASM artifact to produce candidate_outputs.npz, and "
             "executes check_parity.py; --env can override for power-user lanes."
         ],
