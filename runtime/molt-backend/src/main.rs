@@ -46,8 +46,10 @@ use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileE
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
 mod backend_process;
+mod backend_request;
 mod fact_graph_emit;
 use backend_process::*;
+use backend_request::BackendCliRequest;
 use fact_graph_emit::{FactGraphEmitRequest, emit_fact_graph_for_ir};
 
 #[cfg(any(unix, test))]
@@ -227,26 +229,6 @@ fn default_backend_max_rss_gb() -> u64 {
     default_backend_max_rss_gb_from_physical_mem_bytes(detect_physical_memory_bytes())
 }
 
-fn validate_fact_graph_cli_contract(
-    output_path: Option<&str>,
-    function_name: Option<&str>,
-    is_rust: bool,
-) -> io::Result<()> {
-    if output_path.is_some() != function_name.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "--fact-graph-output and --fact-graph-function must be supplied together",
-        ));
-    }
-    if output_path.is_some() && is_rust {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "fact graph emission does not support the rust target",
-        ));
-    }
-    Ok(())
-}
-
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
 fn main() -> io::Result<()> {
     // TIR optimization is mandatory. Invalid roundtrips are fatal compiler
@@ -337,31 +319,10 @@ fn main() -> io::Result<()> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--socket is required"))?;
         return run_daemon(socket_path);
     }
-    let is_wasm = args.contains(&"--target".to_string()) && args.contains(&"wasm".to_string());
-    let is_rust = args.contains(&"--target".to_string()) && args.contains(&"rust".to_string());
-    let is_luau = args.contains(&"--target".to_string()) && args.contains(&"luau".to_string());
-    #[allow(unused_variables)]
-    let use_ir_pipeline = args.contains(&"--ir-pipeline".to_string());
-    #[cfg_attr(not(feature = "native-backend"), allow(unused_variables))]
-    let target_triple = args
-        .iter()
-        .position(|arg| arg == "--target-triple")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str);
-    let output_path = args
-        .iter()
-        .position(|arg| arg == "--output")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str);
+    let request = BackendCliRequest::parse(&args)?;
     #[cfg(feature = "native-backend")]
-    let native_batch_job_file = args
-        .iter()
-        .position(|arg| arg == "--native-batch-job-file")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str);
-    #[cfg(feature = "native-backend")]
-    if let Some(job_file) = native_batch_job_file {
-        let output_file = output_path.ok_or_else(|| {
+    if let Some(job_file) = request.native_batch_job_file {
+        let output_file = request.output_path.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "--output is required with --native-batch-job-file",
@@ -371,201 +332,16 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let ir_file_path = args
-        .iter()
-        .position(|arg| arg == "--ir-file")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str);
-    let fact_graph_output_path = args
-        .iter()
-        .position(|arg| arg == "--fact-graph-output")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str);
-    let fact_graph_function = args
-        .iter()
-        .position(|arg| arg == "--fact-graph-function")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str);
-    validate_fact_graph_cli_contract(fact_graph_output_path, fact_graph_function, is_rust)?;
-
-    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
-    let wasm_link_flag = args.iter().any(|arg| arg == "--wasm-link");
-    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
-    let wasm_data_base = args
-        .iter()
-        .position(|arg| arg == "--wasm-data-base")
-        .and_then(|idx| args.get(idx + 1))
-        .and_then(|raw| raw.parse::<u32>().ok());
-    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
-    let wasm_table_base = args
-        .iter()
-        .position(|arg| arg == "--wasm-table-base")
-        .and_then(|idx| args.get(idx + 1))
-        .and_then(|raw| raw.parse::<u32>().ok());
-    #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
-    let wasm_split_runtime_runtime_table_min = args
-        .iter()
-        .position(|arg| arg == "--wasm-split-runtime-runtime-table-min")
-        .and_then(|idx| args.get(idx + 1))
-        .and_then(|raw| raw.parse::<u32>().ok());
-
-    let ir_format = args
-        .iter()
-        .position(|arg| arg == "--ir-format")
-        .and_then(|idx| args.get(idx + 1))
-        .map(String::as_str)
-        .unwrap_or("json");
-
-    // Read and parse IR.  Drop the raw buffer immediately after
+    // Read and parse IR. Drop the raw buffer immediately after
     // deserialization to avoid holding two copies in memory simultaneously.
-    let stdin_request_limit_bytes = stdin_request_limit_bytes();
-    let document: molt_backend::BackendIrDocument = {
-        if ir_format == "msgpack" {
-            // msgpack binary format — deserialize directly via serde
-            if let Some(ir_path) = ir_file_path {
-                let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-                })?;
-                let reader = io::BufReader::new(file);
-                match rmp_serde::from_read::<_, molt_backend::BackendIrDocument>(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid msgpack IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                // Streaming msgpack from stdin via BufReader — avoids
-                // loading the entire IR into a Vec<u8> first.
-                let stdin = io::stdin();
-                let bounded = RequestBoundedRead::new(
-                    stdin.lock(),
-                    stdin_request_limit_bytes,
-                    "backend stdin request",
-                );
-                let reader = io::BufReader::with_capacity(1 << 20, bounded);
-                match rmp_serde::from_read::<_, molt_backend::BackendIrDocument>(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid msgpack IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-        } else if ir_format == "cbor" {
-            // CBOR binary format — deserialize via ciborium
-            #[cfg(not(feature = "cbor"))]
-            {
-                eprintln!("CBOR support requires the 'cbor' feature");
-                std::process::exit(1);
-            }
-            #[cfg(feature = "cbor")]
-            {
-                if let Some(ir_path) = ir_file_path {
-                    let file = std::fs::File::open(ir_path).map_err(|e| {
-                        io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-                    })?;
-                    let reader = io::BufReader::new(file);
-                    match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(reader) {
-                        Ok(ir) => ir,
-                        Err(err) => {
-                            eprintln!("invalid CBOR IR: {err}");
-                            std::process::exit(1);
-                        }
-                    }
-                } else {
-                    let buf = read_bounded_request_bytes(
-                        io::stdin().lock(),
-                        stdin_request_limit_bytes,
-                        "backend stdin request",
-                    )?;
-                    match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(&buf[..])
-                    {
-                        Ok(ir) => {
-                            drop(buf);
-                            ir
-                        }
-                        Err(err) => {
-                            eprintln!("invalid CBOR IR: {err}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-            }
-        } else if ir_format == "ndjson" {
-            // NDJSON streaming format — one function per line
-            if let Some(ir_path) = ir_file_path {
-                let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-                })?;
-                let reader = io::BufReader::new(file);
-                match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid NDJSON IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                let stdin = io::stdin();
-                let bounded = RequestBoundedRead::new(
-                    stdin.lock(),
-                    stdin_request_limit_bytes,
-                    "backend stdin request",
-                );
-                let reader = io::BufReader::new(bounded);
-                match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid NDJSON IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-        } else if let Some(ir_path) = ir_file_path {
-            // Stream JSON directly from file — never holds raw JSON string in memory.
-            let file = std::fs::File::open(ir_path).map_err(|e| {
-                io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-            })?;
-            let reader = io::BufReader::with_capacity(1 << 20, file);
-            match serde_json::from_reader::<_, molt_backend::BackendIrDocument>(reader) {
-                Ok(ir) => ir,
-                Err(err) => {
-                    eprintln!("invalid IR JSON: {err}");
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            // Stdin: read into string then deserialize directly (skips DOM intermediate).
-            let raw_bytes = read_bounded_request_bytes(
-                io::stdin().lock(),
-                stdin_request_limit_bytes,
-                "backend stdin request",
-            )?;
-            let buffer = String::from_utf8(raw_bytes).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("backend stdin request is not UTF-8: {err}"),
-                )
-            })?;
-            let result = serde_json::from_str::<molt_backend::BackendIrDocument>(&buffer);
-            drop(buffer);
-            match result {
-                Ok(ir) => ir,
-                Err(err) => {
-                    eprintln!("invalid IR JSON: {err}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    };
+    let document = request.read_document()?;
     let molt_backend::BackendIrDocument {
         mut ir,
         module_registry,
     } = document;
     // The registry projection belongs to the native application-object lane;
     // other lanes must not silently drop it.
-    if module_registry.is_some() && (is_wasm || is_luau || is_rust) {
+    if module_registry.is_some() && (request.is_wasm || request.is_luau || request.is_rust) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "module_registry is a native-lane IR section; wasm/luau/rust lanes do not consume it",
@@ -576,15 +352,17 @@ fn main() -> io::Result<()> {
 
     // Source emitters do not link against native/WASM runtime objects, so they
     // prune unreachable runtime/bootstrap support before textual codegen.
-    if is_luau {
+    if request.is_luau {
         ir.tree_shake_luau();
     }
 
-    if let (Some(path), Some(function_name)) = (fact_graph_output_path, fact_graph_function) {
+    if let (Some(path), Some(function_name)) =
+        (request.fact_graph_output_path, request.fact_graph_function)
+    {
         let backend_setting = std::env::var("MOLT_BACKEND").ok();
-        let target_info = if is_luau {
+        let target_info = if request.is_luau {
             molt_backend::tir::target_info::TargetInfo::luau_release_fast()
-        } else if is_wasm {
+        } else if request.is_wasm {
             molt_backend::tir::target_info::TargetInfo::wasm_release_fast()
         } else if backend_setting.as_deref() == Some("llvm") {
             molt_backend::tir::target_info::TargetInfo::llvm_release_fast()
@@ -610,7 +388,7 @@ fn main() -> io::Result<()> {
     // function through the per-function pipeline, then run the whole-module
     // pipeline (E1 inliner, generator fusion, module-slot promotion, terminal
     // DropInsertion) before one fail-closed back-conversion.
-    if is_luau {
+    if request.is_luau {
         let tir_start = Instant::now();
         let module_stats = run_luau_tir_module_pipeline(&mut ir)?;
         let tir_elapsed = tir_start.elapsed();
@@ -621,16 +399,7 @@ fn main() -> io::Result<()> {
         molt_backend::eliminate_dead_ops(&mut ir);
     }
 
-    let output_kind = if is_luau {
-        BackendOutputKind::Luau
-    } else if is_rust {
-        BackendOutputKind::Rust
-    } else if is_wasm {
-        BackendOutputKind::Wasm
-    } else {
-        BackendOutputKind::Native
-    };
-    let output_file = resolve_backend_output_path(output_path, output_kind);
+    let output_file = resolve_backend_output_path(request.output_path, request.output_kind());
     ensure_output_parent_dir(output_file).map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -640,11 +409,11 @@ fn main() -> io::Result<()> {
             ),
         )
     })?;
-    if is_luau {
+    if request.is_luau {
         #[cfg(feature = "luau-backend")]
         {
             let mut backend = LuauBackend::new();
-            let source = if use_ir_pipeline {
+            let source = if request.use_ir_pipeline {
                 backend.compile_via_ir(&ir)
             } else {
                 backend.compile_checked(&ir)
@@ -675,7 +444,7 @@ fn main() -> io::Result<()> {
                 "backend binary was built without luau-backend support; rebuild with: cargo build -p molt-backend --features luau-backend",
             ));
         }
-    } else if is_rust {
+    } else if request.is_rust {
         #[cfg(feature = "rust-backend")]
         {
             let mut file = create_backend_output_file(output_file).map_err(|err| {
@@ -695,7 +464,7 @@ fn main() -> io::Result<()> {
                 "backend binary was built without rust-backend support; rebuild with: cargo build -p molt-backend --features rust-backend",
             ));
         }
-    } else if is_wasm {
+    } else if request.is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
             let mut file = create_backend_output_file(output_file).map_err(|err| {
@@ -705,16 +474,16 @@ fn main() -> io::Result<()> {
                 )
             })?;
             let mut options = WasmCompileOptions::default();
-            if wasm_link_flag {
+            if request.wasm_link_flag {
                 options.reloc_enabled = true;
             }
-            if let Some(value) = wasm_data_base {
+            if let Some(value) = request.wasm_data_base {
                 options.data_base = value;
             }
-            if let Some(value) = wasm_table_base {
+            if let Some(value) = request.wasm_table_base {
                 options.table_base = value;
             }
-            if let Some(value) = wasm_split_runtime_runtime_table_min {
+            if let Some(value) = request.wasm_split_runtime_runtime_table_min {
                 options.split_runtime_runtime_table_min = Some(value);
             }
             let backend = WasmBackend::with_options(options);
@@ -748,7 +517,7 @@ fn main() -> io::Result<()> {
             let compile_options = prepare_native_application_object(
                 &mut ir,
                 NativeStdlibCachePrepare {
-                    target_triple,
+                    target_triple: request.target_triple,
                     stdlib_obj_path: stdlib_obj_path.as_deref(),
                     expected_cache_key: expected_stdlib_cache_key.as_deref(),
                     expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
@@ -776,6 +545,7 @@ fn main() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::backend_request::validate_fact_graph_cli_contract;
     #[cfg(feature = "rust-backend")]
     use super::rust_source_for_ir;
     use super::{
@@ -793,9 +563,8 @@ mod tests {
         resolved_batch_size_limit, run_luau_tir_module_pipeline, shared_stdlib_cache_matches,
         shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
         stdlib_cache_count_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
-        validate_fact_graph_cli_contract, validate_shared_stdlib_partition,
-        with_shared_stdlib_cache_publish_lock, write_cached_output, write_json_artifact,
-        write_shared_stdlib_cache_sidecars,
+        validate_shared_stdlib_partition, with_shared_stdlib_cache_publish_lock,
+        write_cached_output, write_json_artifact, write_shared_stdlib_cache_sidecars,
     };
     #[cfg(unix)]
     use super::{DaemonResponse, daemon_response_payload, read_daemon_request_bytes};
