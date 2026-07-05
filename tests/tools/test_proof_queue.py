@@ -2767,6 +2767,26 @@ def test_proof_queue_rejects_invalid_queue_size_env(
         )
 
 
+def test_proof_queue_defaults_uv_link_mode_to_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UV_LINK_MODE", raising=False)
+
+    proof_queue._normalize_queue_process_environment()
+
+    assert os.environ["UV_LINK_MODE"] == "copy"
+
+
+def test_proof_queue_preserves_operator_uv_link_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UV_LINK_MODE", "hardlink")
+
+    proof_queue._normalize_queue_process_environment()
+
+    assert os.environ["UV_LINK_MODE"] == "hardlink"
+
+
 def test_proof_queue_prune_stale_preserves_fresh_dispatched_row(
     tmp_path: Path,
 ) -> None:

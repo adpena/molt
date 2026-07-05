@@ -171,6 +171,10 @@ its launch limit to the queue size, while `--limit` remains a per-invocation cap
 The scheduler skips rows whose contention key is already active or already
 selected in the same batch, so increasing queue size only admits independent
 work.
+Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
+already set a value. This keeps APDataStore, exFAT, cross-device caches, and
+other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback
+paths without disabling cache reuse or overriding an explicit operator choice.
 
 The source checkout also exposes a shell-free convenience front door. Prefer
 this for interactive use because it is the portable command surface:
