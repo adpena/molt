@@ -570,6 +570,35 @@ def test_canonical_env_drops_stale_legacy_windows_artifact_roots(
     assert env["RUFF_CACHE_DIR"] == str(resolved / ".ruff-cache")
 
 
+def test_dx_env_drops_stale_legacy_windows_dx_roots(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    repo_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(
+        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+    )
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
+
+    env = RunContext(
+        repo_root, session_prefix="test", prefer_external_artifacts=True
+    ).dx_env(
+        {
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "MOLT_BACKEND_DAEMON_SOCKET_DIR": r"E:\Molt\tmp\backend-socket",
+            "SCCACHE_DIR": r"E:\Molt\.sccache",
+        },
+        create_dirs=True,
+    )
+
+    resolved = external_root.resolve()
+    assert env["MOLT_BACKEND_DAEMON_SOCKET_DIR"].startswith(str(resolved / "tmp"))
+    assert env["SCCACHE_DIR"] == str(resolved / ".sccache")
+
+
 def test_canonical_env_can_preserve_legacy_windows_artifact_roots(
     monkeypatch,
     tmp_path: Path,

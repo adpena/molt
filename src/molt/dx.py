@@ -72,6 +72,11 @@ LEGACY_WINDOWS_MOLT_ARTIFACT_ROOTS = (
     *LEGACY_WINDOWS_MOLT_EXT_ROOTS,
     *LEGACY_WINDOWS_MOLT_TARGET_ROOTS,
 )
+LEGACY_WINDOWS_ARTIFACT_ENV_KEYS = (
+    *CANONICAL_ROOT_ENV_KEYS,
+    "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+    "SCCACHE_DIR",
+)
 WINDOWS_EXTERNAL_ARTIFACT_HINT = (
     "Attach the APDataStore volume, or set MOLT_EXTERNAL_ARTIFACT_ROOTS=D:\\Molt "
     "to an external root with sufficient free space"
@@ -207,7 +212,7 @@ def _drop_legacy_windows_artifact_env(
         return
     if _env_bool(env, ("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS",), default=False):
         return
-    for key in CANONICAL_ROOT_ENV_KEYS:
+    for key in LEGACY_WINDOWS_ARTIFACT_ENV_KEYS:
         raw = env.get(key, "")
         if raw and _is_legacy_windows_molt_artifact_path(raw):
             env.pop(key, None)
