@@ -222,6 +222,8 @@ def test_c_heap_buffer_export_admission_uses_memoryview_format_authority() -> No
 
     view_body = _rust_function_body(c_api_source, "c_heap_buffer_view_is_valid")
     format_body = _rust_function_body(c_api_source, "c_heap_buffer_format_is_valid")
+    readonly_body = _rust_function_body(c_api_source, "buffer_readonly_from_flag")
+    from_buffer_body = _rust_function_body(c_api_source, "molt_memoryview_from_buffer")
 
     assert "c_heap_buffer_format_is_valid(view, itemsize)" in view_body
     assert "view.format.iter().position" in format_body
@@ -229,6 +231,13 @@ def test_c_heap_buffer_export_admission_uses_memoryview_format_authority() -> No
     assert "memoryview_format_from_str(format)" in format_body
     assert "format.itemsize == itemsize" in format_body
     assert "default_buffer_format" not in format_body
+    assert "buffer_readonly_from_flag(view.readonly)" in view_body
+    assert "buffer_readonly_from_flag(view.readonly)" in from_buffer_body
+    assert "view.readonly != 0" not in view_body
+    assert "view.readonly != 0" not in from_buffer_body
+    assert "0 => Some(false)" in readonly_body
+    assert "1 => Some(true)" in readonly_body
+    assert "_ => None" in readonly_body
 
 
 def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> None:

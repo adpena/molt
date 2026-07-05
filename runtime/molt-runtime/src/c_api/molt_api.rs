@@ -196,6 +196,14 @@ fn c_heap_buffer_format_is_valid(view: &MoltBufferView, itemsize: usize) -> bool
     format.itemsize == itemsize
 }
 
+fn buffer_readonly_from_flag(readonly: u32) -> Option<bool> {
+    match readonly {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
 type CHeapBufferExporter = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
 type CHeapBufferReleaser = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
 
@@ -234,6 +242,9 @@ fn c_heap_buffer_view_is_valid(ptr: usize, view: &MoltBufferView) -> bool {
     if !c_heap_buffer_format_is_valid(view, itemsize) {
         return false;
     }
+    let Some(readonly) = buffer_readonly_from_flag(view.readonly) else {
+        return false;
+    };
     let ndim = view.ndim as usize;
     if ndim > MOLT_BUFFER_MAX_NDIM {
         return false;
@@ -242,7 +253,7 @@ fn c_heap_buffer_view_is_valid(ptr: usize, view: &MoltBufferView) -> bool {
     let strides = view.strides[..ndim].to_vec();
     let Some(storage) = crate::object::memoryview::TypedStridedStorage::new(
         view.data,
-        view.readonly != 0,
+        readonly,
         itemsize,
         view.offset,
         0,
@@ -1777,6 +1788,13 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         if view.itemsize == 0 {
             return raise_exception::<u64>(_py, "BufferError", "buffer itemsize cannot be zero");
         }
+        let Some(readonly) = buffer_readonly_from_flag(view.readonly) else {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "buffer readonly flag must be 0 or 1",
+            );
+        };
         let Ok(backing_capacity) = usize::try_from(view.backing_capacity) else {
             return raise_exception::<u64>(
                 _py,
@@ -1800,7 +1818,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
         let storage = crate::object::memoryview::TypedStridedStorage::new(
             view.data,
-            view.readonly != 0,
+            readonly,
             view.itemsize as usize,
             view.offset,
             view.base,

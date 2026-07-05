@@ -1660,6 +1660,27 @@ fn memoryview_from_c_buffer_rejects_strided_span_past_backing() {
 }
 
 #[test]
+fn memoryview_from_c_buffer_rejects_invalid_readonly_flag() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let mut data = [1u8];
+        let mut source = MoltBufferView {
+            data: data.as_mut_ptr(),
+            len: data.len() as u64,
+            backing_capacity: data.len() as u64,
+            readonly: 2,
+            ..MoltBufferView::default()
+        };
+        source.shape[0] = 1;
+        source.strides[0] = 1;
+        source.format[0] = b'B';
+
+        let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
+        assert_none_with_exception_class(_py, view_bits, "BufferError");
+    });
+}
+
+#[test]
 fn memoryview_from_c_buffer_accepts_zero_length_null_data() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
@@ -4810,6 +4831,28 @@ unsafe extern "C" fn test_c_heap_format_itemsize_mismatch_buffer_exporter(
     0
 }
 
+unsafe extern "C" fn test_c_heap_invalid_readonly_buffer_exporter(
+    _ptr: usize,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    if out_view.is_null() {
+        return -1;
+    }
+    unsafe {
+        (*out_view).data = TEST_C_HEAP_BUFFER.as_ptr().cast_mut();
+        (*out_view).len = TEST_C_HEAP_BUFFER.len() as u64;
+        (*out_view).backing_capacity = TEST_C_HEAP_BUFFER.len() as u64;
+        (*out_view).readonly = 2;
+        (*out_view).ndim = 1;
+        (*out_view).itemsize = 1;
+        (*out_view).shape[0] = TEST_C_HEAP_BUFFER.len() as isize;
+        (*out_view).strides[0] = 1;
+        (*out_view).format[0] = b'B';
+        (*out_view).format[1] = 0;
+    }
+    0
+}
+
 fn assert_c_heap_exporter_rejects_and_releases(
     type_kind: u32,
     object_kind: u32,
@@ -5194,5 +5237,14 @@ fn c_heap_exporter_rejects_format_itemsize_mismatch() {
         0x4d595401,
         0x4d594101,
         test_c_heap_format_itemsize_mismatch_buffer_exporter,
+    );
+}
+
+#[test]
+fn c_heap_exporter_rejects_invalid_readonly_flag() {
+    assert_c_heap_exporter_rejects_and_releases(
+        0x4d5a5401,
+        0x4d5a4101,
+        test_c_heap_invalid_readonly_buffer_exporter,
     );
 }
