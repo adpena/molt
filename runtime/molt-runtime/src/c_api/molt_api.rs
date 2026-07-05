@@ -180,6 +180,22 @@ fn c_heap_header_has_self_typed_type_shape(ptr: usize, header: &CHeapHeader) -> 
         && c_heap_kind_is_type_kind(header.kind)
 }
 
+fn c_heap_buffer_format_is_valid(view: &MoltBufferView, itemsize: usize) -> bool {
+    let Some(format_len) = view.format.iter().position(|&byte| byte == 0) else {
+        return false;
+    };
+    if format_len == 0 {
+        return false;
+    }
+    let Ok(format) = std::str::from_utf8(&view.format[..format_len]) else {
+        return false;
+    };
+    let Some(format) = crate::object::memoryview::memoryview_format_from_str(format) else {
+        return false;
+    };
+    format.itemsize == itemsize
+}
+
 type CHeapBufferExporter = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
 type CHeapBufferReleaser = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
 
@@ -213,6 +229,9 @@ fn c_heap_buffer_view_is_valid(ptr: usize, view: &MoltBufferView) -> bool {
         return false;
     };
     if itemsize == 0 {
+        return false;
+    }
+    if !c_heap_buffer_format_is_valid(view, itemsize) {
         return false;
     }
     let ndim = view.ndim as usize;

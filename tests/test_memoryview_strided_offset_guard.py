@@ -217,6 +217,20 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     assert "storage.fits_in_backing_len(backing_len)" not in from_buffer_body
 
 
+def test_c_heap_buffer_export_admission_uses_memoryview_format_authority() -> None:
+    c_api_source = C_API_MOLT_API_PATH.read_text(encoding="utf-8")
+
+    view_body = _rust_function_body(c_api_source, "c_heap_buffer_view_is_valid")
+    format_body = _rust_function_body(c_api_source, "c_heap_buffer_format_is_valid")
+
+    assert "c_heap_buffer_format_is_valid(view, itemsize)" in view_body
+    assert "view.format.iter().position" in format_body
+    assert "std::str::from_utf8" in format_body
+    assert "memoryview_format_from_str(format)" in format_body
+    assert "format.itemsize == itemsize" in format_body
+    assert "default_buffer_format" not in format_body
+
+
 def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> None:
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     body = _function_body(header_source, "PyMemoryView_FromBuffer")

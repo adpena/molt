@@ -4766,6 +4766,101 @@ unsafe extern "C" fn test_c_heap_undersized_scalar_buffer_exporter(
     0
 }
 
+unsafe extern "C" fn test_c_heap_unsupported_format_buffer_exporter(
+    _ptr: usize,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    if out_view.is_null() {
+        return -1;
+    }
+    unsafe {
+        (*out_view).data = TEST_C_HEAP_BUFFER.as_ptr().cast_mut();
+        (*out_view).len = TEST_C_HEAP_BUFFER.len() as u64;
+        (*out_view).backing_capacity = TEST_C_HEAP_BUFFER.len() as u64;
+        (*out_view).readonly = 1;
+        (*out_view).ndim = 1;
+        (*out_view).itemsize = 1;
+        (*out_view).shape[0] = TEST_C_HEAP_BUFFER.len() as isize;
+        (*out_view).strides[0] = 1;
+        (*out_view).format[0] = b'Z';
+        (*out_view).format[1] = 0;
+    }
+    0
+}
+
+unsafe extern "C" fn test_c_heap_format_itemsize_mismatch_buffer_exporter(
+    _ptr: usize,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    if out_view.is_null() {
+        return -1;
+    }
+    unsafe {
+        (*out_view).data = TEST_C_HEAP_BUFFER.as_ptr().cast_mut();
+        (*out_view).len = TEST_C_HEAP_BUFFER.len() as u64;
+        (*out_view).backing_capacity = TEST_C_HEAP_BUFFER.len() as u64;
+        (*out_view).readonly = 1;
+        (*out_view).ndim = 1;
+        (*out_view).itemsize = 1;
+        (*out_view).shape[0] = TEST_C_HEAP_BUFFER.len() as isize;
+        (*out_view).strides[0] = 1;
+        (*out_view).format[0] = b'I';
+        (*out_view).format[1] = 0;
+    }
+    0
+}
+
+fn assert_c_heap_exporter_rejects_and_releases(
+    type_kind: u32,
+    object_kind: u32,
+    exporter: unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32,
+) {
+    let _guard = CApiTestGuard::new();
+    let type_header = Box::leak(Box::new(TestCHeapHeader {
+        magic: TEST_C_HEAP_MAGIC,
+        refcnt: u32::MAX,
+        kind: type_kind,
+        type_ptr: 0,
+        dealloc: 0,
+    }));
+    let type_ptr = (type_header as *mut TestCHeapHeader) as usize;
+    type_header.type_ptr = type_ptr;
+    assert_eq!(molt_c_heap_type_canonicalize(type_kind, type_ptr), type_ptr);
+
+    let mut object_header = TestCHeapHeader {
+        magic: TEST_C_HEAP_MAGIC,
+        refcnt: 1,
+        kind: object_kind,
+        type_ptr,
+        dealloc: 0,
+    };
+    let object_ptr = (&mut object_header as *mut TestCHeapHeader) as usize;
+    assert_eq!(molt_c_heap_register(object_ptr), 0);
+    assert_eq!(
+        molt_c_heap_register_buffer_exporter(object_kind, type_ptr, Some(exporter)),
+        0
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_releaser(
+            object_kind,
+            type_ptr,
+            Some(test_c_heap_buffer_releaser)
+        ),
+        0
+    );
+
+    TEST_C_HEAP_RELEASES.store(0, Ordering::SeqCst);
+    let mut view = MoltBufferView::default();
+    assert_eq!(
+        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view) },
+        -1
+    );
+    assert_eq!(view.len, 0);
+    assert!(view.data.is_null());
+    assert_eq!(TEST_C_HEAP_RELEASES.load(Ordering::SeqCst), 1);
+    assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+}
+
 #[test]
 fn c_heap_buffer_lease_export_roundtrip() {
     let _guard = CApiTestGuard::new();
@@ -5082,4 +5177,22 @@ fn c_heap_exporter_rejects_undersized_scalar_buffer() {
     assert_eq!(view.len, 0);
     assert!(view.data.is_null());
     assert_eq!(molt_c_heap_unregister(object_ptr), 0);
+}
+
+#[test]
+fn c_heap_exporter_rejects_unsupported_buffer_format() {
+    assert_c_heap_exporter_rejects_and_releases(
+        0x4d585401,
+        0x4d584101,
+        test_c_heap_unsupported_format_buffer_exporter,
+    );
+}
+
+#[test]
+fn c_heap_exporter_rejects_format_itemsize_mismatch() {
+    assert_c_heap_exporter_rejects_and_releases(
+        0x4d595401,
+        0x4d594101,
+        test_c_heap_format_itemsize_mismatch_buffer_exporter,
+    );
 }
