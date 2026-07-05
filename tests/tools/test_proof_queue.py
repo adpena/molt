@@ -3111,6 +3111,34 @@ def test_proof_queue_windows_launchers_hide_console(
     assert proof_queue._queued_command_process_kwargs() == {"creationflags": 0x08000200}
 
 
+def test_proof_queue_posix_detached_runner_uses_new_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, _command: list[str], **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(proof_queue, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+
+    args = SimpleNamespace(
+        db=tmp_path / "proof_queue.sqlite3",
+        logs_root=tmp_path / "runs",
+        notebooks_root=None,
+        repo_root=tmp_path,
+    )
+
+    proof_queue._launch_detached_runner(args, run_id="posix-runner", timeout=1.0)
+
+    assert captured[0]["start_new_session"] is True
+    assert "creationflags" not in captured[0]
+    assert proof_queue._queued_command_process_kwargs() == {}
+
+
 def test_proof_queue_rejects_uv_run_without_active_project_python(
     tmp_path: Path,
 ) -> None:
