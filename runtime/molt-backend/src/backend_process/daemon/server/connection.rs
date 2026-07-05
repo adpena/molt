@@ -1,73 +1,12 @@
-use std::env;
-#[cfg(unix)]
-use std::io::BufRead;
-use std::io::Write;
-use std::io::{self, Read};
-use std::path::Path;
+use std::io;
 use std::time::Instant;
 
-#[cfg(unix)]
-use super::super::config::BACKEND_DAEMON_PROTOCOL_VERSION;
-#[cfg(unix)]
-use super::super::io_limits::{daemon_max_jobs, daemon_request_limit_bytes};
-#[cfg(unix)]
-use super::{
-    DaemonCache, DaemonRequest, DaemonResponse, DaemonStats, compile_single_job,
-    daemon_cache_limit_bytes, daemon_health,
+use super::super::super::config::BACKEND_DAEMON_PROTOCOL_VERSION;
+use super::super::{
+    DaemonCache, DaemonRequest, DaemonResponse, DaemonStats, compile_single_job, daemon_health,
 };
+use super::wire::{read_daemon_request_bytes, write_daemon_response};
 
-#[cfg(unix)]
-pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
-    use std::os::unix::net::UnixListener;
-
-    let socket = Path::new(socket_path);
-    if socket.exists() {
-        let _ = std::fs::remove_file(socket);
-    }
-    if let Some(parent) = socket.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let listener = UnixListener::bind(socket)?;
-    let request_limit_bytes = daemon_request_limit_bytes();
-    let max_jobs = daemon_max_jobs();
-    let mut cache = DaemonCache::new(Some(daemon_cache_limit_bytes()));
-    let mut stats = DaemonStats::default();
-    let spawn_config_digest = env::var("MOLT_BACKEND_DAEMON_CONFIG_DIGEST")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let mut active_config_digest: Option<String> = None;
-    let started_at = Instant::now();
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut conn) => {
-                if let Err(err) = handle_daemon_connection(
-                    &mut conn,
-                    DaemonConnectionContext {
-                        cache: &mut cache,
-                        stats: &mut stats,
-                        spawn_config_digest: spawn_config_digest.as_deref(),
-                        active_config_digest: &mut active_config_digest,
-                        started_at,
-                        request_limit_bytes,
-                        max_jobs,
-                    },
-                ) {
-                    eprintln!("backend daemon connection error: {err}");
-                }
-            }
-            Err(err) => {
-                eprintln!("backend daemon accept error: {err}");
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
 pub(crate) struct DaemonConnectionContext<'a> {
     pub(crate) cache: &'a mut DaemonCache,
     pub(crate) stats: &'a mut DaemonStats,
@@ -78,7 +17,6 @@ pub(crate) struct DaemonConnectionContext<'a> {
     pub(crate) max_jobs: usize,
 }
 
-#[cfg(unix)]
 pub(crate) fn handle_daemon_connection(
     stream: &mut std::os::unix::net::UnixStream,
     ctx: DaemonConnectionContext<'_>,
@@ -278,47 +216,4 @@ pub(crate) fn handle_daemon_connection(
         };
         write_daemon_response(stream, &response)?;
     }
-}
-
-#[cfg(unix)]
-pub(crate) fn read_daemon_request_bytes<R: BufRead>(
-    reader: &mut R,
-    request_limit_bytes: usize,
-) -> io::Result<Vec<u8>> {
-    let mut raw_bytes = Vec::new();
-    let limit = u64::try_from(request_limit_bytes)
-        .unwrap_or(u64::MAX - 1)
-        .saturating_add(1);
-    reader.take(limit).read_until(b'\n', &mut raw_bytes)?;
-    if raw_bytes.len() > request_limit_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("daemon request exceeded {request_limit_bytes} byte limit"),
-        ));
-    }
-    Ok(raw_bytes)
-}
-
-#[cfg(unix)]
-pub(crate) fn write_daemon_response(
-    stream: &mut std::os::unix::net::UnixStream,
-    response: &DaemonResponse,
-) -> io::Result<()> {
-    let mut payload = daemon_response_payload(response)?;
-    payload.push(b'\n');
-    stream.write_all(&payload)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-pub(crate) fn daemon_response_payload(response: &DaemonResponse) -> io::Result<Vec<u8>> {
-    serde_json::to_vec(&response.to_json_value()).map_err(io::Error::other)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn run_daemon(_socket_path: &str) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "daemon mode requires unix domain sockets",
-    ))
 }
