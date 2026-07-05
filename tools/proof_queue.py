@@ -3276,7 +3276,7 @@ def _launch_detached_runner(
     }
     popen_kwargs.update(
         detached_process_group_kwargs(
-            windows=os.name == "nt",
+            windows=_queue_process_spawn_is_windows(),
             subprocess_module=subprocess,
         )
     )
@@ -3290,6 +3290,10 @@ def _launch_detached_runner(
             **popen_kwargs,
         )
     return proc.pid, runner_log
+
+
+def _queue_process_spawn_is_windows() -> bool:
+    return os.name == "nt"
 
 
 def _claim_detached_run(
@@ -3409,7 +3413,7 @@ def _dispatch_detached_runner(
 
 def _queued_command_process_kwargs() -> dict[str, object]:
     return hidden_windows_process_group_kwargs(
-        windows=os.name == "nt",
+        windows=_queue_process_spawn_is_windows(),
         subprocess_module=subprocess,
     )
 
