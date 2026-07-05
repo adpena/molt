@@ -6380,6 +6380,65 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
     assert any("manifest-led" in note for note in spec["notes"])
 
 
+def test_proof_queue_pact_witness_acceptance_discovers_sibling_worktree_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    side_worktree = tmp_path / "worktrees" / "side"
+    shared_worktree = tmp_path / "main"
+    side_worktree.mkdir(parents=True)
+    expected_roots = [
+        shared_worktree / "tmp/pact_numpy_multiarray_sealed_for_witness",
+        shared_worktree / "tmp/pact_scipy_ndimage_sealed_for_witness_next",
+        shared_worktree / "bench/friends/repos/numpy_off_the_shelf",
+        shared_worktree / "bench/friends/repos/scipy_off_the_shelf",
+    ]
+    for root in expected_roots:
+        root.mkdir(parents=True)
+    for root in expected_roots[:2]:
+        (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        proof_queue,
+        "_git_worktree_roots",
+        lambda repo_root: (shared_worktree,) if repo_root == side_worktree else (),
+    )
+
+    spec = proof_queue._pact_witness_acceptance_spec(repo_root=side_worktree)
+    env = spec["env_overrides"]
+
+    assert env["MOLT_MODULE_ROOTS"].split(os.pathsep) == [
+        str(root.resolve()) for root in expected_roots
+    ]
+
+
+def test_proof_queue_pact_witness_acceptance_prefers_canonical_sibling_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    side_worktree = tmp_path / "worktrees" / "side"
+    shared_worktree = tmp_path / "main"
+    stale_scipy = (
+        side_worktree / "tmp/pact_scipy_ndimage_provider_sealed_support_closure"
+    )
+    canonical_scipy = (
+        shared_worktree / "tmp/pact_scipy_ndimage_sealed_for_witness_next"
+    )
+    side_worktree.mkdir(parents=True)
+    for root in (stale_scipy, canonical_scipy):
+        root.mkdir(parents=True)
+        (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        proof_queue,
+        "_git_worktree_roots",
+        lambda repo_root: (shared_worktree,) if repo_root == side_worktree else (),
+    )
+
+    roots = proof_queue._pact_witness_native_roots(repo_root=side_worktree)
+
+    assert canonical_scipy.resolve() in roots
+    assert stale_scipy.resolve() not in roots
+
+
 def test_proof_queue_pact_witness_roots_accept_artifact_specific_manifests(
     tmp_path: Path,
 ) -> None:
