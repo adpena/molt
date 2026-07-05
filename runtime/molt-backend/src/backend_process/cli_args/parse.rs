@@ -1,40 +1,4 @@
-use std::io;
-
-use super::io_limits::BackendOutputKind;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct WasmCliOptions {
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) link_relocs: bool,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) data_base: Option<u32>,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) table_base: Option<u32>,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) split_runtime_runtime_table_min: Option<u32>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BackendCliArgs<'a> {
-    pub(crate) wants_features: bool,
-    pub(crate) wants_daemon: bool,
-    pub(crate) socket_path: Option<&'a str>,
-    pub(crate) is_wasm: bool,
-    pub(crate) is_rust: bool,
-    pub(crate) is_luau: bool,
-    #[cfg_attr(not(feature = "luau-backend"), allow(dead_code))]
-    pub(crate) use_ir_pipeline: bool,
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) target_triple: Option<&'a str>,
-    pub(crate) output_path: Option<&'a str>,
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) native_batch_job_file: Option<&'a str>,
-    pub(crate) ir_file_path: Option<&'a str>,
-    pub(crate) fact_graph_output_path: Option<&'a str>,
-    pub(crate) fact_graph_function: Option<&'a str>,
-    pub(crate) wasm_options: WasmCliOptions,
-    pub(crate) ir_format: &'a str,
-}
+use super::model::{BackendCliArgs, WasmCliOptions};
 
 impl<'a> BackendCliArgs<'a> {
     pub(crate) fn parse(args: &'a [String]) -> Self {
@@ -137,43 +101,6 @@ impl<'a> BackendCliArgs<'a> {
         parsed.is_rust = saw_target_flag && saw_rust_value;
         parsed.is_luau = saw_target_flag && saw_luau_value;
         parsed
-    }
-
-    pub(crate) fn daemon_socket_path(&self) -> io::Result<Option<&'a str>> {
-        if !self.wants_daemon {
-            return Ok(None);
-        }
-        self.socket_path
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--socket is required"))
-            .map(Some)
-    }
-
-    pub(crate) fn validate_fact_graph_contract(&self) -> io::Result<()> {
-        if self.fact_graph_output_path.is_some() != self.fact_graph_function.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--fact-graph-output and --fact-graph-function must be supplied together",
-            ));
-        }
-        if self.fact_graph_output_path.is_some() && self.is_rust {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "fact graph emission does not support the rust target",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn output_kind(&self) -> BackendOutputKind {
-        if self.is_luau {
-            BackendOutputKind::Luau
-        } else if self.is_rust {
-            BackendOutputKind::Rust
-        } else if self.is_wasm {
-            BackendOutputKind::Wasm
-        } else {
-            BackendOutputKind::Native
-        }
     }
 }
 
