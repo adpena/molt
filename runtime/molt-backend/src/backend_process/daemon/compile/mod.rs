@@ -1,18 +1,20 @@
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+mod document;
 mod ir;
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+mod output;
+mod response;
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
 mod target;
 
-use std::path::Path;
-
-use super::super::io_limits::write_output;
 use super::{
     DaemonCache, DaemonJobRequest, DaemonJobResponse, daemon_memory_cache_allowed_for_job,
-    insert_daemon_cache_entries, maybe_cache_output_file, try_write_cached_daemon_job_output,
+    try_write_cached_daemon_job_output,
 };
 
 pub(crate) use ir::backend_ir_document_from_json_path;
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
-use target::{DaemonCompiledOutput, compile_daemon_job_output};
+use target::compile_daemon_job_output;
 
 #[cfg(any(unix, test))]
 pub(crate) fn compile_single_job(
@@ -21,139 +23,55 @@ pub(crate) fn compile_single_job(
 ) -> DaemonJobResponse {
     #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
     {
-        let unsupported = if job.is_wasm {
-            "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend"
-        } else {
-            "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend"
-        };
-        return DaemonJobResponse {
-            id: job.id,
-            ok: false,
-            cached: false,
-            cache_tier: None,
-            output_written: false,
-            needs_ir: false,
-            message: Some(unsupported.to_string()),
-            warnings: Vec::new(),
-        };
+        return response::unsupported_backend_response(job);
     }
 
     #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
     {
-        let cache_key = job.cache_key.trim();
+        let cache_key = job.cache_key.trim().to_string();
         let function_cache_key = job
             .function_cache_key
             .as_deref()
             .map(str::trim)
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
         let daemon_memory_cache_allowed = daemon_memory_cache_allowed_for_job(&job);
         if daemon_memory_cache_allowed
             && let Some(response) =
-                try_write_cached_daemon_job_output(_cache, &job, cache_key, function_cache_key)
+                try_write_cached_daemon_job_output(_cache, &job, &cache_key, &function_cache_key)
         {
             return response;
         }
 
         if job.probe_cache_only {
-            return DaemonJobResponse {
-                id: job.id,
-                ok: true,
-                cached: false,
-                cache_tier: None,
-                output_written: false,
-                needs_ir: true,
-                message: None,
-                warnings: Vec::new(),
-            };
+            return response::daemon_job_probe_cache_miss_response(job.id);
         }
 
-        let document = if let Some(document) = job.ir.take() {
-            document
-        } else if let Some(ir_path) = job.ir_path.as_deref() {
-            match backend_ir_document_from_json_path(ir_path) {
-                Ok(document) => document,
-                Err(err) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: false,
-                        cached: false,
-                        cache_tier: None,
-                        output_written: false,
-                        needs_ir: false,
-                        message: Some(err),
-                        warnings: Vec::new(),
-                    };
-                }
-            }
-        } else {
-            return DaemonJobResponse {
-                id: job.id,
-                ok: false,
-                cached: false,
-                cache_tier: None,
-                output_written: false,
-                needs_ir: false,
-                message: Some("missing ir for cache miss".to_string()),
-                warnings: Vec::new(),
-            };
+        let document = match document::take_daemon_job_document(&mut job) {
+            Ok(document) => document,
+            Err(err) => return response::daemon_job_error_response(job.id, err),
         };
 
         let mut warnings = Vec::new();
         let compiled_output = match compile_daemon_job_output(&job, document) {
             Ok(output) => output,
             Err(err) => {
-                return DaemonJobResponse {
-                    id: job.id,
-                    ok: false,
-                    cached: false,
-                    cache_tier: None,
-                    output_written: false,
-                    needs_ir: false,
-                    message: Some(err),
-                    warnings: Vec::new(),
-                };
+                return response::daemon_job_error_response(job.id, err);
             }
         };
 
-        match compiled_output {
-            #[cfg(feature = "wasm-backend")]
-            DaemonCompiledOutput::Bytes(output_bytes) => {
-                if let Err(err) = write_output(&job.output, output_bytes.as_ref()) {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: false,
-                        cached: false,
-                        cache_tier: None,
-                        output_written: false,
-                        needs_ir: false,
-                        message: Some(format!("failed to write compiled output: {err}")),
-                        warnings: Vec::new(),
-                    };
-                }
-                insert_daemon_cache_entries(_cache, cache_key, function_cache_key, output_bytes);
-            }
-            DaemonCompiledOutput::WrittenToPath => {
-                if daemon_memory_cache_allowed {
-                    maybe_cache_output_file(
-                        _cache,
-                        Path::new(&job.output),
-                        cache_key,
-                        function_cache_key,
-                        &mut warnings,
-                    );
-                }
-            }
+        if let Err(err) = output::write_daemon_compiled_output(
+            _cache,
+            &job,
+            &cache_key,
+            &function_cache_key,
+            daemon_memory_cache_allowed,
+            compiled_output,
+            &mut warnings,
+        ) {
+            return response::daemon_job_error_response(job.id, err);
         }
 
-        DaemonJobResponse {
-            id: job.id,
-            ok: true,
-            cached: false,
-            cache_tier: None,
-            output_written: true,
-            needs_ir: false,
-            message: None,
-            warnings,
-        }
+        response::daemon_job_success_response(job.id, warnings)
     }
 }
