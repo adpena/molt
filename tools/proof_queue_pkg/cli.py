@@ -91,12 +91,14 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     run_p.add_argument(
         "--limit",
         "--jobs",
+        "--queue-size",
         dest="limit",
         type=int,
         default=1,
         help=(
             "maximum ready queued rows to run or detach in this worker call; "
-            "--jobs is the preferred operator spelling"
+            "--queue-size is the product spelling and --jobs is the low-level "
+            "proof-queue spelling"
         ),
     )
     run_p.add_argument("--run-id")

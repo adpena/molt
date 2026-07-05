@@ -2456,6 +2456,57 @@ def test_proof_queue_run_jobs_detaches_multiple_ready_rows(
     assert launched == [("queued-a", 42.0), ("queued-b", 42.0)]
 
 
+def test_proof_queue_run_queue_size_is_jobs_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id in ("queued-a", "queued-b"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove product queue-size spelling",
+            command=[sys.executable, "-c", "print('queued')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+                "--queue-size",
+                "2",
+                "--detach",
+            ]
+        )
+        == 0
+    )
+
+    assert launched == ["queued-a", "queued-b"]
+
+
 def test_proof_queue_detached_runner_uses_shared_spawn_authority(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2529,6 +2580,26 @@ def test_proof_queue_run_jobs_rejects_non_positive_size(tmp_path: Path) -> None:
                 "0",
             ]
         )
+
+
+def test_proof_queue_defaults_uv_link_mode_to_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UV_LINK_MODE", raising=False)
+
+    proof_queue._normalize_queue_process_environment()
+
+    assert os.environ["UV_LINK_MODE"] == "copy"
+
+
+def test_proof_queue_preserves_operator_uv_link_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UV_LINK_MODE", "hardlink")
+
+    proof_queue._normalize_queue_process_environment()
+
+    assert os.environ["UV_LINK_MODE"] == "hardlink"
 
 
 def test_proof_queue_named_lane_can_detach_runner(
