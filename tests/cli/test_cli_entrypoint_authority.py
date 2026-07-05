@@ -47,10 +47,10 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
 
 def test_molt_queue_parser_preserves_proof_queue_argv() -> None:
     parser = entrypoint_parser._build_entrypoint_parser()
-    args = parser.parse_args(["queue", "run", "--jobs", "2", "--detach"])
+    args = parser.parse_args(["queue", "run", "--queue-size", "2", "--detach"])
 
     assert args.command == "queue"
-    assert args.queue_args == ["run", "--jobs", "2", "--detach"]
+    assert args.queue_args == ["run", "--queue-size", "2", "--detach"]
 
     global_option_args = parser.parse_args(
         [
@@ -92,11 +92,11 @@ def test_molt_queue_handler_delegates_to_proof_queue_main(
     monkeypatch.setattr(cli_proof_queue.importlib, "import_module", fake_import_module)
 
     rc = cli_proof_queue.handle_queue_command(
-        argparse.Namespace(queue_args=["run", "--jobs", "2", "--detach"])
+        argparse.Namespace(queue_args=["run", "--queue-size", "2", "--detach"])
     )
 
     assert rc == 17
-    assert calls == [["prog=molt queue", "run", "--jobs", "2", "--detach"]]
+    assert calls == [["prog=molt queue", "run", "--queue-size", "2", "--detach"]]
 
 
 def test_molt_queue_handler_defaults_to_status(monkeypatch) -> None:

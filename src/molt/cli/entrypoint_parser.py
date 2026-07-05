@@ -59,7 +59,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  molt queue status\n"
             "  molt queue --help\n"
-            "  molt queue run --jobs 2 --detach\n"
+            "  molt queue run --queue-size 2 --detach\n"
             "  molt queue native-molt-run --detach tmp/probe.py\n"
             "  molt queue --db logs/proof_queue/proof_queue.sqlite3 status\n"
         ),
