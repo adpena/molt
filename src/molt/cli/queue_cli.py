@@ -11,6 +11,16 @@ from molt.cli.project_roots import _find_molt_root
 PROOF_QUEUE_SIZE_ENV = "MOLT_PROOF_QUEUE_SIZE"
 
 
+def _positive_queue_size(value: object) -> str:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"--queue-size must be a positive integer, got {value!r}") from exc
+    if parsed < 1:
+        raise ValueError(f"--queue-size must be a positive integer, got {value!r}")
+    return str(parsed)
+
+
 def _queue_repo_root() -> Path:
     return _find_molt_root(Path.cwd()) or Path(__file__).resolve().parents[3]
 
@@ -48,8 +58,13 @@ def handle_queue_command(args: argparse.Namespace) -> int:
         )
         return 2
     if queue_size is not None:
+        try:
+            queue_size = _positive_queue_size(queue_size)
+        except ValueError as exc:
+            print(f"molt queue: {exc}", file=sys.stderr)
+            return 2
         env = os.environ.copy()
-        env[PROOF_QUEUE_SIZE_ENV] = str(queue_size)
+        env[PROOF_QUEUE_SIZE_ENV] = queue_size
         result = subprocess.run(
             [sys.executable, str(proof_queue), *queue_args],
             cwd=repo_root,
