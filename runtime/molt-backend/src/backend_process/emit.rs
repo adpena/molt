@@ -17,6 +17,7 @@ use std::path::Path;
 #[cfg(feature = "luau-backend")]
 use std::time::Instant;
 
+use super::cli_args::WasmCliOptions;
 #[cfg(any(
     feature = "luau-backend",
     feature = "rust-backend",
@@ -28,18 +29,6 @@ use super::io_limits::{BackendOutputKind, ensure_output_parent_dir, resolve_back
 use super::native_batch::compile_native_application_object_to_path;
 #[cfg(feature = "native-backend")]
 use super::shared_stdlib_cache::{NativeStdlibCachePrepare, prepare_native_application_object};
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct WasmCliOptions {
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) link_relocs: bool,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) data_base: Option<u32>,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) table_base: Option<u32>,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) split_runtime_runtime_table_min: Option<u32>,
-}
 
 pub(crate) struct BackendTargetEmitRequest<'a> {
     pub(crate) ir: SimpleIR,
