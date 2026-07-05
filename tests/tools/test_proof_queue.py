@@ -3829,6 +3829,71 @@ def test_proof_queue_diagnoses_failed_static_module_exec(
     assert (notebooks / "failed-run.py").exists()
 
 
+def test_proof_queue_diagnoses_pact_witness_fixture_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "pact-fixture-missing.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="pact-fixture-missing-run",
+        logical_id="pact-witness-acceptance",
+        reason="prove missing Pact fixture diagnosis",
+        command=[sys.executable, "tools/pact_witness_acceptance.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact-witness",
+        scopes=["tools/pact_witness_acceptance.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "pact-fixture-missing.memory_guard.json",
+    )
+    log_path.write_text(
+        "Successfully built tmp/pact_witness_acceptance_queue/build/output.wasm\n"
+        "Successfully linked tmp/pact_witness_acceptance_queue/build/output_linked.wasm\n"
+        "missing Pact fixture: collab/pact/pact_witness_kernel/lstar_sample.npz\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn,
+        "pact-fixture-missing-run",
+        status="failed",
+        returncode=1,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "pact-fixture-missing-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "pact-witness-fixture-missing"
+    assert "fixture/reference oracle inside the run directory" in diagnostics[0][
+        "next_action"
+    ]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -6216,10 +6281,22 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native() -> None:
         "--python",
         "3.12",
     ]
-    assert command[7:9] == ["python", "tools/pact_witness_acceptance.py"]
+    assert command[7:11] == [
+        "--with",
+        "numpy==1.26.4",
+        "--with",
+        "scipy==1.17.1",
+    ]
+    python_index = command.index("python")
+    assert command[python_index : python_index + 2] == [
+        "python",
+        "tools/pact_witness_acceptance.py",
+    ]
     assert "tmp/pact_witness_acceptance_queue" in command
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
+    assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
     assert "collab/pact/pact_witness_kernel/check_parity.py" in spec["scopes"]
+    assert any("regenerates the fixture/reference oracle" in note for note in spec["notes"])
     assert any("candidate_outputs.npz" in note for note in spec["notes"])
     assert proof_queue._proof_command_policy_error(command) is None
 

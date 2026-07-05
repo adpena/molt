@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import tools.pact_witness_acceptance as acceptance
 
@@ -68,6 +69,56 @@ def test_pact_witness_acceptance_uses_output_wasm_without_split_runtime(
     assert selected == output_wasm
     assert "MOLT_WASM_DIRECT_LINK" not in env
     assert "MOLT_RUNTIME_WASM" not in env
+
+
+def test_pact_witness_acceptance_generates_run_scoped_fixture_and_reference(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    kernel_root = tmp_path / "kernel"
+    kernel_root.mkdir()
+    (kernel_root / "make_fixture.py").write_text(
+        "from pathlib import Path\n"
+        "Path('lstar_sample.npz').write_bytes(b'fixture')\n",
+        encoding="utf-8",
+    )
+    (kernel_root / "field_solve.py").write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "assert Path(sys.argv[1]).read_bytes() == b'fixture'\n"
+        "Path('reference_outputs.npz').write_bytes(b'reference')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(acceptance, "KERNEL_ROOT", kernel_root)
+    monkeypatch.setattr(acceptance, "_node_bin", lambda: "node")
+
+    def fake_run_capture(
+        args: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        assert "wasm/run_wasm.js" in args[1].replace("\\", "/")
+        assert (cwd / "lstar_sample.npz").read_bytes() == b"fixture"
+        assert (cwd / "reference_oracle.npz").read_bytes() == b"reference"
+        (cwd / "reference_outputs.npz").write_bytes(b"candidate")
+        return subprocess.CompletedProcess(args, 0, stdout="node ok\n")
+
+    monkeypatch.setattr(acceptance, "_run_capture", fake_run_capture)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    output_wasm = tmp_path / "output.wasm"
+    output_wasm.write_bytes(b"wasm")
+
+    candidate, reference = acceptance._run_candidate(output_wasm, run_dir)
+
+    assert candidate == run_dir / "candidate_outputs.npz"
+    assert reference == run_dir / "reference_oracle.npz"
+    assert candidate.read_bytes() == b"candidate"
+    assert reference.read_bytes() == b"reference"
+    assert not (run_dir / "reference_outputs.npz").exists()
+    assert not (kernel_root / "lstar_sample.npz").exists()
 
 
 def test_pact_witness_acceptance_reports_static_extension_capsule_drift(
