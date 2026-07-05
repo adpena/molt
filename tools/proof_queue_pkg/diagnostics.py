@@ -358,6 +358,31 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = pq.PACT_WITNESS_FIXTURE_MISSING_RE.search(log_tail)
+    if match is not None:
+        fixture = match.group("path").strip()
+        fixture_name = Path(fixture).name or fixture
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="pact-witness-fixture-missing",
+                severity="operator",
+                summary=f"Pact witness acceptance fixture is missing: {fixture_name}.",
+                evidence=match.group(0),
+                next_action=(
+                    "Regenerate the Kernel A fixture/reference pair through the "
+                    "queue-native pact-witness-oracle lane, then rerun "
+                    "pact-witness-acceptance as a rerun edge; do not treat this "
+                    "row as runtime, browser, or parity evidence."
+                ),
+                scopes=(
+                    "tools/pact_witness_acceptance.py",
+                    "tools/pact_witness_oracle.py",
+                    "collab/pact/",
+                ),
+                artifacts=(str(row["log_path"]),),
+            )
+        )
+
     match = pq.NATIVE_ARTIFACT_CUSTODY_RE.search(log_tail)
     if match is not None:
         missing_abi_symbols = tuple(

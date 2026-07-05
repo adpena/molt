@@ -315,13 +315,13 @@ Evidence includes deterministic `diagnostics` derived from queue metadata and
 log tails. These are not guesses; they are first-party rules for recurring
 proof failure classes such as queue policy rejection, static-linked
 `Py_mod_exec` failure, unresolved native/WASM symbols, unsupported direct calls,
-Pact missing-output acceptance failures, Rust compiler errors, pytest assertion
-failures, external native artifact custody refusals, reachable native support
-modules without source/artifact custody, reachability-driven stdlib profile
-refusals, generated WASM ABI/link-import surface gaps, dependency-blocked rows,
-Molt runtime invalid-object-header aborts, quiet running pytest rows with missing
-current-test custody markers, non-final memory-guard summaries on terminal
-rows, and memory-guard orphan cleanup.
+Pact missing-output acceptance failures, missing Pact fixture/reference inputs,
+Rust compiler errors, pytest assertion failures, external native artifact custody
+refusals, reachable native support modules without source/artifact custody,
+reachability-driven stdlib profile refusals, generated WASM ABI/link-import
+surface gaps, dependency-blocked rows, Molt runtime invalid-object-header aborts,
+quiet running pytest rows with missing current-test custody markers, non-final
+memory-guard summaries on terminal rows, and memory-guard orphan cleanup.
 When the Pact runner emits `static_extension_init_failure.json`, the
 static-link diagnostic includes that path in its `artifacts` list.
 

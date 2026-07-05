@@ -114,6 +114,9 @@ RUNTIME_WASM_MISSING_EXPORTS_RE = re.compile(
     r"Runtime wasm (?:build produced artifact|artifact) missing required "
     r"exports[:;]?\s*(?P<symbols>[^\r\n]*)"
 )
+PACT_WITNESS_FIXTURE_MISSING_RE = re.compile(
+    r"missing Pact fixture:\s*(?P<path>[^\r\n]+)"
+)
 RUNTIME_EXPORT_AUTHORITY_UNKNOWN_NAME_RE = re.compile(
     r"ValueError: unknown WASM runtime import/export name: "
     r"(?P<symbol>[A-Za-z_][A-Za-z0-9_@.$]*)"
