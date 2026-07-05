@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from molt.dx import development_artifact_env
 
@@ -24,6 +24,20 @@ from molt.dx import development_artifact_env
 # module load, so bound directly rather than via the call-time proxy.
 from tools.proof_queue import DEFAULT_EDGE_KIND  # noqa: E402
 from tools.proof_queue_pkg import pq
+
+
+def _apply_uv_link_mode_default(env: dict[str, str], repo_root: Path) -> None:
+    """Avoid noisy failed hardlink attempts for cross-drive Windows proof envs."""
+
+    if os.name != "nt" or "UV_LINK_MODE" in env:
+        return
+    venv = env.get("VIRTUAL_ENV")
+    if not venv:
+        return
+    repo_drive = PureWindowsPath(str(repo_root)).drive.casefold()
+    venv_drive = PureWindowsPath(venv).drive.casefold()
+    if repo_drive and venv_drive and repo_drive != venv_drive:
+        env["UV_LINK_MODE"] = "copy"
 
 
 def _run_one(
@@ -193,6 +207,7 @@ def _run_one(
         env["MOLT_PROOF_QUEUE"] = "1"
         env["MOLT_PROOF_QUEUE_DB"] = str(db)
         env["MOLT_PROOF_QUEUE_RUN_ID"] = run_id
+        _apply_uv_link_mode_default(env, repo_root)
         env.update(env_overrides)
         poll_interval = pq._proof_queue_memory_guard_poll_sec(env_overrides)
         env[pq.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval

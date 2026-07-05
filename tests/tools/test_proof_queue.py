@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import tools.proof_queue as proof_queue
+from tools.proof_queue_pkg import runner as proof_queue_runner
 
 _TEST_GIT_SNAPSHOT = {
     "available": True,
@@ -32,6 +33,48 @@ def _proof_queue_unit_git_snapshot(
     if request.node.name in _REAL_GIT_SNAPSHOT_TESTS:
         return
     monkeypatch.setattr(proof_queue, "_git_snapshot", lambda cwd: _TEST_GIT_SNAPSHOT)
+
+
+def test_proof_queue_uv_link_mode_defaults_to_copy_for_windows_split_drives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proof_queue_runner.os, "name", "nt")
+    env = {"VIRTUAL_ENV": r"C:\Users\adpen\OneDrive\Documents\molt\.venv"}
+
+    proof_queue_runner._apply_uv_link_mode_default(
+        env, Path(r"D:\Molt\worktrees\r6")
+    )
+
+    assert env["UV_LINK_MODE"] == "copy"
+
+
+def test_proof_queue_uv_link_mode_preserves_same_drive_windows_hardlinks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proof_queue_runner.os, "name", "nt")
+    env = {"VIRTUAL_ENV": r"D:\Molt\.venv"}
+
+    proof_queue_runner._apply_uv_link_mode_default(
+        env, Path(r"D:\Molt\worktrees\r6")
+    )
+
+    assert "UV_LINK_MODE" not in env
+
+
+def test_proof_queue_uv_link_mode_preserves_operator_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proof_queue_runner.os, "name", "nt")
+    env = {
+        "UV_LINK_MODE": "hardlink",
+        "VIRTUAL_ENV": r"C:\Users\adpen\OneDrive\Documents\molt\.venv",
+    }
+
+    proof_queue_runner._apply_uv_link_mode_default(
+        env, Path(r"D:\Molt\worktrees\r6")
+    )
+
+    assert env["UV_LINK_MODE"] == "hardlink"
 
 
 def _rows(db: Path) -> list[sqlite3.Row]:
