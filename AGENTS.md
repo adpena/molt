@@ -107,6 +107,22 @@ is reconciled.
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
   Non-active `uv run` creates throwaway environments and is not acceptable.
+- On this Windows workstation, APDataStore is the preferred maintainer/agent
+  artifact volume. Fresh DX/proof-queue builds must go through RunContext
+  (`tools/run_context_env.py --prefer-external-artifacts --dx`,
+  `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so build,
+  cache, temp, and `MOLT_TARGET_ROOT` toolchain paths resolve to `D:\Molt`
+  when that volume is healthy. RunContext drops stale inherited `E:\Molt`
+  derived roots and `E:\molt-target`/`E:\Molt\target-root` defaults in
+  external-preferred DX sessions. Treat `E:\Molt` and `E:\molt-target` as
+  legacy evidence only, never default discovery targets. Use another volume
+  only through an explicit `MOLT_EXTERNAL_ARTIFACT_ROOTS` override; preserve
+  inherited legacy roots only with `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1`.
+  APDataStore is exFAT, so Molt cache publication must not depend on hard-link
+  support; the backend cache owns the lock+rename/copy fallback. Do not disable
+  caching, reroute to `E:`, or hand-copy artifacts to work around hard-link
+  errors. Treat `Failed to publish backend cache output` under `D:\Molt` as a
+  DX defect to diagnose through the cache authority.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`. Read it before
   queueing or interpreting long-running proof evidence.
 - Pact Kernel A acceptance must use the named queue lane

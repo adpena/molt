@@ -625,9 +625,22 @@ select a healthy external root when one is available but are not public compile
 location bans. macOS/Linux use the configured external candidates. The resolver
 owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `MOLT_CACHE`, diff/tmp roots, `UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`,
-`PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP`. Default
-Cargo output is session-scoped as `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`;
-explicit `CARGO_TARGET_DIR` remains an operator-owned override.
+`PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, `TEMP`, and
+`MOLT_TARGET_ROOT`. Default Cargo output is session-scoped as
+`$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR`
+remains an operator-owned override.
+
+On this Windows workstation, the attached 2 TB SSD volume label `APDataStore`
+is the preferred build/artifact/toolchain tier and resolves to `D:\Molt` when
+healthy; the default managed toolchain root is `D:\Molt\target-root`.
+RunContext drops stale inherited `E:\Molt` derived roots and `E:\molt-target` /
+`E:\Molt\target-root` defaults in external-preferred DX sessions. Use another
+Windows volume only through `MOLT_EXTERNAL_ARTIFACT_ROOTS`, or deliberately
+preserve inherited legacy roots with `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1`.
+APDataStore is exFAT, so hard-link failures in Cargo/uv/cache publication are
+DX defects to solve through the owning cache/tool, not reasons to reroute proof
+lanes to `E:` or disable caches. Windows DX env defaults `UV_LINK_MODE=copy`
+unless the operator overrides it.
 
 Raw `cargo` commands do NOT honor `MOLT_SESSION_ID` by themselves. For any
 direct cargo invocation, export the DX env first. If you bypass the DX env, keep

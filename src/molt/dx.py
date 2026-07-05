@@ -42,14 +42,15 @@ DX_ENV_KEYS = (
     "MOLT_BACKEND_DAEMON_SOCKET_DIR",
     "MOLT_USE_SCCACHE",
     "MOLT_DIFF_ALLOW_RUSTC_WRAPPER",
+    "UV_LINK_MODE",
     "SCCACHE_DIR",
     "SCCACHE_CACHE_SIZE",
     "MOLT_CACHE_MAX_GB",
     "MOLT_CACHE_MAX_AGE_DAYS",
 )
 DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
-    "/Volumes/VertigoDataTier/Molt",
     "/Volumes/APDataStore/Molt",
+    "/Volumes/VertigoDataTier/Molt",
 )
 DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME = "Molt"
 # The maintainer/agent artifact volume is selected by VOLUME LABEL, never by
@@ -61,7 +62,20 @@ DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS = ("APDataStore",)
 # Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the selected
 # artifact volume so MOLT_TARGET_ROOT follows the one root authority instead of
 # stranding a legacy E:\molt-target.
-DEFAULT_TARGET_ROOT_DIRNAME = "molt-target"
+DEFAULT_TARGET_ROOT_DIRNAME = "target-root"
+LEGACY_WINDOWS_MOLT_EXT_ROOTS = ("E:\\Molt",)
+LEGACY_WINDOWS_MOLT_TARGET_ROOTS = (
+    "E:\\molt-target",
+    "E:\\Molt\\target-root",
+)
+LEGACY_WINDOWS_MOLT_ARTIFACT_ROOTS = (
+    *LEGACY_WINDOWS_MOLT_EXT_ROOTS,
+    *LEGACY_WINDOWS_MOLT_TARGET_ROOTS,
+)
+WINDOWS_EXTERNAL_ARTIFACT_HINT = (
+    "Attach the APDataStore volume, or set MOLT_EXTERNAL_ARTIFACT_ROOTS=D:\\Molt "
+    "to an external root with sufficient free space"
+)
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
@@ -169,6 +183,36 @@ def _drop_ambient_tmpdir(env: dict[str, str], *, prefer_external: bool) -> None:
             env.pop(key, None)
 
 
+def _normalize_windows_path_text(raw: str) -> str:
+    return raw.strip().strip('"').replace("/", "\\").rstrip("\\").casefold()
+
+
+def _is_legacy_windows_molt_artifact_path(raw: str) -> bool:
+    if os.name != "nt":
+        return False
+    normalized = _normalize_windows_path_text(raw)
+    for legacy in LEGACY_WINDOWS_MOLT_ARTIFACT_ROOTS:
+        legacy_norm = _normalize_windows_path_text(legacy)
+        if normalized == legacy_norm or normalized.startswith(f"{legacy_norm}\\"):
+            return True
+    return False
+
+
+def _drop_legacy_windows_artifact_env(
+    env: dict[str, str],
+    *,
+    prefer_external: bool,
+) -> None:
+    if not prefer_external:
+        return
+    if _env_bool(env, ("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS",), default=False):
+        return
+    for key in CANONICAL_ROOT_ENV_KEYS:
+        raw = env.get(key, "")
+        if raw and _is_legacy_windows_molt_artifact_path(raw):
+            env.pop(key, None)
+
+
 def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
     seen: set[str] = set()
     deduped: list[Path] = []
@@ -247,46 +291,9 @@ def _windows_volume_label(drive_root: Path) -> str | None:
     return label.value if ok else None
 
 
-def _path_drive(path: Path) -> str:
-    return path.drive.upper()
-
-
 def _default_toolchain_root_for_artifact_root(artifact_root: Path) -> Path:
-    """Toolchain root (MOLT_TARGET_ROOT) derived from the artifact root's VOLUME.
-
-    ``D:\\Molt`` -> ``D:\\molt-target`` (sibling of the artifact dir, where the
-    wasi-sysroot/binaryen/zig toolchains already live) so MOLT_TARGET_ROOT
-    follows the one root authority onto the same SSD instead of stranding a
-    legacy ``E:\\molt-target``.
-    """
-    if (
-        artifact_root.name.casefold()
-        == DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME.casefold()
-    ):
-        parent = artifact_root.parent
-        if parent != artifact_root:
-            return parent / DEFAULT_TARGET_ROOT_DIRNAME
+    """Toolchain root (MOLT_TARGET_ROOT) owned by the selected artifact root."""
     return artifact_root / DEFAULT_TARGET_ROOT_DIRNAME
-
-
-def _should_rehome_toolchain_root(
-    raw: str,
-    artifact_root: Path,
-    env: Mapping[str, str],
-) -> bool:
-    """True when an inherited MOLT_TARGET_ROOT sits on a different volume than
-    the selected artifact root — e.g. a stale ``E:\\molt-target`` while the
-    authority chose ``D:\\Molt``. Rehoming deletes that legacy fallback rather
-    than honoring it; set ``MOLT_PRESERVE_TARGET_ROOT=1`` to keep an intentional
-    off-volume toolchain root.
-    """
-    if _env_bool(env, ("MOLT_PRESERVE_TARGET_ROOT",), default=False):
-        return False
-    if os.name != "nt":
-        return False
-    target_drive = _path_drive(Path(raw).expanduser())
-    artifact_drive = _path_drive(artifact_root)
-    return bool(target_drive and artifact_drive) and target_drive != artifact_drive
 
 
 def _requires_external_artifacts(
@@ -328,8 +335,8 @@ def _reject_c_drive_artifact_path(
     if _is_windows_c_drive_path(path.resolve()):
         raise DxConfigError(
             f"{key} resolved to {path}; Molt build artifacts must live on an "
-            "external non-C: drive. Set MOLT_EXTERNAL_ARTIFACT_ROOTS=E:\\Molt "
-            "or another external root, or set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 "
+            f"external non-C: drive. {WINDOWS_EXTERNAL_ARTIFACT_HINT}, "
+            "or set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 "
             "only for an explicit emergency override."
         )
 
@@ -431,9 +438,9 @@ def select_external_artifact_root(
         return candidate
     if require_external:
         raise DxConfigError(
-            "no healthy external non-C: Molt artifact root was found. Attach an "
-            "external drive or set MOLT_EXTERNAL_ARTIFACT_ROOTS=E:\\Molt with "
-            "sufficient free space; set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 only for "
+            "no healthy external non-C: Molt artifact root was found. "
+            f"{WINDOWS_EXTERNAL_ARTIFACT_HINT}; set "
+            "MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 only for "
             "an explicit emergency override."
         )
     return None
@@ -485,7 +492,7 @@ def _validate_windows_artifact_root(
         return
     raise DxConfigError(
         "Molt build artifacts must not be placed on C:. "
-        f"Rejected artifact root: {artifact_root}"
+        f"{WINDOWS_EXTERNAL_ARTIFACT_HINT}. Rejected artifact root: {artifact_root}"
     )
 
 
@@ -517,6 +524,8 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     )
     env.setdefault("MOLT_USE_SCCACHE", "1")
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
+    if os.name == "nt":
+        env.setdefault("UV_LINK_MODE", "copy")
     env.setdefault("SCCACHE_DIR", str((artifact_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
@@ -619,6 +628,10 @@ class RunContext:
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
+        _drop_legacy_windows_artifact_env(
+            env,
+            prefer_external=self.prefer_external_artifacts,
+        )
         forced = set(force_default_keys)
 
         if "MOLT_EXT_ROOT" in forced or not env.get("MOLT_EXT_ROOT"):
@@ -660,16 +673,10 @@ class RunContext:
         install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
-        # MOLT_TARGET_ROOT (wasi-sysroot/binaryen/zig toolchains) flows through
-        # the one root authority: derive it from the selected artifact volume,
-        # and rehome a stale off-volume inherit (a legacy E:\molt-target) onto
-        # that volume rather than honoring the legacy fallback.
-        default_toolchain_root = _default_toolchain_root_for_artifact_root(ext_root)
-        raw_target_root = env.get("MOLT_TARGET_ROOT")
-        if not raw_target_root or _should_rehome_toolchain_root(
-            raw_target_root, ext_root, env
-        ):
-            env["MOLT_TARGET_ROOT"] = str(default_toolchain_root)
+        install_default(
+            "MOLT_TARGET_ROOT",
+            _default_toolchain_root_for_artifact_root(ext_root),
+        )
         install_default("PYTHONPYCACHEPREFIX", ext_root / "tmp" / "pycache")
         install_default("TMPDIR", ext_root / "tmp")
         install_default("TMP", env["TMPDIR"])
@@ -830,6 +837,7 @@ class DxProject:
             env.pop(name, None)
         prefer_external = bool(dx.get("prefer_external_artifacts"))
         _drop_ambient_tmpdir(env, prefer_external=prefer_external)
+        _drop_legacy_windows_artifact_env(env, prefer_external=prefer_external)
         if env.get("MOLT_EXT_ROOT"):
             artifact_root = Path(env["MOLT_EXT_ROOT"]).expanduser()
             if not artifact_root.is_absolute():

@@ -25,6 +25,33 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py status
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
 
+## APDataStore Artifact Roots
+
+Proof-queue rows must inherit the DX-selected artifact roots. On this Windows
+workstation, `tools/run_context_env.py --prefer-external-artifacts --dx`
+selects the volume labeled `APDataStore` (`D:\Molt` when healthy) for
+`MOLT_EXT_ROOT`, Cargo/session targets, caches, temp roots, uv caches, and
+`MOLT_TARGET_ROOT` (`D:\Molt\target-root` when healthy). Do not submit new
+proof rows against legacy `E:\Molt` or `E:\molt-target` roots. In PowerShell,
+refresh the local shell before expensive rows:
+
+```powershell
+Invoke-Expression (uv run --active --project . --python 3.12 python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)
+```
+
+RunContext drops stale inherited `E:\Molt` derived roots plus
+`E:\molt-target` and `E:\Molt\target-root` defaults when external artifacts are
+preferred. A deliberate non-APDataStore lane must say so explicitly with
+`MOLT_EXTERNAL_ARTIFACT_ROOTS=<candidate-list>` or
+`MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1`.
+
+APDataStore is exFAT on this host, so Git commands in a D: clone/worktree need
+a scoped `safe.directory` entry for that exact path; prefer per-command
+`git -c safe.directory=<D:/Molt/...>` or an exact path entry, never
+workspace-wide ownership relaxation. uv should run with `UV_LINK_MODE=copy` in
+the DX env so fresh APDataStore setup does not retry unsupported hard links
+before copying.
+
 ## Cargo Proof Lanes
 
 Cargo proofs use the queue-native `cargo` subcommand. Do not submit raw
