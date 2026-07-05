@@ -100,7 +100,7 @@ STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
     }
 )
 STATIC_PYMOD_EXEC_RE = re.compile(
-    r"ImportError:\s+"
+    r"(?:ImportError:\s+|Original error was:\s*)"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
     r": static-link PyModuleDef Py_mod_exec slot returned non-zero"
     r"(?P<detail>[^\r\n]*)"
