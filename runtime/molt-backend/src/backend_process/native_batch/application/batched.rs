@@ -4,74 +4,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use molt_backend::{SimpleBackend, SimpleIR};
 
-use super::super::config::{DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_BACKEND_BATCH_SIZE};
-use super::super::io_limits::{write_json_artifact, write_output_path};
-use super::{
+use super::super::{
     NativeApplicationObjectOptions, NativeApplicationObjectResult, NativeBatchJobSpec,
     NativeBatchModuleMetadata, NativeBatchObjectJob, batch_external_function_names,
-    deduplicate_functions_by_name, finish_native_batch_temp_dir, merge_relocatable_objects,
-    partition_functions_for_batches, release_native_backend_batch_memory_to_os,
-    resolved_batch_op_budget_limit, resolved_batch_size_limit,
-    run_native_batch_worker_with_failure_artifacts,
+    finish_native_batch_temp_dir, merge_relocatable_objects, partition_functions_for_batches,
+    release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
 };
+use crate::backend_process::io_limits::write_json_artifact;
 
-pub(crate) fn compile_native_application_object_to_path(
-    mut ir: SimpleIR,
+pub(crate) fn compile_batched_native_application_object_to_path(
+    ir: SimpleIR,
     output_path: &Path,
-    mut options: NativeApplicationObjectOptions<'_>,
+    options: &mut NativeApplicationObjectOptions<'_>,
+    function_count: usize,
+    batch_size: usize,
+    batch_ops_budget: usize,
 ) -> io::Result<NativeApplicationObjectResult> {
-    if options.stdlib_split_enabled && options.app_callable_manifest.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "stdlib-split native application object requires a full-set app callable manifest",
-        ));
-    }
-
-    // Preserve the one-shot native application-object sequence as the single
-    // authority for both direct backend runs and daemon requests.
-    molt_backend::inject_runtime_exit(&mut ir);
-    if !options.stdlib_split_enabled {
-        // Import bedrock: registry init symbols are DFE roots - init bodies
-        // are reachable only through the registry blob's MODULE_INIT_TABLE
-        // relocations (invariant I5).
-        let module_registry_roots: std::collections::BTreeSet<String> = options
-            .module_registry
-            .as_ref()
-            .map(|registry| registry.init_symbols.iter().cloned().collect())
-            .unwrap_or_default();
-        molt_backend::eliminate_dead_functions_with_roots(&mut ir, &module_registry_roots);
-        molt_backend::eliminate_dead_imports(&mut ir);
-        molt_backend::eliminate_dead_ops(&mut ir);
-    }
-    deduplicate_functions_by_name(&mut ir.functions);
-
-    let function_count = ir.functions.len();
-    let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
-    let batch_ops_budget = resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET);
-    let total_ops = ir
-        .functions
-        .iter()
-        .fold(0usize, |ops, func| ops.saturating_add(func.ops.len()));
-    if function_count <= batch_size && total_ops <= batch_ops_budget {
-        let mut backend = SimpleBackend::new_with_target(options.target_triple);
-        if options.stdlib_split_enabled {
-            backend.skip_shared_stdlib_partition = true;
-        }
-        backend.app_callable_manifest = options.app_callable_manifest.take();
-        backend.module_registry = options.module_registry.take();
-        let obj_output = backend.compile(ir);
-        write_output_path(output_path, &obj_output.bytes)?;
-        eprintln!(
-            "Successfully compiled to {} ({} functions)",
-            output_path.display(),
-            function_count
-        );
-        return Ok(NativeApplicationObjectResult {
-            function_count,
-            batch_count: 1,
-        });
-    }
-
     let profile = ir.profile;
     let all_functions: Vec<_> = ir.functions.into_iter().collect();
     let all_func_names: std::collections::BTreeSet<String> =
