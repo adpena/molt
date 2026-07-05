@@ -110,7 +110,9 @@ request stride metadata; `PyBUF_SIMPLE`/format-only requests fail closed unless
 the descriptor is C-contiguous. Unsupported or over-capacity PEP 3118 format
 metadata fails closed instead of being truncated or guessed, and base-less
 negative-stride memoryviews do not publish a buffer descriptor because their
-lower bound cannot be revalidated on import.
+lower bound cannot be revalidated on import. `readonly` is a canonical u32
+boolean: `0` means writable, `1` means read-only, and every other value fails
+descriptor admission.
 
 ### 4.8 Types + Modules
 - `molt_type_ready`

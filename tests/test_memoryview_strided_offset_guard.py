@@ -19,6 +19,7 @@ RUNTIME_MEMORYVIEW_PATH = ROOT / "runtime/molt-runtime/src/object/memoryview.rs"
 RUNTIME_BUILDERS_PATH = ROOT / "runtime/molt-runtime/src/object/builders.rs"
 C_API_MOLT_API_PATH = ROOT / "runtime/molt-runtime/src/c_api/molt_api.rs"
 C_API_MOD_PATH = ROOT / "runtime/molt-runtime/src/c_api/mod.rs"
+C_API_SURFACE_PATH = ROOT / "docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md"
 CPYTHON_ABI_HOOKS_PATH = ROOT / "runtime/molt-cpython-abi/src/hooks.rs"
 CPYTHON_ABI_TYPES_PATH = ROOT / "runtime/molt-cpython-abi/src/abi_types.rs"
 CPYTHON_ABI_BUFFER_PATH = ROOT / "runtime/molt-cpython-abi/src/api/buffer.rs"
@@ -182,6 +183,24 @@ def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
     assert "pub extern \"C\" fn molt_c_heap_unregister(ptr: usize) -> i32" in c_api_symbols_source
     assert "pub extern \"C\" fn molt_c_heap_contains(ptr: usize) -> i32" in c_api_symbols_source
     assert "pub extern \"C\" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize" in c_api_symbols_source
+
+
+def test_molt_buffer_view_readonly_contract_is_canonical() -> None:
+    header_source = MOLT_HEADER_PATH.read_text(encoding="utf-8")
+    runtime_source = RUNTIME_MEMORYVIEW_PATH.read_text(encoding="utf-8")
+    surface_source = C_API_SURFACE_PATH.read_text(encoding="utf-8")
+
+    assert "Canonical bool: 0 writable, 1 read-only; other values are rejected." in header_source
+    assert (
+        "Canonical bool exported as 0/1; importers reject every other value."
+        in runtime_source
+    )
+    normalized_surface = re.sub(r"\s+", " ", surface_source)
+    assert (
+        "`readonly` is a canonical u32 boolean: `0` means writable, `1` means "
+        "read-only, and every other value fails descriptor admission."
+        in normalized_surface
+    )
 
 
 def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
