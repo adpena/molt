@@ -3,6 +3,12 @@ use std::io;
 #[cfg(unix)]
 mod connection;
 #[cfg(unix)]
+mod context;
+#[cfg(unix)]
+mod dispatch;
+#[cfg(unix)]
+mod responses;
+#[cfg(unix)]
 mod wire;
 
 #[cfg(unix)]
@@ -17,7 +23,9 @@ use super::super::io_limits::{daemon_max_jobs, daemon_request_limit_bytes};
 #[cfg(unix)]
 use super::{DaemonCache, DaemonStats, daemon_cache_limit_bytes};
 #[cfg(unix)]
-use connection::{DaemonConnectionContext, handle_daemon_connection};
+use connection::handle_daemon_connection;
+#[cfg(unix)]
+use context::DaemonConnectionContext;
 
 #[cfg(unix)]
 pub(crate) use wire::{daemon_response_payload, read_daemon_request_bytes};
