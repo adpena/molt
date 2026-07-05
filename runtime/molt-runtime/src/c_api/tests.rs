@@ -4619,6 +4619,8 @@ const FAKE_C_HEAP_BUFFER_KIND: u32 = 0x5151_4101;
 const FAKE_C_HEAP_BUFFER_TYPE_KIND: u32 = 0x5151_5401;
 const FAKE_C_HEAP_INVALID_KIND: u32 = 0x5151_4102;
 const FAKE_C_HEAP_INVALID_TYPE_KIND: u32 = 0x5151_5402;
+const FAKE_C_HEAP_REVOKE_KIND: u32 = 0x5151_4103;
+const FAKE_C_HEAP_REVOKE_TYPE_KIND: u32 = 0x5151_5403;
 static FAKE_C_HEAP_BUFFER_DATA: [u8; 4] = [1, 2, 3, 4];
 static FAKE_C_HEAP_EXPORTS: AtomicUsize = AtomicUsize::new(0);
 static FAKE_C_HEAP_RELEASES: AtomicUsize = AtomicUsize::new(0);
@@ -4784,6 +4786,83 @@ fn c_heap_buffer_hooks_require_releaser_and_stable_registration() {
 
     let _ = molt_c_heap_unregister(object_ptr);
     let _ = molt_c_heap_unregister(type_ptr);
+}
+
+#[test]
+fn c_heap_unregister_revokes_type_owned_buffer_hooks_and_canonical_type() {
+    let _guard = CApiTestGuard::new();
+    let mut type_obj = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: u32::MAX,
+        kind: FAKE_C_HEAP_REVOKE_TYPE_KIND,
+        type_ptr: 0,
+        dealloc: 0,
+    };
+    type_obj.type_ptr = (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let mut next_type_obj = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: u32::MAX,
+        kind: FAKE_C_HEAP_REVOKE_TYPE_KIND,
+        type_ptr: 0,
+        dealloc: 0,
+    };
+    next_type_obj.type_ptr = (&mut next_type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let mut object = FakeCHeapHeader {
+        magic: FAKE_C_HEAP_MAGIC,
+        refcnt: 1,
+        kind: FAKE_C_HEAP_REVOKE_KIND,
+        type_ptr: (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize,
+        dealloc: 0,
+    };
+    let type_ptr = (&mut type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let next_type_ptr = (&mut next_type_obj as *mut FakeCHeapHeader).cast::<()>() as usize;
+    let object_ptr = (&mut object as *mut FakeCHeapHeader).cast::<()>() as usize;
+
+    assert_eq!(
+        molt_c_heap_type_canonicalize(FAKE_C_HEAP_REVOKE_TYPE_KIND, type_ptr),
+        type_ptr
+    );
+    assert_eq!(molt_c_heap_register(object_ptr), 0);
+    assert_eq!(
+        molt_c_heap_register_buffer_exporter(
+            FAKE_C_HEAP_REVOKE_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_export),
+        ),
+        0
+    );
+    assert_eq!(
+        molt_c_heap_register_buffer_releaser(
+            FAKE_C_HEAP_REVOKE_KIND,
+            type_ptr,
+            Some(fake_c_heap_buffer_release),
+        ),
+        0
+    );
+
+    let mut view = MoltBufferView::default();
+    assert_eq!(
+        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        0
+    );
+    assert_eq!(
+        unsafe { molt_c_heap_release_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        0
+    );
+
+    assert_eq!(molt_c_heap_unregister(type_ptr), 0);
+    assert_eq!(molt_c_heap_contains(type_ptr), 0);
+    assert_eq!(
+        unsafe { molt_c_heap_export_buffer(object_ptr, &mut view as *mut MoltBufferView) },
+        -1
+    );
+    assert_eq!(
+        molt_c_heap_type_canonicalize(FAKE_C_HEAP_REVOKE_TYPE_KIND, next_type_ptr),
+        next_type_ptr
+    );
+
+    let _ = molt_c_heap_unregister(object_ptr);
+    let _ = molt_c_heap_unregister(next_type_ptr);
 }
 
 #[test]

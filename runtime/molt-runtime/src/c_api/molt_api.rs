@@ -156,6 +156,14 @@ pub extern "C" fn molt_c_heap_unregister(ptr: usize) -> i32 {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&ptr);
+    C_HEAP_TYPES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|_, canonical| *canonical != ptr);
+    C_HEAP_BUFFER_EXPORTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|_, entry| entry.type_ptr != ptr);
     0
 }
 

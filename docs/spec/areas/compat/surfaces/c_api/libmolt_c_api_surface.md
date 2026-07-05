@@ -78,6 +78,9 @@ Buffer exporter/releaser hooks make C-heap objects first-class buffer owners:
 the public header must release a C-heap buffer through the same object-kind hook
 that exported it, and runtime validation rejects forged or out-of-bounds
 descriptors before the view crosses the ABI.
+Unregistering a C-heap type pointer revokes its canonical type mapping and
+buffer exporter/releaser hooks; stale type authority must not keep future buffer
+exports alive.
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
