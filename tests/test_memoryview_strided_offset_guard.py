@@ -310,7 +310,7 @@ def test_buffer_support_probe_does_not_require_simple_contiguity() -> None:
 
     assert "MoltBufferView tmp" in public_body
     assert "molt_buffer_acquire(_molt_py_handle(obj), &tmp)" in public_body
-    assert "molt_buffer_release(&tmp)" in public_body
+    assert "_molt_pybuffer_release_exported_view(obj, &tmp)" in public_body
     assert "PyBUF_SIMPLE" not in public_body
     assert "PyObject_GetBuffer" not in public_body
 
@@ -921,6 +921,19 @@ def test_numpy_public_c_heap_types_are_canonical_across_translation_units(tmp_pa
                 "    canon_type_count++;",
                 "    remember_registered(ptr);",
                 "    return ptr;",
+                "}",
+                "",
+                "int32_t molt_c_heap_register_buffer_exporter(uint32_t kind, uintptr_t type_ptr, MoltCHeapBufferExporter exporter) {",
+                "    (void)kind; (void)type_ptr; (void)exporter; return 0;",
+                "}",
+                "int32_t molt_c_heap_register_buffer_releaser(uint32_t kind, uintptr_t type_ptr, MoltCHeapBufferReleaser releaser) {",
+                "    (void)kind; (void)type_ptr; (void)releaser; return 0;",
+                "}",
+                "int32_t molt_c_heap_export_buffer(uintptr_t ptr, MoltBufferView *out_view) {",
+                "    (void)ptr; (void)out_view; return -1;",
+                "}",
+                "int32_t molt_c_heap_release_buffer(uintptr_t ptr, MoltBufferView *view) {",
+                "    (void)ptr; (void)view; return 0;",
                 "}",
                 "",
                 "MoltHandle molt_none(void) { return 1; }",

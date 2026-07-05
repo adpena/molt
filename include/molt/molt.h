@@ -29,6 +29,9 @@ typedef struct MoltBufferView {
   char format[MOLT_BUFFER_FORMAT_CAP];
 } MoltBufferView;
 
+typedef int32_t (*MoltCHeapBufferExporter)(uintptr_t ptr, MoltBufferView *out_view);
+typedef int32_t (*MoltCHeapBufferReleaser)(uintptr_t ptr, MoltBufferView *view);
+
 uint32_t molt_c_api_version(void);
 
 int32_t molt_init(void);
@@ -43,6 +46,12 @@ int32_t molt_c_heap_register(uintptr_t ptr);
 int32_t molt_c_heap_unregister(uintptr_t ptr);
 int32_t molt_c_heap_contains(uintptr_t ptr);
 uintptr_t molt_c_heap_type_canonicalize(uint32_t kind, uintptr_t ptr);
+int32_t molt_c_heap_register_buffer_exporter(uint32_t kind, uintptr_t type_ptr,
+                                             MoltCHeapBufferExporter exporter);
+int32_t molt_c_heap_register_buffer_releaser(uint32_t kind, uintptr_t type_ptr,
+                                             MoltCHeapBufferReleaser releaser);
+int32_t molt_c_heap_export_buffer(uintptr_t ptr, MoltBufferView *out_view);
+int32_t molt_c_heap_release_buffer(uintptr_t ptr, MoltBufferView *view);
 MoltHandle molt_none(void);
 MoltHandle molt_bool_from_i32(int32_t value);
 MoltHandle molt_int_from_i64(int64_t value);
@@ -237,6 +246,10 @@ static inline void *_molt_host_abi_symbol(const char *name) {
 #define molt_c_heap_unregister ((int32_t (*)(uintptr_t))_molt_host_abi_symbol("molt_c_heap_unregister"))
 #define molt_c_heap_contains ((int32_t (*)(uintptr_t))_molt_host_abi_symbol("molt_c_heap_contains"))
 #define molt_c_heap_type_canonicalize ((uintptr_t (*)(uint32_t, uintptr_t))_molt_host_abi_symbol("molt_c_heap_type_canonicalize"))
+#define molt_c_heap_register_buffer_exporter ((int32_t (*)(uint32_t, uintptr_t, MoltCHeapBufferExporter))_molt_host_abi_symbol("molt_c_heap_register_buffer_exporter"))
+#define molt_c_heap_register_buffer_releaser ((int32_t (*)(uint32_t, uintptr_t, MoltCHeapBufferReleaser))_molt_host_abi_symbol("molt_c_heap_register_buffer_releaser"))
+#define molt_c_heap_export_buffer ((int32_t (*)(uintptr_t, MoltBufferView *))_molt_host_abi_symbol("molt_c_heap_export_buffer"))
+#define molt_c_heap_release_buffer ((int32_t (*)(uintptr_t, MoltBufferView *))_molt_host_abi_symbol("molt_c_heap_release_buffer"))
 #define molt_none ((MoltHandle (*)(void))_molt_host_abi_symbol("molt_none"))
 #define molt_bool_from_i32 ((MoltHandle (*)(int32_t))_molt_host_abi_symbol("molt_bool_from_i32"))
 #define molt_int_from_i64 ((MoltHandle (*)(int64_t))_molt_host_abi_symbol("molt_int_from_i64"))
