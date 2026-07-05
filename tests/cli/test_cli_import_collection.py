@@ -3941,6 +3941,17 @@ def _wasm_exporting_i64_unary_symbol(
     *,
     imports: tuple[str, ...] = (),
 ) -> bytes:
+    return _wasm_exporting_i64_unary_symbols((symbol,), imports=imports)
+
+
+def _wasm_exporting_i64_unary_symbols(
+    symbols: Sequence[str],
+    *,
+    imports: tuple[str, ...] = (),
+) -> bytes:
+    if not symbols:
+        raise ValueError("at least one exported symbol is required")
+
     def uleb(value: int) -> bytes:
         out = bytearray()
         while True:
@@ -3968,10 +3979,13 @@ def _wasm_exporting_i64_unary_symbol(
                 for import_name in imports
             ),
         )
-    function_section = uleb(1) + uleb(0)
-    export_section = uleb(1) + wasm_string(symbol) + b"\x00" + uleb(len(imports))
+    function_section = uleb(len(symbols)) + (uleb(0) * len(symbols))
+    export_section = uleb(len(symbols)) + b"".join(
+        wasm_string(symbol) + b"\x00" + uleb(len(imports) + index)
+        for index, symbol in enumerate(symbols)
+    )
     body = uleb(0) + b"\x42\x00\x0b"
-    code_section = uleb(1) + uleb(len(body)) + body
+    code_section = uleb(len(symbols)) + (uleb(len(body)) + body) * len(symbols)
     return (
         b"\x00asm\x01\x00\x00\x00"
         + section(1, type_section)
@@ -6485,22 +6499,38 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
-    _write_external_native_artifact(
-        external_root,
-        package="nativepkg",
-        relative_module="ndimage._nd_image",
-        manifest_overrides={
-            "callable_exports": [
-                {
-                    "module": "nativepkg.ndimage",
-                    "name": "distance_transform_edt",
-                    "binding": "direct_symbol",
-                    "abi": "molt.forward_f32_v1",
-                    "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
-                }
-            ],
-        },
+    provider_operations = {
+        "ndimage._nd_image": (
+            ("distance_transform_edt", "molt.object_call_v1"),
+            ("maximum_filter", "molt.object_callargs_v1"),
+            ("minimum_filter", "molt.object_callargs_v1"),
+        ),
+        "ndimage._filters": (("gaussian_filter", "molt.object_callargs_v1"),),
+        "ndimage._ni_label": (("label", "molt.object_call_v1"),),
+    }
+    expected_exports = frozenset(
+        f"nativepkg.ndimage.{name}"
+        for operations in provider_operations.values()
+        for name, _abi in operations
     )
+    for relative_module, operations in provider_operations.items():
+        _write_external_native_artifact(
+            external_root,
+            package="nativepkg",
+            relative_module=relative_module,
+            manifest_overrides={
+                "callable_exports": [
+                    {
+                        "module": "nativepkg.ndimage",
+                        "name": name,
+                        "binding": "direct_symbol",
+                        "abi": abi,
+                        "symbol": f"molt_nativepkg_ndimage_{name}",
+                    }
+                    for name, abi in operations
+                ],
+            },
+        )
 
     plan, errors = cli._resolve_external_package_native_artifact_plan(
         external_module_roots=(external_root,),
@@ -6509,18 +6539,20 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
     )
     assert errors == []
     assert plan is not None
-    assert [artifact.module for artifact in plan.artifacts] == [
-        "nativepkg.ndimage._nd_image"
-    ]
+    assert {artifact.module for artifact in plan.artifacts} == {
+        "nativepkg.ndimage._filters",
+        "nativepkg.ndimage._nd_image",
+        "nativepkg.ndimage._ni_label",
+    }
 
     reachable = plan.with_reachable_imports({"nativepkg.ndimage"})
 
-    assert [artifact.module for artifact in reachable.artifacts] == [
-        "nativepkg.ndimage._nd_image"
-    ]
-    assert reachable.native_callable_export_names() == frozenset(
-        {"nativepkg.ndimage.distance_transform_edt"}
-    )
+    assert {artifact.module for artifact in reachable.artifacts} == {
+        "nativepkg.ndimage._filters",
+        "nativepkg.ndimage._nd_image",
+        "nativepkg.ndimage._ni_label",
+    }
+    assert reachable.native_callable_export_names() == expected_exports
 
 
 def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables(
@@ -6592,72 +6624,97 @@ def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables
     ] == ["nativepkg.ndimage._nd_image"]
 
 
+def _nativepkg_ndimage_provider_operations() -> dict[str, tuple[tuple[str, str], ...]]:
+    return {
+        "ndimage._nd_image": (
+            ("distance_transform_edt", "molt.object_call_v1"),
+            ("maximum_filter", "molt.object_callargs_v1"),
+            ("minimum_filter", "molt.object_callargs_v1"),
+        ),
+        "ndimage._filters": (("gaussian_filter", "molt.object_callargs_v1"),),
+        "ndimage._ni_label": (("label", "molt.object_call_v1"),),
+    }
+
+
 def _source_recompiled_frontend_ops_for_nativepkg_ndimage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     source: str,
-    callable_exports: list[dict[str, object]],
-    artifact_bytes: bytes | None = None,
+    binding: str,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     project = tmp_path / "project"
     external_root = tmp_path / "site"
     project.mkdir()
     entry = project / "field_solve.py"
     entry.write_text(source, encoding="utf-8")
-    manifest_overrides: dict[str, object] = {
-        "target_triple": "wasm32-wasip1",
-        "platform_tag": "wasm32_wasip1",
-        "runtime_linkage": "static_link",
-        "artifact_kind": "wasm_relocatable_object",
-        "callable_exports": callable_exports,
-    }
-    module_attr_exports = [
-        export for export in callable_exports if export.get("binding") == "module_attr"
-    ]
-    if module_attr_exports:
-        source_path = external_root / "nativepkg" / "ndimage" / "src" / "nd_image.c"
-        source_path.parent.mkdir(parents=True)
-        method_lines: list[str] = [
-            "#include <Python.h>",
-        ]
-        for export in module_attr_exports:
-            name = str(export["name"])
-            method_lines.extend(
-                [
-                    f"static PyObject *native_{name}(PyObject *self, PyObject *args) {{",
-                    "    return PyLong_FromLong(1);",
-                    "}",
-                ]
-            )
-        method_lines.append("static PyMethodDef ndimage_methods[] = {")
-        for export in module_attr_exports:
-            name = str(export["name"])
-            method_lines.append(
-                f'    {{"{name}", native_{name}, METH_VARARGS, ""}},'
-            )
-        method_lines.extend(
-            [
-                "    {NULL, NULL, 0, NULL},",
-                "};",
-                "",
-            ]
-        )
-        source_path.write_text("\n".join(method_lines), encoding="utf-8")
-        manifest_overrides["sources"] = [str(source_path)]
-    _write_external_native_artifact(
-        external_root,
-        package="nativepkg",
-        relative_module="ndimage._nd_image",
-        artifact_name="_nd_image.molt.wasm",
-        artifact_bytes=artifact_bytes
-        or _wasm_exporting_i64_unary_symbol("PyInit__nd_image"),
-        manifest_overrides=manifest_overrides,
-    )
-    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    assert binding in {"direct_symbol", "module_attr"}
+    provider_operations = _nativepkg_ndimage_provider_operations()
     expected_export_names = frozenset(
-        f"{export['module']}.{export['name']}" for export in callable_exports
+        f"nativepkg.ndimage.{name}"
+        for operations in provider_operations.values()
+        for name, _abi in operations
     )
+    for relative_module, operations in provider_operations.items():
+        module_tail = relative_module.rsplit(".", 1)[1]
+        callable_exports: list[dict[str, object]] = []
+        for name, abi in operations:
+            export: dict[str, object] = {
+                "module": "nativepkg.ndimage",
+                "name": name,
+                "binding": binding,
+                "abi": abi,
+            }
+            if binding == "direct_symbol":
+                export["symbol"] = f"molt_nativepkg_ndimage_{name}"
+            callable_exports.append(export)
+        manifest_overrides: dict[str, object] = {
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "callable_exports": callable_exports,
+        }
+        artifact_bytes = _wasm_exporting_i64_unary_symbol(f"PyInit_{module_tail}")
+        if binding == "direct_symbol":
+            artifact_bytes = _wasm_exporting_i64_unary_symbols(
+                tuple(f"molt_nativepkg_ndimage_{name}" for name, _abi in operations)
+            )
+        else:
+            source_path = (
+                external_root
+                / "nativepkg"
+                / "ndimage"
+                / "src"
+                / f"{module_tail}.c"
+            )
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            method_lines: list[str] = ["#include <Python.h>"]
+            for name, _abi in operations:
+                method_lines.extend(
+                    [
+                        f"static PyObject *native_{name}(PyObject *self, PyObject *args) {{",
+                        "    return PyLong_FromLong(1);",
+                        "}",
+                    ]
+                )
+            method_lines.append("static PyMethodDef ndimage_methods[] = {")
+            for name, _abi in operations:
+                method_lines.append(
+                    f'    {{"{name}", native_{name}, METH_VARARGS, ""}},'
+                )
+            method_lines.extend(["    {NULL, NULL, 0, NULL},", "};", ""])
+            source_path.write_text("\n".join(method_lines), encoding="utf-8")
+            manifest_overrides["sources"] = [str(source_path)]
+        _write_external_native_artifact(
+            external_root,
+            package="nativepkg",
+            relative_module=relative_module,
+            artifact_name=f"{module_tail}.molt.wasm",
+            artifact_bytes=artifact_bytes,
+            manifest_overrides=manifest_overrides,
+        )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
         json_output=False,
@@ -6788,46 +6845,53 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    native_symbol = "molt_nativepkg_ndimage_distance_transform_edt"
     ops, scoped_exports = _source_recompiled_frontend_ops_for_nativepkg_ndimage(
         tmp_path,
         monkeypatch,
         source=(
-            "from nativepkg.ndimage import distance_transform_edt\n"
+            "from nativepkg.ndimage import (\n"
+            "    distance_transform_edt,\n"
+            "    gaussian_filter,\n"
+            "    label,\n"
+            "    maximum_filter,\n"
+            "    minimum_filter,\n"
+            ")\n"
             "mask = 1\n"
-            "result = distance_transform_edt(mask)\n"
+            "a = distance_transform_edt(mask)\n"
+            "b = gaussian_filter(mask, sigma=1.5)\n"
+            "c = label(mask)\n"
+            "d = maximum_filter(mask, size=3)\n"
+            "e = minimum_filter(mask, size=5)\n"
         ),
-        callable_exports=[
-            {
-                "module": "nativepkg.ndimage",
-                "name": "distance_transform_edt",
-                "binding": "direct_symbol",
-                "abi": "molt.forward_f32_v1",
-                "symbol": native_symbol,
-            }
-        ],
-        artifact_bytes=_wasm_exporting_i64_unary_symbol(native_symbol),
+        binding="direct_symbol",
     )
-    assert scoped_exports["nativepkg.ndimage.distance_transform_edt"]["symbol"] == (
-        native_symbol
-    )
+    expected_symbols = {
+        f"nativepkg.ndimage.{name}": f"molt_nativepkg_ndimage_{name}"
+        for operations in _nativepkg_ndimage_provider_operations().values()
+        for name, _abi in operations
+    }
+    for export_name, symbol in expected_symbols.items():
+        assert scoped_exports[export_name]["symbol"] == symbol
     invoke_ops = [
         op
         for op in ops
         if op.get("kind") == "invoke_ffi"
-        and op.get("native_callable_export")
-        == "nativepkg.ndimage.distance_transform_edt"
     ]
 
-    assert len(invoke_ops) == 1
-    assert invoke_ops[0]["native_callable_binding"] == "direct_symbol"
-    assert invoke_ops[0]["native_callable_abi"] == "molt.forward_f32_v1"
-    assert invoke_ops[0]["native_callable_symbol"] == native_symbol
+    assert {op["native_callable_export"] for op in invoke_ops} == set(
+        expected_symbols
+    )
+    assert all(op["native_callable_binding"] == "direct_symbol" for op in invoke_ops)
+    assert all(
+        op["native_callable_symbol"] == expected_symbols[op["native_callable_export"]]
+        for op in invoke_ops
+    )
     assert all(op.get("kind") != "call_bind" for op in ops)
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "nativepkg__ndimage__distance_transform_edt"
+            and isinstance(op.get("s_value"), str)
+            and op["s_value"].startswith("nativepkg__ndimage__")
         )
         for op in ops
     )
@@ -6868,15 +6932,7 @@ def test_source_recompiled_pact_ndimage_operation_closure_reaches_frontend_scope
             "i = label(mask)\n"
             "j = ndi.label(mask)\n"
         ),
-        callable_exports=[
-            {
-                "module": "nativepkg.ndimage",
-                "name": operation_name,
-                "binding": "module_attr",
-                "abi": abi,
-            }
-            for operation_name, abi in operation_abis.items()
-        ],
+        binding="module_attr",
     )
     expected_counts = {
         f"nativepkg.ndimage.{operation_name}": 2
