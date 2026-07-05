@@ -176,15 +176,19 @@ cache, a broad selector, or a stale generated file.
 - Prefer the product front door for day-to-day queue work:
   `molt queue status`, `molt queue --help`,
   `molt queue --db logs/proof_queue/proof_queue.sqlite3 status`,
-  `molt queue run --jobs N --detach`, and `molt queue native-molt-run --detach
-  path/to/probe.py`. The `molt queue` command delegates to this proof-queue
-  authority and passes all post-`queue` argv through unchanged; it does not own
-  a second scheduler, flag parser, database, log tree, process model, or
-  contention policy.
+  `molt queue run --queue-size N --detach`, and
+  `molt queue native-molt-run --detach path/to/probe.py`. The `molt queue`
+  command delegates to this proof-queue authority; it does not own a second
+  scheduler, database, log tree, process model, or contention policy.
 - `--jobs` is the queue worker count for ready rows in one `run` call. It is
   cross-platform because each launched row still uses the same queue-owned
   detached runner and OS custody path; contention keys still prevent unsafe
-  overlap such as two active `cargo:molt-runtime` rows.
+  overlap such as two active `cargo:molt-runtime` rows. `--queue-size` is the
+  product spelling for the same value.
+- Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
+  already set a value. This avoids noisy hardlink fallback warnings on
+  cross-device caches, exFAT artifact volumes, and other valid Windows/macOS/Linux
+  storage layouts without disabling cache reuse.
 - When historical warning rows make audit output noisy, use
   `tools\proof_queue.py audit --errors-only` for human triage. This hides
   warning rows only from the terminal text; JSON/output payloads and the audit

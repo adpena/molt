@@ -2617,6 +2617,10 @@ def _uv_active_python_command(
     return command
 
 
+def _normalize_queue_process_environment() -> None:
+    os.environ.setdefault("UV_LINK_MODE", "copy")
+
+
 def _cargo_package_for_contention(cargo_args: list[str]) -> str:
     for index, arg in enumerate(cargo_args):
         if arg in {"-p", "--package"} and index + 1 < len(cargo_args):
@@ -4833,6 +4837,7 @@ from tools.proof_queue_pkg.cli import _build_parser  # noqa: E402
 
 
 def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
+    _normalize_queue_process_environment()
     raw = list(sys.argv[1:] if argv is None else argv)
     proof_subcommand_index = _proof_command_subcommand_index(raw)
     if proof_subcommand_index is not None:
