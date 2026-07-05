@@ -87,7 +87,24 @@ def _build_parser() -> argparse.ArgumentParser:
     submit_p.set_defaults(func=pq._cmd_submit)
 
     run_p = sub.add_parser("run", help="run queued proof specs")
-    run_p.add_argument("--limit", type=int, default=1)
+    run_p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "maximum queued rows to run; defaults to 1, or to --queue-size "
+            "when --detach is used"
+        ),
+    )
+    run_p.add_argument(
+        "--queue-size",
+        type=int,
+        default=None,
+        help=(
+            "maximum concurrently dispatched/running rows; defaults to "
+            f"{pq.DEFAULT_PROOF_QUEUE_SIZE} or {pq.PROOF_QUEUE_SIZE_ENV}"
+        ),
+    )
     run_p.add_argument("--run-id")
     run_p.add_argument("--timeout", type=float, default=1200.0)
     run_p.add_argument("--detach", action="store_true")
