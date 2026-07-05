@@ -149,6 +149,29 @@ def test_molt_queue_queue_size_sets_portable_env(monkeypatch, tmp_path: Path) ->
     assert env[queue_cli.PROOF_QUEUE_SIZE_ENV] == "3"
 
 
+@pytest.mark.parametrize("queue_size", ["0", "-1", "banana"])
+def test_molt_queue_rejects_invalid_top_level_queue_size(
+    monkeypatch, tmp_path: Path, capsys, queue_size: str
+) -> None:
+    script = tmp_path / "tools" / "proof_queue.py"
+    script.parent.mkdir()
+    script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+
+    monkeypatch.setattr(queue_cli, "_find_molt_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(
+        queue_cli.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("invalid capacity must fail closed"),
+    )
+
+    rc = queue_cli.handle_queue_command(
+        argparse.Namespace(queue_size=queue_size, queue_args=["status"])
+    )
+
+    assert rc == 2
+    assert "--queue-size must be a positive integer" in capsys.readouterr().err
+
+
 def test_molt_queue_queue_size_is_child_env_only(monkeypatch, tmp_path: Path) -> None:
     script = tmp_path / "tools" / "proof_queue.py"
     script.parent.mkdir()
