@@ -17,6 +17,7 @@ pub(crate) use cache::{
 ))]
 pub(crate) use cache::{
     daemon_memory_cache_allowed_for_job, insert_daemon_cache_entries, maybe_cache_output_file,
+    try_write_cached_daemon_job_output,
 };
 #[cfg(any(unix, test))]
 pub(crate) use compile::{backend_ir_document_from_json_path, compile_single_job};

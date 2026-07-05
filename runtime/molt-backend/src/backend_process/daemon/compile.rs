@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::{WasmBackend, WasmCompileOptions};
 
-use super::super::io_limits::{write_cached_output, write_output};
+use super::super::io_limits::write_output;
 #[cfg(feature = "native-backend")]
 use super::super::native_batch::compile_native_application_object_to_path;
 #[cfg(feature = "native-backend")]
@@ -15,7 +15,7 @@ use super::super::shared_stdlib_cache::{
 };
 use super::{
     DaemonCache, DaemonJobRequest, DaemonJobResponse, daemon_memory_cache_allowed_for_job,
-    insert_daemon_cache_entries, maybe_cache_output_file,
+    insert_daemon_cache_entries, maybe_cache_output_file, try_write_cached_daemon_job_output,
 };
 
 #[cfg(any(unix, test))]
@@ -69,67 +69,10 @@ pub(crate) fn compile_single_job(
             .unwrap_or("");
         let daemon_memory_cache_allowed = daemon_memory_cache_allowed_for_job(&job);
         if daemon_memory_cache_allowed
-            && !cache_key.is_empty()
-            && let Some(bytes) = _cache.get_bytes(cache_key)
+            && let Some(response) =
+                try_write_cached_daemon_job_output(_cache, &job, cache_key, function_cache_key)
         {
-            match write_cached_output(&job.output, bytes, job.skip_module_output_if_synced) {
-                Ok(output_written) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: true,
-                        cached: true,
-                        cache_tier: Some("module".to_string()),
-                        output_written,
-                        needs_ir: false,
-                        message: None,
-                        warnings: Vec::new(),
-                    };
-                }
-                Err(err) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: false,
-                        cached: false,
-                        cache_tier: None,
-                        output_written: false,
-                        needs_ir: false,
-                        message: Some(format!("failed to write cached output: {err}")),
-                        warnings: Vec::new(),
-                    };
-                }
-            }
-        }
-        if daemon_memory_cache_allowed
-            && !function_cache_key.is_empty()
-            && function_cache_key != cache_key
-            && let Some(bytes) = _cache.get_bytes(function_cache_key)
-        {
-            match write_cached_output(&job.output, bytes, job.skip_function_output_if_synced) {
-                Ok(output_written) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: true,
-                        cached: true,
-                        cache_tier: Some("function".to_string()),
-                        output_written,
-                        needs_ir: false,
-                        message: None,
-                        warnings: Vec::new(),
-                    };
-                }
-                Err(err) => {
-                    return DaemonJobResponse {
-                        id: job.id,
-                        ok: false,
-                        cached: false,
-                        cache_tier: None,
-                        output_written: false,
-                        needs_ir: false,
-                        message: Some(format!("failed to write cached output: {err}")),
-                        warnings: Vec::new(),
-                    };
-                }
-            }
+            return response;
         }
 
         if job.probe_cache_only {
