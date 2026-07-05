@@ -1,13 +1,8 @@
-use std::env;
 use std::fs::File;
+use std::io;
 use std::io::Write;
-use std::io::{self, Read};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(any(unix, test))]
-use super::config::DEFAULT_DAEMON_MAX_JOBS;
-use super::config::{DEFAULT_DAEMON_REQUEST_LIMIT_BYTES, DEFAULT_STDIN_REQUEST_LIMIT_BYTES};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BackendOutputKind {
@@ -64,118 +59,6 @@ pub(crate) fn resolve_backend_output_path(
     kind: BackendOutputKind,
 ) -> &str {
     output_path.unwrap_or(default_backend_output_path(kind))
-}
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn write_json_artifact<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    ensure_output_parent_dir(path.to_str().unwrap_or_default())?;
-    let file = File::create(path)?;
-    let writer = io::BufWriter::new(file);
-    serde_json::to_writer(writer, value).map_err(io::Error::other)
-}
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn read_json_artifact<T: serde::de::DeserializeOwned>(
-    path: &Path,
-    label: &str,
-) -> io::Result<T> {
-    let file = File::open(path).map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!("failed to open {label} '{}': {err}", path.display()),
-        )
-    })?;
-    let reader = io::BufReader::new(file);
-    serde_json::from_reader(reader).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid {label} '{}': {err}", path.display()),
-        )
-    })
-}
-
-pub(crate) fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
-    env::var(name)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value >= min_value)
-        .unwrap_or(default)
-}
-
-#[cfg(any(unix, test))]
-pub(crate) fn daemon_request_limit_bytes() -> usize {
-    env_usize_limit(
-        "MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES",
-        DEFAULT_DAEMON_REQUEST_LIMIT_BYTES,
-        1024,
-    )
-}
-
-pub(crate) fn stdin_request_limit_bytes() -> usize {
-    env_usize_limit(
-        "MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES",
-        DEFAULT_STDIN_REQUEST_LIMIT_BYTES,
-        1024,
-    )
-}
-
-#[cfg(any(unix, test))]
-pub(crate) fn daemon_max_jobs() -> usize {
-    env_usize_limit("MOLT_BACKEND_DAEMON_MAX_JOBS", DEFAULT_DAEMON_MAX_JOBS, 1)
-}
-
-#[derive(Debug)]
-pub(crate) struct RequestBoundedRead<R> {
-    pub(crate) inner: R,
-    pub(crate) remaining: usize,
-    pub(crate) limit_bytes: usize,
-    pub(crate) context: &'static str,
-}
-
-impl<R: Read> RequestBoundedRead<R> {
-    pub(crate) fn new(inner: R, limit_bytes: usize, context: &'static str) -> Self {
-        Self {
-            inner,
-            remaining: limit_bytes,
-            limit_bytes,
-            context,
-        }
-    }
-}
-
-impl<R: Read> Read for RequestBoundedRead<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        if self.remaining == 0 {
-            let mut probe = [0_u8; 1];
-            return match self.inner.read(&mut probe) {
-                Ok(0) => Ok(0),
-                Ok(_) => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{} exceeded {} byte limit", self.context, self.limit_bytes),
-                )),
-                Err(err) => Err(err),
-            };
-        }
-
-        let read_len = buf.len().min(self.remaining);
-        let n = self.inner.read(&mut buf[..read_len])?;
-        self.remaining = self.remaining.saturating_sub(n);
-        Ok(n)
-    }
-}
-
-pub(crate) fn read_bounded_request_bytes<R: Read>(
-    reader: R,
-    limit_bytes: usize,
-    context: &'static str,
-) -> io::Result<Vec<u8>> {
-    let mut bounded = RequestBoundedRead::new(reader, limit_bytes, context);
-    let mut bytes = Vec::new();
-    bounded.read_to_end(&mut bytes)?;
-    Ok(bytes)
 }
 
 #[cfg_attr(
