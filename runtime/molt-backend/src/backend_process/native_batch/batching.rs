@@ -1,4 +1,6 @@
-use super::*;
+use std::path::PathBuf;
+
+use molt_backend::SimpleIR;
 
 pub(crate) fn partition_functions_for_batches(
     functions: Vec<molt_backend::FunctionIR>,

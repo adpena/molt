@@ -1,4 +1,17 @@
-use super::*;
+use std::io;
+use std::path::Path;
+
+use molt_backend::{SimpleBackend, SimpleIR};
+
+use super::super::config::{DEFAULT_BACKEND_BATCH_OP_BUDGET, DEFAULT_STDLIB_BATCH_SIZE};
+use super::super::io_limits::write_json_artifact;
+use super::super::native_batch::{
+    NativeBatchJobSpec, NativeBatchModuleMetadata, NativeBatchObjectJob,
+    batch_external_function_names, finish_native_batch_temp_dir, merge_relocatable_objects,
+    partition_functions_for_batches, release_native_backend_batch_memory_to_os,
+    resolved_batch_op_budget_limit, resolved_batch_size_limit,
+    run_native_batch_worker_with_failure_artifacts,
+};
 
 pub(crate) fn compile_stdlib_cache_object(
     stdlib_path: &Path,

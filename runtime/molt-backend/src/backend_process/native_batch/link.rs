@@ -1,4 +1,7 @@
-use super::*;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use super::super::io_limits::ensure_output_parent_dir;
 
 pub(crate) fn relocatable_linker_binary(linker_override: Option<&str>) -> String {
     linker_override
@@ -12,7 +15,7 @@ pub(crate) fn relocatable_linker_binary(linker_override: Option<&str>) -> String
 
 pub(crate) fn merge_relocatable_objects(
     output_path: &Path,
-    object_paths: &[std::path::PathBuf],
+    object_paths: &[PathBuf],
     linker_override: Option<&str>,
 ) -> io::Result<()> {
     if object_paths.is_empty() {

@@ -1,4 +1,20 @@
-use super::*;
+use std::fs::File;
+use std::io::Write;
+use std::io::{self, Read};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, UnlockFileEx};
+#[cfg(windows)]
+use windows_sys::Win32::System::IO::OVERLAPPED;
+
+use super::super::io_limits::ensure_output_parent_dir;
 
 pub(crate) fn stdlib_cache_count_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
     stdlib_path.with_extension("count")

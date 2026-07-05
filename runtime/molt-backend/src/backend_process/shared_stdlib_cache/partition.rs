@@ -1,4 +1,6 @@
-use super::*;
+use std::io;
+
+use molt_backend::SimpleIR;
 
 pub(crate) const STDLIB_PARTITION_MANIFEST_SCHEMA: &str = "stdlib-partition-v1";
 
