@@ -306,13 +306,23 @@ def test_buffer_support_probe_does_not_require_simple_contiguity() -> None:
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     abi_buffer_source = CPYTHON_ABI_BUFFER_PATH.read_text(encoding="utf-8")
     public_body = _function_body(header_source, "PyObject_CheckBuffer")
+    public_getbuffer_body = _function_body(header_source, "PyObject_GetBuffer")
+    public_release_body = _function_body(header_source, "PyBuffer_Release")
+    public_release_exported_body = _function_body(header_source, "_molt_pybuffer_release_exported_view")
     compiled_body = _rust_function_body(abi_buffer_source, "PyObject_CheckBuffer")
 
     assert "MoltBufferView tmp" in public_body
+    assert "molt_c_heap_export_buffer((uintptr_t)obj, &tmp)" in public_body
     assert "molt_buffer_acquire(_molt_py_handle(obj), &tmp)" in public_body
     assert "_molt_pybuffer_release_exported_view(obj, &tmp)" in public_body
     assert "PyBUF_SIMPLE" not in public_body
     assert "PyObject_GetBuffer" not in public_body
+    assert "molt_c_heap_export_buffer((uintptr_t)obj, &view->_molt_view)" in public_getbuffer_body
+    assert "molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view)" in public_getbuffer_body
+    assert "view->internal == &view->_molt_view" in public_release_body
+    assert "_molt_pybuffer_release_exported_view(view->obj, &view->_molt_view)" in public_release_body
+    assert "molt_buffer_release(view)" in public_release_exported_body
+    assert "molt_c_heap_release_buffer((uintptr_t)obj, view)" in public_release_exported_body
 
     assert "let mut descriptor = MoltBufferView::default()" in compiled_body
     assert "(hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView)" in compiled_body
