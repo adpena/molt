@@ -6523,6 +6523,75 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
     )
 
 
+def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.ndimage._nd_image",
+                package_dir=package_dir,
+                path=package_dir / "ndimage" / "_nd_image.molt.wasm",
+                manifest_path=package_dir
+                / "ndimage"
+                / "_nd_image.molt.wasm.extension_manifest.json",
+                extension_sha256="ndimage-wasm",
+                manifest_sha256="ndimage-manifest",
+                capabilities=(),
+                abi_tag="molt-extension-v1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="distance_transform_edt",
+                        binding="direct_symbol",
+                        abi="molt.forward_f32_v1",
+                        symbol="molt_nativepkg_ndimage_distance_transform_edt",
+                    ),
+                ),
+            ),
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.linalg._umath_linalg",
+                package_dir=package_dir,
+                path=package_dir / "linalg" / "_umath_linalg.molt.wasm",
+                manifest_path=package_dir
+                / "linalg"
+                / "_umath_linalg.molt.wasm.extension_manifest.json",
+                extension_sha256="linalg-wasm",
+                manifest_sha256="linalg-manifest",
+                capabilities=(),
+                abi_tag="molt-extension-v1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.linalg",
+                        name="eigh",
+                        binding="direct_symbol",
+                        abi="molt.object_call_v1",
+                        symbol="molt_nativepkg_linalg_eigh",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert plan.with_reachable_imports({"nativepkg"}).artifacts == ()
+    assert [
+        artifact.module
+        for artifact in plan.with_reachable_imports({"nativepkg.ndimage"}).artifacts
+    ] == ["nativepkg.ndimage._nd_image"]
+
+
 def test_source_recompiled_package_callable_export_reaches_frontend_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

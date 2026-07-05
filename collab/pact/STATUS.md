@@ -98,6 +98,10 @@ not yet passed the full `candidate_outputs.npz` parity runner:
   `_multiarray_umath`; `_rank_filter_1d` remains the next wrapper-reachable
   native artifact to expose if graph/runtime execution reaches rank-filter
   support.
+- Reachable native-artifact selection is now bounded by public callable-export
+  modules: `scipy.ndimage` keeps the five Kernel A wrapper/provider artifacts
+  reachable, but a bare `scipy` package-root import does not wildcard every
+  descendant SciPy callable provider.
 - The current recovery first moved the next failure from late WASM execution
   into import/link authority. Reachable provider support source is now sliced
   once for graph discovery and frontend lowering, decorator/doc-only support
