@@ -27,7 +27,6 @@ static inline void _molt_numpy_descr_dealloc(PyObject *obj);
 static inline void _molt_numpy_dtype_meta_dealloc(PyObject *obj);
 static inline void _molt_numpy_iter_dealloc(PyObject *obj);
 static inline void _molt_numpy_neighborhood_iter_dealloc(PyObject *obj);
-
 #if _MOLT_NUMPY_PUBLIC_C_HEAP
 static inline int _molt_numpy_array_buffer_export(uintptr_t ptr, MoltBufferView *out_view);
 static inline int _molt_numpy_array_buffer_release(uintptr_t ptr, MoltBufferView *view);
@@ -38,7 +37,9 @@ static inline int _molt_numpy_array_buffer_lease_record(
 static inline int _molt_numpy_array_buffer_lease_consume(
     PyArrayObject_fields *array_obj,
     const MoltBufferView *view);
+#endif
 
+#if _MOLT_NUMPY_PUBLIC_C_HEAP
 static inline PyTypeObject *_molt_numpy_public_c_heap_type(
     _MoltCHeapObject *type_obj,
     PyTypeObject **canonical_out,
@@ -2706,9 +2707,6 @@ static inline void PyArray_UpdateFlags(PyArrayObject *array_obj, int flagmask) {
     npy_intp expected;
     int itemsize;
     if (array_obj == NULL) {
-        return;
-    }
-    if (!_molt_numpy_array_can_mutate_metadata((PyArrayObject_fields *)array_obj, "PyArray_UpdateFlags")) {
         return;
     }
     nd = PyArray_NDIM(array_obj);

@@ -24,7 +24,7 @@ use crate::*;
 use std::collections::HashMap;
 use std::sync::MutexGuard;
 /// libmolt C-API surface version.
-pub const MOLT_C_API_VERSION: u32 = 4;
+pub const MOLT_C_API_VERSION: u32 = 3;
 
 /// Opaque object handle used by the libmolt C-API.
 pub type MoltHandle = u64;

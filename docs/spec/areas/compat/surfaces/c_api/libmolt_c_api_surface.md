@@ -33,7 +33,7 @@ performance-first C-extension compatibility without embedding CPython.
   - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
   - Public header: `include/molt/molt.h`
   - CPython-compat shim headers: `include/Python.h`, `include/molt/Python.h`
-  - Current version constant: `MOLT_C_API_VERSION = 4`
+  - Current version constant: `MOLT_C_API_VERSION = 3`
 
 ---
 
@@ -74,13 +74,22 @@ source-compatible headers expose real C heap pointers for extension-local
 objects, while generic `Py_INCREF`/`Py_DECREF`/type checks avoid treating those
 pointers as Molt handles. Type canonicalization is keyed by explicit kind so
 header-inline type objects keep one identity across C translation units.
-Buffer exporter/releaser hooks make C-heap objects first-class buffer owners:
-the public header must release a C-heap buffer through the same object-kind hook
-that exported it, and runtime validation rejects forged or out-of-bounds
-descriptors before the view crosses the ABI.
 Unregistering a C-heap type pointer revokes its canonical type mapping and
 buffer exporter/releaser hooks; stale type authority must not keep future buffer
 exports alive.
+
+The `molt_c_heap_*_buffer*` lease functions extend that lane to the buffer
+protocol: a source-recompiled extension (e.g. the numpy `PyArrayObject`
+header) registers a per-kind exporter and releaser keyed on its typed C-heap
+header, then `molt_c_heap_export_buffer` hands out a `MoltBufferView` lease only
+after the runtime revalidates the descriptor through the same typed strided
+storage authority as `molt_memoryview_from_buffer`. A C-heap lease owns its own
+backing (`owner == 0`, `base == 0`); a descriptor whose declared length or
+strided span does not fit its backing capacity fails closed, draining the lease
+through the registered releaser so the exporter's slot-identity bookkeeping
+stays balanced. `PyObject_GetBuffer`/`PyBuffer_Release`/`PyObject_CheckBuffer`
+route C-heap objects through this lease lane and runtime objects through
+`molt_buffer_acquire`/`molt_buffer_release`.
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`

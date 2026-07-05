@@ -645,6 +645,11 @@ static inline int _molt_c_heap_object_is(const PyObject *obj) {
     return obj != NULL && molt_c_heap_contains((uintptr_t)obj) != 0;
 }
 
+static inline void _molt_c_heap_fatal(const char *message) {
+    fprintf(stderr, "Fatal Python error: %s\n", message != NULL ? message : "(null)");
+    abort();
+}
+
 static inline _MoltCHeapObject *_molt_c_heap_header_from_object(const PyObject *obj) {
     return (_MoltCHeapObject *)obj;
 }
@@ -659,11 +664,6 @@ static inline void *_molt_c_heap_payload_maybe(const void *obj) {
         return (void *)_molt_c_heap_header_from_object(pyobj);
     }
     return (void *)obj;
-}
-
-static inline void _molt_c_heap_fatal(const char *message) {
-    fprintf(stderr, "Fatal Python error: %s\n", message != NULL ? message : "(null)");
-    abort();
 }
 
 static inline void _molt_c_heap_init(
@@ -4842,20 +4842,19 @@ static inline int _molt_pybuffer_descriptor_satisfies_flags(const MoltBufferView
 
 static inline void PyBuffer_Release(Py_buffer *view);
 
-static inline void _molt_pybuffer_release_exported_view(PyObject *obj, Py_buffer *view) {
-    if (view == NULL || view->internal != &view->_molt_view) {
+/* Release a molt buffer descriptor back to whichever authority exported it. A
+ * runtime object export owns a nonzero `owner` handle and is released through
+ * `molt_buffer_release`; a source-recompiled C-heap object (e.g. an ndarray
+ * header) exports a lease that must be handed back through
+ * `molt_c_heap_release_buffer` so the exporter can consume its recorded lease. */
+static inline void _molt_pybuffer_release_exported_view(PyObject *obj, MoltBufferView *view) {
+    if (view == NULL) {
         return;
     }
-    if (view->_molt_view.owner != 0) {
-        if (molt_buffer_release(&view->_molt_view) != 0) {
-            _molt_c_heap_fatal("runtime buffer release failed");
-        }
-        return;
-    }
-    if (obj != NULL && _molt_c_heap_object_is(obj)) {
-        if (molt_c_heap_release_buffer((uintptr_t)obj, &view->_molt_view) != 0) {
-            _molt_c_heap_fatal("C-heap buffer release failed");
-        }
+    if (view->owner != 0) {
+        (void)molt_buffer_release(view);
+    } else if (obj != NULL && _molt_c_heap_object_is(obj)) {
+        (void)molt_c_heap_release_buffer((uintptr_t)obj, view);
     }
 }
 
@@ -4870,9 +4869,11 @@ static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) 
         PyErr_SetString(PyExc_TypeError, "buffer exporter must not be NULL");
         return -1;
     }
-    rc = _molt_c_heap_object_is(obj)
-        ? molt_c_heap_export_buffer((uintptr_t)obj, &view->_molt_view)
-        : molt_buffer_acquire(_molt_py_handle_unchecked(obj), &view->_molt_view);
+    if (_molt_c_heap_object_is(obj)) {
+        rc = molt_c_heap_export_buffer((uintptr_t)obj, &view->_molt_view);
+    } else {
+        rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
+    }
     if (rc != 0) {
         if (molt_err_pending() == 0) {
             PyErr_SetString(PyExc_BufferError, "object does not export a buffer");
@@ -4880,17 +4881,13 @@ static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) 
         return -1;
     }
     if ((flags & PyBUF_WRITABLE) != 0 && view->_molt_view.readonly != 0) {
-        view->obj = obj;
-        view->internal = &view->_molt_view;
-        _molt_pybuffer_release_exported_view(obj, view);
+        _molt_pybuffer_release_exported_view(obj, &view->_molt_view);
         _molt_pybuffer_reset(view);
         PyErr_SetString(PyExc_BufferError, "writable buffer requested for readonly object");
         return -1;
     }
     if (!_molt_pybuffer_descriptor_satisfies_flags(&view->_molt_view, flags)) {
-        view->obj = obj;
-        view->internal = &view->_molt_view;
-        _molt_pybuffer_release_exported_view(obj, view);
+        _molt_pybuffer_release_exported_view(obj, &view->_molt_view);
         _molt_pybuffer_reset(view);
         PyErr_SetString(PyExc_BufferError, "non-contiguous buffers require PyBUF_STRIDES");
         return -1;
@@ -4912,7 +4909,7 @@ static inline void PyBuffer_Release(Py_buffer *view) {
         return;
     }
     if (view->internal == &view->_molt_view) {
-        _molt_pybuffer_release_exported_view(view->obj, view);
+        _molt_pybuffer_release_exported_view(view->obj, &view->_molt_view);
     }
     if (view->obj != NULL) {
         Py_DECREF(view->obj);
@@ -11076,207 +11073,10 @@ static inline PyObject *PyCoro_New(PyFrameObject *frame, PyObject *name, PyObjec
  * MemoryView API
  * ======================================================================== */
 
-#define _MOLT_C_HEAP_MEMORYVIEW UINT32_C(0x4d565701)
-#define _MOLT_C_HEAP_MEMORYVIEW_TYPE UINT32_C(0x4d565401)
-
-typedef struct _MoltCHeapMemoryViewBufferLease {
-    const MoltBufferView *slot;
-    MoltBufferView view;
-    struct _MoltCHeapMemoryViewBufferLease *next;
-} _MoltCHeapMemoryViewBufferLease;
-
-typedef struct _MoltCHeapMemoryView {
-    _MoltCHeapObject ob_base;
-    Py_buffer view;
-    uint64_t buffer_exports;
-    _MoltCHeapMemoryViewBufferLease *buffer_leases;
-} _MoltCHeapMemoryView;
-
-static inline int _molt_c_heap_memoryview_buffer_export(uintptr_t ptr, MoltBufferView *out_view);
-static inline int _molt_c_heap_memoryview_buffer_release(uintptr_t ptr, MoltBufferView *view);
-static inline void _molt_c_heap_memoryview_dealloc(PyObject *obj);
-
-static inline _MoltCHeapMemoryView *_molt_c_heap_memoryview_fields(PyObject *obj) {
-    return (_MoltCHeapMemoryView *)_molt_c_heap_payload_maybe(obj);
-}
-
-static inline int _molt_c_heap_memoryview_ensure_buffer_hooks(PyTypeObject *type) {
-    static PyTypeObject *registered_type = NULL;
-    if (registered_type == type) {
-        return 0;
-    }
-    if (molt_c_heap_register_buffer_exporter(
-            _MOLT_C_HEAP_MEMORYVIEW,
-            (uintptr_t)type,
-            _molt_c_heap_memoryview_buffer_export) != 0) {
-        PyErr_SetString(PyExc_BufferError, "failed to register memoryview buffer exporter");
-        return -1;
-    }
-    if (molt_c_heap_register_buffer_releaser(
-            _MOLT_C_HEAP_MEMORYVIEW,
-            (uintptr_t)type,
-            _molt_c_heap_memoryview_buffer_release) != 0) {
-        PyErr_SetString(PyExc_BufferError, "failed to register memoryview buffer releaser");
-        return -1;
-    }
-    registered_type = type;
-    return 0;
-}
-
-static inline PyTypeObject *_molt_c_heap_memoryview_type(void) {
-    static _MoltCHeapObject type_obj = {0};
-    static PyTypeObject *canonical = NULL;
-    if (canonical == NULL) {
-        canonical = (PyTypeObject *)_molt_c_heap_static_type_init(
-            &type_obj,
-            _MOLT_C_HEAP_MEMORYVIEW_TYPE);
-    }
-    if (canonical == NULL) {
-        return NULL;
-    }
-    if (_molt_c_heap_memoryview_ensure_buffer_hooks(canonical) != 0) {
-        return NULL;
-    }
-    return canonical;
-}
-
-static inline int _molt_c_heap_memoryview_check(PyObject *obj) {
-    return _molt_c_heap_object_type_is(obj, _molt_c_heap_memoryview_type());
-}
-
-static inline int _molt_c_heap_memoryview_buffer_lease_record(
-    _MoltCHeapMemoryView *mview,
-    const MoltBufferView *view
-) {
-    _MoltCHeapMemoryViewBufferLease *lease;
-    if (mview == NULL || view == NULL) {
-        return -1;
-    }
-    lease = (_MoltCHeapMemoryViewBufferLease *)PyMem_Calloc(
-        1,
-        sizeof(_MoltCHeapMemoryViewBufferLease));
-    if (lease == NULL) {
-        PyErr_NoMemory();
-        return -1;
-    }
-    lease->slot = view;
-    lease->view = *view;
-    lease->next = mview->buffer_leases;
-    mview->buffer_leases = lease;
-    return 0;
-}
-
-static inline int _molt_c_heap_memoryview_buffer_lease_consume(
-    _MoltCHeapMemoryView *mview,
-    const MoltBufferView *view
-) {
-    _MoltCHeapMemoryViewBufferLease **prev;
-    _MoltCHeapMemoryViewBufferLease *lease;
-    if (mview == NULL || view == NULL) {
-        return -1;
-    }
-    prev = &mview->buffer_leases;
-    while (*prev != NULL) {
-        lease = *prev;
-        if (lease->slot == view) {
-            *prev = lease->next;
-            PyMem_Free(lease);
-            return 0;
-        }
-        prev = &lease->next;
-    }
-    return -1;
-}
-
-static inline int _molt_c_heap_memoryview_buffer_export(uintptr_t ptr, MoltBufferView *out_view) {
-    _MoltCHeapMemoryView *mview;
-    if (ptr == 0 || out_view == NULL || !_molt_c_heap_memoryview_check((PyObject *)ptr)) {
-        return -1;
-    }
-    mview = _molt_c_heap_memoryview_fields((PyObject *)ptr);
-    if (mview == NULL || mview->view.internal != &mview->view._molt_view) {
-        return -1;
-    }
-    if (mview->buffer_exports == UINT64_MAX) {
-        PyErr_SetString(PyExc_BufferError, "memoryview active buffer export count overflow");
-        return -1;
-    }
-    *out_view = mview->view._molt_view;
-    out_view->owner = 0;
-    out_view->base = 0;
-    if (_molt_c_heap_memoryview_buffer_lease_record(mview, out_view) != 0) {
-        memset(out_view, 0, sizeof(*out_view));
-        return -1;
-    }
-    mview->buffer_exports++;
-    return 0;
-}
-
-static inline int _molt_c_heap_memoryview_buffer_release(uintptr_t ptr, MoltBufferView *view) {
-    _MoltCHeapMemoryView *mview;
-    if (ptr == 0 || view == NULL || !_molt_c_heap_memoryview_check((PyObject *)ptr)) {
-        return -1;
-    }
-    mview = _molt_c_heap_memoryview_fields((PyObject *)ptr);
-    if (mview == NULL || mview->buffer_exports == 0) {
-        return -1;
-    }
-    if (_molt_c_heap_memoryview_buffer_lease_consume(mview, view) != 0) {
-        return -1;
-    }
-    mview->buffer_exports--;
-    memset(view, 0, sizeof(*view));
-    return 0;
-}
-
-static inline void _molt_c_heap_memoryview_dealloc(PyObject *obj) {
-    _MoltCHeapMemoryView *mview = _molt_c_heap_memoryview_fields(obj);
-    if (mview == NULL) {
-        return;
-    }
-    if (mview->buffer_exports != 0 || mview->buffer_leases != NULL) {
-        _molt_c_heap_fatal("memoryview dealloc with active buffer exports");
-    }
-    PyBuffer_Release(&mview->view);
-    PyMem_Free(mview);
-}
-
-static inline PyObject *_molt_c_heap_memoryview_from_object(PyObject *obj) {
-    _MoltCHeapMemoryView *mview;
-    PyTypeObject *type;
-    if (obj == NULL) {
-        PyErr_SetString(PyExc_TypeError, "memoryview exporter must not be NULL");
-        return NULL;
-    }
-    type = _molt_c_heap_memoryview_type();
-    if (type == NULL) {
-        return NULL;
-    }
-    mview = (_MoltCHeapMemoryView *)PyMem_Calloc(1, sizeof(_MoltCHeapMemoryView));
-    if (mview == NULL) {
-        PyErr_NoMemory();
-        return NULL;
-    }
-    _molt_pybuffer_reset(&mview->view);
-    if (PyObject_GetBuffer(obj, &mview->view, PyBUF_FULL_RO) != 0) {
-        PyMem_Free(mview);
-        return NULL;
-    }
-    _molt_c_heap_init(
-        &mview->ob_base,
-        _MOLT_C_HEAP_MEMORYVIEW,
-        type,
-        _molt_c_heap_memoryview_dealloc);
-    return (PyObject *)mview;
-}
-
 static inline PyObject *PyMemoryView_FromObject(PyObject *obj) {
     if (obj == NULL) {
         PyErr_SetString(PyExc_TypeError, "memoryview exporter must not be NULL");
         return NULL;
-    }
-    if (_molt_c_heap_object_is(obj)) {
-        return _molt_c_heap_memoryview_from_object(obj);
     }
     return _molt_pyobject_from_result(molt_memoryview_new(_molt_py_handle(obj)));
 }
@@ -11337,10 +11137,6 @@ static inline PyObject *PyMemoryView_FromBuffer(Py_buffer *info) {
     }
     view.ndim = (uint32_t)ndim;
     trusted_molt_view = info->internal == &info->_molt_view;
-    if (trusted_molt_view && info->_molt_view.owner == 0 && info->_molt_view.base == 0
-            && info->obj != NULL && _molt_c_heap_object_is(info->obj)) {
-        return _molt_c_heap_memoryview_from_object(info->obj);
-    }
     view.backing_capacity = trusted_molt_view ? info->_molt_view.backing_capacity : view.len;
     view.offset = trusted_molt_view ? info->_molt_view.offset : 0;
     view.base = trusted_molt_view
@@ -11387,13 +11183,7 @@ static inline PyObject *PyMemoryView_FromBuffer(Py_buffer *info) {
 }
 
 static inline int PyMemoryView_Check(PyObject *op) {
-    if (op == NULL) {
-        return 0;
-    }
-    if (_molt_c_heap_object_is(op)) {
-        return _molt_c_heap_memoryview_check(op);
-    }
-    return molt_memoryview_check(_molt_py_handle(op)) != 0;
+    return op != NULL && molt_memoryview_check(_molt_py_handle(op)) != 0;
 }
 
 typedef struct _molt_memoryview_export_slot {
@@ -11459,9 +11249,6 @@ static inline Py_buffer *_molt_memoryview_export_cache_get(PyObject *mview) {
 }
 
 static inline Py_buffer *PyMemoryView_GET_BUFFER(PyObject *mview) {
-    if (mview != NULL && _molt_c_heap_memoryview_check(mview)) {
-        return &_molt_c_heap_memoryview_fields(mview)->view;
-    }
     if (!PyMemoryView_Check(mview)) {
         return NULL;
     }
@@ -11473,9 +11260,6 @@ static inline PyObject *PyMemoryView_GET_BASE(PyObject *mview) {
     MoltHandle base;
     if (!PyMemoryView_Check(mview)) {
         return NULL;
-    }
-    if (_molt_c_heap_memoryview_check(mview)) {
-        return _molt_c_heap_memoryview_fields(mview)->view.obj;
     }
     memset(&view, 0, sizeof(view));
     if (molt_buffer_acquire(_molt_py_handle(mview), &view) != 0) {
@@ -12083,18 +11867,16 @@ static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
 
 static inline int PyObject_CheckBuffer(PyObject *obj) {
     MoltBufferView tmp;
+    int rc;
     if (obj == NULL) return 0;
     memset(&tmp, 0, sizeof(tmp));
-    if (_molt_c_heap_object_is(obj)
-            ? molt_c_heap_export_buffer((uintptr_t)obj, &tmp) == 0
-            : molt_buffer_acquire(_molt_py_handle_unchecked(obj), &tmp) == 0) {
-        if (_molt_c_heap_object_is(obj)) {
-            if (molt_c_heap_release_buffer((uintptr_t)obj, &tmp) != 0) {
-                _molt_c_heap_fatal("C-heap buffer support probe release failed");
-            }
-        } else if (molt_buffer_release(&tmp) != 0) {
-            _molt_c_heap_fatal("runtime buffer support probe release failed");
-        }
+    if (_molt_c_heap_object_is(obj)) {
+        rc = molt_c_heap_export_buffer((uintptr_t)obj, &tmp);
+    } else {
+        rc = molt_buffer_acquire(_molt_py_handle(obj), &tmp);
+    }
+    if (rc == 0) {
+        _molt_pybuffer_release_exported_view(obj, &tmp);
         return 1;
     }
     if (molt_err_pending() != 0) {
