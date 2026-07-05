@@ -99,6 +99,7 @@ STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
         "running-proof-launch-summary-stale",
     }
 )
+RUNNER_TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset({"running-proof-child-missing"})
 STATIC_PYMOD_EXEC_RE = re.compile(
     r"ImportError:\s+"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
@@ -1635,6 +1636,15 @@ def _diagnostics_have_stale_running_signal(
     )
 
 
+def _diagnostics_have_runner_terminal_stale_signal(
+    diagnostics: Sequence[dict[str, object]],
+) -> bool:
+    return any(
+        diagnostic.get("signal_id") in RUNNER_TERMINAL_STALE_DIAGNOSTIC_IDS
+        for diagnostic in diagnostics
+    )
+
+
 def _diagnostics_have_signal(
     diagnostics: Sequence[dict[str, object]], signal_id: str
 ) -> bool:
@@ -1732,7 +1742,7 @@ def _wait_for_guard_completion_or_stale(
                     _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
                 return str(row["status"]), row["returncode"], elapsed
             diagnostics = _run_diagnostics(row)
-            if not _diagnostics_have_stale_running_signal(diagnostics):
+            if not _diagnostics_have_runner_terminal_stale_signal(diagnostics):
                 continue
             diagnostic_summary = _format_diagnostic_summary(diagnostics)
             print(
