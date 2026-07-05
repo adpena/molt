@@ -26,7 +26,11 @@ jobs:
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo kani setup
       - name: Run NaN-boxing proofs
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-obj-model -- cargo kani --tests
+          # Kani 0.67 bundles its own Rust 1.93 nightly; Molt's
+          # CI/toolchain floor stays at 1.96.1.
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-obj-model -- cargo kani --tests --ignore-rust-version
       - name: Run runtime proofs
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-runtime -- cargo kani --tests --no-default-features
+          # Keep the verifier-only opt-in scoped to cargo-kani instead of
+          # weakening workspace rust-version.
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-runtime -- cargo kani --tests --no-default-features --ignore-rust-version
