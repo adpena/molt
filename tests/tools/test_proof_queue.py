@@ -3250,7 +3250,7 @@ def test_proof_queue_windows_launchers_hide_console(
         def __init__(self, _command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
 
-    monkeypatch.setattr(proof_queue.os, "name", "nt")
+    monkeypatch.setattr(proof_queue, "_queue_process_spawn_is_windows", lambda: True)
     monkeypatch.setattr(
         proof_queue.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
@@ -3289,7 +3289,7 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
         def __init__(self, _command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
 
-    monkeypatch.setattr(proof_queue, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(proof_queue, "_queue_process_spawn_is_windows", lambda: False)
     monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
 
     args = SimpleNamespace(
@@ -7458,6 +7458,12 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
     """
     db = tmp_path / "proof_queue.sqlite3"
     live_pid = os.getpid()
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: int(pid) == live_pid)
+    monkeypatch.setattr(
+        proof_queue,
+        "_process_identity",
+        lambda pid: f"{os.name}:{int(pid)}:live" if int(pid) == live_pid else None,
+    )
     # Record an identity for the *original* (now-dead) guard that does not match
     # the live process now owning that PID. This is exactly the state a launch
     # write leaves after PID reuse.
@@ -7465,7 +7471,7 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
         db,
         tmp_path,
         guard_pid=live_pid,
-        guard_identity=f"{os.name}:{live_pid}:0",
+        guard_identity=f"{os.name}:{live_pid}:dead",
     )
     # The PID is genuinely alive (it is our own process); only identity differs.
     assert proof_queue._pid_alive(live_pid)
