@@ -1449,8 +1449,16 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Submit, run, and inspect proof queue lanes",
         description=(
             "Forward to the canonical proof queue using the same syntax on "
-            "Windows, macOS, and Linux. Use `molt queue run --queue-size N "
+            "Windows, macOS, and Linux. Use `molt queue --queue-size N run "
             "--detach` to launch up to N independent proof rows."
+        ),
+    )
+    queue_parser.add_argument(
+        "--queue-size",
+        help=(
+            "Portable session-local capacity default for proof_queue run. "
+            "Equivalent to MOLT_PROOF_QUEUE_SIZE for this invocation without "
+            "shell-specific environment syntax."
         ),
     )
     queue_parser.add_argument("queue_args", nargs=argparse.REMAINDER)
