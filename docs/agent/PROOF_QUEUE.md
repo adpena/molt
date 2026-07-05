@@ -188,7 +188,9 @@ both. The command surface is the same on Windows, macOS, and Linux, and it must
 not be replaced with PowerShell-specific launch wrappers, POSIX backgrounding,
 or shell-quoted command reconstruction. Raw `uv run ... tools/proof_queue.py`
 examples below remain source-checkout diagnostics and CI/bootstrap forms; they
-are not a second queue authority.
+are not a second queue authority. The portability tests intentionally include
+spaces and shell metacharacters in paths/arguments, plus Windows and POSIX
+detached-runner assertions; update those tests with any queue launch change.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on
