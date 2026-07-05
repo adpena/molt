@@ -1,4 +1,4 @@
-use super::super::super::blocks::{Terminator, TirBlock};
+use super::super::super::blocks::{BlockId, Terminator, TirBlock};
 use super::super::super::function::{TirFunction, TirModule};
 use super::super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::super::types::TirType;
@@ -192,8 +192,7 @@ fn promotes_bench_sum_shaped_loop() {
     );
     assert_eq!(f.blocks[&header].args.len(), 3, "carried phis added");
     // The merged function is structurally valid SSA.
-    crate::tir::verify::verify_function(f)
-        .unwrap_or_else(|e| panic!("promoted fn invalid: {e:?}"));
+    crate::tir::verify::verify_function(f).unwrap_or_else(|e| panic!("promoted fn invalid: {e:?}"));
     // A compensation block exists: some block (â‰  original handler) carries
     // ModuleSetAttr ops AND branches to the handler block (BlockId(4)).
     let handler = BlockId(4);
