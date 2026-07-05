@@ -113,6 +113,271 @@ pub extern "C" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize 
     canonical
 }
 
+// --- C-heap ndarray buffer lease custody -------------------------------------
+//
+// The buffer-lease surface lets a source-recompiled extension (e.g. the numpy
+// PyArrayObject header) publish a typed strided buffer through the same runtime
+// authority that owns `MoltBufferView` descriptor validation. It is strictly
+// additive over the `molt_c_heap_{register,unregister,contains,type_canonicalize}`
+// registry above: the register functions keep their existing membership-only
+// semantics, and the lease path layers a per-kind exporter/releaser table plus
+// C-heap header validation on top so a lease is only ever handed out for a
+// registered object whose typed header agrees with the registered exporter.
+
+/// Magic word stamped into the shared `_MoltCHeapObject` header (`"MOLTCOBJ"`).
+const C_HEAP_MAGIC: u64 = 0x4d4f4c54434f424a;
+const C_HEAP_REFCNT_IMMORTAL: u32 = u32::MAX;
+const C_HEAP_KIND_TAG_MASK: u32 = 0x0000_ff00;
+const C_HEAP_OBJECT_KIND_TAG: u32 = 0x0000_4100;
+const C_HEAP_TYPE_KIND_TAG: u32 = 0x0000_5400;
+
+static C_HEAP_BUFFER_EXPORTERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, CHeapBufferExporterEntry>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// The prefix of every registered C-heap object/type: mirrors `_MoltCHeapObject`
+/// in `include/molt/Python.h`. Validated (never dereferenced blindly) before any
+/// buffer lease is exported.
+#[repr(C)]
+struct CHeapHeader {
+    magic: u64,
+    refcnt: u32,
+    kind: u32,
+    type_ptr: usize,
+    dealloc: usize,
+}
+
+unsafe fn c_heap_header(ptr: usize) -> Option<&'static CHeapHeader> {
+    if ptr == 0 || ptr % std::mem::align_of::<CHeapHeader>() != 0 {
+        return None;
+    }
+    let header = unsafe { &*(ptr as *const CHeapHeader) };
+    if header.magic != C_HEAP_MAGIC || header.kind == 0 {
+        return None;
+    }
+    Some(header)
+}
+
+fn c_heap_object_registered(ptr: usize) -> bool {
+    C_HEAP_OBJECTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&ptr)
+}
+
+fn c_heap_kind_is_type_kind(kind: u32) -> bool {
+    kind & C_HEAP_KIND_TAG_MASK == C_HEAP_TYPE_KIND_TAG
+}
+
+fn c_heap_object_kind_matches_type_kind(object_kind: u32, type_kind: u32) -> bool {
+    object_kind & C_HEAP_KIND_TAG_MASK == C_HEAP_OBJECT_KIND_TAG
+        && type_kind == ((object_kind & !C_HEAP_KIND_TAG_MASK) | C_HEAP_TYPE_KIND_TAG)
+}
+
+fn c_heap_header_has_self_typed_type_shape(ptr: usize, header: &CHeapHeader) -> bool {
+    header.type_ptr == ptr
+        && header.refcnt == C_HEAP_REFCNT_IMMORTAL
+        && c_heap_kind_is_type_kind(header.kind)
+}
+
+type CHeapBufferExporter = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
+type CHeapBufferReleaser = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
+
+#[derive(Clone, Copy)]
+struct CHeapBufferExporterEntry {
+    type_ptr: usize,
+    exporter: CHeapBufferExporter,
+    releaser: Option<CHeapBufferReleaser>,
+}
+
+/// Validate a freshly-exported lease descriptor through the runtime's typed
+/// strided storage authority (`TypedStridedStorage` + `fits_in_backing_len`),
+/// the same authority `molt_memoryview_from_buffer` uses. A C-heap lease owns
+/// its own backing, so it must declare neither an `owner` nor a `base`; the
+/// declared logical length must match the shape/itemsize product, and the span
+/// must fit inside the declared backing capacity.
+fn c_heap_buffer_view_is_valid(ptr: usize, view: &MoltBufferView) -> bool {
+    if view.owner != 0 || view.base != 0 {
+        return false;
+    }
+    if view.data.is_null() && view.len != 0 {
+        return false;
+    }
+    if unsafe { c_heap_header(ptr).is_none() } {
+        return false;
+    }
+    let Ok(backing_capacity) = usize::try_from(view.backing_capacity) else {
+        return false;
+    };
+    let Ok(itemsize) = usize::try_from(view.itemsize) else {
+        return false;
+    };
+    if itemsize == 0 {
+        return false;
+    }
+    let ndim = view.ndim as usize;
+    if ndim > MOLT_BUFFER_MAX_NDIM {
+        return false;
+    }
+    let shape = view.shape[..ndim].to_vec();
+    let strides = view.strides[..ndim].to_vec();
+    let Some(storage) = crate::object::memoryview::TypedStridedStorage::new(
+        view.data,
+        view.readonly != 0,
+        itemsize,
+        view.offset,
+        0,
+        0,
+        shape,
+        strides,
+    ) else {
+        return false;
+    };
+    let Ok(logical_len) = u64::try_from(storage.len) else {
+        return false;
+    };
+    logical_len == view.len && storage.fits_in_backing_len(backing_capacity)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_c_heap_register_buffer_exporter(
+    kind: u32,
+    type_ptr: usize,
+    exporter: Option<CHeapBufferExporter>,
+) -> i32 {
+    let Some(exporter) = exporter else {
+        return -1;
+    };
+    if kind == 0 || c_heap_kind_is_type_kind(kind) || type_ptr == 0 {
+        return -1;
+    }
+    let Some(type_header) = (unsafe { c_heap_header(type_ptr) }) else {
+        return -1;
+    };
+    if !c_heap_header_has_self_typed_type_shape(type_ptr, type_header)
+        || !c_heap_object_kind_matches_type_kind(kind, type_header.kind)
+        || !c_heap_object_registered(type_ptr)
+    {
+        return -1;
+    }
+    let entry = CHeapBufferExporterEntry {
+        type_ptr,
+        exporter,
+        releaser: None,
+    };
+    let mut exporters = C_HEAP_BUFFER_EXPORTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = exporters.get(&kind) {
+        return if existing.type_ptr == type_ptr { 0 } else { -1 };
+    }
+    exporters.insert(kind, entry);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_c_heap_register_buffer_releaser(
+    kind: u32,
+    type_ptr: usize,
+    releaser: Option<CHeapBufferReleaser>,
+) -> i32 {
+    let Some(releaser) = releaser else {
+        return -1;
+    };
+    if kind == 0 || c_heap_kind_is_type_kind(kind) || type_ptr == 0 {
+        return -1;
+    }
+    let Some(type_header) = (unsafe { c_heap_header(type_ptr) }) else {
+        return -1;
+    };
+    if !c_heap_header_has_self_typed_type_shape(type_ptr, type_header)
+        || !c_heap_object_kind_matches_type_kind(kind, type_header.kind)
+        || !c_heap_object_registered(type_ptr)
+    {
+        return -1;
+    }
+    let mut exporters = C_HEAP_BUFFER_EXPORTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(entry) = exporters.get_mut(&kind) else {
+        return -1;
+    };
+    if entry.type_ptr != type_ptr {
+        return -1;
+    }
+    if entry.releaser.is_some() {
+        return 0;
+    }
+    entry.releaser = Some(releaser);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_c_heap_export_buffer(
+    ptr: usize,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    if out_view.is_null() || ptr == 0 || !c_heap_object_registered(ptr) {
+        return -1;
+    }
+    let Some(header) = (unsafe { c_heap_header(ptr) }) else {
+        return -1;
+    };
+    let Some(entry) = C_HEAP_BUFFER_EXPORTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&header.kind)
+        .copied()
+    else {
+        return -1;
+    };
+    if header.type_ptr != entry.type_ptr {
+        return -1;
+    }
+    let rc = unsafe { (entry.exporter)(ptr, out_view) };
+    if rc != 0 {
+        return rc;
+    }
+    let view = unsafe { &*out_view };
+    if c_heap_buffer_view_is_valid(ptr, view) {
+        0
+    } else {
+        unsafe {
+            if let Some(releaser) = entry.releaser {
+                let _ = releaser(ptr, out_view);
+            }
+            *out_view = MoltBufferView::default();
+        }
+        -1
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_c_heap_release_buffer(ptr: usize, view: *mut MoltBufferView) -> i32 {
+    if view.is_null() || ptr == 0 || !c_heap_object_registered(ptr) {
+        return -1;
+    }
+    let Some(header) = (unsafe { c_heap_header(ptr) }) else {
+        return -1;
+    };
+    let Some(entry) = C_HEAP_BUFFER_EXPORTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&header.kind)
+        .copied()
+    else {
+        return -1;
+    };
+    if header.type_ptr != entry.type_ptr {
+        return -1;
+    }
+    if let Some(releaser) = entry.releaser {
+        unsafe { releaser(ptr, view) }
+    } else {
+        0
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_none() -> MoltHandle {
     none_bits()

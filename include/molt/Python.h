@@ -645,6 +645,11 @@ static inline int _molt_c_heap_object_is(const PyObject *obj) {
     return obj != NULL && molt_c_heap_contains((uintptr_t)obj) != 0;
 }
 
+static inline void _molt_c_heap_fatal(const char *message) {
+    fprintf(stderr, "Fatal Python error: %s\n", message != NULL ? message : "(null)");
+    abort();
+}
+
 static inline _MoltCHeapObject *_molt_c_heap_header_from_object(const PyObject *obj) {
     return (_MoltCHeapObject *)obj;
 }
@@ -4837,6 +4842,22 @@ static inline int _molt_pybuffer_descriptor_satisfies_flags(const MoltBufferView
 
 static inline void PyBuffer_Release(Py_buffer *view);
 
+/* Release a molt buffer descriptor back to whichever authority exported it. A
+ * runtime object export owns a nonzero `owner` handle and is released through
+ * `molt_buffer_release`; a source-recompiled C-heap object (e.g. an ndarray
+ * header) exports a lease that must be handed back through
+ * `molt_c_heap_release_buffer` so the exporter can consume its recorded lease. */
+static inline void _molt_pybuffer_release_exported_view(PyObject *obj, MoltBufferView *view) {
+    if (view == NULL) {
+        return;
+    }
+    if (view->owner != 0) {
+        (void)molt_buffer_release(view);
+    } else if (obj != NULL && _molt_c_heap_object_is(obj)) {
+        (void)molt_c_heap_release_buffer((uintptr_t)obj, view);
+    }
+}
+
 static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) {
     int rc;
     if (view == NULL) {
@@ -4848,7 +4869,11 @@ static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) 
         PyErr_SetString(PyExc_TypeError, "buffer exporter must not be NULL");
         return -1;
     }
-    rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
+    if (_molt_c_heap_object_is(obj)) {
+        rc = molt_c_heap_export_buffer((uintptr_t)obj, &view->_molt_view);
+    } else {
+        rc = molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view);
+    }
     if (rc != 0) {
         if (molt_err_pending() == 0) {
             PyErr_SetString(PyExc_BufferError, "object does not export a buffer");
@@ -4856,13 +4881,13 @@ static inline int PyObject_GetBuffer(PyObject *obj, Py_buffer *view, int flags) 
         return -1;
     }
     if ((flags & PyBUF_WRITABLE) != 0 && view->_molt_view.readonly != 0) {
-        (void)molt_buffer_release(&view->_molt_view);
+        _molt_pybuffer_release_exported_view(obj, &view->_molt_view);
         _molt_pybuffer_reset(view);
         PyErr_SetString(PyExc_BufferError, "writable buffer requested for readonly object");
         return -1;
     }
     if (!_molt_pybuffer_descriptor_satisfies_flags(&view->_molt_view, flags)) {
-        (void)molt_buffer_release(&view->_molt_view);
+        _molt_pybuffer_release_exported_view(obj, &view->_molt_view);
         _molt_pybuffer_reset(view);
         PyErr_SetString(PyExc_BufferError, "non-contiguous buffers require PyBUF_STRIDES");
         return -1;
@@ -4884,7 +4909,7 @@ static inline void PyBuffer_Release(Py_buffer *view) {
         return;
     }
     if (view->internal == &view->_molt_view) {
-        (void)molt_buffer_release(&view->_molt_view);
+        _molt_pybuffer_release_exported_view(view->obj, &view->_molt_view);
     }
     if (view->obj != NULL) {
         Py_DECREF(view->obj);
@@ -11842,10 +11867,16 @@ static inline int PyBuffer_FillInfo(Py_buffer *view, PyObject *exporter,
 
 static inline int PyObject_CheckBuffer(PyObject *obj) {
     MoltBufferView tmp;
+    int rc;
     if (obj == NULL) return 0;
     memset(&tmp, 0, sizeof(tmp));
-    if (molt_buffer_acquire(_molt_py_handle(obj), &tmp) == 0) {
-        (void)molt_buffer_release(&tmp);
+    if (_molt_c_heap_object_is(obj)) {
+        rc = molt_c_heap_export_buffer((uintptr_t)obj, &tmp);
+    } else {
+        rc = molt_buffer_acquire(_molt_py_handle(obj), &tmp);
+    }
+    if (rc == 0) {
+        _molt_pybuffer_release_exported_view(obj, &tmp);
         return 1;
     }
     if (molt_err_pending() != 0) {
