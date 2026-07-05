@@ -15,8 +15,8 @@ use molt_backend::rust::RustBackend;
 use molt_backend::{WasmBackend, WasmCompileOptions};
 use molt_tir::ir_rewrites::rewrite_annotate_stubs;
 use std::env;
+use std::io;
 use std::io::Write;
-use std::io::{self, Read};
 use std::path::Path;
 use std::time::Instant;
 
@@ -219,149 +219,7 @@ fn main() -> io::Result<()> {
         .map(String::as_str)
         .unwrap_or("json");
 
-    // Read and parse IR.  Drop the raw buffer immediately after
-    // deserialization to avoid holding two copies in memory simultaneously.
-    let stdin_request_limit_bytes = stdin_request_limit_bytes();
-    let document: molt_backend::BackendIrDocument = {
-        if ir_format == "msgpack" {
-            // msgpack binary format — deserialize directly via serde
-            if let Some(ir_path) = ir_file_path {
-                let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-                })?;
-                let reader = io::BufReader::new(file);
-                match rmp_serde::from_read::<_, molt_backend::BackendIrDocument>(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid msgpack IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                // Streaming msgpack from stdin via BufReader — avoids
-                // loading the entire IR into a Vec<u8> first.
-                let stdin = io::stdin();
-                let bounded = RequestBoundedRead::new(
-                    stdin.lock(),
-                    stdin_request_limit_bytes,
-                    "backend stdin request",
-                );
-                let reader = io::BufReader::with_capacity(1 << 20, bounded);
-                match rmp_serde::from_read::<_, molt_backend::BackendIrDocument>(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid msgpack IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-        } else if ir_format == "cbor" {
-            // CBOR binary format — deserialize via ciborium
-            #[cfg(not(feature = "cbor"))]
-            {
-                eprintln!("CBOR support requires the 'cbor' feature");
-                std::process::exit(1);
-            }
-            #[cfg(feature = "cbor")]
-            {
-                if let Some(ir_path) = ir_file_path {
-                    let file = std::fs::File::open(ir_path).map_err(|e| {
-                        io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-                    })?;
-                    let reader = io::BufReader::new(file);
-                    match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(reader) {
-                        Ok(ir) => ir,
-                        Err(err) => {
-                            eprintln!("invalid CBOR IR: {err}");
-                            std::process::exit(1);
-                        }
-                    }
-                } else {
-                    let buf = read_bounded_request_bytes(
-                        io::stdin().lock(),
-                        stdin_request_limit_bytes,
-                        "backend stdin request",
-                    )?;
-                    match ciborium::de::from_reader::<molt_backend::BackendIrDocument, _>(&buf[..])
-                    {
-                        Ok(ir) => {
-                            drop(buf);
-                            ir
-                        }
-                        Err(err) => {
-                            eprintln!("invalid CBOR IR: {err}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-            }
-        } else if ir_format == "ndjson" {
-            // NDJSON streaming format — one function per line
-            if let Some(ir_path) = ir_file_path {
-                let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-                })?;
-                let reader = io::BufReader::new(file);
-                match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid NDJSON IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                let stdin = io::stdin();
-                let bounded = RequestBoundedRead::new(
-                    stdin.lock(),
-                    stdin_request_limit_bytes,
-                    "backend stdin request",
-                );
-                let reader = io::BufReader::new(bounded);
-                match molt_backend::BackendIrDocument::from_ndjson_reader(reader) {
-                    Ok(ir) => ir,
-                    Err(err) => {
-                        eprintln!("invalid NDJSON IR: {err}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-        } else if let Some(ir_path) = ir_file_path {
-            // Stream JSON directly from file — never holds raw JSON string in memory.
-            let file = std::fs::File::open(ir_path).map_err(|e| {
-                io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
-            })?;
-            let reader = io::BufReader::with_capacity(1 << 20, file);
-            match serde_json::from_reader::<_, molt_backend::BackendIrDocument>(reader) {
-                Ok(ir) => ir,
-                Err(err) => {
-                    eprintln!("invalid IR JSON: {err}");
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            // Stdin: read into string then deserialize directly (skips DOM intermediate).
-            let raw_bytes = read_bounded_request_bytes(
-                io::stdin().lock(),
-                stdin_request_limit_bytes,
-                "backend stdin request",
-            )?;
-            let buffer = String::from_utf8(raw_bytes).map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("backend stdin request is not UTF-8: {err}"),
-                )
-            })?;
-            let result = serde_json::from_str::<molt_backend::BackendIrDocument>(&buffer);
-            drop(buffer);
-            match result {
-                Ok(ir) => ir,
-                Err(err) => {
-                    eprintln!("invalid IR JSON: {err}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    };
+    let document = read_backend_ir_document(ir_format, ir_file_path)?;
     let molt_backend::BackendIrDocument {
         mut ir,
         module_registry,
