@@ -1117,13 +1117,23 @@ class _ExternalPackageNativeArtifactPlan:
         )
 
     @staticmethod
-    def _requested_import_reaches_provider(
-        requested_name: str, provider_name: str
+    def _requested_import_reaches_module(
+        requested_name: str,
+        module_name: str,
+    ) -> bool:
+        return requested_name == module_name or requested_name.startswith(
+            module_name + "."
+        )
+
+    @classmethod
+    def _requested_import_reaches_callable_export(
+        cls,
+        requested_name: str,
+        export: _ExternalNativeCallableExport,
     ) -> bool:
         return (
-            requested_name == provider_name
-            or requested_name.startswith(provider_name + ".")
-            or provider_name.startswith(requested_name + ".")
+            cls._requested_import_reaches_module(requested_name, export.qualified_name)
+            or requested_name == export.module
         )
 
     def with_reachable_imports(
@@ -1143,17 +1153,14 @@ class _ExternalPackageNativeArtifactPlan:
         reachable: list[_ExternalPackageNativeArtifact] = []
         reachable_keys: set[tuple[str, Path]] = set()
         for artifact in self.artifacts:
-            providers = (
-                artifact.module,
-                *artifact.python_exports,
-                *(export.qualified_name for export in artifact.callable_exports),
-            )
             if any(
-                self._requested_import_reaches_provider(
-                    requested_name, provider_name
-                )
+                self._requested_import_reaches_module(requested_name, provider_name)
                 for requested_name in requested
-                for provider_name in providers
+                for provider_name in (artifact.module, *artifact.python_exports)
+            ) or any(
+                self._requested_import_reaches_callable_export(requested_name, export)
+                for requested_name in requested
+                for export in artifact.callable_exports
             ):
                 reachable.append(artifact)
                 reachable_keys.add((artifact.module, artifact.path))
