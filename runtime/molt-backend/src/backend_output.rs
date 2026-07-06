@@ -10,6 +10,8 @@ use molt_backend::rust::RustBackend;
 use molt_backend::{WasmBackend, WasmCompileOptions};
 use molt_tir::ir_rewrites::rewrite_annotate_stubs;
 use std::io;
+#[cfg(feature = "wasm-backend")]
+use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
