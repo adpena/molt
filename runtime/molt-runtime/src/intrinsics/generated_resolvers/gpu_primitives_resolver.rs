@@ -4,6 +4,147 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_linear_contiguous" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_linear_contiguous",
+            crate::molt_gpu_linear_contiguous as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_linear_split_last_dim_contiguous" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_linear_split_last_dim_contiguous",
+                crate::molt_gpu_linear_split_last_dim_contiguous as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor__tensor_linear_split_last_dim" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_tensor__tensor_linear_split_last_dim",
+                crate::molt_gpu_tensor__tensor_linear_split_last_dim as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor__tensor_scaled_dot_product_attention" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_tensor__tensor_scaled_dot_product_attention",
+                crate::molt_gpu_tensor__tensor_scaled_dot_product_attention as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_turboquant_attention_packed" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_turboquant_attention_packed",
+                crate::molt_gpu_turboquant_attention_packed as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor__tensor_concat_first_dim" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_tensor__tensor_concat_first_dim",
+                crate::molt_gpu_tensor__tensor_concat_first_dim as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor__tensor_scatter_rows" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_tensor__tensor_scatter_rows",
+                crate::molt_gpu_tensor__tensor_scatter_rows as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor__tensor_take_rows" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_tensor__tensor_take_rows",
+            crate::molt_gpu_tensor__tensor_take_rows as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_linear_squared_relu_gate_interleaved_contiguous" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+                crate::molt_gpu_linear_squared_relu_gate_interleaved_contiguous as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor_from_parts" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_tensor_from_parts",
+            crate::molt_gpu_tensor_from_parts as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_repeat_axis_contiguous" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_repeat_axis_contiguous",
+            crate::molt_gpu_repeat_axis_contiguous as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor_from_buffer" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_tensor_from_buffer",
+            crate::molt_gpu_tensor_from_buffer as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_tensor__zeros" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_tensor__zeros",
+            crate::molt_gpu_tensor__zeros as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_buffer_to_list" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_buffer_to_list",
+            crate::molt_gpu_buffer_to_list as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_interop_decode_bf16_bytes_to_f32" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_interop_decode_bf16_bytes_to_f32",
+                crate::molt_gpu_interop_decode_bf16_bytes_to_f32 as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_interop_decode_f16_bytes_to_f32" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_interop_decode_f16_bytes_to_f32",
+                crate::molt_gpu_interop_decode_f16_bytes_to_f32 as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_broadcast_binary_contiguous" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_broadcast_binary_contiguous",
+                crate::molt_gpu_broadcast_binary_contiguous as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_matmul_contiguous" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_matmul_contiguous",
+            crate::molt_gpu_matmul_contiguous as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_rope_apply_contiguous" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_rope_apply_contiguous",
+            crate::molt_gpu_rope_apply_contiguous as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_permute_contiguous" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_permute_contiguous",
+            crate::molt_gpu_permute_contiguous as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_softmax_last_axis_contiguous" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_softmax_last_axis_contiguous",
+                crate::molt_gpu_softmax_last_axis_contiguous as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_rms_norm_last_axis_contiguous" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_rms_norm_last_axis_contiguous",
+                crate::molt_gpu_rms_norm_last_axis_contiguous as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_squared_relu_gate_interleaved_contiguous" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_gpu_squared_relu_gate_interleaved_contiguous",
+                crate::molt_gpu_squared_relu_gate_interleaved_contiguous as *const (),
+            ))
+        }
+        #[cfg(feature = "molt_gpu_primitives")]
         "molt_gpu_prim_create_tensor" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gpu_prim_create_tensor",
             crate::molt_gpu_prim_create_tensor as *const (),

@@ -38,8 +38,8 @@ pub(crate) mod functions_re;
 pub(crate) mod functions_stat;
 pub(crate) mod functions_textwrap;
 pub(crate) mod functools;
+#[cfg(feature = "molt_gpu_primitives")]
 pub(crate) mod gpu;
-pub(crate) mod gpu_backend;
 pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
