@@ -173,6 +173,13 @@ atomic queued-to-dispatched claim that rechecks global capacity and contention
 key ownership immediately before spawning a detached runner. The scheduler skips
 rows whose contention key is already active or already selected in the same
 batch, so increasing queue size only admits independent work.
+`running-proof-launch-summary-stale` is diagnostic evidence only while the
+queue-owned guard is still live; it means the memory guard has not yet published
+child-process custody. Only terminal stale signals such as
+`running-proof-child-missing`, a dead/reused guard, an expired dispatch handoff,
+or the running-age ceiling may reclaim a live row. This keeps Windows, macOS,
+and Linux detached rows from being marked stale just because an old queued log
+or launch summary predates the current execution epoch.
 Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
 already set a value. This keeps APDataStore, exFAT, cross-device caches, and
 other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback

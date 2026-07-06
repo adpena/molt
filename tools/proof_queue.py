@@ -100,13 +100,7 @@ PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS = 6 * 60 * 60.0
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
 DIAGNOSTIC_EVIDENCE_MAX_CHARS = 640
-STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
-    {
-        "running-proof-child-missing",
-        "running-proof-launch-summary-stale",
-    }
-)
-RUNNER_TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset({"running-proof-child-missing"})
+TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset({"running-proof-child-missing"})
 STATIC_PYMOD_EXEC_RE = re.compile(
     r"(?:ImportError:\s+|Original error was:\s*)"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
@@ -1738,20 +1732,11 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
 
 
 
-def _diagnostics_have_stale_running_signal(
+def _diagnostics_have_terminal_stale_signal(
     diagnostics: Sequence[dict[str, object]],
 ) -> bool:
     return any(
-        diagnostic.get("signal_id") in STALE_RUNNING_DIAGNOSTIC_IDS
-        for diagnostic in diagnostics
-    )
-
-
-def _diagnostics_have_runner_terminal_stale_signal(
-    diagnostics: Sequence[dict[str, object]],
-) -> bool:
-    return any(
-        diagnostic.get("signal_id") in RUNNER_TERMINAL_STALE_DIAGNOSTIC_IDS
+        diagnostic.get("signal_id") in TERMINAL_STALE_DIAGNOSTIC_IDS
         for diagnostic in diagnostics
     )
 
@@ -1853,7 +1838,7 @@ def _wait_for_guard_completion_or_stale(
                     _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
                 return str(row["status"]), row["returncode"], elapsed
             diagnostics = _run_diagnostics(row)
-            if not _diagnostics_have_runner_terminal_stale_signal(diagnostics):
+            if not _diagnostics_have_terminal_stale_signal(diagnostics):
                 continue
             diagnostic_summary = _format_diagnostic_summary(diagnostics)
             print(
@@ -4349,7 +4334,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         if (
             guard_alive
             and not age_exceeded
-            and not _diagnostics_have_stale_running_signal(diagnostics)
+            and not _diagnostics_have_terminal_stale_signal(diagnostics)
         ):
             continue
         _update_run(
