@@ -70,8 +70,9 @@ def _write_empty_registry(root: Path) -> Path:
 def test_gate_is_green_on_seeded_registry() -> None:
     gate = _load_gate_module()
     violations = gate.run_gate()
-    assert not violations, "seeded registry must pass the gate; violations:\n" + "\n".join(
-        str(v) for v in violations
+    assert not violations, (
+        "seeded registry must pass the gate; violations:\n"
+        + "\n".join(str(v) for v in violations)
     )
 
 
@@ -131,9 +132,9 @@ def test_negative_control_ecosystem_baked_fails_then_passes(tmp_path: Path) -> N
     hdr.write_text(baked, encoding="utf-8")
 
     discovered = gate.discover_ecosystem_baked(tmp_path)
-    assert any(
-        s.file == "include/numpy/synthetic.h" for s in discovered
-    ), f"Scan A failed to discover injected baked header; got {discovered}"
+    assert any(s.file == "include/numpy/synthetic.h" for s in discovered), (
+        f"Scan A failed to discover injected baked header; got {discovered}"
+    )
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(
@@ -142,7 +143,7 @@ def test_negative_control_ecosystem_baked_fails_then_passes(tmp_path: Path) -> N
 
     # Remove the baked definition (leave a thin forwarder) -> passes.
     hdr.write_text(
-        '#ifndef SYNTHETIC_H\n#define SYNTHETIC_H\n#include <numpy/arrayobject.h>\n#endif\n',
+        "#ifndef SYNTHETIC_H\n#define SYNTHETIC_H\n#include <numpy/arrayobject.h>\n#endif\n",
         encoding="utf-8",
     )
     assert not gate.discover_ecosystem_baked(tmp_path), "forwarder must not be flagged"
@@ -174,7 +175,8 @@ def test_negative_control_fail_open_abi_fails_then_passes(tmp_path: Path) -> Non
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(
-        v.kind == "unregistered-poison-site" and "synthetic.rs" in v.detail for v in fail
+        v.kind == "unregistered-poison-site" and "synthetic.rs" in v.detail
+        for v in fail
     ), f"gate MUST fail on unregistered fail_open_stub; got {fail}"
 
     # Replace wrapping_add with a fail-closed impl (checked add or null) -> passes.
@@ -211,13 +213,14 @@ def test_negative_control_todo_as_plan_fails_then_passes(tmp_path: Path) -> None
     mod.write_text(poison, encoding="utf-8")
 
     discovered = gate.discover_todo_as_plan(tmp_path)
-    assert any(
-        s.file == "src/molt/stdlib/synthetic.py" for s in discovered
-    ), f"Scan C failed to discover injected todo-as-plan; got {discovered}"
+    assert any(s.file == "src/molt/stdlib/synthetic.py" for s in discovered), (
+        f"Scan C failed to discover injected todo-as-plan; got {discovered}"
+    )
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(
-        v.kind == "unregistered-poison-site" and "synthetic.py" in v.detail for v in fail
+        v.kind == "unregistered-poison-site" and "synthetic.py" in v.detail
+        for v in fail
     ), f"gate MUST fail on unregistered todo_as_plan; got {fail}"
 
     # Fail closed instead of diverging (raise) -> not poison, passes.
@@ -229,7 +232,9 @@ def test_negative_control_todo_as_plan_fails_then_passes(tmp_path: Path) -> None
         "    return spawn_context()\n",
         encoding="utf-8",
     )
-    assert not gate.discover_todo_as_plan(tmp_path), "fail-closed raise must not be flagged"
+    assert not gate.discover_todo_as_plan(tmp_path), (
+        "fail-closed raise must not be flagged"
+    )
     assert not gate.run_gate(tmp_path, registry)
 
 
@@ -286,9 +291,9 @@ def test_negative_control_duplicate_authority_fails_then_passes(tmp_path: Path) 
     abi_hdr.write_text(body, encoding="utf-8")
 
     discovered = gate.discover_duplicate_authority(tmp_path)
-    assert any(
-        s.file == "include/pyerrors.h" for s in discovered
-    ), f"Scan D failed to discover duplicate header; got {discovered}"
+    assert any(s.file == "include/pyerrors.h" for s in discovered), (
+        f"Scan D failed to discover duplicate header; got {discovered}"
+    )
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(

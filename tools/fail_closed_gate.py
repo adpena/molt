@@ -84,9 +84,7 @@ _ECOSYSTEM_SCAN_DIRS = (
     "src/molt",
 )
 # Rust/native source + include trees are also swept for baked package impls.
-_ECOSYSTEM_SCAN_DIRS_RUST = (
-    "runtime",
-)
+_ECOSYSTEM_SCAN_DIRS_RUST = ("runtime",)
 
 # Package-owned symbol families whose *definition* (not mere mention) inside a
 # Molt-owned tree is the ecosystem-baked poison.
@@ -98,7 +96,9 @@ _PACKAGE_TOKEN_RE = re.compile(r"(?:numpy|NumPy|NPY_|PyArray_|scipy|pandas)")
 # `#include <numpy/...>` forwarder or a comment.
 _DEFINITION_RES = (
     re.compile(r"^\s*typedef\s+(?:struct|union|enum)\b.*(?:NPY_|PyArray_|npy_)"),
-    re.compile(r"^\s*(?:typedef\s+)?(?:struct|union|enum)\s+(?:NPY_|PyArray_|_?Npy|npy_)"),
+    re.compile(
+        r"^\s*(?:typedef\s+)?(?:struct|union|enum)\s+(?:NPY_|PyArray_|_?Npy|npy_)"
+    ),
     re.compile(r"^\s*\}\s*(?:PyArray_|PyUFunc_|Npy|npy_)[A-Za-z0-9_]*\s*;"),
     re.compile(r"^\s*static\s+(?:NPY_INLINE\s+|inline\s+)"),
     re.compile(r"^\s*#define\s+NPY_SIZEOF_"),
@@ -161,7 +161,9 @@ class DiscoveredSite:
     detail: str
 
 
-def _iter_files(root: Path, dirs: Iterable[str], suffixes: tuple[str, ...]) -> Iterable[Path]:
+def _iter_files(
+    root: Path, dirs: Iterable[str], suffixes: tuple[str, ...]
+) -> Iterable[Path]:
     for rel in dirs:
         base = root / rel
         if not base.exists():
@@ -286,7 +288,7 @@ _ABI_ALLOWLIST_FILES = frozenset(
     }
 )
 
-_NO_MANGLE_RE = re.compile(r'#\[(?:unsafe\()?no_mangle')
+_NO_MANGLE_RE = re.compile(r"#\[(?:unsafe\()?no_mangle")
 _FN_RE = re.compile(
     r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*'
 )
@@ -418,7 +420,9 @@ _MESSAGE_STRING_RE = re.compile(
 
 # A public def/fn header: a shipped support surface whose BODY the marker sits in.
 # `def _x`/`fn _x` (leading underscore) is a private helper — not a shipped surface.
-_PUBLIC_DEF_RE = re.compile(r"^(\s*)(?:pub\s+)?(?:async\s+)?(?:def|fn)\s+([A-Za-z][A-Za-z0-9_]*)")
+_PUBLIC_DEF_RE = re.compile(
+    r"^(\s*)(?:pub\s+)?(?:async\s+)?(?:def|fn)\s+([A-Za-z][A-Za-z0-9_]*)"
+)
 
 # Self-negating marker forms: a HACK-marker that describes the gate's OWN
 # prevention machinery or a test fixture is not a poison site.
@@ -707,7 +711,11 @@ def _row_matches_site(registry: Registry, site: DiscoveredSite) -> RegistryRow |
     # Loose match: a row in the same file whose anchor is a substring of the
     # discovered signature (covers whitespace / trailing-token variance).
     for row in registry.rows:
-        if row.file == site.file and row.cls == site.cls and row.anchor in site.signature:
+        if (
+            row.file == site.file
+            and row.cls == site.cls
+            and row.anchor in site.signature
+        ):
             return row
     return None
 
