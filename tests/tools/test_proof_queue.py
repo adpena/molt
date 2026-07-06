@@ -77,6 +77,49 @@ def test_proof_queue_uv_link_mode_preserves_operator_override(
     assert env["UV_LINK_MODE"] == "hardlink"
 
 
+def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+
+    def reject_wasm_toolchain_load():
+        raise AssertionError("non-WASM queue commands must stay import-light")
+
+    monkeypatch.setattr(
+        proof_queue, "_load_wasm_toolchain", reject_wasm_toolchain_load
+    )
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "python-import-light",
+            "--reason",
+            "prove non-wasm queue rows avoid wasm CLI imports",
+            "--resource-family",
+            "python-tests",
+            "--contention-key",
+            "python:import-light",
+            "--",
+            sys.executable,
+            "-c",
+            "print('ran')",
+        ]
+    )
+
+    assert rc == 0
+    rows = _rows(db)
+    assert rows[0]["status"] == "passed"
+    assert "ran" in Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+
+
 def _rows(db: Path) -> list[sqlite3.Row]:
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
@@ -2251,6 +2294,7 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     calls: list[tuple[str, Path | None]] = []
+    required_targets = ("wasm32-wasip1", "wasm32-unknown-unknown")
 
     def fake_ensure(
         target: str, warnings: list[str], *, root: Path | None = None
@@ -2259,7 +2303,16 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
         calls.append((target, root))
         return True
 
-    monkeypatch.setattr(proof_queue.wasm_toolchain, "ensure_rustup_target", fake_ensure)
+    fake_toolchain = SimpleNamespace(
+        RustToolchainContractError=RuntimeError,
+        rust_toolchain_contract=lambda repo_root: SimpleNamespace(
+            required_wasm_targets=required_targets
+        ),
+        ensure_rustup_target=fake_ensure,
+    )
+    monkeypatch.setattr(
+        proof_queue, "_load_wasm_toolchain", lambda: fake_toolchain
+    )
 
     rc = proof_queue.main(
         [
@@ -2286,12 +2339,7 @@ def test_proof_queue_wasm_rows_ensure_rust_target_before_run(
     )
 
     assert rc == 0
-    assert calls == [
-        (target, proof_queue.ROOT)
-        for target in proof_queue.wasm_toolchain.rust_toolchain_contract(
-            proof_queue.ROOT
-        ).required_wasm_targets
-    ]
+    assert calls == [(target, proof_queue.ROOT) for target in required_targets]
     assert ("wasm32-wasip1", proof_queue.ROOT) in calls
     rows = _rows(db)
     assert rows[0]["status"] == "passed"
@@ -2303,6 +2351,7 @@ def test_proof_queue_wasm_preflight_fails_before_command(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
+    required_targets = ("wasm32-wasip1",)
 
     def fake_ensure(
         target: str, warnings: list[str], *, root: Path | None = None
@@ -2311,7 +2360,16 @@ def test_proof_queue_wasm_preflight_fails_before_command(
         warnings.append(f"missing {target}")
         return False
 
-    monkeypatch.setattr(proof_queue.wasm_toolchain, "ensure_rustup_target", fake_ensure)
+    fake_toolchain = SimpleNamespace(
+        RustToolchainContractError=RuntimeError,
+        rust_toolchain_contract=lambda repo_root: SimpleNamespace(
+            required_wasm_targets=required_targets
+        ),
+        ensure_rustup_target=fake_ensure,
+    )
+    monkeypatch.setattr(
+        proof_queue, "_load_wasm_toolchain", lambda: fake_toolchain
+    )
 
     rc = proof_queue.main(
         [
