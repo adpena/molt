@@ -622,6 +622,13 @@ Read these first instead of rediscovering project structure:
   `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
 - DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). Windows defaults select only the volume labeled `APDataStore` (`D:\Molt` on this workstation, the dedicated artifact SSD); old `E:\Molt` roots are legacy evidence/fallbacks and are not default candidates. `MOLT_TARGET_ROOT` is derived from the selected artifact root as `D:\Molt\target-root`; stale `E:\molt-target`, `E:\Molt\target-root`, and `D:\molt-target` defaults are rehomed unless the operator sets `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext emits `UV_LINK_MODE=copy` for exFAT APDataStore roots unless an explicit operator value is present. POSIX defaults prefer `/Volumes/APDataStore/Molt` before `/Volumes/VertigoDataTier/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
+- In a fresh checkout/worktree, import RunContext with an already-installed host
+  Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
+  before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
+  `Invoke-Expression (python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)`.
+  POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
+  Do not use `uv run` to obtain this first env in a cold checkout, and never
+  run parallel uv bootstrap/sync commands against the same `.venv`.
 - `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` is an explicit emergency override for
   developer machines only. Do not set it in normal agent work, CI, proof lanes,
   or benchmark runs.
@@ -652,6 +659,11 @@ Read these first instead of rediscovering project structure:
   APDataStore is exFAT and records no ownership, so after `git worktree add` run
   `git config --global --add safe.directory <worktree-path>` or git aborts with
   "detected dubious ownership".
+  Do not create a fresh APDataStore worktree for read-only origin/doc checks;
+  use `git show origin/main:<path>` or an existing warm worktree. New worktrees
+  are for isolation from dirty WIP, cherry-pick/merge surgery, or real build
+  proof, and should be removed with `git worktree remove <path>` when the lane
+  closes.
 
 ## Crash Recovery Structural Stability Mode (Non-Negotiable)
 - This mode stabilizes the control plane whenever Codex, Claude, the desktop
