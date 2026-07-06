@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GEN = ROOT / "tools" / "gen_target_feature_manifest.py"
 OUT_PY = ROOT / "src" / "molt" / "_target_feature_manifest.py"
 OUT_JSON = ROOT / "wasm" / "target_feature_manifest.json"
+OUT_JS = ROOT / "wasm" / "target_feature_constants.generated.js"
 
 
 def _load_generator():
@@ -35,6 +36,7 @@ def test_target_feature_manifest_is_in_sync() -> None:
     model = gen.build_model()
     assert OUT_PY.read_text(encoding="utf-8") == gen.render_python(model)
     assert OUT_JSON.read_text(encoding="utf-8") == gen.render_json(model)
+    assert OUT_JS.read_text(encoding="utf-8") == gen.render_js(model)
 
 
 def test_check_mode_is_green() -> None:
@@ -61,6 +63,85 @@ def test_public_api_exposes_doc_71_target_profiles() -> None:
     assert TF.target_feature_support("native", "numeric.lapack") == "gated"
     assert TF.target_feature_support("native", "numeric.gsl") == "gated"
     assert TF.target_feature_support("wasm-browser", "numeric.blas") == "tracked"
+
+
+def test_browser_targets_carry_default_and_host_import_selectors() -> None:
+    assert TF.target_profile("wasm-browser")["browser_default"] is True
+    assert TF.target_profile("wasm-browser")["browser_host_imports"] == {
+        "webgpu": []
+    }
+    assert TF.target_profile("wasm-browser-webgpu")["browser_default"] is False
+    assert TF.target_profile("wasm-browser-webgpu")["browser_host_imports"] == {
+        "webgpu": [TF.WEBGPU_DISPATCH_HOST_IMPORT]
+    }
+    assert TF.target_profile("wasm-browser-webnn")["browser_default"] is False
+    assert TF.target_profile("wasm-browser-webnn")["browser_host_imports"] == {
+        "webgpu": []
+    }
+
+
+def test_derived_constants_are_single_sourced_from_manifest() -> None:
+    constants = TF.target_feature_constants()
+    assert constants == {
+        "WEBGPU_DISPATCH_HOST_IMPORT": "molt_gpu_webgpu_dispatch_host",
+        "TARGET_FEATURE_MANIFEST_ASSET_NAME": "target_feature_manifest.json",
+        "BROWSER_TARGET_FAMILY": "wasm-browser",
+    }
+    # The WebGPU dispatch host import is a DERIVED fact: it is the sole
+    # browser_host_imports.webgpu selector of the wasm-browser-webgpu profile.
+    webgpu_profile = TF.target_profile("wasm-browser-webgpu")
+    assert webgpu_profile["browser_host_imports"]["webgpu"] == [
+        constants["WEBGPU_DISPATCH_HOST_IMPORT"]
+    ]
+    # Module-level constants mirror the constants table exactly.
+    assert TF.WEBGPU_DISPATCH_HOST_IMPORT == constants["WEBGPU_DISPATCH_HOST_IMPORT"]
+    assert (
+        TF.TARGET_FEATURE_MANIFEST_ASSET_NAME
+        == constants["TARGET_FEATURE_MANIFEST_ASSET_NAME"]
+    )
+    assert TF.BROWSER_TARGET_FAMILY == constants["BROWSER_TARGET_FAMILY"]
+
+
+def test_generated_js_constants_module_carries_derived_constants() -> None:
+    js_text = OUT_JS.read_text(encoding="utf-8")
+    assert "DO NOT EDIT" in js_text
+    for name, value in TF.target_feature_constants().items():
+        assert f'export const {name} = "{value}";' in js_text
+
+
+def test_generator_rejects_missing_webgpu_browser_host_selector() -> None:
+    gen = _load_generator()
+    data = copy.deepcopy(gen.load_source())
+    for target in data["target"]:
+        if target["id"] == "wasm-browser-webgpu":
+            target["browser_host_imports"]["webgpu"] = []
+            break
+    with pytest.raises(gen.TargetFeatureManifestError, match="WebGPU"):
+        gen.build_model(data)
+
+
+def test_generator_rejects_wasm_browser_requiring_webgpu_host_import() -> None:
+    gen = _load_generator()
+    data = copy.deepcopy(gen.load_source())
+    for target in data["target"]:
+        if target["id"] == "wasm-browser":
+            target["browser_host_imports"]["webgpu"] = [
+                "molt_gpu_webgpu_dispatch_host"
+            ]
+            break
+    with pytest.raises(gen.TargetFeatureManifestError, match="must not require"):
+        gen.build_model(data)
+
+
+def test_generator_rejects_missing_browser_default() -> None:
+    gen = _load_generator()
+    data = copy.deepcopy(gen.load_source())
+    for target in data["target"]:
+        if target["id"] == "wasm-browser":
+            target.pop("browser_default")
+            break
+    with pytest.raises(gen.TargetFeatureManifestError, match="default browser target"):
+        gen.build_model(data)
 
 
 def test_target_rows_carry_doc_71_feature_envelope_and_diagnostics() -> None:
