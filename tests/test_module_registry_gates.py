@@ -142,6 +142,33 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
     assert "registry_digest mismatch" in check.stdout
 
 
+def test_module_registry_json_checker_rejects_malformed_rows() -> None:
+    payload = {
+        "schema": authority.MODULE_REGISTRY_SCHEMA_VERSION,
+        "registry_digest": "not-the-real-digest",
+        "rows": [
+            "not-a-row",
+            {
+                "id": 0,
+                "name": "pkg.sub",
+                "kind": "source",
+                "parent": "pkg",
+                "alias_target": 99,
+                "init_symbol": "molt_init_pkg__sub",
+                "flags": 0,
+                "deps": "not-a-dependency-list",
+            },
+        ],
+    }
+
+    problems = check_registry_json_payload(payload)
+
+    assert "row 0 is not an object" in problems
+    assert "row 'pkg.sub' parent is not an integer: 'pkg'" in problems
+    assert "row 'pkg.sub' alias_target index out of range: 99" in problems
+    assert any(problem.startswith("registry_digest mismatch") for problem in problems)
+
+
 def test_module_registry_blob_layout_matches_schema() -> None:
     registry = _sample_registry()
     payload = registry.backend_ir_payload()
