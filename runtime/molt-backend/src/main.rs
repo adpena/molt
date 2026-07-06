@@ -46,8 +46,12 @@ mod backend_output;
 mod backend_process;
 mod backend_request;
 mod fact_graph_emit;
+mod resource_limits;
 use backend_process::*;
 use backend_request::BackendCliRequest;
+use resource_limits::apply_backend_memory_limit;
+#[cfg(test)]
+use resource_limits::{GIB, default_backend_max_rss_gb_from_physical_mem_bytes};
 
 #[cfg(any(unix, test))]
 use molt_backend::json_boundary::{
@@ -123,110 +127,13 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_TIR_DUMP",
 ];
 
-const GIB: u64 = 1024 * 1024 * 1024;
-
-fn default_backend_max_rss_gb_from_physical_mem_bytes(bytes: Option<u64>) -> u64 {
-    match bytes.map(|raw| raw / GIB).unwrap_or(0) {
-        gib if gib >= 64 => 16,
-        gib if gib >= 32 => 12,
-        gib if gib >= 16 => 8,
-        _ => 4,
-    }
-}
-
-#[cfg(unix)]
-fn detect_physical_memory_bytes() -> Option<u64> {
-    unsafe {
-        let pages = libc::sysconf(libc::_SC_PHYS_PAGES);
-        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
-        if pages <= 0 || page_size <= 0 {
-            return None;
-        }
-        Some((pages as u64).saturating_mul(page_size as u64))
-    }
-}
-
-#[cfg(windows)]
-fn detect_physical_memory_bytes() -> Option<u64> {
-    unsafe {
-        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-        let mut status: MEMORYSTATUSEX = core::mem::zeroed();
-        status.dwLength = core::mem::size_of::<MEMORYSTATUSEX>() as u32;
-        if GlobalMemoryStatusEx(&mut status) == 0 {
-            return None;
-        }
-        Some(status.ullTotalPhys)
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn detect_physical_memory_bytes() -> Option<u64> {
-    None
-}
-
-fn default_backend_max_rss_gb() -> u64 {
-    default_backend_max_rss_gb_from_physical_mem_bytes(detect_physical_memory_bytes())
-}
-
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
 fn main() -> io::Result<()> {
     // TIR optimization is mandatory. Invalid roundtrips are fatal compiler
     // bugs and must be debugged through dumps/verifier evidence, not by
     // bypassing typed IR.
 
-    // Hard memory guard: set rlimit on virtual memory to prevent OOM
-    // from crashing the entire machine. The default scales with host memory
-    // so large TIR-enabled stdlib builds do not trip an artificially tiny cap.
-    #[cfg(unix)]
-    {
-        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_backend_max_rss_gb);
-        let max_bytes = max_gb * 1024 * 1024 * 1024;
-        unsafe {
-            let rlim = libc::rlimit {
-                rlim_cur: max_bytes,
-                rlim_max: max_bytes,
-            };
-            if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
-                // Silently ignore on macOS (Apple Silicon). MOLT_DEBUG_RLIMIT=1 to warn.
-                if std::env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1") {
-                    eprintln!(
-                        "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB). OOM guard not active."
-                    );
-                }
-            }
-        }
-    }
-
-    // Windows memory guard: use job objects to limit working set.
-    // Less effective than Unix RLIMIT_AS but prevents unbounded growth.
-    #[cfg(windows)]
-    {
-        let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(default_backend_max_rss_gb);
-        let max_bytes = max_gb * 1024 * 1024 * 1024;
-        unsafe {
-            use windows_sys::Win32::System::JobObjects::*;
-            use windows_sys::Win32::System::Threading::*;
-            let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
-            if !job.is_null() {
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-                info.ProcessMemoryLimit = max_bytes as usize;
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const _,
-                    core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-                AssignProcessToJobObject(job, GetCurrentProcess());
-            }
-        }
-    }
+    apply_backend_memory_limit();
 
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--features") {
