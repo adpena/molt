@@ -103,6 +103,14 @@ touching code, docs, tests, benchmarks, or roadmap state.
   structural cause once, rerun the specific failing proof once, and keep
   implementing. Avoid expanding proof scope unless the failure exposes a real
   cross-layer contract risk.
+- Dependency gates are work selectors, not idle states. Never stop at
+  "I will not do X until Y happens" unless the formal blocked audit is already
+  satisfied. If a lane is waiting on CI, a queue row, a frozen owner, a merge, or
+  any other external event, immediately advance another board-valid structural
+  arc, pre-stage the next exact patch/proof, file the precise queue/board note,
+  or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
+  detached proof custody or an explicit stand-down/frozen-lane order; it is never
+  a reason to narrate status, shrink scope, land a placeholder, or stop moving.
 - Prefer subagents for disjoint broad work: one agent can map call sites or
   migrate non-overlapping files while the main agent lands the authority move.
   Do not use subagents to multiply proof lanes or produce status theater.

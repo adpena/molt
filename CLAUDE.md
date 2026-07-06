@@ -57,6 +57,22 @@ is reconciled.
   the boundary.
 - A small landing is valid only when it is a complete end-state subsystem cut
   with no adjacent same-kind duplicate lane left behind.
+- Dependency gates are work selectors, not idle states. Never stop at
+  "I will not do X until Y happens" unless the formal blocked audit is already
+  satisfied. If a lane is waiting on CI, a queue row, a frozen owner, a merge, or
+  any other external event, immediately advance another board-valid structural
+  arc, pre-stage the next exact patch/proof, file the precise queue/board note,
+  or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
+  detached proof custody or an explicit stand-down/frozen-lane order; it is never
+  a reason to narrate status, shrink scope, land a placeholder, or stop moving.
+  Rigor, honesty, "not overselling," "measure later," "map before fix," and
+  "read-only first, fix later" are NOT licenses to defer: if the prerequisite is
+  inside the repo and can be engineered, engineer it NOW in the same arc and do
+  the work that GENERATES the evidence, then report it done. Splitting a task
+  into analyze/plan and shipping only the analysis is deferral. The tell is any
+  self-directed "I won't... / I'll then... / once X lands / gated on Y / then I
+  drive / I won't claim until"; the instant you form one, delete it and do the
+  complete thing.
 
 ## DX, Queue, And Proof Discipline
 
@@ -77,7 +93,7 @@ is reconciled.
   ownership, so a fresh worktree needs
   `git config --global --add safe.directory <path>` or git aborts with "detected
   dubious ownership"; and it has no hard-link support, so cache publication uses
-  the backend cache lock+rename/copy fallback — do not disable caching, reroute to
+  the backend cache lock+rename/copy fallback â€” do not disable caching, reroute to
   `E:`, or hand-copy artifacts to work around it. Treat `Failed to publish
   backend cache output` under `D:\Molt` as a DX defect to diagnose through the
   cache authority; treat `E:\Molt`/`E:\molt-target` as legacy/fallback evidence.
@@ -87,7 +103,7 @@ is reconciled.
   never touches registered git worktrees, the current session, or paths
   modified within `--min-idle-hours`). A daily Windows scheduled task runs the
   safe classes; run `--all` (adds stale `cargo-target-*`) manually to reclaim
-  more. Do not hand-`rm` under `D:\Molt` — route through the janitor.
+  more. Do not hand-`rm` under `D:\Molt` â€” route through the janitor.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`.
 - Pact Kernel A acceptance must use the named queue lane
   `tools/proof_queue.py pact-witness-acceptance`. A row that only runs

@@ -74,6 +74,10 @@ from molt.cli.runtime_paths import (
     _runtime_lib_path,
     _runtime_wasm_artifact_path,
 )
+from molt.cli.runtime_wasm_cache import (
+    _hydrate_runtime_wasm_from_shared_cache,
+    _publish_runtime_wasm_to_shared_cache,
+)
 from molt.cli.runtime_wasm_validation import (
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,
@@ -1702,6 +1706,57 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
+
+        def _finalize_reused_runtime_wasm() -> bool:
+            # Shared reuse/hydration lands a validated artifact at
+            # ``runtime_wasm``; record the integrity pin + fingerprint sidecar so
+            # the normal fast-path recognizes it on the next call without a
+            # rebuild.
+            assert fingerprint is not None
+            try:
+                _publish_runtime_integrity_pin()
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to publish reused runtime wasm metadata.",
+                        file=sys.stderr,
+                    )
+                return False
+            return True
+
+        # Cross-session shared cache: the session-local target dir missed (a
+        # fresh session/worktree always starts cold), but a byte-identical
+        # runtime wasm for this exact content-addressed build identity may
+        # already sit in the session-independent shared cache. Reuse it instead
+        # of recompiling the entire runtime crate. The app.wasm build stays
+        # session-scoped; only this fixed runtime artifact is shared.
+        _shared_cache_validator = (
+            _is_valid_runtime_wasm_artifact
+            if reloc
+            else _is_valid_shared_runtime_wasm_artifact
+        )
+        if _hydrate_runtime_wasm_from_shared_cache(
+            dest=runtime_wasm,
+            fingerprint=fingerprint,
+            reloc=reloc,
+            is_valid=_shared_cache_validator,
+        ) and (
+            not validate_exports
+            or _runtime_exports_satisfy_for_mode(
+                runtime_wasm,
+                required_exports,
+                reloc=reloc,
+            )
+        ):
+            if _finalize_reused_runtime_wasm():
+                return True
+
         needs_rebuild = not _runtime_artifact_fingerprint_matches(
             runtime_wasm,
             fingerprint,
@@ -1891,6 +1946,14 @@ def _ensure_runtime_wasm(
                     reported_staticlib_fingerprint_path,
                     fingerprint,
                     artifact=src,
+                )
+                # Publish the freshly built reloc runtime wasm to the shared,
+                # session-independent cache so the next fresh session/worktree
+                # reuses it instead of recompiling the runtime crate.
+                _publish_runtime_wasm_to_shared_cache(
+                    src=runtime_wasm,
+                    fingerprint=fingerprint,
+                    reloc=reloc,
                 )
             return True
         src_state = _inspect_wasm_binary(src)
@@ -2105,6 +2168,15 @@ def _ensure_runtime_wasm(
                     fingerprint_path,
                     fingerprint,
                     artifact=runtime_wasm,
+                )
+                # Publish the freshly built shared runtime wasm to the
+                # session-independent shared cache so the next fresh
+                # session/worktree reuses it instead of recompiling the runtime
+                # crate from a cold per-session target dir.
+                _publish_runtime_wasm_to_shared_cache(
+                    src=runtime_wasm,
+                    fingerprint=fingerprint,
+                    reloc=reloc,
                 )
             except OSError:
                 if not json_output:
