@@ -50,6 +50,15 @@ is reconciled.
   thinking that phrase, immediately convert Y into executable work, a
   proof-queue/orchestrator handoff with evidence, or a named external blocker;
   anything else is a contract violation.
+- Deferral language is a self-correction trigger. If you write or think "I am
+  not going to", "I cannot do this until", "I will wait for", or equivalent,
+  stop the sentence and choose an executable outcome: implement the prerequisite
+  now inside the owned lane; create an evidence-backed proof-queue/board handoff
+  for a frozen or externally-owned prerequisite and immediately advance another
+  valid structural arc; or declare a formal blocked state only after the blocked
+  audit threshold is met. Do not use deferral to shrink scope, wait for comfort,
+  land substitute code, or narrate status instead of moving the end-state
+  structure.
 - No backward compatibility inside Molt internals. When a touched path has a
   legacy lane, delete it or structurally reconcile it in the same arc.
 - Performance is part of correctness. Claimed support must be deterministic,
