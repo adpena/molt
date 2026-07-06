@@ -69,8 +69,10 @@ pub static GLOBAL_BRIDGE: once_cell::sync::Lazy<Mutex<ObjectBridge>> =
 pub struct ObjectBridge {
     /// handle → CPython pointer
     to_py: HashMap<AbiHandle, Box<BridgeEntry>>,
+    raw_py: HashMap<AbiHandle, usize>,
     /// CPython raw pointer (usize) → handle
     from_py: HashMap<usize, AbiHandle>,
+    next_raw_handle: AbiHandle,
 }
 
 /// SIMD tag→type lookup table.
@@ -213,7 +215,9 @@ impl ObjectBridge {
     pub fn new() -> Self {
         Self {
             to_py: HashMap::new(),
+            raw_py: HashMap::new(),
             from_py: HashMap::new(),
+            next_raw_handle: 0xA11C_0000_0000_0000,
         }
     }
 
@@ -268,6 +272,14 @@ impl ObjectBridge {
             return ptr;
         }
 
+        if let Some(ptr) = self.raw_py.get(&bits).copied() {
+            let ptr = ptr as *mut PyObject;
+            unsafe {
+                (*ptr).ob_refcnt += 1;
+            }
+            return ptr;
+        }
+
         if let Some(ptr) = Self::singleton_pyobj(bits) {
             return ptr;
         }
@@ -290,6 +302,10 @@ impl ObjectBridge {
             return &entry.header.py_obj as *const PyObject as *mut PyObject;
         }
 
+        if let Some(ptr) = self.raw_py.get(&bits).copied() {
+            return ptr as *mut PyObject;
+        }
+
         if let Some(ptr) = Self::singleton_pyobj(bits) {
             return ptr;
         }
@@ -304,11 +320,33 @@ impl ObjectBridge {
         pyobj_to_handle_static(ptr).or_else(|| self.from_py.get(&(ptr as usize)).copied())
     }
 
+    pub unsafe fn register_raw_pyobj(&mut self, ptr: *mut PyObject) -> AbiHandle {
+        if ptr.is_null() {
+            return 0;
+        }
+        if let Some(bits) = self.from_py.get(&(ptr as usize)).copied() {
+            return bits;
+        }
+        loop {
+            let bits = self.next_raw_handle;
+            self.next_raw_handle = self.next_raw_handle.wrapping_add(0x10);
+            if bits != 0 && !self.to_py.contains_key(&bits) && !self.raw_py.contains_key(&bits) {
+                self.raw_py.insert(bits, ptr as usize);
+                self.from_py.insert(ptr as usize, bits);
+                return bits;
+            }
+        }
+    }
+
     /// Called by `Py_DECREF` when ref count reaches zero — release bridge entry.
     pub fn release_pyobj(&mut self, ptr: *mut PyObject) -> bool {
         if let Some(bits) = self.from_py.remove(&(ptr as usize)) {
-            self.to_py.remove(&bits);
-            true
+            if self.raw_py.remove(&bits).is_some() {
+                false
+            } else {
+                self.to_py.remove(&bits);
+                true
+            }
         } else {
             false
         }

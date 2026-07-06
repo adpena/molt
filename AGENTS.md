@@ -119,6 +119,19 @@ is reconciled.
   with `MOLT_PRESERVE_TARGET_ROOT=1`, or override artifact selection with
   `MOLT_EXTERNAL_ARTIFACT_ROOTS`. RunContext emits `UV_LINK_MODE=copy` for
   exFAT APDataStore roots unless an explicit operator value is present.
+- Bootstrap RunContext before the first `uv` command in a fresh checkout or
+  worktree. Use an already-installed host Python 3.12+ for this dependency-free
+  resolver script, for example
+  `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`;
+  then use `uv run --active --project . --python 3.12 ...` for project commands.
+  Do not use `uv run` to obtain the first env in a cold checkout, because
+  `UV_LINK_MODE=copy` must be present before uv touches `.venv` on
+  APDataStore/exFAT.
+- Never launch parallel `uv` bootstrap/sync commands against the same fresh
+  checkout. One process owns `.venv` creation; after it exits, subsequent uv
+  commands run with the emitted DX env. If isolation is not required, inspect
+  `origin/main:<path>` or reuse an existing warm worktree instead of creating a
+  cold APDataStore worktree just to read or verify docs.
 - APDataStore is exFAT, so Molt cache publication must not depend on hard-link
   support; the backend cache owns the lock+rename/copy fallback. Do not disable
   caching, reroute to `E:`, or hand-copy artifacts to work around hard-link

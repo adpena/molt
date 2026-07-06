@@ -1245,7 +1245,26 @@ def _source_extension_eager_import_function_name(function_name: str | None) -> b
         or function_name.startswith("PyInit_")
         or "pymod_exec" in lowered
         or lowered.endswith("_exec")
+        or _source_extension_cython_eager_modinit_function_name(function_name)
     )
+
+
+# Cython 3.x emits its module-init imports inside dedicated ``__Pyx_modinit_*``
+# helper functions that ``__pyx_pymod_exec_<mod>`` calls unconditionally during
+# ``Py_mod_exec``. Those helpers are eager import contexts even though their
+# names do not end in ``_exec``: ``__Pyx_modinit_shared_function_import_code``
+# imports Cython's shared-utility module (e.g. ``scipy._cyutility``),
+# ``__Pyx_modinit_type_import_code`` imports the modules whose extension types
+# the module subclasses (e.g. ``numpy``), and the sibling
+# ``function_import``/``variable_import``/``global_init``/``type_init`` helpers
+# resolve the remaining cimport dependencies. Recognizing exactly this
+# ``__Pyx_modinit_`` family (not arbitrary lazy Cython helpers) admits those
+# unconditional exec-time imports as AOT roots.
+_SOURCE_EXTENSION_CYTHON_MODINIT_PREFIX = "__Pyx_modinit_"
+
+
+def _source_extension_cython_eager_modinit_function_name(function_name: str) -> bool:
+    return function_name.startswith(_SOURCE_EXTENSION_CYTHON_MODINIT_PREFIX)
 
 
 def _skip_c_ws_comments(source_text: str, pos: int) -> int:

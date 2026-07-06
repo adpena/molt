@@ -19,6 +19,7 @@ RUNTIME_MEMORYVIEW_PATH = ROOT / "runtime/molt-runtime/src/object/memoryview.rs"
 RUNTIME_BUILDERS_PATH = ROOT / "runtime/molt-runtime/src/object/builders.rs"
 C_API_MOLT_API_PATH = ROOT / "runtime/molt-runtime/src/c_api/molt_api.rs"
 C_API_MOD_PATH = ROOT / "runtime/molt-runtime/src/c_api/mod.rs"
+C_API_SURFACE_PATH = ROOT / "docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md"
 CPYTHON_ABI_HOOKS_PATH = ROOT / "runtime/molt-cpython-abi/src/hooks.rs"
 CPYTHON_ABI_TYPES_PATH = ROOT / "runtime/molt-cpython-abi/src/abi_types.rs"
 CPYTHON_ABI_BUFFER_PATH = ROOT / "runtime/molt-cpython-abi/src/api/buffer.rs"
@@ -217,6 +218,55 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     assert "storage.fits_in_backing_len(backing_len)" not in from_buffer_body
 
 
+def test_c_heap_buffer_export_admission_uses_memoryview_format_authority() -> None:
+    # Derived from PR #44 "Validate C-heap buffer formats" + "Reject noncanonical
+    # C buffer readonly flags": C-heap lease admission must route the PEP 3118
+    # format through the shared memoryview_format_from_str authority (rejecting
+    # unsupported codes and itemsize disagreement) and decode the readonly flag
+    # through the canonical 0/1 decoder rather than the lossy `readonly != 0`.
+    c_api_source = C_API_MOLT_API_PATH.read_text(encoding="utf-8")
+
+    view_body = _rust_function_body(c_api_source, "c_heap_buffer_view_is_valid")
+    format_body = _rust_function_body(c_api_source, "c_heap_buffer_format_is_valid")
+    readonly_body = _rust_function_body(c_api_source, "buffer_readonly_from_flag")
+    from_buffer_body = _rust_function_body(c_api_source, "molt_memoryview_from_buffer")
+
+    assert "c_heap_buffer_format_is_valid(view, itemsize)" in view_body
+    assert "view.format.iter().position" in format_body
+    assert "std::str::from_utf8" in format_body
+    assert "memoryview_format_from_str(format)" in format_body
+    assert "format.itemsize == itemsize" in format_body
+    assert "default_buffer_format" not in format_body
+    assert "buffer_readonly_from_flag(view.readonly)" in view_body
+    assert "buffer_readonly_from_flag(view.readonly)" in from_buffer_body
+    assert "view.readonly != 0" not in view_body
+    assert "view.readonly != 0" not in from_buffer_body
+    assert "0 => Some(false)" in readonly_body
+    assert "1 => Some(true)" in readonly_body
+    assert "_ => None" in readonly_body
+
+
+def test_molt_buffer_view_readonly_contract_is_canonical() -> None:
+    # Derived from PR #44 "Document canonical C buffer readonly domain": the 0/1
+    # readonly ABI domain must be documented at the public header, the Rust
+    # descriptor, and the libmolt C-API surface so exporters and importers agree.
+    header_source = MOLT_HEADER_PATH.read_text(encoding="utf-8")
+    runtime_source = RUNTIME_MEMORYVIEW_PATH.read_text(encoding="utf-8")
+    surface_source = C_API_SURFACE_PATH.read_text(encoding="utf-8")
+
+    assert "Canonical bool: 0 writable, 1 read-only; other values are rejected." in header_source
+    assert (
+        "Canonical bool exported as 0/1; importers reject every other value."
+        in runtime_source
+    )
+    normalized_surface = re.sub(r"\s+", " ", surface_source)
+    assert (
+        "`readonly` is a canonical u32 boolean: `0` means writable, `1` means "
+        "read-only, and every other value fails descriptor admission."
+        in normalized_surface
+    )
+
+
 def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> None:
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     body = _function_body(header_source, "PyMemoryView_FromBuffer")
@@ -319,6 +369,40 @@ def test_buffer_support_probe_does_not_require_simple_contiguity() -> None:
     assert "(hooks.buffer_release)(&mut descriptor as *mut MoltBufferView)" in compiled_body
     assert "PyBUF_SIMPLE" not in compiled_body
     assert "PyObject_GetBuffer" not in compiled_body
+
+
+def test_public_pybuffer_routes_c_heap_objects_through_lease_authority() -> None:
+    # Derived from PR #31 "Guard C-heap buffer route authority": pin the public
+    # source-recompiled PyObject_GetBuffer / PyObject_CheckBuffer / PyBuffer_Release
+    # so C-heap ndarray-style objects flow through molt_c_heap_export_buffer /
+    # molt_c_heap_release_buffer while runtime objects keep going through
+    # molt_buffer_acquire / molt_buffer_release. Without this route split a stale
+    # or forged C-heap object would be treated as a runtime handle.
+    header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
+    public_check_body = _function_body(header_source, "PyObject_CheckBuffer")
+    public_getbuffer_body = _function_body(header_source, "PyObject_GetBuffer")
+    public_release_body = _function_body(header_source, "PyBuffer_Release")
+    public_release_exported_body = _function_body(
+        header_source, "_molt_pybuffer_release_exported_view"
+    )
+
+    assert "molt_c_heap_export_buffer((uintptr_t)obj, &tmp)" in public_check_body
+    assert "molt_buffer_acquire(_molt_py_handle(obj), &tmp)" in public_check_body
+    assert (
+        "molt_c_heap_export_buffer((uintptr_t)obj, &view->_molt_view)"
+        in public_getbuffer_body
+    )
+    assert (
+        "molt_buffer_acquire(_molt_py_handle(obj), &view->_molt_view)"
+        in public_getbuffer_body
+    )
+    assert "view->internal == &view->_molt_view" in public_release_body
+    assert (
+        "_molt_pybuffer_release_exported_view(view->obj, &view->_molt_view)"
+        in public_release_body
+    )
+    assert "molt_buffer_release(view)" in public_release_exported_body
+    assert "molt_c_heap_release_buffer((uintptr_t)obj, view)" in public_release_exported_body
 
 
 def test_noncontiguous_buffers_require_stride_metadata() -> None:

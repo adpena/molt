@@ -199,18 +199,20 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
 /// `PyDict_SetDefault` semantics (do not clobber a name already placed by an
 /// earlier step — CPython's operators run first). Steals the caller's reference
 /// to `descr` (decrefs it after insertion, exactly like CPython's loop bodies).
-///
-/// Store-layer failures are *recorded but not fatal*, matching the established
-/// `add_methods_to_dict` policy: the descriptor object is structurally complete
-/// (correct type, name, and def pointer) regardless of whether the runtime dict
-/// bridge is wired. Aborting readiness on a degraded-backend store would cascade
-/// into a spurious extension-exec failure in exactly the environments (pure-ABI,
-/// partially-wired hosts) where the dict backend is a stub. When the runtime IS
-/// wired, a genuine store failure still surfaces: the recorded silent failure is
-/// named in the exec-slot diagnostic. The only *fatal* case is a descriptor with
-/// no name, which is a real construction bug that must not be masked.
 unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
     unsafe {
+        if dict.is_null() || std::ptr::eq(dict, &raw mut crate::abi_types::Py_None) {
+            crate::api::refcount::Py_DECREF(descr);
+            crate::capi_trace::record_silent_failure(
+                "PyType_Ready",
+                Some("tp_dict is not backed by runtime dict hooks"),
+            );
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyType_Ready requires a real tp_dict for descriptors".as_ptr(),
+            );
+            return -1;
+        }
         let name = PyDescr_NAME(descr);
         if name.is_null() {
             crate::api::refcount::Py_DECREF(descr);
@@ -224,13 +226,31 @@ unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
             );
             return -1;
         }
+        crate::api::refcount::Py_INCREF(descr);
         let stored = crate::api::mapping::PyDict_SetDefault(dict, name, descr);
+        let visible = if stored.is_null() {
+            ptr::null_mut()
+        } else {
+            crate::api::mapping::PyDict_GetItem(dict, name)
+        };
+        let store_visible = !visible.is_null() && std::ptr::eq(visible, stored);
+        let dict_retained_descriptor = store_visible && std::ptr::eq(stored, descr);
         crate::api::refcount::Py_DECREF(descr);
-        if stored.is_null() {
+        if !dict_retained_descriptor {
+            crate::api::refcount::Py_DECREF(descr);
+        }
+        if !store_visible {
             crate::capi_trace::record_silent_failure(
                 "PyType_Ready",
-                Some("PyDict_SetDefault could not store getset/member descriptor"),
+                Some("PyDict_SetDefault did not make getset/member descriptor visible"),
             );
+            if crate::api::errors::PyErr_Occurred().is_null() {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyType_Ready could not publish getset/member descriptor".as_ptr(),
+                );
+            }
+            return -1;
         }
         0
     }
@@ -645,7 +665,9 @@ pub unsafe extern "C" fn PyDescr_NewGetSet(
             d_common: header,
             d_getset: getset,
         });
-        Box::into_raw(descr).cast::<PyObject>()
+        let ptr = Box::into_raw(descr).cast::<PyObject>();
+        crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr);
+        ptr
     }
 }
 
@@ -671,7 +693,9 @@ pub unsafe extern "C" fn PyDescr_NewMember(
             d_common: header,
             d_member: member,
         });
-        Box::into_raw(descr).cast::<PyObject>()
+        let ptr = Box::into_raw(descr).cast::<PyObject>();
+        crate::bridge::GLOBAL_BRIDGE.lock().register_raw_pyobj(ptr);
+        ptr
     }
 }
 
