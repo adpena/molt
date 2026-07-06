@@ -134,12 +134,8 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
         return {name: formatted[name] for name in modules}
     with tempfile.TemporaryDirectory(prefix="molt-wasm-abi-rustfmt-") as raw_tmp:
         tmp = Path(raw_tmp)
-        paths: list[Path] = []
-        for name, source in modules.items():
-            (tmp / name).write_text(source, encoding="utf-8", newline="\n")
-        for name, source in misses.items():
-            path = tmp / name
-            paths.append(path)
+        materialized_paths = _materialize_rustfmt_modules(tmp, modules)
+        paths = [materialized_paths[name] for name in misses]
         try:
             proc = subprocess.run(
                 [
@@ -169,6 +165,16 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
             if RUSTFMT_CACHE_ENABLED:
                 _store_rustfmt_cache(name, source, rustfmt_version, rustfmt_output)
     return {name: formatted[name] for name in modules}
+
+
+def _materialize_rustfmt_modules(root: Path, modules: dict[str, str]) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for name, source in modules.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8", newline="\n")
+        paths[name] = path
+    return paths
 
 
 def _rustfmt_version() -> str:
