@@ -1,0 +1,552 @@
+# Fail-closed registry — the single authority for KNOWN "hack / workaround /
+# ecosystem-baked / fail-open" poison sites in the Molt tree.
+#
+# THE POISON CLASS THIS REGISTRY + GATE PERMANENTLY PREVENT
+# --------------------------------------------------------
+# Molt's contract is one authority per invariant, source-recompiled ecosystem
+# support, and fail-CLOSED on unsupported behavior (a precise diagnostic, never a
+# plausible-looking wrong answer). A *poison site* abandons that contract for a
+# shortcut that silently ships a wrong or degraded result. Four classes:
+#
+#   ecosystem_baked    : a package-owned header/source (numpy / scipy / pandas
+#                        symbols) vendored AND DEFINED inside a Molt-owned tree
+#                        instead of flowing through source-recompiled extension
+#                        custody. Baked upstream semantics rot when upstream moves.
+#   fail_open_stub     : a #[no_mangle] extern "C" ABI export that returns a
+#                        plausible NON-NULL / success sentinel on a path it does
+#                        not implement (MoltObject::none() / PyList_New(0)
+#                        placeholder, wrapping_* on an arbitrary-precision int,
+#                        `let _ = <arg>;` dropping a real argument). The calling
+#                        C extension cannot tell success from a lie.
+#   duplicate_authority: two live copies of the SAME C-API authority (e.g. two
+#                        Python.h) hand-synced; one is always about to drift.
+#   todo_as_plan       : a HACK / WORKAROUND / "for now" / status:divergent|partial
+#                        marker reachable from a SHIPPED support surface (a public
+#                        API or exported ABI symbol that advertises the capability).
+#                        `status:planned` stubs are EXCLUDED — they honestly do not
+#                        claim support.
+#
+# This is DISTINCT from sound conservatism, thin `#include <numpy/...>` compat
+# forwarders, the package-custody CLASSIFIER (src/molt/c_api_symbols.py,
+# src/molt/cli/external_native.py — which correctly ROUTE these symbols to custody
+# and fail closed; the right primitive), and honest `status:planned` stubs. Those
+# are kept OUT by the gate's curated allowlists, not registered here.
+#
+# HOW THE GATE USES THIS FILE (see tools/fail_closed_gate.py)
+# ----------------------------------------------------------
+# 1. DISCOVERY: three content scans (A ecosystem-baked, B fail-open ABI,
+#    C todo-as-plan) plus D (duplicate authority) sweep the real trees. Every
+#    discovered site MUST have a row here; a NEW unregistered poison site FAILS the
+#    gate (drift teeth), exactly like a new op-kind missing from op_kinds.toml.
+# 2. ANCHOR INTEGRITY: each row's `anchor` must still exist verbatim in `file`, so
+#    a site cannot silently move or vanish out from under its row.
+# 3. TEETH: every row must name a `resolution_row` — the rip task/arc driving it to
+#    zero — and a justification read from the real code.
+# 4. RATCHET: the per-class registered count is monotonically non-increasing
+#    against the per-class `baseline`. The poison classes can only shrink; the rip
+#    arcs LOWER the baseline as they delete sites. Adding poison is a gate failure.
+#
+# Each row cites the parallel rip arc that owns deleting it (these sites are being
+# ripped in flight by the ecosystem-custody / ABI-fail-closed / header-authority
+# arcs; this gate freezes the KNOWN set and prevents regrowth).
+
+# Ratchet baselines: the number of registered rows per class the gate was sealed
+# with. The gate FAILS if a live class count exceeds its baseline. LOWER a baseline
+# (in the same arc that rips a site) — never raise it.
+[baseline]
+ecosystem_baked = 8
+fail_open_stub = 26
+duplicate_authority = 2
+todo_as_plan = 3
+
+# ===========================================================================
+# ecosystem_baked (Scan A) — numpy package headers/config defined in-tree.
+# Resolution: task#7 (numpy source-recompiled extension custody). Custody must
+# supply these headers from the recompiled numpy source tree, not a Molt-owned
+# vendored copy.
+# ===========================================================================
+
+[[site]]
+id = "E1_numpy_ndarraytypes_pyarray_descr"
+class = "ecosystem_baked"
+file = "include/numpy/ndarraytypes.h"
+anchor = "typedef struct PyArray_Descr {"
+resolution_row = "task#7"
+justification = """
+Defines the core numpy PyArray_Descr / PyArrayObject_fields structs in a
+Molt-owned header. This is upstream ndarray ABI frozen in-tree; it must come from
+source-recompiled numpy custody so it tracks the recompiled version.
+"""
+
+[[site]]
+id = "E1_numpy_dtype_api_inline_bodies"
+class = "ecosystem_baked"
+file = "include/numpy/dtype_api.h"
+anchor = "static inline PyArray_DTypeMeta *NPY_DT_NewRef(PyArray_DTypeMeta *o) {"
+resolution_row = "task#7"
+justification = """
+Ships static-inline numpy DType-API function bodies (NPY_DT_NewRef, etc.) in a
+Molt-owned header — baked upstream numpy behaviour, not a Molt authority.
+"""
+
+[[site]]
+id = "E1_numpy_ndarrayobject_inline_dealloc"
+class = "ecosystem_baked"
+file = "include/numpy/ndarrayobject.h"
+anchor = "static inline void _molt_numpy_array_dealloc(PyObject *obj);"
+resolution_row = "task#7"
+justification = """
+Declares a Molt-authored inline that stands in for numpy array dealloc inside a
+numpy-package header. The dealloc semantics belong to recompiled numpy, not a
+baked Molt shim.
+"""
+
+[[site]]
+id = "E1_numpy_ufuncobject_inline_dealloc"
+class = "ecosystem_baked"
+file = "include/numpy/ufuncobject.h"
+anchor = "static inline void _molt_numpy_ufunc_dealloc(PyObject *obj);"
+resolution_row = "task#7"
+justification = """
+Same as the ndarrayobject dealloc but for numpy ufunc objects: a baked inline
+standing in for recompiled-numpy ufunc dealloc semantics.
+"""
+
+[[site]]
+id = "E1_numpy_common_sizeof_datetime"
+class = "ecosystem_baked"
+file = "include/numpy/npy_common.h"
+anchor = "#define NPY_SIZEOF_DATETIME 8"
+resolution_row = "task#7"
+justification = """
+Bakes numpy platform-size config (NPY_SIZEOF_* family) into a Molt-owned copy of
+npy_common.h. These sizes are numpy-build facts and must be produced by the
+recompiled-numpy config step, not frozen here.
+"""
+
+[[site]]
+id = "E1_numpy_numpyconfig_sizeof"
+class = "ecosystem_baked"
+file = "include/numpy/numpyconfig.h"
+anchor = "#define NPY_SIZEOF_SHORT __SIZEOF_SHORT__"
+resolution_row = "task#7"
+justification = """
+A Molt-owned copy of numpy's generated numpyconfig.h. numpyconfig is a per-build
+generated numpy artifact; a checked-in copy is baked upstream config.
+"""
+
+[[site]]
+id = "E1_numpy_root_numpyconfig_sizeof"
+class = "ecosystem_baked"
+file = "include/_numpyconfig.h"
+anchor = "#define NPY_SIZEOF_SHORT __SIZEOF_SHORT__"
+resolution_row = "task#7"
+justification = """
+Root-level baked copy of numpy _numpyconfig.h (the private variant). Same custody
+defect as the numpy/ copy: it must be generated by recompiled numpy, not vendored.
+"""
+
+[[site]]
+id = "E2_commands_numpyconfig_overlay_fixup"
+class = "ecosystem_baked"
+file = "src/molt/cli/commands.py"
+anchor = '#include_next "_numpyconfig.h"'
+resolution_row = "task#7"
+justification = """
+commands.py authors an `#include_next "_numpyconfig.h"` overlay to patch numpy's
+NPY_SIZEOF_PY_INTPTR_T = -1 sentinel at build time. This is CLI code baking a
+numpy-source fixup; the target-fact resolution belongs in the recompiled-numpy
+config/custody primitive, not a hand-authored overlay in the build driver.
+"""
+
+# ===========================================================================
+# fail_open_stub (Scan B) — ABI exports that ship a plausible wrong / placeholder
+# answer instead of failing closed.
+# Resolution: task#9 (CPython ABI fail-closed sweep). Each export must either
+# implement the real semantics or set a PyErr and return the true failure sentinel.
+# ===========================================================================
+
+# --- abstract_number.rs: arbitrary-precision int silently truncated -----------
+
+[[site]]
+id = "F2_pynumber_add_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "pyobj_from_int(x.wrapping_add(y))"
+resolution_row = "task#9"
+justification = """
+PyNumber_Add wraps int addition to machine width. CPython ints are arbitrary
+precision, so on overflow this returns a plausible NON-NULL but WRONG result
+instead of promoting to bignum. Must compute the true (possibly big) sum.
+"""
+
+[[site]]
+id = "F2_pynumber_sub_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "pyobj_from_int(x.wrapping_sub(y))"
+resolution_row = "task#9"
+justification = """
+PyNumber_Subtract wraps int subtraction to machine width — same arbitrary-precision
+truncation poison as F2_pynumber_add_wrapping.
+"""
+
+[[site]]
+id = "F2_pynumber_mul_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "pyobj_from_int(x.wrapping_mul(y))"
+resolution_row = "task#9"
+justification = """
+PyNumber_Multiply wraps int multiplication to machine width; a large product
+silently wraps instead of promoting to bignum.
+"""
+
+[[site]]
+id = "F2_pynumber_pow_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "pyobj_from_int(x.wrapping_pow(y as u32))"
+resolution_row = "task#9"
+justification = """
+PyNumber_Power wraps integer exponentiation; even small bases overflow i64 fast and
+silently wrap. Must produce the true big-integer power.
+"""
+
+[[site]]
+id = "F2_pynumber_lshift_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "pyobj_from_int(x.wrapping_shl(y as u32))"
+resolution_row = "task#9"
+justification = """
+PyNumber_Lshift wraps a left shift; shifting bits past the machine width silently
+discards them instead of widening the int.
+"""
+
+[[site]]
+id = "F2_pynumber_rshift_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "pyobj_from_int(x.wrapping_shr(y as u32))"
+resolution_row = "task#9"
+justification = """
+PyNumber_Rshift uses wrapping_shr; while less prone to overflow than lshift it is
+part of the same machine-width int-semantics shortcut and must use true int shift.
+"""
+
+[[site]]
+id = "F2_pynumber_abs_wrapping"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "Some(v) => pyobj_from_int(v.wrapping_abs()),"
+resolution_row = "task#9"
+justification = """
+PyNumber_Absolute uses wrapping_abs, so abs(i64::MIN) returns i64::MIN (negative) —
+a plausible non-NULL wrong answer. abs of an arbitrary-precision int must widen.
+"""
+
+[[site]]
+id = "F3_pynumber_power_drops_modulus"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "let _ = o3;"
+resolution_row = "task#9"
+justification = """
+PyNumber_Power drops its modulus argument o3 (`let _ = o3;`), so pow(a, b, m) is
+computed as a**b ignoring the modulus — a silently wrong result. Must honour the
+three-argument modular-exponentiation contract or fail closed.
+"""
+
+# --- errors.rs: real error state dropped --------------------------------------
+
+[[site]]
+id = "F1_pyerr_setobject_drops_value"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/errors.rs"
+anchor = "let _ = value;"
+resolution_row = "task#9"
+justification = """
+PyErr_SetObject drops the actual exception value (`let _ = value;`) and sets a
+generic c"<exception>" string. The raised exception loses its payload — a
+fail-open that misreports the error. Must propagate the real value.
+"""
+
+[[site]]
+id = "F1_errors_drops_exc"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/errors.rs"
+anchor = "let _ = exc;"
+resolution_row = "task#9"
+justification = """
+An error-API export drops its exception argument (`let _ = exc;`) rather than
+acting on it, silently no-op'ing an error operation the C extension expects to take
+effect.
+"""
+
+[[site]]
+id = "F1_errors_drops_obj"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/errors.rs"
+anchor = "let _ = obj;"
+resolution_row = "task#9"
+justification = """
+An error-API export drops its object argument (`let _ = obj;`), ignoring the caller
+input on a path that advertises using it.
+"""
+
+# --- alloc-failure returns a plausible None instead of NULL -------------------
+
+[[site]]
+id = "F4_sequences_pylist_new_none_fallback"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/sequences.rs"
+anchor = "let fallback = MoltObject::none().bits();"
+resolution_row = "task#9"
+justification = """
+PyList_New, on allocation failure, returns a bridged MoltObject::none() instead of
+NULL. CPython callers treat non-NULL as success, so an OOM is masked as an empty
+success. Must return NULL (and set MemoryError) on alloc failure.
+"""
+
+[[site]]
+id = "F4_mapping_pydict_new_none_fallback"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/mapping.rs"
+anchor = "let fallback = MoltObject::none().bits();"
+resolution_row = "task#9"
+justification = """
+PyDict_New mirrors the PyList_New OOM fail-open: returns MoltObject::none() rather
+than NULL on alloc failure, masking the error as success.
+"""
+
+[[site]]
+id = "F4_strings_none_fallback"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/strings.rs"
+anchor = "let fallback = MoltObject::none().bits();"
+resolution_row = "task#9"
+justification = """
+String-API exports return a bridged MoltObject::none() on the failure path instead
+of NULL, so a failed string construction reads as a non-NULL success to the C
+caller. Multiple str builders share this shape; must fail closed with NULL + PyErr.
+"""
+
+[[site]]
+id = "F4_object_none_bits_fallback"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/object.rs"
+anchor = "let none_bits = MoltObject::none().bits();"
+resolution_row = "task#9"
+justification = """
+An object-API export materializes MoltObject::none() bits as its result on a path
+that has no real value to return, handing back a plausible non-NULL None instead of
+failing closed.
+"""
+
+[[site]]
+id = "F4_object_none_bits_tail"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/object.rs"
+anchor = "MoltObject::none().bits()"
+resolution_row = "task#9"
+justification = """
+A second object-API export ends by returning MoltObject::none().bits() as a success
+value on an unimplemented branch — same placeholder-None fail-open as
+F4_object_none_bits_fallback.
+"""
+
+# --- PySet / mapping placeholder: empty list stands in for a real object -------
+
+[[site]]
+id = "F5_sequences_pyset_new_placeholder_list"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/sequences.rs"
+anchor = "unsafe { PyList_New(0) }"
+resolution_row = "task#9"
+justification = """
+PySet_New returns an empty LIST as a placeholder ("so extensions that create sets
+do not crash"). A C extension gets back the wrong type presented as success. Must
+implement a real set or fail closed with a precise unsupported diagnostic.
+"""
+
+[[site]]
+id = "F5_sequences_pyset_drops_iterable"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/sequences.rs"
+anchor = "let _ = iterable;"
+resolution_row = "task#9"
+justification = """
+PySet_New drops its iterable argument (`let _ = iterable;`), so even the placeholder
+ignores the caller's contents. Part of the same PySet fail-open as
+F5_sequences_pyset_new_placeholder_list.
+"""
+
+[[site]]
+id = "F5_sequences_drops_op"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/sequences.rs"
+anchor = "let _ = op;"
+resolution_row = "task#9"
+justification = """
+A sequence-API export drops its `op` argument (`let _ = op;`) on a path that
+advertises inspecting it, returning a fixed answer regardless of input.
+"""
+
+[[site]]
+id = "F6_mapping_placeholder_list"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/mapping.rs"
+anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
+resolution_row = "task#9"
+justification = """
+A mapping-API export returns an empty list placeholder (via PyList_New(0)) instead
+of the mapping object/view it advertises, handing back the wrong type as success.
+"""
+
+[[site]]
+id = "F6_mapping_drops_op"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/mapping.rs"
+anchor = "let _ = op;"
+resolution_row = "task#9"
+justification = """
+A mapping-API export drops its `op` argument (`let _ = op;`), ignoring the caller
+input on a path that claims to use it. Multiple mapping exports share this anchor.
+"""
+
+[[site]]
+id = "F6_abstract_mapping_placeholder_list"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_mapping.rs"
+anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
+resolution_row = "task#9"
+justification = """
+An abstract-mapping export (e.g. PyMapping_Keys/Values/Items) returns an empty list
+placeholder instead of the real mapping view, presenting the wrong result as
+success.
+"""
+
+[[site]]
+id = "F6_abstract_mapping_drops_o"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/abstract_mapping.rs"
+anchor = "let _ = o;"
+resolution_row = "task#9"
+justification = """
+The abstract-mapping placeholder drops its object argument (`let _ = o;`), ignoring
+the mapping whose keys/values it claims to return.
+"""
+
+[[site]]
+id = "F6_object_placeholder_list"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/object.rs"
+anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
+resolution_row = "task#9"
+justification = """
+An object-API export returns an empty list placeholder instead of the real result
+(e.g. dir()/attribute enumeration), handing back a plausible-but-empty success.
+"""
+
+[[site]]
+id = "F6_object_drops_o"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/object.rs"
+anchor = "let _ = o;"
+resolution_row = "task#9"
+justification = """
+The object-API placeholder drops its object argument (`let _ = o;`), ignoring the
+input whose properties it advertises returning.
+"""
+
+[[site]]
+id = "F7_strings_drops_newpart"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/strings.rs"
+anchor = "let _ = newpart;"
+resolution_row = "task#9"
+justification = """
+A string-mutation export (PyUnicode_Append-family) drops its `newpart` argument
+(`let _ = newpart;`), so the append/concat silently does nothing while reporting
+success to the caller.
+"""
+
+# ===========================================================================
+# duplicate_authority (Scan D) — one C-API contract, two hand-synced copies.
+# Resolution: task#10 (single CPython-header authority) with task#7 for the
+# custody-facing side. One header tree must own each symbol; the other becomes a
+# generated re-export or is deleted.
+# ===========================================================================
+
+[[site]]
+id = "D1_python_h_two_copies"
+class = "duplicate_authority"
+file = "include/molt/Python.h"
+anchor = "#ifndef MOLT_C_API_PYTHON_H"
+resolution_row = "task#10"
+justification = """
+include/molt/Python.h (14k lines) and runtime/molt-cpython-abi/include/Python.h
+(1.7k lines) are two substantive, DIFFERENT copies of the CPython umbrella header.
+The C-API surface now has two homes that must be hand-synced; one is always about
+to drift. One must own the contract and the other re-export or be deleted.
+"""
+
+[[site]]
+id = "D2_datetime_h_two_copies"
+class = "duplicate_authority"
+file = "include/datetime.h"
+anchor = "#ifndef MOLT_C_API_DATETIME_H"
+resolution_row = "task#10"
+justification = """
+include/datetime.h and runtime/molt-cpython-abi/include/datetime.h are two
+substantive copies of the CPython datetime C-API header, hand-synced. Same
+duplicate-authority defect as D1_python_h_two_copies.
+"""
+
+# ===========================================================================
+# todo_as_plan (Scan C) — a status:divergent|partial / "ignore for now" marker
+# INSIDE the body of a shipped public API that returns a divergent value on an
+# accepted call (as opposed to failing closed with a raise, which is honest).
+# `status:planned` honest stubs and fail-closed raises are NOT swept here.
+# ===========================================================================
+
+[[site]]
+id = "C1_pynumber_power_modulus_for_now"
+class = "todo_as_plan"
+file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
+anchor = "let _ = o3;"
+resolution_row = "task#9"
+justification = """
+The PyNumber_Power modulus argument is dropped with an "ignore for now" comment on
+a SHIPPED, exported ABI symbol that advertises three-argument pow. "for now" on a
+live export is todo-as-plan: the incomplete path ships as if complete. The fix is
+the same as fail_open_stub F3_pynumber_power_drops_modulus.
+"""
+
+[[site]]
+id = "F8_multiprocessing_fork_maps_to_spawn"
+class = "todo_as_plan"
+file = "src/molt/stdlib/multiprocessing/_core.py"
+anchor = "status:divergent"
+resolution_row = "task#9"
+justification = """
+multiprocessing.get_context() accepts "fork"/"forkserver" and silently returns a
+Context whose semantics are actually spawn (status:divergent TODO). A user
+depending on fork's shared-address-space semantics gets spawn behaviour with no
+error — a shipped API diverging on an accepted argument. Must implement true fork
+or fail closed on the unsupported start method.
+"""
+
+[[site]]
+id = "F9_zlib_unused_data_partial"
+class = "todo_as_plan"
+file = "src/molt/stdlib/zlib.py"
+anchor = "molt_zlib_decompressobj_unused_data"
+resolution_row = "task#9"
+justification = """
+zlib decompressobj's `unused_data` property (status:partial) returns b"" because the
+dedicated intrinsic is not yet exposed — a shipped public property that ships an
+empty (wrong) answer for a stream with real trailing data. Must expose the
+molt_zlib_decompressobj_unused_data intrinsic and return the true unused bytes.
+"""
