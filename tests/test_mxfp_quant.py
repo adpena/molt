@@ -13,9 +13,7 @@ import os
 _tq_path = os.path.join(
     os.path.dirname(__file__),
     "..",
-    "src",
-    "molt",
-    "stdlib",
+    "demos",
     "tinygrad",
     "turbo_quant.py",
 )
