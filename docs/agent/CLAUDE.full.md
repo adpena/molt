@@ -637,6 +637,14 @@ intentional off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`.
 RunContext emits `UV_LINK_MODE=copy` for exFAT APDataStore roots unless an
 explicit operator value is present.
 
+In a fresh checkout/worktree, import RunContext with an already-installed host
+Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
+before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
+`$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
+POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
+Do not use `uv run` to obtain this first env in a cold checkout, and never run
+parallel uv bootstrap/sync commands against the same `.venv`.
+
 Raw `cargo` commands do NOT honor `MOLT_SESSION_ID` by themselves. For any
 direct cargo invocation, export the DX env first. If you bypass the DX env, keep
 session isolation inside the external target root:

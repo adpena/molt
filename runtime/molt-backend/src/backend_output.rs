@@ -1,8 +1,6 @@
 use crate::backend_process::*;
 use crate::backend_request::BackendCliRequest;
 use crate::fact_graph_emit::{FactGraphEmitRequest, emit_fact_graph_for_ir};
-#[cfg(feature = "native-backend")]
-use molt_backend::SimpleBackend;
 use molt_backend::SimpleIR;
 #[cfg(feature = "luau-backend")]
 use molt_backend::luau::LuauBackend;
@@ -12,6 +10,7 @@ use molt_backend::rust::RustBackend;
 use molt_backend::{WasmBackend, WasmCompileOptions};
 use molt_tir::ir_rewrites::rewrite_annotate_stubs;
 use std::io;
+#[cfg(feature = "wasm-backend")]
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
