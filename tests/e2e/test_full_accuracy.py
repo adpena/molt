@@ -6,7 +6,7 @@ inference pipeline components work correctly end-to-end.
 
 Requires:
   - Model snapshot at ~/.cache/molt/falcon-ocr/models--tiiuae--Falcon-OCR/
-  - tinygrad tokenizer at src/molt/stdlib/tinygrad/tokenizer.py
+  - tinygrad tokenizer at demos/tinygrad/tokenizer.py
 """
 
 import math
@@ -19,9 +19,6 @@ SNAP = os.path.expanduser(
     "3a4d95a8b0008f7430df30a82cf35e6c3b6bcb66"
 )
 
-# Path to the stdlib (NOT added to sys.path to avoid shadowing Python's
-# own importlib/random/etc).
-_STDLIB = os.path.join(os.path.dirname(__file__), "../../src/molt/stdlib")
 
 
 def _skip_if_no_snapshot():
@@ -40,7 +37,9 @@ def _load_tokenizer():
     """
     import importlib.util
 
-    tok_path = os.path.join(_STDLIB, "tinygrad", "tokenizer.py")
+    tok_path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "demos", "tinygrad", "tokenizer.py"
+    )
     spec = importlib.util.spec_from_file_location("_tokenizer", tok_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

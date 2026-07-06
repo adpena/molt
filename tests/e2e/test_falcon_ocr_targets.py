@@ -146,7 +146,7 @@ class TestCPUTarget:
 
         Device.set("CPU")
 
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -165,7 +165,7 @@ class TestCPUTarget:
 
         Device.set("CPU")
 
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -206,7 +206,7 @@ class TestMetalTarget:
 
         Device.set("METAL")
 
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -221,7 +221,7 @@ class TestMetalTarget:
     def test_metal_cpu_parity(self):
         """Metal and CPU produce identical token sequences."""
         from tinygrad.device import Device
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -551,7 +551,7 @@ class TestCrossTargetParity:
 
         Device.set("CPU")
 
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -569,7 +569,7 @@ class TestCrossTargetParity:
     def test_inference_timing(self, capsys):
         """Report inference timing for available targets."""
         from tinygrad.device import Device
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()

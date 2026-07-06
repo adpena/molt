@@ -130,7 +130,7 @@ def run_reference(output_path: str) -> dict:
     # Import falcon_ocr (requires molt runtime modules)
     t0 = time.monotonic()
     try:
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
     except ImportError as e:
         print(f"ERROR: Cannot import falcon_ocr module: {e}")
         print("This mode requires the molt runtime to be importable.")
@@ -203,7 +203,7 @@ def run_molt(output_path: str) -> dict:
 
     t0 = time.monotonic()
     try:
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
     except ImportError as e:
         print(f"ERROR: Cannot import falcon_ocr module: {e}")
         sys.exit(1)
