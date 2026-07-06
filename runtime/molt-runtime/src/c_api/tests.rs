@@ -1660,6 +1660,27 @@ fn memoryview_from_c_buffer_rejects_strided_span_past_backing() {
 }
 
 #[test]
+fn memoryview_from_c_buffer_rejects_logical_len_mismatch() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let mut data = [1u8, 2, 3, 4];
+        let mut source = MoltBufferView {
+            data: data.as_mut_ptr(),
+            len: 1,
+            backing_capacity: data.len() as u64,
+            readonly: 0,
+            ..MoltBufferView::default()
+        };
+        source.shape[0] = data.len() as isize;
+        source.strides[0] = 1;
+        source.format[0] = b'B';
+
+        let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
+        assert_none_with_exception_class(_py, view_bits, "BufferError");
+    });
+}
+
+#[test]
 fn memoryview_from_c_buffer_accepts_zero_length_null_data() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
