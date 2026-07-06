@@ -8,19 +8,24 @@ pub(super) struct RuntimeValueCall {
 }
 
 impl RuntimeValueCall {
-    pub(super) fn rhs(self, op: &OpIR) -> String {
+    pub(super) fn rhs(self, op: &OpIR) -> Result<String, String> {
         let args = op.args.as_deref().unwrap_or(&[]);
+        if args.len() != self.arity {
+            return Err(format!(
+                "{} requires {} runtime-surface argument(s), got {}",
+                op.kind,
+                self.arity,
+                args.len()
+            ));
+        }
         let rendered_args = (0..self.arity)
             .map(|idx| {
-                let value = args
-                    .get(idx)
-                    .map(|arg| rust_value(arg))
-                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                let value = rust_value(&args[idx]);
                 format!("&{value}")
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("{}({rendered_args})", self.rust_fn)
+        Ok(format!("{}({rendered_args})", self.rust_fn))
     }
 }
 
