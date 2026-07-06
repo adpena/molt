@@ -33,7 +33,6 @@ if str(SRC_ROOT) not in sys.path:
 # object instead of re-importing (and re-executing) the file twice.
 sys.modules.setdefault("tools.proof_queue", sys.modules[__name__])
 
-from molt.cli import wasm_toolchain  # noqa: E402
 from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,
@@ -2200,11 +2199,20 @@ def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
     return None
 
 
+def _load_wasm_toolchain():
+    from molt.cli import wasm_toolchain
+
+    return wasm_toolchain
+
+
 def _required_rust_targets_for_resource(
-    resource_family: str, *, repo_root: Path
+    resource_family: str, *, repo_root: Path, wasm_toolchain_module=None
 ) -> tuple[str, ...]:
     if resource_family in WASM_RESOURCE_FAMILIES:
-        return wasm_toolchain.rust_toolchain_contract(repo_root).required_wasm_targets
+        wasm_toolchain_module = wasm_toolchain_module or _load_wasm_toolchain()
+        return wasm_toolchain_module.rust_toolchain_contract(
+            repo_root
+        ).required_wasm_targets
     return ()
 
 
@@ -2214,14 +2222,32 @@ def _ensure_run_toolchain_preflight(
     resource_family: str,
 ) -> list[str] | None:
     warnings: list[str] = []
+    wasm_toolchain_module = None
     try:
+        if resource_family in WASM_RESOURCE_FAMILIES:
+            wasm_toolchain_module = _load_wasm_toolchain()
         required_targets = _required_rust_targets_for_resource(
-            resource_family, repo_root=repo_root
+            resource_family,
+            repo_root=repo_root,
+            wasm_toolchain_module=wasm_toolchain_module,
         )
-    except wasm_toolchain.RustToolchainContractError as exc:
-        return [str(exc)]
+    except ImportError as exc:
+        return [f"failed to import WASM toolchain contract: {exc}"]
+    except Exception as exc:
+        contract_error = (
+            getattr(wasm_toolchain_module, "RustToolchainContractError", None)
+            if wasm_toolchain_module is not None
+            else None
+        )
+        if contract_error is not None and isinstance(exc, contract_error):
+            return [str(exc)]
+        raise
+    if wasm_toolchain_module is None:
+        return None
     for target in required_targets:
-        if not wasm_toolchain.ensure_rustup_target(target, warnings, root=repo_root):
+        if not wasm_toolchain_module.ensure_rustup_target(
+            target, warnings, root=repo_root
+        ):
             if not warnings:
                 warnings.append(f"failed to ensure Rust target {target}")
             return warnings
