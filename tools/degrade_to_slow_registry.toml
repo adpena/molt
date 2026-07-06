@@ -173,6 +173,37 @@ make_loud because the trigger is an error, not a normal hard input.)
 """
 
 [[site]]
+file = "src/molt/cli/frontend_execution.py"
+symbol = "_run_frontend_serial_disabled_layers"
+signature = "def _run_frontend_serial_disabled_layers(...); serial_mode=\"serial_disabled\""
+classification = "sound_keep"
+justification = """
+Caller-side serial path taken when the frontend fork-cost gate disabled parallel
+(_resolve_frontend_parallel_config returned enabled=False for workers<2 /
+module_count<2). This just executes the serial layer under serial_mode=
+"serial_disabled"; the DECISION that serial is correct here lives in the already
+sound_keep-classified _resolve_frontend_parallel_config. With <2 workers/modules
+there is no parallelism to extract, so this is the only correct schedule, not a
+degrade. Frozen with its policy owner.
+"""
+
+[[site]]
+file = "src/molt/cli/frontend_execution.py"
+symbol = "_run_frontend_layer"
+signature = "policy_reason = \"worker_pool_broken_recreate\" if pool_broken else \"worker_error_isolated_serial\""
+classification = "sound_keep"
+justification = """
+Caller-side parallel-worker ERROR recovery: on a genuine worker failure this
+records policy_reason worker_pool_broken_recreate / worker_error_isolated_serial
+and re-lowers only the incomplete modules (recreating the pool once if broken,
+else keeping it for later layers). It routes through the already-registered LOUD
+_note_frontend_parallel_layer_failure (which appends the "Frontend parallel
+worker ..." warning). The trigger is an error, not a handleable-normal input, so
+this is sound error recovery, not the silent-degrade metabug. Frozen with its
+loud recorder.
+"""
+
+[[site]]
 file = "src/molt/cli/module_dependencies.py"
 symbol = "_module_dependency_closure"
 signature = "def _module_dependency_closure(...); queue = deque([module_name]); BFS over module deps"
