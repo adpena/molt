@@ -113,6 +113,7 @@ tool = "tools/gen_target_feature_manifest.py"
 outputs = [
   "src/molt/_target_feature_manifest.py",
   "wasm/target_feature_manifest.json",
+  "wasm/target_feature_constants.generated.js",
 ]
 source = "src/molt/target_feature_manifest.toml"
 check_mode = true

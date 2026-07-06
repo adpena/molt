@@ -8,6 +8,11 @@ import json
 from typing import Any
 
 _MANIFEST_JSON = r'''{
+  "constants": {
+    "BROWSER_TARGET_FAMILY": "wasm-browser",
+    "TARGET_FEATURE_MANIFEST_ASSET_NAME": "target_feature_manifest.json",
+    "WEBGPU_DISPATCH_HOST_IMPORT": "molt_gpu_webgpu_dispatch_host"
+  },
   "features": [
     {
       "description": "Native scalar machine instructions for proven typed scalar paths.",
@@ -532,6 +537,10 @@ _MANIFEST_JSON = r'''{
     },
     {
       "artifact_kind": "browser_wasm_bundle",
+      "browser_default": true,
+      "browser_host_imports": {
+        "webgpu": []
+      },
       "description": "Browser WASM bundle without GPU/NN graph acceleration.",
       "display_name": "WASM browser",
       "family": "wasm-browser",
@@ -930,6 +939,12 @@ _MANIFEST_JSON = r'''{
     },
     {
       "artifact_kind": "browser_wasm_webgpu_bundle",
+      "browser_default": false,
+      "browser_host_imports": {
+        "webgpu": [
+          "molt_gpu_webgpu_dispatch_host"
+        ]
+      },
       "description": "Browser WASM bundle with WebGPU compute dispatch for admitted tensor kernels.",
       "display_name": "WASM browser WebGPU",
       "family": "wasm-browser",
@@ -1150,6 +1165,10 @@ _MANIFEST_JSON = r'''{
     },
     {
       "artifact_kind": "browser_wasm_webnn_bundle",
+      "browser_default": false,
+      "browser_host_imports": {
+        "webgpu": []
+      },
       "description": "Browser WASM bundle with WebNN graph dispatch for admitted inference subgraphs.",
       "display_name": "WASM browser WebNN",
       "family": "wasm-browser",
@@ -1378,6 +1397,14 @@ TARGET_PROFILE_IDS: tuple[str, ...] = tuple(
 FEATURE_IDS: tuple[str, ...] = tuple(
     feature['id'] for feature in MANIFEST['features']
 )
+CONSTANTS: dict[str, str] = dict(MANIFEST['constants'])
+WEBGPU_DISPATCH_HOST_IMPORT: str = CONSTANTS['WEBGPU_DISPATCH_HOST_IMPORT']
+TARGET_FEATURE_MANIFEST_ASSET_NAME: str = CONSTANTS['TARGET_FEATURE_MANIFEST_ASSET_NAME']
+BROWSER_TARGET_FAMILY: str = CONSTANTS['BROWSER_TARGET_FAMILY']
+
+
+def target_feature_constants() -> dict[str, str]:
+    return dict(CONSTANTS)
 
 
 def target_feature_manifest() -> dict[str, Any]:

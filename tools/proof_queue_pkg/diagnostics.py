@@ -159,8 +159,50 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    rust_test_result = pq.RUST_TEST_RESULT_FAILED_RE.search(log_tail)
+    rust_cargo_test_failed = pq.RUST_CARGO_TEST_FAILED_RE.search(log_tail)
+    if rust_test_result is not None or rust_cargo_test_failed is not None:
+        failed_tests = tuple(
+            dict.fromkeys(
+                match.group("name")
+                for match in pq.RUST_FAILED_TEST_LINE_RE.finditer(log_tail)
+            )
+        )
+        evidence_parts: list[str] = []
+        if rust_test_result is not None:
+            evidence_parts.append(rust_test_result.group(0))
+        if rust_cargo_test_failed is not None:
+            evidence_parts.append(rust_cargo_test_failed.group(0))
+        if failed_tests:
+            listed = ", ".join(failed_tests[:5])
+            if len(failed_tests) > 5:
+                listed += f", ... (+{len(failed_tests) - 5} more)"
+            evidence_parts.append(f"failed_tests={listed}")
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="rust-test-failure",
+                severity="error",
+                summary=(
+                    "Rust proof compiled and reached test execution, but "
+                    f"cargo test reported {len(failed_tests) or 'failed'} "
+                    "test failure(s)."
+                ),
+                evidence=" ".join(evidence_parts),
+                next_action=(
+                    "Fix the failing Rust test or the product contract it protects, "
+                    "then rerun the same queue lane. This row reached test "
+                    "execution; do not classify it as a compiler failure."
+                ),
+                scopes=("runtime/", "tools/proof_queue.py"),
+            )
+        )
+
     match = pq.RUST_COMPILER_ERROR_RE.search(log_tail)
-    if match is not None:
+    if (
+        match is not None
+        and rust_test_result is None
+        and rust_cargo_test_failed is None
+    ):
         code = match.group("code") or "rustc"
         message = match.group("message").strip()
         diagnostics.append(
@@ -355,6 +397,31 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "named pact-witness-acceptance lane after the structural fix."
                 ),
                 scopes=("tools/pact_witness_acceptance.py", "collab/pact/"),
+            )
+        )
+
+    match = pq.PACT_WITNESS_FIXTURE_MISSING_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="pact-witness-fixture-missing",
+                severity="error",
+                summary=(
+                    "Pact acceptance failed after build/link because the Kernel A "
+                    "fixture was not available to the run directory."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Make the acceptance runner regenerate the deterministic "
+                    "fixture/reference oracle inside the run directory, then "
+                    "rerun the named pact-witness-acceptance lane; do not check "
+                    "binary fixture outputs into source."
+                ),
+                scopes=(
+                    "tools/pact_witness_acceptance.py",
+                    "collab/pact/pact_witness_kernel/make_fixture.py",
+                    "collab/pact/pact_witness_kernel/field_solve.py",
+                ),
             )
         )
 

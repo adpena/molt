@@ -83,6 +83,55 @@ pub(crate) fn reserved_wasm_runtime_direct_callable_info_for_table_idx(
     Some(info)
 }
 
+/// Map a reserved-callable table index — in either the direct region OR the
+/// trampoline region — to its canonical *direct* table slot, but only when the
+/// callable uses `Direct` dispatch.
+///
+/// The fixed-arity call lanes lower a Python call of a reserved callable to
+/// `molt_call_indirectN(<slot>, <N positional args>)`. The host resolves the
+/// slot's region: a *direct*-region slot is invoked as an N-argument direct
+/// call; a *trampoline*-region slot is invoked with the closure/argv/argc
+/// convention (exactly 3 host arguments). A fixed-arity lane therefore MUST
+/// target the direct region for a `Direct`-dispatch reserved callable; handing
+/// it the trampoline slot makes the host reject the call as a malformed
+/// trampoline. `reserved_wasm_runtime_callable_info_for_table_idx` only
+/// recognizes the direct region, so a function object whose stored `fn_ptr`
+/// already is the trampoline slot was silently treated as a non-reserved
+/// pointer and routed straight back to the trampoline region. This closes that
+/// gap by recognizing both regions and always returning the direct slot.
+/// Pure region math for [`reserved_wasm_runtime_direct_slot_for_any_reserved_slot`],
+/// factored out so the direct/trampoline-region reconciliation is unit-testable
+/// on native targets. Given a table index that may sit in the direct region
+/// (`[direct_start, direct_start + count)`) or the trampoline region
+/// (`[trampoline_start, trampoline_start + count)`), returns the reserved
+/// callable index it belongs to, or `None` when it is outside both regions.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn reserved_slot_index_for_any_region(
+    table_idx: u64,
+    direct_start: u64,
+    trampoline_start: u64,
+    count: u64,
+) -> Option<u64> {
+    table_idx
+        .checked_sub(direct_start)
+        .filter(|o| *o < count)
+        .or_else(|| table_idx.checked_sub(trampoline_start).filter(|o| *o < count))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn reserved_wasm_runtime_direct_slot_for_any_reserved_slot(table_idx: u64) -> Option<u64> {
+    let base = crate::wasm_table_base();
+    let direct_start = base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE;
+    let trampoline_start = base + wasm_callables::RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE;
+    let count = wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
+    let idx = reserved_slot_index_for_any_region(table_idx, direct_start, trampoline_start, count)?;
+    let dispatch = wasm_callables::reserved_wasm_runtime_callable_dispatch_for_index(idx)?;
+    if dispatch != wasm_callables::ReservedRuntimeCallableDispatch::Direct {
+        return None;
+    }
+    Some(direct_start + idx)
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
     let base = crate::wasm_table_base();
@@ -1508,5 +1557,69 @@ mod wasm_runtime_callable_tests {
     #[test]
     fn wasm_runtime_callable_symbols_resolve_in_functions_scope() {
         wasm_callables::assert_reserved_runtime_symbols_resolve();
+    }
+
+    /// Regression for the reserved-callable fixed-arity dispatch bug: a `Direct`
+    /// reserved callable (e.g. `molt_type_new`) whose function object stored the
+    /// *trampoline* table slot as its identity pointer was routed back onto the
+    /// trampoline lane, emitting `molt_call_indirectN` with N positional args
+    /// into the trampoline region — which the host rejects because that region
+    /// expects the 3-argument closure/argv/argc convention. The region math must
+    /// recognize a reserved slot from EITHER region so the fixed-arity lanes can
+    /// canonicalize it back to the direct slot.
+    #[test]
+    fn reserved_slot_index_resolves_from_direct_and_trampoline_regions() {
+        // Mirror the wasm layout: direct region [1000, 1024), trampoline region
+        // [1024, 1048), 24 reserved callables.
+        let direct_start = 1000u64;
+        let count = 24u64;
+        let trampoline_start = direct_start + count;
+
+        // molt_type_new is reserved index 1.
+        let direct_slot = direct_start + 1;
+        let trampoline_slot = trampoline_start + 1;
+
+        // A pointer in the direct region resolves to its index.
+        assert_eq!(
+            reserved_slot_index_for_any_region(
+                direct_slot,
+                direct_start,
+                trampoline_start,
+                count
+            ),
+            Some(1)
+        );
+        // The bug shape: a pointer in the TRAMPOLINE region must also resolve to
+        // the same reserved index (previously returned None → dispatch fell back
+        // to the trampoline lane and produced the arg-count mismatch).
+        assert_eq!(
+            reserved_slot_index_for_any_region(
+                trampoline_slot,
+                direct_start,
+                trampoline_start,
+                count
+            ),
+            Some(1)
+        );
+        // Out-of-range indices (below both regions, at the boundary, and above
+        // the trampoline region) resolve to nothing.
+        assert_eq!(
+            reserved_slot_index_for_any_region(
+                direct_start - 1,
+                direct_start,
+                trampoline_start,
+                count
+            ),
+            None
+        );
+        assert_eq!(
+            reserved_slot_index_for_any_region(
+                trampoline_start + count,
+                direct_start,
+                trampoline_start,
+                count
+            ),
+            None
+        );
     }
 }

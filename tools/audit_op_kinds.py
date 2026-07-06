@@ -143,9 +143,13 @@ BASELINE_PATH = ROOT / "tools/op_kinds_baseline.json"
 def read_rust_module_cluster(root_file: Path) -> str:
     """Read a Rust module root plus its extracted sibling module tree."""
     parts: list[str] = []
-    module_dir = root_file.with_suffix("")
+    module_dir = root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
     if module_dir.is_dir():
         for child in sorted(module_dir.rglob("*.rs")):
+            if child == root_file:
+                continue
+            if child.name == "tests.rs":
+                continue
             if "tests" in child.relative_to(module_dir).parts:
                 continue
             parts.append(child.read_text(encoding="utf-8"))

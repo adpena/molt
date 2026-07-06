@@ -76,6 +76,10 @@ _KIND_CODES: Mapping[str, int] = {
 }
 
 
+# Reinit policy after `del sys.modules[name]` (design §4.3 / parity row 5.8):
+# source modules fully re-execute; extension modules resurrect from the
+# first-init dict snapshot (snapshot custody lands in PR4; until then the
+# runtime fails closed on extension reinit with a named diagnostic).
 def _row_deps(value: object) -> tuple[object, ...]:
     if isinstance(value, list | tuple):
         return tuple(value)
@@ -100,10 +104,7 @@ def _optional_row_index(
         return None
     return value
 
-# Reinit policy after `del sys.modules[name]` (design §4.3 / parity row 5.8):
-# source modules fully re-execute; extension modules resurrect from the
-# first-init dict snapshot (snapshot custody lands in PR4; until then the
-# runtime fails closed on extension reinit with a named diagnostic).
+
 MODULE_FLAG_REINIT_RESURRECT = 0x01
 
 # Modules whose registry kind is RuntimeBuiltin: the runtime itself

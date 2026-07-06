@@ -67,6 +67,12 @@ from molt.wasm_artifact import (
 )
 
 
+# Generated single-source browser target-feature constants module. Emitted by
+# tools/gen_target_feature_manifest.py and imported by browser_target_features.js,
+# so it must ship alongside the other browser embed assets.
+TARGET_FEATURE_CONSTANTS_JS_ASSET_NAME = "target_feature_constants.generated.js"
+
+
 _BUNDLE_EXCLUDED_NATIVE_SUFFIXES = {
     ".a",
     ".dll",
@@ -962,6 +968,9 @@ def _prepare_non_native_build_result(
             browser_target_features_src = (
                 molt_root / "wasm" / "browser_target_features.js"
             )
+            target_feature_constants_js_src = (
+                molt_root / "wasm" / TARGET_FEATURE_CONSTANTS_JS_ASSET_NAME
+            )
             loader_bridge_src = molt_root / "wasm" / "loader_bridge.js"
             target_feature_manifest_src = (
                 molt_root / "wasm" / TARGET_FEATURE_MANIFEST_ASSET_NAME
@@ -972,6 +981,9 @@ def _prepare_non_native_build_result(
                 browser_gpu_worker_size = browser_gpu_worker_src.stat().st_size
                 browser_target_features_size = (
                     browser_target_features_src.stat().st_size
+                )
+                target_feature_constants_js_size = (
+                    target_feature_constants_js_src.stat().st_size
                 )
                 loader_bridge_size = loader_bridge_src.stat().st_size
                 target_feature_manifest_asset = _file_asset(
@@ -1105,6 +1117,10 @@ def _prepare_non_native_build_result(
                     "path": "browser_target_features.js",
                     "size": browser_target_features_size,
                 },
+                "target_feature_constants": {
+                    "path": TARGET_FEATURE_CONSTANTS_JS_ASSET_NAME,
+                    "size": target_feature_constants_js_size,
+                },
                 "loader_bridge": {
                     "path": "loader_bridge.js",
                     "size": loader_bridge_size,
@@ -1226,6 +1242,20 @@ def _prepare_non_native_build_result(
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime browser target-feature support: {exc}",
+                    json_output,
+                    command="build",
+                )
+            target_feature_constants_js_dst = (
+                split_dir / TARGET_FEATURE_CONSTANTS_JS_ASSET_NAME
+            )
+            try:
+                _atomic_copy_file(
+                    target_feature_constants_js_src,
+                    target_feature_constants_js_dst,
+                )
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime target-feature constants: {exc}",
                     json_output,
                     command="build",
                 )

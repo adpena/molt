@@ -39,9 +39,13 @@ OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
 
 def _read_rs_module_cluster(root_file: Path) -> str:
     parts: list[str] = []
-    module_dir = root_file.with_suffix("")
+    module_dir = root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
     if module_dir.is_dir():
         for child in sorted(module_dir.rglob("*.rs")):
+            if child == root_file:
+                continue
+            if child.name == "tests.rs":
+                continue
             if "tests" in child.relative_to(module_dir).parts:
                 continue
             parts.append(child.read_text(encoding="utf-8"))
@@ -1748,7 +1752,7 @@ def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
     for opcode in ("CallBuiltin", "CallMethod", "Shl", "ConstInt"):
         assert f"OpCode::{opcode} => SccpConstantEvalRule::None," in eval_block
 
-    production = sccp.split("#[cfg(test)]", maxsplit=1)[0]
+    production = _rs_production_source(sccp)
     assert "seed_constant_lattice_value(op.opcode, &op.attrs)" in production
     assert "opcode_sccp_constant_seed_rule_table(op.opcode)" in production
     assert "opcode_sccp_constant_eval_rule_table(opcode)" in production
@@ -3105,7 +3109,7 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     assert "OpCode::Is => GeneratorFusionIterUseRole::NoneGuard," in iter_use_block
     assert "OpCode::Add => GeneratorFusionIterUseRole::None," in iter_use_block
 
-    production = generator_fusion.split("#[cfg(test)]", maxsplit=1)[0]
+    production = _rs_production_source(generator_fusion)
     assert "opcode_generator_fusion_poll_role_table" in production
     body = production.split("fn is_poll_fusable", maxsplit=1)[1].split(
         "fn entry_has_predecessor", maxsplit=1
@@ -4169,9 +4173,7 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in body
     assert "OpCode::" not in body
 
-    transparent_start = alias.index("fn transparent_alias_root(")
-    transparent_end = alias.index("// Typed-slot store helpers", transparent_start)
-    transparent_body = alias[transparent_start:transparent_end]
+    transparent_body = _rust_fn_body(alias, "fn transparent_alias_root(")
     assert "opcode_alias_transparent_alias_role_table" in transparent_body
     assert "match op.opcode" not in transparent_body
     assert "OpCode::" not in transparent_body

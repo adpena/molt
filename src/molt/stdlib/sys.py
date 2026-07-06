@@ -166,7 +166,13 @@ def _noop_is_string_obj(val: object) -> bool:
 
 
 def _platform_default() -> str:
-    return "unknown"
+    try:
+        value = _MOLT_SYS_PLATFORM()
+        if isinstance(value, str):
+            return value
+    except Exception:
+        pass
+    return _return_platform_unknown()
 
 
 def _platform_is_windows() -> bool:
@@ -294,6 +300,7 @@ _MOLT_SYS_IMPLEMENTATION_PAYLOAD = _safe_intrinsic(
     "molt_sys_implementation_payload", None
 )
 _MOLT_SYS_FLAGS_PAYLOAD = _safe_intrinsic("molt_sys_flags_payload", None)
+_MOLT_SYS_PLATFORM = _safe_intrinsic("molt_sys_platform", _return_platform_unknown)
 _MOLT_SYS_IS_FINALIZING = _safe_intrinsic("molt_sys_is_finalizing", _return_false)
 _MOLT_SYS_GETREFCOUNT = _safe_intrinsic("molt_sys_getrefcount", _return_refcount_default)
 _MOLT_SYS_SETTRACE = _safe_intrinsic("molt_sys_settrace", None)
@@ -817,8 +824,16 @@ def _thread_info_tuple_type():
     return _ThreadInfoTuple
 
 
-platform = "unknown"
-_SYS_ABIFLAGS_AVAILABLE = False
+platform = _platform_default()
+
+
+def _sys_abiflags_is_available(platform_name: str) -> bool:
+    return not platform_name.startswith("win")
+
+
+_SYS_ABIFLAGS_AVAILABLE = _sys_abiflags_is_available(platform)
+if _SYS_ABIFLAGS_AVAILABLE:
+    __all__.insert(__all__.index("flags"), "abiflags")
 
 
 def _try_str_intrinsic(fn: object, fallback: str) -> str:
@@ -871,6 +886,7 @@ def _init_metadata():
     _rvi = tuple(raw_version_info)
     hexversion_value = _try_int_intrinsic(_MOLT_SYS_HEXVERSION, 0x030C00F0)
     api_version_value = _try_int_intrinsic(_MOLT_SYS_API_VERSION, 0)
+    platform_value = _try_str_intrinsic(_MOLT_SYS_PLATFORM, _return_platform_unknown())
     abiflags_value = ""
     if _SYS_ABIFLAGS_AVAILABLE:
         abiflags_value = _try_str_intrinsic(_MOLT_SYS_ABIFLAGS, "")
@@ -958,6 +974,7 @@ def _init_metadata():
     g["version_info"] = _version_info_tuple_type()(_rvi)
     g["hexversion"] = hexversion_value
     g["api_version"] = api_version_value
+    g["platform"] = platform_value
     if _SYS_ABIFLAGS_AVAILABLE:
         g["abiflags"] = abiflags_value
     else:

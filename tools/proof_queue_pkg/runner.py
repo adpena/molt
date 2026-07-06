@@ -1,6 +1,6 @@
 """Proof-run execution lifecycle (moved from tools/proof_queue.py).
 
-``_run_one`` drives one queued proof: contention gate, insertion, policy
+``_run_one`` drives one queued or dispatched proof: contention gate, insertion, policy
 and toolchain preflight, memory-guarded launch, guard-completion wait, and
 terminal projection. Shared helpers and monkeypatch-sensitive primitives
 stay in the facade module ``pq`` and are reached through ``pq.``.
