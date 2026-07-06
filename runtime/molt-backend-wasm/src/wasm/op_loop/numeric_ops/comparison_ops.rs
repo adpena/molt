@@ -1,4 +1,6 @@
+#[path = "comparison_ops/equality.rs"]
 mod equality;
+#[path = "comparison_ops/ordered.rs"]
 mod ordered;
 
 use super::common::emit_boxed_binary_result;
