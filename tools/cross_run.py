@@ -75,6 +75,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 # Repo root: tools/cross_run.py -> tools -> repo
@@ -460,7 +461,7 @@ def _local_expected(case: Case) -> str:
 # ---------------------------------------------------------------------------
 
 
-class Transport:
+class Transport(ABC):
     """Abstract remote transport — ssh or docker run."""
 
     def __init__(self, host: Host) -> None:
@@ -473,17 +474,21 @@ class Transport:
 
     # API -----------------------------------------------------------------
 
+    @abstractmethod
     def prepare(self) -> None:  # pragma: no cover - subclass
-        raise NotImplementedError
+        pass
 
+    @abstractmethod
     def push(self, local_files: list[Path]) -> None:  # pragma: no cover
-        raise NotImplementedError
+        pass
 
+    @abstractmethod
     def run(self, remote_argv: list[str], *, timeout: int) -> tuple[int, str, str]:
-        raise NotImplementedError
+        pass
 
+    @abstractmethod
     def cleanup(self) -> None:  # pragma: no cover
-        raise NotImplementedError
+        pass
 
 
 class SSHTransport(Transport):

@@ -49,6 +49,7 @@ RUNTIME_IMPORT_FIXED_RS = (
 RUNTIME_IMPORT_ABI_RS = ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
 
 ABI_I64_RETURNS = {"u64", "i64"}
+ABI_I32_RETURNS = {"u32", "i32"}
 ABI_VOID_RETURNS = {"", "()", "void"}
 ABI_I64_PARAMS = {"u64", "i64"}
 
@@ -306,6 +307,19 @@ def runtime_import_signature_constants(
     return out
 
 
+def fixed_runtime_param_abi_constants(fixed_text: str) -> dict[str, tuple[str, ...]]:
+    param_constants: dict[str, tuple[str, ...]] = {}
+    for match in re.finditer(
+        r"const\s+(?P<name>[A-Z][A-Z0-9_]*)\s*:\s*&\[FixedRuntimeParamAbi\]\s*=\s*&\[(?P<body>.*?)\]\s*;",
+        fixed_text,
+        re.DOTALL,
+    ):
+        param_constants[match.group("name")] = tuple(
+            re.findall(r"FixedRuntimeParamAbi::(I64|Ptr)", match.group("body"))
+        )
+    return param_constants
+
+
 def runtime_import_abi_facts(
     conservative_path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
     fixed_path: Path = RUNTIME_IMPORT_FIXED_RS,
@@ -314,6 +328,7 @@ def runtime_import_abi_facts(
     conservative_text = conservative_path.read_text(encoding="utf-8")
     fixed_text = fixed_path.read_text(encoding="utf-8")
     constants = runtime_import_signature_constants(constants_path)
+    fixed_param_constants = fixed_runtime_param_abi_constants(fixed_text)
     facts: dict[tuple[str, int], AbiFact] = {}
     duplicates: list[DuplicateAbiFact] = []
     for match in re.finditer(
@@ -371,17 +386,37 @@ def runtime_import_abi_facts(
             and fact.return_abi == expected_return
         ):
             _insert_abi_fact(facts, duplicates, fact)
+    for match in re.finditer(
+        r"\bcustom\(\s*"
+        r"\"(?P<name>molt_[^\"]+)\"\s*,\s*"
+        r"(?P<params>[A-Z][A-Z0-9_]*)\s*,\s*"
+        r"FixedRuntimeReturnAbi::(?P<abi>I64|I32)\s*,",
+        fixed_text,
+        re.DOTALL,
+    ):
+        param_abis = fixed_param_constants.get(match.group("params"))
+        if param_abis is None:
+            continue
+        fact = AbiFact(
+            match.group("name"),
+            len(param_abis),
+            match.group("abi"),
+            param_abis,
+        )
+        _insert_abi_fact(facts, duplicates, fact)
     return facts, tuple(sorted(duplicates))
 
 
 def rust_return_to_abi(
-    rust_return: str, aliases: dict[str, str] | None = None
+    rust_return: str, aliases: dict[str, str] | None = None, *, allow_i32: bool = False
 ) -> str | None:
     normalized = normalize_rust_type(rust_return, aliases or {})
     if normalized in ABI_VOID_RETURNS:
         return "Void"
     if normalized in ABI_I64_RETURNS:
         return "I64"
+    if allow_i32 and normalized in ABI_I32_RETURNS:
+        return "I32"
     return None
 
 
@@ -389,6 +424,8 @@ def rust_param_to_abi(rust_param: str, aliases: dict[str, str]) -> str | None:
     normalized = normalize_rust_type(rust_param, aliases)
     if normalized in ABI_I64_PARAMS:
         return "I64"
+    if normalized.startswith("*mut ") or normalized.startswith("*const "):
+        return "Ptr"
     return None
 
 
@@ -448,7 +485,9 @@ def validate_classified_facts(
                 )
             )
 
-        expected_return_abi = rust_return_to_abi(export.rust_return, aliases)
+        expected_return_abi = rust_return_to_abi(
+            export.rust_return, aliases, allow_i32=True
+        )
         if expected_return_abi is None:
             issues.append(
                 ClassifiedFactIssue(
@@ -457,7 +496,7 @@ def validate_classified_facts(
                     fact.arity,
                     str(export.arity),
                     export.rust_return,
-                    "<I64-or-Void>",
+                    "<I64-I32-or-Void>",
                     fact.return_abi,
                     export.source,
                 )

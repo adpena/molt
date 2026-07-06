@@ -133,7 +133,7 @@ CALL_FACTS: list[CallFact] = [
         key="noescape_args",
         label="arguments do not escape",
         status=TRANSIENT,
-        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis.rs",
+        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis/classify.rs",
         evidence_symbol="EscapeState",
         how_to_read="escape_analysis::analyze() yields per-ValueId EscapeState; "
         "the call's arg-escape summary is not attached to the call",
@@ -144,7 +144,7 @@ CALL_FACTS: list[CallFact] = [
         key="no_alloc",
         label="call performs no heap allocation",
         status=TRANSIENT,
-        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis.rs",
+        evidence_file="runtime/molt-passes/src/tir/passes/escape_analysis/apply.rs",
         evidence_symbol="StackAlloc",
         how_to_read="escape pass rewrites NoEscape Alloc→StackAlloc per value; "
         "there is no per-call 'callee allocates?' summary on the call",
