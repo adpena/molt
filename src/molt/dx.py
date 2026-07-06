@@ -75,6 +75,8 @@ DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS = (
 )
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
+DEFAULT_UV_PROJECT_PURPOSE = "dx"
+DEFAULT_UV_PROJECT_PYTHON = "3.12"
 
 
 class DxConfigError(RuntimeError):
@@ -90,26 +92,39 @@ def uv_project_env_component(value: str) -> str:
     return component or "default"
 
 
+def source_root_fingerprint(source_root: Path) -> str:
+    resolved = str(source_root.expanduser().resolve())
+    if os.name == "nt":
+        resolved = resolved.casefold()
+    return hashlib.blake2b(resolved.encode("utf-8"), digest_size=6).hexdigest()
+
+
 def stable_uv_project_env_dir(
     artifact_root: Path,
     *,
+    source_root: Path,
     purpose: str,
     python: str,
 ) -> Path:
-    name = f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
+    name = "__".join(
+        (
+            uv_project_env_component(purpose),
+            f"py{uv_project_env_component(python)}",
+            f"src{source_root_fingerprint(source_root)}",
+        )
+    )
     return (
         artifact_root.expanduser().resolve() / "tmp" / "uv-project-envs" / name
     ).resolve()
 
 
-# The uv project environment (installed deps + editable molt) is a pure function
-# of (project source, python) — NOT of the session — so it is stable and shared
-# across sessions by default; only the Cargo target dir is session-scoped (build
-# isolation). Session-scoping the uv env too churns a fresh `.venv` per proof and
-# was the DX lock-churn source. `MOLT_UV_PROJECT_ENV_SESSION_SCOPED` is the opt-in
-# for the rare case that genuinely needs an isolated uv env.
-DEFAULT_UV_PROJECT_PURPOSE = "dx"
-DEFAULT_UV_PROJECT_PYTHON = "3.12"
+def session_uv_project_env_dir(artifact_root: Path, *, session_id: str) -> Path:
+    return (
+        artifact_root.expanduser().resolve()
+        / "tmp"
+        / "uv-project-envs"
+        / session_artifact_component(session_id)
+    ).resolve()
 
 
 def uv_project_env_session_scoped(env: Mapping[str, str]) -> bool:
@@ -119,14 +134,6 @@ def uv_project_env_session_scoped(env: Mapping[str, str]) -> bool:
         "yes",
         "on",
     }
-
-
-def stable_uv_project_env_from_env(env: Mapping[str, str], artifact_root: Path) -> Path:
-    return stable_uv_project_env_dir(
-        artifact_root,
-        purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or DEFAULT_UV_PROJECT_PURPOSE,
-        python=env.get("MOLT_UV_PROJECT_PYTHON") or DEFAULT_UV_PROJECT_PYTHON,
-    )
 
 
 def session_scoped_target_dir(target_root: Path, session_id: str | None) -> Path:
@@ -695,15 +702,27 @@ class RunContext:
             path = self.root / path
         return path.resolve()
 
-    def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
+    def uv_project_env_dir(
+        self,
+        env: Mapping[str, str],
+        *,
+        session_scoped: bool = False,
+        purpose: str = DEFAULT_UV_PROJECT_PURPOSE,
+        python: str = DEFAULT_UV_PROJECT_PYTHON,
+    ) -> Path:
         explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
         if explicit:
             return self._resolve_env_path(explicit)
         ext_root = self._resolve_env_path(env.get("MOLT_EXT_ROOT", str(self.root)))
-        if uv_project_env_session_scoped(env):
+        if session_scoped or uv_project_env_session_scoped(env):
             session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
-            return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
-        return stable_uv_project_env_from_env(env, ext_root)
+            return session_uv_project_env_dir(ext_root, session_id=session)
+        return stable_uv_project_env_dir(
+            ext_root,
+            source_root=self.root,
+            purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or purpose,
+            python=env.get("MOLT_UV_PROJECT_PYTHON") or python,
+        )
 
     def canonical_env(
         self,
@@ -711,6 +730,9 @@ class RunContext:
         *,
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
+        uv_project_env_session_scoped: bool = False,
+        uv_project_purpose: str = DEFAULT_UV_PROJECT_PURPOSE,
+        uv_project_python: str = DEFAULT_UV_PROJECT_PYTHON,
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
@@ -752,7 +774,15 @@ class RunContext:
         install_default("MOLT_DIFF_ROOT", ext_root / "tmp" / "diff")
         install_default("MOLT_DIFF_TMPDIR", ext_root / "tmp")
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
-        install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
+        install_default(
+            "UV_PROJECT_ENVIRONMENT",
+            self.uv_project_env_dir(
+                env,
+                session_scoped=uv_project_env_session_scoped,
+                purpose=uv_project_purpose,
+                python=uv_project_python,
+            ),
+        )
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
         # MOLT_TARGET_ROOT (wasi-sysroot/binaryen/zig toolchains) flows through
@@ -795,11 +825,17 @@ class RunContext:
         *,
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
+        uv_project_env_session_scoped: bool = False,
+        uv_project_purpose: str = DEFAULT_UV_PROJECT_PURPOSE,
+        uv_project_python: str = DEFAULT_UV_PROJECT_PYTHON,
     ) -> dict[str, str]:
         env = self.canonical_env(
             base,
             create_dirs=create_dirs,
             force_default_keys=force_default_keys,
+            uv_project_env_session_scoped=uv_project_env_session_scoped,
+            uv_project_purpose=uv_project_purpose,
+            uv_project_python=uv_project_python,
         )
         _install_dx_defaults(self.root, env)
         if create_dirs:
@@ -817,6 +853,9 @@ def development_artifact_env(
     session_prefix: str = "dev",
     session_id: str | None = None,
     create_dirs: bool = True,
+    uv_project_env_session_scoped: bool = False,
+    uv_project_purpose: str = DEFAULT_UV_PROJECT_PURPOSE,
+    uv_project_python: str = DEFAULT_UV_PROJECT_PYTHON,
 ) -> dict[str, str]:
     """Resolve Molt developer build/cache/temp roots through the DX authority."""
 
@@ -827,7 +866,13 @@ def development_artifact_env(
         repo_root,
         session_prefix=session_prefix,
         prefer_external_artifacts=True,
-    ).dx_env(env, create_dirs=create_dirs)
+    ).dx_env(
+        env,
+        create_dirs=create_dirs,
+        uv_project_env_session_scoped=uv_project_env_session_scoped,
+        uv_project_purpose=uv_project_purpose,
+        uv_project_python=uv_project_python,
+    )
     src = repo_root.resolve() / "src"
     existing = env.get("PYTHONPATH", "")
     parts = [part for part in existing.split(os.pathsep) if part]
@@ -866,7 +911,14 @@ class DxProject:
     def project_env_dir(self) -> Path:
         return self.root / ".venv"
 
-    def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
+    def uv_project_env_dir(
+        self,
+        env: Mapping[str, str],
+        *,
+        session_scoped: bool = False,
+        purpose: str = DEFAULT_UV_PROJECT_PURPOSE,
+        python: str = DEFAULT_UV_PROJECT_PYTHON,
+    ) -> Path:
         explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
         if explicit:
             path = Path(explicit).expanduser()
@@ -877,10 +929,15 @@ class DxProject:
         if not artifact_root.is_absolute():
             artifact_root = self.root / artifact_root
         artifact_root = artifact_root.resolve()
-        if uv_project_env_session_scoped(env):
+        if session_scoped or uv_project_env_session_scoped(env):
             session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
-            return (artifact_root / "tmp" / "uv-project-envs" / session).resolve()
-        return stable_uv_project_env_from_env(env, artifact_root)
+            return session_uv_project_env_dir(artifact_root, session_id=session)
+        return stable_uv_project_env_dir(
+            artifact_root,
+            source_root=self.root,
+            purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or purpose,
+            python=env.get("MOLT_UV_PROJECT_PYTHON") or python,
+        )
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
         if env is not None:
@@ -901,7 +958,12 @@ class DxProject:
     ) -> dict[str, str]:
         run_env = dict(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        run_env["UV_PROJECT_ENVIRONMENT"] = str(self.uv_project_env_dir(run_env))
+        run_env["UV_PROJECT_ENVIRONMENT"] = str(
+            self.uv_project_env_dir(
+                run_env,
+                python=python or DEFAULT_UV_PROJECT_PYTHON,
+            )
+        )
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)
         if run_env.get("UV_NO_SYNC") == "1":

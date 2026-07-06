@@ -216,6 +216,36 @@ def test_debt_probe_counts_comments_and_rust_macros(tmp_path: Path):
     }
 
 
+def test_debt_probe_ignores_marker_vocabulary_in_fail_closed_gate(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "fail_closed_gate.py").write_text(
+        '# explicit shortcut markers HACK / WORKAROUND / "ignore for now"\n'
+        "# Scan C - todo-as-plan reachable from a shipped support surface\n"
+        "# structured TODO taxonomy (`status:divergent` / `status:partial`)\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_debt_markers(tmp_path)
+
+    assert findings == []
+
+
+def test_debt_probe_counts_real_marker_in_fail_closed_gate(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "fail_closed_gate.py").write_text(
+        "# TODO: route this through the generated authority\n",
+        encoding="utf-8",
+    )
+
+    findings = SA.probe_debt_markers(tmp_path)
+    metrics = SA.ratchet_metrics(findings)
+
+    assert metrics["debt_markers_total"] == 1
+    assert findings[0].location == "tools/fail_closed_gate.py:1"
+
+
 def test_debt_probe_ignores_bare_upstream_stdlib_xxx_not_owned_debt(tmp_path: Path):
     stdlib = tmp_path / "src" / "molt" / "stdlib"
     stdlib.mkdir(parents=True)

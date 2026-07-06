@@ -126,9 +126,11 @@ is reconciled.
   `D:\molt-target` is rehomed unless the operator sets
   `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext also emits `UV_LINK_MODE=copy` for
   exFAT APDataStore roots unless an explicit operator value is present. In
-  `--dx` mode it emits stable `UV_PROJECT_ENVIRONMENT=tmp/uv-project-envs/dx__py3.12`
+  `--dx` mode it emits stable, source-keyed
+  `UV_PROJECT_ENVIRONMENT=tmp/uv-project-envs/dx__py3.12__src<source-fingerprint>`
   for the standard Python 3.12 lane instead of a per-process `run-<pid>` env, so
-  repeated checks reuse one uv environment while Cargo output remains
+  repeated checks in one checkout reuse one uv environment while sibling
+  worktrees do not share stale editable installs and Cargo output remains
   session-scoped. Use `--session-scoped-uv-project-env` only when the uv
   environment must be isolated too.
   Maintainer/agent git worktrees go under `D:\Molt\worktrees`, never

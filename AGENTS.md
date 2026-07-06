@@ -178,11 +178,14 @@ is reconciled.
   resolver script, for example
   `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`;
   then use `uv run --active --project . --python 3.12 ...` for project commands.
-  In `--dx` mode this emits a stable `UV_PROJECT_ENVIRONMENT`
-  (`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env,
-  so repeated checks reuse the same uv environment while Cargo output remains
-  session-scoped by `MOLT_SESSION_ID`. Use `--session-scoped-uv-project-env`
-  only when the uv environment must be isolated too.
+  In `--dx` mode this emits a stable, source-keyed
+  `UV_PROJECT_ENVIRONMENT`
+  (`tmp/uv-project-envs/dx__py3.12__src<source-fingerprint>`) rather than a
+  per-process `run-<pid>` env, so repeated checks in one checkout reuse the same
+  uv environment while sibling worktrees do not share stale editable installs
+  and Cargo output remains session-scoped by `MOLT_SESSION_ID`. Use
+  `--session-scoped-uv-project-env` only when the uv environment must be
+  isolated too.
   Do not use `uv run` to obtain the first env in a cold checkout, because
   `UV_LINK_MODE=copy` must be present before uv touches `.venv` on
   APDataStore/exFAT.

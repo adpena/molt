@@ -17,9 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 from molt.dx import development_artifact_env, uv_project_env_component  # noqa: E402
 
 
-def _session_id(*, python: str, purpose: str, env: Mapping[str, str]) -> str:
-    if env.get("MOLT_SESSION_ID"):
-        return env["MOLT_SESSION_ID"]
+def _purpose_python_env_name(*, python: str, purpose: str) -> str:
     return f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
 
 
@@ -35,8 +33,10 @@ def project_environment_path(
         repo_root,
         env_view,
         session_prefix="uv-project-env",
-        session_id=_session_id(python=python, purpose=purpose, env=env_view),
+        session_id=_purpose_python_env_name(python=python, purpose=purpose),
         create_dirs=False,
+        uv_project_purpose=purpose,
+        uv_project_python=python,
     )
     return Path(resolved["UV_PROJECT_ENVIRONMENT"]).expanduser().resolve()
 
@@ -59,8 +59,10 @@ def uv_project_env(
         repo_root,
         merged,
         session_prefix="uv-project-env",
-        session_id=_session_id(python=python, purpose=purpose, env=merged),
+        session_id=_purpose_python_env_name(python=python, purpose=purpose),
         create_dirs=True,
+        uv_project_purpose=purpose,
+        uv_project_python=python,
     )
     return merged
 

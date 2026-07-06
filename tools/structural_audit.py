@@ -1057,6 +1057,8 @@ def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
         for match in _COMMENT_DEBT_RE.finditer(comment):
             if _is_stdlib_upstream_advisory_marker(path, comment, match):
                 continue
+            if _is_debt_marker_vocabulary_reference(path, comment, match):
+                continue
             hits.append(DebtMarkerHit(line=line, marker=match.group(0)))
     if code_text:
         for match in _CODE_DEBT_RE.finditer(code_text):
@@ -1085,6 +1087,51 @@ def _is_stdlib_upstream_advisory_marker(
         return False
     marker = match.group(0)
     return marker.upper() == "XXX"
+
+
+_DEBT_MARKER_VOCABULARY_PATHS = {
+    "tests/cli/test_fail_closed_gate.py",
+    "tools/ci_gate.py",
+    "tools/fail_closed_gate.py",
+}
+_DEBT_MARKER_VOCABULARY_CONTEXT_RE = re.compile(
+    r"\b(gate|marker|markers|scan|scanner|taxonomy|token|tokens|todo-as-plan)\b|"
+    r"\bstatus:",
+    re.IGNORECASE,
+)
+
+
+def _comment_payload(comment: str) -> str:
+    text = comment.strip()
+    for prefix in ("#", "//", "/*", "*"):
+        if text.startswith(prefix):
+            text = text[len(prefix) :].strip()
+            break
+    if text.endswith("*/"):
+        text = text[:-2].strip()
+    return text
+
+
+def _is_leading_debt_marker(payload: str, marker: str) -> bool:
+    return (
+        re.match(rf"{re.escape(marker)}\b\s*(?:[:(\-]|$)", payload, re.I)
+        is not None
+    )
+
+
+def _is_debt_marker_vocabulary_reference(
+    path: Path, comment: str, match: re.Match[str]
+) -> bool:
+    """Do not count enforcement-code references to the marker vocabulary itself."""
+
+    rel = path.as_posix()
+    if not any(f"/{rel}".endswith(f"/{known}") for known in _DEBT_MARKER_VOCABULARY_PATHS):
+        return False
+    payload = _comment_payload(comment)
+    marker = match.group(0)
+    if _is_leading_debt_marker(payload, marker):
+        return False
+    return _DEBT_MARKER_VOCABULARY_CONTEXT_RE.search(payload) is not None
 
 
 def probe_debt_markers(root: Path) -> list[Finding]:

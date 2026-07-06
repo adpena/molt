@@ -93,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         base_env["MOLT_SESSION_ID"] = args.session_id
     # ONE authority owns the stable-vs-session uv project env decision
     # (dx.uv_project_env_dir). The CLI only wires its knobs into the env that
-    # authority reads, so --dx emits the stable `dx__py3.12` env by default and
+    # authority reads, so --dx emits the stable source-keyed uv env by default and
     # --session-scoped-uv-project-env opts back into MOLT_SESSION_ID isolation —
     # no separate CLI override lane that could drift from the authority.
     if args.dx:
@@ -102,7 +102,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         base_env.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
         base_env.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
     env = (
-        context.dx_env(base_env, create_dirs=False)
+        context.dx_env(
+            base_env,
+            create_dirs=False,
+            uv_project_env_session_scoped=args.session_scoped_uv_project_env,
+            uv_project_purpose=args.uv_project_purpose,
+            uv_project_python=args.uv_project_python,
+        )
         if args.dx
         else context.canonical_env(base_env, create_dirs=False)
     )

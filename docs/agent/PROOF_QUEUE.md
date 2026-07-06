@@ -36,10 +36,12 @@ checkout, `UV_LINK_MODE=copy` must be exported before uv creates or syncs
 `.venv`, otherwise uv first attempts hard links and emits slow fallback noise.
 Use an already-installed host Python 3.12+ for this dependency-free resolver
 script; after the env is imported, use `uv run --active --project . --python
-3.12 ...` for project commands. In `--dx` mode the resolver emits the stable
-project environment `tmp/uv-project-envs/dx__py3.12` by default, so repeated
-checks in one checkout reuse the same uv environment instead of creating
-per-process `run-<pid>` environments. Use
+3.12 ...` for project commands. In `--dx` mode the resolver emits a stable,
+source-keyed project environment
+`tmp/uv-project-envs/dx__py3.12__src<source-fingerprint>` by default, so
+repeated checks in one checkout reuse the same uv environment instead of
+creating per-process `run-<pid>` environments, while sibling worktrees do not
+share stale editable installs. Use
 `--session-scoped-uv-project-env` only when the uv environment itself must be
 isolated with `MOLT_SESSION_ID`. Do not run two uv bootstrap/sync commands in
 parallel in the same fresh checkout; one process owns project-environment
@@ -48,9 +50,9 @@ creation.
 The healthy default is `MOLT_EXT_ROOT=D:\Molt`,
 `CARGO_TARGET_DIR=D:\Molt\target\sessions\<MOLT_SESSION_ID>`, and
 `MOLT_TARGET_ROOT=D:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` stable at
-`D:\Molt\tmp\uv-project-envs\dx__py3.12` for the standard Python 3.12 DX lane
-and `UV_LINK_MODE=copy` emitted for APDataStore/exFAT unless an explicit
-operator value is present. Do not submit
+`D:\Molt\tmp\uv-project-envs\dx__py3.12__src<source-fingerprint>` for the
+standard Python 3.12 DX lane and `UV_LINK_MODE=copy` emitted for
+APDataStore/exFAT unless an explicit operator value is present. Do not submit
 rows with inherited `E:\molt-target`, `E:\Molt\target-root`, or the empty
 legacy `D:\molt-target` default unless the operator explicitly set
 `MOLT_PRESERVE_TARGET_ROOT=1` for that row. APDataStore is exFAT, so hard-link

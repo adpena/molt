@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.dx import stable_uv_project_env_dir
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEV_PY = REPO_ROOT / "tools" / "dev.py"
@@ -27,6 +29,17 @@ def _fake_dx_env(module):
         "PYTHONPATH": str(module.ROOT / "src"),
         "UV_PROJECT_ENVIRONMENT": str(module.ROOT / ".venv"),
     }
+
+
+def _stable_uv_env(artifact_root: Path, source_root: Path) -> str:
+    return str(
+        stable_uv_project_env_dir(
+            artifact_root,
+            source_root=source_root,
+            purpose="dx",
+            python="3.12",
+        )
+    )
 
 
 def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
@@ -563,9 +576,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
-    assert env["UV_PROJECT_ENVIRONMENT"].startswith(
-        str(module.ROOT / "tmp" / "uv-project-envs")
-    )
+    assert env["UV_PROJECT_ENVIRONMENT"] == _stable_uv_env(module.ROOT, module.ROOT)
     assert env["PIP_CACHE_DIR"] == str(module.ROOT / ".pip-cache")
     assert env["PYTHONPYCACHEPREFIX"] == str(module.ROOT / "tmp" / "pycache")
     assert env["TMPDIR"] == str(module.ROOT / "tmp")
