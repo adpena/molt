@@ -2741,6 +2741,166 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
         ]
 
 
+def test_extension_seal_persists_runtime_python_import_modules_for_static_artifact(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "numpy" / "_core"
+    source_dir = artifact_dir / "src"
+    source_dir.mkdir(parents=True)
+    (source_root / "numpy" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    source_path = source_dir / "npy_static_data.c"
+    source_path.write_text(
+        "static int PyInit__multiarray_umath(PyObject *module) {\n"
+        "    IMPORT_GLOBAL(\"numpy._core._exceptions\", ComplexWarning, warning_obj);\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__multiarray_umath")
+    artifact_path = artifact_dir / "_multiarray_umath.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "name": "numpy-probe",
+        "version": "0.1.0",
+        "module": "numpy._core._multiarray_umath",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__multiarray_umath",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "numpy/_core/_multiarray_umath.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__multiarray_umath",
+            "init_symbol_owner": "0_multiarray.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "source": str(source_path),
+                    "object": "0_multiarray.o",
+                    "source_sha256": source_sha256,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__multiarray_umath"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sealed_root = tmp_path / "sealed"
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(sealed_root),
+        python_export=["numpy"],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    capsys.readouterr()
+    for manifest_rel in (
+        "extension_manifest.json",
+        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
+    ):
+        sealed_manifest = json.loads(
+            (sealed_root / manifest_rel).read_text(encoding="utf-8")
+        )
+        assert sealed_manifest["runtime_python_import_modules"] == [
+            "numpy._core._exceptions"
+        ]
+
+
+def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_custody(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    artifact_dir = source_root / "numpy" / "_core"
+    artifact_dir.mkdir(parents=True)
+    (source_root / "numpy" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__multiarray_umath")
+    artifact_path = artifact_dir / "_multiarray_umath.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    stale_source = tmp_path / "deleted" / "npy_static_data.c"
+    manifest = {
+        "schema_version": 1,
+        "name": "numpy-probe",
+        "version": "0.1.0",
+        "module": "numpy._core._multiarray_umath",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__multiarray_umath",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "numpy/_core/_multiarray_umath.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "sealed_from_manifest_sha256": "0" * 64,
+        "sealed_from_extension_sha256": extension_sha256,
+        "provided_capsules": [],
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__multiarray_umath",
+            "init_symbol_owner": "0_multiarray.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "source": str(stale_source),
+                    "object": "0_multiarray.o",
+                    "source_sha256": "1" * 64,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__multiarray_umath"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                }
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(tmp_path / "sealed"),
+        python_export=["numpy"],
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "cannot derive runtime_python_import_modules" in captured.err
+    assert "object_closure.objects[0].source" in captured.err
+
+
 def test_extension_seal_rejects_fake_module_attr_callable_export(
     tmp_path: Path,
     capsys,

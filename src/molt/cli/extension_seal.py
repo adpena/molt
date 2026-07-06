@@ -400,9 +400,9 @@ def _canonicalize_runtime_python_import_modules(
     # over re-scanning, which makes the sealed root self-contained.
     #
     # Re-sealing an already-sealed root may run where the sources no longer
-    # resolve; in that case the scan yields the empty set with missing-source
-    # diagnostics, so union with the previously persisted field rather than
-    # nullifying it.
+    # resolve; in that case preserve the previously persisted field rather than
+    # nullifying it. If no such field exists, fail closed instead of laundering a
+    # partial source scan into a new seal.
     scanned, errors = source_extension_manifest_runtime_python_imports(
         manifest,
         manifest_path=manifest_path,
@@ -415,6 +415,14 @@ def _canonicalize_runtime_python_import_modules(
     if non_missing_errors:
         return non_missing_errors
     persisted = _string_set(manifest.get("runtime_python_import_modules"))
+    if errors and not persisted:
+        return [
+            "extension seal cannot derive runtime_python_import_modules from a "
+            "partial source scan. Re-run seal where every object_closure source "
+            "resolves, or rebuild the extension manifest from source custody "
+            "before sealing. Unresolved sources: "
+            + "; ".join(errors[:3])
+        ]
     persisted.update(scanned)
     if persisted:
         manifest["runtime_python_import_modules"] = sorted(persisted)

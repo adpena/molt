@@ -116,6 +116,32 @@ def test_recipe_fails_closed_on_binary_checksum_mismatch(tmp_path: Path) -> None
     assert manifest["molt_c_api_version"] == "1"
 
 
+def test_recipe_check_fails_on_stale_runtime_import_custody(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root = tmp_path / "pact_numpy_sealed"
+    expected_abi = _default_molt_c_api_version(REPO_ROOT)
+    expected_tag = f"molt_abi{expected_abi.split('.', 1)[0]}"
+    _write_sealed_root(root, molt_c_api_version=expected_abi, abi_tag=expected_tag)
+    stale_source = tmp_path / "deleted" / "npy_static_data.c"
+    for rel in (
+        "extension_manifest.json",
+        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
+    ):
+        manifest_path = root / rel
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["object_closure"]["objects"][0]["source"] = str(stale_source)
+        manifest["object_closure"]["objects"][0]["source_sha256"] = "1" * 64
+        manifest.pop("runtime_python_import_modules", None)
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    assert recipe.main(["--check", "--root", str(root)]) == 1
+    captured = capsys.readouterr()
+    assert "runtime_python_import_modules" in captured.out
+    assert "object_closure.objects[0].source" in captured.out
+
+
 def test_recipe_reports_missing_roots(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist"
     assert recipe.main(["--root", str(missing)]) == 1
