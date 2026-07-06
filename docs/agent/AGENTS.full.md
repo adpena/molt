@@ -35,7 +35,10 @@ touching code, docs, tests, benchmarks, or roadmap state.
   another lane, record a precise proof-queue/board finding with evidence and
   continue immediately on the next allowed structural aperture. Do not posture
   as "waiting for X", and do not land a shim, placeholder, bypass, or partial
-  implementation around the missing primitive.
+  implementation around the missing primitive. When you catch yourself writing
+  or thinking that phrase, immediately convert Y into executable work, a
+  proof-queue/orchestrator handoff with evidence, or a named external blocker;
+  anything else is a contract violation.
 - Maximize verified compatibility only inside Molt's AOT contract. Pursue full
   Python 3.12+ stdlib and ecosystem compatibility where it does not require
   unrestricted dynamic execution, runtime monkeypatching, reflection-heavy host
