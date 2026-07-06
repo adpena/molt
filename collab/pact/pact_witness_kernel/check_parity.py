@@ -106,7 +106,7 @@ def main() -> int:
             )
             same = d <= ATOL[k]
             print(
-                f"  {'PASS' if same else 'FAIL'} {k:20s} max|Δ|={d:.3e}  (atol {ATOL[k]:.0e}, order-robust)"
+                f"  {'PASS' if same else 'FAIL'} {k:20s} max|d|={d:.3e}  (atol {ATOL[k]:.0e}, order-robust)"
             )
             ok &= same
         else:
@@ -118,11 +118,11 @@ def main() -> int:
             )
             same = d <= atol
             print(
-                f"  {'PASS' if same else 'FAIL'} {k:20s} max|Δ|={d:.3e}  (atol {atol:.0e})"
+                f"  {'PASS' if same else 'FAIL'} {k:20s} max|d|={d:.3e}  (atol {atol:.0e})"
             )
             ok &= same
 
-    print("PARITY:", "PASS ✅" if ok else "FAIL ❌")
+    print("PARITY:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 
