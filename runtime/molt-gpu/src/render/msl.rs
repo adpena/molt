@@ -10,7 +10,9 @@ use crate::ops::PrimitiveOp;
 use crate::render::indexing::{
     IndexDialect, render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype,
 };
-use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
+use crate::render::{
+    BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer, detect_fma_pattern,
+};
 
 /// Metal Shading Language renderer for all 26 primitive ops.
 pub struct MslRenderer;
@@ -138,47 +140,14 @@ impl MslRenderer {
         kernel: &FusedKernel,
         idx_var: &str,
     ) -> Option<(String, String, String)> {
-        if op.op() != PrimitiveOp::Add {
-            return None;
-        }
-        // Only emit FMA for float types
-        if !op.dst_dtype().narrow_metal().is_float() {
-            return None;
-        }
-
-        // Check if either source is a MUL op result
-        for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
-            if let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos]
-                && *prior_idx < op_idx
-            {
-                let prior_op = &kernel.ops[*prior_idx];
-                if prior_op.op() == PrimitiveOp::Mul {
-                    let a = match &prior_op.srcs()[0] {
-                        FusedSrc::Buf(buf_idx) => {
-                            Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-                        }
-                        FusedSrc::Op(p) => format!("v{}", p),
-                        FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-                    };
-                    let b = match &prior_op.srcs()[1] {
-                        FusedSrc::Buf(buf_idx) => {
-                            Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-                        }
-                        FusedSrc::Op(p) => format!("v{}", p),
-                        FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-                    };
-                    let c = match &op.srcs()[add_src_pos] {
-                        FusedSrc::Buf(buf_idx) => {
-                            Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
-                        }
-                        FusedSrc::Op(p) => format!("v{}", p),
-                        FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-                    };
-                    return Some((a, b, c));
-                }
-            }
-        }
-        None
+        let pattern =
+            detect_fma_pattern(op, op_idx, kernel, op.dst_dtype().narrow_metal().is_float())?;
+        let prior_op = &kernel.ops[pattern.mul_op_idx];
+        Some((
+            Self::render_src(&prior_op.srcs()[0], kernel, idx_var),
+            Self::render_src(&prior_op.srcs()[1], kernel, idx_var),
+            Self::render_src(&op.srcs()[pattern.add_src_pos], kernel, idx_var),
+        ))
     }
 }
 
