@@ -625,7 +625,7 @@ Read these first instead of rediscovering project structure:
 - In a fresh checkout/worktree, import RunContext with an already-installed host
   Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
   before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
-  `Invoke-Expression (python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)`.
+  `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
   POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
   Do not use `uv run` to obtain this first env in a cold checkout, and never
   run parallel uv bootstrap/sync commands against the same `.venv`.
