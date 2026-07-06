@@ -422,7 +422,14 @@ pub unsafe extern "C" fn PyDict_Check(op: *mut PyObject) -> c_int {
 /// silent data loss — every `dict.copy()`, `.keys()`, `.values()` from an
 /// extension came back empty. Route to the runtime, which reads the real dict.
 unsafe fn dict_op(op: crate::hooks::DictOp, dict: *mut PyObject) -> *mut PyObject {
-    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(dict) {
+    // Resolve and drop the bridge lock before any PyErr_SetString / hook call:
+    // PyErr_SetString and handle_to_pyobj re-acquire GLOBAL_BRIDGE, so holding
+    // the guard across them would self-deadlock.
+    let handle = {
+        let bridge = GLOBAL_BRIDGE.lock();
+        bridge.pyobj_to_handle(dict)
+    };
+    let bits = match handle {
         Some(b) => b,
         None => {
             unsafe {
