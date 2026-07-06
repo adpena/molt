@@ -147,6 +147,15 @@ MOLT_RUNTIME_INVALID_OBJECT_HEADER_RE = re.compile(
 RUST_COMPILER_ERROR_RE = re.compile(
     r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
 )
+RUST_TEST_RESULT_FAILED_RE = re.compile(
+    r"(?m)^test result: FAILED\.(?P<detail>[^\r\n]*)"
+)
+RUST_CARGO_TEST_FAILED_RE = re.compile(
+    r"(?m)^error: test failed, to rerun pass `(?P<rerun>[^`]+)`"
+)
+RUST_FAILED_TEST_LINE_RE = re.compile(
+    r"(?m)^test (?P<name>[A-Za-z0-9_:<>_.-]+) \.\.\. FAILED\r?$"
+)
 RUNTIME_WASM_RUST_TARGET_MISSING_RE = re.compile(
     r"(?m)^Runtime wasm build requires Rust target (?P<target>[A-Za-z0-9_-]+), "
     r"but the active Rust toolchain does not provide it\. "
