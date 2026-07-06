@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -15,16 +14,13 @@ SRC_ROOT = ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from molt.dx import development_artifact_env  # noqa: E402
-
-
-def _slug(value: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-._")
-    return slug or "default"
+from molt.dx import development_artifact_env, uv_project_env_component  # noqa: E402
 
 
 def _session_id(*, python: str, purpose: str, env: Mapping[str, str]) -> str:
-    return env.get("MOLT_SESSION_ID") or f"{_slug(purpose)}__py{_slug(python)}"
+    if env.get("MOLT_SESSION_ID"):
+        return env["MOLT_SESSION_ID"]
+    return f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
 
 
 def project_environment_path(

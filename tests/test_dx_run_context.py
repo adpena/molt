@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from molt.dx import (
     render_env,
 )
 from tools import run_context_env
+
+
+def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in set(CANONICAL_RUN_ENV_KEYS) | set(DX_ENV_KEYS):
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
@@ -356,6 +362,91 @@ def test_run_context_shell_exports_are_eval_safe(tmp_path: Path) -> None:
     assert shell == 'export MOLT_SESSION_ID="session-\\"\\$\\`\\\\"'
 
 
+def test_run_context_env_dx_uses_stable_uv_project_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _clear_run_context_env(monkeypatch)
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+
+    assert (
+        run_context_env.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--dx",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    env = payload["env"]
+    assert env["MOLT_SESSION_ID"].startswith("run-")
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(
+        tmp_path.resolve() / "tmp" / "uv-project-envs" / "dx__py3.12"
+    )
+
+
+def test_run_context_env_can_emit_session_scoped_uv_project_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _clear_run_context_env(monkeypatch)
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+
+    assert (
+        run_context_env.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--dx",
+                "--session-scoped-uv-project-env",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    env = payload["env"]
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(
+        tmp_path.resolve() / "tmp" / "uv-project-envs" / env["MOLT_SESSION_ID"]
+    )
+
+
+def test_run_context_env_preserves_explicit_uv_project_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    explicit = tmp_path / "custom-venv"
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(explicit))
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+
+    assert (
+        run_context_env.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--dx",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    env = payload["env"]
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())
+
+
 def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     tmp_path: Path,
 ) -> None:
@@ -609,3 +700,54 @@ def test_canonical_env_rehomes_same_volume_legacy_target_root(
 
     resolved = external_root.resolve()
     assert env["MOLT_TARGET_ROOT"] == str(resolved / dx.DEFAULT_TARGET_ROOT_DIRNAME)
+
+
+def test_uv_project_env_is_stable_across_sessions(tmp_path: Path) -> None:
+    """The uv project env authority must be STABLE across sessions.
+
+    The DX churn fix: repeated `uv run --active` proofs (each a fresh
+    MOLT_SESSION_ID) reuse ONE uv project environment instead of minting a fresh
+    `.venv` per session. The env is keyed on (purpose, python), never the session.
+    """
+    ctx = RunContext(tmp_path, session_prefix="proof")
+    base = {"MOLT_EXT_ROOT": str(tmp_path)}
+    env_a = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-aaa-111"})
+    env_b = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-bbb-222"})
+    assert env_a == env_b
+    assert env_a == (tmp_path / "tmp" / "uv-project-envs" / "dx__py3.12").resolve()
+    assert "sess-aaa" not in str(env_a) and "sess-bbb" not in str(env_b)
+
+
+def test_uv_project_env_session_scoped_opt_in(tmp_path: Path) -> None:
+    """MOLT_UV_PROJECT_ENV_SESSION_SCOPED restores per-session isolation on demand."""
+    ctx = RunContext(tmp_path, session_prefix="proof")
+    base = {
+        "MOLT_EXT_ROOT": str(tmp_path),
+        "MOLT_UV_PROJECT_ENV_SESSION_SCOPED": "1",
+    }
+    env_a = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-aaa-111"})
+    env_b = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-bbb-222"})
+    assert env_a != env_b
+    assert env_a == (tmp_path / "tmp" / "uv-project-envs" / "sess-aaa-111").resolve()
+
+
+def test_uv_project_env_explicit_override_is_honored(tmp_path: Path) -> None:
+    ctx = RunContext(tmp_path, session_prefix="proof")
+    explicit = tmp_path / "explicit-venv"
+    env = ctx.uv_project_env_dir(
+        {"MOLT_EXT_ROOT": str(tmp_path), "UV_PROJECT_ENVIRONMENT": str(explicit)}
+    )
+    assert env == explicit.resolve()
+
+
+def test_uv_project_env_custom_purpose_and_python(tmp_path: Path) -> None:
+    ctx = RunContext(tmp_path, session_prefix="proof")
+    env = ctx.uv_project_env_dir(
+        {
+            "MOLT_EXT_ROOT": str(tmp_path),
+            "MOLT_UV_PROJECT_PURPOSE": "witness",
+            "MOLT_UV_PROJECT_PYTHON": "3.13",
+            "MOLT_SESSION_ID": "sess-ignored",
+        }
+    )
+    assert env == (tmp_path / "tmp" / "uv-project-envs" / "witness__py3.13").resolve()

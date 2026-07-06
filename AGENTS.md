@@ -178,12 +178,17 @@ is reconciled.
   resolver script, for example
   `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`;
   then use `uv run --active --project . --python 3.12 ...` for project commands.
+  In `--dx` mode this emits a stable `UV_PROJECT_ENVIRONMENT`
+  (`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env,
+  so repeated checks reuse the same uv environment while Cargo output remains
+  session-scoped by `MOLT_SESSION_ID`. Use `--session-scoped-uv-project-env`
+  only when the uv environment must be isolated too.
   Do not use `uv run` to obtain the first env in a cold checkout, because
   `UV_LINK_MODE=copy` must be present before uv touches `.venv` on
   APDataStore/exFAT.
 - Never launch parallel `uv` bootstrap/sync commands against the same fresh
-  checkout. One process owns `.venv` creation; after it exits, subsequent uv
-  commands run with the emitted DX env. If isolation is not required, inspect
+  checkout. One process owns project-environment creation; after it exits,
+  subsequent uv commands run with the emitted DX env. If isolation is not required, inspect
   `origin/main:<path>` or reuse an existing warm worktree instead of creating a
   cold APDataStore worktree just to read or verify docs.
 - APDataStore is exFAT, so Molt cache publication must not depend on hard-link

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import tempfile
@@ -82,6 +83,50 @@ class DxConfigError(RuntimeError):
 
 def session_artifact_component(session_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
+
+
+def uv_project_env_component(value: str) -> str:
+    component = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-._")
+    return component or "default"
+
+
+def stable_uv_project_env_dir(
+    artifact_root: Path,
+    *,
+    purpose: str,
+    python: str,
+) -> Path:
+    name = f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
+    return (
+        artifact_root.expanduser().resolve() / "tmp" / "uv-project-envs" / name
+    ).resolve()
+
+
+# The uv project environment (installed deps + editable molt) is a pure function
+# of (project source, python) — NOT of the session — so it is stable and shared
+# across sessions by default; only the Cargo target dir is session-scoped (build
+# isolation). Session-scoping the uv env too churns a fresh `.venv` per proof and
+# was the DX lock-churn source. `MOLT_UV_PROJECT_ENV_SESSION_SCOPED` is the opt-in
+# for the rare case that genuinely needs an isolated uv env.
+DEFAULT_UV_PROJECT_PURPOSE = "dx"
+DEFAULT_UV_PROJECT_PYTHON = "3.12"
+
+
+def uv_project_env_session_scoped(env: Mapping[str, str]) -> bool:
+    return env.get("MOLT_UV_PROJECT_ENV_SESSION_SCOPED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def stable_uv_project_env_from_env(env: Mapping[str, str], artifact_root: Path) -> Path:
+    return stable_uv_project_env_dir(
+        artifact_root,
+        purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or DEFAULT_UV_PROJECT_PURPOSE,
+        python=env.get("MOLT_UV_PROJECT_PYTHON") or DEFAULT_UV_PROJECT_PYTHON,
+    )
 
 
 def session_scoped_target_dir(target_root: Path, session_id: str | None) -> Path:
@@ -655,8 +700,10 @@ class RunContext:
         if explicit:
             return self._resolve_env_path(explicit)
         ext_root = self._resolve_env_path(env.get("MOLT_EXT_ROOT", str(self.root)))
-        session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
-        return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
+        if uv_project_env_session_scoped(env):
+            session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+            return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
+        return stable_uv_project_env_from_env(env, ext_root)
 
     def canonical_env(
         self,
@@ -829,8 +876,11 @@ class DxProject:
         artifact_root = Path(env.get("MOLT_EXT_ROOT", str(self.root))).expanduser()
         if not artifact_root.is_absolute():
             artifact_root = self.root / artifact_root
-        session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
-        return (artifact_root.resolve() / "tmp" / "uv-project-envs" / session).resolve()
+        artifact_root = artifact_root.resolve()
+        if uv_project_env_session_scoped(env):
+            session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
+            return (artifact_root / "tmp" / "uv-project-envs" / session).resolve()
+        return stable_uv_project_env_from_env(env, artifact_root)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
         if env is not None:
