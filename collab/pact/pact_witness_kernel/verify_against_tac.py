@@ -69,7 +69,7 @@ def main() -> int:
         ok &= same
     print(
         "FIDELITY:",
-        "ALL-MATCH ✅ (extract == canonical tac)" if ok else "DIVERGENCE ❌",
+        "ALL-MATCH (extract == canonical tac)" if ok else "DIVERGENCE",
     )
     return 0 if ok else 1
 
