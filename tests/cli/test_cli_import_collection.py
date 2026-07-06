@@ -14699,6 +14699,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
                 ),
                 has_back_edges=False,
             ),
+            frozenset(),
         ),
     )
     monkeypatch.setattr(
@@ -14840,6 +14841,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
                 ),
                 has_back_edges=False,
             ),
+            frozenset(),
         ),
     )
     monkeypatch.setattr(
@@ -14977,6 +14979,7 @@ def test_parallel_build_allows_scoped_type_facts(
                 ),
                 has_back_edges=False,
             ),
+            frozenset(),
         ),
     )
     monkeypatch.setattr(
@@ -15910,19 +15913,24 @@ def test_analyze_module_schedule_reuses_reverse_edges_and_layers() -> None:
         "e": {"b"},
     }
 
-    order, reverse_deps, has_back_edges, layers, closures = (
+    order, reverse_deps, has_back_edges, layers, closures, scc_serial_modules = (
         cli_module_dependencies._analyze_module_schedule(
             module_graph,
             deps,
         )
     )
 
-    assert order == ["a", "b", "c", "e", "d"]
+    # A pure DAG condenses into singleton SCCs, so the layers match the plain
+    # topological layering (each module in the earliest layer whose dependencies
+    # all precede it); membership within a layer is emitted in stable sorted
+    # order for determinism.
+    assert order == ["a", "b", "c", "d", "e"]
     assert reverse_deps["a"] == {"b", "c"}
     assert reverse_deps["b"] == {"d", "e"}
     assert reverse_deps["c"] == {"d"}
     assert has_back_edges is False
-    assert layers == [["a"], ["b", "c"], ["e", "d"]]
+    assert layers == [["a"], ["b", "c"], ["d", "e"]]
+    assert scc_serial_modules == frozenset()
     assert closures["a"] == frozenset({"a"})
     assert closures["b"] == frozenset({"a", "b"})
     assert closures["d"] == frozenset({"a", "b", "c", "d"})
@@ -16173,25 +16181,30 @@ def test_module_order_has_back_edges_detects_cycles() -> None:
     )
 
 
-def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
+def test_analyze_module_schedule_condenses_cycle_into_serial_scc_unit() -> None:
     module_graph = {
         "a": Path("/tmp/a.py"),
         "b": Path("/tmp/b.py"),
     }
     deps = {"a": {"b"}, "b": {"a"}}
 
-    order, reverse_deps, has_back_edges, layers, closures = (
+    order, reverse_deps, has_back_edges, layers, closures, scc_serial_modules = (
         cli_module_dependencies._analyze_module_schedule(
             module_graph,
             deps,
         )
     )
 
+    # The a<->b cycle is one strongly-connected component, so it collapses to a
+    # single scheduling unit: no module is dropped, and both members land in one
+    # layer that is flagged for serial lowering. has_back_edges is now purely
+    # informational and no longer forces the whole frontend to run serial.
     assert set(order) == {"a", "b"}
     assert reverse_deps["a"] == {"b"}
     assert reverse_deps["b"] == {"a"}
     assert has_back_edges is True
-    assert sum(len(layer) for layer in layers) == 2
+    assert layers == [["a", "b"]]
+    assert scc_serial_modules == frozenset({"a", "b"})
     assert closures["a"] == frozenset({"a", "b"})
     assert closures["b"] == frozenset({"a", "b"})
 

@@ -1605,6 +1605,7 @@ def _module_worker_payload(
     scoped_known_classes: dict[str, Any] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    frontend_phase_timeout: float | None = None,
 ) -> dict[str, Any]:
     if source_lease is None:
         if source is None:
@@ -1669,4 +1670,5 @@ def _module_worker_payload(
         "pgo_hot_functions": scoped_inputs.pgo_hot_function_names_payload,
         "type_facts": scoped_inputs.type_facts,
         "target_python": target_python.short,
+        "frontend_phase_timeout": frontend_phase_timeout,
     }

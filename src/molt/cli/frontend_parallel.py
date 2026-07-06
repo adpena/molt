@@ -329,24 +329,25 @@ def _record_parallel_worker_result(
 def _resolve_frontend_parallel_config(
     *,
     module_count: int,
-    has_back_edges: bool,
-    frontend_phase_timeout: float | None,
 ) -> _FrontendParallelConfig:
     workers = _resolve_frontend_parallel_module_workers()
     min_modules = _resolve_frontend_parallel_min_modules()
     min_predicted_cost = _resolve_frontend_parallel_min_predicted_cost()
     target_cost_per_worker = _resolve_frontend_parallel_target_cost_per_worker()
     stdlib_min_cost_scale = _resolve_frontend_parallel_stdlib_min_cost_scale()
+    # Import cycles no longer serialize the frontend: the module schedule is
+    # built by SCC condensation, so mutually-recursive modules become a single
+    # serial scheduling unit while independent modules stay parallel. A
+    # configured frontend phase timeout no longer serializes either: the timeout
+    # is applied per-phase inside each parallel worker. The only global disables
+    # left are the genuine fork-cost gates (too few workers or modules); every
+    # other decision is a per-layer cost heuristic.
     enabled = False
     reason = "disabled"
     if workers < 2:
         reason = "workers<2"
     elif module_count < 2:
         reason = "module_count<2"
-    elif has_back_edges:
-        reason = "dependency_back_edge"
-    elif frontend_phase_timeout is not None:
-        reason = "phase_timeout_configured"
     else:
         enabled = True
         reason = "enabled"
@@ -383,8 +384,19 @@ def _frontend_layer_plan(
     stdlib_like_by_module: Mapping[str, bool],
     frontend_parallel_config: _FrontendParallelConfig,
     parallel_pool_usable: bool,
+    scc_serial_modules: frozenset[str] = frozenset(),
 ) -> _FrontendLayerPlan:
     candidates = tuple(name for name in layer if name not in syntax_error_modules)
+    # A layer that carries members of a multi-module strongly-connected
+    # component (a genuine import cycle) is a single serial scheduling unit: its
+    # modules must be lowered in stable order with live known-class integration
+    # between them, exactly as the serial path guarantees. Splitting a cycle
+    # across parallel workers would lower each member against a frozen snapshot
+    # that omits its cyclic peers, changing results. So force serial here rather
+    # than letting the per-layer cost heuristic parallelize it.
+    layer_is_serial_scc_unit = any(
+        name in scc_serial_modules for name in candidates
+    )
     policy = _choose_frontend_parallel_layer_workers(
         candidates=list(candidates),
         module_source_catalog=module_source_catalog,
@@ -404,7 +416,11 @@ def _frontend_layer_plan(
     mode = "serial"
     policy_reason = policy_summary.reason
     workers = policy_summary.workers
-    if parallel_pool_usable and policy_summary.enabled and len(candidates) > 1:
+    if layer_is_serial_scc_unit:
+        mode = "serial"
+        workers = 1
+        policy_reason = "cyclic_scc_serial_unit"
+    elif parallel_pool_usable and policy_summary.enabled and len(candidates) > 1:
         mode = "parallel"
         workers = min(workers, len(candidates))
     elif len(candidates) > 1 and not parallel_pool_usable:
@@ -584,19 +600,34 @@ def _append_frontend_serial_disabled_layer_detail(
     )
 
 
-def _fallback_frontend_parallel_layer_to_serial(
+def _note_frontend_parallel_layer_failure(
     *,
     frontend_parallel_details: MutableMapping[str, Any],
     warnings: list[str],
     failure_detail: str,
-) -> _FrontendParallelLayerState:
-    frontend_parallel_details["reason"] = "worker_error_fallback_serial"
-    warnings.append(
-        f"Frontend parallel lowering fallback to serial for layer: {failure_detail}"
-    )
-    fallback_state = _fresh_frontend_parallel_layer_state()
-    fallback_state.fallback_reason = failure_detail
-    return fallback_state
+    pool_broken: bool,
+) -> None:
+    """Record a parallel-layer worker failure without discarding progress.
+
+    A worker error re-lowers only the modules that did not complete (the shared
+    re-lowering loop handles that from the retained layer state). We surface the
+    failure and, when the pool is genuinely broken, mark it so the executor is
+    recreated once; a transient per-module error keeps the pool for later layers
+    instead of latching the whole build to serial.
+    """
+
+    if pool_broken:
+        frontend_parallel_details["reason"] = "worker_pool_broken_recreate"
+        warnings.append(
+            "Frontend parallel worker pool broke; recreating pool and "
+            f"re-lowering affected module serially: {failure_detail}"
+        )
+    else:
+        frontend_parallel_details["reason"] = "worker_error_isolated_serial"
+        warnings.append(
+            "Frontend parallel worker error isolated to module; re-lowering it "
+            f"serially and keeping the pool for later layers: {failure_detail}"
+        )
 
 
 def _frontend_parallel_result_error(
