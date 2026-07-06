@@ -1816,6 +1816,25 @@ pub extern "C" fn molt_sys_abiflags() -> u64 {
     })
 }
 
+fn sys_namespace_set_attr_owned(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name: &'static [u8],
+    value_bits: u64,
+) -> bool {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        dec_ref_bits(_py, value_bits);
+        return false;
+    };
+    let set_out = molt_set_attr_name(obj_bits, name_bits, value_bits);
+    dec_ref_bits(_py, name_bits);
+    dec_ref_bits(_py, value_bits);
+    if set_out != 0 {
+        dec_ref_bits(_py, set_out);
+    }
+    !exception_pending(_py)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_implementation_payload() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1843,38 +1862,36 @@ pub extern "C" fn molt_sys_implementation_payload() -> u64 {
             return MoltObject::none().bits();
         };
 
-        let keys_and_values: [(&[u8], u64); 4] = [
+        let namespace_class_bits = crate::builtins::types::simplenamespace_class(_py);
+        let Some(namespace_class_ptr) = obj_from_bits(namespace_class_bits).as_ptr() else {
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, cache_tag_bits);
+            dec_ref_bits(_py, version_bits);
+            dec_ref_bits(_py, hexversion_bits);
+            return MoltObject::none().bits();
+        };
+        let namespace_bits = unsafe { alloc_instance_for_class(_py, namespace_class_ptr) };
+        if obj_from_bits(namespace_bits).is_none() {
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, cache_tag_bits);
+            dec_ref_bits(_py, version_bits);
+            dec_ref_bits(_py, hexversion_bits);
+            return MoltObject::none().bits();
+        }
+
+        let attrs: [(&'static [u8], u64); 4] = [
             (b"name", name_bits),
             (b"cache_tag", cache_tag_bits),
             (b"version", version_bits),
             (b"hexversion", hexversion_bits),
         ];
-        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        let mut owned: Vec<u64> = vec![name_bits, cache_tag_bits, version_bits, hexversion_bits];
-
-        for (key, value_bits) in keys_and_values {
-            let key_ptr = alloc_string(_py, key);
-            if key_ptr.is_null() {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
+        for (attr_name, value_bits) in attrs {
+            if !sys_namespace_set_attr_owned(_py, namespace_bits, attr_name, value_bits) {
+                dec_ref_bits(_py, namespace_bits);
                 return MoltObject::none().bits();
             }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned.push(key_bits);
         }
-
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned {
-            dec_ref_bits(_py, bits);
-        }
-        if dict_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(dict_ptr).bits()
-        }
+        namespace_bits
     })
 }
 
