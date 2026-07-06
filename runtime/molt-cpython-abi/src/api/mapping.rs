@@ -3,7 +3,6 @@
 use crate::abi_types::{Py_ssize_t, PyDictProxyObject, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
-use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -12,8 +11,17 @@ pub unsafe extern "C" fn PyDict_New() -> *mut PyObject {
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_dict)() };
     if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Allocation failed. CPython's PyDict_New returns NULL with MemoryError
+        // set. Returning Py_None (non-NULL) would defeat the extension's
+        // `if (dict == NULL)` guard and let it treat None as a dict — silent
+        // corruption. Fail closed with NULL + a set exception.
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_MemoryError,
+                c"PyDict_New: failed to allocate dict".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -408,20 +416,56 @@ pub unsafe extern "C" fn PyDict_Check(op: *mut PyObject) -> c_int {
     (std::ptr::eq(ob_type, &raw const crate::abi_types::PyDict_Type)) as c_int
 }
 
+/// Dispatch a dict-iteration op through the runtime dict authority.
+///
+/// Ignoring `op` and returning an empty dict/list (the previous behavior) is
+/// silent data loss — every `dict.copy()`, `.keys()`, `.values()` from an
+/// extension came back empty. Route to the runtime, which reads the real dict.
+unsafe fn dict_op(op: crate::hooks::DictOp, dict: *mut PyObject) -> *mut PyObject {
+    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(dict) {
+        Some(b) => b,
+        None => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyDict op: argument is not a bridge-managed object".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+    };
+    let h = hooks_or_stubs();
+    let result = unsafe { (h.dict_op)(op as u32, bits) };
+    if result == 0 {
+        // Runtime set a pending exception, or hooks are unregistered. Ensure a
+        // NULL return always carries an exception (ABI contract).
+        let pending = crate::hooks::hooks()
+            .map(|h| unsafe { (h.exception_pending)() } != 0)
+            .unwrap_or(false);
+        if !pending {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyDict op failed: runtime dict authority unavailable".as_ptr(),
+                );
+            }
+        }
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Copy(op: *mut PyObject) -> *mut PyObject {
-    let _ = op;
-    unsafe { PyDict_New() }
+    unsafe { dict_op(crate::hooks::DictOp::Copy, op) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Keys(op: *mut PyObject) -> *mut PyObject {
-    let _ = op;
-    unsafe { crate::api::sequences::PyList_New(0) }
+    unsafe { dict_op(crate::hooks::DictOp::Keys, op) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Values(op: *mut PyObject) -> *mut PyObject {
-    let _ = op;
-    unsafe { crate::api::sequences::PyList_New(0) }
+    unsafe { dict_op(crate::hooks::DictOp::Values, op) }
 }
