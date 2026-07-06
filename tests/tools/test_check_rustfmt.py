@@ -63,7 +63,15 @@ def test_rustfmt_command_chunking_keeps_windows_command_lines_bounded() -> None:
 
     assert len(commands) > 1
     assert all(
-        command[:4] == ["rustfmt", "--edition", "2024", "--check"]
+        command[:6]
+        == [
+            "rustfmt",
+            "--edition",
+            "2024",
+            "--config",
+            "skip_children=true",
+            "--check",
+        ]
         for command in commands
     )
     assert all(
