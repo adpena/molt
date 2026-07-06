@@ -32,6 +32,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--session-prefix", default="run")
     parser.add_argument(
+        "--uv-project-python",
+        default="3.12",
+        help=(
+            "Python version for the stable DX UV_PROJECT_ENVIRONMENT emitted by "
+            "--dx when no explicit UV_PROJECT_ENVIRONMENT is set."
+        ),
+    )
+    parser.add_argument(
+        "--uv-project-purpose",
+        default="dx",
+        help=(
+            "Purpose name for the stable DX UV_PROJECT_ENVIRONMENT emitted by "
+            "--dx when no explicit UV_PROJECT_ENVIRONMENT is set."
+        ),
+    )
+    parser.add_argument(
+        "--session-scoped-uv-project-env",
+        action="store_true",
+        help=(
+            "Keep UV_PROJECT_ENVIRONMENT tied to MOLT_SESSION_ID. The default "
+            "--dx behavior uses a stable purpose+Python environment so repeated "
+            "bootstrap commands do not rebuild the project venv."
+        ),
+    )
+    parser.add_argument(
         "--prefer-external-artifacts",
         action="store_true",
         help="Prefer a healthy external artifact root when MOLT_EXT_ROOT is unset.",
@@ -54,6 +79,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         session_prefix=args.session_prefix,
         prefer_external_artifacts=args.prefer_external_artifacts,
     )
+    # ONE authority owns the stable-vs-session uv project env decision
+    # (dx.uv_project_env_dir). The CLI only wires its knobs into the env that
+    # authority reads, so --dx emits the stable `dx__py3.12` env by default and
+    # --session-scoped-uv-project-env opts back into MOLT_SESSION_ID isolation —
+    # no separate CLI override lane that could drift from the authority.
+    if args.dx:
+        if args.session_scoped_uv_project_env:
+            os.environ["MOLT_UV_PROJECT_ENV_SESSION_SCOPED"] = "1"
+        os.environ.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
+        os.environ.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
     env = (
         context.dx_env(os.environ, create_dirs=False)
         if args.dx
