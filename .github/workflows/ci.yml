@@ -153,7 +153,7 @@ jobs:
         env:
           MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC -- \
             uv run python3 -m pytest -q \
             -m "not slow" \
             tests/test_bench_harness.py \
@@ -169,7 +169,7 @@ jobs:
         env:
           MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC -- \
             uv run python3 -m pytest -q \
             tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler
 
@@ -428,7 +428,7 @@ jobs:
         env:
           MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
         run: |
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC -- \
             uv run python3 -m pytest -q \
             tests/test_native_lir_loop_join_semantics.py \
             -k "int_accumulator_crosses_47 or int_overflows_i64 or int_sum_accumulator_overflow or non_overflowing_int_loop"
