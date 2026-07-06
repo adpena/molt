@@ -202,6 +202,11 @@
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - inliner_numeric_raw_lane_consumer_opcodes - opcode-only fact for direct
+#                  call results that feed scalar numeric consumers. The inliner
+#                  owns call/result shape and safety gates; this registry owns
+#                  the closed opcode membership so the hot-budget exception does
+#                  not carry a pass-local hand set.
 #   - overflow_peel_guard_compare_opcodes /
 #                  overflow_peel_body_pure_opcodes - opcode-only legality facts
 #                  consumed by overflow_peel.rs. The pass owns CFG/SSA/result
@@ -830,6 +835,26 @@ state_machine_opcodes = [
     "StateYield",
     "Yield",
     "YieldFrom",
+]
+
+# inliner_numeric_raw_lane_consumer_opcodes: numeric opcodes where a direct
+# call result feeding one operand can block scalar-carrier projection until the
+# call boundary is removed. The inliner still owns the precise direct-call
+# result/use proof, return-type gate, safety gate, and hot-inline budget cap.
+# This table owns only opcode membership and is deliberately narrower than the
+# full numeric type-refine lattice (e.g. no Pow/bitwise/shift).
+inliner_numeric_raw_lane_consumer_opcodes = [
+    "Add",
+    "Div",
+    "FloorDiv",
+    "InplaceAdd",
+    "InplaceMul",
+    "InplaceSub",
+    "Mod",
+    "Mul",
+    "Neg",
+    "Pos",
+    "Sub",
 ]
 
 overflow_peel_guard_compare_opcodes = [

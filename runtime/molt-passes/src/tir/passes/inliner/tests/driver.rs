@@ -5,9 +5,9 @@ fn run_inliner_inlines_const_call() {
     // g() { x = constfn(); return x + 1 }, constfn() = 42.
     // After inlining + re-running the pipeline, the Call is gone, the merged
     // function is valid SSA, and the callee's `const 42` now lives inside g
-    // (the call boundary is eliminated). The downstream `const(42)+1 → 43`
+    // (the call boundary is eliminated). The downstream `const(42)+1 -> 43`
     // arithmetic fold across the continuation block-argument is the
-    // backend's / a future jump-threading pass's job — verified end-to-end
+    // backend's / a future jump-threading pass's job - verified end-to-end
     // by the differential test, not asserted here (the current per-function
     // pipeline has no single-predecessor block-coalescing pass).
     let callee = const_callee();
@@ -87,8 +87,87 @@ fn run_inliner_inlines_add_call_with_args() {
 }
 
 #[test]
+fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
+    let callee = over_base_budget_float_callee("eval_like");
+    let caller = loop_numeric_caller("eval_like");
+    let mut m = module(vec![caller, callee]);
+    let (cg, sm) = analysis(&m);
+    let tti = TargetInfo::native_release_fast();
+
+    assert!(
+        sm.get("eval_like").unwrap().op_count > tti.inline_budget("eval_like"),
+        "fixture must be over the base inline budget"
+    );
+    assert!(
+        sm.get("eval_like").unwrap().op_count <= tti.hot_inline_op_limit(),
+        "fixture must stay inside the targeted numeric hot-inline cap"
+    );
+
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    assert_eq!(
+        stats.sites_inlined, 1,
+        "numeric scalar callee should inline when its call result feeds loop arithmetic"
+    );
+    let caller = m
+        .functions
+        .iter()
+        .find(|f| f.name == "numeric_loop_caller")
+        .unwrap();
+    let calls = caller
+        .blocks
+        .values()
+        .flat_map(|b| b.ops.iter())
+        .filter(|op| op.opcode == OpCode::Call)
+        .count();
+    assert_eq!(calls, 0, "numeric raw-lane call boundary eliminated");
+    crate::tir::verify::verify_function(caller)
+        .unwrap_or_else(|e| panic!("numeric_loop_caller invalid: {e:?}"));
+}
+
+#[test]
+fn run_inliner_uses_hot_budget_for_numeric_return_with_observation_exit() {
+    let callee = over_base_budget_float_callee_with_return_type(
+        "eval_like",
+        TirType::Union(vec![TirType::F64, TirType::None]),
+    );
+    let caller = loop_numeric_caller("eval_like");
+    let mut m = module(vec![caller, callee]);
+    let (cg, sm) = analysis(&m);
+    let tti = TargetInfo::native_release_fast();
+
+    assert!(
+        sm.get("eval_like").unwrap().op_count > tti.inline_budget("eval_like"),
+        "fixture must be over the base inline budget"
+    );
+    assert!(
+        sm.get("eval_like").unwrap().op_count <= tti.hot_inline_op_limit(),
+        "fixture must stay inside the targeted numeric hot-inline cap"
+    );
+
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    assert_eq!(
+        stats.sites_inlined, 1,
+        "numeric callee with a None observation-exit return should inline when its normal result feeds arithmetic"
+    );
+    let caller = m
+        .functions
+        .iter()
+        .find(|f| f.name == "numeric_loop_caller")
+        .unwrap();
+    let calls = caller
+        .blocks
+        .values()
+        .flat_map(|b| b.ops.iter())
+        .filter(|op| op.opcode == OpCode::Call)
+        .count();
+    assert_eq!(calls, 0, "numeric raw-lane call boundary eliminated");
+    crate::tir::verify::verify_function(caller)
+        .unwrap_or_else(|e| panic!("numeric_loop_caller invalid: {e:?}"));
+}
+
+#[test]
 fn run_inliner_two_sites_same_block_both_inlined() {
-    // g() { x = constfn(); y = constfn(); return x + y } — two calls to the
+    // g() { x = constfn(); y = constfn(); return x + y } - two calls to the
     // same inlinable leaf in one block. The reverse-order driver must splice
     // BOTH (a refused/early site must not block the other). After inlining,
     // zero Call ops remain and SSA is valid.

@@ -497,6 +497,23 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_residual_tir_semantic_roles(opcodes, data))
     out.append("\n")
 
+    inliner_numeric_raw_lane_consumers = list(
+        data.get("inliner_numeric_raw_lane_consumer_opcodes", [])
+    )
+    out.append(
+        "/// Whether an opcode is a scalar numeric consumer whose direct-call\n"
+        "/// operand can block raw-lane projection until the call boundary is\n"
+        "/// inlined away. The inliner owns call/result shape, return-type checks,\n"
+        "/// safety gates, and budget policy; this table owns opcode membership.\n"
+        "/// EXHAUSTIVE over OpCode so the hot-budget exception cannot drift through\n"
+        "/// a pass-local hand-set.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, inliner_numeric_raw_lane_consumers))
+    out.append("    }\n}\n\n")
+
     overflow_peel_guard_compares = list(
         data.get("overflow_peel_guard_compare_opcodes", [])
     )
