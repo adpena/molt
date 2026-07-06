@@ -562,3 +562,19 @@ fn new_descriptor_with_null_def_fails_and_records() {
         "a NULL-def descriptor creation must record a silent failure; got {recorded:?}"
     );
 }
+
+#[test]
+fn cpython_abi_header_exposes_descriptor_member_authority() {
+    let header_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include/Python.h");
+    let header = std::fs::read_to_string(&header_path).expect("read cpython-abi Python.h");
+    for expected in [
+        "extern PyObject    *PyDescr_NAME        (PyObject *descr);",
+        "extern PyObject    *PyMember_GetOne     (const char *addr, PyMemberDef *member);",
+        "extern int          PyMember_SetOne     (char *addr, PyMemberDef *member, PyObject *value);",
+    ] {
+        assert!(
+            header.contains(expected),
+            "cpython-abi header must expose descriptor/member authority: {expected}"
+        );
+    }
+}
