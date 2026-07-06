@@ -183,8 +183,8 @@ fn is_string_split_field_op(op: &TirOp) -> bool {
 /// rewrites them to bounds-once reads (`molt_string_split_field_*`) so the field
 /// never materializes. This is the TARGETED enabling signal the baton specifies
 /// - strictly narrower (and icache-cheaper) than a global budget bump, which was
-/// measured NOT to help and to regress code size. A callee is admitted only if
-/// it is ALSO [`is_inline_safe`]; the splice itself is unconditionally sound.
+///   measured NOT to help and to regress code size. A callee is admitted only if
+///   it is ALSO [`is_inline_safe`]; the splice itself is unconditionally sound.
 pub(super) fn split_field_enabled_callees(
     module: &TirModule,
     defined: &[String],
