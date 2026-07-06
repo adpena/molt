@@ -2,6 +2,9 @@ use super::*;
 #[cfg(any(unix, test))]
 use crate::resource_limits::detect_physical_memory_bytes;
 
+#[cfg(any(unix, test))]
+use std::time::Instant;
+
 #[derive(Default)]
 #[cfg(any(unix, test))]
 pub(crate) struct DaemonStats {
