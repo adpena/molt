@@ -712,9 +712,16 @@ def _row_matches_site(registry: Registry, site: DiscoveredSite) -> RegistryRow |
     return None
 
 
-def run_gate(root: Path = REPO_ROOT) -> list[Violation]:
+def run_gate(
+    root: Path = REPO_ROOT, registry_path: Path | None = None
+) -> list[Violation]:
+    """Return the list of gate violations (empty == green). ``root`` is the tree
+    scanned and the base for anchor resolution; ``registry_path`` defaults to the
+    checked-in registry. Both are parameters so the negative-control test can drive
+    the gate against a synthetic tree + registry."""
+
     violations: list[Violation] = []
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path or REGISTRY_PATH)
 
     # --- Registry self-consistency --------------------------------------------
     seen_ids: set[str] = set()
