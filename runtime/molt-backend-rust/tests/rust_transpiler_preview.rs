@@ -253,6 +253,32 @@ fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
 }
 
 #[test]
+fn rust_backend_runtime_value_surface_rejects_wrong_arity() {
+    let mut string = op("str_from_obj");
+    string.out = Some("string_word".to_string());
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_runtime_surface_wrong_arity".to_string(),
+            params: Vec::new(),
+            ops: vec![string],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let mut backend = RustBackend::new();
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("runtime-surface calls must fail closed on missing operands");
+
+    assert!(err.contains("MOLT_STUB: str_from_obj"));
+    assert!(err.contains("str_from_obj requires 1 runtime-surface argument(s), got 0"));
+}
+
+#[test]
 fn rust_backend_keeps_unstructured_branch_fail_closed() {
     let mut cond = op("const_bool");
     cond.value = Some(1);

@@ -224,7 +224,13 @@ impl RustBackend {
             self.emit_op_other(op);
             return;
         };
-        let rhs = call.rhs(op);
+        let rhs = match call.rhs(op) {
+            Ok(rhs) => rhs,
+            Err(reason) => {
+                self.emit_unsupported_op(op, reason);
+                return;
+            }
+        };
         let o = out_var(op);
         if is_assignable_var(&o) {
             self.emit_line(&declare_molt_value(&o, &rhs, &self.hoisted_vars));
