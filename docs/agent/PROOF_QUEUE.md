@@ -27,7 +27,8 @@ environment before submission so APDataStore is the selected artifact and
 toolchain authority:
 
 ```powershell
-Invoke-Expression (python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)
+$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell
+Invoke-Expression ($dx -join [Environment]::NewLine)
 ```
 
 This bootstrap intentionally does not use `uv`: on a cold APDataStore/exFAT
