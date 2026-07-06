@@ -61,7 +61,7 @@ def _falcon_ocr_runtime_available() -> bool:
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
         from molt.gpu import Buffer, alloc  # noqa: F401
-        from molt.stdlib.tinygrad.examples import falcon_ocr  # noqa: F401
+        from demos.tinygrad.examples import falcon_ocr  # noqa: F401
 
         return True
     except (ImportError, ModuleNotFoundError, RuntimeError):
@@ -623,7 +623,7 @@ class TestForwardBlockParity:
 
     def test_init_and_forward_does_not_crash(self):
         """Initialize with stub weights and run one forward step."""
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -661,7 +661,7 @@ class TestFullInferenceParity:
 
     def test_deterministic_output(self):
         """Two runs with same inputs produce identical tokens."""
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -678,7 +678,7 @@ class TestFullInferenceParity:
 
     def test_different_prompts_differ(self):
         """Different prompts should produce different token sequences."""
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()
@@ -722,7 +722,7 @@ class TestPerformanceBaseline:
 
     def test_performance_baseline(self, capsys):
         """Measure time-to-first-token and throughput."""
-        from molt.stdlib.tinygrad.examples.falcon_ocr import init, ocr_tokens
+        from demos.tinygrad.examples.falcon_ocr import init, ocr_tokens
 
         weights = generate_stub_weights()
         config = generate_stub_config_json()

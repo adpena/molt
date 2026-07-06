@@ -84,7 +84,7 @@ def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
         "micro",
     )
     tinygrad_features = RUNTIME_FEATURES._builtin_features_from_import_graph(
-        {"tinygrad.tensor", "molt.stdlib.tinygrad.examples.falcon_ocr"},
+        {"tinygrad.tensor", "tinygrad.nn"},
         "micro",
     )
 

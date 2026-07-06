@@ -1271,7 +1271,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
             "-m",
             "molt.cli",
             "build",
-            str(ROOT / "src/molt/stdlib/tinygrad/wasm_driver.py"),
+            str(ROOT / "demos/tinygrad/wasm_driver.py"),
             "--target",
             "wasm",
             "--linked",

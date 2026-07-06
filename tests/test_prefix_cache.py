@@ -7,7 +7,7 @@ import math
 # bypassing molt's import system. These classes are pure Python (no
 # Tensor/LazyOp dependencies).
 _kv_path = os.path.join(
-    os.path.dirname(__file__), "..", "src", "molt", "stdlib", "tinygrad", "kv_cache.py"
+    os.path.dirname(__file__), "..", "demos", "tinygrad", "kv_cache.py"
 )
 _kv_path = os.path.abspath(_kv_path)
 

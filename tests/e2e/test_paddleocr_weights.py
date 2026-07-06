@@ -110,7 +110,7 @@ def _import_paddleocr_module():
 
     paddleocr_path = os.path.join(
         os.path.dirname(__file__),
-        "../../src/molt/stdlib/tinygrad/paddleocr.py",
+        "../../demos/tinygrad/paddleocr.py",
     )
     paddleocr_path = os.path.abspath(paddleocr_path)
     spec = ilu.spec_from_file_location("_paddleocr_test", paddleocr_path)

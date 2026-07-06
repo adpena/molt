@@ -171,7 +171,11 @@ STRICT_IMPORT_FALLBACK_EXCEPTIONS = {
 }
 INTRINSIC_RUNTIME_FALLBACK_EXEMPT_PREFIXES = ("test", "test.")
 INTRINSIC_PASS_FALLBACK_STRICT_MODULES: tuple[str, ...] = ("json",)
-ALLOWED_POLICY_GATE_MODULES: frozenset[str] = frozenset({"tinygrad.dflash"})
+# tinygrad.dflash was the sole policy-gate module here. It moved out of the
+# stdlib substrate into demos/tinygrad/ (app/demo code, not a compiler
+# primitive), so it is no longer discovered by this stdlib scan and no longer
+# needs a policy-gate exemption.
+ALLOWED_POLICY_GATE_MODULES: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

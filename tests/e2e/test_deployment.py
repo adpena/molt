@@ -31,9 +31,7 @@ def test_wasm_driver_exports():
         os.path.dirname(__file__),
         "..",
         "..",
-        "src",
-        "molt",
-        "stdlib",
+        "demos",
         "tinygrad",
         "wasm_driver.py",
     )
@@ -65,9 +63,7 @@ def test_wasm_driver_delegates_to_falcon_ocr():
             os.path.dirname(__file__),
             "..",
             "..",
-            "src",
-            "molt",
-            "stdlib",
+            "demos",
             "tinygrad",
             "wasm_driver.py",
         )
@@ -152,9 +148,7 @@ def test_wasm_manifest_structure():
             os.path.dirname(__file__),
             "..",
             "..",
-            "src",
-            "molt",
-            "stdlib",
+            "demos",
             "tinygrad",
             "wasm_manifest.json",
         )
@@ -188,9 +182,7 @@ def test_wasm_manifest_export_signatures():
             os.path.dirname(__file__),
             "..",
             "..",
-            "src",
-            "molt",
-            "stdlib",
+            "demos",
             "tinygrad",
             "wasm_manifest.json",
         )
