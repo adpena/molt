@@ -89,9 +89,7 @@ RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
-RUNTIME_CALLABLE_SYMBOLS = importlib.import_module(
-    "molt.cli.runtime_callable_symbols"
-)
+RUNTIME_CALLABLE_SYMBOLS = importlib.import_module("molt.cli.runtime_callable_symbols")
 NATIVE_LINK_COMMAND = importlib.import_module("molt.cli.native_link_command")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TARGET_PYTHON = importlib.import_module("molt.cli.target_python")
@@ -3074,9 +3072,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
     ):
         row = registry.row_of(module_name)
         assert row is not None
-        assert row.init_symbol == cli.SimpleTIRGenerator.module_init_symbol(
-            module_name
-        )
+        assert row.init_symbol == cli.SimpleTIRGenerator.module_init_symbol(module_name)
         assert row.init_symbol in init_symbols
     json_row = registry.row_of("json")
     assert json_row is not None
@@ -6679,6 +6675,38 @@ def test_reachable_native_artifact_plan_keeps_capsule_providers(
     ]
 
 
+def test_case_exact_file_refreshes_stale_directory_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_dir = tmp_path / "nativepkg" / "ndimage"
+    package_dir.mkdir(parents=True)
+    existing = package_dir / "_nd_image.so"
+    staged = package_dir / "_nd_image.molt.wasm"
+    existing.write_bytes(b"host artifact")
+    original_stat = cli_module_resolution.os.stat
+    pinned_stat = original_stat(package_dir)
+    package_dir_text = os.path.normcase(os.path.abspath(os.fspath(package_dir)))
+
+    def fake_stat(
+        path: os.PathLike[str] | str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> os.stat_result:
+        path_text = os.path.normcase(os.path.abspath(os.fspath(path)))
+        if path_text == package_dir_text:
+            return pinned_stat
+        return original_stat(path, *args, **kwargs)
+
+    cli_module_resolution._case_exact_dir_entries_cached.cache_clear()
+    monkeypatch.setattr(cli_module_resolution.os, "stat", fake_stat)
+
+    assert not cli_module_resolution._case_exact_file(staged)
+    staged.write_bytes(b"wasm artifact")
+
+    assert cli_module_resolution._case_exact_file(staged)
+
+
 def test_reachable_native_artifact_plan_keeps_child_callable_exports(
     tmp_path: Path,
 ) -> None:
@@ -6737,6 +6765,75 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
         "nativepkg.ndimage._ni_label",
     }
     assert reachable.native_callable_export_names() == expected_exports
+
+
+def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables(
+    tmp_path: Path,
+) -> None:
+    package_dir = tmp_path / "site" / "nativepkg"
+    package_dir.mkdir(parents=True)
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.ndimage._nd_image",
+                package_dir=package_dir,
+                path=package_dir / "ndimage" / "_nd_image.molt.wasm",
+                manifest_path=package_dir
+                / "ndimage"
+                / "_nd_image.molt.wasm.extension_manifest.json",
+                extension_sha256="ndimage-wasm",
+                manifest_sha256="ndimage-manifest",
+                capabilities=(),
+                abi_tag="molt-extension-v1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.ndimage",
+                        name="distance_transform_edt",
+                        binding="direct_symbol",
+                        abi="molt.forward_f32_v1",
+                        symbol="molt_nativepkg_ndimage_distance_transform_edt",
+                    ),
+                ),
+            ),
+            _ExternalPackageNativeArtifact(
+                package="nativepkg",
+                module="nativepkg.linalg._umath_linalg",
+                package_dir=package_dir,
+                path=package_dir / "linalg" / "_umath_linalg.molt.wasm",
+                manifest_path=package_dir
+                / "linalg"
+                / "_umath_linalg.molt.wasm.extension_manifest.json",
+                extension_sha256="linalg-wasm",
+                manifest_sha256="linalg-manifest",
+                capabilities=(),
+                abi_tag="molt-extension-v1",
+                target_triple="wasm32-wasip1",
+                platform_tag="wasm32_wasip1",
+                runtime_linkage="static_link",
+                artifact_kind="wasm_relocatable_object",
+                callable_exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg.linalg",
+                        name="eigh",
+                        binding="direct_symbol",
+                        abi="molt.object_call_v1",
+                        symbol="molt_nativepkg_linalg_eigh",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert plan.with_reachable_imports({"nativepkg"}).artifacts == ()
+    assert [
+        artifact.module
+        for artifact in plan.with_reachable_imports({"nativepkg.ndimage"}).artifacts
+    ] == ["nativepkg.ndimage._nd_image"]
 
 
 def test_source_recompiled_package_callable_export_reaches_frontend_scope(
@@ -6908,9 +7005,9 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
     )
     assert config_error is None
     assert config is not None
-    scoped_exports = (
-        config.scoped_lowering_inputs.native_callable_exports_by_module["field_solve"]
-    )
+    scoped_exports = config.scoped_lowering_inputs.native_callable_exports_by_module[
+        "field_solve"
+    ]
     assert set(scoped_exports) == expected_exports
     for export_name, symbol in expected_symbols.items():
         assert scoped_exports[export_name]["symbol"] == symbol
@@ -18612,8 +18709,7 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
     )
     target_feature_constants_js = wasm_root / "target_feature_constants.generated.js"
     target_feature_constants_js.write_text(
-        "export const WEBGPU_DISPATCH_HOST_IMPORT = "
-        '"molt_gpu_webgpu_dispatch_host";\n',
+        'export const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";\n',
         encoding="utf-8",
     )
     loader_bridge = wasm_root / "loader_bridge.js"
@@ -18969,8 +19065,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         "target_feature_constants.generated.js"
     )
     assert (
-        output_wasm.parent
-        / manifest["assets"]["target_feature_constants"]["path"]
+        output_wasm.parent / manifest["assets"]["target_feature_constants"]["path"]
     ).exists()
     target_feature_asset = manifest["assets"]["target_feature_manifest"]
     assert target_feature_asset["path"] == "target_feature_manifest.json"
