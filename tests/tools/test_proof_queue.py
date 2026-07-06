@@ -809,6 +809,12 @@ def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> 
         log_path=tmp_path / "active.log",
         summary_json=tmp_path / "active.memory_guard.json",
     )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        started_at=proof_queue._utc_now(),
+    )
 
     rc = proof_queue.main(
         [
@@ -2510,6 +2516,52 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(tmp_path: Path) ->
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
 
 
+def test_proof_queue_run_id_executes_selected_dispatched_row(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id, marker in (("queued-a", "A"), ("dispatched-b", "B")):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=f"run {marker}",
+            command=[sys.executable, "-c", f"print('{marker}')"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{marker}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    proof_queue._update_run(
+        conn,
+        "dispatched-b",
+        status="dispatched",
+        started_at=proof_queue._utc_now(),
+    )
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--run-id",
+            "dispatched-b",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rc == 0
+    assert rows["queued-a"]["status"] == "queued"
+    assert rows["dispatched-b"]["status"] == "passed"
+    assert "B" in (logs / "dispatched-b.log").read_text(encoding="utf-8")
+
+
 def test_proof_queue_run_id_can_detach_existing_queued_row(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2563,10 +2615,415 @@ def test_proof_queue_run_id_can_detach_existing_queued_row(
     assert rc == 0
     assert launched == {"run_id": "queued-b", "timeout": 42.0}
     assert rows["queued-a"]["status"] == "queued"
-    assert rows["queued-b"]["status"] == "queued"
-    assert not (logs / "queued-b.log").exists()
+    assert rows["queued-b"]["status"] == "dispatched"
+    log_text = (logs / "queued-b.log").read_text(encoding="utf-8")
+    assert "status=dispatched" in log_text
+    assert "runner_pid=12345" in log_text
     assert "detached queued-b runner_pid=12345" in stdout
     assert f"runner_log: {logs / 'queued-b.runner.log'}" in stdout
+
+
+def test_proof_queue_run_detach_respects_queue_size_and_contention_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id, key in (
+        ("queued-a", "python:a"),
+        ("queued-a-duplicate", "python:a"),
+        ("queued-b", "python:b"),
+        ("queued-c", "python:c"),
+    ):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=run_id,
+            command=[sys.executable, "-c", f"print({run_id!r})"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=key,
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--detach",
+            "--queue-size",
+            "3",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rc == 0
+    assert launched == ["queued-a", "queued-b", "queued-c"]
+    assert rows["queued-a"]["status"] == "dispatched"
+    assert rows["queued-a-duplicate"]["status"] == "queued"
+    assert rows["queued-b"]["status"] == "dispatched"
+    assert rows["queued-c"]["status"] == "dispatched"
+
+
+def test_proof_queue_run_detach_counts_existing_active_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="already-running",
+        logical_id="already-running",
+        reason="already running",
+        command=[sys.executable, "-c", "print('running')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:running",
+        scopes=[],
+        log_path=logs / "already-running.log",
+        summary_json=logs / "already-running.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        "already-running",
+        status="running",
+        started_at=proof_queue._utc_now(),
+    )
+    for run_id in ("queued-a", "queued-b"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=run_id,
+            command=[sys.executable, "-c", f"print({run_id!r})"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--detach",
+            "--queue-size",
+            "2",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rc == 0
+    assert launched == ["queued-a"]
+    assert rows["already-running"]["status"] == "running"
+    assert rows["queued-a"]["status"] == "dispatched"
+    assert rows["queued-b"]["status"] == "queued"
+
+
+def test_proof_queue_run_detach_does_not_launch_when_capacity_full(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="already-dispatched",
+        logical_id="already-dispatched",
+        reason="already dispatched",
+        command=[sys.executable, "-c", "print('dispatched')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:active",
+        scopes=[],
+        log_path=logs / "already-dispatched.log",
+        summary_json=logs / "already-dispatched.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        "already-dispatched",
+        status="dispatched",
+        started_at=proof_queue._utc_now(),
+    )
+    proof_queue._insert_run(
+        conn,
+        run_id="queued-a",
+        logical_id="queued-a",
+        reason="queued-a",
+        command=[sys.executable, "-c", "print('queued')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:queued-a",
+        scopes=[],
+        log_path=logs / "queued-a.log",
+        summary_json=logs / "queued-a.memory_guard.json",
+    )
+    monkeypatch.setattr(
+        proof_queue,
+        "_launch_detached_runner",
+        lambda *args, **kwargs: pytest.fail("capacity-full queue must not launch"),
+    )
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--detach",
+            "--queue-size",
+            "1",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rc == 0
+    assert rows["already-dispatched"]["status"] == "dispatched"
+    assert rows["queued-a"]["status"] == "queued"
+    assert "queue capacity full active=1 queue_size=1" in capsys.readouterr().out
+
+
+def test_proof_queue_exec_detach_obeys_queue_size_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="already-running",
+        logical_id="already-running",
+        reason="already running",
+        command=[sys.executable, "-c", "print('running')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:active",
+        scopes=[],
+        log_path=logs / "already-running.log",
+        summary_json=logs / "already-running.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        "already-running",
+        status="running",
+        started_at=proof_queue._utc_now(),
+    )
+    monkeypatch.setenv(proof_queue.PROOF_QUEUE_SIZE_ENV, "1")
+    monkeypatch.setattr(
+        proof_queue,
+        "_launch_detached_runner",
+        lambda *args, **kwargs: pytest.fail("env capacity must block detach launch"),
+    )
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "blocked-detach",
+            "--reason",
+            "prove detached submissions obey queue capacity",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:new",
+            "--note",
+            "test: detached submission must remain queued when capacity is full",
+            "--detach",
+            "--",
+            sys.executable,
+            "-c",
+            "print('blocked')",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    queued = [row for row in rows.values() if row["logical_id"] == "blocked-detach"]
+    assert rc == 0
+    assert len(queued) == 1
+    assert queued[0]["status"] == "queued"
+    assert "queue capacity full active=1 queue_size=1" in capsys.readouterr().out
+
+
+def test_proof_queue_rejects_invalid_queue_size_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(proof_queue.PROOF_QUEUE_SIZE_ENV, "0")
+    with pytest.raises(SystemExit, match=proof_queue.PROOF_QUEUE_SIZE_ENV):
+        proof_queue.main(
+            [
+                "--db",
+                str(tmp_path / "proof_queue.sqlite3"),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "run",
+                "--detach",
+            ]
+        )
+
+
+def test_proof_queue_defaults_uv_link_mode_to_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("UV_LINK_MODE", raising=False)
+
+    proof_queue._normalize_queue_process_environment()
+
+    assert os.environ["UV_LINK_MODE"] == "copy"
+
+
+def test_proof_queue_preserves_operator_uv_link_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UV_LINK_MODE", "hardlink")
+
+    proof_queue._normalize_queue_process_environment()
+
+    assert os.environ["UV_LINK_MODE"] == "hardlink"
+
+
+def test_proof_queue_prune_stale_preserves_fresh_dispatched_row(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="just-dispatched",
+        logical_id="just-dispatched",
+        reason="dispatch grace",
+        command=[sys.executable, "-c", "print('dispatch')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:dispatch",
+        scopes=[],
+        log_path=logs / "just-dispatched.log",
+        summary_json=logs / "just-dispatched.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        "just-dispatched",
+        status="dispatched",
+        started_at=proof_queue._utc_now(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "just-dispatched",
+            ]
+        )
+        == 0
+    )
+    assert _rows(db)[0]["status"] == "dispatched"
+
+
+def test_proof_queue_prune_stale_reclaims_expired_dispatched_row(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="expired-dispatch",
+        logical_id="expired-dispatch",
+        reason="expired dispatch",
+        command=[sys.executable, "-c", "print('dispatch')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:dispatch",
+        scopes=[],
+        log_path=logs / "expired-dispatch.log",
+        summary_json=logs / "expired-dispatch.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        "expired-dispatch",
+        status="dispatched",
+        started_at="2000-01-01T00:00:00+00:00",
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(logs),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+                "--run-id",
+                "expired-dispatch",
+            ]
+        )
+        == 0
+    )
+    row = _rows(db)[0]
+    assert row["status"] == "stale"
+    assert row["returncode"] == proof_queue.PROOF_QUEUE_STALE_EXIT_CODE
+    out = capsys.readouterr().out
+    assert "dispatch-handoff-expired" in out
+    assert str(logs / "expired-dispatch.runner.log") in out
 
 
 def test_proof_queue_named_lane_can_detach_runner(
@@ -2604,7 +3061,7 @@ def test_proof_queue_named_lane_can_detach_runner(
     rows = _rows(db)
     assert rc == 0
     assert len(rows) == 1
-    assert rows[0]["status"] == "queued"
+    assert rows[0]["status"] == "dispatched"
     assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
     assert [note["body"] for note in _notes(db)][-1:] == ["detached queue launch smoke"]
 
@@ -2793,7 +3250,7 @@ def test_proof_queue_windows_launchers_hide_console(
         def __init__(self, _command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
 
-    monkeypatch.setattr(proof_queue.os, "name", "nt")
+    monkeypatch.setattr(proof_queue, "_queue_process_spawn_is_windows", lambda: True)
     monkeypatch.setattr(
         proof_queue.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
@@ -2819,6 +3276,34 @@ def test_proof_queue_windows_launchers_hide_console(
 
     assert captured[0]["creationflags"] == 0x08000200
     assert proof_queue._queued_command_process_kwargs() == {"creationflags": 0x08000200}
+
+
+def test_proof_queue_posix_detached_runner_uses_new_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class FakePopen:
+        pid = 12345
+
+        def __init__(self, _command: list[str], **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(proof_queue, "_queue_process_spawn_is_windows", lambda: False)
+    monkeypatch.setattr(proof_queue.subprocess, "Popen", FakePopen)
+
+    args = SimpleNamespace(
+        db=tmp_path / "proof_queue.sqlite3",
+        logs_root=tmp_path / "runs",
+        notebooks_root=None,
+        repo_root=tmp_path,
+    )
+
+    proof_queue._launch_detached_runner(args, run_id="posix-runner", timeout=1.0)
+
+    assert captured[0]["start_new_session"] is True
+    assert "creationflags" not in captured[0]
+    assert proof_queue._queued_command_process_kwargs() == {}
 
 
 def test_proof_queue_rejects_uv_run_without_active_project_python(
@@ -2969,7 +3454,7 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     rows = _rows(db)
     assert rc == 0
     assert len(rows) == 1
-    assert rows[0]["status"] == "queued"
+    assert rows[0]["status"] == "dispatched"
     assert rows[0]["resource_family"] == "rust"
     assert rows[0]["contention_key"] == "cargo:molt-runtime"
     assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
@@ -3164,7 +3649,7 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
     rows = _rows(db)
     assert rc == 0
     assert len(rows) == 1
-    assert rows[0]["status"] == "queued"
+    assert rows[0]["status"] == "dispatched"
     assert launched == {"run_id": rows[0]["run_id"], "timeout": 42.0}
     command = json.loads(rows[0]["command_json"])
     assert "pyinit_module_to_bits_reports_static_link_py_mod_exec_pending_error" in command
@@ -6973,6 +7458,12 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
     """
     db = tmp_path / "proof_queue.sqlite3"
     live_pid = os.getpid()
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: int(pid) == live_pid)
+    monkeypatch.setattr(
+        proof_queue,
+        "_process_identity",
+        lambda pid: f"{os.name}:{int(pid)}:live" if int(pid) == live_pid else None,
+    )
     # Record an identity for the *original* (now-dead) guard that does not match
     # the live process now owning that PID. This is exactly the state a launch
     # write leaves after PID reuse.
@@ -6980,7 +7471,7 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
         db,
         tmp_path,
         guard_pid=live_pid,
-        guard_identity=f"{os.name}:{live_pid}:0",
+        guard_identity=f"{os.name}:{live_pid}:dead",
     )
     # The PID is genuinely alive (it is our own process); only identity differs.
     assert proof_queue._pid_alive(live_pid)
@@ -7265,11 +7756,54 @@ def test_contention_key_admits_only_one_running_run(tmp_path: Path) -> None:
     assert running[0]["run_id"] == "first-active"
 
 
-def test_admit_run_atomic_gate_rejects_second_admission(tmp_path: Path) -> None:
-    """Defect 3: the BEGIN IMMEDIATE gate reports the active blocker."""
+def test_admit_run_allows_multiple_queued_rows_per_contention_key(
+    tmp_path: Path,
+) -> None:
+    """Queued rows are wait-list state; launch claim owns resource custody."""
     db = tmp_path / "proof_queue.sqlite3"
     conn = proof_queue._connect(db)
-    first = proof_queue._admit_run(
+    assert (
+        proof_queue._admit_run(
+            conn,
+            run_id="gate-first",
+            logical_id="first",
+            reason="first",
+            command=[sys.executable, "-c", "print('first')"],
+            cwd=proof_queue.ROOT,
+            resource_family="rust",
+            contention_key="cargo:gate",
+            scopes=[],
+            log_path=tmp_path / "gate-first.log",
+            summary_json=tmp_path / "gate-first.memory_guard.json",
+        )
+        is None
+    )
+    assert (
+        proof_queue._admit_run(
+            conn,
+            run_id="gate-second",
+            logical_id="second",
+            reason="second",
+            command=[sys.executable, "-c", "print('second')"],
+            cwd=proof_queue.ROOT,
+            resource_family="rust",
+            contention_key="cargo:gate",
+            scopes=[],
+            log_path=tmp_path / "gate-second.log",
+            summary_json=tmp_path / "gate-second.memory_guard.json",
+        )
+        is None
+    )
+
+    rows = _rows(db)
+    assert [r["run_id"] for r in rows] == ["gate-first", "gate-second"]
+    assert {r["status"] for r in rows} == {"queued"}
+
+
+def test_detached_claim_serializes_contention_key(tmp_path: Path) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._admit_run(
         conn,
         run_id="gate-first",
         logical_id="first",
@@ -7282,9 +7816,7 @@ def test_admit_run_atomic_gate_rejects_second_admission(tmp_path: Path) -> None:
         log_path=tmp_path / "gate-first.log",
         summary_json=tmp_path / "gate-first.memory_guard.json",
     )
-    assert first is None  # admitted
-
-    blocked = proof_queue._admit_run(
+    proof_queue._admit_run(
         conn,
         run_id="gate-second",
         logical_id="second",
@@ -7297,10 +7829,21 @@ def test_admit_run_atomic_gate_rejects_second_admission(tmp_path: Path) -> None:
         log_path=tmp_path / "gate-second.log",
         summary_json=tmp_path / "gate-second.memory_guard.json",
     )
-    assert blocked is not None
-    assert [r["run_id"] for r in blocked] == ["gate-first"]
-    # Only the first row exists; the rejected admission left no row behind.
-    assert [r["run_id"] for r in _rows(db)] == ["gate-first"]
+
+    claimed, reason = proof_queue._claim_detached_run(
+        conn, "gate-first", queue_size=2
+    )
+    assert claimed is not None
+    assert reason is None
+    blocked, reason = proof_queue._claim_detached_run(
+        conn, "gate-second", queue_size=2
+    )
+    assert blocked is None
+    assert reason is not None
+    assert "contention_key=cargo:gate active" in reason
+    rows = {r["run_id"]: r for r in _rows(db)}
+    assert rows["gate-first"]["status"] == "dispatched"
+    assert rows["gate-second"]["status"] == "queued"
 
 
 def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
