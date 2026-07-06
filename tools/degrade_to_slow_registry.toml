@@ -37,7 +37,7 @@
 # fails if the live count EXCEEDS this. Lower it (never raise it) as each
 # pending site is fixed and reclassified. Raising it requires an explicit,
 # reviewed edit -- that is the ratchet.
-metabug_fix_pending_baseline = 2
+metabug_fix_pending_baseline = 0
 
 
 # =============================================================================
@@ -48,40 +48,33 @@ metabug_fix_pending_baseline = 2
 file = "src/molt/cli/module_cache.py"
 symbol = "_load_cached_module_lowering_result"
 signature = "def _load_cached_module_lowering_result(project_root: Path | None, module_name: str, module_path: Path, *, ...) -> dict[str, Any] | None"
-classification = "metabug_fix_pending"
+classification = "sound_keep"
 justification = """
-B1 -- session-local module LOWERING cache. On a cache miss (project_root is
-None, context_digest cannot be computed, or the persisted entry's context
-digest does not match) the function returns None and the caller silently
-re-lowers the module from scratch. There is no diagnostic distinguishing a
-cold cache from an unexpected miss on a warm cache (e.g. a context-digest
-input that was not folded into the key), so a reuse-defeating key change
-degrades the whole build to cold lowering with no signal. Handleable input:
-an unchanged module across sessions should hit the persisted cache. The fixing
-arc must either make the miss reasons observable or prove the warm-hit path is
-taken; until then this is a pending metabug, not sound conservatism (the
-persisted result is byte-identical to a fresh lowering, so reuse is always
-correct).
+B1 -- session-local module LOWERING cache. RESOLVED 2026-07-06: a shared,
+content-addressed cross-session tier (src/molt/cli/module_frontend_cache.py)
+now hydrates the warm-hit path across sessions, so an unchanged module no
+longer silently re-lowers cold on every fresh session. The None-on-genuine-
+cold-miss that remains is correct (a true miss must re-lower; the persisted
+result is byte-identical to a fresh lowering, and the key is content-complete
+after the cache-fingerprint fix). fast_path_test proves cross-session reuse is
+taken on an unchanged module. No silent degrade on a handleable input remains.
 """
-fast_path_test = "test_module_lowering_cache_warm_hit_on_unchanged_module"
+fast_path_test = "test_lowering_reuse_across_sessions_no_relower"
 
 [[site]]
 file = "src/molt/cli/module_cache.py"
 symbol = "_load_module_analysis"
 signature = "def _load_module_analysis(path: Path, *, module_name: str, is_package: bool, import_scan_mode: ImportScanMode, ..., project_root: Path | None, ...) -> tuple[ast.AST | None, ...]"
-classification = "metabug_fix_pending"
+classification = "sound_keep"
 justification = """
-B2 -- session-local module ANALYSIS cache. Symmetric to B1 for the analysis
-phase: when project_root is None or the persisted analysis's stat/context does
-not match, `persisted_analysis` is None and the module is re-parsed and
-re-analyzed with no diagnostic. A key/stat input that silently invalidates the
-persisted analysis degrades every build to cold analysis. Handleable input: an
-unchanged source file across sessions must hit the persisted analysis. Fixing
-arc adds the warm-hit proof / loud-miss diagnostic. Reuse is always correct
-(the analysis is a pure function of the folded key), so this is a real perf
-degrade, not sound conservatism.
+B2 -- session-local module ANALYSIS cache. RESOLVED 2026-07-06: symmetric to B1
+-- the shared content-addressed cross-session tier hydrates the analysis warm-
+hit path across sessions, so an unchanged source no longer re-parses/re-analyzes
+cold every session. The None-on-genuine-miss that remains is correct (analysis
+is a pure function of the content-complete folded key). fast_path_test proves
+cross-session analysis reuse. No silent degrade on a handleable input remains.
 """
-fast_path_test = "test_module_analysis_cache_warm_hit_on_unchanged_source"
+fast_path_test = "test_analysis_reuse_across_sessions_hydrates_shared"
 
 
 # =============================================================================
