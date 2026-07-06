@@ -1,6 +1,5 @@
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
-use super::gpu_backend::{GpuBackend, requested_gpu_backend};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
     TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data,
@@ -8,6 +7,7 @@ use crate::{
     molt_exception_last, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
     string_obj_to_owned, to_f64, to_i64,
 };
+use molt_gpu::runtime_backend::{GpuBackend, requested_gpu_backend};
 #[cfg(any(
     target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),

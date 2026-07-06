@@ -1,7 +1,7 @@
-pub(crate) const MOLT_GPU_BACKEND_ENV: &str = "MOLT_GPU_BACKEND";
+pub const MOLT_GPU_BACKEND_ENV: &str = "MOLT_GPU_BACKEND";
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum GpuBackend {
+pub enum GpuBackend {
     Metal,
     WebGpu,
     Cuda,
@@ -9,7 +9,7 @@ pub(crate) enum GpuBackend {
 }
 
 impl GpuBackend {
-    pub(crate) fn from_env_value(raw: &str) -> Option<Self> {
+    pub fn from_env_value(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "metal" => Some(Self::Metal),
             "webgpu" => Some(Self::WebGpu),
@@ -21,7 +21,7 @@ impl GpuBackend {
     }
 }
 
-pub(crate) fn requested_gpu_backend() -> Option<GpuBackend> {
+pub fn requested_gpu_backend() -> Option<GpuBackend> {
     std::env::var(MOLT_GPU_BACKEND_ENV)
         .ok()
         .and_then(|raw| GpuBackend::from_env_value(&raw))
