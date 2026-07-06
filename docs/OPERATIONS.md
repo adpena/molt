@@ -543,7 +543,10 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   - `matrix_results.json` now includes `gate_status` (thresholds, observed counts, violation details, pass/fail).
   - Use `--fail-on-gate` to return exit code `2` on gate failure.
   - If external root is unavailable, pass `--output-root` explicitly only for an approved emergency override.
-  - If rustc prints incremental hard-link fallback warnings, move `--shared-target-dir` to a local APFS/ext4 path.
+  - If rustc or backend cache publication reports hard-link fallback on
+    APDataStore/exFAT, keep the lane on the DX-selected artifact root and
+    diagnose the specific cache authority; do not reroute proof lanes to legacy
+    `E:` roots to hide the defect.
 - **Compile-progress suite**: use `tools/compile_progress.py` for standardized
   cold/warm + cache-hit/no-cache + daemon-on/off compile tracking.
   - Example: `uv run --python 3.12 python tools/compile_progress.py --clean-state`
