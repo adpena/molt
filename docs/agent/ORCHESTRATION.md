@@ -644,6 +644,23 @@ Everything else: parallel, lane-owned.
 
 ## Delegated to Codex (pick up, in priority order)
 
+**✅ CODEX REASSIGNMENT 2026-07-06 (late, orchestrator) — READ THIS FIRST; it supersedes the stale blockers below.**
+The `molt_type_new` reserved-callable arity blocker and the numpy exec C-API closure ("task #20") described further down are RESOLVED/superseded: numpy now compiles through the cpython-abi path PAST the header-custody collision (landed 410ada3ad), and the fail-open ABI class is fixed (landed 062fb5301). The witness R0 frontier has moved UPSTREAM-of-runtime to the numpy meson GENERATED headers (`__multiarray_umath` `__multiarray_api.h`) — ORCHESTRATOR-OWNED.
+
+**CODEX STAND DOWN — orchestrator/subagent-owned lanes, do NOT edit (hard stop):**
+- ALL of `runtime/molt-cpython-abi/` (fail-open ABI just landed; real PySet_* hooks + the two-Python.h unification in flight).
+- `src/molt/cli/source_extension_toolchain.py` + repo-root `include/` header custody (numpy header authority).
+- The frontend metabug lanes: `src/molt/cli/{frontend_parallel,frontend_execution,frontend_pipeline,frontend_worker,module_dependencies,module_cache,module_frontend_cache}.py`.
+- The numpy witness seal/regen (`tools/regen_numpy_multiarray_meson_wasm.py`, the sealed roots).
+- `src/molt/stdlib/tinygrad/` + `src/molt/gpu/` (demo relocation in flight — MOVE not delete).
+- `tools/{degrade_to_slow,fail_closed}_*` (the two enforcement gates — CI-wired).
+
+**CODEX CURRENT PRIORITIES (in order):**
+1. **GOD-FILE/GOD-CRATE DECOMPOSITION (standing operator P0)** — the #1 dev-velocity obligation; advances every arc, collides with nothing above. Continue on the CPython-mirrored decomposition axis documented below.
+2. **R4 numeric raw-lane perf** (`molt-backend-wasm`/`molt-passes` numeric). The FlatListFloat lane failed v1-v3 on rustc errors — run `tools/proof_queue.py diagnose <run-id>` and fix the ACTUAL compile error before resubmitting; if it is structurally blocked, park it with a precise finding and advance the next R4 keystone rather than re-submitting the same failing shape.
+3. **R6 CPython >=3.12 parity/conformance** (continuous) — conformance shards + differential parity within the verified subset.
+Cite queue run IDs; commit by EXACT pathspec (never `git add -A`); run the ownership audit before every commit. Everything below this block is retained for context but the RESOLVED blockers are superseded by this reassignment.
+
 WITNESS CLOSURE is the top program (goal: field_solve.py → candidate_outputs.npz
 → check_parity.py PASS through Molt WASM). The orchestrator's ONE subagent owns
 the numpy `_multiarray_umath` exec C-API closure (current import blocker — exec
