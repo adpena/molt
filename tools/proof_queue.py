@@ -108,7 +108,7 @@ STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
 )
 RUNNER_TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset({"running-proof-child-missing"})
 STATIC_PYMOD_EXEC_RE = re.compile(
-    r"ImportError:\s+"
+    r"(?:ImportError:\s+|Original error was:\s*)"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
     r": static-link PyModuleDef Py_mod_exec slot returned non-zero"
     r"(?P<detail>[^\r\n]*)"
@@ -134,6 +134,9 @@ DIAGNOSTIC_JSON_RE = re.compile(r"diagnostic_json=(?P<path>\S+)")
 QUEUE_COLD_SINGLE_CARGO_PROOF_RE = re.compile(
     r"proof queue refuses cold-prone single-test Cargo proofs "
     r"\('(?P<filter>[^']+)' under --lib\)"
+)
+PACT_WITNESS_FIXTURE_MISSING_RE = re.compile(
+    r"missing Pact fixture:\s+(?P<path>[^\r\n]+)"
 )
 NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
     r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
@@ -2778,9 +2781,58 @@ def _first_existing_manifest_root(
     return None
 
 
+def _git_worktree_roots(repo_root: Path) -> tuple[Path, ...]:
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo_root,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ()
+    roots: list[Path] = []
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            raw = line[len("worktree ") :].strip()
+            if raw:
+                roots.append(Path(raw))
+    return tuple(roots)
+
+
+def _pact_witness_candidate_repo_roots(repo_root: Path) -> tuple[Path, ...]:
+    roots = [Path(repo_root)]
+    roots.extend(_git_worktree_roots(repo_root))
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        deduped.append(resolved)
+    return tuple(deduped)
+
+
+def _first_existing_manifest_root_across(
+    repo_roots: Sequence[Path], candidates: list[str]
+) -> Path | None:
+    for candidate in candidates:
+        for repo_root in repo_roots:
+            root = _first_existing_manifest_root(repo_root, [candidate])
+            if root is not None:
+                return root
+    return None
+
+
 def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
     repo_root = Path(repo_root)
     selected: list[Path] = []
+    candidate_repo_roots = _pact_witness_candidate_repo_roots(repo_root)
     artifact_groups = [
         [
             "tmp/pact_numpy_multiarray_sealed_for_witness",
@@ -2796,27 +2848,33 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
         ],
     ]
     artifact_roots = [
-        _first_existing_manifest_root(repo_root, candidates)
+        _first_existing_manifest_root_across(candidate_repo_roots, candidates)
         for candidates in artifact_groups
     ]
     artifact_roots.extend(
         root
         for root in [
-            _first_existing_manifest_root(
-                repo_root,
+            _first_existing_manifest_root_across(
+                candidate_repo_roots,
                 ["tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi"],
             ),
-            _first_existing_manifest_root(
-                repo_root,
+            _first_existing_manifest_root_across(
+                candidate_repo_roots,
                 ["tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi"],
             ),
         ]
         if root is not None
     )
-    source_roots = [
-        repo_root / "bench/friends/repos/numpy_off_the_shelf",
-        repo_root / "bench/friends/repos/scipy_off_the_shelf",
-    ]
+    source_roots = []
+    for source_rel in [
+        "bench/friends/repos/numpy_off_the_shelf",
+        "bench/friends/repos/scipy_off_the_shelf",
+    ]:
+        for candidate_repo_root in candidate_repo_roots:
+            root = candidate_repo_root / source_rel
+            if root.exists():
+                source_roots.append(root)
+                break
     for root in [*artifact_roots, *source_roots]:
         if root is None or not root.exists():
             continue
@@ -2849,10 +2907,12 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
+            with_packages=["numpy==1.26.4", "scipy==1.17.1"],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
+            "collab/pact/pact_witness_kernel/make_fixture.py",
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
             "wasm/browser_embed.js",
@@ -2871,6 +2931,7 @@ def _pact_witness_acceptance_spec(
         "notes": [
             "Named Pact acceptance auto-admits conventional manifest-led "
             "NumPy/SciPy staging roots when present, builds field_solve.py, "
+            "regenerates the fixture/reference oracle in the run directory, "
             "runs the WASM artifact to produce candidate_outputs.npz, and "
             "executes check_parity.py; --env can override for power-user lanes."
         ],
