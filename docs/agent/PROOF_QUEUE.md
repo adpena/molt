@@ -147,10 +147,60 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witne
 ```
 
 Detached submission creates a queued row, starts a queue-owned runner for that
-exact run ID, and prints both the run ID and `*.runner.log`. The runner then
-uses `tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
-queued row. WASM resource families also preflight the checked-in Rust toolchain
-contract and install/check required Rust targets before Cargo starts.
+exact run ID, marks the row `dispatched`, and prints both the run ID and
+`*.runner.log`. The runner then uses
+`tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
+queued row. `dispatched` is active queue custody: it consumes queue capacity and
+prevents duplicate launch until the runner claims the row as `running` or
+`prune-stale` reclaims an expired handoff. WASM resource families also preflight
+the checked-in Rust toolchain contract and install/check required Rust targets
+before Cargo starts.
+
+Use the queue-size scheduler instead of launching several detached rows by hand:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py run `
+  --detach `
+  --queue-size 3
+```
+
+`--queue-size N` is the maximum number of concurrently `dispatched` or
+`running` rows across all contention keys. The default is `1`; set
+`MOLT_PROOF_QUEUE_SIZE=N` for a shell/session default. `run --detach` defaults
+its launch limit to the queue size, while `--limit` remains a per-invocation cap.
+Queued rows are wait-list state and do not consume capacity; launch uses an
+atomic queued-to-dispatched claim that rechecks global capacity and contention
+key ownership immediately before spawning a detached runner. The scheduler skips
+rows whose contention key is already active or already selected in the same
+batch, so increasing queue size only admits independent work.
+Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
+already set a value. This keeps APDataStore, exFAT, cross-device caches, and
+other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback
+paths without disabling cache reuse or overriding an explicit operator choice.
+
+The source checkout also exposes a shell-free convenience front door. Prefer
+this for interactive use because it is the portable command surface:
+
+```shell
+molt queue --queue-size 3 run --detach
+```
+
+`molt queue ...` forwards to `tools/proof_queue.py` using Python argv lists, not
+a shell. The top-level `--queue-size N` is a portable per-invocation shorthand
+for `MOLT_PROOF_QUEUE_SIZE=N`; it avoids PowerShell/Bash/Fish-specific
+environment syntax while leaving scheduling and validation in
+`tools/proof_queue.py`. The wrapper rejects invalid top-level capacity before
+spawning the queue process, so bad values do not leak as latent environment
+state. Use either that shorthand or `run --queue-size N`, not both. The command
+surface is the same on Windows, macOS, and Linux, and it must not be replaced
+with PowerShell-specific launch wrappers, POSIX backgrounding, or shell-quoted
+command reconstruction. Raw `uv run ... tools/proof_queue.py` examples below
+remain source-checkout diagnostics and CI/bootstrap forms; they are not a
+second queue authority. The portability tests intentionally include
+spaces and shell metacharacters in paths/arguments, plus Windows and POSIX
+detached-runner assertions; update those tests with any queue launch change.
+The path-filtered `Proof Queue Portability` workflow runs those queue tests on
+Ubuntu, macOS, and Windows whenever queue launch surfaces change.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on
