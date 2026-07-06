@@ -1,7 +1,8 @@
 use super::emit_helpers::{
-    arg0, args2, is_assignable_var, out_var, rust_clone, rust_slot_key, rust_string_literal,
-    rust_stub_marker, rust_value, var_ref,
+    arg0, args2, declare_molt_value, is_assignable_var, out_var, rust_clone, rust_slot_key,
+    rust_string_literal, rust_stub_marker, rust_value, var_ref,
 };
+use super::runtime_surface::runtime_value_call_for_kind;
 use super::{RustBackend, rust_ident};
 use crate::OpIR;
 use std::collections::BTreeSet;
@@ -20,11 +21,7 @@ impl RustBackend {
         let o = out_var(op);
         if is_assignable_var(&o) {
             let rhs = format!("{{ /* {marker} */ MoltValue::None }}");
-            if self.hoisted_vars.contains(&o) {
-                self.emit_line(&format!("{o} = {rhs};"));
-            } else {
-                self.emit_line(&format!("let mut {o}: MoltValue = {rhs};"));
-            }
+            self.emit_line(&declare_molt_value(&o, &rhs, &self.hoisted_vars));
         } else {
             self.emit_line(&format!("/* {marker} */"));
         }
@@ -189,9 +186,11 @@ impl RustBackend {
             }
             "module_set_attr" => self.emit_op_module_set_attr(op),
             "nop" | "comment" | "debug_label" | "line" | "type_assert" => self.emit_op_nop(op),
-            "br_if"
-            | "branch"
-            | "alloc_task"
+            "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "bridge_unavailable" => {
+                self.emit_op_runtime_value_call(op)
+            }
+            "br_if" | "branch" => self.emit_op_unstructured_branch(op),
+            "alloc_task"
             | "block_on"
             | "asyncgen_locals_register"
             | "cancel_current"
@@ -203,9 +202,7 @@ impl RustBackend {
             | "cancel_token_new"
             | "cancel_token_set_current"
             | "cancelled"
-            | "check_exception"
-            | "ascii_from_obj"
-            | "bridge_unavailable" => self.emit_op_br_if(op),
+            | "check_exception" => self.emit_op_runtime_control_gap(op),
             "inc_ref" | "borrow" | "binding_alias" => self.emit_op_inc_ref(op),
             "dec_ref" | "release" => self.emit_op_dec_ref(op),
             "alloc_instance" | "init_instance" | "instance_set_field" | "instance_get_field"
@@ -214,13 +211,25 @@ impl RustBackend {
             "try_start" | "try_end" | "except_start" | "except_end" | "finally_start"
             | "finally_end" => self.emit_op_try_start(op),
             "format_string" | "string_format" => self.emit_op_format_string(op),
-            "str_from_obj" => self.emit_op_str_from_obj(op),
-            "repr_from_obj" => self.emit_op_repr_from_obj(op),
             "tuple_new" | "list_new" => self.emit_op_tuple_new(op),
             "list_fill_new" => self.emit_op_list_fill_new(op),
             "unpack_sequence" => self.emit_op_unpack_sequence(op),
             "string_join" => self.emit_op_string_join(op),
             _ => self.emit_op_other(op),
+        }
+    }
+
+    fn emit_op_runtime_value_call(&mut self, op: &OpIR) {
+        let Some(call) = runtime_value_call_for_kind(op.kind.as_str()) else {
+            self.emit_op_other(op);
+            return;
+        };
+        let rhs = call.rhs(op);
+        let o = out_var(op);
+        if is_assignable_var(&o) {
+            self.emit_line(&declare_molt_value(&o, &rhs, &self.hoisted_vars));
+        } else {
+            self.emit_line(&format!("{rhs};"));
         }
     }
 
@@ -2703,10 +2712,20 @@ impl RustBackend {
         }
     }
 
-    fn emit_op_br_if(&mut self, op: &OpIR) {
+    fn emit_op_unstructured_branch(&mut self, op: &OpIR) {
         self.emit_unsupported_op(
             op,
-            format!("semantic op `{}` has no Rust backend lowering", op.kind),
+            format!("{} requires Rust backend CFG/block lowering", op.kind),
+        );
+    }
+
+    fn emit_op_runtime_control_gap(&mut self, op: &OpIR) {
+        self.emit_unsupported_op(
+            op,
+            format!(
+                "{} requires Rust backend runtime-control representation",
+                op.kind
+            ),
         );
     }
 
@@ -2788,45 +2807,6 @@ impl RustBackend {
             format!("MoltValue::Str({parts})")
         };
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
-    }
-
-    fn emit_op_str_from_obj(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let a = arg0(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("MoltValue::Str(molt_str(&{a}))"),
-            &self.hoisted_vars.clone(),
-        ));
-    }
-
-    fn emit_op_repr_from_obj(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        // molt_repr already returns MoltValue
-        let o = out();
-        let a = arg0(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("molt_repr(&{a})"),
-            &self.hoisted_vars.clone(),
-        ));
     }
 
     fn emit_op_tuple_new(&mut self, op: &OpIR) {
