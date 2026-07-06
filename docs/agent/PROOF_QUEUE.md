@@ -27,8 +27,16 @@ environment before submission so APDataStore is the selected artifact and
 toolchain authority:
 
 ```powershell
-Invoke-Expression (uv run --active --project . --python 3.12 python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)
+Invoke-Expression (python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)
 ```
+
+This bootstrap intentionally does not use `uv`: on a cold APDataStore/exFAT
+checkout, `UV_LINK_MODE=copy` must be exported before uv creates or syncs
+`.venv`, otherwise uv first attempts hard links and emits slow fallback noise.
+Use an already-installed host Python 3.12+ for this dependency-free resolver
+script; after the env is imported, use `uv run --active --project . --python
+3.12 ...` for project commands. Do not run two uv bootstrap/sync commands in
+parallel in the same fresh checkout; one process owns `.venv` creation.
 
 The healthy default is `MOLT_EXT_ROOT=D:\Molt`,
 `CARGO_TARGET_DIR=D:\Molt\target\sessions\<MOLT_SESSION_ID>`, and
@@ -39,6 +47,12 @@ legacy `D:\molt-target` default unless the operator explicitly set
 `MOLT_PRESERVE_TARGET_ROOT=1` for that row. APDataStore is exFAT, so hard-link
 fallbacks are cache-authority defects to diagnose, not a reason to reroute
 proof lanes to legacy `E:` roots.
+
+APDataStore is the artifact and warm-worktree tier, not a disposable cold-clone
+treadmill. Create a new `D:\Molt\worktrees\...` checkout only for real isolation
+from dirty WIP or branch surgery; for read-only doc/status checks prefer
+`git show origin/main:<path>` from an existing checkout, and for repeated proof
+work reuse a warm worktree plus queue-assigned target/session roots.
 
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
