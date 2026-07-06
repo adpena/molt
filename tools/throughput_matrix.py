@@ -529,8 +529,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--shared-target-dir",
         help=(
-            "Optional shared CARGO_TARGET_DIR for all cases. Use a filesystem "
-            "with hard-link support (APFS/ext4) for best incremental behavior."
+            "Optional shared CARGO_TARGET_DIR for all cases. Defaults should "
+            "come from the DX-selected artifact root; on this workstation that "
+            "is APDataStore (D:\\Molt) when healthy."
         ),
     )
     parser.add_argument(
