@@ -16,7 +16,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 import json
 
-from molt.stdlib.tinygrad.template_extractor import (
+from ..template_extractor import (
     BoundingBox,
     OcrBlock,
     OcrResult,

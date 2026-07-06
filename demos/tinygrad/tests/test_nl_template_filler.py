@@ -14,7 +14,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 from datetime import date
 
 
-from molt.stdlib.tinygrad.nl_template_filler import (
+from ..nl_template_filler import (
     fill_template_from_nl,
     generate_invoice_number,
     parse_all_amounts,
