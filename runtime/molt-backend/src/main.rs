@@ -34,7 +34,9 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(any(unix, test))]
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(feature = "wasm-backend")]
+use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(all(feature = "native-backend", windows))]
 use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, UnlockFileEx};
 #[cfg(all(feature = "native-backend", windows))]
