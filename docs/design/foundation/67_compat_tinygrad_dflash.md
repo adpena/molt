@@ -114,7 +114,7 @@ The current state, verified against the tree on 2026-06-23:
     the initial conditioning is DFlash; verifier/drafter separation with
     target-owned conditioning is wired in without keeping generic loops under the
     DFlash package.
-- **The fail-closed alias** `src/molt/stdlib/tinygrad/dflash.py` raises `ImportError`
+- **The fail-closed alias** `demos/tinygrad/dflash.py` raises `ImportError`
   pointing at `molt.gpu.dflash` (paper-faithful) vs `tinygrad.speculative` (generic) —
   exactly the no-mislabel guard the constitution demands.
 - **The pinned upstream oracle is already in-tree:**
@@ -309,7 +309,7 @@ it claims to replace is a hard failure, not a tolerance fudge.
 **Retires:** the class "a public `tinygrad.*` name/signature/default/error-type drifts
 from the pinned upstream without detection" (§1.2.2 generalized to the API surface).
 
-**What it is:** a generated `src/molt/stdlib/tinygrad/api_contract.json` + generator
+**What it is:** a generated `demos/tinygrad/api_contract.json` + generator
 `tools/gen_tinygrad_api_contract.py` that **introspects the pinned upstream tinygrad
 0.13.0** (`bench/.../tinygrad/`) and records, for every public symbol molt claims to
 support: fully-qualified name, signature (params, defaults, kw-only-ness), and the
@@ -419,7 +419,7 @@ for any change touching `src/molt/gpu/dflash/**` or the speculative modules.
 | Fact / mechanism | File(s) | Class made unexpressible |
 |---|---|---|
 | `gpu_op_contract` (3.1) | `runtime/molt-gpu/op_contract.toml`, `tools/gen_gpu_op_contract.py` | primitive-set / op-semantics drift vs upstream pin |
-| `gpu_api_contract` (3.2) | `src/molt/stdlib/tinygrad/api_contract.json`, `tools/gen_tinygrad_api_contract.py` | public API shape/default/error drift |
+| `gpu_api_contract` (3.2) | `demos/tinygrad/api_contract.json`, `tools/gen_tinygrad_api_contract.py` | public API shape/default/error drift |
 | diff oracle (3.3) | `tools/tinygrad_diff_oracle.py`, `tests/gpu/parity/` | hand-written-expected-value rot |
 | `gpu_substrate_authority` (3.4) | `src/molt/gpu/AUTHORITY.toml`, `structural_audit.py` ext | `molt.gpu` second-authority drift |
 | `dflash_fidelity` (3.5) | `src/molt/gpu/dflash/SPEC.md`, `tests/gpu/dflash/**` | DFlash mislabeling + unverified-fidelity |
@@ -493,7 +493,7 @@ immutable, in-tree* references the later phases derive from.
 ### Phase 3 — `gpu_api_contract` fact + gate (retires §1.2.2 API shape)
 **Goal:** API shape/defaults/error-types are a derived, checked fact.
 - 3a. `tools/gen_tinygrad_api_contract.py` (3.2): introspect the pin, emit
-  `src/molt/stdlib/tinygrad/api_contract.json`.
+  `demos/tinygrad/api_contract.json`.
 - 3b. Reconcile every `unclassified` upstream symbol: implement, or mark
   `raises-unsupported` with a clear boundary error (canonicalization doc rule). No silent
   absence.

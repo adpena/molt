@@ -309,7 +309,7 @@ The primitive stack powers two complementary OCR engines:
 - All ops decompose to the 26 primitives — no new Rust code needed
 - ONNX weights loaded via minimal protobuf parser (zero external deps)
 - Runs on: **browser (WebGPU/WASM)**, **Workers edge**, **native**
-- Implementation: `src/molt/stdlib/tinygrad/paddleocr.py`
+- Implementation: `demos/tinygrad/paddleocr.py`
 - Models: PP-OCRv4 mobile ONNX from HuggingFace (OleehyO/paddleocrv4.onnx)
 
 ONNX op decomposition to tinygrad primitives:
@@ -334,7 +334,7 @@ ONNX op decomposition to tinygrad primitives:
 - TurboQuant INT4 quantization for edge deployment
 - Runs on: **browser (WebGPU)**, **GPU server (Modal)**, **Workers AI**
 - Higher quality on difficult inputs but 10-100x slower than PaddleOCR
-- Implementation: `src/molt/stdlib/tinygrad/eagle.py`
+- Implementation: `demos/tinygrad/eagle.py`
 
 ### Routing Strategy
 

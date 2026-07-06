@@ -207,7 +207,7 @@ tokenizer_id=...)`. Model-object attributes, including `dflash_adapter`,
 not enable adapter resolution.
 
 Generic speculative-decoding helpers live under `src/molt/gpu/speculative.py`
-and `src/molt/stdlib/tinygrad/speculative.py`. The `molt.gpu.dflash` namespace
+and `demos/tinygrad/speculative.py`. The `molt.gpu.dflash` namespace
 does not export generic speculative helpers, and the `tinygrad.dflash` import
 path fails closed with an explicit error so generic helpers cannot be mistaken
 for paper-faithful DFlash.
