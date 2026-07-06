@@ -958,6 +958,66 @@ def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> 
     )
 
 
+def test_source_extension_runtime_python_imports_admits_cython_modinit_helpers() -> (
+    None
+):
+    # Cython 3.x emits its unconditional exec-time imports inside dedicated
+    # ``__Pyx_modinit_*`` helpers that ``__pyx_pymod_exec_<mod>`` calls during
+    # ``Py_mod_exec``. scipy.ndimage's ``_ni_label`` imports Cython's
+    # shared-utility module ``scipy._cyutility`` from
+    # ``__Pyx_modinit_shared_function_import_code`` and ``numpy`` from
+    # ``__Pyx_modinit_type_import_code``. Before the scanner recognized this
+    # helper family those imports were dropped, so the witness failed at
+    # runtime with ``No module named 'scipy._cyutility'``.
+    source = r"""
+    static int __Pyx_modinit_shared_function_import_code(void *mstate) {
+        __pyx_t_1 = PyImport_ImportModule("scipy._cyutility");
+        return 0;
+    }
+    static int __Pyx_modinit_type_import_code(void *mstate) {
+        __pyx_t_1 = PyImport_ImportModule("numpy");
+        return 0;
+    }
+    static int __Pyx_DecompressString(void) {
+        PyImport_ImportModule("compression.zstd");
+        return 0;
+    }
+    static int __pyx_pymod_exec__ni_label(PyObject *module) {
+        if (unlikely((__Pyx_modinit_type_import_code(mstate) < 0))) return -1;
+        if (unlikely((__Pyx_modinit_shared_function_import_code(mstate) < 0)))
+            return -1;
+        return 0;
+    }
+    """
+
+    imports = cli_source_extensions.source_extension_runtime_python_imports(source)
+    # Teeth: both exec-time helper imports must be admitted...
+    assert "scipy._cyutility" in imports
+    assert "numpy" in imports
+    # ...while the genuine lazy runtime helper stays excluded.
+    assert "compression.zstd" not in imports
+    assert imports == ("numpy", "scipy._cyutility")
+
+
+def test_source_extension_eager_import_function_name_precise_cython_modinit() -> None:
+    # The eager admission is scoped to the ``__Pyx_modinit_`` init family only;
+    # arbitrary Cython runtime helpers stay lazy so their imports are not
+    # dragged in as AOT roots.
+    eager = cli_source_extensions._source_extension_eager_import_function_name
+    assert eager("__Pyx_modinit_shared_function_import_code")
+    assert eager("__Pyx_modinit_type_import_code")
+    assert eager("__Pyx_modinit_function_import_code")
+    assert eager("__Pyx_modinit_global_init_code")
+    assert eager("__pyx_pymod_exec__ni_label")
+    assert eager("PyInit__ni_label")
+    # Not eager: lazy Cython helpers / unrelated functions.
+    assert not eager("__Pyx_init_co_variables")
+    assert not eager("__Pyx_DecompressString")
+    assert not eager("__Pyx_ImportType_3_2_8")
+    assert not eager("helper")
+    assert not eager(None)
+
+
 def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -8109,6 +8169,7 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
 
     ops = _frontend_main_ops_for_import_source(
         "import scipy.ndimage as ndi\n"
+        "from scipy import ndimage\n"
         "from scipy.ndimage import (\n"
         "    distance_transform_edt,\n"
         "    gaussian_filter,\n"
@@ -8119,14 +8180,19 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
         "mask = 1\n"
         "a = distance_transform_edt(mask)\n"
         "b = ndi.distance_transform_edt(mask)\n"
-        "c = gaussian_filter(mask, sigma=1.5)\n"
-        "d = ndi.gaussian_filter(mask, sigma=2.0)\n"
-        "e = maximum_filter(mask, size=15)\n"
-        "f = ndi.maximum_filter(mask, size=17)\n"
-        "g = minimum_filter(mask, size=11)\n"
-        "h = ndi.minimum_filter(mask, size=13)\n"
-        "i = label(mask)\n"
-        "j = ndi.label(mask)\n",
+        "c = ndimage.distance_transform_edt(mask)\n"
+        "d = gaussian_filter(mask, sigma=1.5)\n"
+        "e = ndi.gaussian_filter(mask, sigma=2.0)\n"
+        "f = ndimage.gaussian_filter(mask, sigma=2.5)\n"
+        "g = maximum_filter(mask, size=15)\n"
+        "h = ndi.maximum_filter(mask, size=17)\n"
+        "i = ndimage.maximum_filter(mask, size=19)\n"
+        "j = minimum_filter(mask, size=11)\n"
+        "k = ndi.minimum_filter(mask, size=13)\n"
+        "l = ndimage.minimum_filter(mask, size=21)\n"
+        "m = label(mask)\n"
+        "n = ndi.label(mask)\n"
+        "o = ndimage.label(mask)\n",
         module_name="field_solve",
         parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
@@ -8136,11 +8202,11 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
     )
 
     expected_counts = {
-        "scipy.ndimage.distance_transform_edt": 2,
-        "scipy.ndimage.gaussian_filter": 2,
-        "scipy.ndimage.maximum_filter": 2,
-        "scipy.ndimage.minimum_filter": 2,
-        "scipy.ndimage.label": 2,
+        "scipy.ndimage.distance_transform_edt": 3,
+        "scipy.ndimage.gaussian_filter": 3,
+        "scipy.ndimage.maximum_filter": 3,
+        "scipy.ndimage.minimum_filter": 3,
+        "scipy.ndimage.label": 3,
     }
     invoke_ops_by_export = {
         name: [
@@ -8162,8 +8228,8 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
             assert invoke_op["native_callable_abi"] == spec["abi"]
             assert "native_callable_symbol" not in invoke_op
             assert len(invoke_op["args"]) == 2
-    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 6
-    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 6
+    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 9
+    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 9
     assert all(op.get("kind") != "call_bind" for op in ops)
     assert all(op.get("kind") != "call_indirect" for op in ops)
     assert all(

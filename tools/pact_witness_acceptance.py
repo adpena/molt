@@ -161,6 +161,33 @@ def _build_wasm(build_dir: Path) -> Path:
     return _select_wasm_entry(build_dir)
 
 
+def _prepare_reference_oracle(run_dir: Path) -> Path:
+    fixture = run_dir / "lstar_sample.npz"
+    raw_reference = run_dir / "reference_outputs.npz"
+    reference = run_dir / "reference_oracle.npz"
+    fixture.unlink(missing_ok=True)
+    raw_reference.unlink(missing_ok=True)
+    reference.unlink(missing_ok=True)
+    env = _build_env()
+    _run([sys.executable, str(KERNEL_ROOT / "make_fixture.py")], cwd=run_dir, env=env)
+    if not fixture.is_file():
+        raise SystemExit(f"Pact fixture generator did not produce {fixture}")
+    _run(
+        [
+            sys.executable,
+            str(KERNEL_ROOT / "field_solve.py"),
+            "lstar_sample.npz",
+        ],
+        cwd=run_dir,
+        env=env,
+    )
+    if not raw_reference.is_file():
+        raise SystemExit(f"Pact reference generator did not produce {raw_reference}")
+    raw_reference.replace(reference)
+    print(f"reference_oracle={reference}", flush=True)
+    return reference
+
+
 def _module_roots_from_env(env: Mapping[str, str]) -> tuple[Path, ...]:
     roots: list[Path] = []
     for raw in env.get("MOLT_MODULE_ROOTS", "").split(os.pathsep):
@@ -439,11 +466,8 @@ def _write_static_extension_init_failure_diagnostic(
     return report_path
 
 
-def _run_candidate(output_wasm: Path, run_dir: Path) -> Path:
-    fixture = KERNEL_ROOT / "lstar_sample.npz"
-    if not fixture.is_file():
-        raise SystemExit(f"missing Pact fixture: {fixture}")
-    shutil.copy2(fixture, run_dir / "lstar_sample.npz")
+def _run_candidate(output_wasm: Path, run_dir: Path) -> tuple[Path, Path]:
+    reference = _prepare_reference_oracle(run_dir)
     raw_output = run_dir / "reference_outputs.npz"
     candidate = run_dir / "candidate_outputs.npz"
     raw_output.unlink(missing_ok=True)
@@ -468,11 +492,10 @@ def _run_candidate(output_wasm: Path, run_dir: Path) -> Path:
         )
     raw_output.replace(candidate)
     print(f"candidate_outputs={candidate}", flush=True)
-    return candidate
+    return candidate, reference
 
 
-def _check_parity(candidate: Path) -> None:
-    reference = KERNEL_ROOT / "reference_outputs.npz"
+def _check_parity(candidate: Path, reference: Path) -> None:
     if not reference.is_file():
         raise SystemExit(f"missing Pact reference oracle: {reference}")
     _run(
@@ -502,8 +525,8 @@ def main(argv: list[str] | None = None) -> int:
     build_dir, run_dir = _prepare_attempt_dirs(args.out_dir)
 
     output_wasm = _build_wasm(build_dir)
-    candidate = _run_candidate(output_wasm, run_dir)
-    _check_parity(candidate)
+    candidate, reference = _run_candidate(output_wasm, run_dir)
+    _check_parity(candidate, reference)
     print("pact witness acceptance PASS", flush=True)
     return 0
 
