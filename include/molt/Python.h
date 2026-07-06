@@ -527,10 +527,6 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define Py_GT 4
 #define Py_GE 5
 
-#define READONLY 1
-#define T_OBJECT 6
-#define T_OBJECT_EX 16
-
 #define Py_TPFLAGS_DEFAULT 0UL
 #define Py_TPFLAGS_BASETYPE (1UL << 10)
 #define Py_TPFLAGS_HAVE_VECTORCALL (1UL << 11)
@@ -2971,56 +2967,20 @@ static inline int _molt_type_install_tp_setattro(PyObject *type_obj, uintptr_t f
 
 static inline int _molt_type_add_getset(PyObject *type_obj, PyGetSetDef *getset) {
     PyGetSetDef *entry;
+    (void)type_obj;
     if (getset == NULL) {
         return 0;
     }
     for (entry = getset; entry->name != NULL; entry++) {
-        PyObject *getter_callable;
-        PyObject *property_obj;
         if (entry->name[0] == '\0') {
             PyErr_SetString(PyExc_TypeError, "getset name must not be empty");
             return -1;
         }
-        if (entry->get == NULL) {
-            PyErr_Format(
-                PyExc_RuntimeError,
-                "unsupported getset '%s': getter callback is required",
-                entry->name);
-            return -1;
-        }
-        if (entry->set != NULL) {
-            PyErr_Format(
-                PyExc_RuntimeError,
-                "unsupported getset '%s': setter callbacks are not yet implemented",
-                entry->name);
-            return -1;
-        }
-        if (entry->closure != NULL) {
-            PyErr_Format(
-                PyExc_RuntimeError,
-                "unsupported getset '%s': non-NULL closure is not yet implemented",
-                entry->name);
-            return -1;
-        }
-        getter_callable = _molt_type_make_slot_callable(
-            molt_none(),
-            entry->name,
-            (uintptr_t)entry->get,
-            (uint32_t)METH_NOARGS,
-            entry->doc);
-        if (getter_callable == NULL) {
-            return -1;
-        }
-        property_obj = _molt_type_wrap_single_arg_builtin("property", getter_callable);
-        Py_DECREF(getter_callable);
-        if (property_obj == NULL) {
-            return -1;
-        }
-        if (PyObject_SetAttrString(type_obj, entry->name, property_obj) < 0) {
-            Py_DECREF(property_obj);
-            return -1;
-        }
-        Py_DECREF(property_obj);
+        PyErr_Format(
+            PyExc_RuntimeError,
+            "source-compat Py_tp_getset '%s' requires --abi-tier cpython-abi",
+            entry->name);
+        return -1;
     }
     return 0;
 }
@@ -8195,31 +8155,35 @@ static inline PyObject *PyDescr_NewClassMethod(PyTypeObject *type, PyMethodDef *
 }
 
 static inline PyObject *PyDescr_NewGetSet(PyTypeObject *type, PyGetSetDef *getset) {
-    PyObject *getter_callable;
-    PyObject *property_obj;
     if (type == NULL || getset == NULL) {
         PyErr_SetString(PyExc_TypeError, "type and getset must not be NULL");
         return NULL;
     }
-    if (getset->get == NULL) {
-        PyErr_SetString(PyExc_TypeError, "getset descriptor must have a getter");
+    if (getset->name == NULL || getset->name[0] == '\0') {
+        PyErr_SetString(PyExc_TypeError, "getset descriptor name must not be empty");
         return NULL;
     }
-    getter_callable = _molt_type_make_slot_callable(
-        _molt_py_handle((PyObject *)type), getset->name, (uintptr_t)getset->get, METH_O, getset->doc);
-    if (getter_callable == NULL) {
-        return NULL;
-    }
-    property_obj = _molt_type_wrap_single_arg_builtin("property", getter_callable);
-    Py_DECREF(getter_callable);
-    return property_obj;
+    PyErr_Format(
+        PyExc_RuntimeError,
+        "source-compat getset descriptor '%s' requires --abi-tier cpython-abi",
+        getset->name);
+    return NULL;
 }
 
 static inline PyObject *PyDescr_NewMember(PyTypeObject *type, PyMemberDef *member) {
-    (void)type;
-    (void)member;
-    Py_INCREF(Py_None);
-    return Py_None;
+    if (type == NULL || member == NULL) {
+        PyErr_SetString(PyExc_TypeError, "type and member must not be NULL");
+        return NULL;
+    }
+    if (member->name == NULL || member->name[0] == '\0') {
+        PyErr_SetString(PyExc_TypeError, "member descriptor name must not be empty");
+        return NULL;
+    }
+    PyErr_Format(
+        PyExc_RuntimeError,
+        "source-compat member descriptor '%s' requires --abi-tier cpython-abi",
+        member->name);
+    return NULL;
 }
 
 /* ========================================================================
@@ -12481,34 +12445,72 @@ static inline void PyMem_SetupDebugHooks(void) {
  * ======================================================================== */
 
 #ifndef T_SHORT
-#define T_SHORT 0
-#define T_INT 1
-#define T_LONG 2
-#define T_FLOAT 3
-#define T_DOUBLE 4
-#define T_STRING 5
-#define T_OBJECT 6
-#define T_CHAR 7
-#define T_BYTE 8
-#define T_UBYTE 9
-#define T_USHORT 10
-#define T_UINT 11
-#define T_ULONG 12
-#define T_STRING_INPLACE 13
-#define T_BOOL 14
-#define T_OBJECT_EX 16
-#define T_LONGLONG 17
-#define T_ULONGLONG 18
-#define T_PYSSIZET 19
-#define T_NONE 20
+#define Py_T_SHORT 0
+#define Py_T_INT 1
+#define Py_T_LONG 2
+#define Py_T_FLOAT 3
+#define Py_T_DOUBLE 4
+#define Py_T_STRING 5
+#define _Py_T_OBJECT 6
+#define Py_T_OBJECT _Py_T_OBJECT
+#define Py_T_CHAR 7
+#define Py_T_BYTE 8
+#define Py_T_UBYTE 9
+#define Py_T_USHORT 10
+#define Py_T_UINT 11
+#define Py_T_ULONG 12
+#define Py_T_STRING_INPLACE 13
+#define Py_T_BOOL 14
+#define Py_T_OBJECT_EX 16
+#define Py_T_LONGLONG 17
+#define Py_T_ULONGLONG 18
+#define Py_T_PYSSIZET 19
+#define _Py_T_NONE 20
+#define Py_T_NONE _Py_T_NONE
+#define T_SHORT Py_T_SHORT
+#define T_INT Py_T_INT
+#define T_LONG Py_T_LONG
+#define T_FLOAT Py_T_FLOAT
+#define T_DOUBLE Py_T_DOUBLE
+#define T_STRING Py_T_STRING
+#define T_OBJECT _Py_T_OBJECT
+#define T_CHAR Py_T_CHAR
+#define T_BYTE Py_T_BYTE
+#define T_UBYTE Py_T_UBYTE
+#define T_USHORT Py_T_USHORT
+#define T_UINT Py_T_UINT
+#define T_ULONG Py_T_ULONG
+#define T_STRING_INPLACE Py_T_STRING_INPLACE
+#define T_BOOL Py_T_BOOL
+#define T_OBJECT_EX Py_T_OBJECT_EX
+#define T_LONGLONG Py_T_LONGLONG
+#define T_ULONGLONG Py_T_ULONGLONG
+#define T_PYSSIZET Py_T_PYSSIZET
+#define T_NONE _Py_T_NONE
+#endif
+
+#ifndef Py_READONLY
+#define Py_READONLY 1
+#endif
+
+#ifndef Py_AUDIT_READ
+#define Py_AUDIT_READ 2
+#endif
+
+#ifndef _Py_WRITE_RESTRICTED
+#define _Py_WRITE_RESTRICTED 4
+#endif
+
+#ifndef READONLY
+#define READONLY Py_READONLY
 #endif
 
 #ifndef READ_RESTRICTED
-#define READ_RESTRICTED 2
+#define READ_RESTRICTED Py_AUDIT_READ
 #endif
 
 #ifndef PY_WRITE_RESTRICTED
-#define PY_WRITE_RESTRICTED 4
+#define PY_WRITE_RESTRICTED _Py_WRITE_RESTRICTED
 #endif
 
 #ifndef RESTRICTED
