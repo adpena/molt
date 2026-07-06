@@ -3,7 +3,7 @@
 This corpus makes the EXISTING-but-untested DFlash contract guards executable
 and gated. It exercises the real typed refusals in
 ``src/molt/gpu/dflash/{contracts,adapters}.py`` and the mislabel guard in
-``src/molt/stdlib/tinygrad/dflash.py`` so that the constitutional invariant —
+``demos/tinygrad/dflash.py`` so that the constitutional invariant —
 "generic speculative decoding mislabeled DFlash is UNEXPRESSIBLE"
 (CLAUDE.md "Top Priority: Tinygrad + DFlash Fidelity") — is held by a RED gate,
 not by prose.
@@ -890,7 +890,7 @@ def test_no_adapter_no_name_returns_none_not_generic_runtime():
 
 
 # === (c) tinygrad.dflash import must fail closed, pointing at molt.gpu.dflash ===
-# Exercises src/molt/stdlib/tinygrad/dflash.py. SPEC.md F6.
+# Exercises demos/tinygrad/dflash.py. SPEC.md F6.
 #
 # A bare `import tinygrad.dflash` under host pytest would resolve `tinygrad` to
 # whatever tinygrad is installed in the host environment (the upstream package),
@@ -901,12 +901,7 @@ def test_no_adapter_no_name_returns_none_not_generic_runtime():
 # assert the molt ImportError it raises at module load.
 
 _MOLT_TINYGRAD_DFLASH = (
-    Path(__file__).resolve().parents[3]
-    / "src"
-    / "molt"
-    / "stdlib"
-    / "tinygrad"
-    / "dflash.py"
+    Path(__file__).resolve().parents[3] / "demos" / "tinygrad" / "dflash.py"
 )
 
 

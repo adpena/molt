@@ -7,7 +7,7 @@ async function main() {
     const wasmPath = '/tmp/paddleocr_final_linked.wasm';
     if (!fs.existsSync(wasmPath)) {
         console.log('PaddleOCR WASM not found. Build with:');
-        console.log('  MOLT_HERMETIC_MODULE_ROOTS=1 molt build src/molt/stdlib/tinygrad/paddleocr_driver.py --target wasm');
+        console.log('  MOLT_HERMETIC_MODULE_ROOTS=1 molt build demos/tinygrad/paddleocr_driver.py --target wasm');
         return;
     }
 
