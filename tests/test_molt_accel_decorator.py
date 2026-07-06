@@ -117,9 +117,7 @@ def test_raw_json_response_factory_uses_optional_django_http(monkeypatch) -> Non
         def JsonResponse(payload, *, status, safe):
             return ("json", payload, status, safe)
 
-    monkeypatch.setattr(
-        decorator_mod, "_optional_django_http", lambda: FakeDjangoHttp
-    )
+    monkeypatch.setattr(decorator_mod, "_optional_django_http", lambda: FakeDjangoHttp)
 
     assert raw_json_response_factory(b'{"ok": true}', 203) == (
         "http",
