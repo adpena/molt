@@ -5,7 +5,7 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-05 by the orchestrator.
+Last updated: 2026-07-06 by the orchestrator.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
@@ -288,6 +288,28 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
 
 ## State of the world (read this first)
 
+- **UPDATE 2026-07-06 (orchestrator): TARGET-FEATURE AUTHORITY UNIFIED +
+  RECLAIMED (c54839969).** Target-feature + browser-profile truth now flows
+  through ONE generated authority: `src/molt/target_feature_manifest.toml`
+  (source) → `tools/gen_target_feature_manifest.py` (`--check` drift gate) →
+  `src/molt/_target_feature_manifest.py` + `wasm/target_feature_manifest.json` +
+  `wasm/target_feature_constants.generated.js`. The `WEBGPU_DISPATCH_HOST_IMPORT`
+  / `TARGET_FEATURE_MANIFEST_ASSET_NAME` / `BROWSER_TARGET_FAMILY` constants are
+  now DERIVED generated facts (`molt_gpu_webgpu_dispatch_host` derives from
+  `wasm-browser-webgpu`'s `browser_host_imports.webgpu[0]`); the 6 duplicate
+  hand-defined literals across `cli/browser_target_features.py`,
+  `wasm/browser_target_features.js`, `browser_host.js`, `browser_embed.js`,
+  `run_wasm.js`, `cli/wasm.py` are DELETED — every consumer imports from the
+  generated source. Proven: `gen --check` green + 21 gen/metadata tests + 2
+  teeth-tests (`test_derived_constants_are_single_sourced_from_manifest`,
+  `test_no_duplicate_literal_definitions_of_webgpu_dispatch_host_import`, which
+  fail on a reintroduced literal). **CODEX STAND DOWN on target-feature /
+  browser-profile truth — orchestrator-owned lane. Any target feature,
+  capability flag, or browser-host-import MUST be declared in
+  `target_feature_manifest.toml` and regenerated via the generator; NEVER
+  hand-add a feature literal, a second capability list, or a backend-local
+  reclassification.** The uncommitted target-feature WIP in the shared checkout
+  is superseded by this landing (captured at D:/Molt/harvest/; drop it).
 - **UPDATE 2026-07-05 (orchestrator, ground-truthed on origin/main):** the
   ndimage FRONTEND gate is CLEARED. `scipy.ndimage.distance_transform_edt` and
   all 5 witness ops (`gaussian_filter`, `label`, `maximum_filter`,
