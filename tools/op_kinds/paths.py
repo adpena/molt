@@ -26,6 +26,10 @@ def tir_path(relative: str) -> Path:
         candidate = base.joinpath(*parts)
         if candidate.exists():
             return candidate
+        if candidate.suffix == ".rs":
+            split_module = candidate.with_suffix("") / "mod.rs"
+            if split_module.exists():
+                return split_module
     return TIR_SRC.joinpath(*parts)
 
 
