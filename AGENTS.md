@@ -122,7 +122,7 @@ is reconciled.
 - Bootstrap RunContext before the first `uv` command in a fresh checkout or
   worktree. Use an already-installed host Python 3.12+ for this dependency-free
   resolver script, for example
-  `Invoke-Expression (python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)`;
+  `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`;
   then use `uv run --active --project . --python 3.12 ...` for project commands.
   Do not use `uv run` to obtain the first env in a cold checkout, because
   `UV_LINK_MODE=copy` must be present before uv touches `.venv` on
