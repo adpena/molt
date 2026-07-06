@@ -5,7 +5,7 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-04 by the orchestrator.
+Last updated: 2026-07-05 by the orchestrator.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
@@ -288,6 +288,29 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
 
 ## State of the world (read this first)
 
+- **UPDATE 2026-07-05 (orchestrator, ground-truthed on origin/main):** the
+  ndimage FRONTEND gate is CLEARED. `scipy.ndimage.distance_transform_edt` and
+  all 5 witness ops (`gaussian_filter`, `label`, `maximum_filter`,
+  `minimum_filter`) now lower through `invoke_ffi` — the sealed scipy.ndimage
+  manifest carries all 5 `callable_exports` (`module_attr` binding, provider
+  module, `molt.object_call(args)_v1`) and reachability is fixed (**6eda13d2a**,
+  Branch A, independently verified). ndarray buffer-lease custody landed
+  (**ff9f7c23a**, queue-verified). ABI custody does not block. **The real blocker
+  was DOWNSTREAM and is now FIXED:** a `molt-backend-wasm` E0583 compile break
+  (the **d0b381224** wasm split left bare `mod equality; mod ordered;` children in
+  the nested `#[path]`-loaded `comparison_ops` module → rustc resolved them to
+  `numeric_ops/`) broke EVERY WASM build on main. Fixed **df4e5e738** (explicit
+  `#[path]`, matching the working `aggregate_ops` convention; `cargo check
+  -p molt-backend-wasm` rc=0). **LESSON (reinforces the binding working
+  agreement): `cargo check` every touched crate after a decomposition/split
+  BEFORE landing — a split that does not compile is a broken-main P0 that blocks
+  the whole witness.** Witness acceptance is RE-RUNNING on df4e5e738 to surface
+  the next step (wasm link / runtime-exec / parity) toward `candidate_outputs.npz`
+  + `check_parity` green (owner: orchestrator, R0). DX gap flagged: RunContext
+  rehomes `MOLT_TARGET_ROOT` to `D:\molt-target`, which lacks toolchains/WASI
+  sysroot on this host — wasm builds currently need a `MOLT_PRESERVE_TARGET_ROOT=1`
+  + explicit `MOLT_WASI_SYSROOT` workaround (provisioning + `dx.py` rehome-guard
+  follow-up).
 - The witness `import numpy` chain has advanced deep into numpy's C-core
   init. Landed this arc: conditional-import wedge (3b0ca4a80, killed the
   infinite hang), honest-error propagation (3d5977a9d, real import errors no
