@@ -40,6 +40,12 @@ from molt.cli.models import (
 )
 from molt.cli.module_dependencies import _module_dependency_closure
 from molt.cli.module_graph_discovery import _load_module_imports
+from molt.cli.module_frontend_cache import (
+    _hydrate_shared_frontend_cache,
+    _publish_shared_frontend_cache,
+    _shared_module_analysis_cache_path,
+    _shared_module_lowering_cache_path,
+)
 from molt.cli.module_graph_cache import (
     _read_persisted_import_scan,
     _resolved_module_cache_key,
@@ -735,6 +741,41 @@ _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 
 
+def _module_analysis_cache_key(
+    path: Path,
+    *,
+    kind: str,
+    module_name: str,
+    is_package: bool | None,
+    import_scan_mode: ImportScanMode,
+    target_python: TargetPythonVersion,
+    capability_config_digest: str,
+) -> str:
+    """Content-addressed key for one module-analysis identity.
+
+    Single authority for the analysis cache key: the session-local filename and
+    the shared-tier slot both derive from this so they can never drift. The key
+    covers the resolved source path, the module identity, the import scan mode,
+    the target Python tag, the frontend tooling fingerprint, and (when set) the
+    capability config digest -- every input that changes the analysis result.
+    """
+    package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
+    key_parts = [
+        module_name,
+        package_kind,
+        import_scan_mode,
+        kind,
+        target_python.tag,
+        _cache_tooling_fingerprint(),
+    ]
+    if capability_config_digest:
+        key_parts.append(f"capability_config={capability_config_digest}")
+    return _resolved_module_cache_key(
+        os.fspath(path),
+        *key_parts,
+    )
+
+
 def _module_analysis_cache_path(
     project_root: Path,
     path: Path,
@@ -750,22 +791,61 @@ def _module_analysis_cache_path(
         os.fspath(_build_state_root(project_root)),
         kind,
     )
-    package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
-    key_parts = [
-        module_name,
-        package_kind,
-        import_scan_mode,
-        kind,
-        target_python.tag,
-        _cache_tooling_fingerprint(),
-    ]
-    if capability_config_digest:
-        key_parts.append(f"capability_config={capability_config_digest}")
-    cache_key = _resolved_module_cache_key(
-        os.fspath(path),
-        *key_parts,
+    cache_key = _module_analysis_cache_key(
+        path,
+        kind=kind,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     return root / f"{path.stem}.{cache_key}.json"
+
+
+def _shared_module_analysis_cache_path_for(
+    path: Path,
+    *,
+    kind: str = "module_analysis_cache",
+    module_name: str,
+    is_package: bool | None = None,
+    import_scan_mode: ImportScanMode,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
+) -> Path | None:
+    cache_key = _module_analysis_cache_key(
+        path,
+        kind=kind,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    return _shared_module_analysis_cache_path(path.stem, cache_key)
+
+
+def _module_lowering_cache_key(
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    target_python: TargetPythonVersion,
+) -> str:
+    """Coarse session-local key for one module-lowering slot.
+
+    Deliberately coarse (path + module + pkg/mod + target Python): the
+    session-local ``.molt_state`` dir holds a single build identity per build, and
+    the ``context_digest`` re-checked on read is the correctness authority. The
+    shared tier folds the ``context_digest`` into its slot name so distinct
+    identities never collide (see ``_shared_module_lowering_cache_path``).
+    """
+    return _resolved_module_cache_key(
+        os.fspath(path),
+        module_name,
+        "pkg" if is_package else "mod",
+        target_python.tag,
+    )
 
 
 def _module_lowering_cache_path(
@@ -780,37 +860,49 @@ def _module_lowering_cache_path(
         os.fspath(_build_state_root(project_root)),
         "module_lowering_cache",
     )
-    cache_key = _resolved_module_cache_key(
-        os.fspath(path),
-        module_name,
-        "pkg" if is_package else "mod",
-        target_python.tag,
+    cache_key = _module_lowering_cache_key(
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        target_python=target_python,
     )
     return root / f"{path.stem}.{cache_key}.json"
 
 
-def _read_persisted_module_analysis(
-    project_root: Path,
+def _shared_module_lowering_cache_path_for(
     path: Path,
     *,
     module_name: str,
     is_package: bool,
-    import_scan_mode: ImportScanMode,
-    path_stat: os.stat_result | None = None,
-    validate_stat: bool = True,
+    context_digest: str,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
-) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
-    cache_path = _module_analysis_cache_path(
-        project_root,
+) -> Path | None:
+    cache_key = _module_lowering_cache_key(
         path,
         module_name=module_name,
         is_package=is_package,
-        import_scan_mode=import_scan_mode,
         target_python=target_python,
-        capability_config_digest=capability_config_digest,
     )
-    payload = _read_artifact_sync_state(cache_path)
+    return _shared_module_lowering_cache_path(path.stem, cache_key, context_digest)
+
+
+def _validate_persisted_module_analysis_payload(
+    payload: dict[str, Any] | None,
+    path: Path,
+    *,
+    import_scan_mode: ImportScanMode,
+    path_stat: os.stat_result | None,
+    validate_stat: bool,
+    capability_config_digest: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
+    """Validate one analysis payload; the single correctness gate for both tiers.
+
+    Returns the decoded ``(func_defaults, func_kinds, imports)`` triple only when
+    every schema / fingerprint / scan-mode / capability / source-content check
+    passes. Applied identically to a session-local payload and to one hydrated
+    from the shared tier, so a shared hit can never bypass a check the
+    session-local path enforces.
+    """
     if payload is None:
         return None
     if (
@@ -862,6 +954,62 @@ def _read_persisted_module_analysis(
     return normalized, dict(cast(dict[str, str], raw_kinds)), cached_imports
 
 
+def _read_persisted_module_analysis(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    path_stat: os.stat_result | None = None,
+    validate_stat: bool = True,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
+    cache_path = _module_analysis_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    result = _validate_persisted_module_analysis_payload(
+        _read_artifact_sync_state(cache_path),
+        path,
+        import_scan_mode=import_scan_mode,
+        path_stat=path_stat,
+        validate_stat=validate_stat,
+        capability_config_digest=capability_config_digest,
+    )
+    if result is not None:
+        return result
+    # Session-local miss: hydrate from the shared, content-addressed tier so a
+    # fresh session reuses another session's analysis instead of re-parsing. The
+    # hydrated payload is re-validated through the same gate above (schema /
+    # fingerprint / scan-mode / capability / source-content sha256), so a shared
+    # hit can never serve a stale or mismatched result.
+    shared_path = _shared_module_analysis_cache_path_for(
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    if not _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path):
+        return None
+    return _validate_persisted_module_analysis_payload(
+        _read_artifact_sync_state(cache_path),
+        path,
+        import_scan_mode=import_scan_mode,
+        path_stat=path_stat,
+        validate_stat=validate_stat,
+        capability_config_digest=capability_config_digest,
+    )
+
+
 def _write_persisted_module_analysis(
     project_root: Path,
     path: Path,
@@ -906,6 +1054,20 @@ def _write_persisted_module_analysis(
         payload["imports"] = list(imports)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload, default=_json_ir_default)
+    # Publish the completed session-local entry to the shared, content-addressed
+    # tier so the next fresh session hydrates it instead of re-parsing. Best-effort
+    # byte copy (exFAT-safe): a publish failure never fails the build.
+    _publish_shared_frontend_cache(
+        src=cache_path,
+        cache_path=_shared_module_analysis_cache_path_for(
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            target_python=target_python,
+            capability_config_digest=capability_config_digest,
+        ),
+    )
 
 
 def _validate_module_func_default_payload(payload: dict[str, Any]) -> bool:
@@ -1383,26 +1545,22 @@ def _module_lowering_context_digest_for_module(
     return _module_lowering_context_digest(context_payload)
 
 
-def _read_persisted_module_lowering(
-    project_root: Path,
+def _validate_persisted_module_lowering_payload(
+    payload: dict[str, Any] | None,
     path: Path,
     *,
     module_name: str,
-    is_package: bool,
     context_digest: str,
-    path_stat: os.stat_result | None = None,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    path_stat: os.stat_result | None,
 ) -> dict[str, Any] | None:
-    cache_path = _module_lowering_cache_path(
-        project_root,
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        target_python=target_python,
-    )
-    payload = _read_cached_json_object(cache_path)
-    if payload is None:
-        return None
+    """Validate one lowering payload; the single correctness gate for both tiers.
+
+    Enforces schema version, ``context_digest`` identity (which embeds the tooling
+    fingerprint, target Python, and every scoped lowering input), source-content
+    sha256, and local-function-reference closure. Applied identically to a
+    session-local payload and to one hydrated from the shared tier, so a shared
+    hit can never bypass a check the session-local path enforces.
+    """
     if (
         not isinstance(payload, dict)
         or payload.get("version") != _MODULE_LOWERING_CACHE_SCHEMA_VERSION
@@ -1432,6 +1590,56 @@ def _read_persisted_module_lowering(
         ):
             return None
     return result
+
+
+def _read_persisted_module_lowering(
+    project_root: Path,
+    path: Path,
+    *,
+    module_name: str,
+    is_package: bool,
+    context_digest: str,
+    path_stat: os.stat_result | None = None,
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+) -> dict[str, Any] | None:
+    cache_path = _module_lowering_cache_path(
+        project_root,
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        target_python=target_python,
+    )
+    result = _validate_persisted_module_lowering_payload(
+        _read_cached_json_object(cache_path),
+        path,
+        module_name=module_name,
+        context_digest=context_digest,
+        path_stat=path_stat,
+    )
+    if result is not None:
+        return result
+    # Session-local miss: hydrate from the shared, content-addressed tier so a
+    # fresh session reuses another session's lowering instead of re-lowering. The
+    # shared slot name embeds the context_digest, and the hydrated payload is
+    # re-validated through the same gate above (schema / context digest / source
+    # sha256 / reference closure), so a shared hit can never serve a stale or
+    # mismatched IR result.
+    shared_path = _shared_module_lowering_cache_path_for(
+        path,
+        module_name=module_name,
+        is_package=is_package,
+        context_digest=context_digest,
+        target_python=target_python,
+    )
+    if not _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path):
+        return None
+    return _validate_persisted_module_lowering_payload(
+        _read_cached_json_object(cache_path),
+        path,
+        module_name=module_name,
+        context_digest=context_digest,
+        path_stat=path_stat,
+    )
 
 
 def _write_persisted_module_lowering(
@@ -1466,6 +1674,19 @@ def _write_persisted_module_lowering(
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_cached_json_object(cache_path, payload, default=_json_ir_default)
+    # Publish the completed session-local entry to the shared, content-addressed
+    # tier (slot name embeds the context_digest) so the next fresh session
+    # hydrates it instead of re-lowering. Best-effort byte copy (exFAT-safe).
+    _publish_shared_frontend_cache(
+        src=cache_path,
+        cache_path=_shared_module_lowering_cache_path_for(
+            path,
+            module_name=module_name,
+            is_package=is_package,
+            context_digest=context_digest,
+            target_python=target_python,
+        ),
+    )
 
 
 def _load_cached_module_lowering_result(
