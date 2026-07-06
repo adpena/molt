@@ -56,4 +56,5 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Run proof queue portability tests
-        run: uv run python -m pytest -q tests/test_molt_queue_cli.py tests/tools/test_proof_queue.py
+        timeout-minutes: 10
+        run: uv run --active --project . --no-sync python -m pytest -q tests/test_molt_queue_cli.py tests/tools/test_proof_queue.py
