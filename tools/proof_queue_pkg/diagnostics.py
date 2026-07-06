@@ -425,8 +425,37 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
-    match = pq.NATIVE_ARTIFACT_CUSTODY_RE.search(log_tail)
+    match = pq.NATIVE_RUNTIME_IMPORT_CUSTODY_RE.search(log_tail)
     if match is not None:
+        package = match.group("package")
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="external-native-runtime-import-custody",
+                severity="error",
+                summary=(
+                    f"Sealed external package {package} cannot prove runtime "
+                    "Python imports because its manifest is missing "
+                    "runtime_python_import_modules."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Regenerate and re-seal the source-recompiled extension root "
+                    "from live source/build custody so seal persists "
+                    "runtime_python_import_modules; do not rerun the heavy "
+                    "pact-witness-acceptance lane until package admission passes."
+                ),
+                scopes=(
+                    "src/molt/cli/external_native.py",
+                    "src/molt/cli/extension_seal.py",
+                    "tools/pact_seal_witness_roots.py",
+                ),
+            )
+        )
+
+    match = pq.NATIVE_ARTIFACT_CUSTODY_RE.search(log_tail)
+    if match is not None and not pq._diagnostics_have_signal(
+        diagnostics, "external-native-runtime-import-custody"
+    ):
         missing_abi_symbols = tuple(
             dict.fromkeys(
                 symbol_match.group("symbol")
