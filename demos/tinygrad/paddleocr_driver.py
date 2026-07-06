@@ -32,7 +32,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
-from tinygrad.paddleocr import PaddleOCR
+from .paddleocr import PaddleOCR
 from tinygrad.lazy import LazyOp, LazyBuffer
 
 

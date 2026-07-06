@@ -8,7 +8,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 import random
 
 from tinygrad.tensor import Tensor
-from tinygrad.flash_attention import flash_attention_v3, naive_attention
+from ..flash_attention import flash_attention_v3, naive_attention
 
 
 def _allclose(a: list, b: list, atol: float = 1e-3) -> bool:

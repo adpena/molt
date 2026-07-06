@@ -25,7 +25,7 @@ from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
 
 if TYPE_CHECKING:
-    from tinygrad.kv_cache import TieredKVCache
+    from .kv_cache import TieredKVCache
 
 
 def flash_attention(
@@ -235,7 +235,7 @@ def speculative_decode_with_kv_cache(
     The kv_cache is mutated in place: rejected positions are removed,
     and tier management is applied.
     """
-    from tinygrad.kv_cache import (
+    from .kv_cache import (
         compute_attention_importance_from_positions,
     )
 

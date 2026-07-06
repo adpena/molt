@@ -573,7 +573,7 @@ class PaddleOCRDetector:
         self._loaded = count > 0
 
         # Load the full ONNX graph for interpreter-based forward pass
-        from tinygrad.onnx_interpreter import OnnxInterpreter
+        from .onnx_interpreter import OnnxInterpreter
 
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
@@ -703,7 +703,7 @@ class PaddleOCRClassifier:
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
 
-        from tinygrad.onnx_interpreter import OnnxInterpreter
+        from .onnx_interpreter import OnnxInterpreter
 
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
@@ -805,7 +805,7 @@ class PaddleOCRRecognizer:
         count = self.weights.load_onnx(onnx_bytes)
         self._loaded = count > 0
 
-        from tinygrad.onnx_interpreter import OnnxInterpreter
+        from .onnx_interpreter import OnnxInterpreter
 
         self._interpreter = OnnxInterpreter()
         self._interpreter.load_model(onnx_bytes)
@@ -1080,13 +1080,13 @@ class PaddleOCR:
             return Tensor.zeros(1, 3, 48, 48)
 
         new_w = max(1, int(48.0 * crop_w / crop_h))
-        from tinygrad.onnx_interpreter import _nearest_resize
+        from .onnx_interpreter import _nearest_resize
 
         return _nearest_resize(crop, (1, 3, 48, new_w))
 
     def _resize_for_classifier(self, crop: Tensor) -> Tensor:
         """Resize a text crop to the direction classifier's fixed input."""
-        from tinygrad.onnx_interpreter import _nearest_resize
+        from .onnx_interpreter import _nearest_resize
 
         return _nearest_resize(crop, (1, 3, 48, 192))
 
