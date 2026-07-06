@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(any(unix, test))]
+use crate::resource_limits::detect_physical_memory_bytes;
 
 #[derive(Default)]
 #[cfg(any(unix, test))]
