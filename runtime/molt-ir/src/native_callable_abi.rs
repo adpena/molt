@@ -65,6 +65,10 @@ impl NativeCallableAbi {
         }
     }
 
+    pub fn requires_direct_symbol_binding(self) -> bool {
+        matches!(self, Self::ForwardF32V1 | Self::PyinitModuleV1)
+    }
+
     pub fn browser_signature(self) -> NativeCallableBrowserSignature {
         match self {
             Self::ObjectCallV1 => NativeCallableBrowserSignature {
@@ -136,6 +140,7 @@ mod tests {
         assert_eq!(object_call, NativeCallableAbi::ObjectCallV1);
         assert_eq!(object_call.token(), NATIVE_CALLABLE_ABI_OBJECT_CALL_V1);
         assert_eq!(object_call.fixed_arity(), None);
+        assert!(!object_call.requires_direct_symbol_binding());
         assert_eq!(object_call.browser_signature().params, ["molt.value..."]);
         assert_eq!(object_call.browser_signature().result, "molt.value");
         assert_eq!(object_call.wasm_signature().params, ["i64..."]);
@@ -149,6 +154,7 @@ mod tests {
             NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1
         );
         assert_eq!(object_callargs.fixed_arity(), Some(1));
+        assert!(!object_callargs.requires_direct_symbol_binding());
         assert_eq!(
             object_callargs.browser_signature().params,
             ["molt.callargs"]
@@ -161,6 +167,7 @@ mod tests {
         assert_eq!(forward_f32, NativeCallableAbi::ForwardF32V1);
         assert_eq!(forward_f32.token(), NATIVE_CALLABLE_ABI_FORWARD_F32_V1);
         assert_eq!(forward_f32.fixed_arity(), Some(1));
+        assert!(forward_f32.requires_direct_symbol_binding());
         assert_eq!(forward_f32.browser_signature().params, ["bytes.float32"]);
         assert_eq!(forward_f32.browser_signature().result, "bytes.float32");
         assert_eq!(forward_f32.wasm_signature().params, ["i32", "i64", "i32"]);
@@ -171,6 +178,7 @@ mod tests {
         assert_eq!(pyinit_module, NativeCallableAbi::PyinitModuleV1);
         assert_eq!(pyinit_module.token(), NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1);
         assert_eq!(pyinit_module.fixed_arity(), Some(0));
+        assert!(pyinit_module.requires_direct_symbol_binding());
         assert!(pyinit_module.browser_signature().params.is_empty());
         assert_eq!(
             pyinit_module.browser_signature().result,

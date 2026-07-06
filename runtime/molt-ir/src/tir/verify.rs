@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
+
 use super::blocks::{BlockId, Terminator};
 use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
@@ -231,6 +233,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 },
                 _ => {}
             }
+            verify_native_callable_attrs(*bid, op_idx, op, errors);
 
             // Check expected result counts using the generated opcode registry.
             let expected_results = opcode_fixed_result_count_table(op.opcode);
@@ -269,6 +272,162 @@ fn op_has_call_callee(op: &super::ops::TirOp) -> bool {
         (Some(AttrValue::Str(binding)), Some(AttrValue::Str(symbol)))
             if binding == "direct_symbol" && !symbol.is_empty()
     )
+}
+
+fn attr_str<'a>(op: &'a super::ops::TirOp, key: &str) -> Option<&'a str> {
+    match op.attrs.get(key) {
+        Some(AttrValue::Str(value)) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+fn has_native_callable_attr(op: &super::ops::TirOp) -> bool {
+    op.attrs.contains_key("native_callable_export")
+        || op.attrs.contains_key("native_callable_binding")
+        || op.attrs.contains_key("native_callable_symbol")
+        || op.attrs.contains_key("native_callable_abi")
+}
+
+fn push_native_callable_error(
+    errors: &mut Vec<VerifyError>,
+    bid: BlockId,
+    op_idx: usize,
+    message: impl Into<String>,
+) {
+    errors.push(VerifyError::op(bid, op_idx, message));
+}
+
+fn verify_native_callable_attrs(
+    bid: BlockId,
+    op_idx: usize,
+    op: &super::ops::TirOp,
+    errors: &mut Vec<VerifyError>,
+) {
+    if !has_native_callable_attr(op) {
+        return;
+    }
+
+    if op.opcode != super::ops::OpCode::Call || attr_str(op, "_original_kind") != Some("invoke_ffi")
+    {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            "native callable metadata belongs only on invoke_ffi call ops",
+        );
+    }
+
+    let Some(export_name) = attr_str(op, "native_callable_export") else {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            "invoke_ffi native callable export requires native_callable_export",
+        );
+        return;
+    };
+    if export_name.trim().is_empty() || export_name.chars().any(char::is_control) {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            "invoke_ffi native_callable_export must be nonempty and printable",
+        );
+    }
+
+    let Some(binding) = attr_str(op, "native_callable_binding") else {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            format!(
+                "invoke_ffi native callable export `{export_name}` requires native_callable_binding"
+            ),
+        );
+        return;
+    };
+    if !matches!(binding, "module_attr" | "direct_symbol") {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            format!(
+                "invoke_ffi native callable export `{export_name}` has unsupported binding `{binding}`"
+            ),
+        );
+        return;
+    }
+
+    let Some(abi) = attr_str(op, "native_callable_abi") else {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            format!(
+                "invoke_ffi native callable export `{export_name}` requires native_callable_abi"
+            ),
+        );
+        return;
+    };
+    let Some(parsed_abi) = parse_native_callable_abi(abi) else {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            format!(
+                "invoke_ffi native callable export `{export_name}` has unknown native_callable_abi `{abi}`; expected one of: {NATIVE_CALLABLE_ABI_CHOICES}"
+            ),
+        );
+        return;
+    };
+
+    if binding == "module_attr" && parsed_abi.requires_direct_symbol_binding() {
+        push_native_callable_error(
+            errors,
+            bid,
+            op_idx,
+            format!(
+                "invoke_ffi native callable export `{export_name}` uses module_attr direct-symbol ABI `{abi}`"
+            ),
+        );
+    }
+
+    if binding == "direct_symbol" {
+        let Some(symbol) = attr_str(op, "native_callable_symbol") else {
+            push_native_callable_error(
+                errors,
+                bid,
+                op_idx,
+                format!(
+                    "invoke_ffi native callable export `{export_name}` direct_symbol requires native_callable_symbol"
+                ),
+            );
+            return;
+        };
+        if symbol.trim().is_empty() || symbol.chars().any(char::is_control) {
+            push_native_callable_error(
+                errors,
+                bid,
+                op_idx,
+                "invoke_ffi native_callable_symbol must be nonempty and printable",
+            );
+        }
+    }
+
+    if let Some(fixed_payload_arity) = parsed_abi.fixed_arity() {
+        let expected = fixed_payload_arity + usize::from(binding == "module_attr");
+        if op.operands.len() != expected {
+            push_native_callable_error(
+                errors,
+                bid,
+                op_idx,
+                format!(
+                    "invoke_ffi native callable export `{export_name}` with ABI `{abi}` has {} operand(s), expected {expected}",
+                    op.operands.len()
+                ),
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +927,7 @@ mod tests {
             "native_callable_abi".into(),
             AttrValue::Str("molt.pyinit_module_v1".into()),
         );
+        attrs.insert("_original_kind".into(), AttrValue::Str("invoke_ffi".into()));
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -786,6 +946,97 @@ mod tests {
             verify_function(&func).is_ok(),
             "direct-symbol native call should verify: {:?}",
             verify_function(&func).err()
+        );
+    }
+
+    #[test]
+    fn module_attr_object_callargs_native_callable_verifies() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "native_callable_binding".into(),
+            AttrValue::Str("module_attr".into()),
+        );
+        attrs.insert(
+            "native_callable_export".into(),
+            AttrValue::Str("scipy.ndimage.gaussian_filter".into()),
+        );
+        attrs.insert(
+            "native_callable_abi".into(),
+            AttrValue::Str("molt.object_callargs_v1".into()),
+        );
+        attrs.insert("_original_kind".into(), AttrValue::Str("invoke_ffi".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        assert!(
+            verify_function(&func).is_ok(),
+            "module_attr object-callargs native call should verify: {:?}",
+            verify_function(&func).err()
+        );
+    }
+
+    #[test]
+    fn module_attr_direct_symbol_abi_fails_closed() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "native_callable_binding".into(),
+            AttrValue::Str("module_attr".into()),
+        );
+        attrs.insert(
+            "native_callable_export".into(),
+            AttrValue::Str("scipy.ndimage.distance_transform_edt".into()),
+        );
+        attrs.insert(
+            "native_callable_abi".into(),
+            AttrValue::Str("molt.forward_f32_v1".into()),
+        );
+        attrs.insert("_original_kind".into(), AttrValue::Str("invoke_ffi".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let result = verify_function(&func);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("module_attr direct-symbol ABI")),
+            "expected module_attr ABI-shape error, got: {:?}",
+            errors
         );
     }
 
