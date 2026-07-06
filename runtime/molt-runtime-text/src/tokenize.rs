@@ -311,10 +311,12 @@ pub fn detect_source_encoding(first_bytes: &[u8], second_bytes: &[u8]) -> Encodi
 mod tests {
     use super::*;
 
+    type ObservedToken<'a> = (i64, &'a str, (i64, i64), (i64, i64), &'a str);
+
     #[test]
     fn scan_tokens_matches_runtime_tuple_contract() {
         let scan = scan_tokens("name = 42 # hi\n# full\n");
-        let observed: Vec<(i64, &str, (i64, i64), (i64, i64), &str)> = scan
+        let observed: Vec<ObservedToken<'_>> = scan
             .tokens
             .iter()
             .map(|token| {
