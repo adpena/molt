@@ -23,7 +23,7 @@ compositions of the 26 tinygrad primitives (EXP2, LOG2, SIN, SQRT, NEG,
 RECIPROCAL, ADD, MUL, MAX, CMPLT, CMPEQ, REDUCE_SUM, REDUCE_MAX, etc.).
 
 Usage:
-    from tinygrad.paddleocr import PaddleOCR
+    from demos.tinygrad.paddleocr import PaddleOCR
     ocr = PaddleOCR()
     ocr.load_detector(det_bytes)
     ocr.load_classifier(cls_bytes)
