@@ -486,6 +486,10 @@ family = "wasm-browser"
 target_triple = "wasm32-wasip1"
 artifact_kind = "browser_wasm_bundle"
 description = "Browser WASM bundle without GPU/NN graph acceleration."
+browser_default = true
+
+[target.browser_host_imports]
+webgpu = []
 
 [[target.feature]]
 id = "wasm.mvp"
@@ -826,6 +830,10 @@ family = "wasm-browser"
 target_triple = "wasm32-wasip1"
 artifact_kind = "browser_wasm_webgpu_bundle"
 description = "Browser WASM bundle with WebGPU compute dispatch for admitted tensor kernels."
+browser_default = false
+
+[target.browser_host_imports]
+webgpu = ["molt_gpu_webgpu_dispatch_host"]
 
 [[target.feature]]
 id = "wasm.mvp"
@@ -1014,6 +1022,10 @@ family = "wasm-browser"
 target_triple = "wasm32-wasip1"
 artifact_kind = "browser_wasm_webnn_bundle"
 description = "Browser WASM bundle with WebNN graph dispatch for admitted inference subgraphs."
+browser_default = false
+
+[target.browser_host_imports]
+webgpu = []
 
 [[target.feature]]
 id = "wasm.mvp"

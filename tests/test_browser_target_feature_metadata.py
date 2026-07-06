@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from molt import target_features as TF
+from molt.cli import browser_target_features
 from molt.cli.browser_target_features import (
     TARGET_FEATURE_MANIFEST_ASSET_NAME,
     WEBGPU_DISPATCH_HOST_IMPORT,
     browser_target_feature_metadata,
     browser_target_profile_for_imports,
 )
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _manifest_asset() -> dict[str, object]:
@@ -14,6 +20,38 @@ def _manifest_asset() -> dict[str, object]:
         "size": 123,
         "sha256": "0" * 64,
     }
+
+
+def test_browser_target_constants_are_sourced_from_generated_manifest() -> None:
+    # The CLI browser helper re-exports the generated facts; it must not carry a
+    # second hand-written definition of these constants.
+    assert WEBGPU_DISPATCH_HOST_IMPORT is TF.WEBGPU_DISPATCH_HOST_IMPORT
+    assert TARGET_FEATURE_MANIFEST_ASSET_NAME is TF.TARGET_FEATURE_MANIFEST_ASSET_NAME
+    assert (
+        browser_target_features.WEBGPU_DISPATCH_HOST_IMPORT
+        is TF.WEBGPU_DISPATCH_HOST_IMPORT
+    )
+
+
+def test_no_duplicate_literal_definitions_of_webgpu_dispatch_host_import() -> None:
+    # Teeth for single-sourcing: the only place the string literal
+    # "molt_gpu_webgpu_dispatch_host" is *defined* is the generated manifest
+    # authority (TOML source + generated .py/.json/.js). Consumers must import
+    # it, never redeclare it as an assignment/export.
+    literal = '"molt_gpu_webgpu_dispatch_host"'
+    js_literal = "'molt_gpu_webgpu_dispatch_host'"
+    py_consumer = (
+        _ROOT / "src" / "molt" / "cli" / "browser_target_features.py"
+    ).read_text(encoding="utf-8")
+    assert "WEBGPU_DISPATCH_HOST_IMPORT =" not in py_consumer
+    assert literal not in py_consumer
+
+    js_consumer = (_ROOT / "wasm" / "browser_target_features.js").read_text(
+        encoding="utf-8"
+    )
+    assert "export const WEBGPU_DISPATCH_HOST_IMPORT =" not in js_consumer
+    assert literal not in js_consumer
+    assert js_literal not in js_consumer
 
 
 def test_browser_target_profile_defaults_to_browser_wasm() -> None:

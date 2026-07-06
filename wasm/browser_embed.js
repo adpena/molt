@@ -2,6 +2,7 @@ import './loader_bridge.js';
 import {
   assertBrowserTargetFeatureContract,
   parsedImportsRequireWebGpuDispatch,
+  WEBGPU_DISPATCH_HOST_IMPORT,
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
 
@@ -1197,7 +1198,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
     molt_process_close_stdin_host: stubI32,
     molt_process_stdio_host: stubI32,
     molt_process_host_poll: stubZero,
-    molt_gpu_webgpu_dispatch_host: gpuHost.gpuWebGpuDispatchHost,
+    [WEBGPU_DISPATCH_HOST_IMPORT]: gpuHost.gpuWebGpuDispatchHost,
     molt_time_timezone_host: stubZeroI64,
     molt_time_local_offset_host: stubZeroI64,
     molt_time_tzname_host: (_which, _bufPtr, _bufCap, outLenPtr) => {
