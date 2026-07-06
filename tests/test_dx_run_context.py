@@ -375,6 +375,64 @@ def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     assert env["MOLT_CACHE_MAX_AGE_DAYS"] == "30"
 
 
+def test_dx_env_sets_uv_copy_link_mode_for_windows_exfat_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    repo_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(
+        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+    )
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
+    monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).dx_env(
+        {
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
+        create_dirs=True,
+    )
+
+    assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
+    assert env["UV_LINK_MODE"] == "copy"
+
+
+def test_dx_env_preserves_explicit_uv_link_mode_on_exfat_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external" / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
+    repo_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(
+        dx, "_default_windows_external_artifact_roots", lambda: (external_root,)
+    )
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
+    monkeypatch.setattr(dx, "_artifact_root_is_windows_exfat", lambda _path: True)
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).dx_env(
+        {
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "UV_LINK_MODE": "hardlink",
+        },
+        create_dirs=True,
+    )
+
+    assert env["UV_LINK_MODE"] == "hardlink"
+
+
 def test_dx_env_renders_shell_neutral_and_powershell(tmp_path: Path) -> None:
     env = RunContext(tmp_path, session_prefix="quote").dx_env(
         {
