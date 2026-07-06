@@ -19,12 +19,32 @@ is reconciled.
 - No hacks, no shortcuts, no workarounds, no facades, no compatibility shims,
   no local-minimum patches, no TODO-as-plan, and no partial implementations
   committed as progress. If the abstraction is wrong, move the abstraction.
-- A discovered prerequisite is not permission to defer the work. If the
-  prerequisite is inside the owned authority class, pull it into the same
-  structural arc and implement the end-state path. If it is frozen or owned by
-  another lane, record a precise proof-queue/board finding with evidence and
-  immediately continue on the next allowed structural aperture. Do not posture
-  as "waiting for X" or land a placeholder around the missing primitive.
+- POISON — permanently forbidden, binds the orchestrator AND every subagent:
+  "unblock the ecosystem by baking the package's own code into Molt." Concretely
+  forbidden: (a) shipping a third-party package's headers, symbols, tables, or
+  type reimplementations inside Molt-owned dirs (e.g. numpy headers under
+  `include/`) — the package owns those; they flow through PACKAGE CUSTODY at
+  source-recompile, never a Molt overlay; (b) a duplicate copy of an authority
+  to dodge fixing the real one (two header homes, two registries, two tables);
+  (c) a fail-OPEN / stub / plausible-fake return that masks a missing primitive
+  as if the path were supported. Ecosystem behavior flows ONLY through reusable
+  custody primitives (package/import custody, source-recompiled extensions,
+  C-API/ABI symbols/type-objects). A missing primitive is COMPLETED as a shared
+  primitive, or it FAILS CLOSED with a precise diagnostic — never faked, baked
+  in, duplicated, or worked around, not even to "unblock" a witness/benchmark.
+  Every spawn prompt MUST carry this. ENFORCEMENT: a ratchet gate (the
+  degrade-to-slow-gate pattern) fails when a new ecosystem-baked file, fail-open
+  mask, duplicate authority, or TODO-as-plan lands in a claimed-supported path
+  without a tracked structural-resolution row driving the class to zero. If you
+  or a subagent reach for any of these, STOP and move the abstraction.
+- A discovered prerequisite is not permission to defer the work, and
+  "I will not do X until Y happens" is a turn-blocking avoidance pattern unless
+  the formal blocked audit is satisfied. If the prerequisite is inside the owned
+  authority class, pull it into the same structural arc and implement the
+  end-state path. If it is frozen or owned by another lane, record a precise
+  proof-queue/board finding with evidence and immediately continue on the next
+  allowed structural aperture. Do not posture as "waiting for X" or land a
+  placeholder around the missing primitive.
 - No backward compatibility inside Molt internals. When a touched path has a
   legacy lane, delete it or structurally reconcile it in the same arc.
 - Performance is part of correctness. Claimed support must be deterministic,

@@ -649,6 +649,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @staticmethod
     def _display_allowlist_module(module_name: str) -> str: ...
 
+    def _dotted_attribute_parts(self, expr: ast.AST) -> tuple[str, ...] | None: ...
+
+    def _dotted_imported_module_target(
+        self, receiver_parts: tuple[str, ...]
+    ) -> str | None: ...
+
     def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]: ...
 
     def _eliminate_redundant_fused_dict_increment_guards(
@@ -2312,6 +2318,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_attribute_receiver_call(
         self, node: ast.Call, needs_bind: bool
     ) -> Any: ...
+
+    def _try_emit_dotted_imported_native_callable(self, node: ast.Call) -> Any: ...
 
     def _try_emit_guarded_module_global_native_callable_import(
         self, node: ast.Call, *, func_id: str, imported_from: str | None
