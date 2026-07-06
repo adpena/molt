@@ -1,10 +1,16 @@
 //! Number abstract protocol — PyNumber_* operations.
 //!
-//! These implement the abstract numeric operations that work across int, float,
-//! and bool types by bridging to Molt's internal object model.
+//! The single numeric authority lives in `molt-lang-runtime`: arbitrary-precision
+//! int promotion, float coercion, operator-overload dispatch, and CPython-shaped
+//! exception raising. This ABI layer MUST NOT reimplement arithmetic — an i64
+//! reimplementation silently wraps Python's unbounded ints at 64 bits and masks
+//! the exceptions CPython raises. Every `PyNumber_*` here resolves its operands
+//! to runtime handle bits and delegates to that authority through the numeric
+//! hooks (`number_binary_op` / `number_unary_op` / `number_power`).
 
 use crate::abi_types::{Py_ssize_t, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
+use crate::hooks::{NumberBinaryOp, NumberUnaryOp};
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
@@ -15,6 +21,74 @@ fn resolve_bits(op: *mut PyObject) -> Option<u64> {
         return None;
     }
     GLOBAL_BRIDGE.lock().pyobj_to_handle(op)
+}
+
+/// Ensure a NULL return carries a set exception, as the CPython ABI requires.
+///
+/// The runtime numeric authority sets a pending exception on failure. If a
+/// numeric hook returned 0 (error) but no runtime exception is pending — e.g.
+/// the runtime hooks were never registered (pre-init/test) — we fail closed with
+/// a SystemError rather than returning a bare NULL. A NULL PyObject* without an
+/// exception is an ABI violation that corrupts the caller's error handling.
+unsafe fn ensure_exception_set() {
+    let pending = crate::hooks::hooks()
+        .map(|h| unsafe { (h.exception_pending)() } != 0)
+        .unwrap_or(false);
+    if !pending {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyNumber operation failed: runtime numeric authority unavailable"
+                    .as_ptr(),
+            );
+        }
+    }
+}
+
+/// Convert a numeric-result handle from the runtime authority into a PyObject*.
+/// `result_bits == 0` signals an error (pending runtime exception); we surface
+/// it as NULL, guaranteeing an exception is set.
+unsafe fn pyobj_from_result(result_bits: u64) -> *mut PyObject {
+    if result_bits == 0 {
+        unsafe { ensure_exception_set() };
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result_bits) }
+}
+
+/// Dispatch a binary numeric op through the runtime authority.
+unsafe fn binary_op(op: NumberBinaryOp, o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
+    let a = match resolve_bits(o1) {
+        Some(b) => b,
+        None => {
+            unsafe { ensure_exception_set() };
+            return ptr::null_mut();
+        }
+    };
+    let b = match resolve_bits(o2) {
+        Some(b) => b,
+        None => {
+            unsafe { ensure_exception_set() };
+            return ptr::null_mut();
+        }
+    };
+    let h = crate::hooks::hooks_or_stubs();
+    let result = unsafe { (h.number_binary_op)(op as u32, a, b) };
+    unsafe { pyobj_from_result(result) }
+}
+
+/// Dispatch a unary numeric op through the runtime authority.
+unsafe fn unary_op(op: NumberUnaryOp, o: *mut PyObject) -> *mut PyObject {
+    let a = match resolve_bits(o) {
+        Some(b) => b,
+        None => {
+            unsafe { ensure_exception_set() };
+            return ptr::null_mut();
+        }
+    };
+    let h = crate::hooks::hooks_or_stubs();
+    let result = unsafe { (h.number_unary_op)(op as u32, a) };
+    unsafe { pyobj_from_result(result) }
 }
 
 /// Helper: extract a numeric value as f64 from Molt bits.
@@ -43,11 +117,6 @@ fn as_i64(bits: u64) -> Option<i64> {
     }
 }
 
-/// Helper: check if either operand is a float.
-fn either_is_float(a_bits: u64, b_bits: u64) -> bool {
-    MoltObject::from_bits(a_bits).is_float() || MoltObject::from_bits(b_bits).is_float()
-}
-
 /// Helper: build a PyObject from a float result.
 fn pyobj_from_float(v: f64) -> *mut PyObject {
     let bits = MoltObject::from_float(v).bits();
@@ -55,8 +124,24 @@ fn pyobj_from_float(v: f64) -> *mut PyObject {
 }
 
 /// Helper: build a PyObject from an int result.
+///
+/// Routes through the runtime `int_from_i64` hook, which dispatches
+/// inline-vs-BigInt correctly. `MoltObject::from_int` alone truncates any value
+/// outside the 47-bit inline window (mod 2^47) — the silent-integer-miscompile
+/// class — so it must never be used to box an arbitrary i64 here.
 fn pyobj_from_int(v: i64) -> *mut PyObject {
-    let bits = MoltObject::from_int(v).bits();
+    let h = crate::hooks::hooks_or_stubs();
+    let bits = unsafe { (h.int_from_i64)(v) };
+    if bits == 0 {
+        // Hooks unregistered (pre-init/test) — fall back to the inline boxer,
+        // valid only for the inline window. Out-of-window values fail closed as
+        // a null with a set exception rather than a truncated wrong answer.
+        if let Some(inline) = MoltObject::try_from_int(v) {
+            return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(inline.bits()) };
+        }
+        unsafe { ensure_exception_set() };
+        return ptr::null_mut();
+    }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
 
@@ -64,71 +149,17 @@ fn pyobj_from_int(v: i64) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Add(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    if either_is_float(a, b) {
-        match (as_f64(a), as_f64(b)) {
-            (Some(x), Some(y)) => pyobj_from_float(x + y),
-            _ => ptr::null_mut(),
-        }
-    } else {
-        match (as_i64(a), as_i64(b)) {
-            (Some(x), Some(y)) => pyobj_from_int(x.wrapping_add(y)),
-            _ => ptr::null_mut(),
-        }
-    }
+    unsafe { binary_op(NumberBinaryOp::Add, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Subtract(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    if either_is_float(a, b) {
-        match (as_f64(a), as_f64(b)) {
-            (Some(x), Some(y)) => pyobj_from_float(x - y),
-            _ => ptr::null_mut(),
-        }
-    } else {
-        match (as_i64(a), as_i64(b)) {
-            (Some(x), Some(y)) => pyobj_from_int(x.wrapping_sub(y)),
-            _ => ptr::null_mut(),
-        }
-    }
+    unsafe { binary_op(NumberBinaryOp::Subtract, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Multiply(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    if either_is_float(a, b) {
-        match (as_f64(a), as_f64(b)) {
-            (Some(x), Some(y)) => pyobj_from_float(x * y),
-            _ => ptr::null_mut(),
-        }
-    } else {
-        match (as_i64(a), as_i64(b)) {
-            (Some(x), Some(y)) => pyobj_from_int(x.wrapping_mul(y)),
-            _ => ptr::null_mut(),
-        }
-    }
+    unsafe { binary_op(NumberBinaryOp::Multiply, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -136,30 +167,7 @@ pub unsafe extern "C" fn PyNumber_TrueDivide(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    match (as_f64(a), as_f64(b)) {
-        (Some(x), Some(y)) => {
-            if y == 0.0 {
-                unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_ZeroDivisionError,
-                        c"division by zero".as_ptr(),
-                    );
-                }
-                ptr::null_mut()
-            } else {
-                pyobj_from_float(x / y)
-            }
-        }
-        _ => ptr::null_mut(),
-    }
+    unsafe { binary_op(NumberBinaryOp::TrueDivide, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -167,96 +175,12 @@ pub unsafe extern "C" fn PyNumber_FloorDivide(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    if either_is_float(a, b) {
-        match (as_f64(a), as_f64(b)) {
-            (Some(x), Some(y)) => {
-                if y == 0.0 {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_ZeroDivisionError,
-                            c"integer division or modulo by zero".as_ptr(),
-                        );
-                    }
-                    ptr::null_mut()
-                } else {
-                    pyobj_from_float((x / y).floor())
-                }
-            }
-            _ => ptr::null_mut(),
-        }
-    } else {
-        match (as_i64(a), as_i64(b)) {
-            (Some(x), Some(y)) => {
-                if y == 0 {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_ZeroDivisionError,
-                            c"integer division or modulo by zero".as_ptr(),
-                        );
-                    }
-                    ptr::null_mut()
-                } else {
-                    pyobj_from_int(x.div_euclid(y))
-                }
-            }
-            _ => ptr::null_mut(),
-        }
-    }
+    unsafe { binary_op(NumberBinaryOp::FloorDivide, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Remainder(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    if either_is_float(a, b) {
-        match (as_f64(a), as_f64(b)) {
-            (Some(x), Some(y)) => {
-                if y == 0.0 {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_ZeroDivisionError,
-                            c"integer division or modulo by zero".as_ptr(),
-                        );
-                    }
-                    ptr::null_mut()
-                } else {
-                    pyobj_from_float(x % y)
-                }
-            }
-            _ => ptr::null_mut(),
-        }
-    } else {
-        match (as_i64(a), as_i64(b)) {
-            (Some(x), Some(y)) => {
-                if y == 0 {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            &raw mut crate::abi_types::PyExc_ZeroDivisionError,
-                            c"integer division or modulo by zero".as_ptr(),
-                        );
-                    }
-                    ptr::null_mut()
-                } else {
-                    pyobj_from_int(x.rem_euclid(y))
-                }
-            }
-            _ => ptr::null_mut(),
-        }
-    }
+    unsafe { binary_op(NumberBinaryOp::Remainder, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -265,199 +189,85 @@ pub unsafe extern "C" fn PyNumber_Power(
     o2: *mut PyObject,
     o3: *mut PyObject,
 ) -> *mut PyObject {
-    let _ = o3; // modulus argument — rarely used, ignore for now
+    // CPython's `PyNumber_Power(base, exp, mod)` computes `pow(base, exp, mod)`:
+    // a genuine 3-argument modular exponentiation, NOT `base ** exp` with the
+    // modulus dropped. When `mod` is None (or absent), it is plain `base ** exp`.
+    // The runtime numeric authority owns both forms (`molt_pow` / `molt_pow_mod`)
+    // with correct bignum and exception semantics.
     let a = match resolve_bits(o1) {
         Some(b) => b,
-        None => return ptr::null_mut(),
+        None => {
+            unsafe { ensure_exception_set() };
+            return ptr::null_mut();
+        }
     };
     let b = match resolve_bits(o2) {
         Some(b) => b,
-        None => return ptr::null_mut(),
+        None => {
+            unsafe { ensure_exception_set() };
+            return ptr::null_mut();
+        }
     };
-    if either_is_float(a, b) {
-        match (as_f64(a), as_f64(b)) {
-            (Some(x), Some(y)) => pyobj_from_float(x.powf(y)),
-            _ => ptr::null_mut(),
-        }
+    // A NULL o3 means "no modulus" (two-arg pow). A non-NULL o3 that resolves
+    // to None likewise means two-arg pow; the runtime authority treats a None
+    // / 0 modulus as the two-argument form.
+    let mod_bits = if o3.is_null() {
+        0
     } else {
-        match (as_i64(a), as_i64(b)) {
-            (Some(x), Some(y)) => {
-                if y < 0 {
-                    // Negative exponent → float result
-                    pyobj_from_float((x as f64).powf(y as f64))
-                } else {
-                    pyobj_from_int(x.wrapping_pow(y as u32))
-                }
-            }
-            _ => ptr::null_mut(),
-        }
-    }
+        resolve_bits(o3).unwrap_or(0)
+    };
+    let h = crate::hooks::hooks_or_stubs();
+    let result = unsafe { (h.number_power)(a, b, mod_bits) };
+    unsafe { pyobj_from_result(result) }
 }
 
 // ─── Unary operations ────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Negative(o: *mut PyObject) -> *mut PyObject {
-    let bits = match resolve_bits(o) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let obj = MoltObject::from_bits(bits);
-    if obj.is_float() {
-        match obj.as_float() {
-            Some(v) => pyobj_from_float(-v),
-            None => ptr::null_mut(),
-        }
-    } else if obj.is_int() {
-        match obj.as_int() {
-            Some(v) => pyobj_from_int(-v),
-            None => ptr::null_mut(),
-        }
-    } else if obj.is_bool() {
-        match obj.as_bool() {
-            Some(b) => pyobj_from_int(if b { -1 } else { 0 }),
-            None => ptr::null_mut(),
-        }
-    } else {
-        ptr::null_mut()
-    }
+    unsafe { unary_op(NumberUnaryOp::Negative, o) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Positive(o: *mut PyObject) -> *mut PyObject {
-    let bits = match resolve_bits(o) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let obj = MoltObject::from_bits(bits);
-    if obj.is_float() {
-        match obj.as_float() {
-            Some(v) => pyobj_from_float(v),
-            None => ptr::null_mut(),
-        }
-    } else if obj.is_int() || obj.is_bool() {
-        match as_i64(bits) {
-            Some(v) => pyobj_from_int(v),
-            None => ptr::null_mut(),
-        }
-    } else {
-        ptr::null_mut()
-    }
+    unsafe { unary_op(NumberUnaryOp::Positive, o) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Absolute(o: *mut PyObject) -> *mut PyObject {
-    let bits = match resolve_bits(o) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    let obj = MoltObject::from_bits(bits);
-    if obj.is_float() {
-        match obj.as_float() {
-            Some(v) => pyobj_from_float(v.abs()),
-            None => ptr::null_mut(),
-        }
-    } else if obj.is_int() {
-        match obj.as_int() {
-            Some(v) => pyobj_from_int(v.wrapping_abs()),
-            None => ptr::null_mut(),
-        }
-    } else if obj.is_bool() {
-        match obj.as_bool() {
-            Some(b) => pyobj_from_int(b as i64),
-            None => ptr::null_mut(),
-        }
-    } else {
-        ptr::null_mut()
-    }
+    unsafe { unary_op(NumberUnaryOp::Absolute, o) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Invert(o: *mut PyObject) -> *mut PyObject {
-    let bits = match resolve_bits(o) {
-        Some(b) => b,
-        None => return ptr::null_mut(),
-    };
-    match as_i64(bits) {
-        Some(v) => pyobj_from_int(!v),
-        None => ptr::null_mut(),
-    }
+    unsafe { unary_op(NumberUnaryOp::Invert, o) }
 }
 
 // ─── Bitwise operations ──────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Lshift(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = resolve_bits(o1).and_then(as_i64);
-    let b = resolve_bits(o2).and_then(as_i64);
-    match (a, b) {
-        (Some(x), Some(y)) => {
-            if y < 0 {
-                unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_ValueError,
-                        c"negative shift count".as_ptr(),
-                    );
-                }
-                ptr::null_mut()
-            } else {
-                pyobj_from_int(x.wrapping_shl(y as u32))
-            }
-        }
-        _ => ptr::null_mut(),
-    }
+    unsafe { binary_op(NumberBinaryOp::Lshift, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Rshift(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = resolve_bits(o1).and_then(as_i64);
-    let b = resolve_bits(o2).and_then(as_i64);
-    match (a, b) {
-        (Some(x), Some(y)) => {
-            if y < 0 {
-                unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        &raw mut crate::abi_types::PyExc_ValueError,
-                        c"negative shift count".as_ptr(),
-                    );
-                }
-                ptr::null_mut()
-            } else {
-                pyobj_from_int(x.wrapping_shr(y as u32))
-            }
-        }
-        _ => ptr::null_mut(),
-    }
+    unsafe { binary_op(NumberBinaryOp::Rshift, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_And(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = resolve_bits(o1).and_then(as_i64);
-    let b = resolve_bits(o2).and_then(as_i64);
-    match (a, b) {
-        (Some(x), Some(y)) => pyobj_from_int(x & y),
-        _ => ptr::null_mut(),
-    }
+    unsafe { binary_op(NumberBinaryOp::And, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Or(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = resolve_bits(o1).and_then(as_i64);
-    let b = resolve_bits(o2).and_then(as_i64);
-    match (a, b) {
-        (Some(x), Some(y)) => pyobj_from_int(x | y),
-        _ => ptr::null_mut(),
-    }
+    unsafe { binary_op(NumberBinaryOp::Or, o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Xor(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let a = resolve_bits(o1).and_then(as_i64);
-    let b = resolve_bits(o2).and_then(as_i64);
-    match (a, b) {
-        (Some(x), Some(y)) => pyobj_from_int(x ^ y),
-        _ => ptr::null_mut(),
-    }
+    unsafe { binary_op(NumberBinaryOp::Xor, o1, o2) }
 }
 
 // ─── Type conversions ────────────────────────────────────────────────────
@@ -672,14 +482,11 @@ pub unsafe extern "C" fn PyNumber_Divmod(o1: *mut PyObject, o2: *mut PyObject) -
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_MatrixMultiply(
-    _o1: *mut PyObject,
-    _o2: *mut PyObject,
+    o1: *mut PyObject,
+    o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe {
-        crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_TypeError,
-            c"unsupported operand type(s) for @".as_ptr(),
-        );
-    }
-    ptr::null_mut()
+    // `@` dispatches `__matmul__` on the operands (numpy arrays override it).
+    // Route to the runtime authority, which raises a CPython-shaped TypeError
+    // for operands that do not support the operator.
+    unsafe { binary_op(NumberBinaryOp::MatrixMultiply, o1, o2) }
 }
