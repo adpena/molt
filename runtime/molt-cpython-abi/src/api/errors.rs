@@ -362,6 +362,10 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
         arg_idx += 1;
 
         if item_bits.is_none() && !optional {
+            // Missing required positional argument. CPython raises TypeError
+            // ("function takes at least N arguments (M given)"); a zero return
+            // must leave a set exception.
+            unsafe { set_parse_type_error("required argument is missing") };
             return 0;
         }
         if item_bits.is_none() {
@@ -381,37 +385,77 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
             }};
         }
 
-        match ch {
-            'i' | 'H' | 'b' | 'B' | 'I' => write_out!(c_int, obj.as_int().unwrap_or(0) as c_int),
-            'l' | 'k' => write_out!(c_long, obj.as_int().unwrap_or(0) as c_long),
-            'L' => write_out!(i64, obj.as_int().unwrap_or(0)),
-            'K' => write_out!(u64, obj.as_int().unwrap_or(0) as u64),
-            'd' => {
-                let v = if obj.is_float() {
-                    obj.as_float().unwrap_or(0.0)
+        // CPython (Python/getargs.c `convertsimple`): a converter that receives
+        // the wrong type sets TypeError and the whole parse returns 0. We must
+        // NOT silently coerce a non-int to 0 — that poisons the extension with a
+        // fake argument value where CPython would have raised. We accept the
+        // int-like values CPython accepts (int, bool as an int subtype, and heap
+        // BigInt via the runtime int-conversion authority) and reject the rest
+        // with a TypeError.
+        macro_rules! require_int {
+            ($expect:literal) => {{
+                if let Some(v) = obj.as_int() {
+                    v
+                } else if obj.is_bool() {
+                    obj.as_bool().unwrap_or(false) as i64
+                } else if let Some(v) = int_like_to_i64(bits) {
+                    // Heap BigInt (or other int-compatible object) resolved
+                    // through the runtime authority.
+                    v
                 } else {
-                    obj.as_int().map(|x| x as f64).unwrap_or(0.0)
+                    set_parse_type_error(concat!(
+                        "argument must be ",
+                        $expect,
+                        ", not the supplied type"
+                    ));
+                    return 0;
+                }
+            }};
+        }
+
+        match ch {
+            'i' | 'H' | 'b' | 'B' | 'I' => write_out!(c_int, require_int!("an integer") as c_int),
+            'l' | 'k' => write_out!(c_long, require_int!("an integer") as c_long),
+            'L' => write_out!(i64, require_int!("an integer")),
+            'K' => write_out!(u64, require_int!("an integer") as u64),
+            'd' => {
+                let v = match float_like(&obj, bits) {
+                    Some(v) => v,
+                    None => {
+                        unsafe { set_parse_type_error("argument must be a float") };
+                        return 0;
+                    }
                 };
                 write_out!(f64, v);
             }
             'f' => {
-                let v = if obj.is_float() {
-                    obj.as_float().unwrap_or(0.0) as f32
-                } else {
-                    obj.as_int().map(|x| x as f32).unwrap_or(0.0)
+                let v = match float_like(&obj, bits) {
+                    Some(v) => v as f32,
+                    None => {
+                        unsafe { set_parse_type_error("argument must be a float") };
+                        return 0;
+                    }
                 };
                 write_out!(f32, v);
             }
             's' | 'z' | 'y' => {
-                let ptr: *const c_char = if obj.is_none() {
-                    std::ptr::null()
+                // 'z' accepts None (→ NULL). 's'/'y' require a str/bytes-like.
+                if obj.is_none() {
+                    if ch != 'z' {
+                        unsafe { set_parse_type_error("argument must be a string") };
+                        return 0;
+                    }
+                    write_out!(*const c_char, std::ptr::null());
+                    if i < fmt.len() && fmt[i] == b'#' {
+                        i += 1;
+                        write_out!(Py_ssize_t, 0 as Py_ssize_t);
+                    }
                 } else {
-                    molt_str_ptr(bits)
-                };
-                write_out!(*const c_char, ptr);
-                if i < fmt.len() && fmt[i] == b'#' {
-                    i += 1;
-                    write_out!(Py_ssize_t, molt_str_len(bits) as Py_ssize_t);
+                    write_out!(*const c_char, molt_str_ptr(bits));
+                    if i < fmt.len() && fmt[i] == b'#' {
+                        i += 1;
+                        write_out!(Py_ssize_t, molt_str_len(bits) as Py_ssize_t);
+                    }
                 }
             }
             'O' => {
@@ -428,11 +472,65 @@ pub unsafe extern "C" fn molt_pyarg_parse_tuple_inner(
                 };
                 write_out!(c_int, truthy as c_int);
             }
-            'n' => write_out!(Py_ssize_t, obj.as_int().unwrap_or(0) as Py_ssize_t),
-            _ => {} // unknown — skip output slot
+            'n' => write_out!(Py_ssize_t, require_int!("an integer") as Py_ssize_t),
+            _ => {
+                // CPython raises SystemError("bad format string") for an
+                // unrecognized format unit. Fail closed — never report success
+                // for a format string we cannot honor.
+                unsafe { set_parse_format_error() };
+                return 0;
+            }
         }
     }
     1
+}
+
+/// Resolve an int-compatible object (heap BigInt or other) to i64 via the
+/// runtime int-conversion authority. Returns `None` for non-integer objects so
+/// the caller can raise TypeError. Inline int and bool are handled by the caller
+/// before this is reached.
+fn int_like_to_i64(bits: u64) -> Option<i64> {
+    let h = crate::hooks::hooks_or_stubs();
+    let mut out: i64 = 0;
+    let rc = unsafe { (h.int_as_i64_checked)(bits, std::ptr::addr_of_mut!(out)) };
+    (rc == 0).then_some(out)
+}
+
+/// Resolve a float-compatible argument to f64 for the `d`/`f` format units.
+/// CPython accepts float, int (incl. bool as int subtype), and any object with
+/// `__float__`/`__index__`. Returns `None` for genuinely non-numeric objects so
+/// the caller can raise TypeError.
+fn float_like(obj: &MoltObject, bits: u64) -> Option<f64> {
+    if obj.is_float() {
+        obj.as_float()
+    } else if let Some(x) = obj.as_int() {
+        Some(x as f64)
+    } else if obj.is_bool() {
+        Some(obj.as_bool().unwrap_or(false) as i64 as f64)
+    } else {
+        int_like_to_i64(bits).map(|x| x as f64)
+    }
+}
+
+/// Set a TypeError for a PyArg_ParseTuple converter type mismatch, matching
+/// CPython's `convertsimple` behavior (Python/getargs.c). A NULL-returning /
+/// zero-returning parse MUST leave a set exception.
+unsafe fn set_parse_type_error(message: &str) {
+    let cmsg = std::ffi::CString::new(message).unwrap_or_default();
+    unsafe {
+        PyErr_SetString(&raw mut crate::abi_types::PyExc_TypeError, cmsg.as_ptr());
+    }
+}
+
+/// Set a SystemError for an unrecognized/malformed format unit, matching
+/// CPython's handling of a bad format string in PyArg_ParseTuple.
+unsafe fn set_parse_format_error() {
+    unsafe {
+        PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_SystemError,
+            c"bad format string passed to PyArg_ParseTuple".as_ptr(),
+        );
+    }
 }
 
 // (parse_args_from_tuple removed — logic moved to molt_pyarg_parse_tuple_inner above)
