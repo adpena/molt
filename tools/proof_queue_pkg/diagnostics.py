@@ -400,6 +400,31 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = pq.PACT_WITNESS_FIXTURE_MISSING_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="pact-witness-fixture-missing",
+                severity="error",
+                summary=(
+                    "Pact acceptance failed after build/link because the Kernel A "
+                    "fixture was not available to the run directory."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Make the acceptance runner regenerate the deterministic "
+                    "fixture/reference oracle inside the run directory, then "
+                    "rerun the named pact-witness-acceptance lane; do not check "
+                    "binary fixture outputs into source."
+                ),
+                scopes=(
+                    "tools/pact_witness_acceptance.py",
+                    "collab/pact/pact_witness_kernel/make_fixture.py",
+                    "collab/pact/pact_witness_kernel/field_solve.py",
+                ),
+            )
+        )
+
     match = pq.NATIVE_ARTIFACT_CUSTODY_RE.search(log_tail)
     if match is not None:
         missing_abi_symbols = tuple(
