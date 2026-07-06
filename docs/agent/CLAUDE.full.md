@@ -681,6 +681,11 @@ Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
 before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
 `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
 POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
+In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
+(`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env, so
+repeated checks reuse the same uv environment while Cargo output remains
+session-scoped by `MOLT_SESSION_ID`. Use `--session-scoped-uv-project-env` only
+when the uv environment must be isolated too.
 Do not use `uv run` to obtain this first env in a cold checkout, and never run
 parallel uv bootstrap/sync commands against the same `.venv`.
 
