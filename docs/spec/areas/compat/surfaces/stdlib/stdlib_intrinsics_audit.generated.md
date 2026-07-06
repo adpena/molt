@@ -9,11 +9,11 @@
 - Modules without intrinsic usage are forbidden in compiled builds and must raise immediately until fully lowered.
 
 ## Progress Summary (Generated)
-- Total audited modules: `920`
+- Total audited modules: `890`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `874`
+- `intrinsic-partial`: `845`
 - `intrinsic-support`: `4`
-- `policy-gate`: `1`
+- `policy-gate`: `0`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -822,41 +822,12 @@
 - `threading`
 - `timeit`
 - `tinygrad`
-- `tinygrad.ddtree`
 - `tinygrad.device`
 - `tinygrad.dtypes`
-- `tinygrad.eagle`
-- `tinygrad.examples`
-- `tinygrad.examples.falcon_ocr`
-- `tinygrad.examples.test_falcon_ocr`
-- `tinygrad.flash_attention`
-- `tinygrad.kv_cache`
 - `tinygrad.lazy`
-- `tinygrad.mirror_sd`
-- `tinygrad.model_config`
-- `tinygrad.nl_template_filler`
 - `tinygrad.nn`
-- `tinygrad.onnx_interpreter`
-- `tinygrad.openpilot_demo`
-- `tinygrad.paddleocr`
-- `tinygrad.paddleocr_bench`
-- `tinygrad.paddleocr_driver`
 - `tinygrad.realize`
-- `tinygrad.speculative`
-- `tinygrad.template_extractor`
 - `tinygrad.tensor`
-- `tinygrad.tests`
-- `tinygrad.tests.test_eagle`
-- `tinygrad.tests.test_flash_attention`
-- `tinygrad.tests.test_kv_cache`
-- `tinygrad.tests.test_mirror_sd`
-- `tinygrad.tests.test_nl_template_filler`
-- `tinygrad.tests.test_template_extractor`
-- `tinygrad.tokenizer`
-- `tinygrad.tree_attention`
-- `tinygrad.turbo_quant`
-- `tinygrad.wasm_driver`
-- `tinygrad.whisper_demo`
 - `tkinter`
 - `tkinter.__main__`
 - `tkinter._support`
@@ -988,7 +959,6 @@
 - `unittest._mock_patch`
 
 ### Fail-closed policy-gate modules
-- `tinygrad.dflash`
 
 ### Probe-only modules (thin wrappers + policy gate only)
 
