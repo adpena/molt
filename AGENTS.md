@@ -94,6 +94,14 @@ is reconciled.
   or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
   detached proof custody or an explicit stand-down/frozen-lane order; it is never
   a reason to narrate status, shrink scope, land a placeholder, or stop moving.
+  Rigor, honesty, "not overselling," "measure later," "map before fix," and
+  "read-only first, fix later" are NOT licenses to defer: if the prerequisite is
+  inside the repo and can be engineered, engineer it NOW in the same arc and do
+  the work that GENERATES the evidence, then report it done. Splitting a task
+  into analyze/plan and shipping only the analysis is deferral. The tell is any
+  self-directed "I won't... / I'll then... / once X lands / gated on Y / then I
+  drive / I won't claim until"; the instant you form one, delete it and do the
+  complete thing.
 
 ## Orchestration And Lane Discipline
 
