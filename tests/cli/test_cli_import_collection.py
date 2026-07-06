@@ -958,6 +958,66 @@ def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> 
     )
 
 
+def test_source_extension_runtime_python_imports_admits_cython_modinit_helpers() -> (
+    None
+):
+    # Cython 3.x emits its unconditional exec-time imports inside dedicated
+    # ``__Pyx_modinit_*`` helpers that ``__pyx_pymod_exec_<mod>`` calls during
+    # ``Py_mod_exec``. scipy.ndimage's ``_ni_label`` imports Cython's
+    # shared-utility module ``scipy._cyutility`` from
+    # ``__Pyx_modinit_shared_function_import_code`` and ``numpy`` from
+    # ``__Pyx_modinit_type_import_code``. Before the scanner recognized this
+    # helper family those imports were dropped, so the witness failed at
+    # runtime with ``No module named 'scipy._cyutility'``.
+    source = r"""
+    static int __Pyx_modinit_shared_function_import_code(void *mstate) {
+        __pyx_t_1 = PyImport_ImportModule("scipy._cyutility");
+        return 0;
+    }
+    static int __Pyx_modinit_type_import_code(void *mstate) {
+        __pyx_t_1 = PyImport_ImportModule("numpy");
+        return 0;
+    }
+    static int __Pyx_DecompressString(void) {
+        PyImport_ImportModule("compression.zstd");
+        return 0;
+    }
+    static int __pyx_pymod_exec__ni_label(PyObject *module) {
+        if (unlikely((__Pyx_modinit_type_import_code(mstate) < 0))) return -1;
+        if (unlikely((__Pyx_modinit_shared_function_import_code(mstate) < 0)))
+            return -1;
+        return 0;
+    }
+    """
+
+    imports = cli_source_extensions.source_extension_runtime_python_imports(source)
+    # Teeth: both exec-time helper imports must be admitted...
+    assert "scipy._cyutility" in imports
+    assert "numpy" in imports
+    # ...while the genuine lazy runtime helper stays excluded.
+    assert "compression.zstd" not in imports
+    assert imports == ("numpy", "scipy._cyutility")
+
+
+def test_source_extension_eager_import_function_name_precise_cython_modinit() -> None:
+    # The eager admission is scoped to the ``__Pyx_modinit_`` init family only;
+    # arbitrary Cython runtime helpers stay lazy so their imports are not
+    # dragged in as AOT roots.
+    eager = cli_source_extensions._source_extension_eager_import_function_name
+    assert eager("__Pyx_modinit_shared_function_import_code")
+    assert eager("__Pyx_modinit_type_import_code")
+    assert eager("__Pyx_modinit_function_import_code")
+    assert eager("__Pyx_modinit_global_init_code")
+    assert eager("__pyx_pymod_exec__ni_label")
+    assert eager("PyInit__ni_label")
+    # Not eager: lazy Cython helpers / unrelated functions.
+    assert not eager("__Pyx_init_co_variables")
+    assert not eager("__Pyx_DecompressString")
+    assert not eager("__Pyx_ImportType_3_2_8")
+    assert not eager("helper")
+    assert not eager(None)
+
+
 def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
