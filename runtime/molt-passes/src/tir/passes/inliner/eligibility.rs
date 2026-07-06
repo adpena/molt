@@ -1,17 +1,20 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::Terminator;
 use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
 use crate::tir::call_graph::CallGraph;
 use crate::tir::function::{TirFunction, TirModule};
-use crate::tir::op_kinds_generated::opcode_is_state_machine_table;
+use crate::tir::op_kinds_generated::{
+    opcode_is_inliner_numeric_raw_lane_consumer_table, opcode_is_state_machine_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
+use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 use super::super::ip_summary::ModuleSummaries;
 
-/// inlining this arc (and likely permanently — these are never simple leaves).
+/// inlining this arc (and likely permanently - these are never simple leaves).
 fn is_generator_or_async_op(opcode: OpCode) -> bool {
     opcode_is_state_machine_table(opcode)
 }
@@ -19,28 +22,28 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 /// Whether `callee` may be inlined under phases a + b.
 ///
 /// Conservative-correct exclusions (any one disqualifies):
-/// * **recursive** — a member of the call graph's recursive set (a recursion
+/// * **recursive** - a member of the call graph's recursive set (a recursion
 ///   cycle, a self-edge, or a function with an opaque call). Inlining a recursive
 ///   callee is unbounded.
-/// * **over budget** — `op_count` exceeds the cost model's
+/// * **over budget** - `op_count` exceeds the cost model's
 ///   [`inline_budget`](crate::tir::target_info::TargetInfo::inline_budget) for
 ///   this callee. The op count is the same metric the
 ///   [`ModuleSummaries`](super::ip_summary::ModuleSummaries) records.
-/// * **generator / async** — the body contains a state-machine opcode
+/// * **generator / async** - the body contains a state-machine opcode
 ///   ([`is_generator_or_async_op`]).
-/// * **exception HANDLER region** — [`TirFunction::has_exception_handlers`]
+/// * **exception HANDLER region** - [`TirFunction::has_exception_handlers`]
 ///   (`try`/`except` or generator/async state regions). Observation-only callees
-///   (`CheckException` with no handler) are NOT excluded — they inline correctly
+///   (`CheckException` with no handler) are NOT excluded - they inline correctly
 ///   via exception-label remapping + exit routing through the caller's post-call
 ///   `CheckException`.
-/// * **entry block has predecessors** — the splice binds parameters *directly*
+/// * **entry block has predecessors** - the splice binds parameters *directly*
 ///   to the call arguments and clones the callee entry as an argument-less
 ///   block. That is only SSA-valid when no branch targets the entry (i.e. the
-///   entry has zero predecessors — the normal case, since the SSA lift puts
+///   entry has zero predecessors - the normal case, since the SSA lift puts
 ///   loop headers in separate blocks). A callee whose entry block is itself a
 ///   branch target would need its entry args preserved, which this arc's
 ///   direct-binding splice does not model, so it is refused (never miscompiled).
-/// * **closure** — the callee's first param is the implicit captured-environment
+/// * **closure** - the callee's first param is the implicit captured-environment
 ///   param ([`is_closure`] / [`crate::MOLT_CLOSURE_PARAM_NAME`]). The
 ///   direct param->operand splice would bind that env-param to the `Call`'s
 ///   LEADING FUNCTION-VALUE operand (operands are `[callee_value, args...]`)
@@ -56,13 +59,13 @@ pub fn is_inlineable(
 ) -> bool {
     // The bool is exactly the eligibility verdict: `is_inlineable` is the
     // single-point reduction of [`classify_inline_eligibility`] (which carries the
-    // typed why-not reason the CallFacts side-table records). Reducing here — not
-    // duplicating the gates — means the inliner and the CallFacts table can never
-    // disagree (doc 47 §7, single source of truth).
+    // typed why-not reason the CallFacts side-table records). Reducing here - not
+    // duplicating the gates - means the inliner and the CallFacts table can never
+    // disagree (doc 47 section7, single source of truth).
     classify_inline_eligibility(callee, call_graph, summaries, tti).is_eligible()
 }
 
-/// Whether `callee` may be inlined, and if not, **why** — the typed
+/// Whether `callee` may be inlined, and if not, **why** - the typed
 /// [`InlineEligibility`] the [`CallFacts`](crate::tir::call_facts) side-table
 /// records on each static-direct call site. The single source of truth from which
 /// [`is_inlineable`]'s bool is derived (`is_inlineable ==
@@ -70,7 +73,7 @@ pub fn is_inlineable(
 ///
 /// Gate-evaluation order (the first failing gate is the reported reason, so the
 /// reason is deterministic): the [`inline_safety_gate`] correctness gates
-/// (recursion → handlers → generator → entry-predecessor → closure) first, then
+/// (recursion -> handlers -> generator -> entry-predecessor -> closure) first, then
 /// the cost-model op-count budget ([`InlineWhyNot::OverBudget`]). This matches the
 /// short-circuit order of the prior `is_inline_safe && within_budget` predicate
 /// exactly, so the bool is byte-identical at every call site.
@@ -89,9 +92,9 @@ pub fn classify_inline_eligibility(
     InlineEligibility::Eligible
 }
 
-/// The callee's op count — the same metric [`ModuleSummaries`] records, with a
+/// The callee's op count - the same metric [`ModuleSummaries`] records, with a
 /// direct fallback for callees without a summary.
-fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
+pub(super) fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
     summaries
         .get(&callee.name)
         .map(|s| s.op_count)
@@ -102,22 +105,22 @@ fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
 /// `None` if every safety gate passes. This is the single source of truth for the
 /// safety verdict, shared by [`is_inline_safe`] (the bool the split-field driver
 /// uses) and [`classify_inline_eligibility`] (the typed reason). It deliberately
-/// EXCLUDES the cost-model budget — that is [`InlineWhyNot::OverBudget`], applied
+/// EXCLUDES the cost-model budget - that is [`InlineWhyNot::OverBudget`], applied
 /// only by [`classify_inline_eligibility`].
 ///
 /// Gate order is the prior `is_inline_safe` order verbatim:
-/// 1. **recursive** — a member of the call graph's recursive set (cycle, self-edge,
+/// 1. **recursive** - a member of the call graph's recursive set (cycle, self-edge,
 ///    or opaque-call function). Inlining is unbounded.
-/// 2. **exception HANDLER region** — [`TirFunction::has_exception_handlers`]
+/// 2. **exception HANDLER region** - [`TirFunction::has_exception_handlers`]
 ///    (`try`/`except` or generator/async state regions); the splice does not remap
 ///    handler labels. Observation-only callees (`CheckException`, no handler) are
 ///    NOT excluded.
-/// 3. **generator / async** — a state-machine opcode ([`is_generator_or_async_op`]).
-/// 4. **entry block has predecessors** — the direct param→argument binding splice
+/// 3. **generator / async** - a state-machine opcode ([`is_generator_or_async_op`]).
+/// 4. **entry block has predecessors** - the direct param->argument binding splice
 ///    clones the entry as an argument-less block, valid only when no branch targets
 ///    the entry.
-/// 5. **closure** — the first param is the implicit captured-env param
-///    ([`is_closure`]); the direct param→operand splice would miscompile it.
+/// 5. **closure** - the first param is the implicit captured-env param
+///    ([`is_closure`]); the direct param->operand splice would miscompile it.
 fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<InlineWhyNot> {
     if call_graph.recursive_set().contains(&callee.name) {
         return Some(InlineWhyNot::Recursive);
@@ -141,13 +144,13 @@ fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<In
     None
 }
 
-/// Whether `callee` is SAFE to inline — every correctness gate of
+/// Whether `callee` is SAFE to inline - every correctness gate of
 /// [`is_inlineable`] EXCEPT the cost-model op-count budget. Used by the driver to
 /// admit a callee that is over-budget but whose inlining UNLOCKS a structural
 /// optimization the budget alone cannot see (the split-field deforestation: a
 /// caller passes a non-escaping `string_split_field` result into `callee`, so
 /// inlining turns the callee's `len(field)`/`ord(field[i])` consumers into
-/// bounds-once reads that never materialize the field — see
+/// bounds-once reads that never materialize the field - see
 /// [`split_field_enabled_callees`]). Admitting an over-budget callee here is
 /// sound for exactly the same reason every other inline is: the splice is
 /// SSA/refcount/loop-metadata preserving regardless of size.
@@ -161,7 +164,7 @@ pub(super) fn is_inline_safe(callee: &TirFunction, call_graph: &CallGraph) -> bo
 
 /// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
 /// carrying `_original_kind = "string_split_field"`). Its single result is the
-/// materialized field — the value whose materialization the deforestation
+/// materialized field - the value whose materialization the deforestation
 /// eliminates when every consumer is bounds-expressible.
 fn is_string_split_field_op(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy
@@ -179,7 +182,7 @@ fn is_string_split_field_op(op: &TirOp) -> bool {
 /// the field that the caller produced, and the SimpleIR deforestation pass
 /// rewrites them to bounds-once reads (`molt_string_split_field_*`) so the field
 /// never materializes. This is the TARGETED enabling signal the baton specifies
-/// — strictly narrower (and icache-cheaper) than a global budget bump, which was
+/// - strictly narrower (and icache-cheaper) than a global budget bump, which was
 /// measured NOT to help and to regress code size. A callee is admitted only if
 /// it is ALSO [`is_inline_safe`]; the splice itself is unconditionally sound.
 pub(super) fn split_field_enabled_callees(
@@ -224,8 +227,135 @@ pub(super) fn split_field_enabled_callees(
     enabled
 }
 
+/// True when the callee return type can carry a raw numeric lane across the
+/// direct-call boundary.
+fn is_numeric_raw_lane_return_type(ty: &TirType) -> bool {
+    match ty {
+        TirType::I64 | TirType::F64 | TirType::Bool => true,
+        TirType::Union(members) => {
+            let mut saw_numeric = false;
+            let mut saw_none = false;
+            for member in members {
+                match member {
+                    TirType::None => saw_none = true,
+                    TirType::I64 | TirType::F64 | TirType::Bool if !saw_numeric => {
+                        saw_numeric = true;
+                    }
+                    _ => return false,
+                }
+            }
+            saw_numeric && saw_none
+        }
+        _ => false,
+    }
+}
+
+struct NumericRawLaneCandidate<'a> {
+    caller: &'a str,
+    callee: &'a str,
+    result: ValueId,
+    return_type: &'a TirType,
+    consumer: OpCode,
+}
+
+fn numeric_raw_lane_candidates<'a>(
+    module: &'a TirModule,
+    defined: &[String],
+) -> Vec<NumericRawLaneCandidate<'a>> {
+    let defined_set: HashSet<&str> = defined.iter().map(String::as_str).collect();
+    let return_types: HashMap<&str, &TirType> = module
+        .functions
+        .iter()
+        .filter(|f| defined_set.contains(f.name.as_str()))
+        .map(|f| (f.name.as_str(), &f.return_type))
+        .collect();
+    if return_types.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    for caller in &module.functions {
+        let mut call_result_to_callee: HashMap<ValueId, &str> = HashMap::new();
+        for block in caller.blocks.values() {
+            for op in &block.ops {
+                if op.opcode == OpCode::Call {
+                    let Some(AttrValue::Str(callee_name)) = op.attrs.get("s_value") else {
+                        continue;
+                    };
+                    if !return_types.contains_key(callee_name.as_str()) {
+                        continue;
+                    }
+                    if let Some(result) = op.results.first().copied() {
+                        call_result_to_callee.insert(result, callee_name.as_str());
+                    }
+                    continue;
+                }
+                if !opcode_is_inliner_numeric_raw_lane_consumer_table(op.opcode) {
+                    continue;
+                }
+                for operand in &op.operands {
+                    if let Some(callee) = call_result_to_callee.get(operand) {
+                        let return_type = return_types
+                            .get(callee)
+                            .expect("candidate callee came from return_types");
+                        candidates.push(NumericRawLaneCandidate {
+                            caller: caller.name.as_str(),
+                            callee,
+                            result: *operand,
+                            return_type,
+                            consumer: op.opcode,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
+pub(super) fn numeric_raw_lane_candidate_diagnostics(
+    module: &TirModule,
+    defined: &[String],
+) -> Vec<String> {
+    let mut lines: Vec<String> = numeric_raw_lane_candidates(module, defined)
+        .into_iter()
+        .map(|candidate| {
+            format!(
+                "{}:{} result={:?} return={:?} numeric_return={} consumer={:?}",
+                candidate.caller,
+                candidate.callee,
+                candidate.result,
+                candidate.return_type,
+                is_numeric_raw_lane_return_type(candidate.return_type),
+                candidate.consumer,
+            )
+        })
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// The set of module-defined callees whose direct-call boundary blocks numeric
+/// raw-lane optimization in a caller.
+///
+/// This is intentionally shaped like [`split_field_enabled_callees`]: it is not a
+/// global inline-budget bump. A callee is only enabled when its structural return
+/// type is a scalar numeric carrier and one of its direct-call results feeds a
+/// numeric op. The driver still applies the full inliner safety gate and caps
+/// this exception at the hot-inline budget.
+pub(super) fn numeric_raw_lane_enabled_callees(
+    module: &TirModule,
+    defined: &[String],
+) -> HashSet<String> {
+    numeric_raw_lane_candidates(module, defined)
+        .into_iter()
+        .filter(|candidate| is_numeric_raw_lane_return_type(candidate.return_type))
+        .map(|candidate| candidate.callee.to_string())
+        .collect()
+}
+
 /// True if any block's terminator branches to `callee`'s entry block. The direct
-/// param→arg binding splice requires the cloned entry to be argument-less and
+/// param->arg binding splice requires the cloned entry to be argument-less and
 /// hence predecessor-free in the callee.
 fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
     let entry = callee.entry_block;
@@ -244,7 +374,7 @@ fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
     })
 }
 
-/// True if `callee` is a closure — i.e. its first parameter is the implicit
+/// True if `callee` is a closure - i.e. its first parameter is the implicit
 /// captured-environment param the frontend prepends to every closure
 /// (`crate::MOLT_CLOSURE_PARAM_NAME` == `"__molt_closure__"`). This is the same
 /// predicate the WASM backend uses to recognize a closure and adjust its arity

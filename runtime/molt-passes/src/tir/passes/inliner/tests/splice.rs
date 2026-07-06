@@ -118,7 +118,7 @@ fn splice_observation_callee_remaps_labels_collision_free() {
     // splicing, the cloned exit block must carry a FRESH label (not 3), the
     // caller's original label 3 must survive, and no two blocks may share a
     // label value (which would make `exception_label_to_block` ambiguous and
-    // emit duplicate `label N` ops in lower_to_simple — a miscompile).
+    // emit duplicate `label N` ops in lower_to_simple - a miscompile).
     let callee = observation_callee("obs", 3);
     let mut caller = caller_calling_obs_with_label("c", "obs", 3);
 
@@ -170,12 +170,12 @@ fn splice_observation_callee_remaps_labels_collision_free() {
 }
 
 #[test]
-fn splice_void_exception_exit_pads_placeholder_for_continuation_type() {
+fn splice_void_exception_exit_branches_directly_to_post_call_exception_target() {
     // The observation callee's exception-exit returns NO value, but the call
     // wants one. The splice must NOT refuse (that would re-dormant the inliner
-    // on every value-returning observation callee) — it pads the continuation
-    // arg with a representation-matched dead placeholder. The exit branch ends
-    // up supplying exactly one continuation arg, and the merged fn verifies.
+    // on every value-returning observation callee). With a post-call
+    // CheckException at the continuation start, the exception-exit branch goes
+    // directly to the caller handler, and the merged fn verifies.
     for (idx, ty) in [TirType::I64, TirType::Bool, TirType::F64, TirType::DynBox]
         .into_iter()
         .enumerate()
@@ -193,31 +193,27 @@ fn splice_void_exception_exit_pads_placeholder_for_continuation_type() {
             "value-returning observation callee inlines (not refused) for {ty:?}"
         );
         crate::tir::verify::verify_function(&caller).unwrap_or_else(|e| {
-            panic!("merged fn invalid SSA after placeholder pad for {ty:?}: {e:?}")
+            panic!("merged fn invalid SSA after direct exception branch for {ty:?}: {e:?}")
         });
 
-        let mut placeholder_const_seen = false;
-        for block in caller.blocks.values() {
-            if let Terminator::Branch { args, .. } = &block.terminator
-                && args.len() == 1
-                && block
-                    .ops
-                    .last()
-                    .map(|op| {
-                        let expected = dead_placeholder_const_for_type(&ty, args[0]);
-                        op.opcode == expected.opcode
-                            && op.operands == expected.operands
-                            && op.results == expected.results
-                            && op.attrs == expected.attrs
-                    })
-                    .unwrap_or(false)
-            {
-                placeholder_const_seen = true;
-            }
-        }
+        let handler = caller
+            .label_id_map
+            .iter()
+            .find_map(|(block, label)| (*label == 90).then_some(BlockId(*block)))
+            .expect("caller exception handler label survives");
+        let direct_exception_branches = caller
+            .blocks
+            .values()
+            .filter(|block| {
+                matches!(
+                    &block.terminator,
+                    Terminator::Branch { target, args } if *target == handler && args.is_empty()
+                )
+            })
+            .count();
         assert!(
-            placeholder_const_seen,
-            "the void exception-exit branch is padded with a {ty:?} placeholder const"
+            direct_exception_branches >= 1,
+            "void exception-exit branches directly to the caller handler for {ty:?}"
         );
     }
 }

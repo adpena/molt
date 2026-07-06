@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn recursive_not_inlined() {
-    // f calls f → recursive.
+    // f calls f -> recursive.
     let mut f = TirFunction::new("f".into(), vec![], TirType::None);
     let entry = f.entry_block;
     let mut attrs = AttrDict::new();
@@ -79,7 +79,7 @@ fn generator_not_inlined() {
 #[test]
 fn entry_predecessor_callee_not_inlined() {
     // A callee whose entry block is a branch target (a back-edge to entry)
-    // cannot be spliced by the direct-param-binding model — refuse it.
+    // cannot be spliced by the direct-param-binding model - refuse it.
     let mut f = TirFunction::new("looper".into(), vec![], TirType::None);
     let body = f.fresh_block();
     f.blocks.insert(
@@ -88,7 +88,7 @@ fn entry_predecessor_callee_not_inlined() {
             id: body,
             args: vec![],
             ops: vec![],
-            // body branches BACK to the entry → entry has a predecessor.
+            // body branches BACK to the entry -> entry has a predecessor.
             terminator: Terminator::Branch {
                 target: f.entry_block,
                 args: vec![],
@@ -112,7 +112,7 @@ fn entry_predecessor_callee_not_inlined() {
 #[test]
 fn handler_bearing_callee_not_inlined() {
     // A callee with a REAL exception handler region (TryStart/TryEnd) is
-    // excluded — splicing across a handler boundary needs handler-label
+    // excluded - splicing across a handler boundary needs handler-label
     // re-targeting this arc does not perform.
     let mut f = TirFunction::new("guarded".into(), vec![], TirType::None);
     f.has_exception_handling = true;
@@ -174,7 +174,7 @@ fn closure_callee_not_inlined() {
     // task #44: a closure (first param == __molt_closure__) must NOT be
     // inlinable. The direct param->operand splice cannot bind the captured
     // env (it would bind the call's leading function-value operand instead),
-    // so `is_inlineable` refuses it — conservative-correct exclusion.
+    // so `is_inlineable` refuses it - conservative-correct exclusion.
     let callee = closure_callee("__main____add");
     assert!(
         is_closure(&callee),
@@ -195,7 +195,7 @@ fn non_closure_same_arity_still_inlineable() {
     // start with the env marker) is still inlinable. The closure gate keys on
     // the marker, not on arity, so a legitimate same-arity function is never
     // de-inlined by the fix.
-    let callee = add_callee(); // params ["p0", "p1"] — not a closure
+    let callee = add_callee(); // params ["p0", "p1"] - not a closure
     assert!(
         !is_closure(&callee),
         "add_callee's first param is not the env marker"
