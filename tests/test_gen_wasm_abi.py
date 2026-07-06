@@ -195,6 +195,7 @@ def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
     }
     seen: dict[str, bool] = {}
 
+    monkeypatch.setattr(gen, "RUSTFMT_CACHE_ENABLED", True)
     monkeypatch.setattr(gen, "_rustfmt_version", lambda: "rustfmt-test")
     monkeypatch.setattr(
         gen,
