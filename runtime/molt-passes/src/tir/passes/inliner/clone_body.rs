@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrDict, TirOp};
+use crate::tir::ops::{AttrDict, AttrValue, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
 use super::exception_labels::{build_label_remap, remap_exception_label_attr};
@@ -13,12 +13,12 @@ use super::exception_labels::{build_label_remap, remap_exception_label_attr};
 /// cloned `Return`-bearing blocks to rewrite into continuation branches).
 pub(super) struct ClonedCallee {
     /// The fresh `BlockId` of the cloned callee's entry block. The caller's
-    /// pre-call half branches here. This block has **no arguments** — the
+    /// pre-call half branches here. This block has **no arguments** - the
     /// callee's parameters were bound directly to the call arguments.
     pub(super) entry: BlockId,
     /// Every fresh block id introduced by the clone, in deterministic order.
     pub(super) cloned_blocks: Vec<BlockId>,
-    /// The callee `BlockId` → cloned `BlockId` map. The splicer uses it to carry
+    /// The callee `BlockId` -> cloned `BlockId` map. The splicer uses it to carry
     /// the callee-side classification of each `Return` block (normal-return vs
     /// exception-exit, computed on the callee's terminator-only CFG) onto the
     /// cloned blocks when rewriting `Return`s into continuation branches.
@@ -30,19 +30,19 @@ pub(super) struct ClonedCallee {
 ///
 /// Cloning a callee body remaps every `ValueId`/`BlockId` to a fresh id, but
 /// these annotations are *function-local name strings* (a Python local like `x`
-/// or `i`) with no id to remap — a verbatim copy carries the callee's names into
+/// or `i`) with no id to remap - a verbatim copy carries the callee's names into
 /// the caller. If a callee name collides with a caller value of a different
 /// container kind, any surviving name-keyed SimpleIR consumer would resolve the
-/// inlined value to the *caller's* kind — a wrong specialization, i.e. a
+/// inlined value to the *caller's* kind - a wrong specialization, i.e. a
 /// miscompile. It would likewise alias two values onto one SimpleIR slot in the
-/// native TIR→SimpleIR lowering.
+/// native TIR->SimpleIR lowering.
 ///
 /// Dropping the names lets each inlined value fall to its unique canonical
 /// (`ValueId`-derived) name, so it is classified by the authoritative
 /// `ValueId`-keyed `TirType` instead. Freshly-built inlined containers keep their
 /// concrete `TirType`, so the correct kind is preserved for the common case;
 /// only a `DynBox`-typed inlined container loses name-keyed specialization
-/// (sound — generic dispatch). LLVM `len` specialization now reads refined TIR
+/// (sound - generic dispatch). LLVM `len` specialization now reads refined TIR
 /// type directly, and the soundness-critical carrier `repr_by_value` is
 /// `ValueId`-keyed, so neither path depends on cloned SimpleIR names.
 pub(super) fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
@@ -53,6 +53,132 @@ pub(super) fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
         .collect()
 }
 
+fn clone_attrs_for_inlined_body(
+    attrs: &AttrDict,
+    var_remap: &mut HashMap<String, String>,
+    occupied_vars: &mut HashSet<String>,
+    inline_var_namespace: &str,
+) -> AttrDict {
+    let mut cloned = clone_attrs_without_simple_names(attrs);
+    if let Some(AttrValue::Str(var)) = cloned.get("_var").cloned() {
+        let private = private_inline_var_name(&var, var_remap, occupied_vars, inline_var_namespace);
+        cloned.insert("_var".into(), AttrValue::Str(private));
+    }
+    cloned
+}
+
+fn private_inline_var_name(
+    var: &str,
+    var_remap: &mut HashMap<String, String>,
+    occupied_vars: &mut HashSet<String>,
+    inline_var_namespace: &str,
+) -> String {
+    if let Some(existing) = var_remap.get(var) {
+        return existing.clone();
+    }
+
+    let mut candidate = format!("{inline_var_namespace}{var}");
+    let mut disambiguator = 0;
+    while occupied_vars.contains(&candidate) {
+        disambiguator += 1;
+        candidate = format!("{inline_var_namespace}r{disambiguator}_{var}");
+    }
+    occupied_vars.insert(candidate.clone());
+    var_remap.insert(var.to_string(), candidate.clone());
+    candidate
+}
+
+fn collect_local_var_attrs(func: &TirFunction) -> HashSet<String> {
+    let mut vars = HashSet::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if let Some(AttrValue::Str(var)) = op.attrs.get("_var") {
+                vars.insert(var.clone());
+            }
+        }
+    }
+    vars
+}
+
+fn original_kind(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
+    }
+}
+
+fn var_attr(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_var") {
+        Some(AttrValue::Str(var)) => Some(var.as_str()),
+        _ => None,
+    }
+}
+
+fn is_store_var(op: &TirOp) -> bool {
+    original_kind(op) == Some("store_var")
+}
+
+fn op_reads_var(op: &TirOp, var: &str) -> bool {
+    var_attr(op) == Some(var)
+        && matches!(
+            original_kind(op),
+            Some("load_var" | "copy_var" | "delete_var")
+        )
+}
+
+fn collect_missing_values(block: &TirBlock) -> HashSet<ValueId> {
+    block
+        .ops
+        .iter()
+        .filter(|op| original_kind(op) == Some("missing"))
+        .flat_map(|op| op.results.iter().copied())
+        .collect()
+}
+
+fn store_source_is_missing(op: &TirOp, missing_values: &HashSet<ValueId>) -> bool {
+    op.operands
+        .first()
+        .is_some_and(|source| missing_values.contains(source))
+}
+
+fn missing_store_is_overwritten_before_read(
+    block: &TirBlock,
+    op_index: usize,
+    var: &str,
+    missing_values: &HashSet<ValueId>,
+) -> bool {
+    for op in block.ops.iter().skip(op_index + 1) {
+        if op_reads_var(op, var) {
+            return false;
+        }
+        if is_store_var(op) && var_attr(op) == Some(var) {
+            return !store_source_is_missing(op, missing_values);
+        }
+    }
+    false
+}
+
+fn dead_initial_missing_store_indices(block: &TirBlock) -> HashSet<usize> {
+    let missing_values = collect_missing_values(block);
+    if missing_values.is_empty() {
+        return HashSet::new();
+    }
+
+    block
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            if !is_store_var(op) || !store_source_is_missing(op, &missing_values) {
+                return None;
+            }
+            let var = var_attr(op)?;
+            missing_store_is_overwritten_before_read(block, index, var, &missing_values)
+                .then_some(index)
+        })
+        .collect()
+}
+
 /// Clone `callee`'s body into `caller`, minting fresh `ValueId`/`BlockId`s for
 /// everything except the callee parameters, which are bound directly to
 /// `arg_values` (the call's argument values, already valid in `caller`).
@@ -60,13 +186,13 @@ pub(super) fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
 /// Returns the cloned-entry block id (which the splice's pre-call half branches
 /// into) and the list of fresh block ids. The caller is responsible for actually
 /// inserting the resulting blocks (they are inserted into `caller.blocks` here)
-/// and for wiring the pre/cont split + rewriting cloned `Return`s — that is
+/// and for wiring the pre/cont split + rewriting cloned `Return`s - that is
 /// [`splice_call_site`]'s job.
 ///
 /// Invariants established here:
 /// * The cloned entry block has **no arguments** (params bind to `arg_values`).
 /// * Every callee value not a parameter gets a fresh id; uses are remapped.
-/// * Cloned `Return` terminators are left *as `Return`* — the splicer rewrites
+/// * Cloned `Return` terminators are left *as `Return`* - the splicer rewrites
 ///   them into branches to the continuation (it owns the continuation id).
 /// * `value_types` for cloned values transfer (remapped keys) so type facts
 ///   survive into the merged function.
@@ -88,7 +214,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
 ) -> ClonedCallee {
     // Fresh exception/label remap for this clone. Allocated ABOVE the caller's
     // current max label so it cannot collide with any caller label (including the
-    // fresh labels of callees already inlined into this caller — `caller` is
+    // fresh labels of callees already inlined into this caller - `caller` is
     // re-scanned each clone, and each clone's fresh labels were inserted into
     // `caller.label_id_map` by `transfer_loop_metadata`).
     let label_remap = build_label_remap(callee, caller);
@@ -117,6 +243,9 @@ pub(super) fn clone_function_body_with_fresh_ids(
     for &bid in &callee_block_ids {
         block_map.insert(bid, caller.fresh_block());
     }
+    let inline_var_namespace = format!("__molt_inline_b{}_", block_map[&callee.entry_block].0);
+    let mut var_remap: HashMap<String, String> = HashMap::new();
+    let mut occupied_vars = collect_local_var_attrs(caller);
 
     // Mint fresh value ids for every non-parameter callee result and every
     // non-entry block argument, in a deterministic walk (blocks sorted; within a
@@ -135,7 +264,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
 
     for &bid in &callee_block_ids {
         let block = &callee.blocks[&bid];
-        // Entry-block args are the parameters — already bound to arg_values, so
+        // Entry-block args are the parameters - already bound to arg_values, so
         // do NOT mint fresh ids for them. Non-entry block args get fresh ids.
         if bid != callee.entry_block {
             for arg in &block.args {
@@ -149,7 +278,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
         }
     }
 
-    // Helper to remap a single value (must already be in the map — every defined
+    // Helper to remap a single value (must already be in the map - every defined
     // value was assigned above; every used value is either a param, a prior
     // def, or a block arg, all of which are mapped).
     let remap = |v: ValueId, value_map: &HashMap<ValueId, ValueId>| -> ValueId {
@@ -192,24 +321,38 @@ pub(super) fn clone_function_body_with_fresh_ids(
         // annotations are dropped (see `clone_attrs_without_simple_names`): they
         // are function-local name strings with no id to remap, so a verbatim copy
         // would carry the callee's names into the caller and collide with caller
-        // values of the same name. Exception ops additionally have their handler
+        // values of the same name. `_var` local-slot names are remapped into a
+        // private per-inline namespace for the same reason: store_var/load_var/
+        // copy_var/delete_var carry Python local identity through round-trips,
+        // and a callee `i` must not become the caller's `i` after splicing.
+        // Exception ops additionally have their handler
         // `"value"` label remapped (see `remap_exception_label_attr`) so the
         // cloned exception edge resolves to the cloned exit block, not a caller
         // block that happens to share the callee's original (per-function) label.
+        let dead_missing_stores = dead_initial_missing_store_indices(src);
         let new_ops: Vec<TirOp> = src
             .ops
             .iter()
-            .map(|op| {
-                let mut attrs = clone_attrs_without_simple_names(&op.attrs);
+            .enumerate()
+            .filter_map(|(op_index, op)| {
+                if dead_missing_stores.contains(&op_index) {
+                    return None;
+                }
+                let mut attrs = clone_attrs_for_inlined_body(
+                    &op.attrs,
+                    &mut var_remap,
+                    &mut occupied_vars,
+                    &inline_var_namespace,
+                );
                 remap_exception_label_attr(op.opcode, &mut attrs, &label_remap);
-                TirOp {
+                Some(TirOp {
                     dialect: op.dialect,
                     opcode: op.opcode,
                     operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
                     results: op.results.iter().map(|v| remap(*v, &value_map)).collect(),
                     attrs,
                     source_span: op.source_span,
-                }
+                })
             })
             .collect();
 
@@ -241,7 +384,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
         }
     }
 
-    // Transfer loop metadata — ALL FOUR maps plus label_id_map — with remapped
+    // Transfer loop metadata - ALL FOUR maps plus label_id_map - with remapped
     // keys (and remapped values where the value is itself a block id). Missing
     // any of these mis-describes the merged loops to LICM / BCE / the structured
     // back-conversion. `label_id_map` LABEL VALUES are remapped through
@@ -257,7 +400,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
 }
 
 /// Clone a terminator, remapping value operands and block targets. `Return`
-/// terminators are cloned verbatim (values remapped) — the splicer rewrites them
+/// terminators are cloned verbatim (values remapped) - the splicer rewrites them
 /// into branches once it owns the continuation block id.
 fn clone_terminator(
     term: &Terminator,

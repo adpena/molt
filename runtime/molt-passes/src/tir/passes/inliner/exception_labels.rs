@@ -41,10 +41,10 @@ pub(super) fn function_label_ids(func: &TirFunction) -> BTreeSet<i64> {
     labels
 }
 
-/// Build the callee→fresh label remap for one clone. Every label the callee uses
+/// Build the callee->fresh label remap for one clone. Every label the callee uses
 /// is reassigned to a fresh id strictly greater than every label currently in the
 /// caller, so the cloned body's exception labels cannot collide with the caller's
-/// (or with the fresh labels of callees already inlined into this caller — those
+/// (or with the fresh labels of callees already inlined into this caller - those
 /// were inserted into `caller.label_id_map`, so the caller's max grows with each
 /// clone). Deterministic: callee labels are processed in ascending order.
 pub(super) fn build_label_remap(callee: &TirFunction, caller: &TirFunction) -> HashMap<i64, i64> {
