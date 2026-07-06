@@ -5,7 +5,6 @@ use crate::abi_types::{Py_ssize_t, PyObject, PyTupleObject, PyVarObject};
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
-use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -16,8 +15,17 @@ pub unsafe extern "C" fn PyList_New(_size: Py_ssize_t) -> *mut PyObject {
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_list)() };
     if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Allocation failed. CPython's PyList_New returns NULL with MemoryError
+        // set. Returning Py_None (non-NULL) here would defeat the extension's
+        // `if (list == NULL)` guard and let it operate on None as if it were a
+        // list — silent corruption. Fail closed with NULL + a set exception.
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_MemoryError,
+                c"PyList_New: failed to allocate list".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -357,42 +365,68 @@ pub unsafe extern "C" fn PyFrozenSet_Check(op: *mut PyObject) -> c_int {
     (std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type)) as c_int
 }
 
+/// Set a NotImplementedError for a not-yet-wired set operation and fail closed.
+///
+/// The CPython ABI has no runtime set hooks in the bridge vtable yet. Faking set
+/// operations (returning a list from PySet_New, reporting every membership test
+/// as "absent" from PySet_Contains, or claiming success from PySet_Add /
+/// PySet_Discard) silently corrupts set semantics for any extension that relies
+/// on dedup or membership. Until real set hooks exist we fail closed with a set
+/// exception + error sentinel so callers see an honest error, never a wrong
+/// answer.
+unsafe fn set_not_implemented(message: &'static [u8]) {
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            &raw mut crate::abi_types::PyExc_NotImplementedError,
+            message.as_ptr().cast(),
+        );
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_New(iterable: *mut PyObject) -> *mut PyObject {
-    // Create an empty set. Full iteration over iterable is not yet supported.
     let _ = iterable;
-    // Sets are not yet supported by the bridge hooks; return a placeholder list.
-    // This allows extensions that create sets to not crash.
-    unsafe { PyList_New(0) }
+    // FAIL CLOSED (pending runtime set hooks): returning a list here would give
+    // the caller a non-set object with list semantics (no dedup, no set
+    // membership) — a silent-wrong-answer. NULL + NotImplementedError instead.
+    unsafe { set_not_implemented(b"PySet_New: set objects are not yet supported by the CPython ABI bridge\0") };
+    ptr::null_mut()
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Size(anyset: *mut PyObject) -> Py_ssize_t {
-    if anyset.is_null() {
-        return 0;
-    }
-    // Delegate to the generic length.
-    unsafe { crate::api::object::PyObject_Length(anyset) }
+    // CPython returns -1 with an exception set on error. Without a real set
+    // object we cannot report a truthful size; fail closed rather than return 0.
+    let _ = anyset;
+    unsafe { set_not_implemented(b"PySet_Size: set objects are not yet supported by the CPython ABI bridge\0") };
+    -1
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Contains(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
+    // CPython returns -1 (error) / 0 (absent) / 1 (present). Returning 0 here
+    // would falsely report every key as absent. Fail closed with -1.
     let _ = (anyset, key);
-    // Cannot check set membership without set hooks.
-    0
+    unsafe { set_not_implemented(b"PySet_Contains: set objects are not yet supported by the CPython ABI bridge\0") };
+    -1
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
-    // Stub — sets are not fully supported.
+    // CPython returns 0 on success, -1 on error. Returning 0 (fake success)
+    // would silently drop the added element. Fail closed with -1.
     let _ = (anyset, key);
-    0
+    unsafe { set_not_implemented(b"PySet_Add: set objects are not yet supported by the CPython ABI bridge\0") };
+    -1
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Discard(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
+    // CPython returns 1 (removed) / 0 (absent) / -1 (error). Fake success (0)
+    // would silently pretend a discard happened. Fail closed with -1.
     let _ = (anyset, key);
-    0
+    unsafe { set_not_implemented(b"PySet_Discard: set objects are not yet supported by the CPython ABI bridge\0") };
+    -1
 }
 
 // ─── PyList_GetSlice / PyList_Sort / PyList_Reverse ──────────────────────
