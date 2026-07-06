@@ -49,6 +49,19 @@ pub(crate) fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
         let direct_target = wasm_direct_call_table_idx(fn_ptr);
         let normalized_tramp =
             crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
+        // A `Direct`-dispatch reserved callable must resolve to its direct
+        // table slot on the fixed-arity lane, no matter whether its stored
+        // identity/target/trampoline pointer lands in the direct or trampoline
+        // region.
+        for candidate in [direct_target, fn_ptr, tramp_ptr] {
+            if let Some(direct_slot) =
+                crate::builtins::functions::reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
+                    candidate,
+                )
+            {
+                return direct_slot;
+            }
+        }
         if crate::builtins::functions::reserved_wasm_runtime_callable_info_for_table_idx(
             direct_target,
         )
@@ -76,12 +89,21 @@ fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
         let direct_target = wasm_direct_call_table_idx(fn_ptr);
-        if crate::builtins::functions::reserved_wasm_runtime_direct_callable_info_for_table_idx(
-            direct_target,
-        )
-        .is_some()
-        {
-            return direct_target;
+        // A `Direct`-dispatch reserved callable must be reached through the
+        // direct table region on the fixed-arity lane. Recognize the callable
+        // whether the stored identity/target/trampoline pointer already sits in
+        // the direct region (`fn_ptr`, `direct_target`) or the trampoline
+        // region — either way the fixed-arity call site emits
+        // `molt_call_indirectN` with N positional args, which the host only
+        // interprets correctly against the direct slot.
+        for candidate in [direct_target, fn_ptr, tramp_ptr] {
+            if let Some(direct_slot) =
+                crate::builtins::functions::reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
+                    candidate,
+                )
+            {
+                return direct_slot;
+            }
         }
         let normalized_tramp =
             crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
@@ -225,7 +247,10 @@ fn should_force_trampoline_for_fixed_arity_call(
     }
     #[cfg(target_arch = "wasm32")]
     {
-        if crate::builtins::functions::reserved_wasm_runtime_direct_callable_info_for_table_idx(
+        // A `Direct`-dispatch reserved callable is dispatched on the fixed-arity
+        // direct lane, never forced onto the trampoline lane — recognize it
+        // whether `direct_target` sits in the direct or trampoline region.
+        if crate::builtins::functions::reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
             direct_target,
         )
         .is_some()
