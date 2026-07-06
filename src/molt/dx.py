@@ -46,6 +46,7 @@ DX_ENV_KEYS = (
     "SCCACHE_CACHE_SIZE",
     "MOLT_CACHE_MAX_GB",
     "MOLT_CACHE_MAX_AGE_DAYS",
+    "UV_LINK_MODE",
 )
 DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/APDataStore/Molt",
@@ -222,9 +223,9 @@ def _windows_drive_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
-def _windows_volume_label(drive_root: Path) -> str | None:
+def _windows_volume_info(drive_root: Path) -> tuple[str | None, str | None]:
     if os.name != "nt":
-        return None
+        return None, None
     try:
         import ctypes
 
@@ -244,12 +245,37 @@ def _windows_volume_label(drive_root: Path) -> str | None:
             len(fs_name),
         )
     except (AttributeError, OSError, ValueError):
-        return None
-    return label.value if ok else None
+        return None, None
+    if not ok:
+        return None, None
+    return label.value, fs_name.value
+
+
+def _windows_volume_label(drive_root: Path) -> str | None:
+    return _windows_volume_info(drive_root)[0]
+
+
+def _windows_volume_filesystem(drive_root: Path) -> str | None:
+    return _windows_volume_info(drive_root)[1]
 
 
 def _path_drive(path: Path) -> str:
     return path.drive.upper()
+
+
+def _windows_drive_root_for_path(path: Path) -> Path:
+    drive = _path_drive(path)
+    if drive:
+        return Path(f"{drive}\\")
+    parent = _nearest_existing_parent(path) or path
+    return Path(parent.anchor) if parent.anchor else parent
+
+
+def _artifact_root_is_windows_exfat(artifact_root: Path) -> bool:
+    if os.name != "nt":
+        return False
+    filesystem = _windows_volume_filesystem(_windows_drive_root_for_path(artifact_root))
+    return filesystem is not None and filesystem.casefold() == "exfat"
 
 
 def _default_toolchain_root_for_artifact_root(artifact_root: Path) -> Path:
@@ -541,6 +567,8 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
     env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
+    if _artifact_root_is_windows_exfat(artifact_root):
+        env.setdefault("UV_LINK_MODE", "copy")
 
 
 def _host_facts() -> dict[str, str]:
