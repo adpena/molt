@@ -170,8 +170,8 @@ def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
     assert _canonical_buffer_fields(
         _rust_molt_buffer_fields(http_bridge_source.replace("BufferExport", "MoltBufferView"))
     ) == MOLT_BUFFER_VIEW_FIELDS
-    assert _c_define_value(header_source, "MOLT_C_API_VERSION") == 3
-    assert _rust_const_value(c_api_source, "MOLT_C_API_VERSION") == 3
+    assert _c_define_value(header_source, "MOLT_C_API_VERSION") == 4
+    assert _rust_const_value(c_api_source, "MOLT_C_API_VERSION") == 4
     assert "int32_t molt_buffer_export(MoltHandle obj_bits, MoltBufferView *out_view);" in header_source
     assert '#define molt_buffer_export ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_export"))' in header_source
     assert "int32_t molt_c_heap_register(uintptr_t ptr);" in header_source
