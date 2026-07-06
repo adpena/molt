@@ -618,6 +618,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, var_name: str, ssa_name: str
     ) -> None: ...
 
+    def _counted_range_args_for_genexpr(
+        self, iter_node: ast.expr
+    ) -> tuple[MoltValue, MoltValue, MoltValue, int | None] | None: ...
+
     def _ctx_mark_arg(self, scope: TryScope) -> MoltValue: ...
 
     def _current_module_pressure_snapshot(self) -> tuple[int, int, int]: ...
@@ -1458,6 +1462,32 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _find_unbound_value_uses(
         self, ops: list[MoltOp], *, params: Sequence[str] = ()
     ) -> list[tuple[int, str, str]]: ...
+
+    def _finish_counted_range_sum_genexpr(
+        self,
+        genexpr: ast.GeneratorExp | ast.ListComp,
+        target_name: str,
+        user_target_names: list[str],
+        counted_range: tuple[MoltValue, MoltValue, MoltValue, int | None],
+        saved_locals: dict[str, MoltValue | None],
+        saved_boxed: dict[str, MoltValue | None],
+        saved_boxed_hints: dict[str, str | None],
+        outer_comp_shadow_locals: set[str],
+    ) -> MoltValue: ...
+
+    def _finish_sum_genexpr_accumulator(
+        self,
+        body_ops: list[MoltOp],
+        *,
+        acc_slot: str,
+        seen_slot: str,
+        acc_is_float: bool,
+        acc_load_hint: str,
+        user_target_names: list[str],
+        saved_boxed: dict[str, MoltValue | None],
+        saved_boxed_hints: dict[str, str | None],
+        outer_comp_shadow_locals: set[str],
+    ) -> MoltValue: ...
 
     def _flush_deferred_module_attrs(self) -> None: ...
 
