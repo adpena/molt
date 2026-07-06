@@ -102,6 +102,18 @@ def test_serial_feature_is_link_affecting() -> None:
     assert "stdlib_serial" in LINK_AFFECTING_FEATURES
 
 
+def test_high_level_gpu_intrinsics_are_link_affecting() -> None:
+    from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+
+    for symbol in (
+        "molt_gpu_linear_contiguous",
+        "molt_gpu_tensor__zeros",
+        "molt_gpu_interop_decode_f16_bytes_to_f32",
+        "molt_gpu_prim_create_tensor",
+    ):
+        assert link_affecting_feature_gate_for_symbol(symbol) == "molt_gpu_primitives"
+
+
 def test_empty_cargo_group_features_are_not_link_affecting() -> None:
     # Empty `[]` Cargo groups gate only resolver arms; their symbols are always
     # defined, so they must stay out of the link-affecting set.
