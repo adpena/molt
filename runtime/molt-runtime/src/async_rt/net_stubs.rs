@@ -307,7 +307,13 @@ pub extern "C" fn molt_socket_reader_drop(_: u64) {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_reader_at_eof(_: u64) -> u64 {
-    crate::MoltObject::from_bool(true).bits()
+    // Fail closed. Reader creation (`molt_socket_reader_new`) already
+    // `net_error!()`s in no-net builds, so a reader is never fabricated and this
+    // is unreachable through the normal path. Returning `true` (fake EOF) here
+    // would tell a caller the stream is exhausted — a silent empty read that
+    // masks the real "no networking" condition. Raise instead, matching every
+    // other reader entry point in this file.
+    net_error!()
 }
 
 #[unsafe(no_mangle)]
