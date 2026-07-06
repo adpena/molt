@@ -319,5 +319,5 @@ feature = "stdlib_signal"
 prefixes = ["select_"]
 feature = "stdlib_select"
 [stdlib.gpu_primitives]
-prefixes = ["gpu_prim_"]
+prefixes = ["gpu_", "gpu_prim_"]
 feature = "molt_gpu_primitives"
