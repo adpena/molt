@@ -86,6 +86,22 @@ is reconciled.
 - If the operator says "tiny slice", "rip it open", or rejects tiny chips, treat
   it as a binding scope override: narrow the aperture, deepen the structural
   rip, and stop defending comfort-sized work.
+- Dependency gates are work selectors, not idle states. Never stop at
+  "I will not do X until Y happens" unless the formal blocked audit is already
+  satisfied. If a lane is waiting on CI, a queue row, a frozen owner, a merge, or
+  any other external event, immediately advance another board-valid structural
+  arc, pre-stage the next exact patch/proof, file the precise queue/board note,
+  or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
+  detached proof custody or an explicit stand-down/frozen-lane order; it is never
+  a reason to narrate status, shrink scope, land a placeholder, or stop moving.
+  Rigor, honesty, "not overselling," "measure later," "map before fix," and
+  "read-only first, fix later" are NOT licenses to defer: if the prerequisite is
+  inside the repo and can be engineered, engineer it NOW in the same arc and do
+  the work that GENERATES the evidence, then report it done. Splitting a task
+  into analyze/plan and shipping only the analysis is deferral. The tell is any
+  self-directed "I won't... / I'll then... / once X lands / gated on Y / then I
+  drive / I won't claim until"; the instant you form one, delete it and do the
+  complete thing.
 
 ## Orchestration And Lane Discipline
 

@@ -10,8 +10,23 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  classify-changes:
+    name: Changed Path Classifier
+    runs-on: ubuntu-latest
+    outputs:
+      kani: ${{ steps.paths.outputs.kani }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: paths
+        run: python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"
+
   kani-verification:
     name: Kani bounded verification
+    needs: classify-changes
+    if: needs.classify-changes.outputs.kani == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

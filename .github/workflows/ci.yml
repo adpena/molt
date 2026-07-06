@@ -121,8 +121,26 @@ jobs:
         if: always()
         run: python3 tools/profile_hotspots.py --limit 20
 
+  classify-changes:
+    name: Changed Path Classifier
+    runs-on: ubuntu-latest
+    outputs:
+      python_tooling: ${{ steps.paths.outputs.python_tooling }}
+      rust: ${{ steps.paths.outputs.rust }}
+      llvm: ${{ steps.paths.outputs.llvm }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        run: python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"
+
   python-tooling-smoke:
     name: Python Tooling Smoke
+    needs: classify-changes
+    if: needs.classify-changes.outputs.python_tooling == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -191,6 +209,8 @@ jobs:
 
   rust-build-unit-smoke:
     name: Rust Build And Unit Smoke
+    needs: classify-changes
+    if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -326,6 +346,8 @@ jobs:
 
   llvm-backend:
     name: LLVM Backend
+    needs: classify-changes
+    if: needs.classify-changes.outputs.llvm == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
