@@ -3647,6 +3647,232 @@ def test_proof_queue_lineage_edges_do_not_gate_execution(
     assert [row["kind"] for row in blockers] == ["depends_on"]
 
 
+def test_proof_queue_lineage_edges_accept_external_parent_ids(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="local-child",
+        logical_id="local-child",
+        reason="prove external lineage parent contract",
+        command=[sys.executable, "-c", "print('child')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:local-child",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=logs / "local-child.log",
+        summary_json=logs / "local-child.memory_guard.json",
+    )
+    fk_columns = {
+        row[3] for row in conn.execute("PRAGMA foreign_key_list(proof_run_edges)")
+    }
+    assert "parent_run_id" not in fk_columns
+    assert "child_run_id" in fk_columns
+
+    proof_queue._insert_edge(
+        conn,
+        parent_run_id="external-worktree-parent",
+        child_run_id="local-child",
+        kind="supersedes",
+        note="external queue DB lineage",
+    )
+    edges = proof_queue._edges_for_run_ids(conn, ["local-child"])
+    parents = edges["local-child"]["parents"]
+    assert len(parents) == 1
+    assert parents[0]["parent_run_id"] == "external-worktree-parent"
+    assert parents[0]["parent_status"] is None
+    assert parents[0]["kind"] == "supersedes"
+    assert proof_queue._dependency_state(conn, "local-child") == ("ready", [])
+
+    with pytest.raises(SystemExit, match="unknown parent proof run"):
+        proof_queue._insert_edge(
+            conn,
+            parent_run_id="external-worktree-parent",
+            child_run_id="local-child",
+            kind="depends_on",
+        )
+
+
+def test_proof_queue_migrates_edge_parent_fk_to_external_lineage(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "legacy_proof_queue.sqlite3"
+    legacy = sqlite3.connect(db)
+    legacy.execute("PRAGMA foreign_keys=ON")
+    legacy.execute(
+        """
+        CREATE TABLE proof_runs (
+            run_id TEXT PRIMARY KEY,
+            logical_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            returncode INTEGER,
+            command_json TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            resource_family TEXT NOT NULL,
+            contention_key TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            env_json TEXT NOT NULL DEFAULT '{}',
+            git_json TEXT NOT NULL DEFAULT '{}',
+            log_path TEXT NOT NULL,
+            summary_json TEXT NOT NULL,
+            guard_pid INTEGER,
+            guard_identity TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            elapsed_s REAL
+        )
+        """
+    )
+    legacy.execute(
+        """
+        CREATE TABLE proof_run_edges (
+            edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent_run_id TEXT NOT NULL,
+            child_run_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            author TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(parent_run_id) REFERENCES proof_runs(run_id),
+            FOREIGN KEY(child_run_id) REFERENCES proof_runs(run_id),
+            UNIQUE(parent_run_id, child_run_id, kind)
+        )
+        """
+    )
+    run_row = (
+        "parent-run",
+        "parent-run",
+        "legacy parent",
+        "failed",
+        1,
+        "[]",
+        str(proof_queue.ROOT),
+        "python",
+        "python:parent",
+        "[]",
+        "{}",
+        "{}",
+        str(tmp_path / "parent.log"),
+        str(tmp_path / "parent.memory_guard.json"),
+    )
+    child_row = (
+        "child-run",
+        "child-run",
+        "legacy child",
+        "queued",
+        None,
+        "[]",
+        str(proof_queue.ROOT),
+        "python",
+        "python:child",
+        "[]",
+        "{}",
+        "{}",
+        str(tmp_path / "child.log"),
+        str(tmp_path / "child.memory_guard.json"),
+    )
+    legacy.executemany(
+        """
+        INSERT INTO proof_runs (
+            run_id, logical_id, reason, status, returncode, command_json, cwd,
+            resource_family, contention_key, scopes_json, env_json, git_json,
+            log_path, summary_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [run_row, child_row],
+    )
+    legacy.execute(
+        """
+        INSERT INTO proof_run_edges (
+            parent_run_id, child_run_id, created_at, author, kind, note
+        )
+        VALUES ('parent-run', 'child-run', '2026-07-05T00:00:00Z',
+                'codex', 'supersedes', 'legacy edge')
+        """
+    )
+    assert {
+        row[3] for row in legacy.execute("PRAGMA foreign_key_list(proof_run_edges)")
+    } == {"parent_run_id", "child_run_id"}
+    legacy.commit()
+    legacy.close()
+
+    conn = proof_queue._connect(db)
+
+    fk_columns = {
+        row[3] for row in conn.execute("PRAGMA foreign_key_list(proof_run_edges)")
+    }
+    assert "parent_run_id" not in fk_columns
+    assert "child_run_id" in fk_columns
+    edges = _edges(db)
+    assert len(edges) == 1
+    assert edges[0]["parent_run_id"] == "parent-run"
+    assert edges[0]["child_run_id"] == "child-run"
+    assert edges[0]["note"] == "legacy edge"
+
+
+def test_proof_queue_submission_allows_external_lineage_parent(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    args = SimpleNamespace(
+        db=db,
+        logs_root=logs,
+        notebooks_root=tmp_path / "notebooks",
+        repo_root=proof_queue.ROOT,
+    )
+
+    rc, run_id = proof_queue._queue_one(
+        args,
+        logical_id="external-lineage-child",
+        reason="prove queued external lineage parent",
+        command=[sys.executable, "-c", "print('external lineage')"],
+        resource_family="python",
+        contention_key="python:external-lineage-child",
+        scopes=["tools/proof_queue.py"],
+        env_overrides={},
+        initial_notes=["external lineage parent can live in another queue DB"],
+        depends_on=["other-worktree-run"],
+        edge_kind="supersedes",
+        edge_note="record cross-worktree lineage without scheduling",
+    )
+
+    assert rc == 0
+    assert run_id is not None
+    conn = proof_queue._connect(db)
+    edges = proof_queue._edges_for_run_ids(conn, [run_id])
+    assert edges[run_id]["parents"][0]["parent_run_id"] == "other-worktree-run"
+    assert edges[run_id]["parents"][0]["parent_status"] is None
+    row = next(row for row in _rows(db) if row["run_id"] == run_id)
+    assert row["status"] == "queued"
+
+    with pytest.raises(SystemExit, match="unknown parent proof run"):
+        proof_queue._queue_one(
+            args,
+            logical_id="external-scheduling-child",
+            reason="prove scheduling parents still fail closed",
+            command=[sys.executable, "-c", "print('external scheduling')"],
+            resource_family="python",
+            contention_key="python:external-scheduling-child",
+            scopes=["tools/proof_queue.py"],
+            env_overrides={},
+            initial_notes=["scheduling parent must exist in this queue DB"],
+            depends_on=["other-worktree-run"],
+            edge_kind="depends_on",
+        )
+
+
 def test_proof_queue_appends_notes_and_exports_evidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

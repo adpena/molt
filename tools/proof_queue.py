@@ -66,6 +66,7 @@ EDGE_KIND_DESCRIPTIONS = {
 }
 EDGE_KINDS = frozenset(EDGE_KIND_DESCRIPTIONS)
 DEFAULT_EDGE_KIND = "depends_on"
+_SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
@@ -977,12 +978,12 @@ def _connect(db: Path) -> sqlite3.Connection:
             author TEXT NOT NULL,
             kind TEXT NOT NULL,
             note TEXT NOT NULL DEFAULT '',
-            FOREIGN KEY(parent_run_id) REFERENCES proof_runs(run_id),
             FOREIGN KEY(child_run_id) REFERENCES proof_runs(run_id),
             UNIQUE(parent_run_id, child_run_id, kind)
         )
         """
     )
+    _migrate_proof_run_edges_for_external_lineage(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS proof_run_edges_child_edge_id ON proof_run_edges(child_run_id, edge_id)"
     )
@@ -1078,6 +1079,60 @@ def _connect(db: Path) -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def _proof_run_edges_has_parent_fk(conn: sqlite3.Connection) -> bool:
+    return any(
+        row[3] == "parent_run_id"
+        for row in conn.execute("PRAGMA foreign_key_list(proof_run_edges)")
+    )
+
+
+def _migrate_proof_run_edges_for_external_lineage(conn: sqlite3.Connection) -> None:
+    if not _proof_run_edges_has_parent_fk(conn):
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for trigger in (
+            "proof_run_edges_append_only_no_update",
+            "proof_run_edges_append_only_no_delete",
+            "proof_run_edges_known_kind",
+        ):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS proof_run_edges_external_lineage")
+        conn.execute(
+            """
+            CREATE TABLE proof_run_edges_external_lineage (
+                edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_run_id TEXT NOT NULL,
+                child_run_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                author TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(child_run_id) REFERENCES proof_runs(run_id),
+                UNIQUE(parent_run_id, child_run_id, kind)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO proof_run_edges_external_lineage (
+                edge_id, parent_run_id, child_run_id, created_at, author, kind, note
+            )
+            SELECT edge_id, parent_run_id, child_run_id, created_at, author, kind, note
+            FROM proof_run_edges
+            ORDER BY edge_id
+            """
+        )
+        conn.execute("DROP TABLE proof_run_edges")
+        conn.execute(
+            "ALTER TABLE proof_run_edges_external_lineage RENAME TO proof_run_edges"
+        )
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _default_note_author() -> str:
@@ -1209,13 +1264,14 @@ def _insert_edge(
     if kind not in EDGE_KINDS:
         allowed = ", ".join(sorted(EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {kind!r}; allowed: {allowed}")
-    if not _run_exists(conn, parent_run_id):
+    parent_exists = _run_exists(conn, parent_run_id)
+    if not parent_exists and _edge_kind_requires_local_parent(kind):
         raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
     if not _run_exists(conn, child_run_id):
         raise SystemExit(f"unknown child proof run {child_run_id!r}")
     if parent_run_id == child_run_id:
         raise SystemExit("proof DAG edge cannot point to itself")
-    if _edge_would_create_cycle(
+    if parent_exists and _edge_would_create_cycle(
         conn, parent_run_id=parent_run_id, child_run_id=child_run_id
     ):
         raise SystemExit(
@@ -1311,7 +1367,7 @@ def _edges_for_run_ids(
                 edge.kind,
                 edge.note
             FROM proof_run_edges edge
-            JOIN proof_runs parent ON parent.run_id = edge.parent_run_id
+            LEFT JOIN proof_runs parent ON parent.run_id = edge.parent_run_id
             JOIN proof_runs child ON child.run_id = edge.child_run_id
             WHERE edge.parent_run_id IN ({placeholders})
                OR edge.child_run_id IN ({placeholders})
@@ -1858,7 +1914,8 @@ def _parent_statuses(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]
     )
 
 
-_SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
+def _edge_kind_requires_local_parent(kind: str) -> bool:
+    return kind in _SCHEDULING_EDGE_KINDS
 
 
 def _dependency_state(
@@ -3051,7 +3108,9 @@ def _queue_one(
     repo_root = _repo_root(args)
     conn = _connect(db)
     for parent_run_id in depends_on or []:
-        if not _run_exists(conn, parent_run_id):
+        if _edge_kind_requires_local_parent(edge_kind) and not _run_exists(
+            conn, parent_run_id
+        ):
             raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
     if edge_kind not in EDGE_KINDS:
         allowed = ", ".join(sorted(EDGE_KINDS))
