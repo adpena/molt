@@ -372,7 +372,7 @@ def test_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
         assert invoke_op["source_line"] == 2
 
 
-def test_conditional_native_callable_import_stays_module_global_call() -> None:
+def test_conditional_native_callable_import_guards_global_then_invokes_ffi() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"nativepkg", "nativepkg.ndimage"},
         direct_call_modules={"__main__"},
@@ -398,18 +398,63 @@ def test_conditional_native_callable_import_stays_module_global_call() -> None:
         fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
     )
 
-    assert [op for op in ops if op["kind"] == "invoke_ffi"] == []
-    call_bind_ops = [op for op in ops if op["kind"] == "call_bind"]
-    assert len(call_bind_ops) == 1
+    invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert invoke_op["native_callable_export"] == (
+        "nativepkg.ndimage.distance_transform_edt"
+    )
+    assert invoke_op["native_callable_binding"] == "direct_symbol"
+    assert invoke_op["native_callable_abi"] == "molt.forward_f32_v1"
+    assert (
+        invoke_op["native_callable_symbol"]
+        == "molt_nativepkg_ndimage_distance_transform_edt"
+    )
+    assert len(invoke_op["args"]) == 1
+    assert [op for op in ops if op["kind"] == "call_bind"] == []
     consts = _const_str_map(ops)
     post_if_ops = ops[
         next(i for i, op in enumerate(ops) if op["kind"] == "end_if") + 1 :
     ]
-    assert any(
-        op["kind"] == "module_get_global"
-        and consts.get((op.get("args") or [None, None])[1]) == "distance_transform_edt"
-        for op in post_if_ops
+    guard_index = next(
+        i
+        for i, op in enumerate(post_if_ops)
+        if op["kind"] == "module_get_global"
+        and consts.get((op.get("args") or [None, None])[1])
+        == "distance_transform_edt"
     )
+    invoke_index = next(i for i, op in enumerate(post_if_ops) if op is invoke_op)
+    assert guard_index < invoke_index
+
+
+def test_rebound_native_callable_import_still_uses_module_global_call() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "direct_symbol",
+                "abi": "molt.forward_f32_v1",
+                "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
+            }
+        },
+        fallback_policy="bridge",
+    )
+    gen.visit(
+        ast.parse(
+            "from nativepkg.ndimage import distance_transform_edt\n"
+            "distance_transform_edt = other\n"
+            "value = distance_transform_edt(data)\n"
+        )
+    )
+    ops = next(
+        fn["ops"] for fn in gen.to_json()["functions"] if fn["name"] == "molt_main"
+    )
+
+    assert [op for op in ops if op["kind"] == "invoke_ffi"] == []
+    assert len([op for op in ops if op["kind"] == "call_bind"]) == 1
 
 
 def test_native_callable_export_rejects_unknown_abi_before_invoke_ffi() -> None:

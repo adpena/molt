@@ -182,6 +182,37 @@ class CallNamedDispatchMixin(_MixinBase):
             return res
         return CALL_NOT_HANDLED
 
+    def _try_emit_guarded_module_global_native_callable_import(
+        self,
+        node: ast.Call,
+        *,
+        func_id: str,
+        imported_from: str | None,
+    ) -> Any:
+        if imported_from is None:
+            return CALL_NOT_HANDLED
+        normalized = self._normalize_allowlist_module(imported_from)
+        target_module = normalized or imported_from
+        original_attr = self._imported_attr_name(func_id)
+        if original_attr is None:
+            return CALL_NOT_HANDLED
+        if self._native_callable_export(target_module, original_attr) is None:
+            return CALL_NOT_HANDLED
+
+        # A conditional module-level import stores through the module dict, so a
+        # later bare-name call must still observe NameError if the import never
+        # executed. The native callable export remains the call authority; the
+        # module-global load is a guard, not a reason to fall back to CALL_BIND.
+        self._emit_global_get(func_id)
+        lowered = self._try_emit_native_callable_export_call(
+            target_module,
+            original_attr,
+            node,
+        )
+        if lowered is not None:
+            return lowered
+        return CALL_NOT_HANDLED
+
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any:
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
@@ -286,6 +317,13 @@ class CallNamedDispatchMixin(_MixinBase):
                 self.current_func_name == "molt_main"
                 and func_id in self.module_global_mutations
             ):
+                guarded_native = self._try_emit_guarded_module_global_native_callable_import(
+                    node,
+                    func_id=func_id,
+                    imported_from=imported_from,
+                )
+                if guarded_native is not CALL_NOT_HANDLED:
+                    return guarded_native
                 callee = self._emit_global_get(func_id)
                 callargs = self._emit_call_args_builder(node)
                 res = MoltValue(self.next_var(), type_hint="Any")
