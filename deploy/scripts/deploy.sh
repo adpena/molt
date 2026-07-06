@@ -25,7 +25,7 @@ DEPLOY_DIR="$PROJECT_ROOT/deploy/cloudflare"
 ENVIRONMENT="${1:-staging}"
 WORKER_NAME="falcon-ocr"
 R2_BUCKET="falcon-ocr-weights"
-WASM_DRIVER="$PROJECT_ROOT/src/molt/stdlib/tinygrad/wasm_driver.py"
+WASM_DRIVER="$PROJECT_ROOT/demos/tinygrad/wasm_driver.py"
 BUILD_OUTPUT_DIR="$PROJECT_ROOT/build/falcon-ocr"
 
 # Validate environment argument
