@@ -2,6 +2,7 @@ import './loader_bridge.js';
 import {
   assertBrowserTargetFeatureContract,
   parsedImportsRequireWebGpuDispatch,
+  WEBGPU_DISPATCH_HOST_IMPORT,
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
 
@@ -1296,7 +1297,7 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
     molt_process_close_stdin_host: stubI32,
     molt_process_stdio_host: stubI32,
     molt_process_host_poll: stubZero,
-    molt_gpu_webgpu_dispatch_host: stubI32,
+    [WEBGPU_DISPATCH_HOST_IMPORT]: stubI32,
     molt_log_host: (level, ptr, len) => {
       if (!memory) return;
       const view = new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0);
@@ -3624,7 +3625,7 @@ export const loadMoltWasm = async (options = {}) => {
     molt_ws_send_host: wsHost.wsSendHost,
     molt_ws_recv_host: wsHost.wsRecvHost,
     molt_ws_close_host: wsHost.wsCloseHost,
-    molt_gpu_webgpu_dispatch_host: gpuHost.gpuWebGpuDispatchHost,
+    [WEBGPU_DISPATCH_HOST_IMPORT]: gpuHost.gpuWebGpuDispatchHost,
   };
 
   let linkedBytes = null;

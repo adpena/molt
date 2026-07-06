@@ -231,7 +231,11 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
     assert "molt_set_wasm_table_base(BigInt(4096))" in worker_js
-    assert "molt_gpu_webgpu_dispatch_host() { return -38; }" in worker_js
+    assert (
+        'const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";'
+        in worker_js
+    )
+    assert "[WEBGPU_DISPATCH_HOST_IMPORT]: () => -38," in worker_js
     assert "const planReservedRuntimeDispatch = ({" in worker_js
     assert "appOwnsReservedTrampoline" not in worker_js
     assert "dispatchReservedRuntimeCallable" in worker_js

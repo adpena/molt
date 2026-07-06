@@ -18591,6 +18591,12 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
         "export const assertBrowserTargetFeatureContract = () => {};\n",
         encoding="utf-8",
     )
+    target_feature_constants_js = wasm_root / "target_feature_constants.generated.js"
+    target_feature_constants_js.write_text(
+        "export const WEBGPU_DISPATCH_HOST_IMPORT = "
+        '"molt_gpu_webgpu_dispatch_host";\n',
+        encoding="utf-8",
+    )
     loader_bridge = wasm_root / "loader_bridge.js"
     loader_bridge.write_text(
         "globalThis.MoltWasmLoaderBridge = {};\n",
@@ -18940,6 +18946,13 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert manifest["assets"]["browser_target_features"]["path"] == (
         "browser_target_features.js"
     )
+    assert manifest["assets"]["target_feature_constants"]["path"] == (
+        "target_feature_constants.generated.js"
+    )
+    assert (
+        output_wasm.parent
+        / manifest["assets"]["target_feature_constants"]["path"]
+    ).exists()
     target_feature_asset = manifest["assets"]["target_feature_manifest"]
     assert target_feature_asset["path"] == "target_feature_manifest.json"
     assert len(target_feature_asset["sha256"]) == 64

@@ -4,10 +4,17 @@ from collections.abc import Collection, Mapping
 from typing import Any
 
 from molt import target_features as _target_features
+from molt.target_features import (
+    TARGET_FEATURE_MANIFEST_ASSET_NAME,
+    WEBGPU_DISPATCH_HOST_IMPORT,
+)
 
-
-TARGET_FEATURE_MANIFEST_ASSET_NAME = "target_feature_manifest.json"
-WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host"
+__all__ = [
+    "TARGET_FEATURE_MANIFEST_ASSET_NAME",
+    "WEBGPU_DISPATCH_HOST_IMPORT",
+    "browser_target_profile_for_imports",
+    "browser_target_feature_metadata",
+]
 
 
 def browser_target_profile_for_imports(browser_host_import_names: Collection[str]) -> str:

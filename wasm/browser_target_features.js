@@ -1,4 +1,9 @@
-export const WEBGPU_DISPATCH_HOST_IMPORT = 'molt_gpu_webgpu_dispatch_host';
+import {
+  WEBGPU_DISPATCH_HOST_IMPORT,
+  TARGET_FEATURE_MANIFEST_ASSET_NAME,
+} from './target_feature_constants.generated.js';
+
+export { WEBGPU_DISPATCH_HOST_IMPORT, TARGET_FEATURE_MANIFEST_ASSET_NAME };
 
 export const parsedImportsRequireWebGpuDispatch = (...parsedImports) =>
   parsedImports.some((imports) =>
