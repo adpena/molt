@@ -40,7 +40,7 @@ if "tinygrad" not in sys.modules:
 from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
 from tinygrad.lazy import LazyOp, LazyBuffer
-from tinygrad.kv_cache import (
+from ..kv_cache import (
     TieredKVCache,
     TIER_HOT,
     TIER_WARM,
@@ -51,8 +51,8 @@ from tinygrad.kv_cache import (
     _quantize_vector,
     _dequantize_entry,
 )
-from tinygrad.speculative import speculative_decode_with_kv_cache
-from tinygrad.tree_attention import (
+from ..speculative import speculative_decode_with_kv_cache
+from ..tree_attention import (
     tiered_tree_attention,
     compact_tiered_kv_cache,
 )
