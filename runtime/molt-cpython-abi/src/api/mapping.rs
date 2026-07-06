@@ -153,7 +153,7 @@ pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -
     if val_bits == 0 {
         return ptr::null_mut();
     }
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(val_bits) }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_borrowed_pyobj(val_bits) }
 }
 
 #[unsafe(no_mangle)]
