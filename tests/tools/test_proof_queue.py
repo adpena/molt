@@ -2774,6 +2774,61 @@ def test_proof_queue_run_detach_respects_queue_size_and_contention_keys(
     assert rows["queued-c"]["status"] == "dispatched"
 
 
+def test_proof_queue_run_jobs_alias_limits_detached_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id in ("queued-a", "queued-b", "queued-c"):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=run_id,
+            command=[sys.executable, "-c", f"print({run_id!r})"],
+            cwd=proof_queue.ROOT,
+            resource_family="python",
+            contention_key=f"python:{run_id}",
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--detach",
+            "--queue-size",
+            "3",
+            "--jobs",
+            "2",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rc == 0
+    assert launched == ["queued-a", "queued-b"]
+    assert rows["queued-a"]["status"] == "dispatched"
+    assert rows["queued-b"]["status"] == "dispatched"
+    assert rows["queued-c"]["status"] == "queued"
+
+
 def test_proof_queue_run_detach_counts_existing_active_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7455,7 +7510,8 @@ def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
         "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in command
     )
     assert "tools/target_python_runtime.py" in spec["scopes"]
-    assert "src/molt/stdlib/_sys_impl.py" in spec["scopes"]
+    assert "src/molt/stdlib/sys.py" in spec["scopes"]
+    assert "src/molt/stdlib/_sys_impl.py" not in spec["scopes"]
     assert "src/molt/stdlib/queue.py" in spec["scopes"]
     assert any("serial fail-fast differential custody" in note for note in spec["notes"])
     assert any("Selected R6 fixtures:" in note for note in spec["notes"])
@@ -7514,6 +7570,47 @@ def test_proof_queue_r6_target_version_parity_uses_target_tag() -> None:
     assert spec["logical_id"] == "r6-target-version-parity-py313"
     assert spec["contention_key"] == "python:r6-target-version-py313"
     assert command[command.index("--python-version") + 1] == "3.13"
+
+
+def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
+    entry = tmp_path / "tmp" / "probe.py"
+    entry.parent.mkdir()
+    entry.write_text("print('ok')\n", encoding="utf-8")
+
+    spec = proof_queue._native_molt_run_spec(
+        "tmp/probe.py",
+        script_args=["--", "--flag"],
+        repo_root=tmp_path,
+    )
+
+    assert spec["logical_id"].startswith("native-molt-run-tmp-probe-py-")
+    assert spec["resource_family"] == "python-native"
+    assert spec["contention_key"] == "python:native-molt-run:tmp-probe-py"
+    command = list(spec["command"])
+    assert command[:9] == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "python",
+    ]
+    assert command[9:13] == ["-m", "molt.cli", "run", "tmp/probe.py"]
+    assert command[-1] == "--flag"
+    assert spec["scopes"] == ["tmp/probe.py"]
+    assert any("foreground Codex control plane" in note for note in spec["notes"])
+    assert proof_queue._proof_command_policy_error(command) is None
+
+
+def test_proof_queue_native_molt_run_rejects_outside_repo(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}_outside_probe.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="must live under repo root"):
+        proof_queue._native_molt_run_spec(str(outside), repo_root=tmp_path)
 
 
 def test_proof_queue_r6_target_version_parity_print_spec(
