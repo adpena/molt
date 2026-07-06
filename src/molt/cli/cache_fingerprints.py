@@ -11,7 +11,6 @@ from typing import Any, Sequence
 from molt.cli.compiler_metadata import _compiler_root, _rustc_version
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.runtime_fingerprints import (
-    _hash_runtime_file,
     _hash_source_tree_metadata,
     _runtime_source_paths,
     _source_fingerprint_files,
