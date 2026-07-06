@@ -355,7 +355,24 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     register_c_function: fake_register_c_function,
     import_module: fake_import_module,
     exception_pending: fake_exception_pending,
+    number_binary_op: fake_number_binary_op,
+    number_unary_op: fake_number_unary_op,
+    number_power: fake_number_power,
+    dict_op: fake_dict_op,
 };
+
+unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_dict_op(_op: u32, _dict: u64) -> u64 {
+    0
+}
 
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();

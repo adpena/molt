@@ -161,3 +161,66 @@ fn test_stub_inc_dec_ref_no_crash() {
     unsafe { (h.inc_ref)(12345) };
     unsafe { (h.dec_ref)(12345) };
 }
+
+// ---------------------------------------------------------------------------
+// F2/F3/F6 teeth: the numeric and dict hooks fail closed (return 0) under stubs
+// so the ABI never fabricates a wrong answer when the runtime authority is
+// absent. (The real bignum-correct / exception-setting behavior lives in the
+// runtime authority and is proved there; here we prove the stub fails closed.)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_stub_number_hooks_fail_closed() {
+    init();
+    let h = hooks_or_stubs();
+    // Every discriminant must return 0 (error sentinel) under the stub table.
+    for op in 0..12u32 {
+        assert_eq!(unsafe { (h.number_binary_op)(op, 1, 2) }, 0);
+    }
+    for op in 0..4u32 {
+        assert_eq!(unsafe { (h.number_unary_op)(op, 1) }, 0);
+    }
+    assert_eq!(unsafe { (h.number_power)(2, 3, 0) }, 0);
+    assert_eq!(unsafe { (h.number_power)(2, 3, 5) }, 0);
+}
+
+#[test]
+fn test_stub_dict_op_hook_fails_closed() {
+    init();
+    let h = hooks_or_stubs();
+    for op in 0..3u32 {
+        assert_eq!(unsafe { (h.dict_op)(op, 0) }, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F1 teeth: PyArg_ParseTuple must NOT fake success. A format that requires a
+// positional argument, against an empty argument tuple, must return 0 (failure)
+// with an exception set — never 1 (success). Previously an unknown/unsatisfied
+// format unit could still return 1, poisoning the caller with uninitialized
+// output slots.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pyarg_parse_missing_required_arg_fails_closed() {
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    // args tuple is 0 (empty / None under stubs); format "i" wants one int.
+    let mut out_slot: std::os::raw::c_int = 4242;
+    let mut outs: [*mut std::ffi::c_void; 1] =
+        [(&mut out_slot as *mut std::os::raw::c_int).cast()];
+    let rc = unsafe {
+        molt_cpython_abi::api::errors::molt_pyarg_parse_tuple_inner(
+            ptr::null_mut(),
+            c"i".as_ptr(),
+            outs.as_mut_ptr(),
+            1,
+        )
+    };
+    assert_eq!(rc, 0, "PyArg_ParseTuple must fail (0), not fake success (1)");
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a failed PyArg_ParseTuple must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
