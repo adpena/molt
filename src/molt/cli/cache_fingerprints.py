@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from molt.cli.compiler_metadata import _compiler_root, _rustc_version
+from molt.cli.file_hashing import _sha256_file
 from molt.cli.runtime_fingerprints import (
-    _hash_runtime_file,
     _hash_source_tree_metadata,
     _runtime_source_paths,
     _source_fingerprint_files,
@@ -278,15 +278,57 @@ def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
     )
 
 
-@functools.lru_cache(maxsize=64)
-def _source_tree_content_digest_cached(
-    root_str: str,
+# Per-process cache of source-tree content digests. The key includes a
+# *content-derived* signature (see `_file_content_signature`) rather than only
+# stat metadata: same-length edits under coarse filesystem mtime resolution can
+# leave (size, mtime_ns, ctime_ns) unchanged, so a metadata-only key would serve
+# a stale content digest and cause the frontend cache to reuse a stale lowering
+# (a miscompile). Reading file bytes is the only sound authority for content, so
+# the digest is always computed from bytes; the cache merely dedupes repeated
+# identical trees within one build process.
+_SOURCE_TREE_CONTENT_DIGEST_CACHE: dict[tuple[str, ...], str] = {}
+_SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT = 64
+
+
+def _file_content_signature(path: Path) -> str:
+    """Content-sound per-file signature: sha256 of the file bytes.
+
+    Using the content hash (not stat metadata) guarantees that any change to a
+    tracked source file changes the signature even when size and mtime collide.
+    """
+
+    try:
+        digest = _sha256_file(path)
+    except OSError:
+        return "unreadable"
+    return digest
+
+
+def _source_tree_content_signature(
+    root: Path,
     path_keys: tuple[str, ...],
-    metadata_digest: str,
+) -> tuple[str, ...]:
+    signature: list[str] = []
+    for path_key in path_keys:
+        path = pathlib.Path(path_key)
+        for item in _source_fingerprint_files(path):
+            try:
+                rel_text = str(item.relative_to(root))
+            except ValueError:
+                rel_text = str(item)
+            signature.append(f"{rel_text}={_file_content_signature(item)}")
+    return tuple(signature)
+
+
+def _compute_source_tree_content_digest(
+    content_signature: tuple[str, ...],
     scope: str,
     extra_fingerprint_inputs: str,
 ) -> str:
-    root = pathlib.Path(root_str)
+    # The signature already carries each tracked file's relative path and the
+    # sha256 of its bytes, so hashing the signature is a sound, read-once content
+    # digest: any byte-level change to any tracked file changes the signature and
+    # therefore this digest, independent of stat metadata.
     hasher = hashlib.sha256()
     hasher.update(_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION.encode("utf-8"))
     hasher.update(b"\0")
@@ -294,13 +336,39 @@ def _source_tree_content_digest_cached(
     hasher.update(b"\0")
     hasher.update(extra_fingerprint_inputs.encode("utf-8"))
     hasher.update(b"\0")
-    hasher.update(metadata_digest.encode("utf-8"))
-    hasher.update(b"\0")
-    for path_key in path_keys:
-        path = pathlib.Path(path_key)
-        for item in _source_fingerprint_files(path):
-            _hash_runtime_file(item, root, hasher)
+    for entry in content_signature:
+        hasher.update(entry.encode("utf-8"))
+        hasher.update(b"\0")
     return hasher.hexdigest()
+
+
+def _source_tree_content_digest(
+    root: Path,
+    path_keys: tuple[str, ...],
+    content_signature: tuple[str, ...],
+    scope: str,
+    extra_fingerprint_inputs: str,
+) -> str:
+    cache_key = (
+        str(root),
+        scope,
+        extra_fingerprint_inputs,
+        *path_keys,
+        "\0",
+        *content_signature,
+    )
+    cached = _SOURCE_TREE_CONTENT_DIGEST_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    digest = _compute_source_tree_content_digest(
+        content_signature,
+        scope,
+        extra_fingerprint_inputs,
+    )
+    if len(_SOURCE_TREE_CONTENT_DIGEST_CACHE) >= _SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT:
+        _SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
+    _SOURCE_TREE_CONTENT_DIGEST_CACHE[cache_key] = digest
+    return digest
 
 
 def _source_tree_cache_fingerprint(
@@ -315,10 +383,11 @@ def _source_tree_cache_fingerprint(
     metadata = _hash_source_tree_metadata(normalized_paths, root)
     metadata_digest = metadata[0] if metadata is not None else "metadata-unavailable"
     file_count = metadata[1] if metadata is not None else -1
-    content_digest = _source_tree_content_digest_cached(
-        str(root),
+    content_signature = _source_tree_content_signature(root, path_keys)
+    content_digest = _source_tree_content_digest(
+        root,
         path_keys,
-        metadata_digest,
+        content_signature,
         scope,
         extra_fingerprint_inputs,
     )

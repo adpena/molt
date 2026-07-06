@@ -547,6 +547,79 @@ def test_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
     assert invoke_op["source_line"] == 2
 
 
+def test_native_callable_dotted_import_export_lowers_to_runtime_ffi() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "module_attr",
+                "abi": "molt.object_call_v1",
+            }
+        },
+        fallback_policy="bridge",
+    )
+
+    gen.visit(
+        ast.parse(
+            "import nativepkg.ndimage\n"
+            "value = nativepkg.ndimage.distance_transform_edt(data)\n"
+        )
+    )
+    ir = gen.to_json()
+    invoke_ops = [
+        op for fn in ir["functions"] for op in fn["ops"] if op["kind"] == "invoke_ffi"
+    ]
+
+    assert len(invoke_ops) == 1
+    invoke_op = invoke_ops[0]
+    assert len(invoke_op["args"]) == 2
+    assert invoke_op["native_callable_export"] == (
+        "nativepkg.ndimage.distance_transform_edt"
+    )
+    assert invoke_op["native_callable_binding"] == "module_attr"
+    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
+    assert "native_callable_symbol" not in invoke_op
+    assert not any(
+        op["kind"] in {"call_bind", "call_indirect"}
+        for fn in ir["functions"]
+        for op in fn["ops"]
+    )
+
+
+def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"nativepkg", "nativepkg.ndimage"},
+        direct_call_modules={"__main__"},
+        native_callable_exports={
+            "nativepkg.ndimage.distance_transform_edt": {
+                "module": "nativepkg.ndimage",
+                "name": "distance_transform_edt",
+                "binding": "module_attr",
+                "abi": "molt.object_call_v1",
+            }
+        },
+        fallback_policy="bridge",
+    )
+
+    gen.visit(
+        ast.parse(
+            "import nativepkg\n"
+            "value = nativepkg.ndimage.distance_transform_edt(data)\n"
+        )
+    )
+    ir = gen.to_json()
+
+    assert not any(
+        op["kind"] == "invoke_ffi" for fn in ir["functions"] for op in fn["ops"]
+    )
+    assert any(
+        op["kind"] == "call_indirect" for fn in ir["functions"] for op in fn["ops"]
+    )
+
+
 def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_ffi() -> (
     None
 ):
