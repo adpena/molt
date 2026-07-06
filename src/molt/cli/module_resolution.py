@@ -252,25 +252,23 @@ def _case_exact_dir_entries(dir_text: str) -> frozenset[str]:
     return _case_exact_dir_entries_cached(dir_text, stat.st_mtime_ns, stat.st_size)
 
 
+def _case_exact_dir_contains(dir_text: str, part: str) -> bool:
+    entries = _case_exact_dir_entries(dir_text)
+    if part in entries:
+        return True
+    if part not in _case_exact_dir_entries_fresh(dir_text):
+        return False
+    _case_exact_dir_entries_cached.cache_clear()
+    return True
+
+
 def _case_exact_file_under(root_text: str, rel_parts: tuple[str, ...]) -> bool:
     if not rel_parts:
         return False
     current = root_text
     for part in rel_parts:
-        if part not in _case_exact_dir_entries(current):
-            # The stat-keyed listing cache is invalidated on (mtime, size),
-            # which is unsound on filesystems whose directory metadata does not
-            # advance when an entry is added within the timestamp resolution
-            # (Windows/NTFS reports directory size 0 and coarse mtime). A stale
-            # empty/partial listing must never cause a freshly written module or
-            # manifest to be reported absent, so re-verify a miss against the
-            # live directory before failing. A genuine absence costs one extra
-            # stat; a stale-cache miss is corrected from a fresh scan.
-            child = os.path.join(current, part)
-            if not os.path.exists(child):
-                return False
-            if part not in _case_exact_dir_entries_fresh(current):
-                return False
+        if not _case_exact_dir_contains(current, part):
+            return False
         current = os.path.join(current, part)
     return os.path.isfile(current)
 
