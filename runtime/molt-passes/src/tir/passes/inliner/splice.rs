@@ -3,13 +3,14 @@ use std::collections::HashSet;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{OpCode, dead_placeholder_const_for_type};
+use crate::tir::ops::{OpCode, TirOp, dead_placeholder_const_for_type};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
 use super::call_sites::{CallSite, call_site_has_arg_incref};
 use super::clone_body::clone_function_body_with_fresh_ids;
 use super::eligibility::is_closure;
+use super::exception_labels::exception_label_of;
 
 /// Splice the call site `(block, op_index)` in `caller`: replace the `Call` to
 /// `callee` (an owned snapshot) with the callee's inlined body.
@@ -18,15 +19,15 @@ use super::eligibility::is_closure;
 /// driver holds `&mut caller` borrowed out of the module vector and Rust cannot
 /// prove disjointness from a second borrow of the callee through the same
 /// vector. The driver clones the callee snapshot (`callee_idx != caller_idx` is
-/// guaranteed — self-calls are filtered) and hands it here.
+/// guaranteed - self-calls are filtered) and hands it here.
 ///
 /// Returns `true` if the site was inlined, `false` if it was refused (refcount
-/// guard, multi-result/arity/shape mismatch — all of which leave the call
+/// guard, multi-result/arity/shape mismatch - all of which leave the call
 /// intact, conservative-correct).
 ///
 /// Mechanics:
 /// 1. Read the `Call` op's argument operands and (optional) result value.
-/// 2. Refcount guard — refuse a site with a caller-side arg `IncRef` in the ≤2
+/// 2. Refcount guard - refuse a site with a caller-side arg `IncRef` in the <=2
 ///    preceding ops.
 /// 3. Clone the callee body (params bound to the call args) into `caller`.
 /// 4. Split the caller block at the `Call` into `B_pre` (ops `0..op_index`,
@@ -37,6 +38,8 @@ use super::eligibility::is_closure;
 /// 5. `B_pre` branches unconditionally into the cloned entry.
 /// 6. Each cloned `Return { values }` becomes `Branch { target: B_cont, args:
 ///    values }` (or `Branch B_cont []` for a void callee with a no-arg `B_cont`).
+///    Observation-only void exception exits may branch directly to the caller's
+///    post-call exception target instead of joining a value-carrying continuation.
 /// 7. The original `Call` op is gone (it lived between `B_pre` and `B_cont`).
 pub(super) fn splice_call_site(
     caller: &mut TirFunction,
@@ -65,7 +68,7 @@ pub(super) fn splice_call_site(
     // DEFENSE-IN-DEPTH: never splice a closure here. `is_inlineable` already
     // excludes closures (see `is_closure`), so a closure should never reach this
     // splice. But the arity guard below CANNOT distinguish a closure from a
-    // legitimate same-arity call — a closure's leading `__molt_closure__` param
+    // legitimate same-arity call - a closure's leading `__molt_closure__` param
     // re-balances against the `Call`'s leading function-value operand, so the
     // guard would pass (false match) and the splice would bind the env-param to
     // the function object, miscompiling `__molt_closure__[i]` into a subscript of
@@ -74,7 +77,7 @@ pub(super) fn splice_call_site(
     // the debug assert flags the invariant violation in tests.
     debug_assert!(
         !is_closure(callee),
-        "splice_call_site: closure '{}' reached splice — is_inlineable must \
+        "splice_call_site: closure '{}' reached splice - is_inlineable must \
          exclude closures (the arity guard cannot, its env-param re-balances \
          the operand count)",
         callee.name
@@ -85,7 +88,7 @@ pub(super) fn splice_call_site(
 
     // Arity must match (params bind 1:1 to args). A static call whose arg count
     // disagrees with the callee's param count is a shape we will not splice
-    // (defensive — the frontend should keep these aligned, but a mismatch must
+    // (defensive - the frontend should keep these aligned, but a mismatch must
     // not produce malformed SSA).
     let callee_entry = &callee.blocks[&callee.entry_block];
     if callee_entry.args.len() != call_args.len() {
@@ -98,25 +101,26 @@ pub(super) fn splice_call_site(
     }
 
     // Classify the callee's `Return` blocks on its **terminator-only** CFG:
-    //  * NORMAL return — reachable from entry through terminator edges. Carries
+    //  * NORMAL return - reachable from entry through terminator edges. Carries
     //    the function's actual return value.
-    //  * EXCEPTION EXIT — reachable ONLY via implicit exception edges
-    //    (`CheckException` → function-exit). A `ret_void` "propagate the pending
+    //  * EXCEPTION EXIT - reachable ONLY via implicit exception edges
+    //    (`CheckException` -> function-exit). A `ret_void` "propagate the pending
     //    flag" exit; it carries no value.
     // This classification (computed on the callee, before any mutation) drives
-    // both the pre-check below and the placeholder padding in the rewrite loop.
+    // both the pre-check below and the exception-exit routing in the rewrite loop.
     let normal_reachable = reachable_blocks_with(callee, CfgEdgePolicy::TerminatorOnly);
 
     // Return-arity compatibility pre-check (BEFORE any mutation, so a refusal
-    // leaves `caller` byte-identical — no fragile mid-splice rollback). The
+    // leaves `caller` byte-identical - no fragile mid-splice rollback). The
     // continuation carries one argument iff the call produces a value. Every
     // NORMAL-return site must then carry a value: a value call demands exactly
     // one returned value from each normal return. A normal return that carries
     // *no* value while the call expects one is a frontend-shape mismatch we
     // refuse rather than fabricate a value for. (An EXCEPTION-EXIT carries no
-    // value by construction; it is handled by placeholder padding, not refused —
-    // refusing it would re-dormant the inliner on every value-returning
-    // observation-only callee, which is the whole point of this arc.)
+    // value by construction; it is handled by direct handler routing or
+    // placeholder padding, not refused. Refusing it would re-dormant the inliner
+    // on every value-returning observation-only callee, which is the whole point
+    // of this arc.)
     let call_wants_value = call_result.is_some();
     if call_wants_value {
         for (bid, block) in &callee.blocks {
@@ -129,12 +133,13 @@ pub(super) fn splice_call_site(
         }
     }
 
-    // Clone the callee body into the caller (params → call args).
+    // Clone the callee body into the caller (params -> call args).
     let cloned = clone_function_body_with_fresh_ids(callee, caller, &call_args);
 
-    // The cloned block ids of the callee's EXCEPTION-EXIT blocks (reached only via
-    // exception edges). Their cloned `Return`s need placeholder padding when the
-    // continuation carries a value.
+    // The cloned block ids of the callee's EXCEPTION-EXIT blocks (reached only
+    // via exception edges). Their cloned `Return`s either branch directly to the
+    // caller handler or use placeholder padding when the continuation carries a
+    // value.
     let exception_exit_clones: HashSet<BlockId> = callee
         .blocks
         .keys()
@@ -166,7 +171,7 @@ pub(super) fn splice_call_site(
     let pre_ops = all_ops;
 
     // The continuation block takes a single argument = the original call result
-    // value id (when the call produced a value). A void call → no-arg cont.
+    // value id (when the call produced a value). A void call -> no-arg cont.
     let cont_block_id = caller.fresh_block();
     let cont_args: Vec<TirValue> = match call_result {
         Some(result) => {
@@ -180,25 +185,39 @@ pub(super) fn splice_call_site(
         }
         None => Vec::new(),
     };
-
-    // Rewrite each cloned `Return { values }` into a branch to the continuation.
-    //  * A NORMAL return (value call): branch with the returned value — the
-    //    pre-check guarantees it carries one.
-    //  * An EXCEPTION-EXIT return (`ret_void`) into a value-carrying continuation:
-    //    synthesize a representation-matched DEAD placeholder for the missing
-    //    continuation arg. The value is provably dead — `B_cont`'s first op is the
-    //    caller's post-call `CheckException`, which re-observes the pending flag
-    //    and reroutes before the call result is ever used — so the placeholder is
-    //    never read. `verify_block_args` checks only arity; the typed placeholder
-    //    keeps the continuation phi's representation clean for codegen.
-    //  * A void call (cont_arity 0): branch with no args (any returned value, on
-    //    the normal or exception path, is discarded — the call discarded it too).
     let cont_arity = cont_args.len();
     let cont_ty: Option<TirType> = cont_args.first().map(|a| a.ty.clone());
     debug_assert!(
         cont_arity <= 1,
         "continuation arity is 0 (void) or 1 (value)"
     );
+
+    // Observation-only exception exits can bypass the value continuation when
+    // the caller's first post-call op is the expected `CheckException`: pending
+    // exceptions would immediately jump to that handler, and the call result is
+    // dead on that edge. Branching directly to the handler avoids fabricating a
+    // `None`/placeholder value into the normal continuation phi, which would
+    // otherwise poison scalar raw-carrier projection for inlined numeric callees.
+    let direct_exception_target = (cont_arity == 1)
+        .then(|| post_call_exception_target(caller, &cont_ops))
+        .flatten();
+
+    // Rewrite each cloned `Return { values }` into a branch to the continuation
+    // or, for directable observation-only exception exits, straight to the
+    // caller's exception target.
+    //  * A NORMAL return (value call): branch with the returned value - the
+    //    pre-check guarantees it carries one.
+    //  * An EXCEPTION-EXIT return (`ret_void`) with a direct exception target:
+    //    branch straight to that target with no args. The call result is dead on
+    //    that edge because the post-call `CheckException` would reroute before
+    //    any result use.
+    //  * An EXCEPTION-EXIT return (`ret_void`) into a value-carrying continuation
+    //    with no direct target: synthesize a representation-matched DEAD
+    //    placeholder for the missing continuation arg. The value is provably
+    //    dead, and the typed placeholder keeps the continuation phi's
+    //    representation clean for codegen.
+    //  * A void call (cont_arity 0): branch with no args (any returned value, on
+    //    the normal or exception path, is discarded - the call discarded it too).
     for &cloned_bid in &cloned.cloned_blocks {
         let return_values: Option<Vec<ValueId>> = match &caller.blocks[&cloned_bid].terminator {
             Terminator::Return { values } => Some(values.clone()),
@@ -207,6 +226,20 @@ pub(super) fn splice_call_site(
         let Some(values) = return_values else {
             continue;
         };
+
+        if exception_exit_clones.contains(&cloned_bid)
+            && let Some(target) = direct_exception_target
+        {
+            caller
+                .blocks
+                .get_mut(&cloned_bid)
+                .expect("cloned block missing")
+                .terminator = Terminator::Branch {
+                target,
+                args: Vec::new(),
+            };
+            continue;
+        }
 
         let branch_args: Vec<ValueId> = match (cont_arity, values.first()) {
             (0, _) => Vec::new(),
@@ -287,4 +320,18 @@ fn callee_return_value_type(callee: &TirFunction) -> Option<TirType> {
         return Some(callee.return_type.clone());
     }
     None
+}
+
+fn post_call_exception_target(caller: &TirFunction, cont_ops: &[TirOp]) -> Option<BlockId> {
+    let first = cont_ops.first()?;
+    if first.opcode != OpCode::CheckException {
+        return None;
+    }
+    let label = exception_label_of(first)?;
+    let target = caller
+        .label_id_map
+        .iter()
+        .find_map(|(block, block_label)| (*block_label == label).then_some(BlockId(*block)))?;
+    let target_block = caller.blocks.get(&target)?;
+    target_block.args.is_empty().then_some(target)
 }
