@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import threading
@@ -22,14 +23,24 @@ ResponseFactory = Callable[[Any, int], Any]
 ClientMode = str
 
 
-def _default_response_factory(payload: Any, status: int) -> Any:
+def _optional_django_http() -> Any | None:
     try:
-        from django.http import JsonResponse
+        return importlib.import_module("django.http")
+    except ImportError:
+        return None
 
-        return JsonResponse(payload, status=status, safe=isinstance(payload, dict))
-    except (ImportError, Exception):
-        # Covers both missing Django and unconfigured Django settings.
-        return {"status": status, "payload": payload}
+
+def _default_response_factory(payload: Any, status: int) -> Any:
+    django_http = _optional_django_http()
+    if django_http is not None:
+        try:
+            return django_http.JsonResponse(
+                payload, status=status, safe=isinstance(payload, dict)
+            )
+        except Exception:
+            pass
+
+    return {"status": status, "payload": payload}
 
 
 def _status_for_error(error: MoltAccelError) -> int:
@@ -49,18 +60,22 @@ def _status_for_error(error: MoltAccelError) -> int:
 
 
 def raw_json_response_factory(payload: Any, status: int) -> Any:
-    try:
-        from django.http import HttpResponse, JsonResponse
-
-        if isinstance(payload, (bytes, bytearray)):
-            return HttpResponse(
-                payload,
-                status=status,
-                content_type="application/json",
+    django_http = _optional_django_http()
+    if django_http is not None:
+        try:
+            if isinstance(payload, (bytes, bytearray)):
+                return django_http.HttpResponse(
+                    payload,
+                    status=status,
+                    content_type="application/json",
+                )
+            return django_http.JsonResponse(
+                payload, status=status, safe=isinstance(payload, dict)
             )
-        return JsonResponse(payload, status=status, safe=isinstance(payload, dict))
-    except (ImportError, Exception):
-        return {"status": status, "payload": payload}
+        except Exception:
+            pass
+
+    return {"status": status, "payload": payload}
 
 
 _SHARED_CLIENT: MoltClient | MoltClientPool | None = None

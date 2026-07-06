@@ -50,8 +50,8 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping
 
 MODULE_REGISTRY_SCHEMA_VERSION = 1
 MODULE_REGISTRY_BLOB_SYMBOL = "molt_module_registry_blob"
@@ -75,10 +75,36 @@ _KIND_CODES: Mapping[str, int] = {
     "runtime_builtin": MODULE_KIND_RUNTIME_BUILTIN,
 }
 
+
 # Reinit policy after `del sys.modules[name]` (design §4.3 / parity row 5.8):
 # source modules fully re-execute; extension modules resurrect from the
 # first-init dict snapshot (snapshot custody lands in PR4; until then the
 # runtime fails closed on extension reinit with a named diagnostic).
+def _row_deps(value: object) -> tuple[object, ...]:
+    if isinstance(value, list | tuple):
+        return tuple(value)
+    return ()
+
+
+def _optional_row_index(
+    value: object,
+    *,
+    row_name: object,
+    field: str,
+    names: Sequence[str],
+    problems: list[str],
+) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        problems.append(f"row {row_name!r} {field} is not an integer: {value!r}")
+        return None
+    if value < 0 or value >= len(names):
+        problems.append(f"row {row_name!r} {field} index out of range: {value}")
+        return None
+    return value
+
+
 MODULE_FLAG_REINIT_RESURRECT = 0x01
 
 # Modules whose registry kind is RuntimeBuiltin: the runtime itself
@@ -270,7 +296,7 @@ def registry_digest_for_rows(
             "alias_target": row["alias_target"],
             "init_symbol": row["init_symbol"],
             "flags": row["flags"],
-            "deps": list(row.get("deps", ())),
+            "deps": list(_row_deps(row.get("deps", ()))),
         }
         for row in rows
     ]
@@ -393,10 +419,22 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
             f"schema mismatch: payload has {schema!r}, authority is "
             f"{MODULE_REGISTRY_SCHEMA_VERSION}"
         )
-    rows = payload.get("rows")
-    if not isinstance(rows, list):
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
         return problems + ["payload has no rows list"]
-    names = [row.get("name") for row in rows]
+    rows: list[dict[str, object]] = []
+    for idx, row in enumerate(raw_rows):
+        if not isinstance(row, Mapping):
+            problems.append(f"row {idx} is not an object")
+            continue
+        rows.append({str(key): value for key, value in row.items()})
+    names: list[str] = []
+    for idx, row in enumerate(rows):
+        name = row.get("name")
+        if not isinstance(name, str):
+            problems.append(f"row {idx} has non-string name {name!r}")
+            name = str(name)
+        names.append(name)
     if names != sorted(names):  # id order is sorted-name order
         problems.append("rows are not in sorted-name (id) order")
     name_to_id = {name: idx for idx, name in enumerate(names)}
@@ -404,22 +442,35 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
     for idx, row in enumerate(rows):
         if row.get("id") != idx:
             problems.append(f"row {row.get('name')!r} has id {row.get('id')} != {idx}")
-        parent = row.get("parent")
-        alias_target = row.get("alias_target")
+        row_name = row.get("name")
+        parent = _optional_row_index(
+            row.get("parent"),
+            row_name=row_name,
+            field="parent",
+            names=names,
+            problems=problems,
+        )
+        alias_target = _optional_row_index(
+            row.get("alias_target"),
+            row_name=row_name,
+            field="alias_target",
+            names=names,
+            problems=problems,
+        )
         canonical_rows.append(
             {
-                "name": row.get("name"),
+                "name": row_name,
                 "kind": row.get("kind"),
                 "parent": None if parent is None else names[parent],
                 "alias_target": None if alias_target is None else names[alias_target],
                 "init_symbol": row.get("init_symbol", ""),
                 "flags": row.get("flags", 0),
-                "deps": tuple(row.get("deps", ())),
+                "deps": _row_deps(row.get("deps", ())),
             }
         )
         expected_parent = (
-            name_to_id.get(str(row.get("name")).rsplit(".", 1)[0])
-            if "." in str(row.get("name"))
+            name_to_id.get(str(row_name).rsplit(".", 1)[0])
+            if "." in str(row_name)
             else None
         )
         if parent != expected_parent:

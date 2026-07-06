@@ -15172,6 +15172,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORTS: tuple[str, ...] = (
     "PyDateTime_TimeType",
     "PyDateTime_TimeZone_UTC_Object",
     "PyDescr_IsData",
+    "PyDescr_NAME",
     "PyDescr_NewGetSet",
     "PyDescr_NewMember",
     "PyDictProxy_New",
@@ -15368,6 +15369,8 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORTS: tuple[str, ...] = (
     "PyMem_RawRealloc",
     "PyMem_Realloc",
     "PyMemberDescr_Type",
+    "PyMember_GetOne",
+    "PyMember_SetOne",
     "PyMemoryView_Check",
     "PyMemoryView_FromBuffer",
     "PyMemoryView_FromMemory",
@@ -15694,6 +15697,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORTS: tuple[str, ...] = (
     "molt_cpython_abi_time_from_time",
     "molt_cpython_abi_time_from_time_and_fold",
     "molt_cpython_abi_timezone_from_timezone",
+    "molt_cpython_abi_type_canonicalize",
 )
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
@@ -15977,6 +15981,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
     "PyDateTime_TimeType": "molt_cpython_abi_link_import",
     "PyDateTime_TimeZone_UTC_Object": "molt_cpython_abi_link_import",
     "PyDescr_IsData": "molt_cpython_abi_link_import",
+    "PyDescr_NAME": "molt_cpython_abi_link_import",
     "PyDescr_NewGetSet": "molt_cpython_abi_link_import",
     "PyDescr_NewMember": "molt_cpython_abi_link_import",
     "PyDictProxy_New": "molt_cpython_abi_link_import",
@@ -16173,6 +16178,8 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
     "PyMem_RawRealloc": "molt_cpython_abi_link_import",
     "PyMem_Realloc": "molt_cpython_abi_link_import",
     "PyMemberDescr_Type": "molt_cpython_abi_link_import",
+    "PyMember_GetOne": "molt_cpython_abi_link_import",
+    "PyMember_SetOne": "molt_cpython_abi_link_import",
     "PyMemoryView_Check": "molt_cpython_abi_link_import",
     "PyMemoryView_FromBuffer": "molt_cpython_abi_link_import",
     "PyMemoryView_FromMemory": "molt_cpython_abi_link_import",
@@ -16499,6 +16506,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
     "molt_cpython_abi_time_from_time": "molt_cpython_abi_link_import",
     "molt_cpython_abi_time_from_time_and_fold": "molt_cpython_abi_link_import",
     "molt_cpython_abi_timezone_from_timezone": "molt_cpython_abi_link_import",
+    "molt_cpython_abi_type_canonicalize": "molt_cpython_abi_link_import",
 }
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {
@@ -16566,6 +16574,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {
     "PyDateTime_TimeType": "molt_PyDateTime_TimeType",
     "PyDateTime_TimeZone_UTC_Object": "molt_PyDateTime_TimeZone_UTC_Object",
     "PyDescr_IsData": "molt_PyDescr_IsData",
+    "PyDescr_NAME": "molt_PyDescr_NAME",
     "PyDescr_NewGetSet": "molt_PyDescr_NewGetSet",
     "PyDescr_NewMember": "molt_PyDescr_NewMember",
     "PyDictProxy_New": "molt_PyDictProxy_New",
@@ -16762,6 +16771,8 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {
     "PyMem_RawRealloc": "molt_PyMem_RawRealloc",
     "PyMem_Realloc": "molt_PyMem_Realloc",
     "PyMemberDescr_Type": "molt_PyMemberDescr_Type",
+    "PyMember_GetOne": "molt_PyMember_GetOne",
+    "PyMember_SetOne": "molt_PyMember_SetOne",
     "PyMemoryView_Check": "molt_PyMemoryView_Check",
     "PyMemoryView_FromBuffer": "molt_PyMemoryView_FromBuffer",
     "PyMemoryView_FromMemory": "molt_PyMemoryView_FromMemory",
@@ -17088,6 +17099,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {
     "molt_cpython_abi_time_from_time": "molt_cpython_abi_time_from_time",
     "molt_cpython_abi_time_from_time_and_fold": "molt_cpython_abi_time_from_time_and_fold",
     "molt_cpython_abi_timezone_from_timezone": "molt_cpython_abi_timezone_from_timezone",
+    "molt_cpython_abi_type_canonicalize": "molt_cpython_abi_type_canonicalize",
 }
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {
@@ -17155,6 +17167,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {
     "molt_PyDateTime_TimeType": "PyDateTime_TimeType",
     "molt_PyDateTime_TimeZone_UTC_Object": "PyDateTime_TimeZone_UTC_Object",
     "molt_PyDescr_IsData": "PyDescr_IsData",
+    "molt_PyDescr_NAME": "PyDescr_NAME",
     "molt_PyDescr_NewGetSet": "PyDescr_NewGetSet",
     "molt_PyDescr_NewMember": "PyDescr_NewMember",
     "molt_PyDictProxy_New": "PyDictProxy_New",
@@ -17351,6 +17364,8 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {
     "molt_PyMem_RawRealloc": "PyMem_RawRealloc",
     "molt_PyMem_Realloc": "PyMem_Realloc",
     "molt_PyMemberDescr_Type": "PyMemberDescr_Type",
+    "molt_PyMember_GetOne": "PyMember_GetOne",
+    "molt_PyMember_SetOne": "PyMember_SetOne",
     "molt_PyMemoryView_Check": "PyMemoryView_Check",
     "molt_PyMemoryView_FromBuffer": "PyMemoryView_FromBuffer",
     "molt_PyMemoryView_FromMemory": "PyMemoryView_FromMemory",
@@ -17677,6 +17692,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {
     "molt_cpython_abi_time_from_time": "molt_cpython_abi_time_from_time",
     "molt_cpython_abi_time_from_time_and_fold": "molt_cpython_abi_time_from_time_and_fold",
     "molt_cpython_abi_timezone_from_timezone": "molt_cpython_abi_timezone_from_timezone",
+    "molt_cpython_abi_type_canonicalize": "molt_cpython_abi_type_canonicalize",
 }
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {
@@ -17744,6 +17760,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {
     "PyDateTime_TimeType": "data",
     "PyDateTime_TimeZone_UTC_Object": "data",
     "PyDescr_IsData": "function",
+    "PyDescr_NAME": "function",
     "PyDescr_NewGetSet": "function",
     "PyDescr_NewMember": "function",
     "PyDictProxy_New": "function",
@@ -17940,6 +17957,8 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {
     "PyMem_RawRealloc": "function",
     "PyMem_Realloc": "function",
     "PyMemberDescr_Type": "data",
+    "PyMember_GetOne": "function",
+    "PyMember_SetOne": "function",
     "PyMemoryView_Check": "function",
     "PyMemoryView_FromBuffer": "function",
     "PyMemoryView_FromMemory": "function",
@@ -18266,6 +18285,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {
     "molt_cpython_abi_time_from_time": "function",
     "molt_cpython_abi_time_from_time_and_fold": "function",
     "molt_cpython_abi_timezone_from_timezone": "function",
+    "molt_cpython_abi_type_canonicalize": "function",
 }
 
 WASM_STRIP_IMPORT_RULES: tuple[tuple[str, str, str, str], ...] = (

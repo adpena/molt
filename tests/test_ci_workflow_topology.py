@@ -89,7 +89,26 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "Install native linker" in ci_text
     assert "sudo apt-get install -y lld" in ci_text
     assert "ld.lld --version" in ci_text
-    assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in ci_text
+    timeout_guard = (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE "
+        "--timeout-env MOLT_NATIVE_TEST_TIMEOUT_SEC --"
+    )
+    timeout_steps = {
+        "Run Python smoke tests",
+        "Run bench CLI native smoke tests",
+        "LLVM int-overflow differential tests (build/run vs CPython)",
+    }
+    blocks_by_name = {
+        block.splitlines()[0].removeprefix("      - name: "): block
+        for block in _named_step_blocks(ci_text)
+    }
+    assert ci_text.count(timeout_guard) == len(timeout_steps)
+    for name in timeout_steps:
+        block = blocks_by_name[name]
+        assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in block
+        assert timeout_guard in block
+    assert timeout_guard not in blocks_by_name["Test capability manifest import"]
+    assert timeout_guard not in blocks_by_name["Test harness report import"]
     assert ci_text.count("Run bench CLI native smoke tests") == 1
     # Four jobs summarize hotspots: docs-gates, python-tooling-smoke,
     # rust-build-unit-smoke, and the LLVM backend job.
@@ -136,6 +155,23 @@ def test_kani_runtime_proofs_do_not_compile_full_stdlib_closure() -> None:
     assert "cargo kani --tests --no-default-features" in runtime_block
     assert "--all-features" not in runtime_block
     assert "stdlib_full" not in runtime_block
+
+
+def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
+    kani_text = _read(".github/workflows/kani.yml")
+
+    assert "Check Kani toolchain compatibility" in kani_text
+    assert "id: kani-toolchain" in kani_text
+    assert 'workspace_manifest["workspace"]["package"]["rust-version"]' in kani_text
+    assert 'runtime" / "molt-obj-model" / "Cargo.toml"' in kani_text
+    assert 'runtime" / "molt-runtime" / "Cargo.toml"' in kani_text
+    assert "run_kani = version_key(kani_rustc) >= version_key(required)" in kani_text
+    assert "run_kani={'true' if run_kani else 'false'}" in kani_text
+    assert "GITHUB_STEP_SUMMARY" in kani_text
+    assert "::warning title=Kani rust-version gate::" in kani_text
+    assert "if: steps.kani-toolchain.outputs.run_kani == 'true'" in kani_text
+    assert "if: steps.kani-toolchain.outputs.run_kani != 'true'" in kani_text
+    assert "--ignore-rust-version" not in kani_text
 
 
 def test_github_workflows_opt_into_node24_action_runtime() -> None:
