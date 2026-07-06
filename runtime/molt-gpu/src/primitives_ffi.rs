@@ -276,7 +276,6 @@ pub unsafe extern "C" fn molt_gpu_prim_zeros_dtype(
 ///
 /// After realization, the tensor's data is available for readback.
 /// Returns 0 on success, u64::MAX on failure.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
     // If already realized, nothing to do.
     let already_realized = with_tensor(handle, |t| t.data.is_some()).unwrap_or(false);
@@ -686,13 +685,11 @@ pub unsafe extern "C" fn molt_gpu_prim_read_data(
 }
 
 /// Return this tensor's dtype code, or u64::MAX for an invalid handle.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_dtype(handle: u64) -> u64 {
     with_tensor(handle, |t| dtype_to_code(t.dtype) as u64).unwrap_or(u64::MAX)
 }
 
 /// Return this tensor's logical storage byte count, or u64::MAX on overflow.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_nbytes(handle: u64) -> u64 {
     with_tensor(handle, |t| {
         tensor_storage_nbytes(&t.shape, t.dtype)
@@ -748,7 +745,6 @@ pub unsafe extern "C" fn molt_gpu_prim_read_data_raw(
 }
 
 /// Free a tensor handle.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_free(handle: u64) -> u64 {
     TENSOR_STORE.with(|store| {
         let mut store = store.borrow_mut();
@@ -1390,7 +1386,6 @@ pub extern "C" fn molt_gpu_prim_flip(src_handle: u64, axis: usize) -> u64 {
 }
 
 /// Insert a materializing contiguous barrier for a tensor DAG.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_contiguous(src_handle: u64) -> u64 {
     let (lazy, shape, dtype) =
         match with_tensor(src_handle, |t| (t.lazy.clone(), t.shape.clone(), t.dtype)) {
@@ -1440,7 +1435,6 @@ pub unsafe extern "C" fn molt_gpu_prim_shape(
 }
 
 /// Get the number of elements in a tensor.
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
     with_tensor(handle, |t| t.shape.iter().product::<usize>() as u64).unwrap_or(0)
 }
