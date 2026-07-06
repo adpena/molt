@@ -1,5 +1,6 @@
 use super::rust_ident;
 use crate::OpIR;
+use std::collections::BTreeSet;
 
 pub(super) fn rust_value(name: &str) -> String {
     if name.is_empty() || name == "none" || name == "_" {
@@ -27,6 +28,14 @@ pub(super) fn is_assignable_var(name: &str) -> bool {
 
 pub(super) fn out_var(op: &OpIR) -> String {
     rust_ident(op.out.as_deref().unwrap_or("_"))
+}
+
+pub(super) fn declare_molt_value(out_name: &str, rhs: &str, hoisted: &BTreeSet<String>) -> String {
+    if hoisted.contains(out_name) {
+        format!("{out_name} = {rhs};")
+    } else {
+        format!("let mut {out_name}: MoltValue = {rhs};")
+    }
 }
 
 pub(super) fn var_ref(op: &OpIR) -> String {
