@@ -1,0 +1,824 @@
+#!/usr/bin/env python3
+"""Enforcement gate: make the "hack / workaround / ecosystem-baked / fail-open"
+poison class un-landable.
+
+A *poison site* is a place where Molt abandons its own contract — one authority
+per invariant, source-recompiled ecosystem support, and fail-CLOSED on unsupported
+behavior — in favour of a shortcut that silently ships a wrong or degraded answer:
+
+  * ecosystem_baked   — a package-owned header/source (numpy / scipy / pandas
+    symbols) vendored *and defined* inside a Molt-owned tree instead of flowing
+    through source-recompiled extension custody. A baked ``PyArray_*`` struct or
+    ``static inline`` body is upstream semantics frozen into Molt; it rots the
+    moment upstream moves and it is not the reusable primitive the contract wants.
+
+  * fail_open_stub    — a ``#[no_mangle] extern "C"`` ABI export that returns a
+    plausible NON-NULL / success sentinel on a path it does not actually
+    implement (``MoltObject::none()`` / ``PyList_New(0)`` placeholder,
+    ``wrapping_*`` on an arbitrary-precision int, ``let _ = <arg>;`` that drops a
+    real argument, a ``_ => success`` catch-all), or a ``-> c_int`` export that
+    returns a mismatch code with no ``PyErr`` set. The C extension calling it
+    cannot tell success from a lie — the opposite of failing closed.
+
+  * duplicate_authority — two live copies of the SAME authority (e.g. two
+    ``Python.h`` files, two copies of a CPython header) that must be kept in sync
+    by hand. One of them is always about to drift.
+
+  * todo_as_plan      — a ``HACK`` / ``WORKAROUND`` / ``for now`` / ``status:``
+    marker reachable from a *shipped* support surface (a public stdlib API or an
+    exported ABI symbol that advertises the capability). A stub module that
+    honestly says ``status:planned`` and does NOT claim support is fine; a shipped
+    API whose body says "ignore for now" is a poison site.
+
+``tools/fail_closed_registry.toml`` is the single authority: one row per KNOWN
+poison site, classified into the four classes above, each naming the
+``resolution_row`` (the rip task driving it to zero). This gate is the teeth. It
+is modelled EXACTLY on ``tools/degrade_to_slow_gate.py`` + its registry ratchet:
+
+  * DISCOVERY SCAN  — three scans (A ecosystem-baked, B fail-open ABI, C
+    todo-as-plan) sweep the real trees and emit the live poison-site set. A
+    curated allowlist keeps sound conservatism, thin compat forwarders, the
+    package-custody CLASSIFIER, and honest ``status:planned`` stubs OUT.
+
+  * DRIFT RECONCILIATION — every discovered site MUST have a registry row. A new,
+    unregistered poison site FAILS the gate, exactly like a new op-kind missing
+    from ``op_kinds.toml``.
+
+  * RATCHET — the per-class count of registered sites is monotonically
+    non-increasing against the per-class baseline. The poison classes can only
+    shrink; the rip arcs lower the baselines as they delete sites.
+
+  * TEETH — every row must name a ``resolution_row``; anchor signatures must still
+    exist verbatim (a site cannot silently move out from under its row).
+
+Run standalone::
+
+    uv run --active --project . --python 3.12 python tools/fail_closed_gate.py
+
+Exit 0 = green, 1 = drift / ratchet / anchor failure (violations printed).
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REGISTRY_PATH = REPO_ROOT / "tools" / "fail_closed_registry.toml"
+
+_VALID_CLASSES = frozenset(
+    {"ecosystem_baked", "fail_open_stub", "duplicate_authority", "todo_as_plan"}
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scan A — ecosystem-baked package-owned symbol definitions
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Trees a Molt-owned baked package header/source could hide in.
+_ECOSYSTEM_SCAN_DIRS = (
+    "include",
+    "src/molt",
+)
+# Rust/native source + include trees are also swept for baked package impls.
+_ECOSYSTEM_SCAN_DIRS_RUST = (
+    "runtime",
+)
+
+# Package-owned symbol families whose *definition* (not mere mention) inside a
+# Molt-owned tree is the ecosystem-baked poison.
+_PACKAGE_TOKEN_RE = re.compile(r"(?:numpy|NumPy|NPY_|PyArray_|scipy|pandas)")
+
+# A *definition* of a package-owned symbol: a typedef/struct/enum/union that
+# names one, a `static inline` body, a `} PyArray*;` struct close, or a function
+# body `PyArray_xxx(...) {`. This is what separates baked semantics from a thin
+# `#include <numpy/...>` forwarder or a comment.
+_DEFINITION_RES = (
+    re.compile(r"^\s*typedef\s+(?:struct|union|enum)\b.*(?:NPY_|PyArray_|npy_)"),
+    re.compile(r"^\s*(?:typedef\s+)?(?:struct|union|enum)\s+(?:NPY_|PyArray_|_?Npy|npy_)"),
+    re.compile(r"^\s*\}\s*(?:PyArray_|PyUFunc_|Npy|npy_)[A-Za-z0-9_]*\s*;"),
+    re.compile(r"^\s*static\s+(?:NPY_INLINE\s+|inline\s+)"),
+    re.compile(r"^\s*#define\s+NPY_SIZEOF_"),
+    re.compile(r"\bPyArray_[A-Za-z0-9_]+\s*\([^;]*\)\s*\{"),
+)
+
+# Allowlisted files: the package-custody CLASSIFIER (correctly ROUTES these
+# symbols to source-recompiled custody and fails closed — the right primitive),
+# and any file that is a thin `#include <numpy/...>` compat forwarder.
+_ECOSYSTEM_ALLOWLIST = frozenset(
+    {
+        "src/molt/c_api_symbols.py",
+        "src/molt/cli/external_native.py",
+    }
+)
+
+_FORWARDER_INCLUDE_RE = re.compile(r'#\s*include(?:_next)?\s*[<"](?:numpy/|scipy/)')
+
+
+def _is_thin_forwarder(text: str) -> bool:
+    """A header that only re-includes an upstream package header (and guards) —
+    it bakes no symbols of its own, so it is NOT ecosystem-baked poison."""
+
+    has_include = bool(_FORWARDER_INCLUDE_RE.search(text))
+    if not has_include:
+        return False
+    # If it ALSO carries a real package definition it is not a thin forwarder.
+    for line in text.splitlines():
+        for rex in _DEFINITION_RES:
+            if rex.search(line):
+                return False
+    return True
+
+
+def _strip_block_comments(text: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
+
+def _defines_package_symbol(text: str) -> bool:
+    stripped = _strip_block_comments(text)
+    for raw_line in stripped.splitlines():
+        line = raw_line.rstrip("\n")
+        # Ignore line comments.
+        no_line_comment = re.sub(r"//.*$", "", line)
+        if not _PACKAGE_TOKEN_RE.search(no_line_comment):
+            continue
+        for rex in _DEFINITION_RES:
+            if rex.search(no_line_comment):
+                return True
+    return False
+
+
+@dataclass(frozen=True)
+class DiscoveredSite:
+    scan: str  # "A" | "B" | "C"
+    cls: str
+    file: str
+    signature: str
+    line: int
+    detail: str
+
+
+def _iter_files(root: Path, dirs: Iterable[str], suffixes: tuple[str, ...]) -> Iterable[Path]:
+    for rel in dirs:
+        base = root / rel
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            if path.suffix not in suffixes:
+                continue
+            posix = path.as_posix()
+            if "/target/" in posix or "/tests/" in posix or "/test/" in posix:
+                continue
+            yield path
+
+
+def discover_ecosystem_baked(root: Path) -> list[DiscoveredSite]:
+    found: list[DiscoveredSite] = []
+    header_dirs = _ECOSYSTEM_SCAN_DIRS
+    for path in _iter_files(root, header_dirs, (".h", ".c", ".py")):
+        rel = path.relative_to(root).as_posix()
+        if rel in _ECOSYSTEM_ALLOWLIST:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _is_thin_forwarder(text):
+            continue
+        if path.suffix == ".py":
+            # For Python surfaces, only the numpyconfig-overlay authoring block
+            # (which BAKES an upstream _numpyconfig.h fixup) counts — plain
+            # mentions of NPY_ constants in string literals do not define symbols.
+            if "#include_next" in text and "_numpyconfig.h" in text:
+                found.append(
+                    DiscoveredSite(
+                        "A",
+                        "ecosystem_baked",
+                        rel,
+                        '#include_next "_numpyconfig.h"',
+                        _first_line(text, '#include_next "_numpyconfig.h"'),
+                        "bakes an upstream numpy _numpyconfig.h fixup overlay",
+                    )
+                )
+            continue
+        if _defines_package_symbol(text):
+            sig = _first_definition_signature(text)
+            found.append(
+                DiscoveredSite(
+                    "A",
+                    "ecosystem_baked",
+                    rel,
+                    sig,
+                    _first_line(text, sig),
+                    "defines package-owned (numpy/scipy/pandas) symbols in-tree",
+                )
+            )
+    return found
+
+
+def _first_definition_signature(text: str) -> str:
+    stripped = _strip_block_comments(text)
+    for raw_line in stripped.splitlines():
+        no_line_comment = re.sub(r"//.*$", "", raw_line)
+        if not _PACKAGE_TOKEN_RE.search(no_line_comment):
+            continue
+        for rex in _DEFINITION_RES:
+            if rex.search(no_line_comment):
+                return no_line_comment.strip()
+    return ""
+
+
+def _first_line(text: str, needle: str) -> int:
+    for i, line in enumerate(text.splitlines(), start=1):
+        if needle in line:
+            return i
+    return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scan B — fail-open ABI exports
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ABI_SCAN_DIR = "runtime/molt-cpython-abi/src/api"
+
+# A fail-open marker inside a #[no_mangle] extern "C" body. Each is a way an ABI
+# export ships a plausible answer on a path it does not implement.
+_FAIL_OPEN_MARKERS = (
+    # arbitrary-precision int silently truncated to machine width
+    ("wrapping_add", r"\.wrapping_add\("),
+    ("wrapping_sub", r"\.wrapping_sub\("),
+    ("wrapping_mul", r"\.wrapping_mul\("),
+    ("wrapping_pow", r"\.wrapping_pow\("),
+    ("wrapping_shl", r"\.wrapping_shl\("),
+    ("wrapping_shr", r"\.wrapping_shr\("),
+    ("wrapping_abs", r"\.wrapping_abs\("),
+    # a real argument dropped on the floor
+    ("dropped_arg", r"^\s*let\s+_\s*=\s*[A-Za-z_][A-Za-z0-9_]*\s*;"),
+    # a placeholder success value returned from an unimplemented export
+    ("none_placeholder", r"MoltObject::none\(\)"),
+    ("empty_list_placeholder", r"PyList_New\(0\)"),
+)
+
+# Refcount saturation and mask arithmetic are LEGITIMATE wrapping uses (not int
+# semantics). Anchor them out by symbol so they are not swept in as poison.
+_ABI_ALLOWLIST_SYMBOLS = frozenset(
+    {
+        "Py_INCREF",
+        "Py_DECREF",
+        "_Py_INCREF",
+        "_Py_DECREF",
+        "Py_IncRef",
+        "Py_DecRef",
+    }
+)
+# Files whose wrapping_* is mask/refcount arithmetic, not int-semantics poison.
+_ABI_ALLOWLIST_FILES = frozenset(
+    {
+        "runtime/molt-cpython-abi/src/api/refcount.rs",
+        # numbers.rs uses (value ^ mask).wrapping_sub(mask) for sign extension —
+        # a bit-twiddle, not an arbitrary-precision int result.
+        "runtime/molt-cpython-abi/src/api/numbers.rs",
+    }
+)
+
+_NO_MANGLE_RE = re.compile(r'#\[(?:unsafe\()?no_mangle')
+_FN_RE = re.compile(
+    r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*'
+)
+
+
+@dataclass
+class AbiFn:
+    name: str
+    start: int  # 1-based line of the fn signature
+    end: int  # 1-based inclusive last line of the body
+    body: str
+
+
+def _extract_abi_fns(text: str) -> list[AbiFn]:
+    """Every `#[no_mangle] ... extern "C" fn NAME` and its brace-balanced body."""
+
+    lines = text.splitlines()
+    fns: list[AbiFn] = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        if _NO_MANGLE_RE.search(lines[i]):
+            # find the fn signature within the next few lines
+            j = i
+            name = None
+            while j < min(i + 6, n):
+                m = _FN_RE.search(lines[j])
+                if m:
+                    name = m.group(1)
+                    break
+                j += 1
+            if name is not None:
+                # find opening brace, then brace-balance to the matching close
+                k = j
+                while k < n and "{" not in lines[k]:
+                    k += 1
+                if k < n:
+                    depth = 0
+                    start_body = k
+                    end = k
+                    for idx in range(k, n):
+                        depth += lines[idx].count("{") - lines[idx].count("}")
+                        if depth <= 0:
+                            end = idx
+                            break
+                    body = "\n".join(lines[start_body : end + 1])
+                    fns.append(AbiFn(name=name, start=j + 1, end=end + 1, body=body))
+                    i = end + 1
+                    continue
+        i += 1
+    return fns
+
+
+def discover_fail_open_abi(root: Path) -> list[DiscoveredSite]:
+    base = root / _ABI_SCAN_DIR
+    if not base.exists():
+        return []
+    found: list[DiscoveredSite] = []
+    for path in sorted(base.rglob("*.rs")):
+        posix = path.as_posix()
+        if "/tests/" in posix:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel in _ABI_ALLOWLIST_FILES:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for fn in _extract_abi_fns(text):
+            if fn.name in _ABI_ALLOWLIST_SYMBOLS:
+                continue
+            for marker, pat in _FAIL_OPEN_MARKERS:
+                rex = re.compile(pat, re.MULTILINE)
+                m = rex.search(fn.body)
+                if not m:
+                    continue
+                # Extract the matched line as the anchor signature.
+                matched_line = _line_of_offset(fn.body, m.start())
+                found.append(
+                    DiscoveredSite(
+                        "B",
+                        "fail_open_stub",
+                        rel,
+                        matched_line.strip(),
+                        fn.start + _line_index_of_offset(fn.body, m.start()),
+                        f"{fn.name}: fail-open marker {marker!r}",
+                    )
+                )
+    return found
+
+
+def _line_of_offset(text: str, offset: int) -> str:
+    start = text.rfind("\n", 0, offset) + 1
+    end = text.find("\n", offset)
+    if end == -1:
+        end = len(text)
+    return text[start:end]
+
+
+def _line_index_of_offset(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scan C — todo-as-plan reachable from a shipped support surface
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TODO_SCAN_DIRS = (
+    "src/molt",
+    "runtime/molt-cpython-abi/src",
+)
+
+# Markers that a shipped surface is quietly incomplete. Anchored to Molt's
+# structured TODO taxonomy (`status:divergent` / `status:partial`) and the
+# explicit shortcut markers HACK / WORKAROUND / "ignore for now". `status:planned`
+# is EXCLUDED (an honest not-yet-supported declaration). Bare English "for now" is
+# NOT a marker on its own: it appears in verbatim upstream CPython comments,
+# diagnostic message strings, and fail-closed raises — it only counts when paired
+# with an explicit TODO / ignore token on the same line.
+_TODO_MARKER_RE = re.compile(
+    r"status:(?:divergent|partial)\b|\bHACK\b|\bWORKAROUND\b|"
+    r"ignore for now|TODO\b[^\n]*\bfor now\b"
+)
+_HONEST_PLANNED_RE = re.compile(r"status:planned\b")
+
+# Message-string contexts where a marker token is user-facing text, not a code
+# shortcut: a raise/error string or a diagnostic `alternative=`/`message=` kwarg.
+_MESSAGE_STRING_RE = re.compile(
+    r'raise\s+\w+\(|alternative\s*=|message\s*=|"[^"]*"\s*\)\s*$'
+)
+
+# A public def/fn header: a shipped support surface whose BODY the marker sits in.
+# `def _x`/`fn _x` (leading underscore) is a private helper — not a shipped surface.
+_PUBLIC_DEF_RE = re.compile(r"^(\s*)(?:pub\s+)?(?:async\s+)?(?:def|fn)\s+([A-Za-z][A-Za-z0-9_]*)")
+
+# Self-negating marker forms: a HACK-marker that describes the gate's OWN
+# prevention machinery or a test fixture is not a poison site.
+_TODO_ALLOWLIST_SUBSTRINGS = (
+    "fail_closed",
+    "degrade_to_slow",
+    "poison site",
+    "synthetic",
+)
+
+
+def _enclosing_public_def(lines: list[str], marker_idx: int) -> str | None:
+    """The nearest ``def``/``fn`` whose body encloses ``marker_idx`` — i.e. a def
+    header ABOVE the marker at a STRICTLY smaller indent than the marker line, with
+    a public (non-underscore) name. Returns the def name, or None if the marker is
+    at module level / inside only a private helper. This is what separates a
+    per-call silent divergence inside a SHIPPED API from an honest module-level
+    scope declaration (which needs no enclosing def and is therefore excluded)."""
+
+    marker_indent = len(lines[marker_idx]) - len(lines[marker_idx].lstrip())
+    for j in range(marker_idx - 1, -1, -1):
+        cand = lines[j]
+        if not cand.strip():
+            continue
+        indent = len(cand) - len(cand.lstrip())
+        m = _PUBLIC_DEF_RE.match(cand)
+        if m and indent < marker_indent:
+            name = m.group(2)
+            if name.startswith("_"):
+                # Enclosed only by a private helper — keep scanning outward for a
+                # public ancestor at a smaller indent.
+                marker_indent = indent
+                continue
+            return name
+        # A non-def line at column 0 above the marker ends the search only if we
+        # have descended to module level with no enclosing def found.
+        if indent == 0 and not m:
+            # Still could be preceded by a public def further up if the marker is
+            # itself at indent 0 inside nothing — but indent 0 marker means module
+            # level. Stop.
+            if marker_indent == 0:
+                return None
+    return None
+
+
+def discover_todo_as_plan(root: Path) -> list[DiscoveredSite]:
+    found: list[DiscoveredSite] = []
+    for path in _iter_files(root, _TODO_SCAN_DIRS, (".py", ".rs")):
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if _HONEST_PLANNED_RE.search(line):
+                continue
+            if not _TODO_MARKER_RE.search(line):
+                continue
+            if any(s in line for s in _TODO_ALLOWLIST_SUBSTRINGS):
+                continue
+            # A marker token inside a user-facing message string (a raise/error or
+            # a diagnostic kwarg) is guidance text, not a code shortcut.
+            if _MESSAGE_STRING_RE.search(line) and "status:" not in line:
+                continue
+            # A marker whose path FAILS CLOSED (raises within a few lines) is honest,
+            # not todo-as-plan poison: it refuses the unsupported input with a precise
+            # diagnostic instead of shipping a divergent answer. Exclude it.
+            following = "\n".join(lines[i : min(i + 6, len(lines))])
+            if re.search(r"\braise\s+\w+", following):
+                continue
+            # Poison only when the marker sits INSIDE the body of a public shipped
+            # def/method (a per-call silent divergence). A module-level marker is an
+            # honest scope declaration on the module, not a claim-then-diverge.
+            enclosing = _enclosing_public_def(lines, i)
+            if enclosing is not None:
+                found.append(
+                    DiscoveredSite(
+                        "C",
+                        "todo_as_plan",
+                        rel,
+                        line.strip(),
+                        i + 1,
+                        f"todo/hack marker inside shipped public surface {enclosing!r}",
+                    )
+                )
+    return found
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scan D — duplicate authority (two live copies of the same CPython header)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The two authority trees that ship CPython public headers. A substantive header
+# present in BOTH is a duplicate authority: the C-API contract now has two homes
+# that must be hand-synced, and one of them is always about to drift.
+_DUP_AUTHORITY_TREES = (
+    "include",  # includes include/ root and include/molt/
+    "runtime/molt-cpython-abi/include",
+)
+_MOLT_INCLUDE_TREE = "include"
+_ABI_INCLUDE_TREE = "runtime/molt-cpython-abi/include"
+
+# Only CPython public headers count for the duplicate-authority class. numpy /
+# scipy package headers are the ecosystem_baked class (Scan A), not this one.
+_CPYTHON_HEADER_NAMES = frozenset(
+    {
+        "Python.h",
+        "abstract.h",
+        "object.h",
+        "pyerrors.h",
+        "pymem.h",
+        "structmember.h",
+        "frameobject.h",
+        "datetime.h",
+        "traceback.h",
+        "compile.h",
+        "pythread.h",
+        "ceval.h",
+        "import.h",
+        "modsupport.h",
+    }
+)
+
+# A header short enough to be a pure `#include`/guard forwarder is not itself an
+# authority copy — it delegates. Substantive copies (real declarations) collide.
+_FORWARDER_LINE_CAP = 20
+
+
+def _molt_side_headers(root: Path) -> dict[str, Path]:
+    out: dict[str, Path] = {}
+    base = root / _MOLT_INCLUDE_TREE
+    if not base.exists():
+        return out
+    for path in sorted(base.rglob("*.h")):
+        # Skip the abi tree itself if nested; skip numpy/scipy package dirs.
+        posix = path.as_posix()
+        if "/numpy/" in posix or "/scipy/" in posix:
+            continue
+        name = path.name
+        if name not in _CPYTHON_HEADER_NAMES:
+            continue
+        try:
+            n = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            continue
+        if n <= _FORWARDER_LINE_CAP:
+            continue  # thin forwarder, not an authority copy
+        # Prefer the largest substantive copy per basename on the molt side.
+        prev = out.get(name)
+        if prev is None or n > len(
+            prev.read_text(encoding="utf-8", errors="replace").splitlines()
+        ):
+            out[name] = path
+    return out
+
+
+def discover_duplicate_authority(root: Path) -> list[DiscoveredSite]:
+    abi_base = root / _ABI_INCLUDE_TREE
+    if not abi_base.exists():
+        return []
+    abi_names: dict[str, Path] = {}
+    for path in sorted(abi_base.rglob("*.h")):
+        if path.name in _CPYTHON_HEADER_NAMES:
+            n = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+            if n > _FORWARDER_LINE_CAP:
+                abi_names.setdefault(path.name, path)
+
+    found: list[DiscoveredSite] = []
+    for name, molt_path in _molt_side_headers(root).items():
+        twin = abi_names.get(name)
+        if twin is None:
+            continue
+        rel = molt_path.relative_to(root).as_posix()
+        text = molt_path.read_text(encoding="utf-8", errors="replace")
+        # Anchor on the include guard line (stable, unique per header).
+        guard = _first_guard(text)
+        found.append(
+            DiscoveredSite(
+                "D",
+                "duplicate_authority",
+                rel,
+                guard,
+                _first_line(text, guard),
+                f"{name} also lives at {twin.relative_to(root).as_posix()} — "
+                "one C-API authority, two hand-synced copies",
+            )
+        )
+    return found
+
+
+def _first_guard(text: str) -> str:
+    for line in text.splitlines():
+        m = re.match(r"^\s*#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)", line)
+        if m:
+            return line.strip()
+    # Fall back to the first non-empty line.
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def discover_all(root: Path) -> list[DiscoveredSite]:
+    return (
+        discover_ecosystem_baked(root)
+        + discover_fail_open_abi(root)
+        + discover_todo_as_plan(root)
+        + discover_duplicate_authority(root)
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Registry + gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RegistryRow:
+    id: str
+    cls: str
+    file: str
+    anchor: str
+    resolution_row: str
+    justification: str
+
+
+@dataclass
+class Registry:
+    rows: list[RegistryRow]
+    baseline: dict[str, int]
+    by_file_anchor: dict[tuple[str, str], RegistryRow] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for row in self.rows:
+            self.by_file_anchor.setdefault((row.file, row.anchor), row)
+
+
+@dataclass
+class Violation:
+    kind: str
+    detail: str
+
+    def __str__(self) -> str:
+        return f"[{self.kind}] {self.detail}"
+
+
+def load_registry(path: Path = REGISTRY_PATH) -> Registry:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    baseline_tbl = data.get("baseline", {})
+    baseline = {cls: int(baseline_tbl.get(cls, 0)) for cls in _VALID_CLASSES}
+    rows: list[RegistryRow] = []
+    for entry in data.get("site", []):
+        rows.append(
+            RegistryRow(
+                id=entry["id"],
+                cls=entry["class"],
+                file=entry["file"],
+                anchor=entry["anchor"],
+                resolution_row=entry.get("resolution_row", "").strip(),
+                justification=entry.get("justification", "").strip(),
+            )
+        )
+    return Registry(rows=rows, baseline=baseline)
+
+
+def check_anchor_present(root: Path, row: RegistryRow) -> Violation | None:
+    path = root / row.file
+    if not path.exists():
+        return Violation(
+            "missing-file",
+            f"row {row.id!r} names {row.file} which does not exist",
+        )
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if row.anchor not in text:
+        return Violation(
+            "anchor-drift",
+            f"row {row.id!r}: anchor {row.anchor!r} no longer present in "
+            f"{row.file}; the site moved or was ripped — reconcile the registry "
+            "(and lower the class baseline if it was ripped).",
+        )
+    return None
+
+
+def _row_matches_site(registry: Registry, site: DiscoveredSite) -> RegistryRow | None:
+    exact = registry.by_file_anchor.get((site.file, site.signature))
+    if exact is not None:
+        return exact
+    # Loose match: a row in the same file whose anchor is a substring of the
+    # discovered signature (covers whitespace / trailing-token variance).
+    for row in registry.rows:
+        if row.file == site.file and row.cls == site.cls and row.anchor in site.signature:
+            return row
+    return None
+
+
+def run_gate(root: Path = REPO_ROOT) -> list[Violation]:
+    violations: list[Violation] = []
+    registry = load_registry(REGISTRY_PATH)
+
+    # --- Registry self-consistency --------------------------------------------
+    seen_ids: set[str] = set()
+    for row in registry.rows:
+        if row.cls not in _VALID_CLASSES:
+            violations.append(
+                Violation(
+                    "bad-class",
+                    f"row {row.id!r} has class {row.cls!r}; must be one of "
+                    f"{sorted(_VALID_CLASSES)}",
+                )
+            )
+        if row.id in seen_ids:
+            violations.append(
+                Violation("duplicate-id", f"registry id {row.id!r} is duplicated")
+            )
+        seen_ids.add(row.id)
+        if not row.resolution_row:
+            violations.append(
+                Violation(
+                    "missing-resolution-row",
+                    f"row {row.id!r} must name a resolution_row (the rip task "
+                    "driving it to zero)",
+                )
+            )
+        if not row.justification:
+            violations.append(
+                Violation(
+                    "missing-justification",
+                    f"row {row.id!r} has no justification",
+                )
+            )
+
+    # --- Anchor integrity: every row's anchor still exists ---------------------
+    for row in registry.rows:
+        v = check_anchor_present(root, row)
+        if v is not None:
+            violations.append(v)
+
+    # --- Drift: every discovered poison site must be registered ----------------
+    discovered = discover_all(root)
+    for site in discovered:
+        if _row_matches_site(registry, site) is None:
+            violations.append(
+                Violation(
+                    "unregistered-poison-site",
+                    f"[{site.cls}] {site.file}:{site.line} introduces poison site "
+                    f"{site.signature!r} ({site.detail}) with no registry row. Add a "
+                    "row to tools/fail_closed_registry.toml classifying it, or rip "
+                    "the site. New poison MUST NOT land unregistered.",
+                )
+            )
+
+    # --- Ratchet: per-class registered count is monotonically non-increasing ---
+    live_counts: dict[str, int] = {cls: 0 for cls in _VALID_CLASSES}
+    for row in registry.rows:
+        if row.cls in live_counts:
+            live_counts[row.cls] += 1
+    for cls in sorted(_VALID_CLASSES):
+        if live_counts[cls] > registry.baseline[cls]:
+            violations.append(
+                Violation(
+                    "ratchet-regression",
+                    f"{live_counts[cls]} {cls!r} rows exceed baseline "
+                    f"{registry.baseline[cls]}. This poison class must only "
+                    "shrink. Rip a site (and lower the baseline) rather than "
+                    "registering new poison.",
+                )
+            )
+
+    return violations
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--discover" in argv:
+        # Debug aid: print the raw discovered set (not a gate pass/fail).
+        for site in discover_all(REPO_ROOT):
+            print(f"[{site.scan}/{site.cls}] {site.file}:{site.line}\t{site.signature}")
+        return 0
+
+    violations = run_gate(REPO_ROOT)
+    if violations:
+        print("fail-closed gate: FAIL", file=sys.stderr)
+        for v in violations:
+            print(f"  {v}", file=sys.stderr)
+        print(
+            f"\n{len(violations)} violation(s). tools/fail_closed_registry.toml is "
+            "the authority; register or rip the site there.",
+            file=sys.stderr,
+        )
+        return 1
+
+    registry = load_registry(REGISTRY_PATH)
+    counts = {cls: 0 for cls in _VALID_CLASSES}
+    for row in registry.rows:
+        counts[row.cls] += 1
+    summary = ", ".join(
+        f"{cls}={counts[cls]}<={registry.baseline[cls]}"
+        for cls in sorted(_VALID_CLASSES)
+    )
+    print(f"fail-closed gate: OK ({len(registry.rows)} registered sites; {summary})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
