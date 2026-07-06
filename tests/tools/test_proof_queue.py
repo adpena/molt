@@ -3985,6 +3985,101 @@ def test_proof_queue_diagnoses_rust_compile_error_and_guard_orphan_cleanup(
     assert orphan_issue["artifacts"] == [quarantine_receipt]
 
 
+def test_proof_queue_diagnoses_rust_test_failure_before_cargo_error_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "rust-test-failed.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="rust-test-failed-run",
+        logical_id="r3b-boxed-nonscalar-alias-regressions-warm-20260705",
+        reason="prove cargo test failures are not compiler diagnostics",
+        command=[
+            "cargo",
+            "test",
+            "-p",
+            "molt-tir",
+            "representation_plan::tests::",
+            "--lib",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="cargo",
+        contention_key="cargo:molt-tir",
+        scopes=["runtime/molt-tir/src/representation_plan/tests.rs"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "rust-test-failed.memory_guard.json",
+    )
+    proof_queue._insert_note(
+        conn,
+        run_id="rust-test-failed-run",
+        body="test: cargo test assertion failure must not masquerade as rustc",
+        kind="submission",
+        author="codex",
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "   Compiling molt-tir v0.1.0 (C:\\repo\\runtime\\molt-tir)",
+                "    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.67s",
+                "     Running unittests src\\lib.rs (D:\\Molt\\target\\debug\\deps\\molt_tir.exe)",
+                "running 2 tests",
+                "test representation_plan::tests::safe_case ... ok",
+                "test representation_plan::tests::boxed_abi_parameters_survive_synthetic_self_stores ... FAILED",
+                "",
+                "failures:",
+                "    representation_plan::tests::boxed_abi_parameters_survive_synthetic_self_stores",
+                "",
+                "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.30s",
+                "",
+                "error: test failed, to rerun pass `-p molt-tir --lib`",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "rust-test-failed-run", status="failed", returncode=101
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "rust-test-failed-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    signals = [item["signal_id"] for item in diagnostics]
+    assert signals[0] == "rust-test-failure"
+    assert "rust-compiler-error" not in signals
+    assert "test result: FAILED. 1 passed; 1 failed" in diagnostics[0]["evidence"]
+    assert (
+        "error: test failed, to rerun pass `-p molt-tir --lib`"
+        in diagnostics[0]["evidence"]
+    )
+    assert (
+        "representation_plan::tests::boxed_abi_parameters_survive_synthetic_self_stores"
+        in diagnostics[0]["evidence"]
+    )
+
+
 def test_proof_queue_diagnoses_nested_guarded_exec_orphan_cleanup(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
