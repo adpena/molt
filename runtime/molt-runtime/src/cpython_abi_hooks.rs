@@ -577,6 +577,97 @@ unsafe extern "C" fn hook_exception_pending() -> std::os::raw::c_int {
     with_gil(|_py| crate::exception_pending(&_py) as std::os::raw::c_int)
 }
 
+// ── Numeric protocol (PyNumber_*) ─────────────────────────────────────────
+//
+// The single numeric authority is the runtime's `PyNumber_*` compat functions
+// (`crate::c_api::PyNumber_*`), which delegate to `molt_add`/`molt_pow`/etc.
+// with arbitrary-precision int promotion, float coercion, operator-overload
+// dispatch, and CPython-shaped exceptions. Each returns result handle bits or
+// `0` with a pending runtime exception on error. These hooks are a thin routing
+// layer; they perform NO arithmetic themselves.
+
+/// Binary numeric op. `op` matches [`molt_cpython_abi::NumberBinaryOp`].
+unsafe extern "C" fn hook_number_binary_op(op: u32, a_bits: u64, b_bits: u64) -> u64 {
+    use molt_cpython_abi::NumberBinaryOp;
+    match op {
+        x if x == NumberBinaryOp::Add as u32 => crate::c_api::PyNumber_Add(a_bits, b_bits),
+        x if x == NumberBinaryOp::Subtract as u32 => {
+            crate::c_api::PyNumber_Subtract(a_bits, b_bits)
+        }
+        x if x == NumberBinaryOp::Multiply as u32 => {
+            crate::c_api::PyNumber_Multiply(a_bits, b_bits)
+        }
+        x if x == NumberBinaryOp::TrueDivide as u32 => {
+            crate::c_api::PyNumber_TrueDivide(a_bits, b_bits)
+        }
+        x if x == NumberBinaryOp::FloorDivide as u32 => {
+            crate::c_api::PyNumber_FloorDivide(a_bits, b_bits)
+        }
+        x if x == NumberBinaryOp::Remainder as u32 => {
+            crate::c_api::PyNumber_Remainder(a_bits, b_bits)
+        }
+        x if x == NumberBinaryOp::Lshift as u32 => crate::c_api::PyNumber_Lshift(a_bits, b_bits),
+        x if x == NumberBinaryOp::Rshift as u32 => crate::c_api::PyNumber_Rshift(a_bits, b_bits),
+        x if x == NumberBinaryOp::And as u32 => crate::c_api::PyNumber_And(a_bits, b_bits),
+        x if x == NumberBinaryOp::Or as u32 => crate::c_api::PyNumber_Or(a_bits, b_bits),
+        x if x == NumberBinaryOp::Xor as u32 => crate::c_api::PyNumber_Xor(a_bits, b_bits),
+        x if x == NumberBinaryOp::MatrixMultiply as u32 => {
+            crate::c_api::PyNumber_MatrixMultiply(a_bits, b_bits)
+        }
+        // An unknown op discriminant is a build-time contract break between the
+        // ABI enum and this dispatch. Fail closed with a SystemError rather than
+        // returning a fake success value.
+        _ => with_gil(|_py| {
+            crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "PyNumber binary op: unknown operation discriminant",
+            )
+        }),
+    }
+}
+
+/// Unary numeric op. `op` matches [`molt_cpython_abi::NumberUnaryOp`].
+unsafe extern "C" fn hook_number_unary_op(op: u32, a_bits: u64) -> u64 {
+    use molt_cpython_abi::NumberUnaryOp;
+    match op {
+        x if x == NumberUnaryOp::Negative as u32 => crate::c_api::PyNumber_Negative(a_bits),
+        x if x == NumberUnaryOp::Positive as u32 => crate::c_api::PyNumber_Positive(a_bits),
+        x if x == NumberUnaryOp::Absolute as u32 => crate::c_api::PyNumber_Absolute(a_bits),
+        x if x == NumberUnaryOp::Invert as u32 => crate::c_api::PyNumber_Invert(a_bits),
+        _ => with_gil(|_py| {
+            crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "PyNumber unary op: unknown operation discriminant",
+            )
+        }),
+    }
+}
+
+/// Ternary power `pow(base, exp, modulus)`. `mod_bits == 0` means two-arg pow.
+unsafe extern "C" fn hook_number_power(a_bits: u64, b_bits: u64, mod_bits: u64) -> u64 {
+    crate::c_api::PyNumber_Power(a_bits, b_bits, mod_bits)
+}
+
+/// Dict copy/keys/values. `op` matches [`molt_cpython_abi::DictOp`]. Routes to
+/// the runtime dict authority; returns 0 with a pending exception on error.
+unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
+    use molt_cpython_abi::DictOp;
+    match op {
+        x if x == DictOp::Copy as u32 => crate::c_api::PyDict_Copy(dict_bits),
+        x if x == DictOp::Keys as u32 => crate::c_api::PyDict_Keys(dict_bits),
+        x if x == DictOp::Values as u32 => crate::c_api::PyDict_Values(dict_bits),
+        _ => with_gil(|_py| {
+            crate::raise_exception::<u64>(
+                &_py,
+                "SystemError",
+                "PyDict op: unknown operation discriminant",
+            )
+        }),
+    }
+}
+
 unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
     with_gil(|_py| {
         let module_obj = MoltObject::from_bits(module_bits);
@@ -1803,6 +1894,10 @@ pub fn register_cpython_hooks() {
         register_c_function: hook_register_c_function,
         import_module: hook_import_module,
         exception_pending: hook_exception_pending,
+        number_binary_op: hook_number_binary_op,
+        number_unary_op: hook_number_unary_op,
+        number_power: hook_number_power,
+        dict_op: hook_dict_op,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {

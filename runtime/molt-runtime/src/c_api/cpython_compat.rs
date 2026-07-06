@@ -585,6 +585,20 @@ pub extern "C" fn PyNumber_Multiply(a: u64, b: u64) -> u64 {
     })
 }
 
+/// `PyNumber_MatrixMultiply(a, b)` — return `a @ b`, or 0 on error.
+pub extern "C" fn PyNumber_MatrixMultiply(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let res = molt_matmul(a, b);
+        if exception_pending(_py) {
+            if !obj_from_bits(res).is_none() {
+                dec_ref_bits(_py, res);
+            }
+            return 0;
+        }
+        res
+    })
+}
+
 /// `PyNumber_TrueDivide(a, b)` — return `a / b`, or 0 on error.
 pub extern "C" fn PyNumber_TrueDivide(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

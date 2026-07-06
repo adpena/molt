@@ -182,6 +182,72 @@ pub struct RuntimeHooks {
     /// Lets ABI-side fallbacks avoid masking a real runtime error with a
     /// synthetic "without setting an exception" message.
     pub exception_pending: unsafe extern "C" fn() -> std::os::raw::c_int,
+    // ── Numeric protocol (PyNumber_*) ─────────────────────────────────────────
+    //
+    // The runtime owns the single numeric authority: arbitrary-precision int
+    // promotion, float coercion, operator-overload dispatch, and CPython-shaped
+    // exception raising all live in `molt-lang-runtime`. The ABI MUST NOT
+    // reimplement arithmetic (that silently wraps at 64 bits and masks the
+    // exceptions CPython raises). These hooks route `PyNumber_*` straight to
+    // that authority. Each returns result handle bits, or `0` with a pending
+    // runtime exception on error (the ABI turns `0` into a NULL PyObject*).
+    /// Binary numeric op. `op` is a [`NumberBinaryOp`] discriminant. Returns
+    /// result bits, or 0 with a pending exception on error.
+    pub number_binary_op: unsafe extern "C" fn(op: u32, a_bits: u64, b_bits: u64) -> u64,
+    /// Unary numeric op. `op` is a [`NumberUnaryOp`] discriminant. Returns
+    /// result bits, or 0 with a pending exception on error.
+    pub number_unary_op: unsafe extern "C" fn(op: u32, a_bits: u64) -> u64,
+    /// Ternary power `pow(base, exp, modulus)`. When `mod_bits` is `0` or None,
+    /// computes two-argument `base ** exp`. Returns result bits, or 0 with a
+    /// pending exception on error.
+    pub number_power: unsafe extern "C" fn(a_bits: u64, b_bits: u64, mod_bits: u64) -> u64,
+    // ── Mapping protocol (PyDict_*) ───────────────────────────────────────────
+    //
+    // The runtime owns dict iteration (copy / keys / values). The ABI MUST NOT
+    // return an empty dict/list ignoring its argument — that is silent data
+    // loss. This hook routes to the runtime dict authority. `op` is a [`DictOp`]
+    // discriminant. Returns result bits, or 0 with a pending exception on error.
+    pub dict_op: unsafe extern "C" fn(op: u32, dict_bits: u64) -> u64,
+}
+
+/// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
+/// the runtime hook implementation (`hook_dict_op`).
+#[repr(u32)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum DictOp {
+    Copy = 0,
+    Keys = 1,
+    Values = 2,
+}
+
+/// Discriminants for [`RuntimeHooks::number_binary_op`]. Kept in sync with the
+/// match in the runtime hook implementation (`hook_number_binary_op`).
+#[repr(u32)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum NumberBinaryOp {
+    Add = 0,
+    Subtract = 1,
+    Multiply = 2,
+    TrueDivide = 3,
+    FloorDivide = 4,
+    Remainder = 5,
+    Lshift = 6,
+    Rshift = 7,
+    And = 8,
+    Or = 9,
+    Xor = 10,
+    MatrixMultiply = 11,
+}
+
+/// Discriminants for [`RuntimeHooks::number_unary_op`]. Kept in sync with the
+/// match in the runtime hook implementation (`hook_number_unary_op`).
+#[repr(u32)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum NumberUnaryOp {
+    Negative = 0,
+    Positive = 1,
+    Absolute = 2,
+    Invert = 3,
 }
 
 /// Global hook table, set once by `molt-lang-runtime` at init time.
@@ -401,6 +467,18 @@ unsafe extern "C" fn stub_import_module(_data: *const u8, _len: usize) -> u64 {
 unsafe extern "C" fn stub_exception_pending() -> std::os::raw::c_int {
     0
 }
+unsafe extern "C" fn stub_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_number_unary_op(_op: u32, _a: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_dict_op(_op: u32, _dict: u64) -> u64 {
+    0
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -446,6 +524,10 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     register_c_function: stub_register_c_function,
     import_module: stub_import_module,
     exception_pending: stub_exception_pending,
+    number_binary_op: stub_number_binary_op,
+    number_unary_op: stub_number_unary_op,
+    number_power: stub_number_power,
+    dict_op: stub_dict_op,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.
