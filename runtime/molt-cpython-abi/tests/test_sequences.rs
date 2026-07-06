@@ -13,20 +13,70 @@ fn init() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_list_new_returns_non_null() {
+fn test_list_new_fails_closed_on_alloc_failure() {
+    // F4 teeth: with stub hooks, alloc_list returns 0 (allocation failure).
+    // PyList_New MUST fail closed with NULL + a set MemoryError, NOT return a
+    // non-NULL Py_None placeholder (which would defeat the caller's
+    // `if (list == NULL)` guard and let it operate on None as a list).
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
-    // With stub hooks, alloc_list returns 0 => fallback to None placeholder
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "PyList_New must return NULL on alloc failure, not a placeholder"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a NULL return from PyList_New must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
-fn test_list_new_with_size() {
+fn test_list_new_with_size_fails_closed_on_alloc_failure() {
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::sequences::PyList_New(5) };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(py.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_set_new_fails_closed() {
+    // F5 teeth: PySet_New must fail closed (NULL + NotImplementedError) rather
+    // than return a *list* with list semantics (no dedup, no membership).
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let py = unsafe { molt_cpython_abi::api::sequences::PySet_New(ptr::null_mut()) };
+    assert!(py.is_null(), "PySet_New must fail closed, not return a list");
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_set_membership_ops_fail_closed() {
+    // F5 teeth: PySet_Contains/Add/Discard must return the error sentinel (-1)
+    // with an exception set, NOT fake success/absence (0).
+    init();
+    for result in [
+        unsafe {
+            molt_cpython_abi::api::sequences::PySet_Contains(ptr::null_mut(), ptr::null_mut())
+        },
+        unsafe { molt_cpython_abi::api::sequences::PySet_Add(ptr::null_mut(), ptr::null_mut()) },
+        unsafe {
+            molt_cpython_abi::api::sequences::PySet_Discard(ptr::null_mut(), ptr::null_mut())
+        },
+    ] {
+        assert_eq!(result, -1, "set op must fail closed with -1, not fake 0");
+    }
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::sequences::PySet_Size(ptr::null_mut()) },
+        -1,
+        "PySet_Size must fail closed with -1, not fake 0"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------

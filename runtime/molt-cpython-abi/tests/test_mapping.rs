@@ -13,12 +13,54 @@ fn init() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_dict_new_returns_non_null() {
+fn test_dict_new_fails_closed_on_alloc_failure() {
+    // F4 teeth: with stub hooks, alloc_dict returns 0 (allocation failure).
+    // PyDict_New MUST fail closed with NULL + a set MemoryError, NOT a non-NULL
+    // Py_None placeholder that defeats the caller's `if (dict == NULL)` guard.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    // With stub hooks, alloc_dict returns 0 => fallback to None placeholder
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "PyDict_New must return NULL on alloc failure, not a placeholder"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a NULL return from PyDict_New must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_dict_copy_keys_values_fail_closed_without_runtime() {
+    // F6 teeth: PyDict_Copy/Keys/Values route through the runtime dict
+    // authority. They must NOT ignore their argument and return an empty
+    // dict/list (silent data loss). Without runtime hooks the dict_op hook
+    // returns 0, so each must fail closed with NULL + an exception, never a
+    // fabricated empty result.
+    init();
+    type DictOpFn = unsafe extern "C" fn(
+        *mut molt_cpython_abi::abi_types::PyObject,
+    ) -> *mut molt_cpython_abi::abi_types::PyObject;
+    let ops: [DictOpFn; 3] = [
+        molt_cpython_abi::api::mapping::PyDict_Copy,
+        molt_cpython_abi::api::mapping::PyDict_Keys,
+        molt_cpython_abi::api::mapping::PyDict_Values,
+    ];
+    for op in ops {
+        // Clear first so we prove THIS op set the exception, not a prior one.
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        let result = unsafe { op(ptr::null_mut()) };
+        assert!(
+            result.is_null(),
+            "PyDict copy/keys/values must fail closed (NULL), not return empty"
+        );
+        assert!(
+            !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+            "a NULL return must leave an exception set"
+        );
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,44 +271,8 @@ fn test_dict_check_on_int_returns_zero() {
 // PyDict_Copy
 // ---------------------------------------------------------------------------
 
-#[test]
-fn test_dict_copy_returns_new_dict() {
-    init();
-    let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    let copy = unsafe { molt_cpython_abi::api::mapping::PyDict_Copy(dict) };
-    assert!(!copy.is_null());
-    // Copy should be a different pointer
-    // (with stubs both are None placeholders, but still distinct bridge entries)
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(copy);
-        molt_cpython_abi::api::refcount::Py_DECREF(dict);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PyDict_Keys / PyDict_Values
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_dict_keys_returns_list() {
-    init();
-    let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    let keys = unsafe { molt_cpython_abi::api::mapping::PyDict_Keys(dict) };
-    assert!(!keys.is_null());
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(keys);
-        molt_cpython_abi::api::refcount::Py_DECREF(dict);
-    }
-}
-
-#[test]
-fn test_dict_values_returns_list() {
-    init();
-    let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
-    let values = unsafe { molt_cpython_abi::api::mapping::PyDict_Values(dict) };
-    assert!(!values.is_null());
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(values);
-        molt_cpython_abi::api::refcount::Py_DECREF(dict);
-    }
-}
+// PyDict_Copy / PyDict_Keys / PyDict_Values fail-closed behavior without a
+// registered runtime is proved by `test_dict_copy_keys_values_fail_closed_without_runtime`
+// above. Their real (non-empty) results require the runtime dict authority and
+// are exercised by the runtime-side / differential integration tests, not by
+// these stub-only unit tests.
