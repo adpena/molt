@@ -29,6 +29,13 @@ is reconciled.
   proof-queue/board finding with evidence and immediately continue on the next
   allowed structural aperture. Do not posture as "waiting for X" or land a
   placeholder around the missing primitive.
+- Self-detect deferral before the next sentence. If you catch yourself thinking
+  or writing "after", "once", "until", "blocked on", "waiting for", or "I will
+  not do X until Y", convert it immediately into one of: implement Y inside the
+  owned structural arc; route Y through the proper owner/queue with evidence and
+  continue on a board-valid structural arc; or satisfy the formal blocked audit.
+  A future-tense plan, analysis-only handoff, placeholder, compatibility shim,
+  or partial implementation is not an allowed response.
 - No backward compatibility inside Molt internals. When a touched path has a
   legacy lane, delete it or structurally reconcile it in the same arc.
 - Performance is part of correctness. Claimed support must be deterministic,

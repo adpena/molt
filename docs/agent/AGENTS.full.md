@@ -36,6 +36,13 @@ touching code, docs, tests, benchmarks, or roadmap state.
   continue immediately on the next allowed structural aperture. Do not posture
   as "waiting for X", and do not land a shim, placeholder, bypass, or partial
   implementation around the missing primitive.
+- Self-detect deferral before the next sentence. If you catch yourself thinking
+  or writing "after", "once", "until", "blocked on", "waiting for", or "I will
+  not do X until Y", convert it immediately into one of: implement Y inside the
+  owned structural arc; route Y through the proper owner/queue with evidence and
+  continue on a board-valid structural arc; or satisfy the formal blocked audit.
+  A future-tense plan, analysis-only handoff, placeholder, compatibility shim,
+  or partial implementation is not an allowed response.
 - Maximize verified compatibility only inside Molt's AOT contract. Pursue full
   Python 3.12+ stdlib and ecosystem compatibility where it does not require
   unrestricted dynamic execution, runtime monkeypatching, reflection-heavy host
