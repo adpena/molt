@@ -24,7 +24,7 @@ from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
 
 if TYPE_CHECKING:
-    from tinygrad.kv_cache import TieredKVCache
+    from .kv_cache import TieredKVCache
 
 
 def build_ancestor_mask(tree_structure: list) -> Tensor:
@@ -274,7 +274,7 @@ def compact_tiered_kv_cache(
         tree_positions: list mapping tree node index -> cache position
         query: query vector for importance scoring (optional)
     """
-    from tinygrad.kv_cache import compute_attention_importance_from_positions
+    from .kv_cache import compute_attention_importance_from_positions
 
     # Determine which tree positions are accepted vs rejected
     accepted_tree_positions = set(tree_positions[i] for i in accepted_indices)

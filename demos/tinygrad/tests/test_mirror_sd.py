@@ -8,7 +8,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 import math
 import random
 
-from tinygrad.mirror_sd import (
+from ..mirror_sd import (
     EarlyExitProxy,
     HypothesisTree,
     MirrorSpeculativeDecoder,

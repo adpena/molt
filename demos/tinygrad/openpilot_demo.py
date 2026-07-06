@@ -482,7 +482,7 @@ def init_from_onnx(onnx_bytes: bytes) -> None:
     """
     global _model
 
-    from tinygrad.onnx_interpreter import OnnxInterpreter
+    from .onnx_interpreter import OnnxInterpreter
 
     interp = OnnxInterpreter()
     interp.load_from_bytes(onnx_bytes)

@@ -8,7 +8,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 import math
 import random
 
-from tinygrad.eagle import (
+from ..eagle import (
     EagleDraftHead,
     eagle_verify,
     eagle_speculate,
