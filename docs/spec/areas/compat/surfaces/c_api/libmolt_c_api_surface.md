@@ -66,12 +66,27 @@ not observable through this accessor.
 - `molt_object_equal`, `molt_object_not_equal`, `molt_object_contains`
 - `molt_c_heap_register`, `molt_c_heap_unregister`, `molt_c_heap_contains`
 - `molt_c_heap_type_canonicalize`
+- `molt_c_heap_register_buffer_exporter`, `molt_c_heap_register_buffer_releaser`
+- `molt_c_heap_export_buffer`, `molt_c_heap_release_buffer`
 
 `molt_c_heap_*` is the public-header C-object provenance lane. It lets
 source-compatible headers expose real C heap pointers for extension-local
 objects, while generic `Py_INCREF`/`Py_DECREF`/type checks avoid treating those
 pointers as Molt handles. Type canonicalization is keyed by explicit kind so
 header-inline type objects keep one identity across C translation units.
+
+The `molt_c_heap_*_buffer*` lease functions extend that lane to the buffer
+protocol: a source-recompiled extension (e.g. the numpy `PyArrayObject`
+header) registers a per-kind exporter and releaser keyed on its typed C-heap
+header, then `molt_c_heap_export_buffer` hands out a `MoltBufferView` lease only
+after the runtime revalidates the descriptor through the same typed strided
+storage authority as `molt_memoryview_from_buffer`. A C-heap lease owns its own
+backing (`owner == 0`, `base == 0`); a descriptor whose declared length or
+strided span does not fit its backing capacity fails closed, draining the lease
+through the registered releaser so the exporter's slot-identity bookkeeping
+stays balanced. `PyObject_GetBuffer`/`PyBuffer_Release`/`PyObject_CheckBuffer`
+route C-heap objects through this lease lane and runtime objects through
+`molt_buffer_acquire`/`molt_buffer_release`.
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
