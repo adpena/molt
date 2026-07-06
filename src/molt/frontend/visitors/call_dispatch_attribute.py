@@ -28,6 +28,62 @@ from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 
 
 class CallAttributeDispatchMixin(_MixinBase):
+    def _dotted_attribute_parts(self, expr: ast.AST) -> tuple[str, ...] | None:
+        if isinstance(expr, ast.Name):
+            return (expr.id,)
+        if isinstance(expr, ast.Attribute):
+            base = self._dotted_attribute_parts(expr.value)
+            if base is None:
+                return None
+            return (*base, expr.attr)
+        return None
+
+    def _dotted_imported_module_target(
+        self, receiver_parts: tuple[str, ...]
+    ) -> str | None:
+        if len(receiver_parts) < 2:
+            return None
+        root = receiver_parts[0]
+        imported_target = self._imported_module_binding_target(root)
+        if imported_target is None:
+            return None
+        receiver_name = ".".join(receiver_parts)
+        if receiver_name == imported_target:
+            return receiver_name
+        imported_root = imported_target.split(".", 1)[0]
+        if root != imported_root:
+            return ".".join((imported_target, *receiver_parts[1:]))
+        return None
+
+    def _try_emit_dotted_imported_native_callable(
+        self, node: ast.Call
+    ) -> Any:
+        if not isinstance(node.func, ast.Attribute):
+            return CALL_NOT_HANDLED
+        parts = self._dotted_attribute_parts(node.func)
+        if parts is None or len(parts) < 3:
+            return CALL_NOT_HANDLED
+        target_module = self._dotted_imported_module_target(parts[:-1])
+        if target_module is None:
+            return CALL_NOT_HANDLED
+        func_id = parts[-1]
+        normalized = self._normalize_allowlist_module(target_module)
+        visible_module = normalized or target_module
+        lowered = self._try_emit_native_callable_export_call(
+            visible_module,
+            func_id,
+            node,
+        )
+        if lowered is not None:
+            return lowered
+        if self._is_native_python_export(visible_module, func_id):
+            self._raise_native_python_export_missing_callable_metadata(
+                visible_module,
+                func_id,
+                node,
+            )
+        return CALL_NOT_HANDLED
+
     def _try_emit_attribute_receiver_call(
         self, node: ast.Call, needs_bind: bool
     ) -> Any:
@@ -168,6 +224,9 @@ class CallAttributeDispatchMixin(_MixinBase):
                         MoltOp(kind="BUFFER2D_MATMUL", args=[lhs, rhs], result=res)
                     )
                     return res
+            dotted_native = self._try_emit_dotted_imported_native_callable(node)
+            if dotted_native is not CALL_NOT_HANDLED:
+                return dotted_native
             receiver = self.visit(attr_node.value)
             if receiver is None:
                 receiver = MoltValue("unknown_obj", type_hint="Unknown")
