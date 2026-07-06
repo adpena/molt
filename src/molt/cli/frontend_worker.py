@@ -180,6 +180,12 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     target_python = _parse_target_python_version(
         cast(str | None, payload.get("target_python"))
     )
+    frontend_phase_timeout_raw = payload.get("frontend_phase_timeout")
+    frontend_phase_timeout = (
+        float(frontend_phase_timeout_raw)
+        if frontend_phase_timeout_raw is not None
+        else None
+    )
     pgo_hot_functions = {
         symbol.strip()
         for symbol in cast(list[str], payload.get("pgo_hot_functions", []))
@@ -235,16 +241,25 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         visit_start = time.perf_counter()
-        gen.visit(tree)
+        with _phase_timeout(
+            frontend_phase_timeout,
+            phase_name=f"frontend visit ({module_name})",
+        ):
+            gen.visit(tree)
         visit_s = time.perf_counter() - visit_start
         lower_start = time.perf_counter()
-        ir = gen.to_json()
+        with _phase_timeout(
+            frontend_phase_timeout,
+            phase_name=f"frontend IR lowering ({module_name})",
+        ):
+            ir = gen.to_json()
         lower_s = time.perf_counter() - lower_start
-    except CompatibilityError as exc:
+    except (CompatibilityError, TimeoutError) as exc:
         worker_finished_ns = time.time_ns()
         return {
             "ok": False,
             "error": str(exc),
+            "timed_out": isinstance(exc, TimeoutError),
             "timings": {
                 "visit_s": visit_s,
                 "lower_s": lower_s,
@@ -679,6 +694,7 @@ def _prepare_frontend_parallel_batch(
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     dirty_lowering_modules: Collection[str],
     target_python: TargetPythonVersion,
+    frontend_phase_timeout: float | None = None,
 ) -> tuple[
     dict[str, dict[str, Any]],
     list[tuple[str, dict[str, Any]]],
@@ -856,6 +872,7 @@ def _prepare_frontend_parallel_batch(
                     scoped_known_classes_by_module=scoped_known_classes_by_module,
                     scoped_known_classes=scoped_known_classes,
                     target_python=target_python,
+                    frontend_phase_timeout=frontend_phase_timeout,
                 ),
             )
         )
