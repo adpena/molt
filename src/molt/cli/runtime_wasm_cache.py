@@ -36,7 +36,7 @@ fresh session can reuse a warm artifact instead of recompiling:
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file, _write_json_sidecar
@@ -100,7 +100,7 @@ def _hydrate_runtime_wasm_from_shared_cache(
     dest: Path,
     fingerprint: Mapping[str, object],
     reloc: bool,
-    is_valid: object,
+    is_valid: Callable[[Path], bool],
 ) -> bool:
     """Copy a warm shared-cache runtime wasm into ``dest`` when one matches.
 
