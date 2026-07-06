@@ -1821,7 +1821,7 @@ def test_proof_queue_audit_treats_pruned_stale_incomplete_summary_as_warning(
     assert "error audit-memory-guard-summary-incomplete run=stale-run" not in out
 
 
-def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
+def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1852,7 +1852,98 @@ def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
         conn,
         run_id="active-run",
         logical_id="active",
-        reason="prove prune follows stale diagnosis",
+        reason="prove launch-summary-only rows are diagnostic, not terminal",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm-build",
+        scopes=["tools/proof_queue.py"],
+        log_path=log_path,
+        summary_json=summary_path,
+    )
+    proof_queue._update_run(
+        conn,
+        "active-run",
+        status="running",
+        guard_pid=99_001,
+        started_at=proof_queue._utc_now(),
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "prune-stale",
+            ]
+        )
+        == 0
+    )
+
+    out = capsys.readouterr().out
+    assert "stale active-run" not in out
+    assert "diagnosis=running-proof-launch-summary-stale" not in out
+    assert "pruned=0" in out
+    row = _rows(db)[0]
+    assert row["status"] == "running"
+    assert row["returncode"] is None
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "diagnose",
+                "active-run",
+            ]
+        )
+        == 0
+    )
+    diag_out = capsys.readouterr().out
+    assert "running-proof-launch-summary-stale" in diag_out
+    assert str(summary_path) in diag_out
+
+
+def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "active.log"
+    summary_path = tmp_path / "active.memory_guard.json"
+    log_path.write_text(
+        "proof_queue run_id=active-run\n"
+        " done\n",
+        encoding="utf-8",
+    )
+    stale = time.time() - proof_queue.RUNNING_CHILD_MISSING_STALE_LOG_SECONDS - 5.0
+    os.utime(log_path, (stale, stale))
+    summary_path.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "child_process": None,
+                "returncode": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: False)
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-run",
+        logical_id="active",
+        reason="prove dead guard launch-summary rows are reclaimable",
         command=[sys.executable, "-c", "print('active')"],
         cwd=proof_queue.ROOT,
         resource_family="wasm",
@@ -1887,8 +1978,6 @@ def test_proof_queue_prune_stale_uses_running_launch_summary_diagnosis(
     out = capsys.readouterr().out
     assert "stale active-run" in out
     assert "diagnosis=running-proof-launch-summary-stale" in out
-    assert str(summary_path) in out
-    assert str(log_path) in out
     assert "pruned=1" in out
     row = _rows(db)[0]
     assert row["status"] == "stale"
@@ -2260,7 +2349,10 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
             guard_pid=guard_pid,
             started_at=proof_queue._utc_now(),
         )
-    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid in {99_001, 99_002})
+    # The selected target's guard has exited; the unselected sibling still owns
+    # live custody. This keeps the test focused on --run-id scoping now that a
+    # launch-summary-only diagnostic is not terminal while its guard is live.
+    monkeypatch.setattr(proof_queue, "_pid_alive", lambda pid: pid == 99_002)
 
     assert (
         proof_queue.main(
