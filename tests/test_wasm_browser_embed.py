@@ -1081,6 +1081,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert (out_dir / "browser_gpu_dispatch.js").exists()
     assert (out_dir / "browser_gpu_worker.js").exists()
     assert (out_dir / "browser_target_features.js").exists()
+    assert (out_dir / "target_feature_constants.generated.js").exists()
     assert (out_dir / "loader_bridge.js").exists()
     assert (out_dir / "target_feature_manifest.json").exists()
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1099,6 +1100,12 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     )
     assert manifest["assets"]["browser_target_features"]["size"] == (
         out_dir / "browser_target_features.js"
+    ).stat().st_size
+    assert manifest["assets"]["target_feature_constants"]["path"] == (
+        "target_feature_constants.generated.js"
+    )
+    assert manifest["assets"]["target_feature_constants"]["size"] == (
+        out_dir / "target_feature_constants.generated.js"
     ).stat().st_size
     assert manifest["assets"]["loader_bridge"]["path"] == "loader_bridge.js"
     target_feature_asset = manifest["assets"]["target_feature_manifest"]

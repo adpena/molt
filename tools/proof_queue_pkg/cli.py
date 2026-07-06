@@ -11,9 +11,8 @@ import argparse
 from tools.proof_queue_pkg import pq
 
 
-def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog=prog,
         description="Submit, run, and inspect Molt proof lanes with contention limits."
     )
     parser.add_argument("--db")
@@ -91,14 +90,21 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     run_p.add_argument(
         "--limit",
         "--jobs",
-        "--queue-size",
         dest="limit",
         type=int,
-        default=1,
+        default=None,
         help=(
-            "maximum ready queued rows to run or detach in this worker call; "
-            "--queue-size is the product spelling and --jobs is the low-level "
-            "proof-queue spelling"
+            "maximum queued rows to run; defaults to 1, or to --queue-size "
+            "when --detach is used. --jobs is the operator-facing alias."
+        ),
+    )
+    run_p.add_argument(
+        "--queue-size",
+        type=int,
+        default=None,
+        help=(
+            "maximum concurrently dispatched/running rows; defaults to "
+            f"{pq.DEFAULT_PROOF_QUEUE_SIZE} or {pq.PROOF_QUEUE_SIZE_ENV}"
         ),
     )
     run_p.add_argument("--run-id")

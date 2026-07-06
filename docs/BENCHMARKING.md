@@ -755,10 +755,13 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
     or `--format powershell`; `tools/throughput_env.sh --apply` is a POSIX
     compatibility wrapper over that resolver and still runs cache prune policy.
 - Defaults preserve explicit root env vars. When external artifacts are
-  preferred, the tooling selects the first healthy configured external root
-  (default order `/Volumes/VertigoDataTier/Molt`, then
-  `/Volumes/APDataStore/Molt`); otherwise it falls back to canonical repo-local
-  artifact roots.
+  preferred, the tooling selects the first healthy configured external root. On
+  this Windows workstation the attached 2 TB SSD volume label `APDataStore`
+  wins and resolves to `D:\Molt`; old `E:` roots are legacy/fallback evidence,
+  not default candidates. POSIX defaults prefer `/Volumes/APDataStore/Molt`,
+  then `/Volumes/VertigoDataTier/Molt`. On APDataStore/exFAT, RunContext emits
+  `UV_LINK_MODE=copy` to avoid uv hard-link churn. Otherwise the resolver falls
+  back to canonical repo-local artifact roots.
 - `tools/bench.py` treats explicit canonical artifact env vars as authoritative
   after conformance setup. `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
   `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
@@ -837,7 +840,13 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
 - Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and inherit the adaptive
   child rlimit from `tests/molt_diff.py`; pass `--diff-child-rlimit-gb <n>`
   only for a deliberate narrower-cap investigation.
-- Prefer `--shared-target-dir` on a hard-link-friendly filesystem (APFS/ext4). If Cargo reports incremental hard-link fallback, move the target dir off filesystems like exFAT.
+- Prefer the DX-selected shared target root, which is `D:\Molt` on this
+  workstation when APDataStore is healthy. If a row reports hard-link fallback
+  or backend cache publication failure on exFAT, diagnose the specific cache
+  authority and keep publication on the canonical lock/rename/copy fallback; do
+  not reroute proof or benchmark lanes to legacy `E:` roots to hide the defect.
+  Verify the row inherited `UV_LINK_MODE=copy` from RunContext before blaming
+  uv or Cargo.
 
 ### Compile Progress Tracker
 

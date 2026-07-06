@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import molt.wasm_artifact as _wasm_artifact
+from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
@@ -495,6 +496,7 @@ export default {
     const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
     const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
     const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
+    const WEBGPU_DISPATCH_HOST_IMPORT = __MOLT_WEBGPU_DISPATCH_HOST_IMPORT__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
     const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -1417,7 +1419,7 @@ export default {
       molt_db_host_poll()        { return 0; },
       molt_process_host_poll()   { return 0; },
       molt_ws_connect_host()     { return -1; },
-      molt_gpu_webgpu_dispatch_host() { return -38; },
+      [WEBGPU_DISPATCH_HOST_IMPORT]: () => -38,
     };
 
     for (const indirectName of callIndirectImportNames) {
@@ -1643,6 +1645,10 @@ export default {
         .replace(
             "__MOLT_SHARED_TABLE_BASE__",
             "null" if shared_table_base is None else str(shared_table_base),
+        )
+        .replace(
+            "__MOLT_WEBGPU_DISPATCH_HOST_IMPORT__",
+            json.dumps(WEBGPU_DISPATCH_HOST_IMPORT),
         )
     )
 

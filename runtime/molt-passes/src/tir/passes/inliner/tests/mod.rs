@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::call_sites::collect_call_sites;
 use super::clone_body::{clone_attrs_without_simple_names, clone_function_body_with_fresh_ids};
 use super::eligibility::is_closure;
@@ -6,10 +8,13 @@ use super::splice::splice_call_site;
 use super::*;
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
+use crate::tir::call_graph::CallGraph;
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::ops::{
     AttrDict, AttrValue, Dialect, OpCode, TirOp, dead_placeholder_const_for_type,
 };
+use crate::tir::passes::ip_summary::ModuleSummaries;
+use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -164,6 +169,78 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
     g
 }
 
+fn over_base_budget_float_callee_with_return_type(name: &str, return_type: TirType) -> TirFunction {
+    let mut f = TirFunction::new(name.into(), vec![], return_type);
+    let entry = f.entry_block;
+    let mut last = ValueId(0);
+    for i in 0..31 {
+        let value = f.fresh_value();
+        let mut attrs = AttrDict::new();
+        attrs.insert("f_value".into(), AttrValue::Float(i as f64));
+        f.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstFloat,
+            operands: vec![],
+            results: vec![value],
+            attrs,
+            source_span: None,
+        });
+        f.value_types.insert(value, TirType::F64);
+        last = value;
+    }
+    f.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![last] };
+    f
+}
+
+fn over_base_budget_float_callee(name: &str) -> TirFunction {
+    over_base_budget_float_callee_with_return_type(name, TirType::F64)
+}
+
+fn loop_numeric_caller(callee_name: &str) -> TirFunction {
+    let mut g = TirFunction::new("numeric_loop_caller".into(), vec![], TirType::F64);
+    let call_res = g.fresh_value();
+    let scale = g.fresh_value();
+    let product = g.fresh_value();
+    let entry = g.entry_block;
+    let mut call_attrs = AttrDict::new();
+    call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
+    let mut scale_attrs = AttrDict::new();
+    scale_attrs.insert("f_value".into(), AttrValue::Float(2.0));
+    let block = g.blocks.get_mut(&entry).unwrap();
+    block.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Call,
+        operands: vec![],
+        results: vec![call_res],
+        attrs: call_attrs,
+        source_span: None,
+    });
+    block.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::ConstFloat,
+        operands: vec![],
+        results: vec![scale],
+        attrs: scale_attrs,
+        source_span: None,
+    });
+    block.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Mul,
+        operands: vec![call_res, scale],
+        results: vec![product],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    block.terminator = Terminator::Return {
+        values: vec![product],
+    };
+    g.loop_roles.insert(entry, LoopRole::LoopHeader);
+    g.value_types.insert(call_res, TirType::F64);
+    g.value_types.insert(scale, TirType::F64);
+    g.value_types.insert(product, TirType::F64);
+    g
+}
+
 fn module(funcs: Vec<TirFunction>) -> TirModule {
     TirModule {
         name: "m".into(),
@@ -223,7 +300,7 @@ fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirF
             id: exc_exit,
             args: vec![],
             ops: vec![],
-            // ret_void — propagate the pending flag.
+            // ret_void - propagate the pending flag.
             terminator: Terminator::Return { values: vec![] },
         },
     );

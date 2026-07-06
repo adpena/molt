@@ -958,6 +958,66 @@ def test_source_extension_runtime_python_imports_keeps_nested_init_context() -> 
     )
 
 
+def test_source_extension_runtime_python_imports_admits_cython_modinit_helpers() -> (
+    None
+):
+    # Cython 3.x emits its unconditional exec-time imports inside dedicated
+    # ``__Pyx_modinit_*`` helpers that ``__pyx_pymod_exec_<mod>`` calls during
+    # ``Py_mod_exec``. scipy.ndimage's ``_ni_label`` imports Cython's
+    # shared-utility module ``scipy._cyutility`` from
+    # ``__Pyx_modinit_shared_function_import_code`` and ``numpy`` from
+    # ``__Pyx_modinit_type_import_code``. Before the scanner recognized this
+    # helper family those imports were dropped, so the witness failed at
+    # runtime with ``No module named 'scipy._cyutility'``.
+    source = r"""
+    static int __Pyx_modinit_shared_function_import_code(void *mstate) {
+        __pyx_t_1 = PyImport_ImportModule("scipy._cyutility");
+        return 0;
+    }
+    static int __Pyx_modinit_type_import_code(void *mstate) {
+        __pyx_t_1 = PyImport_ImportModule("numpy");
+        return 0;
+    }
+    static int __Pyx_DecompressString(void) {
+        PyImport_ImportModule("compression.zstd");
+        return 0;
+    }
+    static int __pyx_pymod_exec__ni_label(PyObject *module) {
+        if (unlikely((__Pyx_modinit_type_import_code(mstate) < 0))) return -1;
+        if (unlikely((__Pyx_modinit_shared_function_import_code(mstate) < 0)))
+            return -1;
+        return 0;
+    }
+    """
+
+    imports = cli_source_extensions.source_extension_runtime_python_imports(source)
+    # Teeth: both exec-time helper imports must be admitted...
+    assert "scipy._cyutility" in imports
+    assert "numpy" in imports
+    # ...while the genuine lazy runtime helper stays excluded.
+    assert "compression.zstd" not in imports
+    assert imports == ("numpy", "scipy._cyutility")
+
+
+def test_source_extension_eager_import_function_name_precise_cython_modinit() -> None:
+    # The eager admission is scoped to the ``__Pyx_modinit_`` init family only;
+    # arbitrary Cython runtime helpers stay lazy so their imports are not
+    # dragged in as AOT roots.
+    eager = cli_source_extensions._source_extension_eager_import_function_name
+    assert eager("__Pyx_modinit_shared_function_import_code")
+    assert eager("__Pyx_modinit_type_import_code")
+    assert eager("__Pyx_modinit_function_import_code")
+    assert eager("__Pyx_modinit_global_init_code")
+    assert eager("__pyx_pymod_exec__ni_label")
+    assert eager("PyInit__ni_label")
+    # Not eager: lazy Cython helpers / unrelated functions.
+    assert not eager("__Pyx_init_co_variables")
+    assert not eager("__Pyx_DecompressString")
+    assert not eager("__Pyx_ImportType_3_2_8")
+    assert not eager("helper")
+    assert not eager(None)
+
+
 def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1046,6 +1106,126 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     assert "nativepkg.exceptions" in import_plan.compile_modules
     assert "native_runtime_python_import" in module_reasons["math"]
     assert "native_support_source" in module_reasons["nativepkg.exceptions"]
+
+
+def _sealed_manifest_custody_overrides() -> dict[str, Any]:
+    """Overrides that mark a manifest as a sealed extension root.
+
+    ``external_native._manifest_has_sealed_extension_custody`` keys on the
+    ``sealed_from_*`` provenance fields, so a test that exercises sealed-root
+    behavior must set them.
+    """
+    return {
+        "sealed_from_manifest_sha256": "0" * 64,
+        "sealed_from_extension_sha256": "0" * 64,
+    }
+
+
+def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sealed manifest's persisted runtime-import field stages a C-only import.
+
+    numpy imports ``numpy._core._exceptions`` only from its C source
+    (``npy_static_data.c`` via ``IMPORT_GLOBAL``); no Python module importer
+    pulls it. A sealed root omits its C sources, so the build cannot re-scan
+    them. The persisted ``runtime_python_import_modules`` field must let the
+    build stage that submodule anyway (the self-contained property). Pre-fix
+    (no field, source dropped) the submodule silently vanished and the runtime
+    raised ``No module named 'nativepkg.hidden'``.
+    """
+    external_root = tmp_path / "site"
+    # The runtime-imported package-internal submodule that only the (absent) C
+    # source would name. It has NO Python importer inside the package.
+    hidden_path = external_root / "nativepkg" / "hidden.py"
+    hidden_path.parent.mkdir(parents=True)
+    hidden_path.write_text(
+        "class Boom(RuntimeError):\n    pass\n",
+        encoding="utf-8",
+    )
+    hidden_sha = hashlib.sha256(hidden_path.read_bytes()).hexdigest()
+    overrides = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "python_exports": ["nativepkg.dynamic"],
+        # No "sources": the sealed root deliberately omits its C sources.
+        "runtime_python_import_modules": ["math", "nativepkg.hidden"],
+    }
+    overrides.update(_sealed_manifest_custody_overrides())
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides=overrides,
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact = policy.native_artifact_plan.artifacts[0]
+    # The stdlib import went to the AOT import-graph closure; the
+    # package-internal C-only import got staged as a support module even though
+    # no C source (and no Python importer) named it.
+    assert artifact.runtime_python_imports == ("math",)
+    assert artifact.runtime_python_import_modules == ("nativepkg.hidden",)
+    assert ("nativepkg/hidden.py", hidden_sha) in artifact.support_file_sha256
+
+
+def test_sealed_manifest_without_runtime_field_and_missing_source_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older sealed manifest lacking the field, with unresolved sources, fails closed.
+
+    Before this fix the runtime-import scan silently tolerated missing sources,
+    so a C-only import that only an absent source declared vanished and failed
+    at runtime. A sealed root that predates ``runtime_python_import_modules``
+    and whose C sources no longer resolve cannot prove its runtime-import
+    closure, so admission must fail closed with a precise diagnostic that names
+    the unresolved sources and directs the operator to re-seal.
+    """
+    external_root = tmp_path / "site"
+    (external_root / "nativepkg").mkdir(parents=True)
+    missing_source = tmp_path / "gone" / "npy_static_data.c"
+    overrides = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "python_exports": ["nativepkg.dynamic"],
+        # A declared source that is not present on disk, and NO persisted
+        # runtime_python_import_modules field (older sealed manifest).
+        "sources": [str(missing_source)],
+    }
+    overrides.update(_sealed_manifest_custody_overrides())
+    artifact_path, manifest_path = _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides=overrides,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "runtime_python_import_modules" not in manifest
+
+    result, errors = cli_external_native._resolve_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=manifest_path,
+        package="nativepkg",
+    )
+    assert result == ()
+    assert errors, "a missing-source sealed manifest without the field must fail closed"
+    joined = " ".join(errors)
+    assert "runtime_python_import_modules" in joined
+    assert "re-seal" in joined.lower()
+    assert "npy_static_data.c" in joined
 
 
 def test_materialize_import_plan_adds_reachable_native_support_source_closure(
@@ -7989,6 +8169,7 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
 
     ops = _frontend_main_ops_for_import_source(
         "import scipy.ndimage as ndi\n"
+        "from scipy import ndimage\n"
         "from scipy.ndimage import (\n"
         "    distance_transform_edt,\n"
         "    gaussian_filter,\n"
@@ -7999,14 +8180,19 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
         "mask = 1\n"
         "a = distance_transform_edt(mask)\n"
         "b = ndi.distance_transform_edt(mask)\n"
-        "c = gaussian_filter(mask, sigma=1.5)\n"
-        "d = ndi.gaussian_filter(mask, sigma=2.0)\n"
-        "e = maximum_filter(mask, size=15)\n"
-        "f = ndi.maximum_filter(mask, size=17)\n"
-        "g = minimum_filter(mask, size=11)\n"
-        "h = ndi.minimum_filter(mask, size=13)\n"
-        "i = label(mask)\n"
-        "j = ndi.label(mask)\n",
+        "c = ndimage.distance_transform_edt(mask)\n"
+        "d = gaussian_filter(mask, sigma=1.5)\n"
+        "e = ndi.gaussian_filter(mask, sigma=2.0)\n"
+        "f = ndimage.gaussian_filter(mask, sigma=2.5)\n"
+        "g = maximum_filter(mask, size=15)\n"
+        "h = ndi.maximum_filter(mask, size=17)\n"
+        "i = ndimage.maximum_filter(mask, size=19)\n"
+        "j = minimum_filter(mask, size=11)\n"
+        "k = ndi.minimum_filter(mask, size=13)\n"
+        "l = ndimage.minimum_filter(mask, size=21)\n"
+        "m = label(mask)\n"
+        "n = ndi.label(mask)\n"
+        "o = ndimage.label(mask)\n",
         module_name="field_solve",
         parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
@@ -8016,11 +8202,11 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
     )
 
     expected_counts = {
-        "scipy.ndimage.distance_transform_edt": 2,
-        "scipy.ndimage.gaussian_filter": 2,
-        "scipy.ndimage.maximum_filter": 2,
-        "scipy.ndimage.minimum_filter": 2,
-        "scipy.ndimage.label": 2,
+        "scipy.ndimage.distance_transform_edt": 3,
+        "scipy.ndimage.gaussian_filter": 3,
+        "scipy.ndimage.maximum_filter": 3,
+        "scipy.ndimage.minimum_filter": 3,
+        "scipy.ndimage.label": 3,
     }
     invoke_ops_by_export = {
         name: [
@@ -8042,8 +8228,8 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi() -> None:
             assert invoke_op["native_callable_abi"] == spec["abi"]
             assert "native_callable_symbol" not in invoke_op
             assert len(invoke_op["args"]) == 2
-    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 6
-    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 6
+    assert sum(1 for op in ops if op.get("kind") == "callargs_new") == 9
+    assert sum(1 for op in ops if op.get("kind") == "callargs_push_kw") == 9
     assert all(op.get("kind") != "call_bind" for op in ops)
     assert all(op.get("kind") != "call_indirect" for op in ops)
     assert all(
@@ -18405,6 +18591,12 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
         "export const assertBrowserTargetFeatureContract = () => {};\n",
         encoding="utf-8",
     )
+    target_feature_constants_js = wasm_root / "target_feature_constants.generated.js"
+    target_feature_constants_js.write_text(
+        "export const WEBGPU_DISPATCH_HOST_IMPORT = "
+        '"molt_gpu_webgpu_dispatch_host";\n',
+        encoding="utf-8",
+    )
     loader_bridge = wasm_root / "loader_bridge.js"
     loader_bridge.write_text(
         "globalThis.MoltWasmLoaderBridge = {};\n",
@@ -18754,6 +18946,13 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert manifest["assets"]["browser_target_features"]["path"] == (
         "browser_target_features.js"
     )
+    assert manifest["assets"]["target_feature_constants"]["path"] == (
+        "target_feature_constants.generated.js"
+    )
+    assert (
+        output_wasm.parent
+        / manifest["assets"]["target_feature_constants"]["path"]
+    ).exists()
     target_feature_asset = manifest["assets"]["target_feature_manifest"]
     assert target_feature_asset["path"] == "target_feature_manifest.json"
     assert len(target_feature_asset["sha256"]) == 64

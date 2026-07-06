@@ -239,6 +239,42 @@ pub extern "C" fn molt_type_tag_of_bits(bits: u64) -> i64 {
     }
 }
 
+#[cfg(feature = "molt_gpu_primitives")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
+    molt_gpu::primitives_ffi::molt_gpu_prim_realize(handle)
+}
+
+#[cfg(feature = "molt_gpu_primitives")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_prim_dtype(handle: u64) -> u64 {
+    molt_gpu::primitives_ffi::molt_gpu_prim_dtype(handle)
+}
+
+#[cfg(feature = "molt_gpu_primitives")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_prim_nbytes(handle: u64) -> u64 {
+    molt_gpu::primitives_ffi::molt_gpu_prim_nbytes(handle)
+}
+
+#[cfg(feature = "molt_gpu_primitives")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_prim_free(handle: u64) -> u64 {
+    molt_gpu::primitives_ffi::molt_gpu_prim_free(handle)
+}
+
+#[cfg(feature = "molt_gpu_primitives")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_prim_contiguous(handle: u64) -> u64 {
+    molt_gpu::primitives_ffi::molt_gpu_prim_contiguous(handle)
+}
+
+#[cfg(feature = "molt_gpu_primitives")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
+    molt_gpu::primitives_ffi::molt_gpu_prim_numel(handle)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
     let Ok(size) = usize::try_from(size) else {

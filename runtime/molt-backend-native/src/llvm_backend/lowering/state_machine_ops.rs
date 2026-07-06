@@ -349,13 +349,35 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_conditional_branch(is_pending, pending_path, ready_path)
             .unwrap();
         self.backend.builder.position_at_end(pending_path);
-        let sleep_fn = self.ensure_runtime_i64_fn("molt_sleep_register", 2);
+        let i64_ty = self.backend.context.i64_type();
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
+        let fn_ty = i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        let sleep_fn = declare_fixed_runtime_function(
+            self.backend.context,
+            &self.backend.module,
+            "molt_sleep_register",
+        )
+        .unwrap_or_else(|| panic!("molt_sleep_register must be a fixed LLVM runtime import"));
+        let sleep_fn = require_llvm_function_type("molt_sleep_register", sleep_fn, fn_ty);
+        let self_ptr = self
+            .backend
+            .builder
+            .build_int_to_ptr(self_bits, ptr_ty, "sleep_task_ptr")
+            .unwrap();
+        let future_ptr = self
+            .backend
+            .builder
+            .build_int_to_ptr(future_bits, ptr_ty, "sleep_future_ptr")
+            .unwrap();
         let _ = self
             .backend
             .builder
             .build_call(
                 sleep_fn,
-                &[self_bits.into(), future_bits.into()],
+                &[self_ptr.into(), future_ptr.into()],
                 "state_transition_sleep",
             )
             .unwrap();

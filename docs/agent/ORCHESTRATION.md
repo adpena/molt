@@ -5,7 +5,7 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-05 by the orchestrator.
+Last updated: 2026-07-06 by the orchestrator.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
@@ -288,6 +288,46 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
 
 ## State of the world (read this first)
 
+- **⚠️ EMERGENCY QUEUE REPRIORITIZATION 2026-07-06 (orchestrator,
+  operator-authorized): WITNESS P0 HAS EXCLUSIVE HEAVY-BUILD PRIORITY — CODEX
+  STAND DOWN ON HEAVY WASM/CARGO BUILDS.** The host is memory-CONTENDED (~1GB
+  available, 59GB commit / 85GB limit) — this is NOT a leak: `orphan_reaper.py
+  sweep` confirms 0 orphaned Molt build processes; the live cargo/rustc are
+  legitimate concurrent builds. The constraint is heavy-build CONTENTION — the
+  pact-witness P0 WASM build cannot complete while other heavy WASM/cargo builds
+  run (both thrash + time out; cf. R4a `spectral_norm` WASM artifact rc=124
+  @1209s). **All Codex agents and subagents: STAND DOWN on heavy builds — full
+  `molt build --target wasm`, R4a spectral/comparison WASM-artifact builds, and
+  multi-crate cargo builds — until the witness reaches parity OR the orchestrator
+  releases this hold.** The witness P0 (Kernel A → `candidate_outputs.npz` →
+  `check_parity`) is the ONE heavy build that runs. Light work continues:
+  Python, docs, single-crate `cargo check` via the queue, tests. **MEMORY
+  DISCIPLINE (standing lesson): memory pressure is diagnosed by `orphan_reaper.py
+  sweep` (leak vs contention), then fixed by QUEUE REPRIORITIZATION (orchestrator
+  authority) — NOT by manual process hunting. Run landed tools from a worktree,
+  since the shared checkout is base-stale and lacks tools/orphan_reaper.py.**
+- **UPDATE 2026-07-06 (orchestrator): TARGET-FEATURE AUTHORITY UNIFIED +
+  RECLAIMED (c54839969).** Target-feature + browser-profile truth now flows
+  through ONE generated authority: `src/molt/target_feature_manifest.toml`
+  (source) → `tools/gen_target_feature_manifest.py` (`--check` drift gate) →
+  `src/molt/_target_feature_manifest.py` + `wasm/target_feature_manifest.json` +
+  `wasm/target_feature_constants.generated.js`. The `WEBGPU_DISPATCH_HOST_IMPORT`
+  / `TARGET_FEATURE_MANIFEST_ASSET_NAME` / `BROWSER_TARGET_FAMILY` constants are
+  now DERIVED generated facts (`molt_gpu_webgpu_dispatch_host` derives from
+  `wasm-browser-webgpu`'s `browser_host_imports.webgpu[0]`); the 6 duplicate
+  hand-defined literals across `cli/browser_target_features.py`,
+  `wasm/browser_target_features.js`, `browser_host.js`, `browser_embed.js`,
+  `run_wasm.js`, `cli/wasm.py` are DELETED — every consumer imports from the
+  generated source. Proven: `gen --check` green + 21 gen/metadata tests + 2
+  teeth-tests (`test_derived_constants_are_single_sourced_from_manifest`,
+  `test_no_duplicate_literal_definitions_of_webgpu_dispatch_host_import`, which
+  fail on a reintroduced literal). **CODEX STAND DOWN on target-feature /
+  browser-profile truth — orchestrator-owned lane. Any target feature,
+  capability flag, or browser-host-import MUST be declared in
+  `target_feature_manifest.toml` and regenerated via the generator; NEVER
+  hand-add a feature literal, a second capability list, or a backend-local
+  reclassification.** The uncommitted target-feature WIP in the shared checkout
+  is superseded by this landing (captured at D:/Molt/harvest/; drop it).
 - **UPDATE 2026-07-05 (orchestrator, ground-truthed on origin/main):** the
   ndimage FRONTEND gate is CLEARED. `scipy.ndimage.distance_transform_edt` and
   all 5 witness ops (`gaussian_filter`, `label`, `maximum_filter`,
@@ -306,11 +346,11 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
   BEFORE landing — a split that does not compile is a broken-main P0 that blocks
   the whole witness.** Witness acceptance is RE-RUNNING on df4e5e738 to surface
   the next step (wasm link / runtime-exec / parity) toward `candidate_outputs.npz`
-  + `check_parity` green (owner: orchestrator, R0). DX gap flagged: RunContext
-  rehomes `MOLT_TARGET_ROOT` to `D:\molt-target`, which lacks toolchains/WASI
-  sysroot on this host — wasm builds currently need a `MOLT_PRESERVE_TARGET_ROOT=1`
-  + explicit `MOLT_WASI_SYSROOT` workaround (provisioning + `dx.py` rehome-guard
-  follow-up).
+  + `check_parity` green (owner: orchestrator, R0). DX gap closed by the
+  APDataStore target-root resolver: RunContext now derives managed toolchains
+  from the selected artifact root as `D:\Molt\target-root`, and stale
+  `E:\molt-target`, `E:\Molt\target-root`, or empty `D:\molt-target` defaults
+  are rehomed unless explicitly preserved with `MOLT_PRESERVE_TARGET_ROOT=1`.
 - The witness `import numpy` chain has advanced deep into numpy's C-core
   init. Landed this arc: conditional-import wedge (3b0ca4a80, killed the
   infinite hang), honest-error propagation (3d5977a9d, real import errors no

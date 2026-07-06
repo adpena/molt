@@ -107,6 +107,42 @@ is reconciled.
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
   Non-active `uv run` creates throwaway environments and is not acceptable.
+- On this Windows workstation, APDataStore is the preferred maintainer/agent
+  artifact volume. Fresh DX/proof-queue builds must go through RunContext
+  (`tools/run_context_env.py --prefer-external-artifacts --dx`,
+  `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so build,
+  cache, temp, and managed toolchain paths resolve under `D:\Molt` when that
+  volume is healthy. `MOLT_TARGET_ROOT` defaults to
+  `D:\Molt\target-root`; stale `E:\molt-target`, `E:\Molt\target-root`, and
+  `D:\molt-target` defaults are legacy evidence/fallbacks, not script-local
+  discovery defaults. Preserve an intentional off-default toolchain root only
+  with `MOLT_PRESERVE_TARGET_ROOT=1`, or override artifact selection with
+  `MOLT_EXTERNAL_ARTIFACT_ROOTS`. RunContext emits `UV_LINK_MODE=copy` for
+  exFAT APDataStore roots unless an explicit operator value is present.
+- Bootstrap RunContext before the first `uv` command in a fresh checkout or
+  worktree. Use an already-installed host Python 3.12+ for this dependency-free
+  resolver script, for example
+  `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`;
+  then use `uv run --active --project . --python 3.12 ...` for project commands.
+  Do not use `uv run` to obtain the first env in a cold checkout, because
+  `UV_LINK_MODE=copy` must be present before uv touches `.venv` on
+  APDataStore/exFAT.
+- Never launch parallel `uv` bootstrap/sync commands against the same fresh
+  checkout. One process owns `.venv` creation; after it exits, subsequent uv
+  commands run with the emitted DX env. If isolation is not required, inspect
+  `origin/main:<path>` or reuse an existing warm worktree instead of creating a
+  cold APDataStore worktree just to read or verify docs.
+- APDataStore is exFAT, so Molt cache publication must not depend on hard-link
+  support; the backend cache owns the lock+rename/copy fallback. Do not disable
+  caching, reroute to `E:`, or hand-copy artifacts to work around hard-link
+  errors. Treat `Failed to publish backend cache output` under `D:\Molt` as a
+  DX defect to diagnose through the cache authority.
+- Maintainer/agent git worktrees belong under `D:\Molt\worktrees`, never
+  `E:\Molt\worktrees` or `C:`. Because APDataStore is exFAT, add each new
+  worktree to Git's safe-directory list if Git reports dubious ownership. Do
+  not hand-delete APDataStore build roots; use `tools/molt_ssd_janitor.py`
+  (dry-run by default, `--apply` for cleanup) so registered worktrees and live
+  sessions stay protected.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`. Read it before
   queueing or interpreting long-running proof evidence.
 - Pact Kernel A acceptance must use the named queue lane

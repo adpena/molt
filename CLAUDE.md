@@ -65,17 +65,19 @@ is reconciled.
   agent artifact volume; `E:` is legacy/contended and `C:` is near-full. Route
   builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts
   --dx`, `tools/dev.py`, `tools/throughput_env.sh`, or the proof queue): it
-  selects APDataStore by volume label and sets `MOLT_EXT_ROOT=D:\Molt` with
-  `CARGO_TARGET_DIR`/cache/temp under it. WASM/native toolchains live under
-  `MOLT_TARGET_ROOT` (`D:\molt-target\toolchains`), an operator-managed
-  persistent env decoupled from the artifact root — RunContext no longer derives
-  it, so a stale inherited `MOLT_TARGET_ROOT=E:\molt-target` must be corrected at
-  the shell, not relied on. Maintainer/agent git worktrees go under
-  `D:\Molt\worktrees`, never `E:\Molt\worktrees` (legacy) or `C:`. APDataStore is
-  exFAT: it records no ownership, so a fresh worktree needs
+  selects APDataStore by volume label and sets `MOLT_EXT_ROOT=D:\Molt`,
+  `CARGO_TARGET_DIR`/cache/temp under it, and the managed toolchain root
+  `MOLT_TARGET_ROOT=D:\Molt\target-root`. Stale inherited
+  `MOLT_TARGET_ROOT=E:\molt-target`, `E:\Molt\target-root`, or
+  `D:\molt-target` is rehomed unless the operator sets
+  `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext also emits `UV_LINK_MODE=copy` for
+  exFAT APDataStore roots unless an explicit operator value is present.
+  Maintainer/agent git worktrees go under `D:\Molt\worktrees`, never
+  `E:\Molt\worktrees` (legacy) or `C:`. APDataStore is exFAT: it records no
+  ownership, so a fresh worktree needs
   `git config --global --add safe.directory <path>` or git aborts with "detected
   dubious ownership"; and it has no hard-link support, so cache publication uses
-  the backend cache lock+rename fallback — do not disable caching, reroute to
+  the backend cache lock+rename/copy fallback — do not disable caching, reroute to
   `E:`, or hand-copy artifacts to work around it. Treat `Failed to publish
   backend cache output` under `D:\Molt` as a DX defect to diagnose through the
   cache authority; treat `E:\Molt`/`E:\molt-target` as legacy/fallback evidence.

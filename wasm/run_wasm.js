@@ -7,6 +7,9 @@ const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
 const {
+  WEBGPU_DISPATCH_HOST_IMPORT,
+} = require('./target_feature_manifest.json').constants;
+const {
   callIndirectObjectSignature,
   callIsolateImportExport,
   callReservedRuntimeCallable,
@@ -5306,7 +5309,7 @@ const runDirectLink = async () => {
     molt_process_close_stdin_host: processHostCloseStdin,
     molt_process_stdio_host: processHostStdio,
     molt_process_host_poll: processHostPoll,
-    molt_gpu_webgpu_dispatch_host: () => -ENOSYS,
+    [WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS,
   };
   for (const name of runtimeCallIndirectNames) {
     env[name] = (...args) => {
@@ -5643,7 +5646,7 @@ const runLinked = async () => {
   importObject.env.molt_process_close_stdin_host = processHostCloseStdin;
   importObject.env.molt_process_stdio_host = processHostStdio;
   importObject.env.molt_process_host_poll = processHostPoll;
-  importObject.env.molt_gpu_webgpu_dispatch_host = () => -ENOSYS;
+  importObject.env[WEBGPU_DISPATCH_HOST_IMPORT] = () => -ENOSYS;
   // `molt_isolate_import` is app-owned: the linked module both imports
   // (env::molt_isolate_import) and exports it, a self-import that wasm-ld leaves
   // unresolved (it is on the allowed-undefined list).  Forward it to the linked
