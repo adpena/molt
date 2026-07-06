@@ -41,6 +41,8 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text
     assert "cancel-in-progress: true" in ci_text
     assert "docs-gates:" in ci_text
+    assert "classify-changes:" in ci_text
+    assert "name: Changed Path Classifier" in ci_text
     # The frontend-Python ty type-check is a zero-diagnostic ratchet enforced in
     # CI (pre-commit is not run in Actions), mirroring the pre-commit `ty` hook.
     assert "uv run ty check src" in ci_text
@@ -49,8 +51,12 @@ def test_ci_push_path_is_cheap_only() -> None:
     # lane/naming debt cannot land silently.
     assert "uv run python3 tools/check_differential_suite_layout.py" in ci_text
     assert "python-tooling-smoke:" in ci_text
+    assert "needs: classify-changes" in ci_text
+    assert "if: needs.classify-changes.outputs.python_tooling == 'true'" in ci_text
     assert "rust-build-unit-smoke:" in ci_text
+    assert "if: needs.classify-changes.outputs.rust == 'true'" in ci_text
     assert "llvm-backend:" in ci_text
+    assert "if: needs.classify-changes.outputs.llvm == 'true'" in ci_text
     assert "needs: docs-gates" not in ci_text
     assert "differential-tests:" not in ci_text
     assert "benchmark:" not in ci_text
@@ -116,6 +122,19 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 4
 
 
+def test_ci_heavy_jobs_are_path_classified() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+
+    assert 'python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"' in (
+        ci_text
+    )
+    assert "python_tooling: ${{ steps.paths.outputs.python_tooling }}" in ci_text
+    assert "rust: ${{ steps.paths.outputs.rust }}" in ci_text
+    assert "llvm: ${{ steps.paths.outputs.llvm }}" in ci_text
+    assert ci_text.count("needs: classify-changes") == 3
+    assert ci_text.count("fetch-depth: 0") == 1
+
+
 def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     ci_text = _read(".github/workflows/ci.yml")
     perf_text = _read(".github/workflows/perf-gate.yml")
@@ -155,6 +174,19 @@ def test_kani_runtime_proofs_do_not_compile_full_stdlib_closure() -> None:
     assert "cargo kani --tests --no-default-features" in runtime_block
     assert "--all-features" not in runtime_block
     assert "stdlib_full" not in runtime_block
+
+
+def test_kani_workflow_is_path_classified() -> None:
+    kani_text = _read(".github/workflows/kani.yml")
+
+    assert "classify-changes:" in kani_text
+    assert "name: Changed Path Classifier" in kani_text
+    assert "kani: ${{ steps.paths.outputs.kani }}" in kani_text
+    assert 'python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"' in (
+        kani_text
+    )
+    assert "needs: classify-changes" in kani_text
+    assert "if: needs.classify-changes.outputs.kani == 'true'" in kani_text
 
 
 def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
@@ -554,6 +586,26 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
         release_text
     )
     assert "run: cargo build -p molt-worker --release" not in release_text
+
+
+def test_security_hardening_workflow_is_path_classified() -> None:
+    security_text = _read(".github/workflows/security_hardening.yml")
+
+    assert "classify-changes:" in security_text
+    assert "name: Changed Path Classifier" in security_text
+    assert (
+        "python_security: ${{ steps.paths.outputs.python_security }}" in security_text
+    )
+    assert "rust_security: ${{ steps.paths.outputs.rust_security }}" in security_text
+    assert 'python3 tools/ci_changed_paths.py --github-output "$GITHUB_OUTPUT"' in (
+        security_text
+    )
+    assert "if: needs.classify-changes.outputs.python_security == 'true'" in (
+        security_text
+    )
+    assert "if: needs.classify-changes.outputs.rust_security == 'true'" in (
+        security_text
+    )
 
 
 def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:

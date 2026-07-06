@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence, cast
 from molt.dx import DxConfigError, DxProject
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import source_extensions as _source_extensions
+from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.arg_helpers import (
     _build_args_has_cache_flag,
     _build_args_has_capabilities_flag,
@@ -2464,7 +2465,85 @@ def extension_build(
         build_tmp = Path(td)
         object_paths: list[Path] = []
         object_facts: list[_source_extensions._SourceExtensionObjectFact] = []
+        # R73.2: a Cython extension's shipped C may have been emitted with
+        # ``--shared scipy._cyutility`` (an unsatisfiable shared-utility import).
+        # Molt owns how it gets a Cython extension's C: regenerate it STANDALONE
+        # from the package's own ``.pyx`` so the module embeds its utilities and
+        # imports no shared-utility module. One custody path, no host fallback.
+        cython_regenerations: dict[Path, _source_extension_cython.CythonRegeneration]
+        cython_regenerations = {}
+        if loaded_source_plan is not None:
+            pyx_candidates = [
+                path
+                for path in (
+                    *loaded_source_plan.non_compiled_inputs,
+                    *loaded_source_plan.sources,
+                    *loaded_source_plan.generated_sources,
+                )
+                if path.suffix.lower() == ".pyx"
+            ]
+            cython_targets: list[tuple[Path, Path]] = []
+            for unit in loaded_source_plan.compile_units:
+                pyx_path = _source_extension_cython.pair_generated_c_with_pyx(
+                    generated_c=unit.source_path,
+                    pyx_candidates=pyx_candidates,
+                )
+                if pyx_path is not None and pyx_path.is_file():
+                    cython_targets.append((unit.source_path.resolve(), pyx_path))
+            if cython_targets:
+                cython_requirement = (
+                    _source_extension_cython.cython_build_requirement_from_pyproject(
+                        pyproject
+                    )
+                )
+                cython_python_exe = sys.executable
+                cython_version, provision_error = (
+                    _source_extension_cython.provision_cython(
+                        python_exe=cython_python_exe,
+                        requirement=cython_requirement,
+                    )
+                )
+                if provision_error is not None:
+                    return _fail(
+                        provision_error,
+                        json_output,
+                        command="extension-build",
+                    )
+                assert cython_version is not None
+                cython_out_dir = build_tmp / "cython_standalone"
+                for original_c, pyx_path in cython_targets:
+                    plan_include_dirs = [
+                        unit.include_dirs
+                        for unit in loaded_source_plan.compile_units
+                        if unit.source_path.resolve() == original_c
+                    ]
+                    flat_includes = [
+                        include_dir
+                        for includes in plan_include_dirs
+                        for include_dir in includes
+                    ]
+                    regeneration, regen_error = (
+                        _source_extension_cython.regenerate_cython_c_standalone(
+                            pyx_path=pyx_path,
+                            original_c=original_c,
+                            out_dir=cython_out_dir,
+                            include_dirs=flat_includes,
+                            cython_version=cython_version,
+                            python_exe=cython_python_exe,
+                        )
+                    )
+                    if regen_error is not None:
+                        return _fail(
+                            regen_error,
+                            json_output,
+                            command="extension-build",
+                        )
+                    assert regeneration is not None
+                    cython_regenerations[original_c] = regeneration
         for idx, source_path in enumerate(source_paths):
+            regeneration = cython_regenerations.get(source_path.resolve())
+            if regeneration is not None:
+                source_path = regeneration.regenerated_c
             plan_unit = (
                 loaded_source_plan.compile_units[idx]
                 if loaded_source_plan is not None
@@ -2857,6 +2936,11 @@ def extension_build(
         if loaded_source_plan is not None:
             manifest_payload["source_plan"] = loaded_source_plan.manifest_payload()
             build_payload["source_plan_digest"] = loaded_source_plan.digest
+            if cython_regenerations:
+                manifest_payload["cython_standalone"] = [
+                    cython_regenerations[key].manifest_payload()
+                    for key in sorted(cython_regenerations)
+                ]
             build_payload["object_count"] = len(object_facts)
             build_payload["linked_object_count"] = len(object_paths)
             assert source_plan_object_closure is not None

@@ -57,6 +57,14 @@ every consumer needed to delete or unify the old lane.
 - No local minima, no smallest-next-chip progress, and no excessive
   test/conformance/proof apparatus as a substitute for changing the
   architecture.
+- Dependency gates are work selectors, not idle states. Never stop at
+  "I will not do X until Y happens" unless the formal blocked audit is already
+  satisfied. If a lane is waiting on CI, a queue row, a frozen owner, a merge, or
+  any other external event, immediately advance another board-valid structural
+  arc, pre-stage the next exact patch/proof, file the precise queue/board note,
+  or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
+  detached proof custody or an explicit stand-down/frozen-lane order; it is never
+  a reason to narrate status, shrink scope, land a placeholder, or stop moving.
 - Expensive or contention-heavy proof work must go through
   `tools/proof_queue.py`: Cargo builds, WASM/browser proofs, benchmark lanes,
   conformance shards, stress tests, and any test likely to contend for shared
