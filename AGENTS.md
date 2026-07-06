@@ -117,12 +117,19 @@ is reconciled.
   `D:\molt-target` defaults are legacy evidence/fallbacks, not script-local
   discovery defaults. Preserve an intentional off-default toolchain root only
   with `MOLT_PRESERVE_TARGET_ROOT=1`, or override artifact selection with
-  `MOLT_EXTERNAL_ARTIFACT_ROOTS`.
+  `MOLT_EXTERNAL_ARTIFACT_ROOTS`. RunContext emits `UV_LINK_MODE=copy` for
+  exFAT APDataStore roots unless an explicit operator value is present.
 - APDataStore is exFAT, so Molt cache publication must not depend on hard-link
   support; the backend cache owns the lock+rename/copy fallback. Do not disable
   caching, reroute to `E:`, or hand-copy artifacts to work around hard-link
   errors. Treat `Failed to publish backend cache output` under `D:\Molt` as a
   DX defect to diagnose through the cache authority.
+- Maintainer/agent git worktrees belong under `D:\Molt\worktrees`, never
+  `E:\Molt\worktrees` or `C:`. Because APDataStore is exFAT, add each new
+  worktree to Git's safe-directory list if Git reports dubious ownership. Do
+  not hand-delete APDataStore build roots; use `tools/molt_ssd_janitor.py`
+  (dry-run by default, `--apply` for cleanup) so registered worktrees and live
+  sessions stay protected.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`. Read it before
   queueing or interpreting long-running proof evidence.
 - Pact Kernel A acceptance must use the named queue lane

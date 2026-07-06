@@ -546,7 +546,9 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   - If rustc or backend cache publication reports hard-link fallback on
     APDataStore/exFAT, keep the lane on the DX-selected artifact root and
     diagnose the specific cache authority; do not reroute proof lanes to legacy
-    `E:` roots to hide the defect.
+    `E:` roots to hide the defect. The DX env should include
+    `UV_LINK_MODE=copy` on APDataStore/exFAT; if it does not, fix RunContext
+    instead of adding a one-off shell export.
 - **Compile-progress suite**: use `tools/compile_progress.py` for standardized
   cold/warm + cache-hit/no-cache + daemon-on/off compile tracking.
   - Example: `uv run --python 3.12 python tools/compile_progress.py --clean-state`

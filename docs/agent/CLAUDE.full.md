@@ -626,7 +626,7 @@ location bans. macOS/Linux use the configured external candidates. The resolver
 owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `MOLT_TARGET_ROOT`, `MOLT_CACHE`, diff/tmp roots, `UV_CACHE_DIR`,
 `UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`,
-`TMP`, and `TEMP`. Default Cargo output is session-scoped as
+`TMP`, `TEMP`, and DX-only `UV_LINK_MODE`. Default Cargo output is session-scoped as
 `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR`
 remains an operator-owned override. On this Windows workstation the selected
 external root is the APDataStore volume (`D:\Molt`) when healthy, and the
@@ -634,6 +634,8 @@ managed toolchain root is `D:\Molt\target-root`. Stale `E:\molt-target`,
 `E:\Molt\target-root`, and old same-volume `D:\molt-target` defaults are
 legacy evidence/fallbacks, not active discovery authority; preserve an
 intentional off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`.
+RunContext emits `UV_LINK_MODE=copy` for exFAT APDataStore roots unless an
+explicit operator value is present.
 
 Raw `cargo` commands do NOT honor `MOLT_SESSION_ID` by themselves. For any
 direct cargo invocation, export the DX env first. If you bypass the DX env, keep

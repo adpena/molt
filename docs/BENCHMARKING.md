@@ -759,8 +759,9 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   this Windows workstation the attached 2 TB SSD volume label `APDataStore`
   wins and resolves to `D:\Molt`; old `E:` roots are legacy/fallback evidence,
   not default candidates. POSIX defaults prefer `/Volumes/APDataStore/Molt`,
-  then `/Volumes/VertigoDataTier/Molt`. Otherwise the resolver falls back to
-  canonical repo-local artifact roots.
+  then `/Volumes/VertigoDataTier/Molt`. On APDataStore/exFAT, RunContext emits
+  `UV_LINK_MODE=copy` to avoid uv hard-link churn. Otherwise the resolver falls
+  back to canonical repo-local artifact roots.
 - `tools/bench.py` treats explicit canonical artifact env vars as authoritative
   after conformance setup. `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
   `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
@@ -844,6 +845,8 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
   or backend cache publication failure on exFAT, diagnose the specific cache
   authority and keep publication on the canonical lock/rename/copy fallback; do
   not reroute proof or benchmark lanes to legacy `E:` roots to hide the defect.
+  Verify the row inherited `UV_LINK_MODE=copy` from RunContext before blaming
+  uv or Cargo.
 
 ### Compile Progress Tracker
 
