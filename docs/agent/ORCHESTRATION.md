@@ -5,7 +5,7 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-06 by the orchestrator.
+Last updated: 2026-07-06 (late) by the orchestrator.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
@@ -288,6 +288,11 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
 
 ## State of the world (read this first)
 
+- **✅ UPDATE 2026-07-06 (late, orchestrator): R73.1 + R73.2 LANDED; WITNESS FRONTIER MOVED; NEW METABUG ARC; CRASH-RESILIENCE LESSON.**
+  - **R73.1 + R73.2 LANDED (origin/main da862df81, teeth-verified).** R73.1 = shared content-addressed `runtime.wasm` cache + memory-bounded cargo jobs (8GB-capable, no per-session cold rebuild). R73.2 = Molt auto-provisions Cython/WASI/meson from package metadata and regenerates extensions **STANDALONE** — `scipy._cyutility` is a PROVEN BYPASS (standalone `cython -3` → 0 `_cyutility` refs), NOT a wall. The "scipy._cyutility unsolved structural gap" note below is **SUPERSEDED**.
+  - **WITNESS (R0) FRONTIER = STALE NUMPY SEAL.** A clean-worktree witness build now fails CLOSED (correctly) at numpy custody: `tmp/pact_numpy_multiarray_sealed_for_witness` has no `runtime_python_import_modules` and all 130 `object_closure` C sources point at a DELETED pact-collab meson dir. Next R0 arc = regenerate the numpy `_multiarray_umath` meson-wasm seal (STATUS.md L206-211) + reseal + verify. **Orchestrator-owned.** Build from a clean origin/main worktree (shared checkout is transiently unbuildable when a Codex Rust lane has in-flight WIP).
+  - **NEW BINDING ARC — SILENT-DEGRADATION METABUG (operator-flagged).** Perf/capability paths that SILENTLY degrade to naive on a handleable input. Honest audit = ~3 real defects (NOT the ~189 sound conservatisms): A1-A4 = frontend parallelism disabled on any import cycle / phase-timeout / one worker error → whole cold numpy+scipy frontend runs serial (~9 min); B1/B2 = frontend lowering cache is session-local → cold re-lower every session. Fix = SCC-condense + resilient pool + shared content-addressed cache, plus a `degrade_to_slow_registry` enforcement gate so the class can't regrow. **ORCHESTRATOR/SUBAGENT-OWNED lane: `src/molt/cli/{frontend_parallel,frontend_execution,frontend_pipeline,frontend_worker,module_dependencies,module_cache,module_frontend_cache}.py` + `tools/degrade_to_slow_*`. CODEX STAND DOWN (these are src/molt/cli frontend — already off your lanes).** Crash-recovered preserved branches to verify+land: `agent-scc-preserved-20260706` (fc652b96d, 12 teeth pass), `agent-frontend-cache-20260706` (2d6f0df7f).
+  - **CRASH-RESILIENCE (binding, 2026-07-06):** background subagents run IN-PROCESS with the orchestrator's harness → a harness crash kills them all and loses in-process state (they can't return). Durable coordination = THIS BOARD + the proof queue + Codex (separate crash-independent processes). Prefer coordinating Codex/queue over fragile in-process subagent fan-out; instruct agents to commit incrementally; on a crash, `git -C <agent-worktree> add -A && commit` to PRESERVE before any cleanup. Also found: `memory_guard` orphan-cleanup can SIGTERM legitimate frontend parallel-worker subprocesses — fix belongs with the A1-A4 parallel arc.
 - **✅ REPRIORITIZATION RELEASED 2026-07-06 (orchestrator): CODEX RESUME NORMAL
   HEAVY BUILDS.** The emergency witness-priority hold below is LIFTED. Honest
   reassessment (adversarial audit): the witness heavy WASM build cannot complete
