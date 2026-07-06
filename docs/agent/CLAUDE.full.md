@@ -28,6 +28,16 @@ thinking that phrase, immediately convert Y into executable work, a
 proof-queue/orchestrator handoff with evidence, or a named external blocker;
 anything else is a contract violation.
 
+Deferral language is a self-correction trigger, not a plan. If you write or
+think "I am not going to", "I cannot do this until", "I will wait for", or any
+equivalent, stop the sentence and choose an executable outcome: implement the
+prerequisite now inside the owned lane; create an evidence-backed
+proof-queue/board handoff for a frozen or externally-owned prerequisite and
+immediately advance another valid structural arc; or declare a formal blocked
+state only after the blocked-audit threshold is met. Do not use deferral to
+shrink scope, wait for comfort, land substitute code, or narrate status instead
+of moving the end-state structure.
+
 ### Narrow Aperture, Full Structural Rip
 
 Default to one narrow, named aperture into the real structure: one invariant,
@@ -78,6 +88,10 @@ every consumer needed to delete or unify the old lane.
   or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
   detached proof custody or an explicit stand-down/frozen-lane order; it is never
   a reason to narrate status, shrink scope, land a placeholder, or stop moving.
+- Treat "waiting for X" as a scheduling defect unless it is detached proof
+  custody, an explicit stand-down order, or a formal blocked state. Convert the
+  dependency into work, a handoff note, or the next board-valid structural arc in
+  the same turn.
 - Expensive or contention-heavy proof work must go through
   `tools/proof_queue.py`: Cargo builds, WASM/browser proofs, benchmark lanes,
   conformance shards, stress tests, and any test likely to contend for shared
@@ -491,8 +505,12 @@ deleted-plan) or it didn't count.
 
 ## Git Discipline
 
-- **NEVER revert or discard unstaged changes**. They are from trusted partners. Pause and wait.
-- **NEVER trample partner work**. If you encounter unfinished changes, work around them or wait.
+- **NEVER revert or discard unstaged changes**. They are from trusted partners.
+  Pause that exact path, preserve evidence, and continue on a board-valid
+  non-conflicting structural arc; do not idle or overwrite.
+- **NEVER trample partner work**. If you encounter unfinished changes, preserve
+  them, choose a non-conflicting board-valid aperture, or file an
+  evidence-backed handoff; do not wait as a substitute for progress.
 - **Always `git add` immediately** after writing any file. Linter hooks can silently revert unstaged changes.
 - **Atomic operations**: write file + git add in the same step using `&&` chaining.
 

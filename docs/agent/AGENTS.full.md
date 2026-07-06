@@ -39,6 +39,15 @@ touching code, docs, tests, benchmarks, or roadmap state.
   or thinking that phrase, immediately convert Y into executable work, a
   proof-queue/orchestrator handoff with evidence, or a named external blocker;
   anything else is a contract violation.
+- Deferral language is a self-correction trigger, not a plan. If you write or
+  think "I am not going to", "I cannot do this until", "I will wait for", or any
+  equivalent, stop the sentence and choose an executable outcome: implement the
+  prerequisite now inside the owned lane; create an evidence-backed
+  proof-queue/board handoff for a frozen or externally-owned prerequisite and
+  immediately advance another valid structural arc; or declare a formal blocked
+  state only after the blocked-audit threshold is met. Do not use deferral to
+  shrink scope, wait for comfort, land substitute code, or narrate status
+  instead of moving the end-state structure.
 - Maximize verified compatibility only inside Molt's AOT contract. Pursue full
   Python 3.12+ stdlib and ecosystem compatibility where it does not require
   unrestricted dynamic execution, runtime monkeypatching, reflection-heavy host
@@ -123,6 +132,10 @@ touching code, docs, tests, benchmarks, or roadmap state.
   or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
   detached proof custody or an explicit stand-down/frozen-lane order; it is never
   a reason to narrate status, shrink scope, land a placeholder, or stop moving.
+- Treat "waiting for X" as a scheduling defect unless it is detached proof
+  custody, an explicit stand-down order, or a formal blocked state. Convert the
+  dependency into work, a handoff note, or the next board-valid structural arc in
+  the same turn.
 - Prefer subagents for disjoint broad work: one agent can map call sites or
   migrate non-overlapping files while the main agent lands the authority move.
   Do not use subagents to multiply proof lanes or produce status theater.
