@@ -127,6 +127,14 @@ const ATTR_WILLRETURN_MEMORY_READ: FixedRuntimeAttrs = FixedRuntimeAttrs::WILLRE
 #[cfg(feature = "llvm")]
 const PTR_I64: &[FixedRuntimeParamAbi] = &[FixedRuntimeParamAbi::Ptr, FixedRuntimeParamAbi::I64];
 #[cfg(feature = "llvm")]
+const PTR_PTR: &[FixedRuntimeParamAbi] = &[FixedRuntimeParamAbi::Ptr, FixedRuntimeParamAbi::Ptr];
+#[cfg(feature = "llvm")]
+const I64_PTR_I64: &[FixedRuntimeParamAbi] = &[
+    FixedRuntimeParamAbi::I64,
+    FixedRuntimeParamAbi::Ptr,
+    FixedRuntimeParamAbi::I64,
+];
+#[cfg(feature = "llvm")]
 const PTR_I64_PTR: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::Ptr,
     FixedRuntimeParamAbi::I64,
@@ -285,6 +293,12 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_alloc", 1, ATTR_WILLRETURN),
     i64_ret("molt_get_attr_name", 2, ATTR_NONE),
     custom(
+        "molt_get_attr_special",
+        I64_PTR_I64,
+        FixedRuntimeReturnAbi::I64,
+        ATTR_NONE,
+    ),
+    custom(
         "molt_get_attr_object_ic",
         I64_PTR_I64_I64,
         FixedRuntimeReturnAbi::I64,
@@ -315,6 +329,12 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_exception_stack_exit", 1, ATTR_WILLRETURN),
     i64_ret("molt_exception_stack_set_depth", 1, ATTR_WILLRETURN),
     i64_ret("molt_exception_resolve_captured", 1, ATTR_WILLRETURN),
+    custom(
+        "molt_sleep_register",
+        PTR_PTR,
+        FixedRuntimeReturnAbi::I64,
+        ATTR_NONE,
+    ),
     void_ret("molt_warn_stderr", 1, ATTR_WILLRETURN),
     void_ret("molt_print_newline", 0, ATTR_WILLRETURN),
     void_ret("molt_print_obj", 1, ATTR_WILLRETURN),

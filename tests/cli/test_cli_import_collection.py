@@ -1048,6 +1048,126 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     assert "native_support_source" in module_reasons["nativepkg.exceptions"]
 
 
+def _sealed_manifest_custody_overrides() -> dict[str, Any]:
+    """Overrides that mark a manifest as a sealed extension root.
+
+    ``external_native._manifest_has_sealed_extension_custody`` keys on the
+    ``sealed_from_*`` provenance fields, so a test that exercises sealed-root
+    behavior must set them.
+    """
+    return {
+        "sealed_from_manifest_sha256": "0" * 64,
+        "sealed_from_extension_sha256": "0" * 64,
+    }
+
+
+def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sealed manifest's persisted runtime-import field stages a C-only import.
+
+    numpy imports ``numpy._core._exceptions`` only from its C source
+    (``npy_static_data.c`` via ``IMPORT_GLOBAL``); no Python module importer
+    pulls it. A sealed root omits its C sources, so the build cannot re-scan
+    them. The persisted ``runtime_python_import_modules`` field must let the
+    build stage that submodule anyway (the self-contained property). Pre-fix
+    (no field, source dropped) the submodule silently vanished and the runtime
+    raised ``No module named 'nativepkg.hidden'``.
+    """
+    external_root = tmp_path / "site"
+    # The runtime-imported package-internal submodule that only the (absent) C
+    # source would name. It has NO Python importer inside the package.
+    hidden_path = external_root / "nativepkg" / "hidden.py"
+    hidden_path.parent.mkdir(parents=True)
+    hidden_path.write_text(
+        "class Boom(RuntimeError):\n    pass\n",
+        encoding="utf-8",
+    )
+    hidden_sha = hashlib.sha256(hidden_path.read_bytes()).hexdigest()
+    overrides = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "python_exports": ["nativepkg.dynamic"],
+        # No "sources": the sealed root deliberately omits its C sources.
+        "runtime_python_import_modules": ["math", "nativepkg.hidden"],
+    }
+    overrides.update(_sealed_manifest_custody_overrides())
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides=overrides,
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact = policy.native_artifact_plan.artifacts[0]
+    # The stdlib import went to the AOT import-graph closure; the
+    # package-internal C-only import got staged as a support module even though
+    # no C source (and no Python importer) named it.
+    assert artifact.runtime_python_imports == ("math",)
+    assert artifact.runtime_python_import_modules == ("nativepkg.hidden",)
+    assert ("nativepkg/hidden.py", hidden_sha) in artifact.support_file_sha256
+
+
+def test_sealed_manifest_without_runtime_field_and_missing_source_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older sealed manifest lacking the field, with unresolved sources, fails closed.
+
+    Before this fix the runtime-import scan silently tolerated missing sources,
+    so a C-only import that only an absent source declared vanished and failed
+    at runtime. A sealed root that predates ``runtime_python_import_modules``
+    and whose C sources no longer resolve cannot prove its runtime-import
+    closure, so admission must fail closed with a precise diagnostic that names
+    the unresolved sources and directs the operator to re-seal.
+    """
+    external_root = tmp_path / "site"
+    (external_root / "nativepkg").mkdir(parents=True)
+    missing_source = tmp_path / "gone" / "npy_static_data.c"
+    overrides = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "python_exports": ["nativepkg.dynamic"],
+        # A declared source that is not present on disk, and NO persisted
+        # runtime_python_import_modules field (older sealed manifest).
+        "sources": [str(missing_source)],
+    }
+    overrides.update(_sealed_manifest_custody_overrides())
+    artifact_path, manifest_path = _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_native",
+        artifact_name="_native.molt.wasm",
+        manifest_overrides=overrides,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "runtime_python_import_modules" not in manifest
+
+    result, errors = cli_external_native._resolve_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=manifest_path,
+        package="nativepkg",
+    )
+    assert result == ()
+    assert errors, "a missing-source sealed manifest without the field must fail closed"
+    joined = " ".join(errors)
+    assert "runtime_python_import_modules" in joined
+    assert "re-seal" in joined.lower()
+    assert "npy_static_data.c" in joined
+
+
 def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

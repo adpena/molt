@@ -79,6 +79,52 @@ def test_runtime_import_abi_facts_reports_duplicate_keys(tmp_path: Path) -> None
     assert duplicates == (AUDIT.DuplicateAbiFact("molt_alpha", 1, "I64", "Void"),)
 
 
+def test_runtime_import_abi_facts_reads_custom_fixed_pointer_params(
+    tmp_path: Path,
+) -> None:
+    conservative_imports = tmp_path / "abi_facts.rs"
+    fixed_imports = tmp_path / "fixed.rs"
+    constants = tmp_path / "runtime_import_abi.rs"
+    conservative_imports.write_text(
+        "pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[];",
+        encoding="utf-8",
+    )
+    fixed_imports.write_text(
+        "\n".join(
+            [
+                "const PTR_PTR: &[FixedRuntimeParamAbi] = &[",
+                "FixedRuntimeParamAbi::Ptr,",
+                "FixedRuntimeParamAbi::Ptr,",
+                "];",
+                "pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[",
+                'custom("molt_ptr_pair", PTR_PTR, FixedRuntimeReturnAbi::I64, ATTR_NONE),',
+                'custom("molt_ptr_pair_status", PTR_PTR, FixedRuntimeReturnAbi::I32, ATTR_NONE),',
+                "];",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    constants.write_text("", encoding="utf-8")
+
+    facts, duplicates = AUDIT.runtime_import_abi_facts(
+        conservative_imports, fixed_imports, constants
+    )
+
+    assert facts[("molt_ptr_pair", 2)] == AUDIT.AbiFact(
+        "molt_ptr_pair",
+        2,
+        "I64",
+        ("Ptr", "Ptr"),
+    )
+    assert facts[("molt_ptr_pair_status", 2)] == AUDIT.AbiFact(
+        "molt_ptr_pair_status",
+        2,
+        "I32",
+        ("Ptr", "Ptr"),
+    )
+    assert duplicates == ()
+
+
 def test_classified_fact_validation_rejects_export_drift() -> None:
     exports = {
         "molt_alpha": AUDIT.RuntimeSignature(
@@ -93,12 +139,20 @@ def test_classified_fact_validation_rejects_export_drift() -> None:
         "molt_delta": AUDIT.RuntimeSignature(
             "molt_delta", 1, "u64", "runtime.rs", "", ("*mut u8",)
         ),
+        "molt_epsilon": AUDIT.RuntimeSignature(
+            "molt_epsilon", 2, "i32", "runtime.rs", "", ("*mut u8", "*const u8")
+        ),
+        "molt_zeta": AUDIT.RuntimeSignature(
+            "molt_zeta", 1, "f64", "runtime.rs", "", ("u64",)
+        ),
     }
     facts = {
         ("molt_alpha", 1): AUDIT.AbiFact("molt_alpha", 1, "I64", ("I64",)),
         ("molt_beta", 1): AUDIT.AbiFact("molt_beta", 1, "I64", ("I64",)),
         ("molt_gamma", 1): AUDIT.AbiFact("molt_gamma", 1, "Void", ("I64",)),
         ("molt_delta", 1): AUDIT.AbiFact("molt_delta", 1, "I64", ("I64",)),
+        ("molt_epsilon", 2): AUDIT.AbiFact("molt_epsilon", 2, "I32", ("Ptr", "Ptr")),
+        ("molt_zeta", 1): AUDIT.AbiFact("molt_zeta", 1, "I64", ("I64",)),
         ("molt_missing", 1): AUDIT.AbiFact("molt_missing", 1, "I64", ("I64",)),
     }
 
@@ -140,7 +194,7 @@ def test_classified_fact_validation_rejects_export_drift() -> None:
             "1",
             "u64",
             "I64",
-            "Unsupported(*mut u8)",
+            "Ptr",
             "runtime.rs",
         ),
         AUDIT.ClassifiedFactIssue(
@@ -150,6 +204,16 @@ def test_classified_fact_validation_rejects_export_drift() -> None:
             "2",
             "()",
             "Void",
+            "I64",
+            "runtime.rs",
+        ),
+        AUDIT.ClassifiedFactIssue(
+            "return-mismatch",
+            "molt_beta",
+            1,
+            "1",
+            "i32",
+            "I32",
             "I64",
             "runtime.rs",
         ),
@@ -165,11 +229,11 @@ def test_classified_fact_validation_rejects_export_drift() -> None:
         ),
         AUDIT.ClassifiedFactIssue(
             "unsupported-return",
-            "molt_beta",
+            "molt_zeta",
             1,
             "1",
-            "i32",
-            "<I64-or-Void>",
+            "f64",
+            "<I64-I32-or-Void>",
             "I64",
             "runtime.rs",
         ),

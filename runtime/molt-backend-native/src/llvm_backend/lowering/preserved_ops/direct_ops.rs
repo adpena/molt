@@ -1812,14 +1812,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return false;
                 };
                 let obj_bits = self.materialize_dynbox_operand(obj_id);
-                let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&attr_name);
-                let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_special", 3);
+                let i64_ty = self.backend.context.i64_type();
+                let ptr_ty = self
+                    .backend
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default());
+                let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(&attr_name);
+                let fn_ty = i64_ty.fn_type(&[i64_ty.into(), ptr_ty.into(), i64_ty.into()], false);
+                let get_fn = declare_fixed_runtime_function(
+                    self.backend.context,
+                    &self.backend.module,
+                    "molt_get_attr_special",
+                )
+                .unwrap_or_else(|| {
+                    panic!("molt_get_attr_special must be a fixed LLVM runtime import")
+                });
+                let get_fn = require_llvm_function_type("molt_get_attr_special", get_fn, fn_ty);
                 let result = self
                     .backend
                     .builder
                     .build_call(
                         get_fn,
-                        &[obj_bits.into(), name_ptr_bits.into(), name_len_bits.into()],
+                        &[obj_bits.into(), name_ptr.into(), name_len_bits.into()],
                         "get_attr_special_obj",
                     )
                     .unwrap()
