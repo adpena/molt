@@ -602,6 +602,76 @@ def _manifest_has_sealed_extension_custody(manifest: Mapping[str, Any]) -> bool:
     )
 
 
+_RUNTIME_PYTHON_IMPORT_MODULES_FIELD = "runtime_python_import_modules"
+
+
+def _resolve_manifest_runtime_python_imports(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+    package: str,
+) -> tuple[tuple[str, ...], list[str]]:
+    """Resolve the extension's source-derived runtime Python import closure.
+
+    Seal is the custody boundary that resolves a source-recompiled extension's
+    dynamic Python imports (e.g. numpy's ``IMPORT_GLOBAL`` calls in
+    ``npy_static_data.c``) while the C sources are still present, and persists
+    them into the sealed manifest as ``runtime_python_import_modules``. A sealed
+    root deliberately omits its build-generated (and eventually its original C)
+    sources, so the build-time re-scan can no longer see a C-only-imported
+    submodule such as ``numpy._core._exceptions``. Prefer the persisted field so
+    the sealed root is self-contained.
+
+    Re-scan the C sources only as a fallback for older manifests that predate the
+    field. When the field is absent *and* the manifest is a sealed root whose
+    sources no longer fully resolve, a required runtime import may have silently
+    vanished from the scan; fail closed with a precise diagnostic naming the
+    unresolved sources rather than staging an incomplete support surface that
+    fails at runtime with ``No module named ...``.
+    """
+    if _RUNTIME_PYTHON_IMPORT_MODULES_FIELD in manifest:
+        value = manifest.get(_RUNTIME_PYTHON_IMPORT_MODULES_FIELD)
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            return (), [
+                f"{package}: extension manifest "
+                f"'{_RUNTIME_PYTHON_IMPORT_MODULES_FIELD}' must be a list of "
+                "module-name strings"
+            ]
+        return (
+            tuple(sorted({item.strip() for item in value if item.strip()})),
+            [],
+        )
+
+    scanned, scan_errors = source_extension_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    missing_source_errors = source_extension_manifest_errors_are_missing_sources(
+        scan_errors
+    )
+    if scan_errors and not missing_source_errors:
+        return (), [f"{package}: {error}" for error in scan_errors]
+    if scan_errors and _manifest_has_sealed_extension_custody(manifest):
+        # A sealed root whose sources no longer fully resolve cannot prove its
+        # runtime-import closure by re-scan, and it predates the persisted
+        # field, so a required C-only import may already be missing. Fail
+        # closed: re-seal the root (which persists
+        # ``runtime_python_import_modules`` from the sources at seal time)
+        # rather than admit an artifact whose support surface may drop a
+        # required module.
+        return (), [
+            f"{package}: sealed extension manifest lacks a "
+            f"'{_RUNTIME_PYTHON_IMPORT_MODULES_FIELD}' field and its C sources "
+            "no longer resolve, so its runtime Python import closure cannot be "
+            "proven. Re-seal the extension root through 'molt extension seal' to "
+            "persist the source-derived runtime imports. Unresolved sources: "
+            + "; ".join(scan_errors[:3])
+        ]
+    return scanned, []
+
+
 def _validate_manifest_source_capsule_requirements(
     manifest: Mapping[str, Any],
     *,
@@ -1157,20 +1227,14 @@ def _validate_external_package_native_artifact(
         # are unused once errors are present.
         runtime_python_imports: tuple[str, ...] = ()
     else:
-        runtime_python_imports, runtime_python_import_errors = (
-            source_extension_manifest_runtime_python_imports(
+        runtime_python_imports, runtime_import_derivation_errors = (
+            _resolve_manifest_runtime_python_imports(
                 manifest,
                 manifest_path=manifest_path,
+                package=package,
             )
         )
-        if runtime_python_import_errors and not (
-            source_extension_manifest_errors_are_missing_sources(
-                runtime_python_import_errors
-            )
-        ):
-            errors.extend(
-                f"{package}: {error}" for error in runtime_python_import_errors
-            )
+        errors.extend(runtime_import_derivation_errors)
     python_exports = _manifest_dotted_name_tuple(
         manifest,
         "python_exports",

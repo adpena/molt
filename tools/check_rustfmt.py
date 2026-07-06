@@ -2,10 +2,10 @@
 """Repo-owned Rust formatting gate.
 
 This deliberately avoids raw ``cargo fmt`` as a broad workspace authority:
-human Rust source is checked with rustfmt, while checked-in generated Rust is
-left to its generator sync gate. Write mode formats through stdout and rewrites
-only files whose normalized contents really changed, which prevents Windows
-line-ending-only churn from cooling later Cargo proof lanes.
+human Rust source is checked with file-local rustfmt, while checked-in generated
+Rust is left to its generator sync gate. Write mode formats through stdout and
+rewrites only files whose normalized contents really changed, which prevents
+Windows line-ending-only churn from cooling later Cargo proof lanes.
 """
 
 from __future__ import annotations
@@ -206,7 +206,7 @@ def _chunked_rustfmt_commands(
     check: bool,
     edition: str,
 ) -> list[list[str]]:
-    prefix = [rustfmt, "--edition", edition]
+    prefix = [rustfmt, "--edition", edition, "--config", "skip_children=true"]
     if check:
         prefix.append("--check")
     commands: list[list[str]] = []
@@ -304,6 +304,8 @@ def _rustfmt_stdout(path: Path, edition: str) -> bytes:
             "rustfmt",
             "--edition",
             edition,
+            "--config",
+            "skip_children=true",
             "--emit",
             "stdout",
             str(ROOT / path),

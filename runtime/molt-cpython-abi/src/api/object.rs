@@ -379,23 +379,7 @@ pub unsafe extern "C" fn PyObject_GenericGetAttr(
     o: *mut PyObject,
     name: *mut PyObject,
 ) -> *mut PyObject {
-    // Minimal implementation: check tp_dict on the type.
-    if o.is_null() || name.is_null() {
-        return ptr::null_mut();
-    }
-    let tp = unsafe { (*o).ob_type };
-    if tp.is_null() {
-        return ptr::null_mut();
-    }
-    let tp_dict = unsafe { (*tp).tp_dict };
-    if !tp_dict.is_null() {
-        let result = unsafe { crate::api::mapping::PyDict_GetItem(tp_dict, name) };
-        if !result.is_null() {
-            unsafe { crate::api::refcount::Py_INCREF(result) };
-            return result;
-        }
-    }
-    ptr::null_mut()
+    unsafe { generic_getattr_with_optional_dict(o, name, ptr::null_mut(), 0) }
 }
 
 #[unsafe(no_mangle)]
@@ -405,8 +389,45 @@ pub unsafe extern "C" fn _PyObject_GenericGetAttrWithDict(
     dict: *mut PyObject,
     suppress: c_int,
 ) -> *mut PyObject {
+    unsafe { generic_getattr_with_optional_dict(o, name, dict, suppress) }
+}
+
+unsafe fn descr_get(
+    descr: *mut PyObject,
+    obj: *mut PyObject,
+    owner: *mut PyTypeObject,
+) -> Option<*mut PyObject> {
+    if descr.is_null() {
+        return None;
+    }
+    let descr_type = unsafe { (*descr).ob_type };
+    if descr_type.is_null() {
+        return None;
+    }
+    let get = unsafe { (*descr_type).tp_descr_get }?;
+    Some(unsafe { get(descr, obj, owner.cast::<PyObject>()) })
+}
+
+unsafe fn generic_getattr_with_optional_dict(
+    o: *mut PyObject,
+    name: *mut PyObject,
+    dict: *mut PyObject,
+    suppress: c_int,
+) -> *mut PyObject {
     if o.is_null() || name.is_null() {
         return ptr::null_mut();
+    }
+    let tp = unsafe { (*o).ob_type };
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
+    let descr = unsafe { crate::api::typeobj::_PyType_Lookup(tp, name) };
+    if !descr.is_null() && unsafe { crate::api::typeobj::PyDescr_IsData(descr) } != 0 {
+        let result = unsafe { descr_get(descr, o, tp).unwrap_or(ptr::null_mut()) };
+        if result.is_null() && suppress != 0 {
+            unsafe { crate::api::errors::PyErr_Clear() };
+        }
+        return result;
     }
     if !dict.is_null() {
         let result = unsafe { crate::api::mapping::PyDict_GetItem(dict, name) };
@@ -415,7 +436,17 @@ pub unsafe extern "C" fn _PyObject_GenericGetAttrWithDict(
             return result;
         }
     }
-    let result = unsafe { PyObject_GenericGetAttr(o, name) };
+    if !descr.is_null() {
+        if let Some(result) = unsafe { descr_get(descr, o, tp) } {
+            if result.is_null() && suppress != 0 {
+                unsafe { crate::api::errors::PyErr_Clear() };
+            }
+            return result;
+        }
+        unsafe { crate::api::refcount::Py_INCREF(descr) };
+        return descr;
+    }
+    let result: *mut PyObject = ptr::null_mut();
     if result.is_null() && suppress != 0 {
         unsafe { crate::api::errors::PyErr_Clear() };
     }

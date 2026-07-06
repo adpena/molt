@@ -120,9 +120,19 @@ def _resolve_root(raw: str | None, *, force: bool) -> Path:
     # Refuse drive/filesystem roots and 1-component paths (C:\, /, D:\).
     if root.parent == root or len(root.parts) <= 1:
         raise SystemExit(f"molt_ssd_janitor: refusing to operate on root {root}")
-    # Refuse the repo checkout itself.
-    if root == REPO_ROOT or REPO_ROOT == root or root in REPO_ROOT.parents:
+    repo_root = REPO_ROOT.resolve()
+    # Refuse the repo checkout itself or any path inside it. The artifact root
+    # may contain this checkout as <root>/worktrees/<name>; that is the normal
+    # APDataStore layout and must remain usable from linked worktrees.
+    if root == repo_root or repo_root in root.parents:
         raise SystemExit(f"molt_ssd_janitor: refusing to operate inside the repo {root}")
+    if root in repo_root.parents and not _repo_is_artifact_worktree_under_root(
+        repo_root, root
+    ):
+        raise SystemExit(
+            "molt_ssd_janitor: refusing parent of repo checkout that is not "
+            f"an artifact worktree root: {root}"
+        )
     # On Windows, refuse a C: root unless forced (artifacts must not live on C:).
     drive = root.drive.rstrip(":").upper()
     if os.name == "nt" and drive == "C" and not force:
@@ -130,6 +140,13 @@ def _resolve_root(raw: str | None, *, force: bool) -> Path:
             f"molt_ssd_janitor: refusing C:-drive root {root} (use --force to override)"
         )
     return root
+
+
+def _repo_is_artifact_worktree_under_root(repo_root: Path, root: Path) -> bool:
+    return (
+        repo_root.parent.name == "worktrees"
+        and repo_root.parent.parent == root
+    )
 
 
 def _autodetect_root() -> Path | None:

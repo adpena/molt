@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from molt._target_feature_manifest import (
+    BROWSER_TARGET_FAMILY,
+    TARGET_FEATURE_MANIFEST_ASSET_NAME,
+    WEBGPU_DISPATCH_HOST_IMPORT,
+    target_feature_constants,
     target_feature_manifest,
     target_feature_row,
     target_feature_support,
@@ -13,7 +17,11 @@ from molt._target_feature_manifest import (
 )
 
 __all__ = (
+    "BROWSER_TARGET_FAMILY",
+    "TARGET_FEATURE_MANIFEST_ASSET_NAME",
+    "WEBGPU_DISPATCH_HOST_IMPORT",
     "target_baseline_features",
+    "target_feature_constants",
     "target_feature_manifest",
     "target_feature_row",
     "target_feature_support",

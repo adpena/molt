@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define MOLT_C_API_VERSION 3u
+#define MOLT_C_API_VERSION 4u
 #define MOLT_BUFFER_MAX_NDIM 64u
 #define MOLT_BUFFER_FORMAT_CAP 16u
 
@@ -18,6 +18,7 @@ typedef struct MoltBufferView {
   uint8_t *data;
   uint64_t len;
   uint64_t backing_capacity;
+  /* Canonical bool: 0 writable, 1 read-only; other values are rejected. */
   uint32_t readonly;
   uint32_t ndim;
   uint64_t itemsize;

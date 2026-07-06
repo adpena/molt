@@ -33,7 +33,6 @@ if str(SRC_ROOT) not in sys.path:
 # object instead of re-importing (and re-executing) the file twice.
 sys.modules.setdefault("tools.proof_queue", sys.modules[__name__])
 
-from molt.cli import wasm_toolchain  # noqa: E402
 from tools.process_spawn import (  # noqa: E402
     detached_process_group_kwargs,
     hidden_windows_process_group_kwargs,
@@ -43,7 +42,13 @@ from tools.dirty_tree_policy import (  # noqa: E402
     filter_status_lines,
 )
 
-RUNNING = {"queued", "running"}
+RUNNING = {"queued", "dispatched", "running"}
+ACTIVE_SQL_STATUSES = "'queued', 'dispatched', 'running'"
+LAUNCHED_SQL_STATUSES = "'dispatched', 'running'"
+ACTIVE_OR_STALE_SQL_STATUSES = "'queued', 'dispatched', 'running', 'stale'"
+DETACHED_READY_STATUSES = {"queued", "dispatched"}
+PROOF_QUEUE_SIZE_ENV = "MOLT_PROOF_QUEUE_SIZE"
+DEFAULT_PROOF_QUEUE_SIZE = 1
 NOTE_KIND_DESCRIPTIONS = {
     "submission": "note captured when the run is submitted",
     "change": "source, config, artifact, or environment change being proved",
@@ -67,12 +72,14 @@ EDGE_KIND_DESCRIPTIONS = {
 }
 EDGE_KINDS = frozenset(EDGE_KIND_DESCRIPTIONS)
 DEFAULT_EDGE_KIND = "depends_on"
+_SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
 PROOF_QUEUE_ACTIVE_POLL_SECONDS = 2.0
+PROOF_QUEUE_DISPATCH_STALE_SECONDS = 120.0
 PROOF_QUEUE_STALE_TERMINATE_GRACE_SECONDS = 5.0
 PROOF_QUEUE_STALE_EXIT_CODE = 2
 # SQLite busy timeout (milliseconds) for every proof-queue connection. WAL
@@ -93,14 +100,9 @@ PROOF_QUEUE_RUNNING_AGE_CEILING_SECONDS = 6 * 60 * 60.0
 RUNNING_CHILD_MISSING_STALE_LOG_SECONDS = 180.0
 RUNNING_PYTEST_CURRENT_TEST_MISSING_STALE_SECONDS = 60.0
 DIAGNOSTIC_EVIDENCE_MAX_CHARS = 640
-STALE_RUNNING_DIAGNOSTIC_IDS = frozenset(
-    {
-        "running-proof-child-missing",
-        "running-proof-launch-summary-stale",
-    }
-)
+TERMINAL_STALE_DIAGNOSTIC_IDS = frozenset({"running-proof-child-missing"})
 STATIC_PYMOD_EXEC_RE = re.compile(
-    r"ImportError:\s+"
+    r"(?:ImportError:\s+|Original error was:\s*)"
     r"(?P<module>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
     r": static-link PyModuleDef Py_mod_exec slot returned non-zero"
     r"(?P<detail>[^\r\n]*)"
@@ -127,6 +129,9 @@ QUEUE_COLD_SINGLE_CARGO_PROOF_RE = re.compile(
     r"proof queue refuses cold-prone single-test Cargo proofs "
     r"\('(?P<filter>[^']+)' under --lib\)"
 )
+PACT_WITNESS_FIXTURE_MISSING_RE = re.compile(
+    r"missing Pact fixture:\s+(?P<path>[^\r\n]+)"
+)
 NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
     r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
 )
@@ -147,6 +152,15 @@ MOLT_RUNTIME_INVALID_OBJECT_HEADER_RE = re.compile(
 )
 RUST_COMPILER_ERROR_RE = re.compile(
     r"(?m)^error(?:\[(?P<code>E\d{4})\])?: (?P<message>[^\r\n]+)"
+)
+RUST_TEST_RESULT_FAILED_RE = re.compile(
+    r"(?m)^test result: FAILED\.(?P<detail>[^\r\n]*)"
+)
+RUST_CARGO_TEST_FAILED_RE = re.compile(
+    r"(?m)^error: test failed, to rerun pass `(?P<rerun>[^`]+)`"
+)
+RUST_FAILED_TEST_LINE_RE = re.compile(
+    r"(?m)^test (?P<name>[A-Za-z0-9_:<>_.-]+) \.\.\. FAILED\r?$"
 )
 RUNTIME_WASM_RUST_TARGET_MISSING_RE = re.compile(
     r"(?m)^Runtime wasm build requires Rust target (?P<target>[A-Za-z0-9_-]+), "
@@ -230,7 +244,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
 )
 FRONTIER_SUPERSEDING_EDGE_KINDS = frozenset({"reruns", "supersedes"})
 FRONTIER_SUPERSEDING_CHILD_STATUSES = frozenset(
-    {"queued", "running", "passed", "failed"}
+    {"queued", "dispatched", "running", "passed", "failed"}
 )
 
 
@@ -822,6 +836,8 @@ def _active_log_status(row: sqlite3.Row) -> list[str]:
     except OSError:
         if row["status"] == "queued":
             return [f"  log={path} (queued; proof command not launched yet)"]
+        if row["status"] == "dispatched":
+            return [f"  log={path} (dispatched; waiting for detached runner)"]
         return [f"  log={path} (missing)"]
     age = _format_duration(max(0.0, time.time() - stat.st_mtime))
     lines = [f"  log={path}", f"  last_log_age={age}"]
@@ -861,6 +877,34 @@ def _proof_session_id(resource_family: str, contention_key: str) -> str:
     family = _slug(resource_family)[:10]
     label = _slug(contention_key)[:8]
     return f"proof-{family}-{digest}-{label}"
+
+
+def _positive_int(value: object, *, source: str) -> int:
+    try:
+        result = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{source} must be a positive integer, got {value!r}") from exc
+    if result < 1:
+        raise SystemExit(f"{source} must be a positive integer, got {value!r}")
+    return result
+
+
+def _configured_queue_size(value: int | None = None) -> int:
+    if value is not None:
+        return _positive_int(value, source="--queue-size")
+    raw = os.environ.get(PROOF_QUEUE_SIZE_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_PROOF_QUEUE_SIZE
+    return _positive_int(raw, source=PROOF_QUEUE_SIZE_ENV)
+
+
+def _configured_run_limit(args: argparse.Namespace, *, queue_size: int) -> int:
+    raw_limit = getattr(args, "limit", None)
+    if raw_limit is not None:
+        return _positive_int(raw_limit, source="--limit")
+    if getattr(args, "detach", False):
+        return queue_size
+    return 1
 
 
 def _connect(db: Path) -> sqlite3.Connection:
@@ -968,12 +1012,12 @@ def _connect(db: Path) -> sqlite3.Connection:
             author TEXT NOT NULL,
             kind TEXT NOT NULL,
             note TEXT NOT NULL DEFAULT '',
-            FOREIGN KEY(parent_run_id) REFERENCES proof_runs(run_id),
             FOREIGN KEY(child_run_id) REFERENCES proof_runs(run_id),
             UNIQUE(parent_run_id, child_run_id, kind)
         )
         """
     )
+    _migrate_proof_run_edges_for_external_lineage(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS proof_run_edges_child_edge_id ON proof_run_edges(child_run_id, edge_id)"
     )
@@ -1051,7 +1095,7 @@ def _connect(db: Path) -> sqlite3.Connection:
         )
     if "guard_identity" not in columns:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
-    # At most one RUNNING run per contention key. A partial UNIQUE index makes
+    # At most one active launched run per contention key. A partial UNIQUE index makes
     # SQLite itself enforce the hard serialization invariant, closing the
     # check-then-insert / transition TOCTOU where two concurrent admissions each
     # see zero running rows and both reach status='running' (two heavy builds
@@ -1067,8 +1111,69 @@ def _connect(db: Path) -> sqlite3.Connection:
         WHERE status = 'running'
         """
     )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_launched_per_contention_key
+        ON proof_runs(contention_key)
+        WHERE status IN ('dispatched', 'running')
+        """
+    )
     conn.commit()
     return conn
+
+
+def _proof_run_edges_has_parent_fk(conn: sqlite3.Connection) -> bool:
+    return any(
+        row[3] == "parent_run_id"
+        for row in conn.execute("PRAGMA foreign_key_list(proof_run_edges)")
+    )
+
+
+def _migrate_proof_run_edges_for_external_lineage(conn: sqlite3.Connection) -> None:
+    if not _proof_run_edges_has_parent_fk(conn):
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for trigger in (
+            "proof_run_edges_append_only_no_update",
+            "proof_run_edges_append_only_no_delete",
+            "proof_run_edges_known_kind",
+        ):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS proof_run_edges_external_lineage")
+        conn.execute(
+            """
+            CREATE TABLE proof_run_edges_external_lineage (
+                edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_run_id TEXT NOT NULL,
+                child_run_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                author TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(child_run_id) REFERENCES proof_runs(run_id),
+                UNIQUE(parent_run_id, child_run_id, kind)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO proof_run_edges_external_lineage (
+                edge_id, parent_run_id, child_run_id, created_at, author, kind, note
+            )
+            SELECT edge_id, parent_run_id, child_run_id, created_at, author, kind, note
+            FROM proof_run_edges
+            ORDER BY edge_id
+            """
+        )
+        conn.execute("DROP TABLE proof_run_edges")
+        conn.execute(
+            "ALTER TABLE proof_run_edges_external_lineage RENAME TO proof_run_edges"
+        )
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _default_note_author() -> str:
@@ -1200,13 +1305,14 @@ def _insert_edge(
     if kind not in EDGE_KINDS:
         allowed = ", ".join(sorted(EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {kind!r}; allowed: {allowed}")
-    if not _run_exists(conn, parent_run_id):
+    parent_exists = _run_exists(conn, parent_run_id)
+    if not parent_exists and _edge_kind_requires_local_parent(kind):
         raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
     if not _run_exists(conn, child_run_id):
         raise SystemExit(f"unknown child proof run {child_run_id!r}")
     if parent_run_id == child_run_id:
         raise SystemExit("proof DAG edge cannot point to itself")
-    if _edge_would_create_cycle(
+    if parent_exists and _edge_would_create_cycle(
         conn, parent_run_id=parent_run_id, child_run_id=child_run_id
     ):
         raise SystemExit(
@@ -1302,7 +1408,7 @@ def _edges_for_run_ids(
                 edge.kind,
                 edge.note
             FROM proof_run_edges edge
-            JOIN proof_runs parent ON parent.run_id = edge.parent_run_id
+            LEFT JOIN proof_runs parent ON parent.run_id = edge.parent_run_id
             JOIN proof_runs child ON child.run_id = edge.child_run_id
             WHERE edge.parent_run_id IN ({placeholders})
                OR edge.child_run_id IN ({placeholders})
@@ -1626,11 +1732,11 @@ def _pytest_timeout_context(summary_json: object) -> tuple[str, str | None] | No
 
 
 
-def _diagnostics_have_stale_running_signal(
+def _diagnostics_have_terminal_stale_signal(
     diagnostics: Sequence[dict[str, object]],
 ) -> bool:
     return any(
-        diagnostic.get("signal_id") in STALE_RUNNING_DIAGNOSTIC_IDS
+        diagnostic.get("signal_id") in TERMINAL_STALE_DIAGNOSTIC_IDS
         for diagnostic in diagnostics
     )
 
@@ -1732,7 +1838,7 @@ def _wait_for_guard_completion_or_stale(
                     _terminate_queue_owned_guard_process(proc, log, run_id=run_id)
                 return str(row["status"]), row["returncode"], elapsed
             diagnostics = _run_diagnostics(row)
-            if not _diagnostics_have_stale_running_signal(diagnostics):
+            if not _diagnostics_have_terminal_stale_signal(diagnostics):
                 continue
             diagnostic_summary = _format_diagnostic_summary(diagnostics)
             print(
@@ -1814,12 +1920,25 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return list(
         conn.execute(
-            """
+            f"""
             SELECT * FROM proof_runs
-            WHERE contention_key = ? AND status IN ('queued', 'running')
+            WHERE contention_key = ? AND status IN ({LAUNCHED_SQL_STATUSES})
             ORDER BY started_at DESC
             """,
             (key,),
+        )
+    )
+
+
+def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    return list(
+        conn.execute(
+            f"""
+            SELECT * FROM proof_runs
+            WHERE status IN ({LAUNCHED_SQL_STATUSES})
+            ORDER BY started_at DESC
+            """
         )
     )
 
@@ -1840,7 +1959,8 @@ def _parent_statuses(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]
     )
 
 
-_SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
+def _edge_kind_requires_local_parent(kind: str) -> bool:
+    return kind in _SCHEDULING_EDGE_KINDS
 
 
 def _dependency_state(
@@ -2016,86 +2136,48 @@ def _admit_run(
     log_path: Path,
     summary_json: Path,
 ) -> list[sqlite3.Row] | None:
-    """Atomically admit a run for its contention key.
+    """Atomically insert a queued run.
 
-    Returns ``None`` when the run was inserted, or the list of active rows that
-    blocked admission. The active-check and the insert run inside a single
-    ``BEGIN IMMEDIATE`` transaction, which acquires the write lock up front (per
-    sqlite.org lang_transaction: IMMEDIATE starts a write transaction without
-    waiting for a write statement). That closes the check-then-insert TOCTOU: a
-    second admission for the same key blocks on the write lock, then either sees
-    the now-active row or trips the partial-unique index. Either way at most one
-    non-terminal run exists per key.
+    Queued rows are wait-list state, not resource custody. Multiple queued rows
+    may share a contention key so dependency chains and follow-up proofs can be
+    parked while earlier work is still running. The launch path owns the
+    dispatched/running contention and capacity checks.
     """
     conn.row_factory = sqlite3.Row
-    # Serialize the check+insert against other writers. Python's sqlite3 driver
-    # would otherwise open an implicit DEFERRED transaction that takes the write
-    # lock only at the INSERT, leaving a window between our SELECT and INSERT.
-    # Close any implicit transaction first so BEGIN IMMEDIATE is legal.
     if conn.in_transaction:
         conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     try:
-        active = list(
-            conn.execute(
-                """
-                SELECT * FROM proof_runs
-                WHERE contention_key = ? AND status IN ('queued', 'running')
-                ORDER BY started_at DESC
-                """,
-                (contention_key,),
-            )
-        )
-        if active:
-            conn.rollback()
-            return active
-        try:
-            conn.execute(
-                """
-                INSERT INTO proof_runs (
-                    run_id, logical_id, reason, status, command_json, cwd,
-                    resource_family, contention_key, scopes_json, env_json,
-                    git_json, log_path, summary_json
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run_id,
-                    logical_id,
-                    reason,
-                    json.dumps(command),
-                    str(cwd),
-                    resource_family,
-                    contention_key,
-                    json.dumps(scopes),
-                    json.dumps(env_overrides or {}, sort_keys=True),
-                    json.dumps(
-                        git_snapshot
-                        if git_snapshot is not None
-                        else _git_snapshot(cwd),
-                        sort_keys=True,
-                    ),
-                    str(log_path),
-                    str(summary_json),
+        conn.execute(
+            """
+            INSERT INTO proof_runs (
+                run_id, logical_id, reason, status, command_json, cwd,
+                resource_family, contention_key, scopes_json, env_json,
+                git_json, log_path, summary_json
+            ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                logical_id,
+                reason,
+                json.dumps(command),
+                str(cwd),
+                resource_family,
+                contention_key,
+                json.dumps(scopes),
+                json.dumps(env_overrides or {}, sort_keys=True),
+                json.dumps(
+                    git_snapshot if git_snapshot is not None else _git_snapshot(cwd),
+                    sort_keys=True,
                 ),
-            )
-        except sqlite3.IntegrityError:
-            # A concurrent admission won the race and the partial-unique index
-            # rejected our insert. Report the active row(s) as the blocker.
-            conn.rollback()
-            return list(
-                conn.execute(
-                    """
-                    SELECT * FROM proof_runs
-                    WHERE contention_key = ? AND status IN ('queued', 'running')
-                    ORDER BY started_at DESC
-                    """,
-                    (contention_key,),
-                )
-            )
+                str(log_path),
+                str(summary_json),
+            ),
+        )
     except BaseException:
         conn.rollback()
         raise
-    conn.commit()
+    _commit_with_locked_retry(conn)
     return None
 
 
@@ -2200,11 +2282,20 @@ def _proof_env_policy_error(env_overrides: dict[str, str]) -> str | None:
     return None
 
 
+def _load_wasm_toolchain():
+    from molt.cli import wasm_toolchain
+
+    return wasm_toolchain
+
+
 def _required_rust_targets_for_resource(
-    resource_family: str, *, repo_root: Path
+    resource_family: str, *, repo_root: Path, wasm_toolchain_module=None
 ) -> tuple[str, ...]:
     if resource_family in WASM_RESOURCE_FAMILIES:
-        return wasm_toolchain.rust_toolchain_contract(repo_root).required_wasm_targets
+        wasm_toolchain_module = wasm_toolchain_module or _load_wasm_toolchain()
+        return wasm_toolchain_module.rust_toolchain_contract(
+            repo_root
+        ).required_wasm_targets
     return ()
 
 
@@ -2214,14 +2305,32 @@ def _ensure_run_toolchain_preflight(
     resource_family: str,
 ) -> list[str] | None:
     warnings: list[str] = []
+    wasm_toolchain_module = None
     try:
+        if resource_family in WASM_RESOURCE_FAMILIES:
+            wasm_toolchain_module = _load_wasm_toolchain()
         required_targets = _required_rust_targets_for_resource(
-            resource_family, repo_root=repo_root
+            resource_family,
+            repo_root=repo_root,
+            wasm_toolchain_module=wasm_toolchain_module,
         )
-    except wasm_toolchain.RustToolchainContractError as exc:
-        return [str(exc)]
+    except ImportError as exc:
+        return [f"failed to import WASM toolchain contract: {exc}"]
+    except Exception as exc:
+        contract_error = (
+            getattr(wasm_toolchain_module, "RustToolchainContractError", None)
+            if wasm_toolchain_module is not None
+            else None
+        )
+        if contract_error is not None and isinstance(exc, contract_error):
+            return [str(exc)]
+        raise
+    if wasm_toolchain_module is None:
+        return None
     for target in required_targets:
-        if not wasm_toolchain.ensure_rustup_target(target, warnings, root=repo_root):
+        if not wasm_toolchain_module.ensure_rustup_target(
+            target, warnings, root=repo_root
+        ):
             if not warnings:
                 warnings.append(f"failed to ensure Rust target {target}")
             return warnings
@@ -2657,9 +2766,58 @@ def _first_existing_manifest_root(
     return None
 
 
+def _git_worktree_roots(repo_root: Path) -> tuple[Path, ...]:
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo_root,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ()
+    roots: list[Path] = []
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            raw = line[len("worktree ") :].strip()
+            if raw:
+                roots.append(Path(raw))
+    return tuple(roots)
+
+
+def _pact_witness_candidate_repo_roots(repo_root: Path) -> tuple[Path, ...]:
+    roots = [Path(repo_root)]
+    roots.extend(_git_worktree_roots(repo_root))
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        deduped.append(resolved)
+    return tuple(deduped)
+
+
+def _first_existing_manifest_root_across(
+    repo_roots: Sequence[Path], candidates: list[str]
+) -> Path | None:
+    for candidate in candidates:
+        for repo_root in repo_roots:
+            root = _first_existing_manifest_root(repo_root, [candidate])
+            if root is not None:
+                return root
+    return None
+
+
 def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
     repo_root = Path(repo_root)
     selected: list[Path] = []
+    candidate_repo_roots = _pact_witness_candidate_repo_roots(repo_root)
     artifact_groups = [
         [
             "tmp/pact_numpy_multiarray_sealed_for_witness",
@@ -2675,27 +2833,33 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
         ],
     ]
     artifact_roots = [
-        _first_existing_manifest_root(repo_root, candidates)
+        _first_existing_manifest_root_across(candidate_repo_roots, candidates)
         for candidates in artifact_groups
     ]
     artifact_roots.extend(
         root
         for root in [
-            _first_existing_manifest_root(
-                repo_root,
+            _first_existing_manifest_root_across(
+                candidate_repo_roots,
                 ["tmp/pact_scipy_ni_label_molt_ext_wasm_cpython_abi"],
             ),
-            _first_existing_manifest_root(
-                repo_root,
+            _first_existing_manifest_root_across(
+                candidate_repo_roots,
                 ["tmp/pact_scipy_rank_filter_1d_molt_ext_wasm_cpython_abi"],
             ),
         ]
         if root is not None
     )
-    source_roots = [
-        repo_root / "bench/friends/repos/numpy_off_the_shelf",
-        repo_root / "bench/friends/repos/scipy_off_the_shelf",
-    ]
+    source_roots = []
+    for source_rel in [
+        "bench/friends/repos/numpy_off_the_shelf",
+        "bench/friends/repos/scipy_off_the_shelf",
+    ]:
+        for candidate_repo_root in candidate_repo_roots:
+            root = candidate_repo_root / source_rel
+            if root.exists():
+                source_roots.append(root)
+                break
     for root in [*artifact_roots, *source_roots]:
         if root is None or not root.exists():
             continue
@@ -2728,10 +2892,12 @@ def _pact_witness_acceptance_spec(
             "tools/pact_witness_acceptance.py",
             "--out-dir",
             "tmp/pact_witness_acceptance_queue",
+            with_packages=["numpy==1.26.4", "scipy==1.17.1"],
         ),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
+            "collab/pact/pact_witness_kernel/make_fixture.py",
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
             "wasm/browser_embed.js",
@@ -2750,6 +2916,7 @@ def _pact_witness_acceptance_spec(
         "notes": [
             "Named Pact acceptance auto-admits conventional manifest-led "
             "NumPy/SciPy staging roots when present, builds field_solve.py, "
+            "regenerates the fixture/reference oracle in the run directory, "
             "runs the WASM artifact to produce candidate_outputs.npz, and "
             "executes check_parity.py; --env can override for power-user lanes."
         ],
@@ -2884,7 +3051,7 @@ def _r6_target_version_parity_spec(
             "Selected R6 fixtures: " + ", ".join(selected_fixtures),
         ],
         "timeout": timeout if timeout is not None else 900.0,
-    }
+}
 
 
 def _native_molt_run_spec(
@@ -2913,9 +3080,8 @@ def _native_molt_run_spec(
         arg_list = arg_list[1:]
     entry_slug = _slug(entry_scope)
     digest = hashlib.sha256(entry_scope.encode("utf-8")).hexdigest()[:10]
-    logical_id = f"native-molt-run-{entry_slug}-{digest}"
     return {
-        "logical_id": logical_id,
+        "logical_id": f"native-molt-run-{entry_slug}-{digest}",
         "reason": (
             "Run a native Molt entrypoint through proof-queue custody instead "
             "of a foreground Codex shell compile."
@@ -2989,11 +3155,16 @@ def _run_named_spec(args: argparse.Namespace, spec: dict[str, object]) -> int:
         )
         if rc != 0 or run_id is None:
             return rc
-        pid, runner_log = _launch_detached_runner(
+        conn = _connect(_db_path(args))
+        dispatch = _dispatch_detached_runner(
             args,
+            conn,
             run_id=run_id,
             timeout=float(runnable["timeout"]),
         )
+        if dispatch is None:
+            return 0
+        pid, runner_log = dispatch
         print(f"detached {run_id} runner_pid={pid}")
         print(f"runner_log: {runner_log}")
         return 0
@@ -3077,7 +3248,9 @@ def _queue_one(
     repo_root = _repo_root(args)
     conn = _connect(db)
     for parent_run_id in depends_on or []:
-        if not _run_exists(conn, parent_run_id):
+        if _edge_kind_requires_local_parent(edge_kind) and not _run_exists(
+            conn, parent_run_id
+        ):
             raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
     if edge_kind not in EDGE_KINDS:
         allowed = ", ".join(sorted(EDGE_KINDS))
@@ -3215,7 +3388,7 @@ def _launch_detached_runner(
     }
     popen_kwargs.update(
         detached_process_group_kwargs(
-            windows=os.name == "nt",
+            windows=_queue_process_spawn_is_windows(),
             subprocess_module=subprocess,
         )
     )
@@ -3231,9 +3404,128 @@ def _launch_detached_runner(
     return proc.pid, runner_log
 
 
+def _queue_process_spawn_is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _claim_detached_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    queue_size: int,
+) -> tuple[sqlite3.Row | None, str | None]:
+    """Atomically move one queued row into launched custody."""
+    conn.row_factory = sqlite3.Row
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT * FROM proof_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            raise SystemExit(f"unknown proof run {run_id!r}")
+        if row["status"] != "queued":
+            conn.rollback()
+            return None, f"proof run {run_id!r} is {row['status']}, not queued"
+
+        active_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM proof_runs "
+                f"WHERE status IN ({LAUNCHED_SQL_STATUSES})"
+            ).fetchone()[0]
+        )
+        if active_count >= queue_size:
+            conn.rollback()
+            return (
+                None,
+                f"queue capacity full active={active_count} queue_size={queue_size}",
+            )
+
+        active_for_key = list(
+            conn.execute(
+                f"""
+                SELECT * FROM proof_runs
+                WHERE contention_key = ? AND status IN ({LAUNCHED_SQL_STATUSES})
+                ORDER BY started_at DESC
+                """,
+                (row["contention_key"],),
+            )
+        )
+        if active_for_key:
+            conn.rollback()
+            return (
+                None,
+                f"waiting {run_id} contention_key={row['contention_key']} active",
+            )
+
+        now = _utc_now()
+        updated = conn.execute(
+            """
+            UPDATE proof_runs
+            SET status = 'dispatched', started_at = ?
+            WHERE run_id = ? AND status = 'queued'
+            """,
+            (now, run_id),
+        )
+        if updated.rowcount != 1:
+            conn.rollback()
+            return None, f"proof run {run_id!r} was claimed by another scheduler"
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return None, f"proof run {run_id!r} could not be claimed atomically"
+    except BaseException:
+        conn.rollback()
+        raise
+    _commit_with_locked_retry(conn)
+    return _row_by_run_id(conn, run_id), None
+
+
+def _dispatch_detached_runner(
+    args: argparse.Namespace,
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    timeout: float,
+) -> tuple[int, Path] | None:
+    claimed, skip_reason = _claim_detached_run(
+        conn,
+        run_id,
+        queue_size=_configured_queue_size(getattr(args, "queue_size", None)),
+    )
+    if claimed is None:
+        if skip_reason:
+            print(skip_reason)
+        return None
+    try:
+        pid, runner_log = _launch_detached_runner(args, run_id=run_id, timeout=timeout)
+    except Exception:
+        _update_run(
+            conn,
+            run_id,
+            status="failed",
+            returncode=2,
+            finished_at=_utc_now(),
+            elapsed_s=0.0,
+        )
+        raise
+    row = _row_by_run_id(conn, run_id)
+    if row is not None:
+        log_path = Path(str(row["log_path"]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as log:
+            print("\n--- proof_queue detached dispatch ---", file=log)
+            print("status=dispatched", file=log)
+            print(f"runner_pid={pid}", file=log)
+            print(f"runner_log={runner_log}", file=log)
+    return pid, runner_log
+
+
 def _queued_command_process_kwargs() -> dict[str, object]:
     return hidden_windows_process_group_kwargs(
-        windows=os.name == "nt",
+        windows=_queue_process_spawn_is_windows(),
         subprocess_module=subprocess,
     )
 
@@ -3414,11 +3706,16 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         )
         if rc != 0 or run_id is None:
             return rc
-        pid, runner_log = _launch_detached_runner(
+        conn = _connect(_db_path(args))
+        dispatch = _dispatch_detached_runner(
             args,
+            conn,
             run_id=run_id,
             timeout=args.timeout,
         )
+        if dispatch is None:
+            return 0
+        pid, runner_log = dispatch
         print(f"detached {run_id} runner_pid={pid}")
         print(f"runner_log: {runner_log}")
         return 0
@@ -3478,11 +3775,16 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
         )
         if rc != 0 or run_id is None:
             return rc
-        pid, runner_log = _launch_detached_runner(
+        conn = _connect(_db_path(args))
+        dispatch = _dispatch_detached_runner(
             args,
+            conn,
             run_id=run_id,
             timeout=args.timeout,
         )
+        if dispatch is None:
+            return 0
+        pid, runner_log = dispatch
         print(f"detached {run_id} runner_pid={pid}")
         print(f"runner_log: {runner_log}")
         return 0
@@ -3669,10 +3971,16 @@ def _cmd_submit(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    if args.limit < 1:
-        raise SystemExit("--jobs/--limit must be greater than or equal to 1")
     conn = _connect(_db_path(args))
     conn.row_factory = sqlite3.Row
+    queue_size = _configured_queue_size(getattr(args, "queue_size", None))
+    run_limit = _configured_run_limit(args, queue_size=queue_size)
+    active_running = _active_running_rows(conn)
+    active_keys = {
+        str(row["contention_key"])
+        for row in active_running
+        if not (args.run_id is not None and row["run_id"] == args.run_id)
+    }
     if args.run_id:
         selected = conn.execute(
             "SELECT * FROM proof_runs WHERE run_id = ?",
@@ -3680,23 +3988,51 @@ def _cmd_run(args: argparse.Namespace) -> int:
         ).fetchone()
         if selected is None:
             raise SystemExit(f"unknown proof run {args.run_id!r}")
-        if selected["status"] != "queued":
+        allowed_statuses = {"queued"} if args.detach else DETACHED_READY_STATUSES
+        if selected["status"] not in allowed_statuses:
+            allowed = ", ".join(sorted(allowed_statuses))
             raise SystemExit(
-                f"proof run {args.run_id!r} is {selected['status']}, not queued"
+                f"proof run {args.run_id!r} is {selected['status']}, not {allowed}"
             )
         queued = [selected]
+        selection_limit = 1
     else:
         queued = list(
             conn.execute(
                 "SELECT * FROM proof_runs WHERE status = 'queued' ORDER BY rowid"
             )
         )
+        available_slots = max(0, queue_size - len(active_running))
+        if available_slots <= 0:
+            print(
+                f"queue capacity full active={len(active_running)} "
+                f"queue_size={queue_size}"
+            )
+            selection_limit = 0
+        elif args.detach:
+            selection_limit = min(run_limit, available_slots)
+        else:
+            selection_limit = run_limit
     rows = []
-    for row in queued:
+    selected_detached_keys = set(active_keys)
+    candidate_rows = queued if selection_limit > 0 else []
+    for row in candidate_rows:
+        contention_key = str(row["contention_key"])
+        if contention_key in active_keys:
+            print(f"waiting {row['run_id']} contention_key={contention_key} active")
+            continue
+        if args.detach and contention_key in selected_detached_keys:
+            print(
+                f"waiting {row['run_id']} contention_key={contention_key} "
+                "already selected"
+            )
+            continue
         state, blockers = _dependency_state(conn, row["run_id"])
         if state == "ready":
             rows.append(row)
-            if args.run_id or len(rows) >= args.limit:
+            if args.detach:
+                selected_detached_keys.add(contention_key)
+            if args.run_id or len(rows) >= selection_limit:
                 break
             continue
         blocker_summary = _blocker_summary(blockers)
@@ -3714,11 +4050,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for row in rows:
         payload = _row_to_payload(row)
         if args.detach:
-            pid, runner_log = _launch_detached_runner(
+            dispatch = _dispatch_detached_runner(
                 args,
+                conn,
                 run_id=str(payload["run_id"]),
                 timeout=args.timeout,
             )
+            if dispatch is None:
+                continue
+            pid, runner_log = dispatch
             print(f"detached {payload['run_id']} runner_pid={pid}")
             print(f"runner_log: {runner_log}")
             continue
@@ -3751,12 +4091,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
     _refresh_blocked_queued_runs(args, conn)
     active = list(
         conn.execute(
-            "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
+            f"SELECT * FROM proof_runs WHERE status IN ({ACTIVE_SQL_STATUSES}) "
+            "ORDER BY started_at"
         )
     )
     recent = list(
         conn.execute(
-            "SELECT * FROM proof_runs WHERE status NOT IN ('queued', 'running') ORDER BY finished_at DESC LIMIT ?",
+            f"SELECT * FROM proof_runs WHERE status NOT IN ({ACTIVE_SQL_STATUSES}) "
+            "ORDER BY finished_at DESC LIMIT ?",
             (args.recent,),
         )
     )
@@ -3978,7 +4320,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         rows = list(
             conn.execute(
                 "SELECT * FROM proof_runs "
-                "WHERE status IN ('queued', 'running', 'stale') "
+                f"WHERE status IN ({ACTIVE_OR_STALE_SQL_STATUSES}) "
                 f"AND run_id IN ({placeholders}) "
                 "ORDER BY started_at",
                 run_ids,
@@ -3988,12 +4330,37 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         rows = list(
             conn.execute(
                 "SELECT * FROM proof_runs "
-                "WHERE status IN ('queued', 'running') ORDER BY started_at"
+                f"WHERE status IN ({ACTIVE_SQL_STATUSES}) ORDER BY started_at"
             )
         )
     pruned = 0
     for row in rows:
         if row["status"] == "queued":
+            continue
+        if row["status"] == "dispatched":
+            dispatch_age = _running_age_seconds(_row_value(row, "started_at"))
+            if (
+                dispatch_age is None
+                or dispatch_age < PROOF_QUEUE_DISPATCH_STALE_SECONDS
+            ):
+                continue
+            _update_run(
+                conn,
+                row["run_id"],
+                status="stale",
+                returncode=PROOF_QUEUE_STALE_EXIT_CODE,
+                finished_at=_utc_now(),
+            )
+            pruned += 1
+            runner_log = Path(str(row["log_path"])).with_name(
+                f"{row['run_id']}.runner.log"
+            )
+            print(
+                f"stale {row['run_id']} diagnosis=dispatch-handoff-expired "
+                "[infra]: detached runner did not claim the dispatched row "
+                f"within {PROOF_QUEUE_DISPATCH_STALE_SECONDS:.0f}s "
+                f"artifacts={runner_log}, {row['log_path']}"
+            )
             continue
         if row["status"] == "stale":
             if row["returncode"] is None:
@@ -4033,7 +4400,7 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
         if (
             guard_alive
             and not age_exceeded
-            and not _diagnostics_have_stale_running_signal(diagnostics)
+            and not _diagnostics_have_terminal_stale_signal(diagnostics)
         ):
             continue
         _update_run(
@@ -4181,13 +4548,15 @@ def _audit_rows(
     conn.row_factory = sqlite3.Row
     active = list(
         conn.execute(
-            "SELECT * FROM proof_runs WHERE status IN ('queued', 'running') ORDER BY started_at"
+            f"SELECT * FROM proof_runs WHERE status IN ({ACTIVE_SQL_STATUSES}) "
+            "ORDER BY started_at"
         )
     )
     if args.all:
         historical = list(
             conn.execute(
-                "SELECT * FROM proof_runs WHERE status NOT IN ('queued', 'running') ORDER BY rowid DESC"
+                f"SELECT * FROM proof_runs WHERE status NOT IN ({ACTIVE_SQL_STATUSES}) "
+                "ORDER BY rowid DESC"
             )
         )
     else:
@@ -4195,7 +4564,7 @@ def _audit_rows(
             conn.execute(
                 """
                 SELECT * FROM proof_runs
-                WHERE status NOT IN ('queued', 'running')
+                WHERE status NOT IN ('queued', 'dispatched', 'running')
                 ORDER BY rowid DESC
                 LIMIT ?
                 """,
@@ -4721,6 +5090,8 @@ def _cmd_notebook(args: argparse.Namespace) -> int:
 def _cmd_quickstart(args: argparse.Namespace) -> int:
     del args
     print(
+        "molt queue status\n"
+        "molt queue run --detach --queue-size 3\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo "
         '--id focused-cargo-proof --reason "why this proves the Rust contract" '
@@ -4836,7 +5207,7 @@ from tools.proof_queue_pkg.runner import _run_one  # noqa: E402
 from tools.proof_queue_pkg.cli import _build_parser  # noqa: E402
 
 
-def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     _normalize_queue_process_environment()
     raw = list(sys.argv[1:] if argv is None else argv)
     proof_subcommand_index = _proof_command_subcommand_index(raw)
@@ -4845,7 +5216,7 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
         before_subcommand = raw[:proof_subcommand_index]
         subcommand_argv = raw[proof_subcommand_index:]
         if _proof_command_help_requested(subcommand_argv):
-            parser = _build_parser(prog=prog)
+            parser = _build_parser()
             args = parser.parse_args(raw)
             return int(args.func(args))
         before, command = _split_proof_command_argv(
@@ -4853,7 +5224,7 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
             subcommand=subcommand,
         )
         before = [*before_subcommand, *before]
-        parser = _build_parser(prog=prog)
+        parser = _build_parser()
         args = parser.parse_args(before)
         if subcommand == "exec":
             _reject_pre_delimiter_remainder(
@@ -4870,7 +5241,7 @@ def main(argv: list[str] | None = None, *, prog: str | None = None) -> int:
             )
             args.cargo_args = command
     else:
-        parser = _build_parser(prog=prog)
+        parser = _build_parser()
         args = parser.parse_args(raw)
     return int(args.func(args))
 

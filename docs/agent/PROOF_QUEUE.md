@@ -22,6 +22,39 @@ Before queueing, always inspect live custody:
 uv run --active --project . --python 3.12 python tools\proof_queue.py status
 ```
 
+On this Windows workstation, expensive queue rows must refresh the canonical DX
+environment before submission so APDataStore is the selected artifact and
+toolchain authority:
+
+```powershell
+$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell
+Invoke-Expression ($dx -join [Environment]::NewLine)
+```
+
+This bootstrap intentionally does not use `uv`: on a cold APDataStore/exFAT
+checkout, `UV_LINK_MODE=copy` must be exported before uv creates or syncs
+`.venv`, otherwise uv first attempts hard links and emits slow fallback noise.
+Use an already-installed host Python 3.12+ for this dependency-free resolver
+script; after the env is imported, use `uv run --active --project . --python
+3.12 ...` for project commands. Do not run two uv bootstrap/sync commands in
+parallel in the same fresh checkout; one process owns `.venv` creation.
+
+The healthy default is `MOLT_EXT_ROOT=D:\Molt`,
+`CARGO_TARGET_DIR=D:\Molt\target\sessions\<MOLT_SESSION_ID>`, and
+`MOLT_TARGET_ROOT=D:\Molt\target-root`, with `UV_LINK_MODE=copy` emitted for
+APDataStore/exFAT unless an explicit operator value is present. Do not submit
+rows with inherited `E:\molt-target`, `E:\Molt\target-root`, or the empty
+legacy `D:\molt-target` default unless the operator explicitly set
+`MOLT_PRESERVE_TARGET_ROOT=1` for that row. APDataStore is exFAT, so hard-link
+fallbacks are cache-authority defects to diagnose, not a reason to reroute
+proof lanes to legacy `E:` roots.
+
+APDataStore is the artifact and warm-worktree tier, not a disposable cold-clone
+treadmill. Create a new `D:\Molt\worktrees\...` checkout only for real isolation
+from dirty WIP or branch surgery; for read-only doc/status checks prefer
+`git show origin/main:<path>` from an existing checkout, and for repeated proof
+work reuse a warm worktree plus queue-assigned target/session roots.
+
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
 
@@ -129,10 +162,77 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witne
 ```
 
 Detached submission creates a queued row, starts a queue-owned runner for that
-exact run ID, and prints both the run ID and `*.runner.log`. The runner then
-uses `tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
-queued row. WASM resource families also preflight the checked-in Rust toolchain
-contract and install/check required Rust targets before Cargo starts.
+exact run ID, marks the row `dispatched`, and prints both the run ID and
+`*.runner.log`. The runner then uses
+`tools\proof_queue.py run --run-id RUN_ID`, so it cannot steal a different
+queued row. `dispatched` is active queue custody: it consumes queue capacity and
+prevents duplicate launch until the runner claims the row as `running` or
+`prune-stale` reclaims an expired handoff. WASM resource families also preflight
+the checked-in Rust toolchain contract and install/check required Rust targets
+before Cargo starts.
+
+Use the queue-size scheduler instead of launching several detached rows by hand:
+
+```powershell
+uv run --active --project . --python 3.12 python tools\proof_queue.py run `
+  --detach `
+  --queue-size 3
+```
+
+`--queue-size N` is the maximum number of concurrently `dispatched` or
+`running` rows across all contention keys. The default is `1`; set
+`MOLT_PROOF_QUEUE_SIZE=N` for a shell/session default. `run --detach` defaults
+its launch limit to the queue size, while `--limit` remains a per-invocation cap.
+Queued rows are wait-list state and do not consume capacity; launch uses an
+atomic queued-to-dispatched claim that rechecks global capacity and contention
+key ownership immediately before spawning a detached runner. The scheduler skips
+rows whose contention key is already active or already selected in the same
+batch, so increasing queue size only admits independent work.
+`running-proof-launch-summary-stale` is diagnostic evidence only while the
+queue-owned guard is still live; it means the memory guard has not yet published
+child-process custody. Only terminal stale signals such as
+`running-proof-child-missing`, a dead/reused guard, an expired dispatch handoff,
+or the running-age ceiling may reclaim a live row. This keeps Windows, macOS,
+and Linux detached rows from being marked stale just because an old queued log
+or launch summary predates the current execution epoch.
+Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
+already set a value. This keeps APDataStore, exFAT, cross-device caches, and
+other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback
+paths without disabling cache reuse or overriding an explicit operator choice.
+
+The source checkout also exposes a shell-free convenience front door. Prefer
+this for interactive use because it is the portable command surface:
+
+```shell
+molt queue --queue-size 3 run --detach
+```
+
+`molt queue ...` forwards to `tools/proof_queue.py` using Python argv lists, not
+a shell. The top-level `--queue-size N` is a portable per-invocation shorthand
+for `MOLT_PROOF_QUEUE_SIZE=N`; it avoids PowerShell/Bash/Fish-specific
+environment syntax while leaving scheduling and validation in
+`tools/proof_queue.py`. The wrapper rejects invalid top-level capacity before
+spawning the queue process, so bad values do not leak as latent environment
+state. Use either that shorthand or `run --queue-size N`, not both. The command
+surface also installs the canonical Molt DX environment around the child queue:
+APDataStore/artifact roots, target/cache/temp roots, `MOLT_TARGET_ROOT`, and
+`UV_LINK_MODE=copy` flow through the same RunContext authority as other build
+wrappers. When a warm project environment is visible, `molt queue` preserves it
+as `UV_PROJECT_ENVIRONMENT` instead of creating a fresh session venv. Resolution
+is explicit and ordered: existing `UV_PROJECT_ENVIRONMENT`, active
+`VIRTUAL_ENV`, checkout-local `.venv`, main-worktree `.venv`, then `MOLT_VENV`.
+This keeps APDataStore fast: use `D:\Molt` for shared build/cache/toolchain
+state, not as disposable cold worktree churn.
+
+The command surface is the same on Windows, macOS, and Linux, and it must not be
+replaced with PowerShell-specific launch wrappers, POSIX backgrounding, or
+shell-quoted command reconstruction. Raw `uv run ... tools/proof_queue.py`
+examples below remain source-checkout diagnostics and CI/bootstrap forms; they
+are not a second queue authority. The portability tests intentionally include
+spaces and shell metacharacters in paths/arguments, plus Windows and POSIX
+detached-runner assertions; update those tests with any queue launch change.
+The path-filtered `Proof Queue Portability` workflow runs those queue tests on
+Ubuntu, macOS, and Windows whenever queue launch surfaces change.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
 `MOLT_PYTEST_CURRENT_TEST_FILE` path so the pytest bootstrap can reuse the
 outer queue memory guard instead of recursively rewrapping the test process on
@@ -180,11 +280,12 @@ cache, a broad selector, or a stale generated file.
   `molt queue native-molt-run --detach path/to/probe.py`. The `molt queue`
   command delegates to this proof-queue authority; it does not own a second
   scheduler, database, log tree, process model, or contention policy.
-- `--jobs` is the queue worker count for ready rows in one `run` call. It is
-  cross-platform because each launched row still uses the same queue-owned
+- `--jobs`/`--limit` caps how many ready rows one `run` invocation selects.
+  `--queue-size` caps active queue capacity; when detaching and no explicit
+  `--jobs`/`--limit` is provided, the run limit defaults to that capacity. Both
+  are cross-platform because each launched row still uses the same queue-owned
   detached runner and OS custody path; contention keys still prevent unsafe
-  overlap such as two active `cargo:molt-runtime` rows. `--queue-size` is the
-  product spelling for the same value.
+  overlap such as two active `cargo:molt-runtime` rows.
 - Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
   already set a value. This avoids noisy hardlink fallback warnings on
   cross-device caches, exFAT artifact volumes, and other valid Windows/macOS/Linux
@@ -307,7 +408,10 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py link CHILD
 
 Canonical edge kinds are `depends_on`, `derives_from`, `reruns`, `compares`,
 and `supersedes`. `depends_on` is the scheduling edge; the others preserve
-lineage and comparison intent for evidence review.
+lineage and comparison intent for evidence review. Because queue databases are
+worktree-local, non-scheduling lineage edges may name a parent run from another
+worktree; `depends_on` parents must exist in the local queue so scheduling can
+fail closed.
 
 ## Evidence And Notebooks
 
@@ -460,10 +564,11 @@ the running summary is dead and the log is stale, `prune-stale` must still mark
 the row stale with `running-proof-child-missing`; do not keep that row active
 waiting for a child that custody already proved gone.
 Active queue-owned runners apply the same stale-running diagnostics while they
-wait: once a row proves `running-proof-child-missing` or
-`running-proof-launch-summary-stale`, the runner marks its own row `stale`,
-writes the diagnosis and evidence to the queue log, and terminates only the
-guard process it launched for that run.
+wait, but only `running-proof-child-missing` is a self-terminalizing runner
+signal. `running-proof-launch-summary-stale` means the guard summary has not
+yet advanced far enough to prove nested custody; the runner must keep waiting
+for the guard process it launched. Use `prune-stale --run-id RUN_ID` after an
+ownership check when a launch-summary-only row truly needs manual cleanup.
 
 ```powershell
 uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID

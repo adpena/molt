@@ -1,0 +1,60 @@
+name: Proof Queue Portability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/proof-queue-portability.yml"
+      - "docs/agent/PROOF_QUEUE.md"
+      - "src/molt/cli/entrypoint_dispatch.py"
+      - "src/molt/cli/entrypoint_parser.py"
+      - "src/molt/cli/queue_cli.py"
+      - "tools/process_spawn.py"
+      - "tools/proof_queue.py"
+      - "tools/proof_queue_pkg/**"
+      - "tests/test_molt_queue_cli.py"
+      - "tests/tools/test_proof_queue.py"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/proof-queue-portability.yml"
+      - "docs/agent/PROOF_QUEUE.md"
+      - "src/molt/cli/entrypoint_dispatch.py"
+      - "src/molt/cli/entrypoint_parser.py"
+      - "src/molt/cli/queue_cli.py"
+      - "tools/process_spawn.py"
+      - "tools/proof_queue.py"
+      - "tools/proof_queue_pkg/**"
+      - "tests/test_molt_queue_cli.py"
+      - "tests/tools/test_proof_queue.py"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  queue-portability:
+    name: Queue Portability (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-2022]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version-file: ".python-version"
+
+      - uses: astral-sh/setup-uv@v8.2.0
+
+      - name: Sync Python environment
+        run: uv sync --frozen --group dev
+
+      - name: Run proof queue portability tests
+        timeout-minutes: 10
+        run: uv run --active --project . --no-sync python -m pytest -q tests/test_molt_queue_cli.py tests/tools/test_proof_queue.py

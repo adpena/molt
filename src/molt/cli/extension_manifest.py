@@ -23,7 +23,7 @@ from molt.native_callable_abi import (
 
 _ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
 _MOLT_C_API_VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
-_CURRENT_MOLT_C_API_VERSION = "3"
+_CURRENT_MOLT_C_API_VERSION = "4"
 _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -128,6 +128,17 @@ def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
             isinstance(item, str) for item in exports
         ):
             errors.append("exports must be a list of strings")
+    runtime_python_import_modules = manifest.get("runtime_python_import_modules")
+    if runtime_python_import_modules is not None:
+        # Sealed roots persist the source-derived dynamic-import closure (e.g.
+        # numpy's IMPORT_GLOBAL("numpy._core._exceptions", ...)) so the build
+        # consumer need not re-scan the C sources, which a sealed root omits.
+        if not isinstance(runtime_python_import_modules, list) or not all(
+            isinstance(item, str) for item in runtime_python_import_modules
+        ):
+            errors.append(
+                "runtime_python_import_modules must be a list of strings"
+            )
     return errors
 
 
