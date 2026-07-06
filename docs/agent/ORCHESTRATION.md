@@ -306,11 +306,11 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
   BEFORE landing — a split that does not compile is a broken-main P0 that blocks
   the whole witness.** Witness acceptance is RE-RUNNING on df4e5e738 to surface
   the next step (wasm link / runtime-exec / parity) toward `candidate_outputs.npz`
-  + `check_parity` green (owner: orchestrator, R0). DX gap flagged: RunContext
-  rehomes `MOLT_TARGET_ROOT` to `D:\molt-target`, which lacks toolchains/WASI
-  sysroot on this host — wasm builds currently need a `MOLT_PRESERVE_TARGET_ROOT=1`
-  + explicit `MOLT_WASI_SYSROOT` workaround (provisioning + `dx.py` rehome-guard
-  follow-up).
+  + `check_parity` green (owner: orchestrator, R0). DX gap closed by the
+  APDataStore target-root resolver: RunContext now derives managed toolchains
+  from the selected artifact root as `D:\Molt\target-root`, and stale
+  `E:\molt-target`, `E:\Molt\target-root`, or empty `D:\molt-target` defaults
+  are rehomed unless explicitly preserved with `MOLT_PRESERVE_TARGET_ROOT=1`.
 - The witness `import numpy` chain has advanced deep into numpy's C-core
   init. Landed this arc: conditional-import wedge (3b0ca4a80, killed the
   infinite hang), honest-error propagation (3d5977a9d, real import errors no
