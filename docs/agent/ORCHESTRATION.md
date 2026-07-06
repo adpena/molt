@@ -288,9 +288,25 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
 
 ## State of the world (read this first)
 
+- **✅ REPRIORITIZATION RELEASED 2026-07-06 (orchestrator): CODEX RESUME NORMAL
+  HEAVY BUILDS.** The emergency witness-priority hold below is LIFTED. Honest
+  reassessment (adversarial audit): the witness heavy WASM build cannot complete
+  right now regardless of memory, because the next blocker — staging
+  `scipy._cyutility` (a Cython 3.1 `--generate-shared` native module the witness's
+  `scipy.ndimage.label` exec-imports) — is an UNSOLVED STRUCTURAL GAP in Molt's
+  source-recompiled-extension build path, not a memory problem. Holding the whole
+  swarm's productive R4a/numeric heavy builds for a witness build that can't run
+  was wrong. Swarm: resume. The witness now needs a focused structural arc
+  (teach Molt's extension build to build a Cython shared-utility module +
+  its `__Pyx_ImportType` type exports, then re-seal/stage it), NOT a build slot.
+  Everything AROUND the witness build is now ready: numpy/scipy submodule closure
+  fixed, ABI 4, Cython exec-import scanner fixed, node runner + parity oracle
+  verified (check_parity cp1252 fix f4780a382; CPython field_solve vs reference =
+  PASS on all 11 arrays, floats bit-identical → parity is achievable once Molt
+  executes the ops). The blocker is solely scipy._cyutility native custody.
 - **⚠️ EMERGENCY QUEUE REPRIORITIZATION 2026-07-06 (orchestrator,
   operator-authorized): WITNESS P0 HAS EXCLUSIVE HEAVY-BUILD PRIORITY — CODEX
-  STAND DOWN ON HEAVY WASM/CARGO BUILDS.** The host is memory-CONTENDED (~1GB
+  STAND DOWN ON HEAVY WASM/CARGO BUILDS.** [SUPERSEDED — RELEASED ABOVE.] The host is memory-CONTENDED (~1GB
   available, 59GB commit / 85GB limit) — this is NOT a leak: `orphan_reaper.py
   sweep` confirms 0 orphaned Molt build processes; the live cargo/rustc are
   legitimate concurrent builds. The constraint is heavy-build CONTENTION — the
