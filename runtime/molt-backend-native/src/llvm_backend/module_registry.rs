@@ -52,20 +52,19 @@ impl<'ctx> LlvmBackend<'ctx> {
         let mut field_types: Vec<BasicTypeEnum> = Vec::new();
         let mut field_values: Vec<BasicValueEnum> = Vec::new();
         let mut cursor: usize = 0;
-        let mut push_bytes =
-            |bytes: &[u8],
-             field_types: &mut Vec<BasicTypeEnum<'ctx>>,
-             field_values: &mut Vec<BasicValueEnum<'ctx>>| {
-                if bytes.is_empty() {
-                    return;
-                }
-                field_types.push(i8_ty.array_type(bytes.len() as u32).into());
-                field_values.push(ctx.const_string(bytes, false).into());
-            };
+        let push_bytes = |bytes: &[u8],
+                          field_types: &mut Vec<BasicTypeEnum<'ctx>>,
+                          field_values: &mut Vec<BasicValueEnum<'ctx>>| {
+            if bytes.is_empty() {
+                return;
+            }
+            field_types.push(i8_ty.array_type(bytes.len() as u32).into());
+            field_values.push(ctx.const_string(bytes, false).into());
+        };
         for (offset, symbol) in &relocs {
             let offset = *offset as usize;
             assert!(
-                offset % 8 == 0,
+                offset.is_multiple_of(8),
                 "module registry reloc offset {offset} is not 8-aligned"
             );
             push_bytes(&blob[cursor..offset], &mut field_types, &mut field_values);
