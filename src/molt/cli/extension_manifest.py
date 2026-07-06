@@ -128,6 +128,17 @@ def _manifest_errors(manifest: dict[str, Any]) -> list[str]:
             isinstance(item, str) for item in exports
         ):
             errors.append("exports must be a list of strings")
+    runtime_python_import_modules = manifest.get("runtime_python_import_modules")
+    if runtime_python_import_modules is not None:
+        # Sealed roots persist the source-derived dynamic-import closure (e.g.
+        # numpy's IMPORT_GLOBAL("numpy._core._exceptions", ...)) so the build
+        # consumer need not re-scan the C sources, which a sealed root omits.
+        if not isinstance(runtime_python_import_modules, list) or not all(
+            isinstance(item, str) for item in runtime_python_import_modules
+        ):
+            errors.append(
+                "runtime_python_import_modules must be a list of strings"
+            )
     return errors
 
 

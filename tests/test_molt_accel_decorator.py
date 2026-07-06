@@ -6,7 +6,8 @@ from pathlib import Path
 import json
 
 from molt_accel.client import MoltClient, MoltClientPool
-from molt_accel.decorator import molt_offload
+from molt_accel import decorator as decorator_mod
+from molt_accel.decorator import molt_offload, raw_json_response_factory
 
 
 def _worker_cmd() -> list[str]:
@@ -95,3 +96,38 @@ def test_molt_offload_env_retry_policy(monkeypatch) -> None:
     assert captured["retry_on_busy"] is True
     assert captured["retry_backoff_ms"] == 9
     assert captured["retry_backoff_max_ms"] == 21
+
+
+def test_raw_json_response_factory_falls_back_without_django(monkeypatch) -> None:
+    monkeypatch.setattr(decorator_mod, "_optional_django_http", lambda: None)
+
+    assert raw_json_response_factory(b'{"ok": true}', 202) == {
+        "status": 202,
+        "payload": b'{"ok": true}',
+    }
+
+
+def test_raw_json_response_factory_uses_optional_django_http(monkeypatch) -> None:
+    class FakeDjangoHttp:
+        @staticmethod
+        def HttpResponse(payload, *, status, content_type):
+            return ("http", payload, status, content_type)
+
+        @staticmethod
+        def JsonResponse(payload, *, status, safe):
+            return ("json", payload, status, safe)
+
+    monkeypatch.setattr(decorator_mod, "_optional_django_http", lambda: FakeDjangoHttp)
+
+    assert raw_json_response_factory(b'{"ok": true}', 203) == (
+        "http",
+        b'{"ok": true}',
+        203,
+        "application/json",
+    )
+    assert raw_json_response_factory({"ok": True}, 204) == (
+        "json",
+        {"ok": True},
+        204,
+        True,
+    )

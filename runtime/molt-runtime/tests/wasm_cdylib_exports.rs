@@ -11,20 +11,39 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn expected_fixed_exports() -> BTreeSet<String> {
+fn expected_fixed_exports(enabled_features: &[&str]) -> BTreeSet<String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = fs::read_to_string(manifest_dir.join("src/wasm_abi_exports.rs"))
         .expect("read wasm_abi_exports.rs");
+    let enabled_features = enabled_features.iter().copied().collect::<BTreeSet<_>>();
     let mut names = BTreeSet::from([
         "molt_runtime_shutdown".to_string(),
         "molt_set_wasm_table_base".to_string(),
     ]);
+    let mut gated_feature: Option<String> = None;
     for line in source.lines() {
         let trimmed = line.trim();
+        if let Some(feature) = trimmed
+            .strip_prefix("#[cfg(feature = \"")
+            .and_then(|rest| rest.strip_suffix("\")]"))
+        {
+            gated_feature = Some(feature.to_string());
+            continue;
+        }
         if let Some(rest) = trimmed.strip_prefix("pub extern \"C\" fn ")
             && let Some((name, _)) = rest.split_once('(')
         {
+            if gated_feature
+                .as_deref()
+                .is_some_and(|feature| !enabled_features.contains(feature))
+            {
+                gated_feature = None;
+                continue;
+            }
             names.insert(name.trim().to_string());
+            gated_feature = None;
+        } else if !trimmed.is_empty() && !trimmed.starts_with("#[") {
+            gated_feature = None;
         }
     }
     names
@@ -136,6 +155,14 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
     let tmp_dir = root.join("tmp");
     fs::create_dir_all(&target_dir).expect("create target dir");
     fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+    let runtime_features = [
+        "stdlib_micro",
+        "builtin_set",
+        "builtin_complex",
+        "builtin_memoryview",
+        "builtin_contextvars",
+        "builtin_fcntl",
+    ];
 
     let expected_cpython_abi = expected_cpython_abi_requested_exports();
     let cpython_abi_requested_exports = expected_cpython_abi
@@ -201,7 +228,7 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
             "wasm32-wasip1",
             "--no-default-features",
             "--features",
-            "stdlib_micro,builtin_set,builtin_complex,builtin_memoryview,builtin_contextvars,builtin_fcntl",
+            &runtime_features.join(","),
         ])
         .output()
         .expect("run cargo build for wasm runtime");
@@ -220,7 +247,7 @@ fn cargo_build_emits_runtime_wasm_with_fixed_abi_surface() {
         runtime_wasm.display()
     );
     let export_names = read_export_names(&runtime_wasm);
-    let expected = expected_fixed_exports();
+    let expected = expected_fixed_exports(&runtime_features);
     let missing: Vec<String> = expected.difference(&export_names).cloned().collect();
     assert!(
         missing.is_empty(),

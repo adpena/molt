@@ -26,6 +26,7 @@ from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.source_extensions import (
     source_extension_manifest_errors_are_missing_sources,
+    source_extension_manifest_runtime_python_imports,
     source_extension_manifest_source_path,
     source_extension_manifest_required_capsule_imports_by_source,
 )
@@ -381,6 +382,47 @@ def _canonicalize_object_closure_source_capsule_requirements(
     return []
 
 
+def _canonicalize_runtime_python_import_modules(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+) -> list[str]:
+    # Some C-extension runtime Python imports (numpy's
+    # ``IMPORT_GLOBAL("numpy._core._exceptions", ...)`` from
+    # ``npy_static_data.c``) have no Python importer, so the AOT import graph
+    # never pulls them and the build-time source scan is the only authority
+    # that knows they are required. A sealed root deliberately omits its
+    # build-generated (and, over time, its original C) sources, so a later
+    # build cannot re-derive that fact. Seal is the custody boundary where the
+    # sources still resolve, so persist the source-derived runtime-Python-import
+    # closure as a first-class manifest field, mirroring the source-derived
+    # capsule-requirement custody above. Consumers prefer this persisted field
+    # over re-scanning, which makes the sealed root self-contained.
+    #
+    # Re-sealing an already-sealed root may run where the sources no longer
+    # resolve; in that case the scan yields the empty set with missing-source
+    # diagnostics, so union with the previously persisted field rather than
+    # nullifying it.
+    scanned, errors = source_extension_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=manifest_path,
+    )
+    non_missing_errors = [
+        error
+        for error in errors
+        if not source_extension_manifest_errors_are_missing_sources([error])
+    ]
+    if non_missing_errors:
+        return non_missing_errors
+    persisted = _string_set(manifest.get("runtime_python_import_modules"))
+    persisted.update(scanned)
+    if persisted:
+        manifest["runtime_python_import_modules"] = sorted(persisted)
+    else:
+        manifest.pop("runtime_python_import_modules", None)
+    return []
+
+
 def _restamp_current_runtime_abi(
     sealed_manifest: dict[str, Any],
     *,
@@ -603,6 +645,16 @@ def extension_seal(
     if source_capsule_errors:
         return _fail(
             "; ".join(source_capsule_errors),
+            json_output,
+            command="extension-seal",
+        )
+    runtime_import_errors = _canonicalize_runtime_python_import_modules(
+        sealed_manifest,
+        manifest_path=manifest_path,
+    )
+    if runtime_import_errors:
+        return _fail(
+            "; ".join(runtime_import_errors),
             json_output,
             command="extension-seal",
         )
