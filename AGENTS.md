@@ -21,12 +21,14 @@ is reconciled.
 - No hacks, no shortcuts, no workarounds, no facades, no compatibility shims,
   no local-minimum patches, no TODO-as-plan, and no partial implementations
   committed as progress. If the abstraction is wrong, move the abstraction.
-- A discovered prerequisite is not permission to defer the work. If the
-  prerequisite is inside the owned authority class, pull it into the same
-  structural arc and implement the end-state path. If it is frozen or owned by
-  another lane, record a precise proof-queue/board finding with evidence and
-  immediately continue on the next allowed structural aperture. Do not posture
-  as "waiting for X" or land a placeholder around the missing primitive.
+- A discovered prerequisite is not permission to defer the work, and
+  "I will not do X until Y happens" is a turn-blocking avoidance pattern unless
+  the formal blocked audit is satisfied. If the prerequisite is inside the owned
+  authority class, pull it into the same structural arc and implement the
+  end-state path. If it is frozen or owned by another lane, record a precise
+  proof-queue/board finding with evidence and immediately continue on the next
+  allowed structural aperture. Do not posture as "waiting for X" or land a
+  placeholder around the missing primitive.
 - No backward compatibility inside Molt internals. When a touched path has a
   legacy lane, delete it or structurally reconcile it in the same arc.
 - Performance is part of correctness. Claimed support must be deterministic,
