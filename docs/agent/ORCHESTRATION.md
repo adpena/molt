@@ -441,6 +441,8 @@ small fast-start artifacts, (5) world-class agent-first DX.
 
 ### R0. Pact witness kernel GREEN end-to-end (owner: orchestrator) — ACTIVE
 
+**CURRENT FRONTIER (2026-07-06, orchestrator): the STALE NUMPY SEAL — UPSTREAM of the R0.1-R0.4 sub-items below.** A clean-worktree witness build now fails CLOSED at numpy custody (before any init): `tmp/pact_numpy_multiarray_sealed_for_witness` has no `runtime_python_import_modules` and all 130 object_closure C sources point at a deleted pact-collab meson dir. Active arc = regenerate the numpy `_multiarray_umath` meson-wasm seal + reseal (subagent in flight, incremental commits). The R0.1-R0.4 items are the deeper roadmap that resumes ONCE the seal is regenerated and the witness build proceeds past numpy. scipy._cyutility is NOT a wall (R73.2 standalone-Cython bypass, landed).
+
 The done criterion of the current goal: `field_solve.py` from
 `collab/pact/` compiles through the live WASM/browser path, produces
 `candidate_outputs.npz`, and `check_parity.py` passes — no host-CPython
