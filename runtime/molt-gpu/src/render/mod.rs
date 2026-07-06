@@ -22,6 +22,42 @@ use crate::shapetracker::ShapeTracker;
 mod fused_op;
 pub use fused_op::{FusedOp, FusedOpDomain, ReductionDomain};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FmaPattern {
+    pub mul_op_idx: usize,
+    pub add_src_pos: usize,
+}
+
+pub(crate) fn detect_fma_pattern(
+    op: &FusedOp,
+    op_idx: usize,
+    kernel: &FusedKernel,
+    dst_is_float: bool,
+) -> Option<FmaPattern> {
+    if op.op() != PrimitiveOp::Add || !dst_is_float {
+        return None;
+    }
+
+    for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
+        let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos] else {
+            continue;
+        };
+        if *prior_idx < op_idx
+            && kernel
+                .ops
+                .get(*prior_idx)
+                .is_some_and(|prior_op| prior_op.op() == PrimitiveOp::Mul)
+        {
+            return Some(FmaPattern {
+                mul_op_idx: *prior_idx,
+                add_src_pos,
+            });
+        }
+    }
+
+    None
+}
+
 /// Executable body carried by a scheduled kernel.
 ///
 /// Compute kernels evaluate the ordered [`FusedOp`] chain. Materialization
