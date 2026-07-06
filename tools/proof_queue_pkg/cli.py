@@ -89,11 +89,13 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p = sub.add_parser("run", help="run queued proof specs")
     run_p.add_argument(
         "--limit",
+        "--jobs",
+        dest="limit",
         type=int,
         default=None,
         help=(
             "maximum queued rows to run; defaults to 1, or to --queue-size "
-            "when --detach is used"
+            "when --detach is used. --jobs is the operator-facing alias."
         ),
     )
     run_p.add_argument(
@@ -281,4 +283,24 @@ def _build_parser() -> argparse.ArgumentParser:
         note_help="append submission context to the R6 parity run",
     )
     r6_parity_p.set_defaults(func=pq._cmd_r6_target_version_parity)
+
+    native_run_p = sub.add_parser(
+        "native-molt-run",
+        help="queue a native `molt run` entrypoint probe",
+        description=(
+            "queue a native `molt run` entrypoint probe with canonical uv, "
+            "memory-guard, log, DAG, and contention custody"
+        ),
+    )
+    pq._add_named_lane_args(
+        native_run_p,
+        note_help="append submission context to the native Molt run",
+    )
+    native_run_p.add_argument("entry", help="repo-local Python entrypoint to run")
+    native_run_p.add_argument(
+        "script_args",
+        nargs=argparse.REMAINDER,
+        help="arguments passed to the entrypoint (use -- to separate)",
+    )
+    native_run_p.set_defaults(func=pq._cmd_native_molt_run)
     return parser

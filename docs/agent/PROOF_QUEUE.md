@@ -273,6 +273,23 @@ cache, a broad selector, or a stale generated file.
   proof-row authority.
 - Submit long or compile-heavy proof rows with `--detach`, then keep working or
   end the arc. Do not spend a turn tailing a queued log.
+- Prefer the product front door for day-to-day queue work:
+  `molt queue status`, `molt queue --help`,
+  `molt queue --db logs/proof_queue/proof_queue.sqlite3 status`,
+  `molt queue run --queue-size N --detach`, and
+  `molt queue native-molt-run --detach path/to/probe.py`. The `molt queue`
+  command delegates to this proof-queue authority; it does not own a second
+  scheduler, database, log tree, process model, or contention policy.
+- `--jobs`/`--limit` caps how many ready rows one `run` invocation selects.
+  `--queue-size` caps active queue capacity; when detaching and no explicit
+  `--jobs`/`--limit` is provided, the run limit defaults to that capacity. Both
+  are cross-platform because each launched row still uses the same queue-owned
+  detached runner and OS custody path; contention keys still prevent unsafe
+  overlap such as two active `cargo:molt-runtime` rows.
+- Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
+  already set a value. This avoids noisy hardlink fallback warnings on
+  cross-device caches, exFAT artifact volumes, and other valid Windows/macOS/Linux
+  storage layouts without disabling cache reuse.
 - When historical warning rows make audit output noisy, use
   `tools\proof_queue.py audit --errors-only` for human triage. This hides
   warning rows only from the terminal text; JSON/output payloads and the audit

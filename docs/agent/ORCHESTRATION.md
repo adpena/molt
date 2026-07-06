@@ -288,6 +288,24 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
 
 ## State of the world (read this first)
 
+- **⚠️ EMERGENCY QUEUE REPRIORITIZATION 2026-07-06 (orchestrator,
+  operator-authorized): WITNESS P0 HAS EXCLUSIVE HEAVY-BUILD PRIORITY — CODEX
+  STAND DOWN ON HEAVY WASM/CARGO BUILDS.** The host is memory-CONTENDED (~1GB
+  available, 59GB commit / 85GB limit) — this is NOT a leak: `orphan_reaper.py
+  sweep` confirms 0 orphaned Molt build processes; the live cargo/rustc are
+  legitimate concurrent builds. The constraint is heavy-build CONTENTION — the
+  pact-witness P0 WASM build cannot complete while other heavy WASM/cargo builds
+  run (both thrash + time out; cf. R4a `spectral_norm` WASM artifact rc=124
+  @1209s). **All Codex agents and subagents: STAND DOWN on heavy builds — full
+  `molt build --target wasm`, R4a spectral/comparison WASM-artifact builds, and
+  multi-crate cargo builds — until the witness reaches parity OR the orchestrator
+  releases this hold.** The witness P0 (Kernel A → `candidate_outputs.npz` →
+  `check_parity`) is the ONE heavy build that runs. Light work continues:
+  Python, docs, single-crate `cargo check` via the queue, tests. **MEMORY
+  DISCIPLINE (standing lesson): memory pressure is diagnosed by `orphan_reaper.py
+  sweep` (leak vs contention), then fixed by QUEUE REPRIORITIZATION (orchestrator
+  authority) — NOT by manual process hunting. Run landed tools from a worktree,
+  since the shared checkout is base-stale and lacks tools/orphan_reaper.py.**
 - **UPDATE 2026-07-06 (orchestrator): TARGET-FEATURE AUTHORITY UNIFIED +
   RECLAIMED (c54839969).** Target-feature + browser-profile truth now flows
   through ONE generated authority: `src/molt/target_feature_manifest.toml`
