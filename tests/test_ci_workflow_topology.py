@@ -138,6 +138,23 @@ def test_kani_runtime_proofs_do_not_compile_full_stdlib_closure() -> None:
     assert "stdlib_full" not in runtime_block
 
 
+def test_kani_workflow_gates_verifier_rust_version_honestly() -> None:
+    kani_text = _read(".github/workflows/kani.yml")
+
+    assert "Check Kani toolchain compatibility" in kani_text
+    assert "id: kani-toolchain" in kani_text
+    assert 'workspace_manifest["workspace"]["package"]["rust-version"]' in kani_text
+    assert "runtime\" / \"molt-obj-model\" / \"Cargo.toml\"" in kani_text
+    assert "runtime\" / \"molt-runtime\" / \"Cargo.toml\"" in kani_text
+    assert "run_kani = version_key(kani_rustc) >= version_key(required)" in kani_text
+    assert "run_kani={'true' if run_kani else 'false'}" in kani_text
+    assert "GITHUB_STEP_SUMMARY" in kani_text
+    assert "::warning title=Kani rust-version gate::" in kani_text
+    assert "if: steps.kani-toolchain.outputs.run_kani == 'true'" in kani_text
+    assert "if: steps.kani-toolchain.outputs.run_kani != 'true'" in kani_text
+    assert "--ignore-rust-version" not in kani_text
+
+
 def test_github_workflows_opt_into_node24_action_runtime() -> None:
     for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
         text = workflow.read_text(encoding="utf-8")
