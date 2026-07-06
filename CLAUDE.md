@@ -57,6 +57,14 @@ is reconciled.
   the boundary.
 - A small landing is valid only when it is a complete end-state subsystem cut
   with no adjacent same-kind duplicate lane left behind.
+- Dependency gates are work selectors, not idle states. Never stop at
+  "I will not do X until Y happens" unless the formal blocked audit is already
+  satisfied. If a lane is waiting on CI, a queue row, a frozen owner, a merge, or
+  any other external event, immediately advance another board-valid structural
+  arc, pre-stage the next exact patch/proof, file the precise queue/board note,
+  or finish a disjoint DX/diagnostic improvement. Waiting is acceptable only as
+  detached proof custody or an explicit stand-down/frozen-lane order; it is never
+  a reason to narrate status, shrink scope, land a placeholder, or stop moving.
 
 ## DX, Queue, And Proof Discipline
 
