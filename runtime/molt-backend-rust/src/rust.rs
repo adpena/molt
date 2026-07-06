@@ -23,6 +23,7 @@ mod emit_helpers;
 mod lowering;
 mod op_emitter;
 mod prelude;
+mod runtime_surface;
 
 use lowering::{
     build_phi_injection_maps, collect_phi_assignments, collect_scope_escapes, lower_early_returns,

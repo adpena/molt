@@ -190,6 +190,126 @@ fn rust_backend_lowers_module_attr_round_trip() {
 }
 
 #[test]
+fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
+    let mut word = op("const_str");
+    word.s_value = Some("cafe\u{301}".to_string());
+    word.out = Some("word".to_string());
+
+    let mut string = op("str_from_obj");
+    string.args = Some(vec!["word".to_string()]);
+    string.out = Some("string_word".to_string());
+
+    let mut repr = op("repr_from_obj");
+    repr.args = Some(vec!["word".to_string()]);
+    repr.out = Some("repr_word".to_string());
+
+    let mut ascii = op("ascii_from_obj");
+    ascii.args = Some(vec!["word".to_string()]);
+    ascii.out = Some("ascii_word".to_string());
+
+    let mut message = op("const_str");
+    message.s_value = Some("feature unavailable".to_string());
+    message.out = Some("message".to_string());
+
+    let mut bridge = op("bridge_unavailable");
+    bridge.args = Some(vec!["message".to_string()]);
+    bridge.out = Some("bridge_result".to_string());
+
+    let mut ret = op("ret");
+    ret.args = Some(vec!["ascii_word".to_string()]);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_runtime_surface".to_string(),
+            params: Vec::new(),
+            ops: vec![word, string, repr, ascii, message, bridge, ret],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let mut backend = RustBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("admitted runtime-surface ops should lower without stubs");
+
+    assert!(source.contains("let mut string_word: MoltValue = molt_str_from_obj(&word);"));
+    assert!(source.contains("let mut repr_word: MoltValue = molt_repr(&word);"));
+    assert!(source.contains("let mut ascii_word: MoltValue = molt_ascii_from_obj(&word);"));
+    assert!(
+        source.contains("let mut bridge_result: MoltValue = molt_bridge_unavailable(&message);")
+    );
+    assert!(source.contains("fn molt_str_from_obj(x: &MoltValue) -> MoltValue"));
+    assert!(source.contains("fn molt_repr(x: &MoltValue) -> MoltValue"));
+    assert!(source.contains("fn molt_ascii_from_obj(x: &MoltValue) -> MoltValue"));
+    assert!(source.contains("fn molt_escape_non_ascii(text: &str) -> String"));
+    assert!(source.contains("fn molt_bridge_unavailable(message: &MoltValue) -> MoltValue"));
+    assert!(!source.contains("MOLT_STUB: str_from_obj"));
+    assert!(!source.contains("MOLT_STUB: repr_from_obj"));
+    assert!(!source.contains("MOLT_STUB: ascii_from_obj"));
+    assert!(!source.contains("MOLT_STUB: bridge_unavailable"));
+}
+
+#[test]
+fn rust_backend_runtime_value_surface_rejects_wrong_arity() {
+    let mut string = op("str_from_obj");
+    string.out = Some("string_word".to_string());
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_runtime_surface_wrong_arity".to_string(),
+            params: Vec::new(),
+            ops: vec![string],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let mut backend = RustBackend::new();
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("runtime-surface calls must fail closed on missing operands");
+
+    assert!(err.contains("MOLT_STUB: str_from_obj"));
+    assert!(err.contains("str_from_obj requires 1 runtime-surface argument(s), got 0"));
+}
+
+#[test]
+fn rust_backend_keeps_unstructured_branch_fail_closed() {
+    let mut cond = op("const_bool");
+    cond.value = Some(1);
+    cond.out = Some("cond".to_string());
+
+    let mut branch = op("br_if");
+    branch.args = Some(vec!["cond".to_string()]);
+    branch.value = Some(1);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_branch_gap".to_string(),
+            params: Vec::new(),
+            ops: vec![cond, branch],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let mut backend = RustBackend::new();
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("unstructured branch must stay fail-closed without CFG lowering");
+
+    assert!(err.contains("MOLT_STUB: br_if"));
+    assert!(err.contains("br_if requires Rust backend CFG/block lowering"));
+}
+
+#[test]
 fn rust_backend_stamps_target_python_version_state() {
     let mut major_raw = op("const");
     major_raw.value = Some(3);

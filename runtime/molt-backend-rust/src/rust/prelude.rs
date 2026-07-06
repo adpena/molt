@@ -155,6 +155,43 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
+        if used("molt_str_from_obj(") {
+            self.output.push_str(concat!(
+                "fn molt_str_from_obj(x: &MoltValue) -> MoltValue {\n",
+                "    MoltValue::Str(molt_str(x))\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_ascii_from_obj(") {
+            self.output.push_str(concat!(
+                "fn molt_ascii_from_obj(x: &MoltValue) -> MoltValue {\n",
+                "    MoltValue::Str(molt_escape_non_ascii(&molt_repr_inner(x)))\n",
+                "}\n\n",
+                "fn molt_escape_non_ascii(text: &str) -> String {\n",
+                "    let mut out = String::with_capacity(text.len());\n",
+                "    for ch in text.chars() {\n",
+                "        let code = ch as u32;\n",
+                "        if ch.is_ascii() {\n",
+                "            out.push(ch);\n",
+                "        } else if code <= 0xff {\n",
+                "            out.push_str(&format!(\"\\\\x{code:02x}\"));\n",
+                "        } else if code <= 0xffff {\n",
+                "            out.push_str(&format!(\"\\\\u{code:04x}\"));\n",
+                "        } else {\n",
+                "            out.push_str(&format!(\"\\\\U{code:08x}\"));\n",
+                "        }\n",
+                "    }\n",
+                "    out\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_bridge_unavailable(") {
+            self.output.push_str(concat!(
+                "fn molt_bridge_unavailable(message: &MoltValue) -> MoltValue {\n",
+                "    panic!(\"{}\", molt_str(message));\n",
+                "}\n\n",
+            ));
+        }
 
         // print
         if used("molt_print(") {
