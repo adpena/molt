@@ -188,6 +188,13 @@ atomic queued-to-dispatched claim that rechecks global capacity and contention
 key ownership immediately before spawning a detached runner. The scheduler skips
 rows whose contention key is already active or already selected in the same
 batch, so increasing queue size only admits independent work.
+`running-proof-launch-summary-stale` is diagnostic evidence only while the
+queue-owned guard is still live; it means the memory guard has not yet published
+child-process custody. Only terminal stale signals such as
+`running-proof-child-missing`, a dead/reused guard, an expired dispatch handoff,
+or the running-age ceiling may reclaim a live row. This keeps Windows, macOS,
+and Linux detached rows from being marked stale just because an old queued log
+or launch summary predates the current execution epoch.
 Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
 already set a value. This keeps APDataStore, exFAT, cross-device caches, and
 other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback
@@ -207,11 +214,21 @@ environment syntax while leaving scheduling and validation in
 `tools/proof_queue.py`. The wrapper rejects invalid top-level capacity before
 spawning the queue process, so bad values do not leak as latent environment
 state. Use either that shorthand or `run --queue-size N`, not both. The command
-surface is the same on Windows, macOS, and Linux, and it must not be replaced
-with PowerShell-specific launch wrappers, POSIX backgrounding, or shell-quoted
-command reconstruction. Raw `uv run ... tools/proof_queue.py` examples below
-remain source-checkout diagnostics and CI/bootstrap forms; they are not a
-second queue authority. The portability tests intentionally include
+surface also installs the canonical Molt DX environment around the child queue:
+APDataStore/artifact roots, target/cache/temp roots, `MOLT_TARGET_ROOT`, and
+`UV_LINK_MODE=copy` flow through the same RunContext authority as other build
+wrappers. When a warm project environment is visible, `molt queue` preserves it
+as `UV_PROJECT_ENVIRONMENT` instead of creating a fresh session venv. Resolution
+is explicit and ordered: existing `UV_PROJECT_ENVIRONMENT`, active
+`VIRTUAL_ENV`, checkout-local `.venv`, main-worktree `.venv`, then `MOLT_VENV`.
+This keeps APDataStore fast: use `D:\Molt` for shared build/cache/toolchain
+state, not as disposable cold worktree churn.
+
+The command surface is the same on Windows, macOS, and Linux, and it must not be
+replaced with PowerShell-specific launch wrappers, POSIX backgrounding, or
+shell-quoted command reconstruction. Raw `uv run ... tools/proof_queue.py`
+examples below remain source-checkout diagnostics and CI/bootstrap forms; they
+are not a second queue authority. The portability tests intentionally include
 spaces and shell metacharacters in paths/arguments, plus Windows and POSIX
 detached-runner assertions; update those tests with any queue launch change.
 The path-filtered `Proof Queue Portability` workflow runs those queue tests on
