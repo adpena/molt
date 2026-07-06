@@ -22,6 +22,24 @@ Before queueing, always inspect live custody:
 uv run --active --project . --python 3.12 python tools\proof_queue.py status
 ```
 
+On this Windows workstation, expensive queue rows must refresh the canonical DX
+environment before submission so APDataStore is the selected artifact and
+toolchain authority:
+
+```powershell
+Invoke-Expression (uv run --active --project . --python 3.12 python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell)
+```
+
+The healthy default is `MOLT_EXT_ROOT=D:\Molt`,
+`CARGO_TARGET_DIR=D:\Molt\target\sessions\<MOLT_SESSION_ID>`, and
+`MOLT_TARGET_ROOT=D:\Molt\target-root`, with `UV_LINK_MODE=copy` emitted for
+APDataStore/exFAT unless an explicit operator value is present. Do not submit
+rows with inherited `E:\molt-target`, `E:\Molt\target-root`, or the empty
+legacy `D:\molt-target` default unless the operator explicitly set
+`MOLT_PRESERVE_TARGET_ROOT=1` for that row. APDataStore is exFAT, so hard-link
+fallbacks are cache-authority defects to diagnose, not a reason to reroute
+proof lanes to legacy `E:` roots.
+
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
 
