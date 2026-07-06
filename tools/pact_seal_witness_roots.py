@@ -72,6 +72,7 @@ from molt.cli.extension_manifest import (  # noqa: E402
     _CURRENT_MOLT_C_API_VERSION,
     _default_molt_c_api_version,
 )
+from molt.cli.external_native import _resolve_manifest_runtime_python_imports  # noqa: E402
 from molt.cli.extension_seal import extension_seal  # noqa: E402
 from molt.cli.file_hashing import _sha256_file  # noqa: E402
 
@@ -187,6 +188,25 @@ def _manifest_abi(manifest: dict) -> tuple[str | None, str | None]:
     )
 
 
+def _manifest_package(manifest: dict, manifest_path: Path) -> str:
+    module = manifest.get("module")
+    if isinstance(module, str) and module.strip():
+        return module.strip().split(".", 1)[0]
+    return manifest_path.parent.name
+
+
+def _runtime_python_import_custody_problems(
+    manifest: dict,
+    manifest_path: Path,
+) -> list[str]:
+    _imports, errors = _resolve_manifest_runtime_python_imports(
+        manifest,
+        manifest_path=manifest_path,
+        package=_manifest_package(manifest, manifest_path),
+    )
+    return [f"{manifest_path}: {error}" for error in errors]
+
+
 def _check_root(root: Path, expected_abi: str, expected_tag: str) -> list[str]:
     problems: list[str] = []
     manifests = _artifact_manifests(root)
@@ -203,6 +223,7 @@ def _check_root(root: Path, expected_abi: str, expected_tag: str) -> list[str]:
                 f"{manifest_path}: molt_c_api_version={abi} abi_tag={tag} "
                 f"(expected {expected_abi} / {expected_tag})"
             )
+        problems.extend(_runtime_python_import_custody_problems(manifest, manifest_path))
         # Only per-artifact manifests declare a resealable artifact path we can
         # checksum; the root manifest mirrors the primary artifact manifest.
         if manifest_path.name.endswith(_ARTIFACT_MANIFEST_SUFFIX):
