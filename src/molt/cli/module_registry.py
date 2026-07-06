@@ -75,6 +75,7 @@ _KIND_CODES: Mapping[str, int] = {
     "runtime_builtin": MODULE_KIND_RUNTIME_BUILTIN,
 }
 
+
 # Reinit policy after `del sys.modules[name]` (design §4.3 / parity row 5.8):
 # source modules fully re-execute; extension modules resurrect from the
 # first-init dict snapshot (snapshot custody lands in PR4; until then the
