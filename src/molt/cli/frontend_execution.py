@@ -6,6 +6,7 @@ import functools
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
@@ -231,6 +232,7 @@ def _prepare_frontend_execution(
     midend_policy_outcomes_by_function: dict[str, dict[str, Any]],
     midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]],
     target_python: TargetPythonVersion,
+    scc_serial_modules: frozenset[str] = frozenset(),
 ) -> tuple[
     _FrontendLayerExecutionContext,
     _FrontendLayerRuntimeHooks,
@@ -274,6 +276,8 @@ def _prepare_frontend_execution(
         stdlib_like_by_module=stdlib_like_by_module,
         known_classes=known_classes,
         target_python=target_python,
+        frontend_phase_timeout=frontend_phase_timeout,
+        scc_serial_modules=scc_serial_modules,
     )
     serial_frontend_lowering_context = _SerialFrontendLoweringContext(
         syntax_error_modules=syntax_error_modules,
@@ -375,9 +379,20 @@ def _run_frontend_parallel_enabled_layers(
     frontend_parallel_layers: list[dict[str, Any]],
 ) -> _CliFailure | None:
     parallel_pool_usable = True
-    with ProcessPoolExecutor(max_workers=frontend_parallel_config.workers) as executor:
+    executor = ProcessPoolExecutor(max_workers=frontend_parallel_config.workers)
+    try:
         for layer_index, layer in enumerate(module_layers):
             layer_started_ns = time.time_ns()
+            # A broken pool from the previous layer is recreated here exactly
+            # once per break, so the very next layer runs in parallel again. This
+            # replaces the old behavior that latched parallelism off for the
+            # entire remainder of the build after one worker failure.
+            if not parallel_pool_usable:
+                executor.shutdown(wait=False, cancel_futures=True)
+                executor = ProcessPoolExecutor(
+                    max_workers=frontend_parallel_config.workers
+                )
+                parallel_pool_usable = True
             layer_run_result, layer_error = _run_frontend_layer(
                 layer,
                 layer_index=layer_index,
@@ -410,6 +425,8 @@ def _run_frontend_parallel_enabled_layers(
                 finished_ns=time.time_ns(),
                 fallback_reason=layer_state.fallback_reason,
             )
+    finally:
+        executor.shutdown(wait=True)
     return None
 
 
@@ -523,7 +540,8 @@ def _run_frontend_parallel_layer_batches(
     scoped_lowering_inputs: _ScopedLoweringInputs | None,
     dirty_lowering_modules: Collection[str],
     target_python: TargetPythonVersion,
-) -> tuple[_FrontendParallelLayerState, str | None, str | None]:
+    frontend_phase_timeout: float | None = None,
+) -> tuple[_FrontendParallelLayerState, str | None, str | None, bool]:
     layer_state = _frontend_parallel._fresh_frontend_parallel_layer_state()
     known_classes_snapshot = _frontend_parallel._known_classes_snapshot_copy(
         known_classes_snapshot_source
@@ -576,9 +594,10 @@ def _run_frontend_parallel_layer_batches(
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             dirty_lowering_modules=dirty_lowering_modules,
             target_python=target_python,
+            frontend_phase_timeout=frontend_phase_timeout,
         )
         if batch_error is not None:
-            return layer_state, batch_error, None
+            return layer_state, batch_error, None, False
         layer_state.context_digests.update(context_digest_by_module)
         for module_name, cached_result in cached_results.items():
             _frontend_parallel._record_parallel_cached_module_result(
@@ -609,9 +628,30 @@ def _run_frontend_parallel_layer_batches(
                     submitted_ns=submission.submitted_ns,
                     received_ns=received_ns,
                 )
+            except BrokenProcessPool as exc:
+                # The pool itself died (a worker process crashed): no future in
+                # or after this batch can complete. Report it as pool-broken so
+                # the caller recreates the executor once rather than latching
+                # parallelism off for the rest of the build. Modules absent from
+                # layer_state.results are re-lowered serially by the caller.
+                return (
+                    layer_state,
+                    None,
+                    f"{module_graph[module_name]}: {exc}",
+                    True,
+                )
             except Exception as exc:
-                return layer_state, None, f"{module_graph[module_name]}: {exc}"
-    return layer_state, None, None
+                # A single module raised inside an otherwise-healthy pool. Leave
+                # the successful results in place; the caller re-lowers only the
+                # modules missing from layer_state.results and keeps the pool for
+                # subsequent layers.
+                return (
+                    layer_state,
+                    None,
+                    f"{module_graph[module_name]}: {exc}",
+                    False,
+                )
+    return layer_state, None, None, False
 
 
 def _write_parallel_persisted_module_lowering(
@@ -847,10 +887,11 @@ def _run_frontend_layer(
         stdlib_like_by_module=execution_context.stdlib_like_by_module,
         frontend_parallel_config=frontend_parallel_config,
         parallel_pool_usable=parallel_pool_usable,
+        scc_serial_modules=execution_context.scc_serial_modules,
     )
     if layer_plan.mode == "parallel":
         assert executor is not None
-        layer_state, batch_error, layer_failure_detail = (
+        layer_state, batch_error, layer_failure_detail, pool_broken = (
             _run_frontend_parallel_layer_batches(
                 layer_plan.candidates,
                 layer_workers=layer_plan.workers,
@@ -886,6 +927,7 @@ def _run_frontend_layer(
                 scoped_lowering_inputs=execution_context.scoped_lowering_inputs,
                 dirty_lowering_modules=execution_context.dirty_lowering_modules,
                 target_python=execution_context.target_python,
+                frontend_phase_timeout=execution_context.frontend_phase_timeout,
             )
         )
         if batch_error is not None:
@@ -893,23 +935,34 @@ def _run_frontend_layer(
                 batch_error, runtime_hooks.json_output, command="build"
             )
         if layer_failure_detail is not None:
-            layer_state = (
-                _frontend_parallel._fallback_frontend_parallel_layer_to_serial(
-                    frontend_parallel_details=runtime_hooks.frontend_parallel_details,
-                    warnings=runtime_hooks.warnings,
-                    failure_detail=layer_failure_detail,
-                )
+            # Isolate the failure to the module(s) that did not complete. We keep
+            # every already-lowered result in layer_state and let the shared
+            # re-lowering loop below re-run only the modules missing from it,
+            # serially. We only surrender the pool when it is genuinely broken
+            # (a worker process crashed); a transient per-module exception must
+            # not disable parallelism for the rest of the build.
+            _frontend_parallel._note_frontend_parallel_layer_failure(
+                frontend_parallel_details=runtime_hooks.frontend_parallel_details,
+                warnings=runtime_hooks.warnings,
+                failure_detail=layer_failure_detail,
+                pool_broken=pool_broken,
             )
+            layer_state.fallback_reason = layer_failure_detail
             layer_plan = _FrontendLayerPlan(
                 candidates=layer_plan.candidates,
                 predicted_cost_total=layer_plan.predicted_cost_total,
                 effective_min_predicted_cost=layer_plan.effective_min_predicted_cost,
                 stdlib_candidates=layer_plan.stdlib_candidates,
-                workers=1,
-                policy_reason="worker_error_fallback_serial",
-                mode="serial_fallback",
+                workers=layer_plan.workers,
+                policy_reason=(
+                    "worker_pool_broken_recreate"
+                    if pool_broken
+                    else "worker_error_isolated_serial"
+                ),
+                mode=layer_plan.mode,
             )
-            parallel_pool_usable = False
+            if pool_broken:
+                parallel_pool_usable = False
 
     for module_name in layer:
         module_path = execution_context.module_graph[module_name]

@@ -312,6 +312,7 @@ def _prepare_frontend_analysis(
         has_back_edges,
         module_layers,
         module_dep_closures,
+        scc_serial_modules,
     ) = _analyze_module_schedule(module_graph, module_deps)
     module_source_catalog = _ModuleSourceCatalog(leases=module_source_leases)
     dirty_lowering_modules = set(analysis_cache_miss_modules)
@@ -339,6 +340,7 @@ def _prepare_frontend_analysis(
         module_layers=module_layers,
         module_dep_closures=module_dep_closures,
         dirty_lowering_modules=dirty_lowering_modules,
+        scc_serial_modules=scc_serial_modules,
     ), None
 
 
@@ -496,8 +498,6 @@ def _prepare_frontend_lowering_config(
 
     frontend_parallel_config = _frontend_parallel._resolve_frontend_parallel_config(
         module_count=len(module_graph),
-        has_back_edges=has_back_edges,
-        frontend_phase_timeout=frontend_phase_timeout,
     )
     frontend_parallel_layers, frontend_parallel_worker_timings = (
         _frontend_parallel._initialize_frontend_parallel_details(
@@ -1164,6 +1164,7 @@ def _prepare_frontend_pipeline(
         midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
         midend_pass_stats_by_function=midend_pass_stats_by_function,
         target_python=prepared_build_config.target_python,
+        scc_serial_modules=prepared_frontend_analysis.scc_serial_modules,
     )
 
     prepared_frontend_run_ticket = _PreparedFrontendRunTicket(

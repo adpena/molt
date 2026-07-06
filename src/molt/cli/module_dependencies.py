@@ -134,6 +134,167 @@ def _topo_sort_modules(
     return order
 
 
+def _module_strongly_connected_components(
+    module_names: Collection[str],
+    module_deps: Mapping[str, set[str]],
+) -> list[tuple[str, ...]]:
+    """Tarjan strongly-connected-component decomposition of the module graph.
+
+    Returns each SCC as a tuple of member module names sorted for a stable
+    internal lowering order, and returns the SCCs in topological order of the
+    condensation DAG (an SCC appears before every SCC that depends on it).
+
+    The algorithm is the iterative form of Tarjan (1972) with an explicit work
+    stack, so it never recurses; module graphs as large as numpy+scipy (many
+    thousands of nodes with deep chains) cannot exhaust the Python recursion
+    limit here.
+    """
+
+    module_name_set = set(module_names)
+    # Deterministic adjacency: only edges that stay inside the module set.
+    successors: dict[str, list[str]] = {
+        name: sorted(
+            dep
+            for dep in module_deps.get(name, ())
+            if dep in module_name_set and dep != name
+        )
+        for name in sorted(module_name_set)
+    }
+
+    index_of: dict[str, int] = {}
+    lowlink_of: dict[str, int] = {}
+    on_stack: set[str] = set()
+    scc_stack: list[str] = []
+    next_index = 0
+    # Edges run dependent -> dependency, so Tarjan finalizes an SCC only after
+    # all of its dependencies are finalized. That means components are emitted in
+    # dependency-first order, which is exactly the topological lowering order of
+    # the condensation (an SCC precedes every SCC that depends on it). No final
+    # reverse is needed.
+    sccs_topo: list[tuple[str, ...]] = []
+
+    for root in sorted(module_name_set):
+        if root in index_of:
+            continue
+        # work_stack holds (node, successor_cursor). A fresh frame has cursor 0.
+        work_stack: list[tuple[str, int]] = [(root, 0)]
+        while work_stack:
+            node, cursor = work_stack[-1]
+            if cursor == 0:
+                index_of[node] = next_index
+                lowlink_of[node] = next_index
+                next_index += 1
+                scc_stack.append(node)
+                on_stack.add(node)
+            node_successors = successors[node]
+            advanced = False
+            while cursor < len(node_successors):
+                successor = node_successors[cursor]
+                cursor += 1
+                if successor not in index_of:
+                    # Descend into the unvisited successor; resume this node
+                    # afterwards with the advanced cursor.
+                    work_stack[-1] = (node, cursor)
+                    work_stack.append((successor, 0))
+                    advanced = True
+                    break
+                if successor in on_stack:
+                    lowlink_of[node] = min(lowlink_of[node], index_of[successor])
+            if advanced:
+                continue
+            # All successors of `node` are processed: finalize this frame.
+            work_stack.pop()
+            if work_stack:
+                parent = work_stack[-1][0]
+                lowlink_of[parent] = min(lowlink_of[parent], lowlink_of[node])
+            if lowlink_of[node] == index_of[node]:
+                component: list[str] = []
+                while True:
+                    member = scc_stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                sccs_topo.append(tuple(sorted(component)))
+
+    return sccs_topo
+
+
+def _condense_module_layers(
+    sccs: Sequence[tuple[str, ...]],
+    module_deps: Mapping[str, set[str]],
+) -> list[list[str]]:
+    """Layer the SCC condensation DAG (Kahn) and expand back to module layers.
+
+    Independent SCCs in the same condensed layer become one parallel-eligible
+    module layer. A multi-module SCC (a genuine import cycle) is emitted as its
+    own dedicated layer so it is lowered as a single ordered scheduling unit and
+    never split across parallel workers. No module is ever dropped: every SCC of
+    the condensation DAG reaches in-degree zero because the condensation is
+    acyclic by construction.
+    """
+
+    if not sccs:
+        return []
+
+    scc_index_of: dict[str, int] = {}
+    for scc_id, component in enumerate(sccs):
+        for member in component:
+            scc_index_of[member] = scc_id
+
+    scc_count = len(sccs)
+    scc_successors: list[set[int]] = [set() for _ in range(scc_count)]
+    in_degree = [0] * scc_count
+    for scc_id, component in enumerate(sccs):
+        for member in component:
+            for dep in module_deps.get(member, ()):
+                dep_scc = scc_index_of.get(dep)
+                if dep_scc is None or dep_scc == scc_id:
+                    continue
+                # Edge dep_scc -> scc_id: scc_id depends on dep_scc, so dep_scc
+                # must be lowered first.
+                if scc_id not in scc_successors[dep_scc]:
+                    scc_successors[dep_scc].add(scc_id)
+                    in_degree[scc_id] += 1
+
+    ready = deque(sorted(scc_id for scc_id in range(scc_count) if in_degree[scc_id] == 0))
+    condensed_layers: list[list[int]] = []
+    while ready:
+        current_layer = sorted(ready)
+        ready.clear()
+        condensed_layers.append(current_layer)
+        for scc_id in current_layer:
+            for successor in sorted(scc_successors[scc_id]):
+                in_degree[successor] -= 1
+                if in_degree[successor] == 0:
+                    ready.append(successor)
+
+    module_layers: list[list[str]] = []
+    for condensed_layer in condensed_layers:
+        singleton_modules: list[str] = []
+        for scc_id in condensed_layer:
+            component = sccs[scc_id]
+            if len(component) == 1:
+                singleton_modules.append(component[0])
+            else:
+                # A genuine cycle is its own serial unit/layer, keeping the
+                # stable internal order so mutually-recursive modules are
+                # lowered with the same live-integration semantics the serial
+                # path guarantees.
+                module_layers.append(list(component))
+        if singleton_modules:
+            module_layers.append(sorted(singleton_modules))
+    return module_layers
+
+
+def _multi_module_scc_members(
+    sccs: Sequence[tuple[str, ...]],
+) -> frozenset[str]:
+    return frozenset(
+        member for component in sccs if len(component) > 1 for member in component
+    )
+
+
 def _analyze_module_schedule(
     module_graph: Mapping[str, Path],
     module_deps: Mapping[str, set[str]],
@@ -143,37 +304,29 @@ def _analyze_module_schedule(
     bool,
     list[list[str]],
     dict[str, frozenset[str]],
+    frozenset[str],
 ]:
     module_names = set(module_graph)
-    in_degree = {name: 0 for name in module_names}
     reverse_module_deps = _reverse_module_dependencies(dict(module_deps), module_names)
-    for name, deps in module_deps.items():
-        for dep in deps:
-            if dep in module_names and name in in_degree:
-                in_degree[name] += 1
-    ready = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
-    order: list[str] = []
-    while ready:
-        name = ready.popleft()
-        order.append(name)
-        for child in sorted(reverse_module_deps.get(name, ())):
-            if child not in in_degree:
-                continue
-            in_degree[child] -= 1
-            if in_degree[child] == 0:
-                ready.append(child)
-    has_back_edges = len(order) != len(module_names)
-    if has_back_edges:
-        remaining = sorted(name for name in module_names if name not in order)
-        order.extend(remaining)
-    layers = _module_dependency_layers(order, dict(module_deps))
+    sccs = _module_strongly_connected_components(module_names, module_deps)
+    has_back_edges = any(len(component) > 1 for component in sccs)
+    layers = _condense_module_layers(sccs, module_deps)
+    order: list[str] = [name for layer in layers for name in layer]
+    scc_serial_modules = _multi_module_scc_members(sccs)
     module_dep_closures = _module_dependency_closures(
         dict(module_deps),
         module_names,
         module_order=order,
         has_back_edges=has_back_edges,
     )
-    return order, reverse_module_deps, has_back_edges, layers, module_dep_closures
+    return (
+        order,
+        reverse_module_deps,
+        has_back_edges,
+        layers,
+        module_dep_closures,
+        scc_serial_modules,
+    )
 
 
 def _reverse_module_dependencies(

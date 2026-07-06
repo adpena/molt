@@ -462,6 +462,8 @@ class _FrontendLayerExecutionContext:
     stdlib_like_by_module: Mapping[str, bool]
     known_classes: Mapping[str, Any]
     target_python: TargetPythonVersion
+    frontend_phase_timeout: float | None
+    scc_serial_modules: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1590,6 +1592,7 @@ class _PreparedFrontendAnalysis:
     module_layers: list[list[str]]
     module_dep_closures: dict[str, frozenset[str]]
     dirty_lowering_modules: set[str]
+    scc_serial_modules: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
