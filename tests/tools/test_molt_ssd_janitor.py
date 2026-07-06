@@ -26,6 +26,29 @@ def test_resolve_root_refuses_drive_and_repo_roots(tmp_path: Path) -> None:
         jan._resolve_root(str(tmp_path / "does-not-exist"), force=False)
 
 
+def test_resolve_root_allows_artifact_root_from_linked_worktree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = (tmp_path / "Molt").resolve()
+    repo_root = root / "worktrees" / "lane"
+    repo_root.mkdir(parents=True)
+    monkeypatch.setattr(jan, "REPO_ROOT", repo_root)
+
+    assert jan._resolve_root(str(root), force=False) == root
+
+
+def test_resolve_root_refuses_arbitrary_parent_of_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    parent = (tmp_path / "parent").resolve()
+    repo_root = parent / "nested" / "repo"
+    repo_root.mkdir(parents=True)
+    monkeypatch.setattr(jan, "REPO_ROOT", repo_root)
+
+    with pytest.raises(SystemExit):
+        jan._resolve_root(str(parent), force=False)
+
+
 def test_gather_protects_registered_current_and_fresh(
     monkeypatch, tmp_path: Path
 ) -> None:

@@ -25,6 +25,7 @@ pub struct MoltBufferView {
     pub data: *mut u8,
     pub len: u64,
     pub backing_capacity: u64,
+    // Canonical bool exported as 0/1; importers reject every other value.
     pub readonly: u32,
     pub ndim: u32,
     pub itemsize: u64,
