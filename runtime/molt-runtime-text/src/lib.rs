@@ -21,6 +21,7 @@ pub mod codec_errors;
 pub mod codec_registry;
 #[cfg(feature = "stdlib_text")]
 pub mod html;
+pub mod textwrap;
 pub mod tokenize;
 #[cfg(feature = "stdlib_text")]
 pub mod unicodedata_mod;
