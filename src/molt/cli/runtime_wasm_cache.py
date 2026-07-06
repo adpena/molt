@@ -100,7 +100,7 @@ def _hydrate_runtime_wasm_from_shared_cache(
     dest: Path,
     fingerprint: Mapping[str, object],
     reloc: bool,
-    is_valid: Callable[[Path], object],
+    is_valid: Callable[[Path], bool],
 ) -> bool:
     """Copy a warm shared-cache runtime wasm into ``dest`` when one matches.
 
