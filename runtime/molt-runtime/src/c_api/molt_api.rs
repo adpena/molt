@@ -1853,6 +1853,13 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         );
         let out_ptr = match storage {
             Some(storage) => {
+                let Ok(logical_len) = u64::try_from(storage.len) else {
+                    return raise_exception::<u64>(
+                        _py,
+                        "BufferError",
+                        "buffer logical length exceeds Molt limit",
+                    );
+                };
                 let valid = if view.base != 0 {
                     unsafe {
                         let base = crate::object::obj_from_bits(view.base);
@@ -1881,7 +1888,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                 } else {
                     storage.fits_in_backing_len(backing_capacity)
                 };
-                if valid {
+                if logical_len == view.len && valid {
                     crate::object::builders::alloc_memoryview_from_storage(_py, storage)
                 } else {
                     std::ptr::null_mut()
