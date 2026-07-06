@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define MOLT_C_API_VERSION 3u
+#define MOLT_C_API_VERSION 4u
 #define MOLT_BUFFER_MAX_NDIM 64u
 #define MOLT_BUFFER_FORMAT_CAP 16u
 
