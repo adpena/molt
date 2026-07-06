@@ -232,8 +232,10 @@ def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> Non
     assert "fail-fast: false" in workflow_text
     assert "python-version-file: \".python-version\"" in workflow_text
     assert "uv sync --frozen --group dev" in workflow_text
+    assert "timeout-minutes: 10" in workflow_text
     assert (
-        "uv run python -m pytest -q tests/test_molt_queue_cli.py "
+        "uv run --active --project . --no-sync python -m pytest -q "
+        "tests/test_molt_queue_cli.py "
         "tests/tools/test_proof_queue.py"
     ) in workflow_text
     for path in (
