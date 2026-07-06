@@ -135,6 +135,12 @@ PACT_WITNESS_FIXTURE_MISSING_RE = re.compile(
 NATIVE_ARTIFACT_CUSTODY_RE = re.compile(
     r"External static package native-artifact custody errors:\s+(?P<detail>[^\r\n]+)"
 )
+NATIVE_RUNTIME_IMPORT_CUSTODY_RE = re.compile(
+    r"External static package native-artifact custody errors:\s+"
+    r"(?P<package>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r": (?P<detail>sealed extension manifest lacks a "
+    r"'runtime_python_import_modules' field[^\r\n]*)"
+)
 NATIVE_ARTIFACT_ABI_SURFACE_RE = re.compile(
     r"runtime ABI symbol '(?P<symbol>[^']+)' is not in the generated "
     r"WASM ABI/link import surface"

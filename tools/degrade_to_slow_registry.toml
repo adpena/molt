@@ -1,0 +1,337 @@
+# Degrade-to-slow registry -- single authority for the "silent degrade-to-slow"
+# metabug enforcement gate (tools/degrade_to_slow_gate.py).
+#
+# THE METABUG (what the gate makes un-regrowable):
+#   A perf/capability path (parallelism, caching, incremental reuse, fast-path
+#   lowering) that SILENTLY degrades to a naive path on a HANDLEABLE input, with
+#   no diagnostic and no test proving the fast path is taken on the hard input.
+#
+# DISTINCT from sound conservatism: a bail that over-approximates for
+# CORRECTNESS (splitting an import cycle across workers would change results;
+# a compile-time budget that prevents embedding megabytes of constants) is not
+# a metabug. Those are frozen as `sound_keep` with a real justification and are
+# NOT required to emit a diagnostic or carry a fast_path_test.
+#
+# CLASSIFICATIONS:
+#   metabug_fix_pending -- a real silent degrade on a handleable input. Being
+#       fixed in a parallel arc. Requires a `fast_path_test` id (the test the
+#       fixing arc will add that proves the fast path is taken on the hard
+#       input). Counted by the ratchet: the count is monotonically
+#       non-increasing against the stored baseline. Reclassify to make_loud or
+#       sound_keep (never invent) once the fix lands.
+#   make_loud -- a degrade that is acceptable ONLY because it emits a loud
+#       diagnostic before falling back. The gate statically proves a diagnostic
+#       emit is reachable at the site. Requires a `fast_path_test` id.
+#   sound_keep -- a correctness/cost bail that is NOT a metabug. Frozen with a
+#       real justification. No diagnostic or fast_path_test required. Changing
+#       one of these to a silent perf degrade is caught because the row's
+#       justification no longer matches the code the anchor names.
+#
+# Every degrade site discovered by the gate scan MUST have a row here. A newly
+# introduced unregistered degrade site FAILS the gate (drift teeth). This is
+# the same "one authority, drift-gated" shape as the op-kind / intrinsic
+# manifest gates.
+
+[meta]
+# Ratchet baseline: the number of metabug_fix_pending rows allowed. The gate
+# fails if the live count EXCEEDS this. Lower it (never raise it) as each
+# pending site is fixed and reclassified. Raising it requires an explicit,
+# reviewed edit -- that is the ratchet.
+metabug_fix_pending_baseline = 0
+
+
+# =============================================================================
+# metabug_fix_pending -- real silent degrades, fix owned by a parallel arc.
+# =============================================================================
+
+[[site]]
+file = "src/molt/cli/module_cache.py"
+symbol = "_load_cached_module_lowering_result"
+signature = "def _load_cached_module_lowering_result(project_root: Path | None, module_name: str, module_path: Path, *, ...) -> dict[str, Any] | None"
+classification = "sound_keep"
+justification = """
+B1 -- session-local module LOWERING cache. RESOLVED 2026-07-06: a shared,
+content-addressed cross-session tier (src/molt/cli/module_frontend_cache.py)
+now hydrates the warm-hit path across sessions, so an unchanged module no
+longer silently re-lowers cold on every fresh session. The None-on-genuine-
+cold-miss that remains is correct (a true miss must re-lower; the persisted
+result is byte-identical to a fresh lowering, and the key is content-complete
+after the cache-fingerprint fix). fast_path_test proves cross-session reuse is
+taken on an unchanged module. No silent degrade on a handleable input remains.
+"""
+fast_path_test = "test_lowering_reuse_across_sessions_no_relower"
+
+[[site]]
+file = "src/molt/cli/module_cache.py"
+symbol = "_load_module_analysis"
+signature = "def _load_module_analysis(path: Path, *, module_name: str, is_package: bool, import_scan_mode: ImportScanMode, ..., project_root: Path | None, ...) -> tuple[ast.AST | None, ...]"
+classification = "sound_keep"
+justification = """
+B2 -- session-local module ANALYSIS cache. RESOLVED 2026-07-06: symmetric to B1
+-- the shared content-addressed cross-session tier hydrates the analysis warm-
+hit path across sessions, so an unchanged source no longer re-parses/re-analyzes
+cold every session. The None-on-genuine-miss that remains is correct (analysis
+is a pure function of the content-complete folded key). fast_path_test proves
+cross-session analysis reuse. No silent degrade on a handleable input remains.
+"""
+fast_path_test = "test_analysis_reuse_across_sessions_hydrates_shared"
+
+
+# =============================================================================
+# make_loud -- degrade is acceptable because it emits a loud diagnostic first.
+# =============================================================================
+
+[[site]]
+file = "src/molt/cli/link_pipeline.py"
+symbol = "_prepare_native_link"
+signature = "def _prepare_native_link(..., warnings: list[str], ...) -> _PreparedNativeLink"
+classification = "make_loud"
+justification = """
+Native linker-hint fallback. When `-fuse-ld=<linker_hint>` fails, the pipeline
+retries with the default linker instead of hard-failing the build. This is a
+capability degrade (the requested fast/alternate linker was not used) but it is
+LOUD: it appends `Linker fallback: -fuse-ld=<hint> failed; retried default
+linker.` to the surfaced warnings list (and the Darwin validation path appends
+`Linker fallback: ...` as well). The gate statically verifies a
+`warnings.append("Linker fallback: ...")` (or logger/print of the same string)
+is reachable in this file before the fallback path. loud-verified.
+"""
+fast_path_test = "test_native_link_fuse_ld_fallback_is_loud"
+
+
+# =============================================================================
+# sound_keep -- correctness / genuine-cost bails. NOT metabugs. Frozen.
+# =============================================================================
+
+[[site]]
+file = "src/molt/cli/frontend_parallel.py"
+symbol = "_frontend_layer_plan"
+signature = "layer_is_serial_scc_unit = any(name in scc_serial_modules for name in candidates)"
+classification = "sound_keep"
+justification = """
+A multi-module strongly-connected component (a genuine import cycle) is forced
+to a single SERIAL scheduling unit (policy_reason = "cyclic_scc_serial_unit").
+This is CORRECTNESS, not a perf degrade: splitting a cycle's members across
+parallel workers would lower each member against a frozen snapshot that omits
+its cyclic peers, changing results. Independent modules and the acyclic
+condensation stay parallel -- the SCC-condensation landing (522b7fe04 / the
+scc_serial_modules plumbing) removed the OLD has_back_edges whole-frontend
+serial bail, which WAS a metabug; only the per-cycle serial unit remains and it
+is sound. Do not classify as a degrade.
+"""
+
+[[site]]
+file = "src/molt/cli/frontend_parallel.py"
+symbol = "_resolve_frontend_parallel_config"
+signature = "enabled = False; if workers < 2: reason = \"workers<2\"; elif module_count < 2: reason = \"module_count<2\""
+classification = "sound_keep"
+justification = """
+Fork-cost gate: parallel frontend is disabled when there are fewer than 2
+workers or fewer than 2 modules. With <2 modules or <2 workers there is
+literally no parallelism to extract, so serial is not a degrade -- it is the
+only correct schedule. Genuine cost floor, not a silent capability loss. Note
+this is the ONLY remaining global disable after SCC condensation; the phase
+timeout no longer disables globally (it is applied per-phase inside workers).
+"""
+
+[[site]]
+file = "src/molt/cli/frontend_parallel.py"
+symbol = "_frontend_layer_policy_summary"
+signature = "predicted_cost_total below effective_min_predicted_cost => policy not enabled (per-layer cost heuristic)"
+classification = "sound_keep"
+justification = """
+Per-layer cost heuristic: a layer whose predicted lowering cost is below the
+min-predicted-cost floor stays serial because forking workers for a trivially
+cheap layer costs more than it saves. This is a measured cost model
+(target_cost_per_worker / min_predicted_cost), not a silent bail on a
+handleable-hard input -- cheap layers are genuinely faster serial. Cost model,
+frozen.
+"""
+
+[[site]]
+file = "src/molt/cli/frontend_parallel.py"
+symbol = "_note_frontend_parallel_layer_failure"
+signature = "frontend_parallel_details[\"reason\"] = \"worker_error_isolated_serial\" | \"worker_pool_broken_recreate\"; warnings.append(...)"
+classification = "sound_keep"
+justification = """
+On a genuine parallel-worker ERROR the pipeline re-lowers only the modules that
+did not complete, keeping the pool for later layers (or recreating it once if
+the pool is genuinely broken). This is (a) recovery from a real error, not a
+degrade on a handleable-normal input, AND (b) LOUD -- it appends
+`Frontend parallel worker error isolated to module; re-lowering it serially...`
+or `Frontend parallel worker pool broke; recreating pool...` to warnings. A
+worker crash is not a handleable input the fast path was supposed to absorb, so
+this is sound error recovery, not the metabug. (Kept as sound_keep rather than
+make_loud because the trigger is an error, not a normal hard input.)
+"""
+
+[[site]]
+file = "src/molt/cli/frontend_execution.py"
+symbol = "_run_frontend_serial_disabled_layers"
+signature = "def _run_frontend_serial_disabled_layers(...); serial_mode=\"serial_disabled\""
+classification = "sound_keep"
+justification = """
+Caller-side serial path taken when the frontend fork-cost gate disabled parallel
+(_resolve_frontend_parallel_config returned enabled=False for workers<2 /
+module_count<2). This just executes the serial layer under serial_mode=
+"serial_disabled"; the DECISION that serial is correct here lives in the already
+sound_keep-classified _resolve_frontend_parallel_config. With <2 workers/modules
+there is no parallelism to extract, so this is the only correct schedule, not a
+degrade. Frozen with its policy owner.
+"""
+
+[[site]]
+file = "src/molt/cli/frontend_execution.py"
+symbol = "_run_frontend_layer"
+signature = "policy_reason = \"worker_pool_broken_recreate\" if pool_broken else \"worker_error_isolated_serial\""
+classification = "sound_keep"
+justification = """
+Caller-side parallel-worker ERROR recovery: on a genuine worker failure this
+records policy_reason worker_pool_broken_recreate / worker_error_isolated_serial
+and re-lowers only the incomplete modules (recreating the pool once if broken,
+else keeping it for later layers). It routes through the already-registered LOUD
+_note_frontend_parallel_layer_failure (which appends the "Frontend parallel
+worker ..." warning). The trigger is an error, not a handleable-normal input, so
+this is sound error recovery, not the silent-degrade metabug. Frozen with its
+loud recorder.
+"""
+
+[[site]]
+file = "src/molt/cli/module_dependencies.py"
+symbol = "_module_dependency_closure"
+signature = "def _module_dependency_closure(...); queue = deque([module_name]); BFS over module deps"
+classification = "sound_keep"
+justification = """
+Transitive dependency-closure BFS. This is a graph traversal that computes the
+FULL reachable closure (it does not bail to an approximation); the visited-set
+guard is standard BFS termination on cycles, not a degrade-to-slow. Correct by
+construction; no perf fast path is being skipped.
+"""
+
+[[site]]
+file = "runtime/molt-backend-native/src/native_backend/simple_backend/deferred_codegen.rs"
+symbol = "should_flush_deferred_codegen"
+signature = "pub(crate) fn should_flush_deferred_codegen(deferred_count: usize, deferred_ops: usize) -> bool  (FLUSH_FUNCTION_LIMIT=16, FLUSH_OP_BUDGET=4_000)"
+classification = "sound_keep"
+justification = """
+Deferred-codegen flush bounds. The backend accumulates deferred function
+defines and flushes when the accumulated count (>=16) or op budget (>=4000) is
+reached. This is a memory/latency BOUND on how much codegen is batched before
+emission, not a fast/slow lowering choice -- the same code is generated either
+way; only the flush cadence changes. Bounded batching, not a capability
+degrade.
+"""
+
+[[site]]
+file = "runtime/molt-passes/src/tir/passes/copy_prop.rs"
+symbol = "run"
+signature = "for _ in 0..20 { ... } // iterate copy-propagation to fixpoint, max 20 rounds"
+classification = "sound_keep"
+justification = """
+Copy-propagation fixpoint iteration is capped at 20 rounds to avoid
+pathological non-convergence. Reaching the cap means the pass stops early with
+a SOUND (partially-propagated but correct) result; it never produces a wrong
+answer. This is a compile-time termination guard, not a silent perf fast-path
+bail on user input. Frozen.
+"""
+
+[[site]]
+file = "runtime/molt-passes/src/tir/passes/dce/engine.rs"
+symbol = "run"
+signature = "break; // fixpoint reached  (dead-code-elimination worklist iterates to fixpoint)"
+classification = "sound_keep"
+justification = """
+DCE worklist iterates to fixpoint and breaks when no further change occurs
+(`break; // fixpoint reached`). Standard monotone-lattice convergence; the
+break is correctness-preserving termination, not a degrade. Frozen.
+"""
+
+[[site]]
+file = "runtime/molt-passes/src/tir/passes/licm.rs"
+symbol = "run"
+signature = "pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats  // loop-invariant code motion, fixpoint hoist"
+classification = "sound_keep"
+justification = """
+Loop-invariant code motion hoists to a fixpoint (a value hoisted out of an
+inner loop may become invariant in the outer loop and hoist again). The
+fixpoint is a correctness/completeness property of the transform, not a
+budget-limited fast/slow choice. The safety checks in licm/safety.rs are
+soundness guards (do not hoist may-raise / effectful ops), which is exactly the
+kind of over-approximation the gate must NOT flag. Frozen.
+"""
+
+[[site]]
+file = "runtime/molt-passes/src/tir/passes/loop_unroll/mod.rs"
+symbol = "run"
+signature = "pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats  // unroll only when trip count <= cost-model trip cap (default 8) and cloned region <= size cap"
+classification = "sound_keep"
+justification = """
+Loop unrolling is gated by the TargetInfo cost model: it unrolls only when the
+trip count is <= the unroll trip cap (default 8) and the cloned region fits the
+size cap. Declining to unroll a large loop is a genuine code-size/cost decision
+(unrolling a huge loop bloats the binary and hurts I-cache), not a silent
+capability degrade on a handleable input. The non-unrolled loop is the correct,
+already-fast baseline. Cost model, frozen.
+"""
+
+[[site]]
+file = "runtime/molt-passes/src/tir/passes/inliner/eligibility.rs"
+symbol = "classify_inline_eligibility"
+signature = "pub fn classify_inline_eligibility(callee, call_graph, summaries, tti) -> InlineWhyNot  // InlineWhyNot::OverBudget when op_count exceeds the cost-model budget"
+classification = "sound_keep"
+justification = """
+Inliner eligibility declines to inline a callee whose op count exceeds the
+cost-model budget (InlineWhyNot::OverBudget). Not inlining a large callee is a
+code-size/compile-time cost decision -- inlining everything would explode both.
+The out-of-line call is the correct baseline, not a degraded slow path. Cost
+model, frozen.
+"""
+
+[[site]]
+file = "runtime/molt-passes/src/tir/passes/sccp/mod.rs"
+symbol = "MAX_COMPOUND_ELEMENTS"
+signature = "const MAX_COMPOUND_ELEMENTS: usize = 1000;  // cap on constant-folded compound (list/tuple/dict) element count"
+classification = "sound_keep"
+justification = """
+SCCP declines to const-fold a compound value (list/tuple/dict) with more than
+1000 elements to avoid embedding megabytes of constant data into the compiled
+artifact at compile time. This is a binary-size/compile-time cost bound, not a
+silent perf fast-path bail -- the large compound is still built correctly at
+runtime. Genuine cost cap, frozen.
+"""
+
+[[site]]
+file = "src/molt/cli/cargo_execution.py"
+symbol = "_memory_bounded_cargo_jobs"
+signature = "def _memory_bounded_cargo_jobs() -> int | None  // bound rustc -j job count to available physical memory"
+classification = "sound_keep"
+justification = """
+Cargo/rustc parallel job count is bounded to fit available physical memory
+(each heavy molt-runtime codegen job has a known peak RSS; an unbounded -j on
+an 8GB box thrashes swap and stalls the build ~45min). Reducing job count under
+a real memory ceiling is a correctness/liveness bound (avoid OOM/swap-death),
+not a silent perf degrade on a handleable input -- running more jobs than
+memory allows is SLOWER, not faster. This is the documented small-box fit, the
+opposite of a metabug. Frozen.
+"""
+
+[[site]]
+file = "runtime/molt-backend-wasm/src/wasm/frame_locals/constant_cache_locals.rs"
+symbol = "allocate_constant_cache"
+signature = "pub(in crate::wasm) fn allocate_constant_cache(&mut self, fast_int_count: usize, ...) -> ConstantCache  // int shift/min/max cache locals allocated only when fast_int_count >= 3"
+classification = "sound_keep"
+justification = """
+The WASM frame allocates the three shared int-constant cache locals (shift /
+min / max, used to materialize small-int NaN-boxed constants cheaply) only when
+a function references >= 3 fast-int constants. Below that threshold the three
+setup locals + their initialization cost more than they save, so the constants
+are materialized inline instead. This is a per-function COST model (amortize
+the 3-local setup only when there are >=3 uses to amortize over), analogous to
+the frontend min_modules<2 and loop_unroll trip-cap gates. The produced code is
+correct and, for <3 uses, actually FASTER inline. Note: the seed audit listed
+this as a make_loud candidate; on reading the code it is a genuine cost model
+with no capability loss (the constants are still emitted correctly), so it is
+frozen as sound_keep rather than forced to carry a synthetic diagnostic. If a
+future change makes the >=3 threshold defeat a real fast path on a handleable
+input, reclassify to metabug_fix_pending with a fast_path_test.
+"""

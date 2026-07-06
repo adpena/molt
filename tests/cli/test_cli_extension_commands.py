@@ -3692,6 +3692,7 @@ def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
         "\n".join(
             [
                 "#include <Python.h>",
+                "#include <structmember.h>",
                 "",
                 "static PyObject *demo_ping(PyObject *self, PyObject *args) {",
                 "    (void)self;",
@@ -3758,6 +3759,7 @@ def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
                 "    PyObject *tmp_tuple = PyTuple_New(1);",
                 "    PyObject *tmp_value = PyLong_FromLong(3);",
                 "    int cmp = PyObject_RichCompareBool(type_obj, type_obj, Py_EQ);",
+                "    int member_code = Py_T_ULONGLONG + T_ULONGLONG + Py_READONLY + Py_AUDIT_READ + _Py_WRITE_RESTRICTED;",
                 "    (void)PyErr_NoMemory;",
                 "    (void)PyObject_CallFunctionObjArgs;",
                 "    (void)Py_BuildValue;",
@@ -3772,6 +3774,7 @@ def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
                 "    (void)owner_type;",
                 "    (void)ts;",
                 "    (void)cmp;",
+                "    (void)member_code;",
                 "    (void)dict_obj;",
                 "    (void)tmp_tuple;",
                 "    (void)tmp_value;",
@@ -3801,6 +3804,14 @@ def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_python_header_source_compat_descriptors_fail_closed() -> None:
+    header = (ROOT / "include" / "molt" / "Python.h").read_text(encoding="utf-8")
+
+    assert "requires --abi-tier cpython-abi" in header
+    assert "_molt_type_wrap_single_arg_builtin(\"property\", getter_callable)" not in header
+    assert "Py_INCREF(Py_None);\n    return Py_None;" not in header
 
 
 def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:

@@ -322,3 +322,119 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
     second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     assert second == first
+
+
+def _write_frontend_tree(root: Path) -> dict[str, Path]:
+    molt_root = root / "src" / "molt"
+    sources = {
+        "cli_init": molt_root / "cli" / "__init__.py",
+        "frontend_init": molt_root / "frontend" / "__init__.py",
+        "cfg_analysis": molt_root / "frontend" / "cfg_analysis.py",
+        "tv_hooks": molt_root / "frontend" / "tv_hooks.py",
+        "nested_helper": molt_root / "frontend" / "lowering" / "reducer.py",
+        "type_facts": molt_root / "type_facts.py",
+        "capabilities": molt_root / "capabilities.py",
+    }
+    for name, source in sources.items():
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"{name.upper()}_MARKER = 1\n", encoding="utf-8")
+    return sources
+
+
+def _rewrite_same_length_content(path: Path) -> None:
+    """Rewrite a marker file with different content but forced-identical stat.
+
+    Same-length body plus restored (atime, mtime) makes size + mtime_ns match the
+    prior revision. This deterministically reproduces the coarse-mtime collision
+    that a metadata-only cache key would miss, independent of host FS timestamp
+    granularity.
+    """
+
+    stat = path.stat()
+    original = path.read_text(encoding="utf-8")
+    assert original.endswith("1\n")
+    path.write_text(original[:-2] + "2\n", encoding="utf-8")
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+
+@pytest.mark.parametrize(
+    "edited",
+    [
+        "frontend_init",
+        "cfg_analysis",
+        "tv_hooks",
+        "nested_helper",
+        "type_facts",
+        "capabilities",
+    ],
+)
+def test_cache_tooling_fingerprint_tracks_each_helper_under_metadata_collision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, edited: str
+) -> None:
+    # Regression guard for the P0: a same-length content edit whose stat metadata
+    # (size + mtime_ns + ctime_ns) is unchanged MUST still change the fingerprint.
+    # A metadata-only content-digest cache key served a stale digest here.
+    root = tmp_path / "repo"
+    sources = _write_frontend_tree(root)
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+
+    first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
+
+    _rewrite_same_length_content(sources[edited])
+
+    second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
+
+    assert second != first, (
+        f"fingerprint did not change after a same-length edit to {edited!r}; "
+        "content digest is not content-complete"
+    )
+
+
+def test_cache_tooling_fingerprint_stable_for_unrelated_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A change outside the tracked frontend/tooling closure must NOT invalidate
+    # the tooling fingerprint (no over-invalidation).
+    root = tmp_path / "repo"
+    _write_frontend_tree(root)
+    unrelated = root / "src" / "molt" / "runtime_only" / "unrelated.py"
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_text("UNRELATED_MARKER = 1\n", encoding="utf-8")
+    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+
+    first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
+
+    unrelated.write_text("UNRELATED_MARKER = 2\n", encoding="utf-8")
+
+    second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
+
+    assert second == first
+
+
+def test_source_tree_content_digest_is_not_metadata_keyed(tmp_path: Path) -> None:
+    # Directly exercise the content-digest authority: two files with identical
+    # stat metadata but different bytes must yield different digests.
+    root = tmp_path / "repo"
+    tracked = root / "src" / "molt" / "frontend" / "cfg_analysis.py"
+    tracked.parent.mkdir(parents=True, exist_ok=True)
+    tracked.write_text("MARKER = 1\n", encoding="utf-8")
+    stat = tracked.stat()
+
+    first = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
+        root=root,
+        source_paths=[tracked],
+        scope="content-digest-test",
+        extra_fingerprint_inputs="",
+    )
+
+    tracked.write_text("MARKER = 2\n", encoding="utf-8")  # same length
+    os.utime(tracked, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    second = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
+        root=root,
+        source_paths=[tracked],
+        scope="content-digest-test",
+        extra_fingerprint_inputs="",
+    )
+
+    assert second != first
