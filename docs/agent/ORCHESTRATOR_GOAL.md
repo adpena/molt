@@ -86,12 +86,15 @@ Next known gap: `PyDescr_NewGetSet` / `PyDescr_NewMember` + `tp_getset` (see the
 - APDataStore = `D:` (exFAT, ~2TB) is THE build volume. Route fresh DX/proof
   builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts
   --dx`, `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so
-  build/cache/temp/`MOLT_TARGET_ROOT` resolve to `D:\Molt`. exFAT has no
-  hard-links: the backend cache owns the lock+rename fallback — a "Failed to
+  build/cache/temp roots resolve to `D:\Molt` and `MOLT_TARGET_ROOT` resolves
+  to `D:\Molt\target-root`. exFAT has no hard-links: the backend cache owns the
+  lock+rename/copy fallback — a "Failed to
   publish backend cache output" under `D:\Molt` is a DX defect to diagnose through
   the cache authority, never a reason to reroute to `E:` or hand-copy. Treat
-  `E:\Molt` / `E:\molt-target` as legacy fallback. The daily `MoltSSDJanitor`
-  keeps `D:` clean.
+  `E:\Molt` / `E:\molt-target` as legacy evidence only; preserve inherited
+  legacy roots only with `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` or an explicit
+  `MOLT_EXTERNAL_ARTIFACT_ROOTS` override. The daily `MoltSSDJanitor` keeps
+  `D:` clean.
 - HARD build cap: ≤2-3 build agents at once (rustc/cargo are NOT RSS-guarded; 5
   concurrent OOM'd a 32GB host at 97GB and got Codex killed). When builds stall,
   STOP feeding and let in-flight drain — don't cram. Use fast feedback loops
