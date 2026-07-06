@@ -86,7 +86,10 @@ strided span does not fit its backing capacity fails closed, draining the lease
 through the registered releaser so the exporter's slot-identity bookkeeping
 stays balanced. `PyObject_GetBuffer`/`PyBuffer_Release`/`PyObject_CheckBuffer`
 route C-heap objects through this lease lane and runtime objects through
-`molt_buffer_acquire`/`molt_buffer_release`.
+`molt_buffer_acquire`/`molt_buffer_release`. Unregistering a C-heap type pointer
+via `molt_c_heap_unregister` revokes its canonical type mapping and buffer
+exporter/releaser hooks; stale type authority must not keep future buffer
+exports alive.
 
 ### 4.5 Numerics
 - `molt_number_add`, `molt_number_sub`, `molt_number_mul`
@@ -110,7 +113,9 @@ request stride metadata; `PyBUF_SIMPLE`/format-only requests fail closed unless
 the descriptor is C-contiguous. Unsupported or over-capacity PEP 3118 format
 metadata fails closed instead of being truncated or guessed, and base-less
 negative-stride memoryviews do not publish a buffer descriptor because their
-lower bound cannot be revalidated on import.
+lower bound cannot be revalidated on import. `readonly` is a canonical u32
+boolean: `0` means writable, `1` means read-only, and every other value fails
+descriptor admission.
 
 ### 4.8 Types + Modules
 - `molt_type_ready`

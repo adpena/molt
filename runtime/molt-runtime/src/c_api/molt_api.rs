@@ -76,6 +76,19 @@ pub extern "C" fn molt_c_heap_unregister(ptr: usize) -> i32 {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&ptr);
+    // Revoke any canonical type mapping and buffer exporter/releaser hooks owned
+    // by this type pointer. A stale type authority must not keep future buffer
+    // exports alive after its type object is unregistered: without this, a kind
+    // whose canonical type was `ptr` would keep matching `header.type_ptr` and
+    // hand out leases through the dead registration.
+    C_HEAP_TYPES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|_, canonical| *canonical != ptr);
+    C_HEAP_BUFFER_EXPORTERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|_, entry| entry.type_ptr != ptr);
     0
 }
 
@@ -180,6 +193,42 @@ fn c_heap_header_has_self_typed_type_shape(ptr: usize, header: &CHeapHeader) -> 
         && c_heap_kind_is_type_kind(header.kind)
 }
 
+/// Admit a C-heap lease descriptor's PEP 3118 `format` only through the same
+/// `memoryview_format_from_str` authority the runtime uses everywhere else. A
+/// forged exporter must not slip an unsupported or mislabeled format past the
+/// ABI boundary: the format bytes must be a valid NUL-terminated non-empty
+/// UTF-8 string naming a supported code whose item size agrees with the
+/// declared `view.itemsize`. This closes the default-format fallback that would
+/// otherwise accept whatever `itemsize` the exporter claimed.
+fn c_heap_buffer_format_is_valid(view: &MoltBufferView, itemsize: usize) -> bool {
+    let Some(format_len) = view.format.iter().position(|&byte| byte == 0) else {
+        return false;
+    };
+    if format_len == 0 {
+        return false;
+    }
+    let Ok(format) = std::str::from_utf8(&view.format[..format_len]) else {
+        return false;
+    };
+    let Some(format) = crate::object::memoryview::memoryview_format_from_str(format) else {
+        return false;
+    };
+    format.itemsize == itemsize
+}
+
+/// Decode the canonical `MoltBufferView.readonly` u32 boolean domain: `0` is
+/// writable, `1` is read-only, and every other value is rejected. Both C-heap
+/// lease admission and `molt_memoryview_from_buffer` route the flag through this
+/// one decoder so an arbitrary nonzero value can never silently collapse into
+/// read-only truth via `readonly != 0`.
+fn buffer_readonly_from_flag(readonly: u32) -> Option<bool> {
+    match readonly {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
 type CHeapBufferExporter = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
 type CHeapBufferReleaser = unsafe extern "C" fn(usize, *mut MoltBufferView) -> i32;
 
@@ -215,6 +264,12 @@ fn c_heap_buffer_view_is_valid(ptr: usize, view: &MoltBufferView) -> bool {
     if itemsize == 0 {
         return false;
     }
+    if !c_heap_buffer_format_is_valid(view, itemsize) {
+        return false;
+    }
+    let Some(readonly) = buffer_readonly_from_flag(view.readonly) else {
+        return false;
+    };
     let ndim = view.ndim as usize;
     if ndim > MOLT_BUFFER_MAX_NDIM {
         return false;
@@ -223,7 +278,7 @@ fn c_heap_buffer_view_is_valid(ptr: usize, view: &MoltBufferView) -> bool {
     let strides = view.strides[..ndim].to_vec();
     let Some(storage) = crate::object::memoryview::TypedStridedStorage::new(
         view.data,
-        view.readonly != 0,
+        readonly,
         itemsize,
         view.offset,
         0,
@@ -1758,6 +1813,13 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         if view.itemsize == 0 {
             return raise_exception::<u64>(_py, "BufferError", "buffer itemsize cannot be zero");
         }
+        let Some(readonly) = buffer_readonly_from_flag(view.readonly) else {
+            return raise_exception::<u64>(
+                _py,
+                "BufferError",
+                "buffer readonly flag must be 0 or 1",
+            );
+        };
         let Ok(backing_capacity) = usize::try_from(view.backing_capacity) else {
             return raise_exception::<u64>(
                 _py,
@@ -1781,7 +1843,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         let format_bits = MoltObject::from_ptr(format_ptr).bits();
         let storage = crate::object::memoryview::TypedStridedStorage::new(
             view.data,
-            view.readonly != 0,
+            readonly,
             view.itemsize as usize,
             view.offset,
             view.base,
