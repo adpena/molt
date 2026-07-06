@@ -1,9 +1,9 @@
-//! `PyType_Ready` getset/member descriptor closure — the fast (`cargo test -p
+//! `PyType_Ready` getset/member descriptor closure â€” the fast (`cargo test -p
 //! molt-lang-cpython-abi`, no wasm) reproduction of the frontier numpy's
 //! `_multiarray_umath_exec` hits after the scalar-type readiness gap was closed.
 //!
-//! numpy's `PyUFunc_Type`, `PyArrayDescr_Type`, and `PyArray_Type` — all readied
-//! inside `_multiarray_umath_exec` — declare static `tp_members` and `tp_getset`
+//! numpy's `PyUFunc_Type`, `PyArrayDescr_Type`, and `PyArray_Type` â€” all readied
+//! inside `_multiarray_umath_exec` â€” declare static `tp_members` and `tp_getset`
 //! tables (e.g. `arraydescr_members`: `{"type", T_OBJECT, ...}`, `{"kind",
 //! T_CHAR, ...}`, `{"num", T_INT, ...}`, `{"itemsize", T_PYSSIZET, ...}`, and
 //! `arraydescr_getsets`: `{"names", getter, setter, ...}`). CPython's
@@ -29,8 +29,12 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
-use std::os::raw::{c_char, c_int};
+use molt_cpython_abi::hooks::RuntimeHooks;
+use std::collections::HashMap;
+use std::os::raw::{c_char, c_int, c_long};
 use std::ptr;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
@@ -38,6 +42,81 @@ fn init() {
 
 unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
     unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(tp) }
+}
+
+static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x5200_0000);
+static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
+static STRINGS: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
+
+fn fresh_handle() -> u64 {
+    NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+}
+
+fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
+    let mut guard = DICTS.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(HashMap::new());
+    }
+    guard
+}
+
+unsafe extern "C" fn fake_alloc_dict() -> u64 {
+    let handle = fresh_handle();
+    dicts().as_mut().unwrap().insert(handle, HashMap::new());
+    handle
+}
+
+unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+    if let Some(map) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
+        map.insert(key_bits, val_bits);
+    }
+}
+
+unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
+    dicts()
+        .as_ref()
+        .unwrap()
+        .get(&dict_bits)
+        .and_then(|map| map.get(&key_bits).copied())
+        .unwrap_or(0)
+}
+
+unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
+    let bytes = if data.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+    };
+    let mut guard = STRINGS.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(HashMap::new());
+    }
+    *guard
+        .as_mut()
+        .unwrap()
+        .entry(bytes)
+        .or_insert_with(fresh_handle)
+}
+
+unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
+    MoltTypeTag::Other as u8
+}
+
+unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
+
+fn install_runtime_hooks() {
+    let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    hooks.alloc_dict = fake_alloc_dict;
+    hooks.dict_set = fake_dict_set;
+    hooks.dict_get = fake_dict_get;
+    hooks.alloc_str = fake_alloc_str;
+    hooks.classify_heap = fake_classify_heap;
+    hooks.inc_ref = fake_noop_ref;
+    hooks.dec_ref = fake_noop_ref;
+    unsafe {
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
+    }
 }
 
 /// A struct shaped like a numpy descriptor object: a `PyObject` header followed
@@ -95,9 +174,14 @@ const READONLY: c_int = 1;
 // actually invoked through the descriptor protocol.
 unsafe extern "C" fn fake_getter(
     _self: *mut PyObject,
-    _closure: *mut std::ffi::c_void,
+    closure: *mut std::ffi::c_void,
 ) -> *mut PyObject {
-    unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1234) }
+    let value = if closure.is_null() {
+        1234
+    } else {
+        unsafe { *(closure.cast::<c_int>()) }
+    };
+    unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(value as c_long) }
 }
 
 fn getset_def(name: &'static [u8], get: Option<getter>, set: Option<setter>) -> PyGetSetDef {
@@ -131,7 +215,7 @@ fn getset_sentinel() -> PyGetSetDef {
 
 #[test]
 fn ready_populates_tp_dict_from_members_and_getset() {
-    init();
+    install_runtime_hooks();
 
     let mut members = [
         member(
@@ -160,8 +244,15 @@ fn ready_populates_tp_dict_from_members_and_getset() {
         ),
         member_sentinel(),
     ];
+    let mut getter_value: c_int = 1234;
     let mut getsets = [
-        getset_def(b"names\0", Some(fake_getter), None),
+        PyGetSetDef {
+            name: b"names\0".as_ptr().cast::<c_char>(),
+            get: Some(fake_getter),
+            set: None,
+            doc: ptr::null(),
+            closure: (&mut getter_value as *mut c_int).cast(),
+        },
         getset_sentinel(),
     ];
 
@@ -172,13 +263,8 @@ fn ready_populates_tp_dict_from_members_and_getset() {
     tp.tp_getset = getsets.as_mut_ptr().cast();
 
     let rc = unsafe { ready(&mut tp) };
-    // PyType_Ready must SUCCEED — the getset/member population step runs
-    // `type_add_members`/`type_add_getset` and, when they construct real
-    // descriptors, readiness completes. (Descriptor *retrieval* from tp_dict
-    // routes through the runtime dict bridge, which is a stub in this pure-ABI
-    // unit test — the numpy-shaped end-to-end retrieval is proved in the WASM
-    // witness path. Here we prove the readiness contract; the descriptor objects
-    // and the descriptor protocol, which need no dict bridge, are proved below.)
+    // This test wires the runtime dict bridge because the witness failure was a
+    // descriptor that constructed successfully but disappeared at publication.
     assert_eq!(
         rc, 0,
         "PyType_Ready must succeed for a type carrying tp_members + tp_getset"
@@ -188,6 +274,84 @@ fn ready_populates_tp_dict_from_members_and_getset() {
         tp.tp_flags & Py_TPFLAGS_READY,
         0,
         "the type must be marked READY after member/getset population"
+    );
+
+    let num_key = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"num".as_ptr()) };
+    let num_descr = unsafe { molt_cpython_abi::api::typeobj::_PyType_Lookup(&mut tp, num_key) };
+    assert!(
+        !num_descr.is_null(),
+        "tp_members entry must be visible in tp_dict"
+    );
+    unsafe {
+        assert_eq!((*num_descr).ob_type, &raw mut PyMemberDescr_Type);
+    }
+    assert!(
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .pyobj_to_handle(num_descr)
+            .is_some(),
+        "member_descriptor must be bridge-resolvable for dict round trips"
+    );
+
+    let names_key =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"names".as_ptr()) };
+    let names_descr = unsafe { molt_cpython_abi::api::typeobj::_PyType_Lookup(&mut tp, names_key) };
+    assert!(
+        !names_descr.is_null(),
+        "tp_getset entry must be visible in tp_dict"
+    );
+    unsafe {
+        assert_eq!((*names_descr).ob_type, &raw mut PyGetSetDescr_Type);
+    }
+
+    let mut inst = FakeDescrObject {
+        ob_base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &mut tp,
+        },
+        type_obj: ptr::null_mut(),
+        kind: b'i' as c_char,
+        type_num: 7,
+        elsize: 8,
+    };
+    let inst_ptr = (&mut inst as *mut FakeDescrObject).cast::<PyObject>();
+    let num_value =
+        unsafe { molt_cpython_abi::api::object::PyObject_GenericGetAttr(inst_ptr, num_key) };
+    assert!(
+        !num_value.is_null(),
+        "member descriptor must bind through GenericGetAttr"
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(num_value) },
+        7
+    );
+
+    let inst_dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
+    let shadow_value = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(99) };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_SetItem(inst_dict, num_key, shadow_value) },
+        0
+    );
+    let shadowed = unsafe {
+        molt_cpython_abi::api::object::_PyObject_GenericGetAttrWithDict(
+            inst_ptr, num_key, inst_dict, 0,
+        )
+    };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(shadowed) },
+        7,
+        "member_descriptor is a data descriptor and must beat instance dict values"
+    );
+
+    let names_value =
+        unsafe { molt_cpython_abi::api::object::PyObject_GenericGetAttr(inst_ptr, names_key) };
+    assert!(
+        !names_value.is_null(),
+        "getset descriptor must bind through GenericGetAttr"
+    );
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(names_value) },
+        1234
     );
 }
 
