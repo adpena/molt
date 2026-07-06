@@ -322,6 +322,30 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The fail-closed poison ratchet: no NEW ecosystem-baked package header,
+            # fail-open ABI export, duplicate C-API authority, or todo-as-plan marker
+            # inside a shipped surface may land unregistered, and each poison class
+            # count is monotonically non-increasing against its committed baseline.
+            # Sits next to the degrade-to-slow gate; same registry-authority shape.
+            name="fail-closed-poison-ratchet",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "fail_closed_gate.py")),
+            timeout=120,
+        )
+    )
+    checks.append(
+        Check(
+            # The silent degrade-to-slow ratchet: no NEW performance/capability path
+            # may silently fall back to a naive/serial/cold lane on a handleable
+            # input, and the metabug_fix_pending class is monotonically non-increasing.
+            name="degrade-to-slow-ratchet",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "degrade_to_slow_gate.py")),
+            timeout=120,
+        )
+    )
+    checks.append(
+        Check(
             # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every
             # generated authority is registered + --check-gated, no orphan
             # generated files, and no NEW silent-default `match` over a closed
