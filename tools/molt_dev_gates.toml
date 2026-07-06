@@ -155,7 +155,6 @@ description = "builtins/sys/importlib/_intrinsics: stdlib-intrinsic audits (Boot
 globs = [
   "src/molt/stdlib/builtins.py",
   "src/molt/stdlib/sys.py",
-  "src/molt/stdlib/_sys_impl.py",
   "src/molt/stdlib/importlib/**/*.py",
   "src/molt/stdlib/_intrinsics.py",
 ]

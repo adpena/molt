@@ -3038,7 +3038,6 @@ def _r6_target_version_parity_spec(
             "tests/molt_diff.py",
             "src/molt/cli/target_python.py",
             "src/molt/stdlib/sys.py",
-            "src/molt/stdlib/_sys_impl.py",
             "src/molt/stdlib/stat.py",
             "src/molt/stdlib/queue.py",
             *selected_fixtures,
@@ -3050,6 +3049,61 @@ def _r6_target_version_parity_spec(
             "serial fail-fast differential custody; missing target interpreters "
             "fail closed through tools/target_python_runtime.py.",
             "Selected R6 fixtures: " + ", ".join(selected_fixtures),
+        ],
+        "timeout": timeout if timeout is not None else 900.0,
+}
+
+
+def _native_molt_run_spec(
+    entry: str,
+    *,
+    script_args: Sequence[str] | None = None,
+    timeout: float | None = None,
+    repo_root: Path = ROOT,
+) -> dict[str, object]:
+    root = repo_root.resolve()
+    entry_path = Path(entry)
+    if not entry_path.is_absolute():
+        entry_path = root / entry_path
+    entry_path = entry_path.resolve()
+    try:
+        rel_entry = entry_path.relative_to(root)
+    except ValueError as exc:
+        raise SystemExit(
+            f"native Molt run entry must live under repo root {root}: {entry_path}"
+        ) from exc
+    if not entry_path.is_file():
+        raise SystemExit(f"native Molt run entry does not exist: {entry_path}")
+    entry_scope = rel_entry.as_posix()
+    arg_list = list(script_args or [])
+    if arg_list[:1] == ["--"]:
+        arg_list = arg_list[1:]
+    entry_slug = _slug(entry_scope)
+    digest = hashlib.sha256(entry_scope.encode("utf-8")).hexdigest()[:10]
+    return {
+        "logical_id": f"native-molt-run-{entry_slug}-{digest}",
+        "reason": (
+            "Run a native Molt entrypoint through proof-queue custody instead "
+            "of a foreground Codex shell compile."
+        ),
+        "command": _uv_active_python_command(
+            "-m",
+            "molt.cli",
+            "run",
+            entry_scope,
+            *arg_list,
+            no_sync=True,
+        ),
+        "resource_family": "python-native",
+        "contention_key": f"python:native-molt-run:{entry_slug}",
+        "scopes": [entry_scope],
+        "env_overrides": {},
+        "notes": [
+            "Named native Molt run lane prevents compile-heavy `molt run` probes "
+            "from occupying the foreground Codex control plane; use --detach "
+            "and `proof_queue.py run --jobs N --detach` for cross-platform "
+            "bounded worker fanout.",
+            "Native Molt entry: " + entry_scope,
         ],
         "timeout": timeout if timeout is not None else 900.0,
     }
@@ -3148,6 +3202,18 @@ def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:
             args.python_version,
             args.timeout,
             args.fixture,
+        ),
+    )
+
+
+def _cmd_native_molt_run(args: argparse.Namespace) -> int:
+    return _run_named_spec(
+        args,
+        _native_molt_run_spec(
+            args.entry,
+            script_args=args.script_args,
+            timeout=args.timeout,
+            repo_root=_repo_root(args),
         ),
     )
 
