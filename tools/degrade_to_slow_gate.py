@@ -250,10 +250,13 @@ def _anchor_present(text: str, row: RegistryRow) -> bool:
 # ---------------------------------------------------------------------------
 # Discovery scan.
 # ---------------------------------------------------------------------------
-def _iter_source_files() -> list[Path]:
+def _iter_source_files(
+    repo_root: Path = REPO_ROOT,
+    scan_roots: tuple[str, ...] = SCAN_ROOTS,
+) -> list[Path]:
     files: list[Path] = []
-    for root in SCAN_ROOTS:
-        base = REPO_ROOT / root
+    for root in scan_roots:
+        base = repo_root / root
         if not base.exists():
             continue
         for pat in ("*.py", "*.rs"):
@@ -269,10 +272,13 @@ def _enclosing_rust_symbol(lines: list[str], idx: int) -> str | None:
     return None
 
 
-def discover_sites() -> list[DiscoveredSite]:
+def discover_sites(
+    repo_root: Path = REPO_ROOT,
+    scan_roots: tuple[str, ...] = SCAN_ROOTS,
+) -> list[DiscoveredSite]:
     sites: list[DiscoveredSite] = []
-    for path in _iter_source_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
+    for path in _iter_source_files(repo_root, scan_roots):
+        rel = path.relative_to(repo_root).as_posix()
         # The gate + registry + tests themselves define the signature strings;
         # skip them so the scanner does not flag its own vocabulary.
         if rel in {
@@ -316,11 +322,11 @@ def discover_sites() -> list[DiscoveredSite]:
 # ---------------------------------------------------------------------------
 # Test-presence resolution (fast_path_test).
 # ---------------------------------------------------------------------------
-def _find_test(test_id: str) -> tuple[bool, bool]:
+def _find_test(test_id: str, repo_root: Path = REPO_ROOT) -> tuple[bool, bool]:
     """Return (present, skipped). Searches tests/ for a `def <test_id>` and
     checks whether it (or its class) is decorated skip/xfail on the line above.
     """
-    tests_root = REPO_ROOT / "tests"
+    tests_root = repo_root / "tests"
     if not tests_root.exists():
         return (False, False)
     needle = re.compile(rf"^\s*def\s+{re.escape(test_id)}\s*\(")
@@ -347,8 +353,14 @@ def _find_test(test_id: str) -> tuple[bool, bool]:
 def run_gate(
     registry_path: Path = REGISTRY_PATH,
     *,
+    repo_root: Path | None = None,
+    scan_roots: tuple[str, ...] = SCAN_ROOTS,
     extra_sites: list[DiscoveredSite] | None = None,
 ) -> GateReport:
+    # Default to the module-global REPO_ROOT, read at CALL time so tests that
+    # rebind gate.REPO_ROOT (or pass repo_root explicitly) are honored.
+    if repo_root is None:
+        repo_root = REPO_ROOT
     report = GateReport()
     rows, baseline = load_registry(registry_path)
     report.registry_row_count = len(rows)
@@ -392,7 +404,7 @@ def run_gate(
 
     def _file_text(rel: str) -> str | None:
         if rel not in file_text_cache:
-            p = REPO_ROOT / rel
+            p = repo_root / rel
             try:
                 file_text_cache[rel] = p.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -441,7 +453,7 @@ def run_gate(
                 f"the fast path is taken on the hard input."
             )
             continue
-        present, skipped = _find_test(row.fast_path_test)
+        present, skipped = _find_test(row.fast_path_test, repo_root)
         if skipped:
             report.fail(
                 f"row #{row._index} ({row.file}) fast_path_test "
@@ -465,7 +477,7 @@ def run_gate(
                 )
 
     # -- drift: every discovered site must be registered --------------------
-    discovered = discover_sites()
+    discovered = discover_sites(repo_root, scan_roots)
     if extra_sites:
         discovered = discovered + list(extra_sites)
     report.discovered_site_count = len(discovered)
