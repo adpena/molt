@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(any(unix, test))]
-use crate::resource_limits::detect_physical_memory_bytes;
 
 #[cfg(unix)]
 pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
