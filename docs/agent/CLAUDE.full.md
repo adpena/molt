@@ -16,12 +16,14 @@ When you identify a structurally correct fix and feel pulled toward an "immediat
 If you cannot complete the structural fix in this session, **do not commit the localized hack as a placeholder**. Leave a clean baton-pass note describing the structural fix needed; the next session picks it up. Half-measures committed to main are worse than nothing committed.
 
 If you discover a missing prerequisite, treat it as implementation scope, not a
-deferral excuse. When the prerequisite is inside your owned authority class,
-pull it into the same structural arc and build the end-state path. When it is
-frozen or owned by another lane, record a precise proof-queue/board finding with
-evidence and immediately continue on the next allowed structural aperture. Do
-not posture as "waiting for X", and do not land a shim, placeholder, bypass, or
-partial implementation around the missing primitive.
+deferral excuse, and treat "I will not do X until Y happens" as a turn-blocking
+avoidance pattern unless the formal blocked audit is satisfied. When the
+prerequisite is inside your owned authority class, pull it into the same
+structural arc and build the end-state path. When it is frozen or owned by
+another lane, record a precise proof-queue/board finding with evidence and
+immediately continue on the next allowed structural aperture. Do not posture as
+"waiting for X", and do not land a shim, placeholder, bypass, or partial
+implementation around the missing primitive.
 
 ### Narrow Aperture, Full Structural Rip
 

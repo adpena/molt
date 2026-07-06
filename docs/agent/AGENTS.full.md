@@ -27,13 +27,15 @@ touching code, docs, tests, benchmarks, or roadmap state.
   Molt internals, no stale aliases, no duplicate dispatch surfaces, no opt-in
   old behavior, no hidden fallbacks, no temporary wrappers. When a path is
   touched, delete the legacy lane or structurally reconcile it in the same arc.
-- A discovered prerequisite is implementation scope, not a deferral excuse. If
-  the missing primitive, authority move, or dependency lies inside the owned
-  lane, pull it into the same structural arc and build the end-state path. If it
-  is frozen or owned by another lane, record a precise proof-queue/board finding
-  with evidence and continue immediately on the next allowed structural
-  aperture. Do not posture as "waiting for X", and do not land a shim,
-  placeholder, bypass, or partial implementation around the missing primitive.
+- A discovered prerequisite is implementation scope, not a deferral excuse, and
+  "I will not do X until Y happens" is a turn-blocking avoidance pattern unless
+  the formal blocked audit is satisfied. If the missing primitive, authority
+  move, or dependency lies inside the owned lane, pull it into the same
+  structural arc and build the end-state path. If it is frozen or owned by
+  another lane, record a precise proof-queue/board finding with evidence and
+  continue immediately on the next allowed structural aperture. Do not posture
+  as "waiting for X", and do not land a shim, placeholder, bypass, or partial
+  implementation around the missing primitive.
 - Maximize verified compatibility only inside Molt's AOT contract. Pursue full
   Python 3.12+ stdlib and ecosystem compatibility where it does not require
   unrestricted dynamic execution, runtime monkeypatching, reflection-heavy host
