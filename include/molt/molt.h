@@ -18,6 +18,7 @@ typedef struct MoltBufferView {
   uint8_t *data;
   uint64_t len;
   uint64_t backing_capacity;
+  /* Canonical bool: 0 writable, 1 read-only; other values are rejected. */
   uint32_t readonly;
   uint32_t ndim;
   uint64_t itemsize;
