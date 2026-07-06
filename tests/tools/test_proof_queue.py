@@ -6314,6 +6314,77 @@ def test_proof_queue_diagnoses_external_native_and_profile_refusals(
     }
 
 
+def test_proof_queue_diagnoses_external_native_runtime_import_custody(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "runtime-import-custody.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="runtime-import-custody",
+        logical_id="pact-witness-acceptance",
+        reason="prove stale NumPy seal runtime import custody diagnostics",
+        command=[sys.executable, "-c", "raise SystemExit(2)"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact-witness",
+        scopes=["src/molt/cli/external_native.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "runtime-import-custody.memory_guard.json",
+    )
+    log_path.write_text(
+        "External static package native-artifact custody errors: "
+        "numpy: sealed extension manifest lacks a "
+        "'runtime_python_import_modules' field and its C sources no longer "
+        "resolve, so its runtime Python import closure cannot be proven. "
+        "Re-seal the extension root through 'molt extension seal' to persist "
+        "the source-derived runtime imports. Unresolved sources: "
+        "object_closure.objects[0].source: "
+        "tmp/worktrees/pact-collab/deleted/npy_static_data.c does not exist\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn,
+        "runtime-import-custody",
+        status="failed",
+        returncode=2,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "runtime-import-custody",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert [item["signal_id"] for item in diagnostics] == [
+        "external-native-runtime-import-custody"
+    ]
+    diagnostic = diagnostics[0]
+    assert "numpy" in diagnostic["summary"]
+    assert "runtime_python_import_modules" in diagnostic["summary"]
+    assert "object_closure.objects[0].source" in diagnostic["evidence"]
+    assert "pact-witness-acceptance" in diagnostic["next_action"]
+
+
 def test_proof_queue_diagnoses_external_native_abi_link_surface_gap(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
