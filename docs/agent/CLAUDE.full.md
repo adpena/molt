@@ -23,7 +23,10 @@ structural arc and build the end-state path. When it is frozen or owned by
 another lane, record a precise proof-queue/board finding with evidence and
 immediately continue on the next allowed structural aperture. Do not posture as
 "waiting for X", and do not land a shim, placeholder, bypass, or partial
-implementation around the missing primitive.
+implementation around the missing primitive. When you catch yourself writing or
+thinking that phrase, immediately convert Y into executable work, a
+proof-queue/orchestrator handoff with evidence, or a named external blocker;
+anything else is a contract violation.
 
 ### Narrow Aperture, Full Structural Rip
 
