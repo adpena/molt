@@ -26,7 +26,7 @@ pub(super) struct CallSite {
 /// Collect every statically-direct `Call` op in `caller` whose target is a
 /// module-defined function (resolved via `s_value`), in deterministic order
 /// (blocks sorted by id, ops in index order). Opaque calls, method dispatch,
-/// builtin calls, gpu intrinsics, and copy-fallback calls are NOT collected —
+/// builtin calls, gpu intrinsics, and copy-fallback calls are NOT collected -
 /// only a first-class `Call` with an `s_value` naming a `defined` function.
 pub(super) fn collect_call_sites(caller: &TirFunction, defined: &[String]) -> Vec<CallSite> {
     let defined_set: BTreeSet<&str> = defined.iter().map(String::as_str).collect();
@@ -57,7 +57,7 @@ pub(super) fn collect_call_sites(caller: &TirFunction, defined: &[String]) -> Ve
 }
 
 /// REFCOUNT guard: returns true if any of the call's argument values is the
-/// result of an `IncRef` in the ≤2 ops immediately before the `Call`. Such a
+/// result of an `IncRef` in the <=2 ops immediately before the `Call`. Such a
 /// site hands the callee an *owned* argument (the `IncRef` balances a `DecRef`
 /// the callee would issue under a +1 convention, or the caller is materializing
 /// an owned temporary). Inlining a +0-borrowed-parameter body there would leak
