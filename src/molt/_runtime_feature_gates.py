@@ -127,6 +127,7 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_dbm_", "stdlib_dbm"),
     ("molt_signal_", "stdlib_signal"),
     ("molt_select_", "stdlib_select"),
+    ("molt_gpu_", "molt_gpu_primitives"),
     ("molt_gpu_prim_", "molt_gpu_primitives"),
 )
 
