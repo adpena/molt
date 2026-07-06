@@ -44,7 +44,10 @@ is reconciled.
   end-state path. If it is frozen or owned by another lane, record a precise
   proof-queue/board finding with evidence and immediately continue on the next
   allowed structural aperture. Do not posture as "waiting for X" or land a
-  placeholder around the missing primitive.
+  placeholder around the missing primitive. When you catch yourself writing or
+  thinking that phrase, immediately convert Y into executable work, a
+  proof-queue/orchestrator handoff with evidence, or a named external blocker;
+  anything else is a contract violation.
 - No backward compatibility inside Molt internals. When a touched path has a
   legacy lane, delete it or structurally reconcile it in the same arc.
 - Performance is part of correctness. Claimed support must be deterministic,
