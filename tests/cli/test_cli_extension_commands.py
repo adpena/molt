@@ -4052,3 +4052,186 @@ def test_datetime_header_cpython_abi_tier_smoke(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_source_extension_cpython_abi_tier_is_single_self_complete_authority() -> None:
+    """The cpython-abi tier is ONE header home: the ABI authority only.
+
+    It must NOT also inject the repo-root ``include/`` tier (which carries
+    Molt's source-compat NumPy overlay ``include/numpy/*``). That overlay would
+    shadow a source-recompiled package's OWN ``numpy/*`` headers. Regression
+    guard for the header-custody collision that blocked numpy self-recompile.
+    """
+    abi_authority = (ROOT / "runtime" / "molt-cpython-abi" / "include").resolve()
+    repo_root_include = (ROOT / "include").resolve()
+
+    cpython_abi_dirs = tuple(
+        path.resolve()
+        for path in (
+            cli_source_extension_toolchain._source_extension_include_dirs_for_abi_tier(
+                molt_root=ROOT,
+                abi_tier="cpython-abi",
+            )
+        )
+    )
+    assert cpython_abi_dirs == (abi_authority,)
+    assert repo_root_include not in cpython_abi_dirs
+
+    # The ABI authority must be self-complete for a generic C extension: the
+    # stock-CPython public headers numpy's _core includes directly all live
+    # under the single authority, not in the repo-root include/ tier.
+    for header in ("Python.h", "structmember.h", "pymem.h", "pyerrors.h"):
+        assert (abi_authority / header).is_file(), header
+
+    # source-compat is unchanged: it owns the repo-root include/ tier (with the
+    # Molt NumPy overlay) and does NOT pull the standalone ABI authority.
+    source_compat_dirs = tuple(
+        path.resolve()
+        for path in (
+            cli_source_extension_toolchain._source_extension_include_dirs_for_abi_tier(
+                molt_root=ROOT,
+                abi_tier="source-compat",
+            )
+        )
+    )
+    assert source_compat_dirs == (repo_root_include,)
+
+
+def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
+    tmp_path: Path,
+) -> None:
+    """A minimal C extension compiles against the ABI authority ALONE.
+
+    No ``-I include`` on the command line. Proves ``structmember.h`` /
+    ``pymem.h`` / ``pyerrors.h`` resolve ``<Python.h>`` to the tier's own
+    complete ``Python.h`` and that the tier stands alone.
+    """
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for the CPython-ABI authority smoke test")
+    abi_authority = ROOT / "runtime" / "molt-cpython-abi" / "include"
+    source = tmp_path / "cpython_abi_self_complete_smoke.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <structmember.h>",
+                "#include <pymem.h>",
+                "#include <pyerrors.h>",
+                "",
+                "/* structmember legacy aliases resolve to the Py_T_* / Py_* */",
+                "/* constants defined by this tier's own Python.h.           */",
+                "static PyMemberDef probe_members[] = {",
+                '    {"legacy", T_INT, 0, READONLY, NULL},',
+                "    {NULL, 0, 0, 0, NULL},",
+                "};",
+                "",
+                "int probe(void) {",
+                "    void *block = PyMem_Malloc(8);",
+                "    if (block == NULL) {",
+                "        PyErr_NoMemory();",
+                "        return -1;",
+                "    }",
+                "    PyMem_Free(block);",
+                "    return probe_members[0].type;",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = run_cli_test_process(
+        [
+            clang,
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{abi_authority}",
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cpython_abi_tier_does_not_shadow_package_numpy_headers(
+    tmp_path: Path,
+) -> None:
+    """A package shipping its OWN ``numpy/*`` headers is not shadowed by Molt.
+
+    The cpython-abi tier carries no ``numpy/*`` overlay, so a ``<numpy/...>``
+    lookup resolves to the package's own header on the include path -- the exact
+    custody the numpy self-recompile needs. Sentinel-guarded so a future
+    reintroduction of the overlay into the cpython-abi tier fails this test.
+    """
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for the numpy header custody test")
+
+    cpython_abi_dirs = (
+        cli_source_extension_toolchain._source_extension_include_dirs_for_abi_tier(
+            molt_root=ROOT,
+            abi_tier="cpython-abi",
+        )
+    )
+    # The tier must expose no numpy/* header of its own.
+    for include_dir in cpython_abi_dirs:
+        assert not (Path(include_dir) / "numpy").exists(), (
+            f"cpython-abi tier must not ship a numpy/ overlay: {include_dir}"
+        )
+
+    # A source-recompiled package ships its own numpy header via package custody.
+    package_include = tmp_path / "pkg_numpy_include"
+    (package_include / "numpy").mkdir(parents=True)
+    (package_include / "numpy" / "arrayobject.h").write_text(
+        "\n".join(
+            [
+                "#ifndef PACKAGE_OWN_NUMPY_ARRAYOBJECT_H",
+                "#define PACKAGE_OWN_NUMPY_ARRAYOBJECT_H",
+                "#define PACKAGE_OWN_NUMPY_SENTINEL 1",
+                "#endif",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    source = tmp_path / "numpy_custody_probe.c"
+    source.write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "#include <numpy/arrayobject.h>",
+                "",
+                "#ifndef PACKAGE_OWN_NUMPY_SENTINEL",
+                '#error "Molt overlay shadowed the package\'s own numpy/ header"',
+                "#endif",
+                "",
+                "int probe(void) { return PACKAGE_OWN_NUMPY_SENTINEL; }",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    include_flags: list[str] = []
+    for include_dir in cpython_abi_dirs:
+        include_flags.extend(["-I", str(include_dir)])
+    include_flags.extend(["-I", str(package_include)])
+    result = run_cli_test_process(
+        [
+            clang,
+            "-std=c11",
+            "-Werror",
+            *include_flags,
+            "-fsyntax-only",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
