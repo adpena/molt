@@ -802,6 +802,36 @@ unsafe extern "C" fn member_set(
     }
 }
 
+unsafe fn descr_common_decref(common: &mut crate::abi_types::PyDescrObject) {
+    unsafe {
+        crate::api::refcount::Py_XDECREF(common.d_type.cast::<PyObject>());
+        crate::api::refcount::Py_XDECREF(common.d_name);
+        crate::api::refcount::Py_XDECREF(common.d_qualname);
+    }
+}
+
+unsafe extern "C" fn getset_descr_dealloc(op: *mut PyObject) {
+    if op.is_null() {
+        return;
+    }
+    unsafe {
+        let descr = op.cast::<crate::abi_types::PyGetSetDescrObject>();
+        descr_common_decref(&mut (*descr).d_common);
+        drop(Box::from_raw(descr));
+    }
+}
+
+unsafe extern "C" fn member_descr_dealloc(op: *mut PyObject) {
+    if op.is_null() {
+        return;
+    }
+    unsafe {
+        let descr = op.cast::<crate::abi_types::PyMemberDescrObject>();
+        descr_common_decref(&mut (*descr).d_common);
+        drop(Box::from_raw(descr));
+    }
+}
+
 /// Install the descriptor protocol slots on the two descriptor type objects.
 /// Called once at ABI init (after `init_static_types`) so that a
 /// `getset_descriptor` / `member_descriptor` found in a type's `tp_dict`
@@ -815,12 +845,14 @@ pub unsafe fn init_descriptor_slots() {
         let gs = &raw mut crate::abi_types::PyGetSetDescr_Type;
         (*gs).tp_descr_get = Some(getset_get);
         (*gs).tp_descr_set = Some(getset_set);
+        (*gs).tp_dealloc = Some(getset_descr_dealloc);
         (*gs).tp_basicsize =
             std::mem::size_of::<crate::abi_types::PyGetSetDescrObject>() as Py_ssize_t;
 
         let mem = &raw mut crate::abi_types::PyMemberDescr_Type;
         (*mem).tp_descr_get = Some(member_get);
         (*mem).tp_descr_set = Some(member_set);
+        (*mem).tp_dealloc = Some(member_descr_dealloc);
         (*mem).tp_basicsize =
             std::mem::size_of::<crate::abi_types::PyMemberDescrObject>() as Py_ssize_t;
     }

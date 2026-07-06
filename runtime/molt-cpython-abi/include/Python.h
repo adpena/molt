@@ -1004,8 +1004,11 @@ extern PyObject    *PyObject_CallFunction(PyObject *callable, const char *format
 extern PyObject    *PyObject_CallFunctionObjArgs(PyObject *callable, ...);
 extern int          PyObject_AsFileDescriptor(PyObject *op);
 extern int          PyDescr_IsData      (PyObject *descr);
+extern PyObject    *PyDescr_NAME        (PyObject *descr);
 extern PyObject    *PyDescr_NewGetSet   (PyTypeObject *type, PyGetSetDef *getset);
 extern PyObject    *PyDescr_NewMember   (PyTypeObject *type, PyMemberDef *member);
+extern PyObject    *PyMember_GetOne     (const char *addr, PyMemberDef *member);
+extern int          PyMember_SetOne     (char *addr, PyMemberDef *member, PyObject *value);
 extern PyObject    *PyObject_GenericGetAttr(PyObject *op, PyObject *name);
 extern int          PyObject_GenericSetAttr(PyObject *op, PyObject *name, PyObject *value);
 extern int          PyObject_GetOptionalAttr(PyObject *op, PyObject *name, PyObject **result);
