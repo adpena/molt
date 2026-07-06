@@ -309,7 +309,10 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py link CHILD
 
 Canonical edge kinds are `depends_on`, `derives_from`, `reruns`, `compares`,
 and `supersedes`. `depends_on` is the scheduling edge; the others preserve
-lineage and comparison intent for evidence review.
+lineage and comparison intent for evidence review. Because queue databases are
+worktree-local, non-scheduling lineage edges may name a parent run from another
+worktree; `depends_on` parents must exist in the local queue so scheduling can
+fail closed.
 
 ## Evidence And Notebooks
 
