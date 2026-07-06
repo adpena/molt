@@ -910,7 +910,7 @@ mod json_parse_tests {
         .expect_err("native callable ABI tokens must be canonical");
 
         assert!(err.contains("unknown native_callable_abi `molt.forward_f33_v1`"));
-        assert!(err.contains("molt.object_call_v1, molt.forward_f32_v1"));
+        assert!(err.contains(crate::native_callable_abi::NATIVE_CALLABLE_ABI_CHOICES));
     }
 
     #[test]
@@ -938,6 +938,33 @@ mod json_parse_tests {
         .expect_err("direct_symbol callable exports require a native symbol");
 
         assert!(err.contains("direct_symbol requires native_callable_symbol"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_module_attr_direct_symbol_abi() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": ["arg0"],
+                        "ops": [
+                            {
+                                "kind": "invoke_ffi",
+                                "args": ["func", "arg0"],
+                                "out": "result",
+                                "native_callable_export": "scipy.ndimage.distance_transform_edt",
+                                "native_callable_binding": "module_attr",
+                                "native_callable_abi": "molt.forward_f32_v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("module_attr cannot carry pointer/typed direct-symbol ABIs");
+
+        assert!(err.contains("uses module_attr direct-symbol ABI `molt.forward_f32_v1`"));
     }
 
     #[test]
