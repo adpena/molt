@@ -271,7 +271,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 "finished_ns": worker_finished_ns,
             },
         }
-    issue = _module_lowering_local_reference_issue(module_name, ir["functions"])
+    issue = _module_lowering_local_reference_issue(
+        module_name, ir["functions"], known_modules=known_modules
+    )
     if issue is not None:
         worker_finished_ns = time.time_ns()
         return {
@@ -514,6 +516,7 @@ def _lower_module_serial_with_context(
                 context_digest=context_digest,
                 path_stat=path_stat,
                 target_python=lowering_context.target_python,
+                known_modules=lowering_context.known_modules,
             )
             if cached_payload is not None:
                 return cached_payload, 0.0, 0.0, 0.0
@@ -596,7 +599,11 @@ def _lower_module_serial_with_context(
         lower_s=lower_s,
         total_s=total_s,
     )
-    issue = _module_lowering_local_reference_issue(module_name, payload["functions"])
+    issue = _module_lowering_local_reference_issue(
+        module_name,
+        payload["functions"],
+        known_modules=lowering_context.known_modules,
+    )
     if issue is not None:
         raise _ModuleLowerError(f"Invalid lowered module {module_name}: {issue}")
     if lowering_context.project_root is not None and context_digest is not None:
