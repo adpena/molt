@@ -64,6 +64,39 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
+## 🔄 ORCHESTRATOR UPDATE — 2026-07-07 (late, post-recovery; READ FIRST — supersedes the burndown frontier + coordination below)
+
+Session recovered after a clean pause (desktop relaunch). No signal lost: the four
+paused worktree branches are banked to `origin/wip/recover-*-20260707`.
+
+- **CONFIRMED E1 FRONTIER (fresh run `20260707T183013-pact-witness-acceptance`,
+  live tree):** the witness build now reaches the **WASM LINK** stage — PAST the
+  "8 numpy support-module seal gap" AND past static init — and fails at link:
+  `wasm-ld: undefined symbol: molt_PyType_Ready` in `native_runtime_imports_0.wasm`.
+  ABI-alias/object-closure naming gap: `PyType_Ready` is exported UNPREFIXED
+  (`#[unsafe(no_mangle)]`, `runtime/molt-cpython-abi/src/api/typeobj.rs:45`) but the
+  wasm runtime-import closure references molt-prefixed `molt_PyType_Ready` (nothing
+  defines it). Same class as `molt_gpu_tensor___product` + the wasm-op triple.
+  ORCHESTRATOR SUBAGENT OWNS IT — close the alias as ONE naming authority for the
+  whole cpython-abi symbol class (PyLong_Type etc. already flow correctly; make
+  PyType_Ready flow the same way), fail-closed on genuinely-missing symbols.
+  **The "8 support-module seal gap" frontier line below is STALE — superseded.**
+- **Compiler-build-resource mutex is LANDED (PR #100).** The "LAND the mutex fix"
+  directive in the CODEX COORDINATION block below is DONE — both
+  `codex/compiler-build-resource-mutex-*` and `codex/proofqueue-build-resource-mutex-*`
+  are merged+deleted. Do NOT re-land or re-chase.
+- **Current Codex lanes:** B = R5c frontend-lowering reuse/parallelize (queue note
+  1431 evidence); C = reconcile+land `codex/proofqueue-preflight-diagnosis-20260707`
+  (`02d85f922`, unlanded) so acceptance fails closed with exact missing-import
+  evidence before long builds; D = R6/R8 continuous. Codex STAND DOWN on the
+  witness link / cpython-abi lane.
+- **Banked-branch reconcile (orchestrator integration-custody, in progress):**
+  scipy `842da9c8f` module_attr dispatch is largely SUPERSEDED on main (ndimage
+  PRs) → RETIRE with note, do not land (trample). asyncio `ordered_positions`
+  exception-region fix + submodule-prefix fix are UNLANDED → reconcile+land.
+  witness `source_extensions.py` seal WIP predates the passed seal frontier →
+  review-before-land. Codex: do not cherry-pick from the `wip/recover-*` refs.
+
 ## 🎯 CURRENT SWARM BURNDOWN — 2026-07-07 (orchestrator; READ FIRST — supersedes stale State-of-the-World below)
 
 ### FINAL EXIT CRITERIA — the swarm is DONE only when ALL FOUR hold

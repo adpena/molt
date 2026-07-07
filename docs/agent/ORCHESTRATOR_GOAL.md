@@ -81,6 +81,40 @@ Next known gap: `PyDescr_NewGetSet` / `PyDescr_NewMember` + `tp_getset` (see the
   destructive git in the shared checkout (`git_guard` + `refs/wip-guard` net).
   Commit with an explicit pathspec so you don't sweep partner WIP. Push over SSH.
 
+## Integration custody — YOU own drift, signal-loss, orphan, trample prevention (binding)
+
+A first-class standing deliverable, not a background chore. The swarm lands PRs
+fast; `origin/main` moves under you every few minutes. Keep the system coherent
+while it moves:
+
+- **Drift prevention.** Before assigning or accepting ANY lane, diff its target
+  against live `origin/main`. A task naming a branch is valid only if that branch
+  still exists AND is unlanded — verify `git rev-parse origin/<b>` +
+  `git merge-base --is-ancestor origin/<b> origin/main`. Re-landing merged work
+  (deleted branch, or logic already on main) is trampling; DROP it and say why.
+  Keep `docs/agent/ORCHESTRATION.md` synced to current main every arc.
+- **Signal-loss prevention.** Every unlanded piece lives in two durable places
+  before you touch anything: a committed worktree branch AND an `origin` ref
+  (`wip/*`). Local-only worktree commits are one prune from loss — push first.
+  The board and coordination notes live in-repo, never only in an ephemeral
+  session scratchpad.
+- **Orphan prevention.** No branch/worktree with unique commits is pruned until
+  its signal is landed on `origin/main` or banked to `origin/wip/*`. Track the
+  reconcile state of every `wip/*` ref; an unreconciled ref no lane owns is an
+  orphan to land or explicitly retire with a note.
+- **Trample prevention.** Cherry-pick LOGIC, never merge stale-base branches
+  (their tree-diff reverts upstream's parallel evolution). Never land docs/code
+  from the stale shared checkout — re-apply onto a clean `origin/main` worktree.
+  Commit by exact pathspec. Never touch another lane's dirty files. Enforce board
+  lane exclusivity + stand-down orders under operator-delegated authority.
+- **Cherry-pick then prune (the custody loop).** Per banked `wip/*` ref and live
+  worktree: (1) isolate real per-commit signal vs current main, skipping what
+  already landed by content (same-hash or same-logic — check, don't assume);
+  (2) reconcile that logic onto a fresh `origin/main` worktree; (3) land via
+  ff-push after a queue-owned proof; (4) only then prune. Bulk worktree pruning
+  happens in a swarm-quiescent window (build procs 0), ref-by-ref, never before
+  the signal is proven banked or landed.
+
 ## Process / resource custody (binding, hard-won)
 
 - APDataStore = `D:` (exFAT, ~2TB) is THE build volume. Route fresh DX/proof
