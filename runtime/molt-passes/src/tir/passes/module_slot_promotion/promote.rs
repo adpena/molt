@@ -282,7 +282,6 @@ pub(super) fn promote_loop(
     true
 }
 
-
 fn apply_promotion(
     func: &mut TirFunction,
     lp: &LoopInfo,
@@ -418,8 +417,8 @@ fn apply_promotion(
                     original_label: label,
                     original_operands: op.operands.clone(),
                 });
-                // The op itself is rewritten in step 5 (fresh label, no
-                // operands); push a placeholder clone for now.
+                // The op itself is rewritten in step 5 with a fresh label and
+                // no operands; keep a clone that step 5 replaces.
                 new_ops.push(op.clone());
                 continue;
             }

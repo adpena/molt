@@ -138,7 +138,7 @@ pub(super) fn rehoist_escaped_locals(source: &mut String) {
 
     while i < lines.len() {
         let t = lines[i].trim();
-        // Detect function start: `XXX = function(` or `local function XXX(`
+        // Detect function start: `name = function(` or `local function name(`
         let is_func_start = (t.contains("= function(") && t.ends_with(')'))
             || (t.starts_with("local function ") && t.ends_with(')'));
         if !is_func_start {

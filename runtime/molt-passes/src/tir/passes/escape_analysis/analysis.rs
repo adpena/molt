@@ -156,11 +156,10 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
             }
         }
 
-        // Branch args that pass alloc'd values to other blocks — for now
-        // we don't escalate these (the value stays in-function), but we
-        // need to track them in the use map is already done above via ops.
-        // Actually branch args aren't ops, just mark them if they appear in
-        // non-Return terminators. These are intra-function, so no escape.
+        // Branch args that pass alloc'd values to other blocks stay
+        // intra-function, so they do not escalate to GlobalEscape. The
+        // terminator scan above still records their uses because branch args
+        // are not ops.
         let _ = terminator_values; // used above for Return check
     }
 
