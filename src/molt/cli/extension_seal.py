@@ -431,6 +431,94 @@ def _canonicalize_runtime_python_import_modules(
     return []
 
 
+def _object_source_plan_roots(
+    manifest: Mapping[str, Any],
+) -> tuple[Path, ...]:
+    source_plan = manifest.get("source_plan")
+    if not isinstance(source_plan, Mapping):
+        return ()
+    roots: list[Path] = []
+    for field_name in ("source_root", "build_root"):
+        raw_root = source_plan.get(field_name)
+        if isinstance(raw_root, str) and raw_root.strip():
+            roots.append(Path(raw_root).expanduser().resolve())
+    return tuple(roots)
+
+
+def _source_plan_relative_path(
+    source_path: Path,
+    *,
+    roots: tuple[Path, ...],
+) -> str | None:
+    matches: list[Path] = []
+    resolved_source = source_path.resolve()
+    for root in roots:
+        try:
+            matches.append(resolved_source.relative_to(root))
+        except ValueError:
+            continue
+    if not matches:
+        return None
+    return min(matches, key=lambda path: len(path.parts)).as_posix()
+
+
+def _canonicalize_object_closure_source_paths(
+    manifest: dict[str, Any],
+    *,
+    manifest_path: Path,
+) -> list[str]:
+    roots = _object_source_plan_roots(manifest)
+    if not roots:
+        return []
+    object_closure = manifest.get("object_closure")
+    if not isinstance(object_closure, dict):
+        return ["extension seal requires non-empty object_closure custody"]
+    objects = object_closure.get("objects")
+    if not isinstance(objects, list):
+        return ["extension seal requires object_closure.objects custody"]
+
+    errors: list[str] = []
+    for index, item in enumerate(objects):
+        if not isinstance(item, dict):
+            errors.append(f"object_closure.objects[{index}] must be an object")
+            continue
+        raw_source = item.get("source")
+        if not isinstance(raw_source, str) or not raw_source.strip():
+            continue
+        source_sha256 = item.get("source_sha256")
+        source_path, source_errors = source_extension_manifest_source_path(
+            raw_source,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            expected_sha256=(
+                source_sha256.strip()
+                if isinstance(source_sha256, str) and source_sha256.strip()
+                else None
+            ),
+        )
+        if source_errors:
+            errors.extend(source_errors)
+            continue
+        if source_path is None:
+            errors.append(
+                "extension seal cannot resolve "
+                f"object_closure.objects[{index}].source through source_plan "
+                f"roots: {raw_source}"
+            )
+            continue
+        relative_source = _source_plan_relative_path(source_path, roots=roots)
+        if relative_source is None:
+            errors.append(
+                "extension seal requires "
+                f"object_closure.objects[{index}].source to live under "
+                "source_plan.source_root or source_plan.build_root: "
+                f"{source_path}"
+            )
+            continue
+        item["source"] = relative_source
+    return errors
+
+
 def _restamp_current_runtime_abi(
     sealed_manifest: dict[str, Any],
     *,
@@ -663,6 +751,16 @@ def extension_seal(
     if runtime_import_errors:
         return _fail(
             "; ".join(runtime_import_errors),
+            json_output,
+            command="extension-seal",
+        )
+    source_path_errors = _canonicalize_object_closure_source_paths(
+        sealed_manifest,
+        manifest_path=manifest_path,
+    )
+    if source_path_errors:
+        return _fail(
+            "; ".join(source_path_errors),
             json_output,
             command="extension-seal",
         )
