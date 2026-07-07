@@ -18,6 +18,29 @@ def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):
     env = {"MOLT_USE_SCCACHE": "1"}
     dx._ensure_sccache_wrapper(env)
     assert env.get("RUSTC_WRAPPER") == "/opt/sccache"
+    # sccache silently skips incremental units — enabling it MUST force this off,
+    # else the wrapper caches nothing (another silent degradation).
+    assert env.get("CARGO_INCREMENTAL") == "0"
+
+
+def test_failed_provision_attempts_download_at_most_once(monkeypatch, tmp_path):
+    # Guard against re-hanging every build's env setup: a failed network download
+    # must be memoized per process, not retried on each _install_dx_defaults call.
+    monkeypatch.setattr(dx.shutil, "which", lambda name: None)
+    monkeypatch.setattr(dx.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(dx, "_sccache_download_failed", False, raising=False)
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise OSError("offline")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    results = [dx._provision_sccache() for _ in range(4)]
+    assert all(r is None for r in results)
+    assert calls["n"] == 1  # attempted exactly once, then short-circuits
 
 
 def test_degrades_loudly_when_unavailable(monkeypatch, capsys):
