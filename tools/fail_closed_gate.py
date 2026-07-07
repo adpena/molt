@@ -20,6 +20,19 @@ behavior — in favour of a shortcut that silently ships a wrong or degraded ans
     returns a mismatch code with no ``PyErr`` set. The C extension calling it
     cannot tell success from a lie — the opposite of failing closed.
 
+  * fail_open_backend_dispatch — a backend op-emitter dispatch catch-all
+    (``_ =>`` / ``other =>`` / an ``emit_unsupported*`` / ``emit_op_other``
+    helper) that, for an op kind the backend does NOT lower, emits a FABRICATED
+    result value (``local x = nil`` / ``MoltValue::None`` / a placeholder) and
+    lets compilation continue. The generated program then runs with a silent
+    wrong value where the unlowered op's result should be — the codegen analogue
+    of ``fail_open_stub``. The end-state backend records the unsupported op into
+    a fail-closed accumulator that ``compile_checked`` rejects; a catch-all that
+    emits a placeholder is the poison. (Backends whose catch-all ``panic!``s /
+    ``bail!``s, or whose catch-all is a REAL generic lowering — e.g. MLIR's
+    ``emit_opaque_molt_op`` that emits a properly-named opaque op — are fail-CLOSED
+    and are NOT this class.)
+
   * duplicate_authority — two live copies of the SAME authority (e.g. two
     ``Python.h`` files, two copies of a CPython header) that must be kept in sync
     by hand. One of them is always about to drift.
@@ -60,6 +73,8 @@ Exit 0 = green, 1 = drift / ratchet / anchor failure (violations printed).
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 import sys
 import tomllib
@@ -70,8 +85,118 @@ from typing import Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "tools" / "fail_closed_registry.toml"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Pruned directory walk (DX: keep the scan fast on the shared build volume)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The scans below sweep the Molt SOURCE trees (include/, src/molt, runtime/…).
+# On the shared checkout / D: build volume those trees accumulate build output,
+# byte-compiled caches, and VCS metadata (``__pycache__`` full of ``.pyc``,
+# ``target/``, ``.git/`` …). A naive ``Path.rglob("*")`` enumerates and ``stat``s
+# every one of those entries even though the per-file suffix filter later drops
+# them — which is what turned this gate into a ~2-minute landing bottleneck.
+#
+# ``_walk_files`` is a pruned ``os.walk`` that skips those build/cache/VCS dirs
+# IN PLACE (editing ``dirnames``) so they are never descended into. This changes
+# NO detection semantics: the pruned directory names below hold only ``.pyc`` /
+# build output / VCS metadata, never ``.h``/``.c``/``.py``/``.rs`` source under
+# audit. To make that a PROVABLE invariant rather than an assumption, the walk is
+# suffix-aware and FAILS CLOSED: before it prunes a directory it verifies (via a
+# recursive scan that stops at the first hit) that the subtree holds NO
+# audited-suffix file. If one is found, the directory is NOT pruned — it is
+# walked exactly like the old ``rglob`` — and a loud warning is logged. A file is
+# therefore never silently skipped; pruning only ever elides ``.pyc`` / build /
+# VCS entries that the per-file suffix filter would have dropped anyway.
+#
+# Exact-name prunes plus a glob prune for build-output ``*_metadata`` dirs.
+_PRUNE_DIR_NAMES = frozenset(
+    {
+        ".git",
+        "target",
+        ".venv",
+        "node_modules",
+        "build",
+        "dist",
+        "__pycache__",
+        "tmp",
+        ".molt_cache",
+        "worktrees",
+    }
+)
+_PRUNE_DIR_GLOBS = ("*_metadata",)
+
+
+def _prune_candidate(name: str) -> bool:
+    if name in _PRUNE_DIR_NAMES:
+        return True
+    return any(fnmatch.fnmatch(name, pat) for pat in _PRUNE_DIR_GLOBS)
+
+
+def _subtree_has_audited_source(base: Path, suffixes: frozenset[str]) -> bool:
+    """True iff ``base`` (recursively) contains a file whose suffix is audited.
+    Stops at the first hit. Only called for prune-candidate dirs, which in a
+    healthy tree hold only ``.pyc`` / build output — so this returns ``False``
+    immediately after scanning cheap non-source entries."""
+
+    stack = [base]
+    while stack:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif os.path.splitext(entry.name)[1] in suffixes:
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
+
+
+def _walk_files(base: Path, suffixes: frozenset[str]) -> Iterable[Path]:
+    """Yield every file under ``base`` in sorted order, pruning build/cache/VCS
+    directories that cannot contain audited source. Provably equivalent to
+    ``sorted(base.rglob("*"))`` filtered to files: a prune-candidate directory is
+    pruned ONLY after ``_subtree_has_audited_source`` confirms it holds no
+    ``suffixes`` file; otherwise it is walked normally (and a loud warning is
+    emitted) so no audited file is ever silently skipped."""
+
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Prune in place so os.walk never descends into excluded trees. A
+        # candidate is only actually pruned once proven source-free; sort the
+        # survivors for deterministic traversal order.
+        kept: list[str] = []
+        for d in dirnames:
+            if _prune_candidate(d):
+                sub = Path(dirpath) / d
+                if _subtree_has_audited_source(sub, suffixes):
+                    print(
+                        f"fail-closed gate: WARNING not pruning {sub.as_posix()!r}: "
+                        f"it holds audited source ({sorted(suffixes)}); scanning it "
+                        "in full to preserve detection coverage.",
+                        file=sys.stderr,
+                    )
+                    kept.append(d)
+                # else: proven source-free — safe to prune.
+            else:
+                kept.append(d)
+        dirnames[:] = sorted(kept)
+        d = Path(dirpath)
+        for fname in sorted(filenames):
+            yield d / fname
+
+
 _VALID_CLASSES = frozenset(
-    {"ecosystem_baked", "fail_open_stub", "duplicate_authority", "todo_as_plan"}
+    {
+        "ecosystem_baked",
+        "fail_open_stub",
+        "duplicate_authority",
+        "todo_as_plan",
+        "fail_open_backend_dispatch",
+    }
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,11 +289,12 @@ class DiscoveredSite:
 def _iter_files(
     root: Path, dirs: Iterable[str], suffixes: tuple[str, ...]
 ) -> Iterable[Path]:
+    suffix_set = frozenset(suffixes)
     for rel in dirs:
         base = root / rel
         if not base.exists():
             continue
-        for path in sorted(base.rglob("*")):
+        for path in _walk_files(base, suffix_set):
             if not path.is_file():
                 continue
             if path.suffix not in suffixes:
@@ -347,7 +473,9 @@ def discover_fail_open_abi(root: Path) -> list[DiscoveredSite]:
     if not base.exists():
         return []
     found: list[DiscoveredSite] = []
-    for path in sorted(base.rglob("*.rs")):
+    for path in _walk_files(base, frozenset({".rs"})):
+        if path.suffix != ".rs":
+            continue
         posix = path.as_posix()
         if "/tests/" in posix:
             continue
@@ -388,6 +516,114 @@ def _line_of_offset(text: str, offset: int) -> str:
 
 def _line_index_of_offset(text: str, offset: int) -> int:
     return text.count("\n", 0, offset)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scan E — fail-open backend op-dispatch catch-all
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A backend op-emitter whose dispatch catch-all, for an op kind the backend does
+# NOT lower, emits a FABRICATED result value and continues — the codegen analogue
+# of the fail_open_stub ABI class. The generated program then carries a silent
+# wrong value (a Luau ``nil`` / a Rust ``MoltValue::None``) where the unlowered
+# op's result should be. The end-state backend instead records the unsupported op
+# into a fail-closed accumulator that ``compile_checked`` rejects.
+#
+# Only the *preview/transpiler* backends that emit source text (luau, rust) can
+# express this shape: they have a single catch-all that fabricates a value. The
+# native and wasm backends ``panic!`` on an unhandled result-producing op (loud,
+# fail-closed) and the MLIR backend's catch-all is a REAL generic lowering
+# (``emit_opaque_molt_op`` emits a properly-named opaque op, not a placeholder),
+# so those are not swept.
+#
+# The op-emitter files a fail-open catch-all could hide in. Scoped tightly to the
+# dispatch/emit surface so unrelated ``MoltValue::None`` (e.g. a legitimate Python
+# ``None`` fill element in ``list_fill_new``) is not swept in.
+_BACKEND_DISPATCH_FILES = (
+    "runtime/molt-backend-luau/src/luau/op_emitter.rs",
+    "runtime/molt-backend-rust/src/rust/op_emitter.rs",
+    "runtime/molt-backend-rust/src/rust/op_emitter/gaps.rs",
+    "runtime/molt-backend-wasm/src/wasm/op_loop/control_ops.rs",
+    "runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs",
+    "runtime/molt-backend-mlir/src/tir_to_mlir/opaque_ops.rs",
+)
+
+# The fabricated-result signatures. Each is a way a catch-all hands back a
+# plausible value for an op it did not lower:
+#   * luau: ``local <x> = nil -- [unsupported op: ...]`` — a nil result tagged
+#     with the unsupported-op marker.
+#   * rust: ``/* <MOLT_STUB marker> */ MoltValue::None`` — a None result wrapped
+#     in the stub marker the catch-all emits.
+# Both are anchored to the co-located ``unsupported``/``MOLT_STUB`` marker so a
+# legitimate ``nil`` default or a real Python-``None`` fill value (which carry no
+# such marker) is NOT flagged.
+_BACKEND_FAIL_OPEN_RES = (
+    (
+        "luau_nil_unsupported",
+        re.compile(r"=\s*nil\s*--\s*\[unsupported op:"),
+    ),
+    (
+        "rust_none_stub",
+        re.compile(r"/\*\s*\{?marker\}?\s*\*/\s*MoltValue::None"),
+    ),
+    # Generic structural backstop for a NEW backend adding the same shape: a
+    # placeholder value (nil / None / none()) emitted next to an
+    # ``unsupported``/``unhandled`` op marker on the same line.
+    (
+        "generic_placeholder_unsupported",
+        re.compile(
+            r"(?:unsupported|unhandled).{0,80}?(?:=\s*nil\b|MoltValue::None|"
+            r"MoltObject::none\(\))",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def discover_fail_open_backend_dispatch(root: Path) -> list[DiscoveredSite]:
+    """Sweep the backend op-emitter dispatch files for a catch-all that fabricates
+    a result value for an unlowered op instead of failing closed."""
+
+    found: list[DiscoveredSite] = []
+    seen: set[tuple[str, int]] = set()
+    for rel in _BACKEND_DISPATCH_FILES:
+        path = root / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for i, raw_line in enumerate(text.splitlines(), start=1):
+            # Ignore lines that are wholly Rust/Lua comments describing the
+            # pattern (e.g. the doc-comment in emit_unsupported_op that MENTIONS
+            # `MoltValue::None`): a fabricated *emit* is a real statement, not a
+            # `//`/`--` comment line.
+            stripped = raw_line.strip()
+            is_comment = stripped.startswith("//") or stripped.startswith("--")
+            for marker, rex in _BACKEND_FAIL_OPEN_RES:
+                if not rex.search(raw_line):
+                    continue
+                # The luau `-- [unsupported op:` and rust `/* {marker} */` forms
+                # are real emit statements even though they contain comment
+                # syntax; only skip pure leading-comment lines for the GENERIC
+                # backstop, which would otherwise match prose.
+                if is_comment and marker == "generic_placeholder_unsupported":
+                    continue
+                key = (rel, i)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    DiscoveredSite(
+                        "E",
+                        "fail_open_backend_dispatch",
+                        rel,
+                        stripped,
+                        i,
+                        f"backend op-dispatch catch-all fabricates a result value "
+                        f"({marker}) for an unlowered op instead of failing closed",
+                    )
+                )
+                break
+    return found
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -554,7 +790,9 @@ def _molt_side_headers(root: Path) -> dict[str, Path]:
     base = root / _MOLT_INCLUDE_TREE
     if not base.exists():
         return out
-    for path in sorted(base.rglob("*.h")):
+    for path in _walk_files(base, frozenset({".h"})):
+        if path.suffix != ".h":
+            continue
         # Skip the abi tree itself if nested; skip numpy/scipy package dirs.
         posix = path.as_posix()
         if "/numpy/" in posix or "/scipy/" in posix:
@@ -582,7 +820,9 @@ def discover_duplicate_authority(root: Path) -> list[DiscoveredSite]:
     if not abi_base.exists():
         return []
     abi_names: dict[str, Path] = {}
-    for path in sorted(abi_base.rglob("*.h")):
+    for path in _walk_files(abi_base, frozenset({".h"})):
+        if path.suffix != ".h":
+            continue
         if path.name in _CPYTHON_HEADER_NAMES:
             n = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
             if n > _FORWARDER_LINE_CAP:
@@ -627,6 +867,7 @@ def discover_all(root: Path) -> list[DiscoveredSite]:
     return (
         discover_ecosystem_baked(root)
         + discover_fail_open_abi(root)
+        + discover_fail_open_backend_dispatch(root)
         + discover_todo_as_plan(root)
         + discover_duplicate_authority(root)
     )

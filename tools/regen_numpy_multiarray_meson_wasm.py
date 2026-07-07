@@ -272,14 +272,35 @@ def main() -> int:
     intro_path.write_text(r.stdout, encoding="utf-8")
     print(f"[regen] wrote {intro_path}")
 
-    # Materialize ONLY the C sources the _multiarray_umath target generates from
-    # its .c.src / template inputs (arraytypes.c, einsum_sumprod.c, loops.c,
-    # ...). molt owns object compilation from the source plan and substitutes its
-    # own CPython-ABI include order, so we must NOT ninja-compile objects (which
-    # would fail: numpy's Meson embeds the host CPython Include, whose Windows-only
-    # <io.h> is absent under the WASI sysroot). Naming just the generated .c
-    # outputs as Ninja targets runs the custom-command generators and nothing
-    # else.
+    # Materialize the C sources AND the GENERATED HEADERS that _multiarray_umath
+    # compiles against. molt owns object compilation from the source plan and
+    # substitutes its own CPython-ABI include order, so we must NOT ninja-compile
+    # objects (which would fail: numpy's Meson embeds the host CPython Include,
+    # whose Windows-only <io.h> is absent under the WASI sysroot). Naming only the
+    # generated .c/.h OUTPUTS as Ninja targets runs numpy's own custom-command
+    # code generators and nothing else.
+    #
+    # Two distinct generated-output families feed the source plan:
+    #
+    #   1. Per-target generated .c sources (arraytypes.c, einsum_sumprod.c,
+    #      loops.c, ...): declared inline in the extension target's
+    #      ``target_sources[].generated_sources`` by intro-targets.
+    #
+    #   2. Generated HEADERS + #include-only .c API sources
+    #      (``__multiarray_api.h``/``.c``, ``__ufunc_api.h``/``.c``,
+    #      ``__umath_generated.c``, ``npy_math_internal.h``,
+    #      ``_umath_doc_generated.h``): declared by numpy's ``custom_target``s in
+    #      ``numpy/_core/meson.build`` and threaded into the extension through the
+    #      ``np_core_dep`` ``sources:`` list + include dirs, NOT as the extension
+    #      target's own ``generated_sources``. Meson surfaces each as a top-level
+    #      ``type == "custom"`` target whose ``filename`` names the generated
+    #      output. Without these, molt's compile fails
+    #      ``fatal error: '__multiarray_api.h' file not found``. They are numpy's
+    #      OWN code-generator outputs (``code_generators/generate_numpy_api.py``
+    #      etc.), driven by numpy's meson — package custody, never vendored.
+    #
+    # We build BOTH families so the meson build dir's include path is complete
+    # before molt takes over object compilation.
     targets = json.loads(intro_path.read_text(encoding="utf-8"))
     want = {
         "_multiarray_umath.cp312-win_amd64",
@@ -294,11 +315,79 @@ def main() -> int:
                         gen_c.add(str(g))
     if not gen_c:
         print("[regen] WARNING: no generated .c sources found for _multiarray_umath")
+
     ninja = _tool("ninja", "ninja")
+
+    # Family 2: the #include-only API .c sources declared by numpy
+    # ``custom_target``s (intro-targets ``type == "custom"``). These are
+    # ``#include``d into other .c, never compiled as their own object, so they
+    # are not in any target's ``generated_sources``.
+    gen_api_c: set[str] = set()
+    for t in targets:
+        if t.get("type") != "custom":
+            continue
+        for f in t.get("filename", []):
+            fp = str(f)
+            if fp.endswith(
+                ("__multiarray_api.c", "__ufunc_api.c", "__umath_generated.c")
+            ):
+                gen_api_c.add(fp)
+
+    # Family 3: EVERY generated ``#include``-only source numpy declares —
+    # generated headers (``.h``) AND generated text-included ``.inc`` bodies.
+    # These come from two meson shapes: top-level ``custom_target``s
+    # (``__multiarray_api.h``, ``__ufunc_api.h``, ``npy_math_internal.h``,
+    # ``_umath_doc_generated.h``) AND per-target ``src_file.process('*.h.src' /
+    # '*.inc.src')`` outputs materialized into a target's private ``*.p/`` dir
+    # (``templ_common.h``, ``arraytypes.h``, ``loops.h``, ``loops_utils.h``,
+    # ``matmul.h``, ``npy_sort.h``, and ``funcs.inc`` under
+    # ``_multiarray_umath.*.p/``). None of these are enumerable from the
+    # extension target's ``generated_sources`` (they are ``#include``d, never
+    # compiled as their own object), but ALL are Ninja ``CUSTOM_COMMAND``
+    # outputs. Ask Ninja's own target graph for every generated ``.h``/``.inc``
+    # — numpy's build is the authority, no hand-written list, nothing vendored.
+    # Building all of them keeps the meson build dir's include path complete
+    # regardless of which private ``*.p/`` copy molt resolves against.
+    #
+    # Without this, molt's downstream compile fails e.g.
+    # ``fatal error: 'templ_common.h' file not found`` (alloc.c) or
+    # ``fatal error: 'funcs.inc' file not found`` (umathmodule.c).
+    _GEN_INCLUDE_SUFFIXES = (".h", ".inc")
+    tg = subprocess.run(
+        [ninja, "-C", str(build_root), "-t", "targets", "all"],
+        cwd=str(build_root),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if tg.returncode != 0:
+        sys.stderr.write(tg.stderr)
+        raise SystemExit(f"ninja -t targets all failed rc={tg.returncode}")
+    gen_hdr: set[str] = set()
+    for line in tg.stdout.splitlines():
+        target, sep, rule = line.partition(":")
+        if not sep:
+            continue
+        target = target.strip()
+        if rule.strip() == "CUSTOM_COMMAND" and target.endswith(
+            _GEN_INCLUDE_SUFFIXES
+        ):
+            gen_hdr.add((build_root / target).as_posix())
+    if not gen_hdr:
+        print(
+            "[regen] WARNING: ninja target graph names no generated "
+            ".h/.inc CUSTOM_COMMAND outputs"
+        )
+
     rel_targets = [
-        os.path.relpath(g, build_root).replace(os.sep, "/") for g in sorted(gen_c)
+        os.path.relpath(g, build_root).replace(os.sep, "/")
+        for g in sorted(gen_c | gen_api_c | gen_hdr)
     ]
-    print(f"[regen] ninja generated-source targets ({len(rel_targets)}):")
+    print(
+        f"[regen] ninja generated-output targets "
+        f"({len(gen_c)} .c sources + {len(gen_api_c)} api-.c includes + "
+        f"{len(gen_hdr)} generated headers/inc = {len(rel_targets)}):"
+    )
     for r_t in rel_targets:
         print(f"           {r_t}")
     if rel_targets:
@@ -306,8 +395,10 @@ def main() -> int:
         r = subprocess.run(gen_cmd, cwd=str(build_root), env=env)
         if r.returncode != 0:
             raise SystemExit(
-                f"ninja generated-source build failed rc={r.returncode}"
+                f"ninja generated-output build failed rc={r.returncode}"
             )
+    # Downstream verification (below) treats gen_hdr as the generated-header set.
+    gen_hdr = gen_hdr | gen_api_c
 
     cc = build_root / "compile_commands.json"
     if not cc.is_file():
@@ -316,19 +407,24 @@ def main() -> int:
             subprocess.run([ninja, "-C", str(build_root), "-t", "compdb"], stdout=fh, env=env)
     print(f"[regen] compile_commands.json: {cc} exists={cc.is_file()}")
 
-    # Confirm every generated source for the target now resolves.
-    all_gen: set[str] = set()
+    # Confirm every generated source AND generated header for the target now
+    # resolves. Missing generated .c sources OR generated headers/api-.c means
+    # molt's downstream compile would hit a fatal 'file not found'.
+    all_gen: set[str] = set(gen_hdr)
     for t in targets:
         if t.get("name") in want:
             for src in t.get("target_sources", []):
                 all_gen.update(str(g) for g in src.get("generated_sources", []))
     missing = [g for g in all_gen if not os.path.exists(g)]
-    print(f"[regen] generated sources: {len(all_gen)} total, {len(missing)} missing")
+    print(
+        f"[regen] generated outputs: {len(all_gen)} total "
+        f"({len(gen_hdr)} headers/api-.c), {len(missing)} missing"
+    )
     for g in missing[:10]:
         print(f"           MISSING: {g}")
     if missing:
         raise SystemExit(
-            f"{len(missing)} generated sources for _multiarray_umath did not materialize"
+            f"{len(missing)} generated outputs for _multiarray_umath did not materialize"
         )
 
     print("[regen] DONE")

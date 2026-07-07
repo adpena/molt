@@ -412,6 +412,18 @@ unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> u64 {
     crate::molt_format_builtin(obj_bits, spec_bits)
 }
 
+/// Route the ABI's `repr(float)` / `str(float)` through the runtime's single
+/// float-format authority (`crate::object::float_repr::repr_float`), so the
+/// C-API path produces byte-identical output to native `repr(float)`.
+unsafe extern "C" fn hook_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
+    let s = crate::object::float_repr::repr_float(value);
+    let bytes = s.as_bytes();
+    if bytes.len() <= cap && !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    bytes.len()
+}
+
 fn clear_speculative_sys_lookup_exception(had_pending_exception: bool) {
     if !had_pending_exception && with_gil(|_py| crate::exception_pending(&_py)) {
         let _ = crate::molt_exception_clear();
@@ -658,6 +670,7 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
         x if x == DictOp::Copy as u32 => crate::c_api::PyDict_Copy(dict_bits),
         x if x == DictOp::Keys as u32 => crate::c_api::PyDict_Keys(dict_bits),
         x if x == DictOp::Values as u32 => crate::c_api::PyDict_Values(dict_bits),
+        x if x == DictOp::Items as u32 => crate::c_api::PyDict_Items(dict_bits),
         _ => with_gil(|_py| {
             crate::raise_exception::<u64>(
                 &_py,
@@ -666,6 +679,56 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
             )
         }),
     }
+}
+
+// ── Set protocol (PySet_*) ────────────────────────────────────────────────
+//
+// The single set authority is the runtime's `PySet_*` compat functions
+// (`crate::c_api::PySet_*`), which delegate to the runtime set object's hash
+// table (`molt_set_*` / `set_del_in_place`) with dedup, hashed membership,
+// frozenset immutability, and CPython-shaped exceptions (TypeError for
+// unhashable keys, SystemError for non-sets). These hooks are a thin routing
+// layer; they perform NO set logic themselves.
+
+/// `PySet_New(iterable)` — 0 (empty) or a populated set. Returns handle bits, or
+/// 0 with a pending exception on error.
+unsafe extern "C" fn hook_set_new(iterable_bits: u64) -> u64 {
+    crate::c_api::PySet_New(iterable_bits)
+}
+
+/// `PySet_Size(anyset)` — element count, or -1 with a pending exception.
+unsafe extern "C" fn hook_set_size(set_bits: u64) -> c_int {
+    // PySet_Size returns isize; the ABI hook narrows to c_int. A set never holds
+    // more than isize::MAX elements, and the only out-of-band value is -1
+    // (error), which round-trips through c_int unchanged.
+    crate::c_api::PySet_Size(set_bits) as c_int
+}
+
+/// `PySet_Contains(anyset, key)` — 1 / 0 / -1.
+unsafe extern "C" fn hook_set_contains(set_bits: u64, key_bits: u64) -> c_int {
+    crate::c_api::PySet_Contains(set_bits, key_bits)
+}
+
+/// `PySet_Add(set, key)` — 0 on success, -1 on error.
+unsafe extern "C" fn hook_set_add(set_bits: u64, key_bits: u64) -> c_int {
+    crate::c_api::PySet_Add(set_bits, key_bits)
+}
+
+/// `PySet_Discard(set, key)` — 1 (removed) / 0 (absent) / -1 (error).
+unsafe extern "C" fn hook_set_discard(set_bits: u64, key_bits: u64) -> c_int {
+    crate::c_api::PySet_Discard(set_bits, key_bits)
+}
+
+/// `PyObject_Dir(o)` — return `dir(o)` as a list. Routes to the runtime dir
+/// authority (`molt_object_dir_method`), which walks the MRO / `__dict__` /
+/// `__dir__`. Returns 0 with a pending exception on error so the ABI side fails
+/// closed instead of fabricating an empty list.
+unsafe extern "C" fn hook_object_dir(obj_bits: u64) -> u64 {
+    let result = crate::molt_object_dir_method(obj_bits);
+    if with_gil(|_py| crate::exception_pending(&_py)) {
+        return 0;
+    }
+    result
 }
 
 unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
@@ -1879,6 +1942,7 @@ pub fn register_cpython_hooks() {
         object_get_attr: hook_object_get_attr,
         object_set_attr: hook_object_set_attr,
         object_format: hook_object_format,
+        float_repr: hook_float_repr,
         sys_get_object_borrowed: hook_sys_get_object_borrowed,
         classify_heap: hook_classify_heap,
         inc_ref: hook_inc_ref,
@@ -1898,6 +1962,12 @@ pub fn register_cpython_hooks() {
         number_unary_op: hook_number_unary_op,
         number_power: hook_number_power,
         dict_op: hook_dict_op,
+        set_new: hook_set_new,
+        set_size: hook_set_size,
+        set_contains: hook_set_contains,
+        set_add: hook_set_add,
+        set_discard: hook_set_discard,
+        object_dir: hook_object_dir,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {
@@ -2733,5 +2803,281 @@ mod tests {
         let message = pending_exception_message_for_assertion();
         assert!(message.contains("static extension PyInit returned an invalid module definition"));
         assert!(message.contains("module definition missing name"));
+    }
+
+    // ── PySet_* CPython ABI hook coverage ────────────────────────────────────
+    //
+    // These exercise the real set primitive end to end: the ABI `PySet_*`
+    // functions route through the registered `set_*` hooks to the runtime set
+    // authority (`crate::c_api::PySet_*` → hashed set object). They prove
+    // membership, dedup, size, and discard semantics match CPython
+    // (docs.python.org/3/c-api/set.html, Objects/setobject.c), not the prior
+    // fail-closed sentinels.
+
+    /// Wrap raw runtime handle bits into a bridge-managed `PyObject*` the ABI
+    /// set functions accept as an argument.
+    fn bridge_pyobj_from_bits(bits: u64) -> *mut PyObject {
+        // SAFETY: handle_to_pyobj materializes a bridge PyObject entry for a
+        // live runtime handle; `bits` here always comes from a hook that just
+        // allocated the object, so it is valid for the bridge round-trip.
+        unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .lock()
+                .handle_to_pyobj(bits)
+        }
+    }
+
+    fn bridge_int_pyobj(value: i64) -> *mut PyObject {
+        let bits = unsafe { hook_int_from_i64(value) };
+        assert!(bits != 0, "hook_int_from_i64 must allocate an int");
+        bridge_pyobj_from_bits(bits)
+    }
+
+    fn release_bridge_pyobj(ptr: *mut PyObject) {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .release_pyobj(ptr);
+    }
+
+    #[test]
+    fn pyset_add_contains_size_discard_round_trip() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        // PySet_New(NULL) creates a real, empty runtime set — not a list.
+        let set = unsafe { molt_cpython_abi::api::sequences::PySet_New(std::ptr::null_mut()) };
+        assert!(!set.is_null(), "PySet_New(NULL) must return a set object");
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Check(set) },
+            1,
+            "PySet_New must produce a set (PySet_Check == 1)"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            0,
+            "a fresh set is empty"
+        );
+
+        let key7 = bridge_int_pyobj(7);
+        let key9 = bridge_int_pyobj(9);
+
+        // Absent before add.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(set, key7) },
+            0,
+            "key must be absent before add"
+        );
+
+        // Add 7 → success (0), then present (1), size 1.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, key7) },
+            0,
+            "PySet_Add success returns 0"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(set, key7) },
+            1,
+            "PySet_Contains after add returns 1"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            1,
+            "size is 1 after one add"
+        );
+
+        // Dedup: adding an equal value twice keeps size at 1.
+        let key7_dup = bridge_int_pyobj(7);
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, key7_dup) },
+            0
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            1,
+            "dedup: adding an equal element must not grow the set"
+        );
+
+        // Add 9 → size 2.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, key9) },
+            0
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            2
+        );
+
+        // Discard present key → 1, then absent, size back to 1.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Discard(set, key7) },
+            1,
+            "PySet_Discard of a present key returns 1"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(set, key7) },
+            0,
+            "discarded key is absent"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            1
+        );
+
+        // Discard absent key → 0 (no error, no KeyError).
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Discard(set, key7) },
+            0,
+            "PySet_Discard of an absent key returns 0"
+        );
+        assert!(
+            !with_gil(|_py| crate::exception_pending(&_py)),
+            "PySet_Discard of an absent key must not raise: {}",
+            pending_exception_message_for_assertion()
+        );
+
+        release_bridge_pyobj(key7);
+        release_bridge_pyobj(key7_dup);
+        release_bridge_pyobj(key9);
+        release_bridge_pyobj(set);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pyset_new_from_iterable_dedups() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        // Build a list [3, 3, 5] via the runtime list authority, bridge it, and
+        // feed it to PySet_New — the result must be a set of size 2 (deduped).
+        let list_bits = unsafe { hook_alloc_list() };
+        assert!(list_bits != 0);
+        let three = unsafe { hook_int_from_i64(3) };
+        let five = unsafe { hook_int_from_i64(5) };
+        unsafe {
+            hook_list_append(list_bits, three);
+            hook_list_append(list_bits, three);
+            hook_list_append(list_bits, five);
+        }
+        let list = bridge_pyobj_from_bits(list_bits);
+
+        let set = unsafe { molt_cpython_abi::api::sequences::PySet_New(list) };
+        assert!(
+            !set.is_null(),
+            "PySet_New(iterable) must succeed: {}",
+            pending_exception_message_for_assertion()
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Check(set) },
+            1
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            2,
+            "PySet_New from [3,3,5] dedups to {{3,5}} (size 2)"
+        );
+
+        release_bridge_pyobj(list);
+        release_bridge_pyobj(set);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pyset_ops_fail_closed_on_non_set() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        // A dict is a bridge-managed object but not a set: every mutating/query
+        // op must fail closed with the CPython error sentinel + SystemError,
+        // never silently succeed.
+        let dict_bits = unsafe { hook_alloc_dict() };
+        assert!(dict_bits != 0);
+        let not_a_set = bridge_pyobj_from_bits(dict_bits);
+        let key = bridge_int_pyobj(1);
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(not_a_set) },
+            -1,
+            "PySet_Size on a non-set returns -1"
+        );
+        assert!(
+            with_gil(|_py| crate::exception_pending(&_py)),
+            "PySet_Size on a non-set must set an exception"
+        );
+        let _ = crate::molt_exception_clear();
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(not_a_set, key) },
+            -1,
+            "PySet_Contains on a non-set returns -1"
+        );
+        assert!(with_gil(|_py| crate::exception_pending(&_py)));
+        let _ = crate::molt_exception_clear();
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(not_a_set, key) },
+            -1,
+            "PySet_Add on a non-set returns -1"
+        );
+        assert!(with_gil(|_py| crate::exception_pending(&_py)));
+        let _ = crate::molt_exception_clear();
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Discard(not_a_set, key) },
+            -1,
+            "PySet_Discard on a non-set returns -1"
+        );
+        assert!(with_gil(|_py| crate::exception_pending(&_py)));
+        let _ = crate::molt_exception_clear();
+
+        release_bridge_pyobj(key);
+        release_bridge_pyobj(not_a_set);
+    }
+
+    #[test]
+    fn pyset_add_unhashable_key_raises_typeerror() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        let set = unsafe { molt_cpython_abi::api::sequences::PySet_New(std::ptr::null_mut()) };
+        assert!(!set.is_null());
+
+        // A list is unhashable — PySet_Add must raise TypeError and return -1,
+        // matching CPython, not silently drop the element.
+        let list_bits = unsafe { hook_alloc_list() };
+        assert!(list_bits != 0);
+        let unhashable = bridge_pyobj_from_bits(list_bits);
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, unhashable) },
+            -1,
+            "PySet_Add of an unhashable key returns -1"
+        );
+        let message = pending_exception_message_for_assertion();
+        assert!(
+            message.to_lowercase().contains("unhashable"),
+            "PySet_Add of an unhashable key must raise a TypeError mentioning 'unhashable', got: {message}"
+        );
+
+        release_bridge_pyobj(unhashable);
+        release_bridge_pyobj(set);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pyset_stub_hooks_fail_closed() {
+        // Mutation guard: the pre-init STUB_HOOKS set ops must return the
+        // CPython error sentinel (0 / -1). If a future edit swapped a stub for a
+        // fake-success value, this catches it before it could mask a missing
+        // runtime authority.
+        use molt_cpython_abi::hooks::STUB_HOOKS;
+        assert_eq!(unsafe { (STUB_HOOKS.set_new)(0) }, 0);
+        assert_eq!(unsafe { (STUB_HOOKS.set_size)(0) }, -1);
+        assert_eq!(unsafe { (STUB_HOOKS.set_contains)(0, 0) }, -1);
+        assert_eq!(unsafe { (STUB_HOOKS.set_add)(0, 0) }, -1);
+        assert_eq!(unsafe { (STUB_HOOKS.set_discard)(0, 0) }, -1);
     }
 }

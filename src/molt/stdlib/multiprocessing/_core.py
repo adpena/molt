@@ -2117,17 +2117,25 @@ _DEFAULT_START_METHOD: str | None = None
 
 
 def get_all_start_methods() -> list[str]:
-    if os.name == "nt":
-        return ["spawn"]
-    return ["spawn", "fork", "forkserver"]
+    # Molt has no os.fork()/HAVE_SEND_HANDLE on any supported target (native or
+    # WASM), so fork/forkserver — which require a real fork() with a shared
+    # address space — are not available. CPython's get_all_start_methods() only
+    # lists methods that are actually available on the platform
+    # (multiprocessing/context.py DefaultContext.get_all_start_methods), so we
+    # advertise only "spawn" rather than advertising methods that would silently
+    # run spawn semantics.
+    return ["spawn"]
 
 
 def set_start_method(method: str, force: bool = False) -> None:
     global _DEFAULT_START_METHOD
     if _DEFAULT_START_METHOD is not None and not force:
-        raise RuntimeError("context already set")
-    if method not in get_all_start_methods():
-        raise ValueError("unknown start method")
+        raise RuntimeError("context has already been set")
+    # CPython's DefaultContext.set_start_method validates by delegating to
+    # get_context(method), which raises ValueError("cannot find context for %r")
+    # for an unknown/unavailable method. Route through the same authority so an
+    # unsupported method (e.g. "fork") fails closed identically.
+    get_context(method)
     _DEFAULT_START_METHOD = method
 
 
@@ -2140,11 +2148,14 @@ def get_start_method(allow_none: bool = False) -> str | None:
 def get_context(method: str | None = None) -> Context:
     if method is None:
         method = get_start_method(allow_none=False)
+    # Fail closed on any start method Molt does not implement. CPython raises
+    # ValueError("cannot find context for %r") when the requested method is not
+    # in its concrete-context table (multiprocessing/context.py
+    # BaseContext.get_context). fork/forkserver are unavailable here (no real
+    # fork()), so requesting them must raise rather than silently degrade to
+    # spawn semantics.
     if method not in get_all_start_methods():
-        raise ValueError("unknown start method")
-    if method != "spawn":
-        # TODO(runtime, owner:runtime, milestone:RT3, priority:P1, status:divergent): fork/forkserver currently map to spawn semantics; implement true fork support.
-        return Context(method)
+        raise ValueError("cannot find context for %r" % method)
     return Context(method)
 
 

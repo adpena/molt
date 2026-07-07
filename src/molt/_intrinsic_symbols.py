@@ -2094,6 +2094,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_zlib_decompressobj_flush": "molt_zlib_decompressobj_flush",
     "molt_zlib_decompressobj_new": "molt_zlib_decompressobj_new",
     "molt_zlib_decompressobj_unconsumed_tail": "molt_zlib_decompressobj_unconsumed_tail",
+    "molt_zlib_decompressobj_unused_data": "molt_zlib_decompressobj_unused_data",
     "molt_zlib_def_buf_size": "molt_zlib_def_buf_size",
     "molt_zlib_def_mem_level": "molt_zlib_def_mem_level",
     "molt_zlib_max_wbits": "molt_zlib_max_wbits",

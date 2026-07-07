@@ -22,6 +22,14 @@ pub fn take_current_error_message() -> Option<String> {
     CURRENT_EXC.with(|c| c.borrow_mut().take().map(|(_type_bits, msg)| msg))
 }
 
+/// Non-consuming peek at the currently-pending exception's type-handle bits.
+/// `Some(0)` = an exception is set whose type was NULL/unresolvable; `None` = no
+/// exception pending. Used by `PyErr_ExceptionMatches` to compare the live
+/// exception's type against a candidate rather than answering "is any set".
+fn current_exc_type_bits() -> Option<u64> {
+    CURRENT_EXC.with(|c| c.borrow().as_ref().map(|(type_bits, _)| *type_bits))
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *const c_char) {
     let msg = if message.is_null() {
@@ -89,11 +97,59 @@ pub unsafe extern "C" fn PyErr_SetFromErrno(exc_type: *mut PyObject) -> *mut PyO
 
 // ─── Additional error API ─────────────────────────────────────────────────
 
+/// Resolve a PyObject to its `str()` text through the runtime string authority so
+/// an exception's real payload is preserved. Returns `None` when the value cannot
+/// be bridged to a Molt handle (no runtime / not a managed object) so the caller
+/// records the type without inventing a message. Scalars format inline; a str
+/// object is read through the `str_data` hook (the runtime str authority).
+fn value_str_message(value: *mut PyObject) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    let bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(value)?;
+    let obj = MoltObject::from_bits(bits);
+    if obj.is_none() {
+        return Some("None".to_string());
+    }
+    if let Some(b) = obj.as_bool() {
+        return Some(if b { "True" } else { "False" }.to_string());
+    }
+    if let Some(i) = obj.as_int() {
+        return Some(i.to_string());
+    }
+    if obj.is_float() {
+        return obj.as_float().map(|f| f.to_string());
+    }
+    let h = crate::hooks::hooks_or_stubs();
+    if unsafe { (h.classify_heap)(bits) } == crate::abi_types::MoltTypeTag::Str as u8 {
+        let mut len: usize = 0;
+        let ptr = unsafe { (h.str_data)(bits, std::ptr::addr_of_mut!(len)) };
+        if !ptr.is_null() {
+            let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+            return Some(String::from_utf8_lossy(slice).into_owned());
+        }
+    }
+    None
+}
+
+/// `PyErr_SetObject(type, value)` — set the current exception (Python/errors.c).
+///
+/// CPython stores `value` as the exception's associated value. This bridge's
+/// error state carries `(type, message)`, so the fix propagates the real value by
+/// storing its `str()` text alongside the caller's exception type. When the value
+/// cannot be resolved (unbridgeable / no runtime) we still record the type with an
+/// empty message rather than the previous generic `c"<exception>"` placeholder,
+/// which discarded the payload entirely (a fail-open that misreported the error).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_SetObject(exc_type: *mut PyObject, value: *mut PyObject) {
-    // Simplified: set the error with the repr of the value.
-    let _ = value;
-    unsafe { PyErr_SetString(exc_type, c"<exception>".as_ptr()) };
+    match value_str_message(value) {
+        Some(message) => {
+            let cmsg = std::ffi::CString::new(message)
+                .unwrap_or_else(|_| c"<exception value contains NUL>".to_owned());
+            unsafe { PyErr_SetString(exc_type, cmsg.as_ptr()) };
+        }
+        None => unsafe { PyErr_SetString(exc_type, ptr::null()) },
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -181,10 +237,28 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
     // No-op — full normalization requires instantiating exception objects.
 }
 
+/// `PyErr_ExceptionMatches(exc)` — does the pending exception match `exc`?
+/// CPython defines this as `PyErr_GivenExceptionMatches(PyErr_Occurred(), exc)`
+/// (Python/errors.c). The previous stub dropped `exc` and returned "is ANY
+/// exception set", so `PyErr_ExceptionMatches(PyExc_KeyError)` was true for a
+/// pending TypeError — a fail-open that misroutes extension error handling.
+///
+/// We compare the pending exception's stored type-handle against `exc` by
+/// identity. Identity match is exact for the common `except SpecificError` case.
+/// A subclass relationship (e.g. pending IndexError vs `exc = LookupError`)
+/// returns 0 here because the bridge has no exception-MRO hook: that is a
+/// CONSERVATIVE narrowing (never a false positive), not a fail-open. When no
+/// exception is pending, return 0 (CPython returns 0 for a NULL PyErr_Occurred).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: *mut PyObject) -> c_int {
-    let _ = exc;
-    CURRENT_EXC.with(|c| c.borrow().is_some() as c_int)
+    let Some(pending_type_bits) = current_exc_type_bits() else {
+        return 0;
+    };
+    if exc.is_null() {
+        return 0;
+    }
+    let exc_bits = GLOBAL_BRIDGE.lock().pyobj_to_handle(exc).unwrap_or(0);
+    (pending_type_bits != 0 && pending_type_bits == exc_bits) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -265,12 +339,22 @@ pub unsafe extern "C" fn PyErr_WarnEx(
     0
 }
 
+/// `PyErr_WriteUnraisable(obj)` — report an exception that cannot be propagated
+/// (Python/errors.c). CPython prints `Exception ignored in: <obj>` followed by the
+/// traceback, using `obj` to identify WHERE the exception was swallowed. The stub
+/// dropped `obj` (`let _ = obj;`), erasing that context. We include `obj`'s
+/// string form in the "ignored in" line so the report names its origin.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyErr_WriteUnraisable(obj: *mut PyObject) {
-    let _ = obj;
+    let context = value_str_message(obj);
     CURRENT_EXC.with(|c| {
         if let Some((_, ref msg)) = *c.borrow() {
-            eprintln!("[molt-cpython-abi] unraisable exception: {msg}");
+            match context {
+                Some(ref ctx) => {
+                    eprintln!("[molt-cpython-abi] Exception ignored in: {ctx}: {msg}")
+                }
+                None => eprintln!("[molt-cpython-abi] unraisable exception: {msg}"),
+            }
         }
     });
     unsafe { PyErr_Clear() };

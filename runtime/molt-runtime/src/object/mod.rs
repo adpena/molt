@@ -31,6 +31,7 @@ pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
 pub(crate) mod cold_header;
+pub mod float_repr;
 pub(crate) mod gc;
 #[allow(dead_code)]
 pub mod gil;

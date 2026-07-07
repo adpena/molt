@@ -469,7 +469,13 @@ fn compile_checked_reports_stub_markers() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("unsupported ops should be rejected with marker details");
-    assert!(err.contains("MOLT_STUB: matmul"));
+    // Fail-closed authority is the emit-time accumulator, which names the op kind
+    // and backend and refuses to emit fail-open codegen.
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "error must come from the fail-closed accumulator, got: {err}"
+    );
+    assert!(err.contains("matmul"), "diagnostic must name the op kind, got: {err}");
 }
 
 #[test]
@@ -701,11 +707,17 @@ fn compile_checked_rejects_unrepresented_literal_values() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("unsupported literal value representations must fail closed");
-    assert!(err.contains("MOLT_STUB: const_bigint"));
+    // The fail-closed accumulator (authority) names each unsupported op kind and
+    // carries its reason; it fires before the retained MOLT_STUB text scan.
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "error must come from the fail-closed accumulator, got: {err}"
+    );
+    assert!(err.contains("const_bigint"), "got: {err}");
     assert!(err.contains("bigint literal exceeds Rust backend i64 value representation"));
-    assert!(err.contains("MOLT_STUB: const_bytes"));
+    assert!(err.contains("const_bytes"), "got: {err}");
     assert!(err.contains("bytes literals require a Rust backend bytes value representation"));
-    assert!(err.contains("MOLT_STUB: const_ellipsis"));
+    assert!(err.contains("const_ellipsis"), "got: {err}");
 }
 
 #[test]
@@ -878,4 +890,78 @@ fn strip_dead_after_return_skips_top_level_jump_after_return() {
     let lowered = strip_dead_after_return(&ops);
     let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
     assert_eq!(kinds, vec!["return_none"]);
+}
+
+/// Fail-closed authority: an op kind that no dispatch arm claims must fail the
+/// build through the `unsupported_ops` accumulator recorded at emit time — NOT
+/// merely through a text scan for the stub-marker comment. A synthetic unknown
+/// kind routes to `emit_op_other` → `emit_unsupported_op`, which records it.
+#[test]
+fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "molt_synthetic_unsupported_op_probe".to_string(),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "return_none".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("a synthetically-unsupported op must fail the build closed");
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "error must come from the fail-closed accumulator, got: {err}"
+    );
+    assert!(
+        err.contains("molt_synthetic_unsupported_op_probe"),
+        "diagnostic must name the unsupported op kind, got: {err}"
+    );
+}
+
+/// The fail-closed accumulator is the authority, independent of the emitted
+/// text. Even when the catch-all's `out` is a non-assignable sink (so NO
+/// `MoltValue::None` value line is emitted), the op is still recorded and the
+/// build fails closed. This proves the gate does not rely on scanning for the
+/// `/* MOLT_STUB: */ MoltValue::None` string in the output.
+#[test]
+fn compile_checked_fails_closed_without_emitted_value_marker() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                // No `out` → catch-all emits only a `/* ... */` comment, never a
+                // `MoltValue::None` value line — yet the op is still recorded.
+                kind: "molt_synthetic_unsupported_sink_probe".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("an unsupported op with no output must still fail closed");
+    assert!(err.contains("refuses to emit fail-open codegen"), "got: {err}");
+    assert!(err.contains("molt_synthetic_unsupported_sink_probe"), "got: {err}");
 }

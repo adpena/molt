@@ -1022,26 +1022,29 @@ fn molt_str_string(bits: u64) -> Vec<u8> {
     b"<molt object>".to_vec()
 }
 
-/// Format a float for repr/str, matching CPython's convention:
-/// - Integer-valued floats show ".0" (e.g. "1.0")
-/// - NaN → "nan", Inf → "inf", -Inf → "-inf"
+/// Format a float for `repr(float)` / `str(float)` through the runtime's single
+/// float-format authority (`molt-lang-runtime`'s `object::float_repr`), exposed
+/// over the `float_repr` runtime hook.
+///
+/// The ABI MUST NOT reimplement float formatting: Rust's own `{f}` produces the
+/// correct number of digits but breaks round-half-to-even ties differently from
+/// CPython's `_Py_dg_dtoa` (e.g. `137839762462415.625` renders as `...62` in
+/// CPython but `...63` in Rust `std`). Routing through the runtime authority
+/// keeps native `repr(float)` and the C-API path byte-for-byte identical.
 fn format_float_repr(f: f64) -> Vec<u8> {
-    if f.is_nan() {
-        return b"nan".to_vec();
-    }
-    if f.is_infinite() {
-        return if f > 0.0 {
-            b"inf".to_vec()
-        } else {
-            b"-inf".to_vec()
-        };
-    }
-    // Use Rust's display formatting which matches Python for most cases.
-    let s = format!("{f}");
-    // Ensure there's always a decimal point (CPython convention).
-    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-        format!("{s}.0").into_bytes()
+    let h = crate::hooks::hooks_or_stubs();
+    // Max CPython float repr is "-1.7976931348623157e+308" (24 bytes); 32 is a
+    // comfortable ceiling that avoids a second call in practice.
+    let mut buf = [0u8; 32];
+    let len = unsafe { (h.float_repr)(f, buf.as_mut_ptr(), buf.len()) };
+    if len <= buf.len() {
+        buf[..len].to_vec()
     } else {
-        s.into_bytes()
+        // Extremely defensive: authority reported a longer string than our
+        // buffer. Re-run into an exactly-sized buffer.
+        let mut big = vec![0u8; len];
+        let written = unsafe { (h.float_repr)(f, big.as_mut_ptr(), big.len()) };
+        big.truncate(written.min(big.len()));
+        big
     }
 }

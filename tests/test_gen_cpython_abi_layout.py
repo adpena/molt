@@ -76,6 +76,47 @@ def test_generated_header_pins_pyobject_and_pytypeobject_size() -> None:
     assert gen.GENERATED_BANNER in text
 
 
+def test_generated_header_pins_wasm32_ilp32_layout() -> None:
+    """The generated header must ALSO pin the wasm32 ILP32 (4-byte pointer)
+    layout, guarded by pointer width, so the CPython-ABI extension tier compiles
+    for wasm32-wasip1. These values are the ground truth the C compiler produced
+    when the LP64-only header was compiled for wasm32 (the drift that blocked the
+    numpy _multiarray_umath wasm seal rebuild)."""
+    gen = _load()
+    text = gen.build()
+    # Pointer-width model select must be present.
+    assert "#if UINTPTR_MAX == 0xFFFFFFFFu" in text
+    assert "_MOLT_ABI_PTR32" in text
+    # ILP32 pins: PyObject is 2 pointers = 8 bytes; ob_type at offset 4.
+    assert "sizeof(PyObject) == 8u" in text
+    assert "offsetof(PyObject, ob_type) == 4u" in text
+    # PyVarObject 12; PyTypeObject 208; tp_watched at 204 (half of the LP64 408).
+    assert "sizeof(PyVarObject) == 12u" in text
+    assert "sizeof(PyTypeObject) == 208u" in text
+    assert "offsetof(PyTypeObject, tp_watched) == 204u" in text
+    # Both models are emitted for pointer-width-dependent structs.
+    assert "sizeof(PyObject) == 16u" in text  # LP64 branch still present
+
+
+def test_ilp32_and_lp64_layouts_derive_from_same_authority() -> None:
+    """Both pointer-width layouts are computed from the ONE parsed Rust authority
+    (no second hand-maintained table). Mutating the authority must move BOTH the
+    LP64 and the ILP32 emitted sizes in lock-step."""
+    gen = _load()
+    authority = gen.parse_rust_authority(gen.AUTHORITY_RS.read_text(encoding="utf-8"))
+    size64, _ = gen._compute_layout("PyObject", authority, gen._PTR_SIZE_LP64)
+    size32, _ = gen._compute_layout("PyObject", authority, gen._PTR_SIZE_ILP32)
+    assert (size64, size32) == (16, 8)
+    tp64, off64 = gen._compute_layout("PyTypeObject", authority, gen._PTR_SIZE_LP64)
+    tp32, off32 = gen._compute_layout("PyTypeObject", authority, gen._PTR_SIZE_ILP32)
+    assert (tp64, tp32) == (416, 208)
+    # Every pointer-dependent offset scales; fixed-width leading field stays at 0.
+    off64_map = dict(off64)
+    off32_map = dict(off32)
+    assert off64_map["ob_base"] == off32_map["ob_base"] == 0
+    assert off64_map["tp_name"] == 24 and off32_map["tp_name"] == 12
+
+
 def test_negative_control_new_field_changes_emitted_layout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

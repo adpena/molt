@@ -340,6 +340,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_get_attr: fake_object_get_attr,
     object_set_attr: fake_object_set_attr,
     object_format: fake_object_format,
+    float_repr: fake_float_repr,
     sys_get_object_borrowed: fake_sys_get_object_borrowed,
     classify_heap: fake_classify_heap,
     inc_ref: fake_inc_ref,
@@ -359,6 +360,12 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
     dict_op: fake_dict_op,
+    set_new: fake_set_new,
+    set_size: fake_set_size,
+    set_contains: fake_set_contains,
+    set_add: fake_set_add,
+    set_discard: fake_set_discard,
+    object_dir: fake_object_dir,
 };
 
 unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
@@ -370,7 +377,33 @@ unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> u64 {
 unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 {
     0
 }
+unsafe extern "C" fn fake_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
+    let s = format!("{value}");
+    let bytes = s.as_bytes();
+    if bytes.len() <= cap && !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    bytes.len()
+}
+unsafe extern "C" fn fake_set_new(_iterable: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_set_size(_set: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_set_contains(_set: u64, _key: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_set_add(_set: u64, _key: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn fake_set_discard(_set: u64, _key: u64) -> std::os::raw::c_int {
+    -1
+}
 unsafe extern "C" fn fake_dict_op(_op: u32, _dict: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
     0
 }
 

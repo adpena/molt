@@ -331,8 +331,10 @@ def emit_header(authority: dict[str, Struct]) -> str:
     ap("#define MOLT_ABI_LAYOUT_GENERATED_H")
     ap("")
     ap("/* This file is included by <Python.h> AFTER the struct definitions. It uses")
-    ap(" * only stddef.h (offsetof) and the C11 _Static_assert facility. */")
+    ap(" * only stddef.h (offsetof), stdint.h (UINTPTR_MAX) and the C11")
+    ap(" * _Static_assert facility. */")
     ap("#include <stddef.h>")
+    ap("#include <stdint.h>")
     ap("")
     ap("#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L")
     ap("#define _MOLT_ABI_SASSERT(cond, msg) _Static_assert((cond), msg)")
@@ -340,6 +342,22 @@ def emit_header(authority: dict[str, Struct]) -> str:
     ap("/* Pre-C11 fallback: negative-size array trick. */")
     ap("#define _MOLT_ABI_SASSERT(cond, msg) \\")
     ap("    typedef char _molt_abi_sassert_##__LINE__[(cond) ? 1 : -1]")
+    ap("#endif")
+    ap("")
+    ap("/* Pointer-width model select. The traditional ob_refcnt/ob_type object model")
+    ap(" * is authored once in Rust repr(C); its byte layout differs only by pointer")
+    ap(" * width. The 64-bit branch pins the LP64 (Linux/macOS x86-64 & aarch64) and")
+    ap(" * LLP64 (Windows) layout (8-byte pointer); the 32-bit branch pins the wasm32")
+    ap(" * ILP32 layout (4-byte pointer) used by the WASM/WASI extension tier. Each")
+    ap(" * target compiles ONLY its own branch, so the assertions hold on every")
+    ap(" * supported pointer width. Both branches are derived from the same Rust")
+    ap(" * authority by the generator — there is no second hand-maintained table. */")
+    ap("#if UINTPTR_MAX == 0xFFFFFFFFu")
+    ap("#define _MOLT_ABI_PTR32 1")
+    ap("#elif UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu")
+    ap("#define _MOLT_ABI_PTR32 0")
+    ap("#else")
+    ap('#error "molt cpython-abi layout: unsupported pointer width (expected 32 or 64 bit)"')
     ap("#endif")
     ap("")
 
@@ -354,82 +372,111 @@ def emit_header(authority: dict[str, Struct]) -> str:
         if c_type is None:
             continue  # struct exists in Rust authority but has no C spelling to assert
         ap(f"/* {rust_name}  <-  {AUTHORITY_RS.name} */")
-        # sizeof parity via a computed lower bound: sum of category sizes with
-        # repr(C) alignment is exactly what both compilers compute, so we assert the
-        # C sizeof equals the Rust-authority-derived byte size.
-        size, offsets = _compute_layout(rust_name, authority)
-        ap(
-            f"_MOLT_ABI_SASSERT(sizeof({c_type}) == {size}u,"
-            f' "layout drift: sizeof({c_type}) != {size} '
-            f'(regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");'
-        )
-        for fname, off in offsets:
-            c_field = _c_field_name(rust_name, fname)
-            if c_field is None:
-                continue
+        # sizeof + offsetof parity for BOTH pointer-width models. Both are computed
+        # from the same parsed authority; the C compiler's _Static_assert on the
+        # branch matching its own pointer width is the real proof.
+        size64, offsets64 = _compute_layout(rust_name, authority, _PTR_SIZE_LP64)
+        size32, offsets32 = _compute_layout(rust_name, authority, _PTR_SIZE_ILP32)
+
+        def _emit_block(size: int, offsets: list[tuple[str, int]]) -> None:
             ap(
-                f"_MOLT_ABI_SASSERT(offsetof({c_type}, {c_field}) == {off}u,"
-                f' "layout drift: offsetof({c_type}, {c_field}) != {off}");'
+                f"_MOLT_ABI_SASSERT(sizeof({c_type}) == {size}u,"
+                f' "layout drift: sizeof({c_type}) != {size} '
+                f'(regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");'
             )
+            for fname, off in offsets:
+                c_field = _c_field_name(rust_name, fname)
+                if c_field is None:
+                    continue
+                ap(
+                    f"_MOLT_ABI_SASSERT(offsetof({c_type}, {c_field}) == {off}u,"
+                    f' "layout drift: offsetof({c_type}, {c_field}) != {off}");'
+                )
+
+        if (size64, offsets64) == (size32, offsets32):
+            # Pointer-width-independent struct (all fixed-width fields): one block.
+            _emit_block(size64, offsets64)
+        else:
+            ap("#if _MOLT_ABI_PTR32")
+            _emit_block(size32, offsets32)
+            ap("#else")
+            _emit_block(size64, offsets64)
+            ap("#endif")
         ap("")
 
     ap("#undef _MOLT_ABI_SASSERT")
+    ap("#undef _MOLT_ABI_PTR32")
     ap("#endif /* MOLT_ABI_LAYOUT_GENERATED_H */")
     ap("")
     return "\n".join(out)
 
 
-# repr(C) sizing rules (LP64 / the target both sides declare).
-_CAT_SIZE_ALIGN = {
-    PTR: (8, 8),
-    WORD: (8, 8),
-    F64: (8, 8),
-    I32: (4, 4),
-    BYTE: (1, 1),
-}
+# repr(C) sizing rules, parameterized by pointer width so ONE Rust authority
+# derives BOTH the LP64/LLP64 (64-bit, 8-byte pointer) and the wasm32 ILP32
+# (32-bit, 4-byte pointer) layouts. PTR and WORD are pointer-width on both sides:
+#   PTR  = any pointer / fn-pointer / Option<extern fn>
+#   WORD = isize/usize/Py_ssize_t/Py_hash_t/Py_uhash_t (intptr-sized), and c_ulong
+#          (categorised WORD; on the two targets we assert — LP64 long=8=ptr and
+#          wasm32/LLP32 long=4=ptr — the C `unsigned long` matches the pointer-width
+#          model, and the per-target compile-time _Static_assert is the real proof).
+# I32/BYTE/F64 are fixed-width on every target (int=4, char=1, double=8).
+#
+# ptr_size is 8 for the 64-bit model and 4 for the wasm32 ILP32 model. Both models
+# flow from the same parsed authority; there is NO second hand-maintained table.
+_PTR_SIZE_LP64 = 8
+_PTR_SIZE_ILP32 = 4
 
 
-def _cat_size_align(cat: str, authority: dict[str, Struct]) -> tuple[int, int]:
-    if cat in _CAT_SIZE_ALIGN:
-        return _CAT_SIZE_ALIGN[cat]
+def _cat_size_align(
+    cat: str, authority: dict[str, Struct], ptr_size: int
+) -> tuple[int, int]:
+    if cat in (PTR, WORD):
+        return ptr_size, ptr_size
+    if cat == F64:
+        return 8, 8
+    if cat == I32:
+        return 4, 4
+    if cat == BYTE:
+        return 1, 1
     if cat.startswith("embed:"):
         name = cat.split(":", 1)[1]
-        sz, _ = _compute_layout(name, authority)
-        al = _struct_align(name, authority)
+        sz, _ = _compute_layout(name, authority, ptr_size)
+        al = _struct_align(name, authority, ptr_size)
         return sz, al
     if cat.startswith("arr:"):
         # arr:<n>x<innercat>
         m = re.match(r"arr:(\d+)x(.+)", cat)
         assert m, cat
         n = int(m.group(1))
-        isz, ial = _cat_size_align(m.group(2), authority)
+        isz, ial = _cat_size_align(m.group(2), authority, ptr_size)
         return isz * n, ial
     if cat == "Py_complex":
         return 16, 8
     raise LayoutError(f"no size for category {cat!r}")
 
 
-def _struct_align(name: str, authority: dict[str, Struct]) -> int:
+def _struct_align(name: str, authority: dict[str, Struct], ptr_size: int) -> int:
     st = authority[name]
     al = 1
     for f in st.fields:
-        _, fa = _cat_size_align(f.category, authority)
+        _, fa = _cat_size_align(f.category, authority, ptr_size)
         al = max(al, fa)
     return al
 
 
 def _compute_layout(
-    name: str, authority: dict[str, Struct]
+    name: str, authority: dict[str, Struct], ptr_size: int
 ) -> tuple[int, list[tuple[str, int]]]:
-    """Return (sizeof, [(field, offset)]) for a repr(C) struct, flattening embedded
-    struct fields so offsets are relative to the outer struct (matching C offsetof
-    of the flattened field name where the C header flattens, e.g. ob_base)."""
+    """Return (sizeof, [(field, offset)]) for a repr(C) struct under the given
+    pointer-width model, flattening embedded struct fields so offsets are relative
+    to the outer struct (matching C offsetof of the flattened field name where the
+    C header flattens, e.g. ob_base)."""
     st = authority[name]
     offset = 0
     struct_align = 1
     out: list[tuple[str, int]] = []
     for f in st.fields:
-        fsz, fal = _cat_size_align(f.category, authority)
+        fsz, fal = _cat_size_align(f.category, authority, ptr_size)
         struct_align = max(struct_align, fal)
         # align
         if offset % fal != 0:

@@ -55,9 +55,10 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 8
-fail_open_stub = 14
+fail_open_stub = 1
 duplicate_authority = 3
-todo_as_plan = 2
+todo_as_plan = 0
+fail_open_backend_dispatch = 2
 
 # ===========================================================================
 # ecosystem_baked (Scan A) — numpy package headers/config defined in-tree.
@@ -169,93 +170,6 @@ config/custody primitive, not a hand-authored overlay in the build driver.
 # --- abstract_number.rs: arbitrary-precision int silently truncated -----------
 
 [[site]]
-id = "F1_pyerr_setobject_drops_value"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/errors.rs"
-anchor = "let _ = value;"
-resolution_row = "task#9"
-justification = """
-PyErr_SetObject drops the actual exception value (`let _ = value;`) and sets a
-generic c"<exception>" string. The raised exception loses its payload — a
-fail-open that misreports the error. Must propagate the real value.
-"""
-
-[[site]]
-id = "F1_errors_drops_exc"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/errors.rs"
-anchor = "let _ = exc;"
-resolution_row = "task#9"
-justification = """
-An error-API export drops its exception argument (`let _ = exc;`) rather than
-acting on it, silently no-op'ing an error operation the C extension expects to take
-effect.
-"""
-
-[[site]]
-id = "F1_errors_drops_obj"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/errors.rs"
-anchor = "let _ = obj;"
-resolution_row = "task#9"
-justification = """
-An error-API export drops its object argument (`let _ = obj;`), ignoring the caller
-input on a path that advertises using it.
-"""
-
-# --- alloc-failure returns a plausible None instead of NULL -------------------
-
-[[site]]
-id = "F4_strings_none_fallback"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/strings.rs"
-anchor = "let fallback = MoltObject::none().bits();"
-resolution_row = "task#9"
-justification = """
-String-API exports return a bridged MoltObject::none() on the failure path instead
-of NULL, so a failed string construction reads as a non-NULL success to the C
-caller. Multiple str builders share this shape; must fail closed with NULL + PyErr.
-"""
-
-[[site]]
-id = "F4_object_none_bits_fallback"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "let none_bits = MoltObject::none().bits();"
-resolution_row = "task#9"
-justification = """
-An object-API export materializes MoltObject::none() bits as its result on a path
-that has no real value to return, handing back a plausible non-NULL None instead of
-failing closed.
-"""
-
-[[site]]
-id = "F4_object_none_bits_tail"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "MoltObject::none().bits()"
-resolution_row = "task#9"
-justification = """
-A second object-API export ends by returning MoltObject::none().bits() as a success
-value on an unimplemented branch — same placeholder-None fail-open as
-F4_object_none_bits_fallback.
-"""
-
-# --- PySet / mapping placeholder: empty list stands in for a real object -------
-
-[[site]]
-id = "F5_sequences_pyset_drops_iterable"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/sequences.rs"
-anchor = "let _ = iterable;"
-resolution_row = "task#9"
-justification = """
-PySet_New drops its iterable argument (`let _ = iterable;`), so even the placeholder
-ignores the caller's contents. Part of the same PySet fail-open as
-F5_sequences_pyset_new_placeholder_list.
-"""
-
-[[site]]
 id = "F5_sequences_drops_op"
 class = "fail_open_stub"
 file = "runtime/molt-cpython-abi/src/api/sequences.rs"
@@ -265,70 +179,6 @@ justification = """
 A sequence-API export drops its `op` argument (`let _ = op;`) on a path that
 advertises inspecting it, returning a fixed answer regardless of input.
 """
-
-[[site]]
-id = "F6_abstract_mapping_placeholder_list"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_mapping.rs"
-anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
-resolution_row = "task#9"
-justification = """
-An abstract-mapping export (e.g. PyMapping_Keys/Values/Items) returns an empty list
-placeholder instead of the real mapping view, presenting the wrong result as
-success.
-"""
-
-[[site]]
-id = "F6_abstract_mapping_drops_o"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_mapping.rs"
-anchor = "let _ = o;"
-resolution_row = "task#9"
-justification = """
-The abstract-mapping placeholder drops its object argument (`let _ = o;`), ignoring
-the mapping whose keys/values it claims to return.
-"""
-
-[[site]]
-id = "F6_object_placeholder_list"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
-resolution_row = "task#9"
-justification = """
-An object-API export returns an empty list placeholder instead of the real result
-(e.g. dir()/attribute enumeration), handing back a plausible-but-empty success.
-"""
-
-[[site]]
-id = "F6_object_drops_o"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "let _ = o;"
-resolution_row = "task#9"
-justification = """
-The object-API placeholder drops its object argument (`let _ = o;`), ignoring the
-input whose properties it advertises returning.
-"""
-
-[[site]]
-id = "F7_strings_drops_newpart"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/strings.rs"
-anchor = "let _ = newpart;"
-resolution_row = "task#9"
-justification = """
-A string-mutation export (PyUnicode_Append-family) drops its `newpart` argument
-(`let _ = newpart;`), so the append/concat silently does nothing while reporting
-success to the caller.
-"""
-
-# ===========================================================================
-# duplicate_authority (Scan D) — one C-API contract, two hand-synced copies.
-# Resolution: task#10 (single CPython-header authority) with task#7 for the
-# custody-facing side. One header tree must own each symbol; the other becomes a
-# generated re-export or is deleted.
-# ===========================================================================
 
 [[site]]
 id = "D1_python_h_two_copies"
@@ -375,49 +225,33 @@ duplicate-authority defect as D1_python_h_two_copies.
 """
 
 # ===========================================================================
-# todo_as_plan (Scan C) — a status:divergent|partial / "ignore for now" marker
-# INSIDE the body of a shipped public API that returns a divergent value on an
-# accepted call (as opposed to failing closed with a raise, which is honest).
-# `status:planned` honest stubs and fail-closed raises are NOT swept here.
+# todo_as_plan (Scan C) — RESOLVED to zero.
+#
+# A status:divergent|partial / "ignore for now" marker INSIDE the body of a
+# shipped public API that returns a divergent value on an accepted call (as
+# opposed to failing closed with a raise, which is honest). `status:planned`
+# honest stubs and fail-closed raises are NOT swept here.
+#
+# All three formerly-registered sites are ripped; the baseline is 0. New
+# todo-as-plan poison must not land (an unregistered discovered site fails the
+# gate). The rips:
+#
+#   * C1_pynumber_power_modulus_for_now — PyNumber_Power now performs a real
+#     3-argument modular pow via the runtime numeric authority (molt_pow_mod);
+#     the "ignore for now" `let _ = o3;` shortcut is gone
+#     (runtime/molt-cpython-abi/src/api/abstract_number.rs). Same fix as
+#     fail_open_stub F3. Landed by task#9 (062fb5301).
+#   * F8_multiprocessing_fork_maps_to_spawn — get_all_start_methods() no longer
+#     advertises fork/forkserver (Molt has no os.fork()/HAVE_SEND_HANDLE), and
+#     get_context()/set_start_method() now fail closed with CPython's
+#     ValueError("cannot find context for %r") instead of silently running
+#     spawn semantics (src/molt/stdlib/multiprocessing/_core.py).
+#   * F9_zlib_unused_data_partial — Decompress.unused_data now returns the true
+#     trailing bytes past the end of the compressed stream via the real
+#     molt_zlib_decompressobj_unused_data intrinsic, tracked separately from
+#     unconsumed_tail per CPython zlib semantics
+#     (src/molt/stdlib/zlib.py + runtime/molt-runtime-compression/src/zlib.rs).
 # ===========================================================================
-
-[[site]]
-id = "F8_multiprocessing_fork_maps_to_spawn"
-class = "todo_as_plan"
-file = "src/molt/stdlib/multiprocessing/_core.py"
-anchor = "status:divergent"
-resolution_row = "task#9"
-justification = """
-multiprocessing.get_context() accepts "fork"/"forkserver" and silently returns a
-Context whose semantics are actually spawn (status:divergent TODO). A user
-depending on fork's shared-address-space semantics gets spawn behaviour with no
-error — a shipped API diverging on an accepted argument. Must implement true fork
-or fail closed on the unsupported start method.
-"""
-
-[[site]]
-id = "F9_zlib_unused_data_partial"
-class = "todo_as_plan"
-file = "src/molt/stdlib/zlib.py"
-anchor = "molt_zlib_decompressobj_unused_data"
-resolution_row = "task#9"
-justification = """
-zlib decompressobj's `unused_data` property (status:partial) returns b"" because the
-dedicated intrinsic is not yet exposed — a shipped public property that ships an
-empty (wrong) answer for a stream with real trailing data. Must expose the
-molt_zlib_decompressobj_unused_data intrinsic and return the true unused bytes.
-"""
-[[site]]
-id = "F5_pyset_size_dropped_arg"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/sequences.rs"
-anchor = "let _ = anyset;"
-resolution_row = "task#12"
-justification = """
-PySet_Size ignores its set argument. Honest fail-closed interim: PySet_* raise
-NotImplementedError + CPython error sentinel pending the runtime set-object
-hooks (not a fake return). Being completed to real behavior in task #12.
-"""
 
 [[site]]
 id = "D2_structmember_h_duplicate"
@@ -431,5 +265,39 @@ and runtime/molt-cpython-abi/include/structmember.h (the ABI authority added by
 the header-custody arc 410ada3ad to make the cpython-abi tier self-complete) --
 two hand-synced copies of the CPython legacy T_*/READONLY aliases. Retire under
 task #10's remaining surface (generate/collapse to one authority).
+"""
+[[site]]
+id = "G1_luau_op_emitter_nil_unsupported"
+class = "fail_open_backend_dispatch"
+file = "runtime/molt-backend-luau/src/luau/op_emitter.rs"
+anchor = "local {out} = nil -- [unsupported op:"
+resolution_row = "task#backend-failclosed"
+justification = """
+LuauBackend::emit_unsupported_op is the dispatch catch-all for any op kind the
+luau backend does not lower. It emits `local <x> = nil -- [unsupported op: ...]`,
+fabricating a nil result. This is now fail-CLOSED: emit_unsupported_op records the
+op into self.unsupported_ops, and compile_checked/compile_via_ir reject a
+non-empty accumulator before returning any source, so the nil can never reach a
+checked build. The marker line is retained only as a readable in-source
+diagnostic; the accumulator is the authority. Row freezes this placeholder-emit
+surface against a NEW unregistered fail-open catch-all.
+"""
+
+[[site]]
+id = "G2_rust_op_emitter_none_stub"
+class = "fail_open_backend_dispatch"
+file = "runtime/molt-backend-rust/src/rust/op_emitter.rs"
+anchor = "/* {marker} */ MoltValue::None"
+resolution_row = "task#backend-failclosed"
+justification = """
+RustBackend::emit_unsupported_op is the dispatch catch-all (reached via
+emit_op_other and the runtime-gap arms) for any op kind the rust backend does not
+lower. It emits `{ /* MOLT_STUB: ... */ MoltValue::None }`, fabricating a None
+result. This is now fail-CLOSED: emit_unsupported_op records the op into
+self.unsupported_ops, and compile_checked rejects a non-empty accumulator before
+returning any source, so the None can never reach a checked build. The marker line
+is retained only as a readable in-source diagnostic; the accumulator is the
+authority. Row freezes this placeholder-emit surface against a NEW unregistered
+fail-open catch-all.
 """
 

@@ -13,13 +13,23 @@ fn init() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_unicode_from_string_non_null() {
+fn test_unicode_from_string_fails_closed_on_alloc_failure() {
+    // F4 teeth: with stub hooks, alloc_str returns 0 (allocation failure).
+    // PyUnicode_FromString MUST fail closed with NULL + MemoryError (CPython's
+    // Objects/unicodeobject.c contract), NOT a fabricated Py_None placeholder
+    // that reads as a non-NULL success and defeats `if (s == NULL)`.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"hello".as_ptr()) };
-    // With stub hooks, alloc_str returns 0 => fallback to None placeholder
-    // Either way, should not return null
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "PyUnicode_FromString must return NULL on alloc failure, not a placeholder"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a NULL return from PyUnicode_FromString must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -30,11 +40,17 @@ fn test_unicode_from_string_null_returns_null() {
 }
 
 #[test]
-fn test_unicode_from_string_empty() {
+fn test_unicode_from_string_empty_fails_closed_under_stubs() {
+    // Even the empty string routes through alloc_str, which the stub table fails
+    // (returns 0) — so under stubs the construction fails closed with NULL. With a
+    // real runtime this returns the interned empty str; the stub table proves the
+    // OOM path never fabricates a placeholder.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"".as_ptr()) };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(py.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------
@@ -42,14 +58,20 @@ fn test_unicode_from_string_empty() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_unicode_from_string_and_size() {
+fn test_unicode_from_string_and_size_fails_closed_on_alloc_failure() {
+    // F4 teeth: alloc_str fails under stubs => NULL + MemoryError, not a placeholder.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let data = b"world\0";
     let py = unsafe {
         molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(data.as_ptr().cast(), 5)
     };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "PyUnicode_FromStringAndSize must fail closed (NULL) on alloc failure"
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -68,12 +90,15 @@ fn test_unicode_from_string_and_size_negative_size() {
 }
 
 #[test]
-fn test_unicode_from_string_and_size_zero_length() {
+fn test_unicode_from_string_and_size_zero_length_fails_closed_under_stubs() {
+    // Zero-length still routes through alloc_str, which the stub fails => NULL.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py =
         unsafe { molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(c"abc".as_ptr(), 0) };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(py.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------
@@ -88,13 +113,16 @@ fn test_unicode_as_utf8_null_returns_null() {
 }
 
 #[test]
-fn test_unicode_as_utf8_on_object() {
+fn test_unicode_as_utf8_null_object_returns_null() {
+    // Under stubs the source str construction fails closed (NULL); AsUTF8 of a
+    // NULL object must itself return NULL rather than dereferencing a placeholder.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"test".as_ptr()) };
+    assert!(py.is_null(), "str construction fails closed under stubs");
     let utf8 = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8(py) };
-    // With stubs, str_data returns empty string pointer
-    assert!(!utf8.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(utf8.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------
@@ -143,13 +171,16 @@ fn test_unicode_get_length_null_returns_minus_one() {
 }
 
 #[test]
-fn test_unicode_get_length_on_object() {
+fn test_unicode_get_length_null_object_returns_minus_one() {
+    // Under stubs str construction fails closed (NULL); GetLength(NULL) is the
+    // error sentinel -1, never a fabricated 0 length for a placeholder object.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"abc".as_ptr()) };
+    assert!(py.is_null(), "str construction fails closed under stubs");
     let len = unsafe { molt_cpython_abi::api::strings::PyUnicode_GetLength(py) };
-    // With stubs, str_data returns empty => length 0
-    assert!(len >= 0);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert_eq!(len, -1);
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,14 +251,21 @@ fn test_unicode_substring_null_returns_null() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_bytes_from_string_and_size() {
+fn test_bytes_from_string_and_size_fails_closed_on_alloc_failure() {
+    // F4 teeth: alloc_bytes fails under stubs => NULL + MemoryError, not a
+    // placeholder None (Objects/bytesobject.c contract).
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let data = b"hello";
     let py = unsafe {
         molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(data.as_ptr().cast(), 5)
     };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "PyBytes_FromStringAndSize must fail closed (NULL) on alloc failure"
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -239,21 +277,26 @@ fn test_bytes_from_string_and_size_negative_len() {
 }
 
 #[test]
-fn test_bytes_from_string_and_size_null_allocates_zeros() {
+fn test_bytes_from_string_and_size_null_fails_closed_under_stubs() {
+    // NULL source requests a zero-filled buffer, still via alloc_bytes, which the
+    // stub fails => NULL. Proves the OOM path does not fabricate a placeholder.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(ptr::null(), 10) };
-    // Should allocate 10 zero bytes
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(py.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
-fn test_bytes_from_string_and_size_zero_length() {
+fn test_bytes_from_string_and_size_zero_length_fails_closed_under_stubs() {
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py =
         unsafe { molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(c"abc".as_ptr(), 0) };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(py.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,11 +304,17 @@ fn test_bytes_from_string_and_size_zero_length() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_bytes_from_string_non_null() {
+fn test_bytes_from_string_fails_closed_on_alloc_failure() {
+    // F4 teeth: alloc_bytes fails under stubs => NULL + MemoryError.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::strings::PyBytes_FromString(c"data".as_ptr()) };
-    assert!(!py.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "PyBytes_FromString must fail closed (NULL) on alloc failure"
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -350,4 +399,36 @@ fn test_bytearray_negative_len_returns_null() {
         molt_cpython_abi::api::strings::PyByteArray_FromStringAndSize(c"abc".as_ptr(), -1)
     };
     assert!(py.is_null());
+}
+
+// ---------------------------------------------------------------------------
+// PyBytes_Concat / PyUnicode_Concat — fail-open burndown teeth
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bytes_concat_null_args_are_noops() {
+    // PyBytes_Concat(pv, w): NULL *pv or NULL w is a documented no-op; it must
+    // not crash. (The real concat path needs a runtime and is exercised in the
+    // c_extensions integration suite.)
+    init();
+    let mut pv: *mut molt_cpython_abi::abi_types::PyObject = ptr::null_mut();
+    unsafe {
+        molt_cpython_abi::api::strings::PyBytes_Concat(&mut pv, ptr::null_mut());
+    }
+    assert!(pv.is_null());
+}
+
+#[test]
+fn test_unicode_concat_fails_closed_on_alloc_failure() {
+    // F4 teeth: PyUnicode_Concat allocates the joined string via alloc_str, which
+    // the stub fails => NULL + MemoryError, never a fabricated None placeholder.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let left = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"a".as_ptr()) };
+    let right = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"b".as_ptr()) };
+    // Both operands already fail closed under stubs (NULL); Concat of NULL
+    // operands must itself return NULL, not an empty-string placeholder.
+    let joined = unsafe { molt_cpython_abi::api::strings::PyUnicode_Concat(left, right) };
+    assert!(joined.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
