@@ -672,7 +672,7 @@ def extract_runtime_molt_externs() -> dict[str, RuntimeExtern]:
     The LLVM generic fallback may only claim symbols whose ABI is positional
     boxed integers; pointer/string/function-pointer ABIs require dedicated
     lowering arms and must stay red in this audit. Runtime symbols now live in
-    leaf crates (`molt-runtime-math`, `molt-runtime-text`, ...), so scanning only
+    leaf crates (`molt-runtime-math`, `molt-stdlib-text`, ...), so scanning only
     the root runtime crate would recreate the pre-decomposition monolith.
     """
     out: dict[str, RuntimeExtern] = {}

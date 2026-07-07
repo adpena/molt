@@ -20,7 +20,7 @@ for the crate-extraction and incremental-build routing plan.
   facade delegates through that leaf sub-registry behind `stdlib_stringprep`.
   Feature-on/feature-off `molt-runtime` checks prove the facade no longer
   carries a duplicate stringprep authority.
-- `molt-runtime-text` now owns the always-on codec identity registry, generated
+- `molt-stdlib-text` now owns the always-on codec identity registry, generated
   codec alias table, and generated single-byte charmap tables as well as the
   feature-gated `html` and `unicodedata` implementations. The small
   `codec_registry` module is a non-optional runtime dependency and is the
@@ -130,7 +130,7 @@ molt build app.py  # where app.py uses `import math`
 | `molt-runtime-core` | `libpython3.*.a` core | Shared runtime core; not yet the complete object-model authority | live leaf |
 | `molt-runtime-collections` | list/dict/set/tuple clusters | Container helpers and collection-facing intrinsics | live leaf |
 | `molt-runtime-math` | `_math` module | math intrinsics and numeric helpers | live leaf |
-| `molt-runtime-text` | str/bytes/codecs clusters | Text and codec helpers | live leaf |
+| `molt-stdlib-text` | str/bytes/codecs clusters | Text and codec helpers | live leaf |
 | `molt-runtime-serial` | `_json`, `_csv`, `_struct` target area | Serialization/deserialization helpers | live leaf |
 | `molt-runtime-crypto` | `_hashlib`, `_hmac`, `secrets` target area | Hashing, HMAC, PBKDF2, scrypt, and secrets helpers plus the leaf-owned crypto intrinsic resolver | live leaf |
 | `molt-runtime-compression` | `_bz2`, `_lzma`, `zlib` target area | Compression/decompression helpers | live leaf |
@@ -227,7 +227,7 @@ Only stdlib crates that the user imports are linked. The linker's
 
 ### Phase 3: Split stdlib into crates
 - Continue moving runtime authority into existing leaf crates such as
-  `molt-runtime-math`, `molt-runtime-crypto`, `molt-runtime-serial`, and `molt-runtime-text`
+  `molt-runtime-math`, `molt-runtime-crypto`, `molt-runtime-serial`, and `molt-stdlib-text`
 - Each crate produces its own .a file
 - Linker only includes crates the user imports
 

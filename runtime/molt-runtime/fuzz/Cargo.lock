@@ -946,7 +946,7 @@ dependencies = [
  "molt-runtime-regex",
  "molt-runtime-serial",
  "molt-runtime-stringprep",
- "molt-runtime-text",
+ "molt-stdlib-text",
  "molt-runtime-tk",
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
@@ -1161,7 +1161,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-text"
+name = "molt-stdlib-text"
 version = "0.1.0"
 dependencies = [
  "memchr",

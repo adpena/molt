@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REGISTRY = ROOT / "runtime/molt-runtime-text/src/codec_registry.rs"
+REGISTRY = ROOT / "runtime/molt-stdlib-text/src/codec_registry.rs"
 ENCODINGS = ROOT / "src/molt/stdlib/encodings"
 ALIASES = ENCODINGS / "aliases.py"
-OUT_RS = ROOT / "runtime/molt-runtime-text/src/charmap_codecs_generated.rs"
-OUT_ALIASES_RS = ROOT / "runtime/molt-runtime-text/src/codec_aliases_generated.rs"
+OUT_RS = ROOT / "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"
+OUT_ALIASES_RS = ROOT / "runtime/molt-stdlib-text/src/codec_aliases_generated.rs"
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 use super::*;
 use crate::object::ops::{decode_error_byte, decode_error_range};
 use crate::object::ops_encoding::DecodeFailure;
-use molt_runtime_text::codec_registry::{TextEncodingClass, normalize_encoding};
+use molt_stdlib_text::codec_registry::{TextEncodingClass, normalize_encoding};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::builtins::io) enum TextEncodingKind {

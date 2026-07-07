@@ -1,14 +1,14 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
 use super::ops_string::{push_wtf8_codepoint, wtf8_from_bytes, wtf8_has_surrogates};
-use molt_runtime_text::charmap_codecs_generated::{
+use molt_stdlib_text::charmap_codecs_generated::{
     decode_single_byte_charmap_with_errors, encode_single_byte_charmap_byte, single_byte_charmap,
 };
-pub(crate) use molt_runtime_text::codec_errors::DecodeFailure;
-pub(crate) use molt_runtime_text::codec_registry::{
+pub(crate) use molt_stdlib_text::codec_errors::DecodeFailure;
+pub(crate) use molt_stdlib_text::codec_registry::{
     CodecRuntimeClass, EncodingKind, normalize_encoding,
 };
-use molt_runtime_text::wtf8::push_backslash_bytes_vec;
+use molt_stdlib_text::wtf8::push_backslash_bytes_vec;
 
 pub(crate) fn encoding_kind_name(kind: EncodingKind) -> &'static str {
     kind.name()

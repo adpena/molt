@@ -1,12 +1,12 @@
 // Textwrap runtime ABI shims.
 //
-// Pure textwrap algorithms live in `molt-runtime-text`; this module keeps only
+// Pure textwrap algorithms live in `molt-stdlib-text`; this module keeps only
 // Molt object conversion, callable predicate handling, and exported ABI entrypoints.
 
 use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
-use molt_runtime_text::textwrap::{
+use molt_stdlib_text::textwrap::{
     TextWrapOptions, textwrap_dedent_impl, textwrap_default_options, textwrap_line_is_space,
     textwrap_splitlines_keepends, textwrap_wrap_impl,
 };
