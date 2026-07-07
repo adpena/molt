@@ -151,12 +151,15 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
             if handle.buffer_size == 0 {
                 let mut written = 0usize;
                 while written < bytes.len() {
-                    let n =
-                        match backend_write_bytes(_py, handle.mem_bits, backend, &bytes[written..])
-                        {
-                            Ok(n) => n,
-                            Err(bits) => return bits,
-                        };
+                    let n = match backend_write_bytes(
+                        _py,
+                        memory_backend_bits(handle),
+                        backend,
+                        &bytes[written..],
+                    ) {
+                        Ok(n) => n,
+                        Err(bits) => return bits,
+                    };
                     if n == 0 {
                         return raise_exception::<_>(_py, "OSError", "write failed");
                     }

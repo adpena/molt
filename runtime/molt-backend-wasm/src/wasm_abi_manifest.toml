@@ -823,6 +823,12 @@ name = "func_new_builtin"
 type = 5
 
 [[import]]
+name = "func_new_builtin_named"
+type = 7
+runtime_name = "molt_func_new_builtin_named"
+callable_arity = 4
+
+[[import]]
 name = "func_new_closure"
 type = 7
 

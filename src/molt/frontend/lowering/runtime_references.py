@@ -108,12 +108,15 @@ class RuntimeReferenceMixin(_MixinBase):
         )
 
     def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue:
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[runtime_name], result=name_val))
         func_val = MoltValue(self.next_var(), type_hint="function")
         self.emit(
             MoltOp(
                 kind="BUILTIN_FUNC",
-                args=[runtime_name, arity],
+                args=[runtime_name, arity, name_val],
                 result=func_val,
+                metadata={"builtin_name": runtime_name},
             )
         )
         return func_val

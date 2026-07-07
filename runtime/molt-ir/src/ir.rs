@@ -280,6 +280,10 @@ pub struct OpIR {
     pub native_callable_binding: Option<String>,
     pub native_callable_symbol: Option<String>,
     pub native_callable_abi: Option<String>,
+    /// Python builtin or runtime intrinsic name consumed by `builtin_func`.
+    /// `s_value` remains the executable runtime symbol; this field names the
+    /// metadata/default authority used by `molt_func_new_builtin_named`.
+    pub builtin_name: Option<String>,
     /// Transitional semantic hint preserved on the transport surface for
     /// compatibility consumers. The canonical representation contract lives in
     /// TIR/LIR, not this field.
@@ -598,6 +602,7 @@ impl OpIR {
             native_callable_binding: optional_string(obj, "native_callable_binding", ctx)?,
             native_callable_symbol: optional_string(obj, "native_callable_symbol", ctx)?,
             native_callable_abi: optional_string(obj, "native_callable_abi", ctx)?,
+            builtin_name: optional_string(obj, "builtin_name", ctx)?,
             type_hint: optional_string(obj, "type_hint", ctx)?,
             ic_index,
             source_op_idx: optional_i64(obj, "source_op_idx", ctx)?,
@@ -813,6 +818,89 @@ mod json_parse_tests {
         .expect_err("effect proof should be rejected on non-module reads");
 
         assert!(err.contains("cannot carry effect_proof `static_module_class_binding`"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_accepts_builtin_name_with_name_operand() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {"kind": "const_str", "s_value": "open", "out": "v0"},
+                            {
+                                "kind": "builtin_func",
+                                "s_value": "molt_open_builtin",
+                                "value": 2,
+                                "args": ["v0"],
+                                "out": "v1",
+                                "builtin_name": "open"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect("named builtin_func should validate with executable name operand");
+
+        let op = &ir.functions[0].ops[1];
+        assert_eq!(op.builtin_name.as_deref(), Some("open"));
+        assert_eq!(op.args.as_deref(), Some(&["v0".to_string()][..]));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_builtin_name_without_name_operand() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {
+                                "kind": "builtin_func",
+                                "s_value": "molt_open_builtin",
+                                "value": 2,
+                                "out": "v1",
+                                "builtin_name": "open"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("builtin_name must not silently fall back to the raw constructor");
+
+        assert!(err.contains("builtin_name requires exactly one name operand"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_builtin_name_operand_without_metadata() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {"kind": "const_str", "s_value": "open", "out": "v0"},
+                            {
+                                "kind": "builtin_func",
+                                "s_value": "molt_open_builtin",
+                                "value": 2,
+                                "args": ["v0"],
+                                "out": "v1"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("name operand must not become hidden constructor authority");
+
+        assert!(err.contains("name operand requires builtin_name metadata"));
     }
 
     #[test]

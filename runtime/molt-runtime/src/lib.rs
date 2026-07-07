@@ -485,7 +485,7 @@ pub use crate::builtins::functions_fnmatch::*;
 #[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
-pub use crate::builtins::functions_re::*;
+pub(crate) use crate::builtins::functions_re::*;
 pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;

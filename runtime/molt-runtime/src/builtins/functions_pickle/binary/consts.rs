@@ -1,7 +1,5 @@
 // Binary pickle protocol opcode + limit constants.
 
-use super::*;
-
 pub(crate) const PICKLE_PROTO_3: i64 = 3;
 pub(crate) const PICKLE_PROTO_4: i64 = 4;
 pub(crate) const PICKLE_PROTO_5: i64 = 5;

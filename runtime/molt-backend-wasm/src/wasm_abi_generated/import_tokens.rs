@@ -128,6 +128,7 @@ pub(crate) enum WasmRuntimeImport {
     FnPtrCodeSet,
     FuncNew,
     FuncNewBuiltin,
+    FuncNewBuiltinNamed,
     FuncNewClosure,
     FunctionClosureBits,
     FunctionDefaultKind,

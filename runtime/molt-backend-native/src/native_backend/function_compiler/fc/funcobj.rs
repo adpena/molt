@@ -136,17 +136,43 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
             let arity_val = builder.ins().iconst(types::I64, arity);
 
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_func_new_builtin",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder
-                .ins()
-                .call(local_callee, &[func_addr, tramp_addr, arity_val]);
+            let call = if let Some(name_var) = op.args.as_ref().and_then(|args| args.first())
+                && let Some(name_bits) = var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    name_var,
+                    representation_plan,
+                )
+                .map(|value| value.0)
+            {
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_func_new_builtin_named",
+                    &[types::I64, types::I64, types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                builder
+                    .ins()
+                    .call(local_callee, &[name_bits, func_addr, tramp_addr, arity_val])
+            } else {
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_func_new_builtin",
+                    &[types::I64, types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                builder
+                    .ins()
+                    .call(local_callee, &[func_addr, tramp_addr, arity_val])
+            };
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);

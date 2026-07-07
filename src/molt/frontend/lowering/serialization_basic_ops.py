@@ -671,15 +671,19 @@ class SerializationBasicOpsMixin(_MixinBase):
                 entry["type_hint"] = result_hint
             ctx.json_ops.append(entry)
         elif op.kind == "BUILTIN_FUNC":
-            func_name, arity = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "builtin_func",
-                    "s_value": func_name,
-                    "value": arity,
-                    "out": op.result.name,
-                }
-            )
+            func_name, arity, *name_args = op.args
+            entry: dict[str, Any] = {
+                "kind": "builtin_func",
+                "s_value": func_name,
+                "value": arity,
+                "out": op.result.name,
+            }
+            if name_args:
+                entry["args"] = [name_args[0].name]
+            builtin_name = (op.metadata or {}).get("builtin_name")
+            if isinstance(builtin_name, str):
+                entry["builtin_name"] = builtin_name
+            ctx.json_ops.append(entry)
         elif op.kind == "FUNC_NEW":
             func_name, arity = op.args
             ctx.json_ops.append(

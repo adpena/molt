@@ -169,6 +169,9 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.native_callable_abi {
             attrs.insert("native_callable_abi".into(), AttrValue::Str(v.clone()));
         }
+        if let Some(ref v) = op.builtin_name {
+            attrs.insert("builtin_name".into(), AttrValue::Str(v.clone()));
+        }
         // Finalizer fact for `object_new_bound`: the instance's class defines
         // `__del__` (frontend-resolved through the MRO, excluding `object`). The
         // escape pass reads this to keep the instance heap-allocated with a live

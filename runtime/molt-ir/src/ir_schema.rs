@@ -240,6 +240,36 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if let Some(type_hint) = op.type_hint.as_deref() {
         validate_clean_symbol(type_hint, &format!("op `{}` type_hint", op.kind))?;
     }
+    if op.kind == "builtin_func" {
+        let name_arg_count = op.args.as_ref().map_or(0, Vec::len);
+        match op.builtin_name.as_deref() {
+            Some(builtin_name) => {
+                validate_clean_symbol(builtin_name, "builtin_func builtin_name")?;
+                match name_arg_count {
+                    1 => {}
+                    0 => {
+                        return Err(
+                            "builtin_func builtin_name requires exactly one name operand, found none"
+                                .to_string(),
+                        );
+                    }
+                    found => {
+                        return Err(format!(
+                            "builtin_func builtin_name requires exactly one name operand, found {found}",
+                        ));
+                    }
+                }
+            }
+            None if name_arg_count == 0 => {}
+            None => {
+                return Err(format!(
+                    "builtin_func name operand requires builtin_name metadata, found {name_arg_count} operand(s)",
+                ));
+            }
+        }
+    } else if op.builtin_name.is_some() {
+        return Err(format!("op `{}` cannot carry builtin_name", op.kind));
+    }
     if let Some(effect_proof) = op.effect_proof.as_deref() {
         validate_clean_symbol(effect_proof, &format!("op `{}` effect_proof", op.kind))?;
         let Some(proof) = EffectProof::from_name(effect_proof) else {
