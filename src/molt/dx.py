@@ -8,6 +8,7 @@ import platform
 import re
 import shlex
 import shutil
+import sys
 import tempfile
 import tomllib
 import uuid
@@ -600,6 +601,115 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
     return (_backend_daemon_socket_root(env) / f"molt-backend-{root_hash}").resolve()
 
 
+# Pinned for reproducible custody (R73.3). A missing compilation-cache binary is a
+# missing PRIMITIVE that gets COMPLETED here, never a silent fallback to cold builds.
+_SCCACHE_VERSION = "v0.16.0"
+_sccache_degrade_warned = False
+
+
+def _sccache_asset_url() -> str | None:
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x86_64", "x64"}:
+        arch = "x86_64"
+    elif machine in {"arm64", "aarch64"}:
+        arch = "aarch64"
+    else:
+        return None
+    system = platform.system().lower()
+    if system == "windows" or os.name == "nt":
+        stem, ext = f"sccache-{_SCCACHE_VERSION}-{arch}-pc-windows-msvc", "zip"
+    elif system == "darwin":
+        stem, ext = f"sccache-{_SCCACHE_VERSION}-{arch}-apple-darwin", "tar.gz"
+    else:
+        stem, ext = f"sccache-{_SCCACHE_VERSION}-{arch}-unknown-linux-musl", "tar.gz"
+    return (
+        "https://github.com/mozilla/sccache/releases/download/"
+        f"{_SCCACHE_VERSION}/{stem}.{ext}"
+    )
+
+
+def _provision_sccache() -> str | None:
+    """Provision the pinned sccache binary into ``~/.cargo/bin`` (already on PATH for
+    any cargo/rust host). Idempotent, bounded (network timeout), and NEVER raises:
+    returns the resolved path or ``None``. The R73.3 custody primitive that keeps
+    Rust compilation content-address-cached and shared across worktrees."""
+    found = shutil.which("sccache")
+    if found:
+        return found
+    exe = "sccache.exe" if os.name == "nt" else "sccache"
+    dest = Path.home() / ".cargo" / "bin" / exe
+    if dest.exists():
+        return str(dest)
+    url = _sccache_asset_url()
+    if url is None:
+        return None
+    import stat as _stat
+    import tarfile
+    import urllib.request
+    import zipfile
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as td:
+            archive = Path(td) / url.rsplit("/", 1)[-1]
+            with urllib.request.urlopen(url, timeout=90) as resp, open(
+                archive, "wb"
+            ) as out:
+                shutil.copyfileobj(resp, out)
+            if archive.suffix == ".zip":
+                with zipfile.ZipFile(archive) as zf:
+                    member = next(n for n in zf.namelist() if n.endswith(exe))
+                    with zf.open(member) as src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out)
+            else:
+                with tarfile.open(archive) as tf:
+                    member = next(m for m in tf.getmembers() if m.name.endswith(exe))
+                    src = tf.extractfile(member)
+                    if src is None:
+                        return None
+                    with src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out)
+        if os.name != "nt" and dest.exists():
+            dest.chmod(
+                dest.stat().st_mode
+                | _stat.S_IEXEC
+                | _stat.S_IXGRP
+                | _stat.S_IXOTH
+            )
+        return str(dest) if dest.exists() else None
+    except Exception:
+        return None
+
+
+def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
+    """Wire ``RUSTC_WRAPPER=sccache`` for content-addressed, cross-worktree-shared
+    rustc caching across EVERY DX/proof build path. Provisions sccache when absent;
+    if it genuinely cannot be made available, DEGRADE LOUDLY (cold builds saturate
+    memory under parallel lanes) instead of the historical silent skip. Single
+    authority — respects an explicit pre-set RUSTC_WRAPPER (e.g. benchmarks)."""
+    global _sccache_degrade_warned
+    if env.get("RUSTC_WRAPPER"):
+        return
+    mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
+    if mode in {"0", "false", "no", "off"}:
+        return
+    sccache = _provision_sccache()
+    if sccache is None:
+        if not _sccache_degrade_warned:
+            _sccache_degrade_warned = True
+            print(
+                "molt: WARNING sccache unavailable and could not be provisioned — "
+                "Rust compilation cache is OFF; builds will be COLD and "
+                "memory-heavy (every worktree recompiles the full crate graph, "
+                "which saturates memory under parallel lanes). Install it "
+                "(`cargo install sccache`) or set MOLT_USE_SCCACHE=0 to silence.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return
+    env["RUSTC_WRAPPER"] = sccache
+
+
 def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     artifact_root = Path(env["MOLT_EXT_ROOT"]).expanduser()
     env.setdefault(
@@ -612,6 +722,7 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
     env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
+    _ensure_sccache_wrapper(env)
     if _artifact_root_is_windows_exfat(artifact_root):
         env.setdefault("UV_LINK_MODE", "copy")
 
