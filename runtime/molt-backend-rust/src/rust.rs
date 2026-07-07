@@ -61,6 +61,14 @@ pub struct RustBackend {
     current_params: Vec<String>,
     current_is_main: bool,
     current_scalar_plan: Option<ScalarRepresentationPlan>,
+    /// Authoritative fail-closed record of op kinds the dispatch could not
+    /// lower. Populated by `emit_unsupported_op` at the moment the catch-all
+    /// fires, so the fail-closed check in `compile_checked` does NOT depend on
+    /// text-scanning the emitted output for a marker comment (a caller emitting
+    /// a value without the exact marker string, or a stray placeholder, would
+    /// otherwise slip a nil/`MoltValue::None` past the gate — the silent
+    /// wrong-codegen class this field closes).
+    unsupported_ops: Vec<String>,
 }
 
 impl Default for RustBackend {
@@ -81,6 +89,7 @@ impl RustBackend {
             current_params: Vec::new(),
             current_is_main: false,
             current_scalar_plan: None,
+            unsupported_ops: Vec::new(),
         }
     }
 
@@ -94,6 +103,9 @@ impl RustBackend {
 
     /// Compile the given IR to a Rust source string.
     pub fn compile(&mut self, ir: &SimpleIR) -> String {
+        // Reset the fail-closed accumulator for this compilation so a reused
+        // backend instance does not carry unsupported-op records across runs.
+        self.unsupported_ops.clear();
         // Phase 1: emit all function bodies into a temporary buffer so we
         // can scan which runtime helpers are actually referenced.
         let mut func_body = String::with_capacity(16384);
@@ -128,9 +140,25 @@ impl RustBackend {
         std::mem::take(&mut self.output)
     }
 
-    /// Compile and reject any preview-blocker stubs in the output.
+    /// Compile and reject any op the dispatch could not lower.
+    ///
+    /// Fail-closed authority: the decision is driven by
+    /// `self.unsupported_ops`, recorded by `emit_unsupported_op` at the moment
+    /// the dispatch catch-all fires — NOT by text-scanning the emitted source
+    /// for a marker comment. An unsupported op therefore cannot slip a
+    /// fabricated `MoltValue::None` past this gate by lacking the exact marker
+    /// string. The output text scan (`rust_stub_markers`) is retained as a
+    /// belt-and-suspenders check for legacy inline stub markers that predate
+    /// the accumulator, but the accumulator is the primary authority.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
         let source = self.compile(ir);
+        if !self.unsupported_ops.is_empty() {
+            return Err(format!(
+                "rust backend refuses to emit fail-open codegen for unsupported op(s): {} \
+                 -- use --target luau or native, or add lowering to the rust op dispatch",
+                self.unsupported_ops.join(", ")
+            ));
+        }
         let stubs = rust_stub_markers(&source);
         if stubs.is_empty() {
             Ok(source)
