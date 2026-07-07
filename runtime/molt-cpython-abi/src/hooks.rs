@@ -203,10 +203,11 @@ pub struct RuntimeHooks {
     pub number_power: unsafe extern "C" fn(a_bits: u64, b_bits: u64, mod_bits: u64) -> u64,
     // ── Mapping protocol (PyDict_*) ───────────────────────────────────────────
     //
-    // The runtime owns dict iteration (copy / keys / values). The ABI MUST NOT
-    // return an empty dict/list ignoring its argument — that is silent data
-    // loss. This hook routes to the runtime dict authority. `op` is a [`DictOp`]
-    // discriminant. Returns result bits, or 0 with a pending exception on error.
+    // The runtime owns dict iteration (copy / keys / values / items). The ABI
+    // MUST NOT return an empty dict/list ignoring its argument — that is silent
+    // data loss. This hook routes to the runtime dict authority. `op` is a
+    // [`DictOp`] discriminant. Returns result bits, or 0 with a pending exception
+    // on error.
     pub dict_op: unsafe extern "C" fn(op: u32, dict_bits: u64) -> u64,
     // ── Set protocol (PySet_*) ────────────────────────────────────────────────
     //
@@ -234,6 +235,12 @@ pub struct RuntimeHooks {
     /// / 0 (absent) / -1 with a pending exception on error. Never raises
     /// KeyError (unlike `set.discard`).
     pub set_discard: unsafe extern "C" fn(set_bits: u64, key_bits: u64) -> std::os::raw::c_int,
+    // ── Object introspection (PyObject_Dir) ───────────────────────────────────
+    //
+    // The runtime owns `dir(obj)` (MRO walk, `__dict__`, `__dir__`). The ABI MUST
+    // NOT return an empty list ignoring its argument. Returns a list handle, or 0
+    // with a pending exception on error.
+    pub object_dir: unsafe extern "C" fn(obj_bits: u64) -> u64,
 }
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
@@ -244,6 +251,7 @@ pub enum DictOp {
     Copy = 0,
     Keys = 1,
     Values = 2,
+    Items = 3,
 }
 
 /// Discriminants for [`RuntimeHooks::number_binary_op`]. Kept in sync with the
@@ -524,6 +532,9 @@ unsafe extern "C" fn stub_set_add(_set: u64, _key: u64) -> std::os::raw::c_int {
 unsafe extern "C" fn stub_set_discard(_set: u64, _key: u64) -> std::os::raw::c_int {
     -1
 }
+unsafe extern "C" fn stub_object_dir(_obj: u64) -> u64 {
+    0
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -578,6 +589,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     set_contains: stub_set_contains,
     set_add: stub_set_add,
     set_discard: stub_set_discard,
+    object_dir: stub_object_dir,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.

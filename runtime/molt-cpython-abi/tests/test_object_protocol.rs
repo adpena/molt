@@ -21,13 +21,18 @@ fn init() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_object_repr_returns_string() {
+fn test_object_repr_fails_closed_under_stubs() {
+    // PyObject_Repr builds its result string via PyUnicode_FromString, whose
+    // alloc_str fails under the stub table => NULL + MemoryError. Post-burndown
+    // that path fails closed instead of returning a fabricated None placeholder.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let repr = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(py) };
-    assert!(!repr.is_null());
+    assert!(repr.is_null(), "PyObject_Repr string alloc fails closed under stubs");
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(repr);
+        molt_cpython_abi::api::errors::PyErr_Clear();
         molt_cpython_abi::api::refcount::Py_DECREF(py);
     }
 }
@@ -40,13 +45,16 @@ fn test_object_repr_null_returns_null() {
 }
 
 #[test]
-fn test_object_str_returns_string() {
+fn test_object_str_fails_closed_under_stubs() {
+    // Same as repr: PyObject_Str's result-string alloc fails closed under stubs.
     init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(py) };
-    assert!(!s.is_null());
+    assert!(s.is_null(), "PyObject_Str string alloc fails closed under stubs");
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(s);
+        molt_cpython_abi::api::errors::PyErr_Clear();
         molt_cpython_abi::api::refcount::Py_DECREF(py);
     }
 }
@@ -642,4 +650,39 @@ fn test_richcomparebool_null_returns_error() {
     };
     // LT on null => cannot compare => -1 (error)
     assert_eq!(result, -1);
+}
+
+// ---------------------------------------------------------------------------
+// PyObject_Dir — fail-open burndown teeth
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_object_dir_null_fails_closed() {
+    // F6 teeth: PyObject_Dir previously returned an empty list ignoring `o`.
+    // PyObject_Dir(NULL) (frame-local dir) is unsupported from the ABI bridge and
+    // must fail closed with NULL + an exception, never an empty-list placeholder.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let result = unsafe { molt_cpython_abi::api::object::PyObject_Dir(ptr::null_mut()) };
+    assert!(
+        result.is_null(),
+        "PyObject_Dir(NULL) must fail closed (NULL), not return an empty list"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a NULL return from PyObject_Dir must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_object_delitem_null_returns_error() {
+    // PyObject_DelItem now routes real deletion through the runtime dict_del
+    // authority (previously it set the key to None — not deletion). NULL args are
+    // the error sentinel -1.
+    init();
+    let rc = unsafe {
+        molt_cpython_abi::api::object::PyObject_DelItem(ptr::null_mut(), ptr::null_mut())
+    };
+    assert_eq!(rc, -1);
 }

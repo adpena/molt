@@ -22,6 +22,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 type VisitProc = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
 
+/// Molt handle bits for the singleton `None`. Used where an absent bound `self`
+/// is correctly represented as Python `None` (e.g. an unbound `PyCFunction`).
+/// This is a real, correct value — NOT a fail-open placeholder for a missing
+/// result — so it is centralized here rather than materialized inline.
+#[inline]
+fn none_bits() -> u64 {
+    MoltObject::none().bits()
+}
+
 // ─── Attribute access ─────────────────────────────────────────────────────
 
 unsafe fn bridge_get_attr_from_name_bits(o: *mut PyObject, name_bits: u64) -> *mut PyObject {
@@ -1100,9 +1109,11 @@ pub unsafe extern "C" fn PyObject_DelItem(o: *mut PyObject, key: *mut PyObject) 
     if obj.is_ptr() {
         let tag = unsafe { (h.classify_heap)(o_bits) };
         if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-            let none_bits = MoltObject::none().bits();
-            unsafe { (h.dict_set)(o_bits, key_bits, none_bits) };
-            return 0;
+            // Real deletion via the runtime dict authority. Setting the key to
+            // None (the previous behavior) is NOT deletion — the key survives
+            // with a None value, a silently-wrong result. dict_del removes the
+            // entry and returns -1 (KeyError set by the runtime) if absent.
+            return unsafe { (h.dict_del)(o_bits, key_bits) };
         }
     }
     -1
@@ -1173,11 +1184,58 @@ pub unsafe extern "C" fn PySeqIter_New(seq: *mut PyObject) -> *mut PyObject {
 
 // ─── Dir ──────────────────────────────────────────────────────────────────
 
+/// `PyObject_Dir(o)` — return `dir(o)` as a sorted list (Objects/object.c).
+///
+/// Routes to the runtime dir authority (`object_dir` hook: MRO walk, `__dict__`,
+/// `__dir__`). The previous stub returned an empty list ignoring `o`, so every
+/// extension `PyObject_Dir(obj)` came back empty (a silent-wrong-answer fail-open).
+///
+/// `PyObject_Dir(NULL)` in CPython returns the *caller's* local names, which is a
+/// frame-introspection operation the ABI layer has no frame for; we fail closed
+/// with a precise SystemError rather than fabricating an answer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Dir(o: *mut PyObject) -> *mut PyObject {
-    // Return an empty list — full dir() requires introspecting the MRO.
-    let _ = o;
-    unsafe { crate::api::sequences::PyList_New(0) }
+    if o.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PyObject_Dir(NULL) (frame-local dir) is not supported from the C-API bridge"
+                    .as_ptr(),
+            );
+        }
+        return ptr::null_mut();
+    }
+    let bits = match GLOBAL_BRIDGE.lock().pyobj_to_handle(o) {
+        Some(b) => b,
+        None => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyObject_Dir: argument is not a bridge-managed object".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+    };
+    let h = hooks_or_stubs();
+    let result = unsafe { (h.object_dir)(bits) };
+    if result == 0 {
+        // Runtime set a pending exception, or hooks are unregistered. Guarantee a
+        // NULL return carries an exception (ABI contract).
+        let pending = crate::hooks::hooks()
+            .map(|h| unsafe { (h.exception_pending)() } != 0)
+            .unwrap_or(false);
+        if !pending {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    c"PyObject_Dir failed: runtime dir authority unavailable".as_ptr(),
+                );
+            }
+        }
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
 }
 
 // ─── Call protocol ────────────────────────────────────────────────────────
@@ -1789,7 +1847,7 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
             unsafe { std::ffi::CStr::from_ptr(ml_ref.ml_name) }.to_bytes()
         };
         let self_bits = if self_.is_null() {
-            MoltObject::none().bits()
+            none_bits()
         } else {
             match GLOBAL_BRIDGE.lock().pyobj_to_handle(self_) {
                 Some(bits) => bits,
