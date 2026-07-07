@@ -56,3 +56,47 @@ console.log(JSON.stringify({{
         "helloExists": True,
         "helloText": "hi",
     }
+
+
+def test_browser_vfs_tar_parser_rejects_path_escape_and_links() -> None:
+    path = Path(__file__).resolve().parents[1] / "wasm" / "molt_vfs_browser.js"
+
+    def tar_payload(member: tarfile.TarInfo, data: bytes = b"") -> str:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            tar.addfile(member, io.BytesIO(data))
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    traversal = tarfile.TarInfo("../secret.txt")
+    traversal.size = 1
+    link = tarfile.TarInfo("linked.txt")
+    link.type = tarfile.SYMTYPE
+    link.linkname = "target.txt"
+
+    js = f"""
+const {{ BundleFs }} = require({json.dumps(str(path))});
+const cases = [
+  Buffer.from({json.dumps(tar_payload(traversal, b"x"))}, "base64"),
+  Buffer.from({json.dumps(tar_payload(link))}, "base64"),
+];
+const results = [];
+for (const payload of cases) {{
+  try {{
+    BundleFs.fromTar(new Uint8Array(payload));
+    results.push("accepted");
+  }} catch (error) {{
+    results.push(String(error.message));
+  }}
+}}
+console.log(JSON.stringify(results));
+"""
+    result = run_native_test_process(
+        ["node", "-e", js],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    messages = json.loads(result.stdout)
+    assert messages[0] == "bundle tar contains '..' component in path: ../secret.txt"
+    assert messages[1] == "bundle tar contains link entry: linked.txt"
