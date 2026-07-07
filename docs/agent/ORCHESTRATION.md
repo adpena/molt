@@ -96,6 +96,17 @@ bind (exact-pathspec commits, no trampling, flag-don't-override).
 - `f7d67fe2e` tree_drift_check DX; `2ba8ca242` ff_land DX; drift-sweep cadence +
   shared-git-stash ban in the docs.
 
+### ⚠️ E1 IS A SOLO LANE — CLAIM IT BEFORE STARTING
+`E1-WITNESS-TO-GREEN` (the whole arc below, seal-regen → link → static-lib → exec
+→ check_parity) must be driven END-TO-END by ONE agent — splitting it masks the
+frontier and invites trampling collisions. Before touching it, follow `docs/agent/CLAIMS.md`:
+drift-sweep, check the claim log at `origin/main`, and if it's unclaimed, claim it
+(append a row + `ff_land`; the fast-forward is the atomic lock — if `ff_land`
+refuses, someone claimed first, so BACK OFF to a standing lane). The claimant owns
+it end-to-end and marks `COMPLETE` only after final exit criteria + recursive
+adversarial review + senior-engineer sign-off (CLAIMS.md §5). If E1 is already
+claimed and alive, work Codex lanes B/C/D instead.
+
 ### E1 ORDER-OF-OPERATIONS — drive this to green (each step names its resume point)
 1. **SEAL-REGEN (current frontier — it is a STALE SEAL ARTIFACT regen, NOT a code
    fix).** Fully diagnosed by the orchestrator's seal-regen subagent (no code
