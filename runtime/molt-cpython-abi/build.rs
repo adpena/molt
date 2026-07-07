@@ -68,6 +68,37 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
     }
 
+    // Single-authority layout enforcement. Compile a tiny translation unit that
+    // pulls in <Python.h> (and, transitively, the generated
+    // include/_molt_abi_layout.generated.h parity block). Its _Static_assert
+    // checks pin every traditional-representation struct's sizeof/offsetof to the
+    // Rust `#[repr(C)]` authority in src/abi_types.rs, so a drift between the C
+    // header and the Rust structs the dylib operates on fails THIS crate's build
+    // rather than corrupting memory at runtime.
+    //
+    // The generated assertions encode LP64/LLP64 native sizes (8-byte pointers /
+    // Py_ssize_t). wasm32 is ILP32 (4-byte pointers), and the standalone-link ABI
+    // tier that this header serves is a native-only surface, so we scope the
+    // layout assertion TU to non-wasm targets.
+    if target_arch != "wasm32" {
+        let layout_assert = manifest.join("shims/abi_layout_assert.c");
+        let abi_include = manifest.join("include");
+        cc::Build::new()
+            .file(&layout_assert)
+            .include(&abi_include)
+            .opt_level(0)
+            .compile("molt_abi_layout_assert");
+        println!("cargo:rerun-if-changed={}", layout_assert.display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            abi_include.join("_molt_abi_layout.generated.h").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            abi_include.join("Python.h").display()
+        );
+    }
+
     // Force the static shim's symbols into the cdylib output so that
     // PyArg_ParseTuple / PyArg_ParseTupleAndKeywords are exported even
     // though no Rust code calls them directly.
@@ -131,5 +162,8 @@ fn main() {
     println!("cargo:rerun-if-changed={}", shim.display());
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=src/api/strings.rs");
+    // The layout-assertion TU is generated from the Rust repr(C) authority; rebuild
+    // it if that authority changes so a drift is caught immediately.
+    println!("cargo:rerun-if-changed=src/abi_types.rs");
     println!("cargo:rerun-if-changed=build.rs");
 }
