@@ -605,6 +605,10 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
 # missing PRIMITIVE that gets COMPLETED here, never a silent fallback to cold builds.
 _SCCACHE_VERSION = "v0.16.0"
 _sccache_degrade_warned = False
+# Provisioning is attempted at most ONCE per process: a failed network download
+# must never re-run on every _install_dx_defaults call (that would hang every
+# build's env setup by the download timeout on an offline host).
+_sccache_download_failed = False
 
 
 def _sccache_asset_url() -> str | None:
@@ -640,14 +644,19 @@ def _provision_sccache() -> str | None:
     dest = Path.home() / ".cargo" / "bin" / exe
     if dest.exists():
         return str(dest)
+    global _sccache_download_failed
+    if _sccache_download_failed:
+        return None  # already tried and failed this process; do not re-hang
     url = _sccache_asset_url()
     if url is None:
+        _sccache_download_failed = True
         return None
     import stat as _stat
     import tarfile
     import urllib.request
     import zipfile
 
+    ok = False
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as td:
@@ -665,20 +674,20 @@ def _provision_sccache() -> str | None:
                 with tarfile.open(archive) as tf:
                     member = next(m for m in tf.getmembers() if m.name.endswith(exe))
                     src = tf.extractfile(member)
-                    if src is None:
-                        return None
-                    with src, open(dest, "wb") as out:
-                        shutil.copyfileobj(src, out)
+                    if src is not None:
+                        with src, open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out)
         if os.name != "nt" and dest.exists():
             dest.chmod(
-                dest.stat().st_mode
-                | _stat.S_IEXEC
-                | _stat.S_IXGRP
-                | _stat.S_IXOTH
+                dest.stat().st_mode | _stat.S_IEXEC | _stat.S_IXGRP | _stat.S_IXOTH
             )
-        return str(dest) if dest.exists() else None
+        ok = dest.exists()
     except Exception:
+        ok = False
+    if not ok:
+        _sccache_download_failed = True
         return None
+    return str(dest)
 
 
 def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
@@ -708,6 +717,10 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
             )
         return
     env["RUSTC_WRAPPER"] = sccache
+    # sccache silently SKIPS incremental compilation units — without this the
+    # wrapper we just wired would cache nothing on paths that default incremental
+    # on (e.g. the proof-queue lane). Force it off wherever sccache is enabled.
+    env["CARGO_INCREMENTAL"] = "0"
 
 
 def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
