@@ -457,16 +457,12 @@ def _open_log(log_path: Path | None) -> TextIO | None:
 
 
 def _python_cmd() -> list[str]:
-    """Return the command prefix for invoking Python in a uv-managed env.
+    """Return the active harness interpreter for nested Python tools.
 
-    Hardcodes ``--python 3.12`` to match the project's target version
-    policy and ensure ``packaging`` and other build-time dependencies
-    are available even when the harness itself runs under a bare
-    uv-managed interpreter.
+    Benchmark runners are launched through the repo's uv/RunContext entrypoints.
+    Re-entering ``uv run`` inside the hot build loop creates extra process and
+    environment churn, so nested Molt builds and link tools reuse this interpreter.
     """
-    uv = shutil.which("uv")
-    if uv:
-        return [uv, "run", "--python", "3.12", "python3"]
     exe = Path(sys.executable)
     if exe.exists():
         return [sys.executable]

@@ -393,8 +393,8 @@ def _git_rev() -> str | None:
 
 
 def _molt_build_cmd() -> list[str]:
-    """Command prefix for the Molt compiler via uv."""
-    return ["uv", "run", "--python", "3.12", "python3"]
+    """Command prefix for Molt builds inside the active benchmark harness."""
+    return [sys.executable]
 
 
 def _resolve_molt_output(payload: dict) -> Path | None:
@@ -942,7 +942,7 @@ def main() -> None:
     # JSON output
     try:
         load_avg = os.getloadavg()
-    except OSError:
+    except (AttributeError, OSError):
         load_avg = None
     report = {
         "schema_version": 1,

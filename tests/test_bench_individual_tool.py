@@ -490,6 +490,7 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     ]
     assert [call["limits"] for call in calls] == [limits, limits, limits]
     assert calls[0]["timeout"] == 3.0
+    assert calls[0]["cmd"][:4] == [sys.executable, "-m", "molt.cli", "build"]
     assert calls[0]["cwd"] == bench.REPO_ROOT
     assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(bench.REPO_ROOT)
     assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(
