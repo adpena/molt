@@ -459,7 +459,11 @@ unsafe extern "C" fn stub_float_repr(value: f64, out: *mut u8, cap: usize) -> us
     let s = if value.is_nan() {
         "nan".to_string()
     } else if value.is_infinite() {
-        if value < 0.0 { "-inf".to_string() } else { "inf".to_string() }
+        if value < 0.0 {
+            "-inf".to_string()
+        } else {
+            "inf".to_string()
+        }
     } else {
         let raw = format!("{value}");
         if raw.contains('.') || raw.contains('e') || raw.contains('E') {
