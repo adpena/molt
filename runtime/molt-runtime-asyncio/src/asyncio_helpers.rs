@@ -1,4 +1,4 @@
-// === FILE: runtime/molt-runtime/src/builtins/asyncio_helpers.rs ===
+// === FILE: runtime/molt-runtime-asyncio/src/asyncio_helpers.rs ===
 //! asyncio module helper intrinsics.
 //!
 //! These intrinsics move remaining pure-Python helpers in the asyncio
@@ -8,9 +8,7 @@
 //! WASM-compatible: no I/O, no syscalls, no platform-specific code.
 //! ABI: NaN-boxed u64 in/out.
 
-use crate::builtins::numbers::{int_bits_from_i64, to_i64};
-use crate::object::builders::alloc_string;
-use crate::{MoltObject, bits_from_ptr, obj_from_bits, raise_exception};
+use crate::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Task name counter ───────────────────────────────────────────────────────
@@ -23,11 +21,7 @@ pub extern "C" fn molt_asyncio_task_next_name() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let n = TASK_NAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let name = format!("Task-{}", n);
-        let ptr = alloc_string(py, name.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        bits_from_ptr(ptr)
+        rt_string_from_bytes(name.as_bytes())
     })
 }
 
@@ -156,8 +150,9 @@ pub unsafe extern "C" fn molt_asyncio_is_cancelled_exc(exc_bits: u64) -> u64 {
         if obj.is_none() {
             return MoltObject::from_bool(false).bits();
         }
-        // Use type_name to check for CancelledError
-        let tname = crate::type_name(py, obj);
+        let Some(tname) = type_name(py, obj) else {
+            return MoltObject::from_bool(false).bits();
+        };
         let is_cancelled = tname == "CancelledError";
         MoltObject::from_bool(is_cancelled).bits()
     })

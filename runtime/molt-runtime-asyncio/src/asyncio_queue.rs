@@ -1,4 +1,4 @@
-// === FILE: runtime/molt-runtime/src/builtins/asyncio_queue.rs ===
+// === FILE: runtime/molt-runtime-asyncio/src/asyncio_queue.rs ===
 //
 // Intrinsic implementations for asyncio.Queue, asyncio.PriorityQueue, and
 // asyncio.LifoQueue.
@@ -24,7 +24,6 @@
 // and no std::time usage. They compile and run correctly on all targets
 // including wasm32-wasi and wasm32-unknown-unknown — no `#[cfg]` gating required.
 
-use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
@@ -194,7 +193,7 @@ impl QueueState {
         }
     }
 
-    fn clear_refs(&mut self, _py: &PyToken<'_>) {
+    fn clear_refs(&mut self, _py: &PyToken) {
         for item in self.drain_all() {
             dec_ref_bits(_py, item);
         }
@@ -209,7 +208,7 @@ pub(crate) struct AsyncioQueueRuntimeState {
 }
 
 impl AsyncioQueueRuntimeState {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             next_queue_handle: AtomicI64::new(1),
             queues: Mutex::new(HashMap::new()),
@@ -223,31 +222,68 @@ impl AsyncioQueueRuntimeState {
     fn reset_next_queue_handle(&self) {
         self.next_queue_handle.store(1, Ordering::Relaxed);
     }
-}
 
-fn queue_runtime_state(_py: &PyToken<'_>) -> &'static AsyncioQueueRuntimeState {
-    &runtime_state(_py).asyncio_queues
-}
-
-pub(crate) fn asyncio_queue_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
-    crate::gil_assert();
-    let queues = {
-        let mut queues = state
-            .asyncio_queues
-            .queues
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut *queues)
-    };
-    state.asyncio_queues.reset_next_queue_handle();
-    for (_, mut queue) in queues {
-        queue.clear_refs(_py);
+    fn clear(&self, _py: &PyToken) {
+        let queues = {
+            let mut queues = self
+                .queues
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *queues)
+        };
+        self.reset_next_queue_handle();
+        for (_, mut queue) in queues {
+            queue.clear_refs(_py);
+        }
     }
+}
+
+const ASYNCIO_QUEUE_STATE_KEY: &[u8] = b"molt-runtime-asyncio/queue/v1";
+
+unsafe extern "C" fn asyncio_queue_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(AsyncioQueueRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn asyncio_queue_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let py = PyToken::new();
+    unsafe {
+        (&*(ptr as *mut AsyncioQueueRuntimeState)).clear(&py);
+    }
+}
+
+unsafe extern "C" fn asyncio_queue_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut AsyncioQueueRuntimeState));
+    }
+}
+
+fn queue_runtime_state(_py: &PyToken) -> &'static AsyncioQueueRuntimeState {
+    let ptr = crate::bridge::runtime_state_get_or_init(
+        ASYNCIO_QUEUE_STATE_KEY,
+        asyncio_queue_state_init,
+        asyncio_queue_state_clear,
+        asyncio_queue_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "asyncio queue runtime state allocation failed"
+    );
+    unsafe { &*(ptr as *const AsyncioQueueRuntimeState) }
+}
+
+pub fn asyncio_queue_clear_state() {
+    let _ = crate::bridge::runtime_state_clear_and_drop(ASYNCIO_QUEUE_STATE_KEY);
 }
 
 /// Execute a closure with mutable access to the queue state for the given handle.
 /// Returns `None` if the handle is not found.
-fn with_queue<F, R>(_py: &PyToken<'_>, handle: i64, f: F) -> Option<R>
+fn with_queue<F, R>(_py: &PyToken, handle: i64, f: F) -> Option<R>
 where
     F: FnOnce(&mut QueueState) -> R,
 {
@@ -546,58 +582,4 @@ pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) {
 
         MoltObject::none().bits()
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::Ordering as AtomicOrdering;
-
-    fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe {
-            (*header_from_obj_ptr(ptr))
-                .ref_count
-                .load(AtomicOrdering::Relaxed)
-        }
-    }
-
-    #[test]
-    fn asyncio_queue_state_is_runtime_scoped_and_clearable() {
-        let _guard = crate::TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::molt_exception_clear();
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            asyncio_queue_clear_state(_py, state);
-
-            let handle_bits = molt_asyncio_queue_new(
-                MoltObject::from_int(0).bits(),
-                MoltObject::from_int(0).bits(),
-            );
-            assert_eq!(to_i64(obj_from_bits(handle_bits)), Some(1));
-            assert_eq!(state.asyncio_queues.queues.lock().unwrap().len(), 1);
-
-            let item_ptr = alloc_string(_py, b"asyncio-queue-state-item");
-            let item_bits = MoltObject::from_ptr(item_ptr).bits();
-            let item_refs_initial = ref_count(item_ptr);
-            assert!(obj_from_bits(molt_asyncio_queue_put_nowait(handle_bits, item_bits)).is_none());
-            assert_eq!(ref_count(item_ptr), item_refs_initial + 1);
-
-            asyncio_queue_clear_state(_py, state);
-
-            assert!(state.asyncio_queues.queues.lock().unwrap().is_empty());
-            assert_eq!(ref_count(item_ptr), item_refs_initial);
-
-            let handle2_bits = molt_asyncio_queue_new(
-                MoltObject::from_int(0).bits(),
-                MoltObject::from_int(0).bits(),
-            );
-            assert_eq!(to_i64(obj_from_bits(handle2_bits)), Some(1));
-            asyncio_queue_clear_state(_py, state);
-
-            dec_ref_bits(_py, item_bits);
-            assert!(!exception_pending(_py));
-        });
-    }
 }

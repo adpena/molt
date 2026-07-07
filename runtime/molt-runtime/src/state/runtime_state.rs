@@ -15,8 +15,6 @@ use crate::async_rt::event_loop::{EventLoopRegistry, PipeTransportRegistry};
 use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::async_rt::sockets::SocketRuntimeState;
-use crate::builtins::asyncio_core::AsyncioCoreState;
-use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
 use crate::builtins::attributes::AttributesRuntimeState;
 use crate::builtins::concurrent::ConcurrentRuntimeState;
 use crate::builtins::copy_mod::CopyMemoRuntimeState;
@@ -300,8 +298,6 @@ pub(crate) struct RuntimeState {
     pub(crate) task_tokens: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
     pub(crate) task_cancel_messages: Mutex<HashMap<PtrSlot, u64>>,
-    pub(crate) asyncio_core: AsyncioCoreState,
-    pub(crate) asyncio_queues: AsyncioQueueRuntimeState,
     pub(crate) asyncio_running_loops: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_loops: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_loop_policy: Mutex<u64>,
@@ -407,8 +403,6 @@ impl RuntimeState {
             task_tokens: Mutex::new(HashMap::new()),
             task_tokens_by_id: Mutex::new(HashMap::new()),
             task_cancel_messages: Mutex::new(HashMap::new()),
-            asyncio_core: AsyncioCoreState::new(),
-            asyncio_queues: AsyncioQueueRuntimeState::new(),
             asyncio_running_loops: Mutex::new(HashMap::new()),
             asyncio_event_loops: Mutex::new(HashMap::new()),
             asyncio_event_loop_policy: Mutex::new(MoltObject::none().bits()),
@@ -540,10 +534,24 @@ pub(crate) fn runtime_extension_state_get_or_init(
 }
 
 pub(crate) fn runtime_extension_states_clear_and_drop(state: &RuntimeState) {
+    crate::gil_assert();
     let slots: Vec<RuntimeExtensionStateSlot> = {
         let mut guard = state.extension_states.lock().unwrap();
         guard.drain().map(|(_, slot)| slot).collect()
     };
+    clear_and_drop_extension_slots(slots);
+}
+
+pub(crate) fn runtime_extension_state_clear_and_drop_key(state: &RuntimeState, key: &[u8]) -> bool {
+    crate::gil_assert();
+    let Some(slot) = state.extension_states.lock().unwrap().remove(key) else {
+        return false;
+    };
+    clear_and_drop_extension_slots(vec![slot]);
+    true
+}
+
+fn clear_and_drop_extension_slots(slots: Vec<RuntimeExtensionStateSlot>) {
     for slot in slots {
         if slot.ptr.is_null() {
             continue;
@@ -993,13 +1001,16 @@ mod tests {
         assert_eq!(EXT_INIT_COUNT.load(Ordering::SeqCst), 1);
         assert_eq!(state.extension_states.lock().unwrap().len(), 1);
 
-        runtime_extension_states_clear_and_drop(&state);
-        assert!(state.extension_states.lock().unwrap().is_empty());
-        assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = _py;
+            runtime_extension_states_clear_and_drop(&state);
+            assert!(state.extension_states.lock().unwrap().is_empty());
+            assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
+            assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
 
-        runtime_extension_states_clear_and_drop(&state);
-        assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
-        assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
+            runtime_extension_states_clear_and_drop(&state);
+            assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
+            assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
+        });
     }
 }

@@ -368,7 +368,7 @@ def _build_checks() -> list[Check]:
         Check(
             name="runtime-bridge-test-stubs",
             tier=1,
-            cmd=_uv_run(str(TOOLS / "check_runtime_bridge_test_stubs.py")),
+            cmd=_uv_run(str(TOOLS / "check_runtime_bridge_test_stubs.py"), "--check"),
             timeout=30,
         )
     )
