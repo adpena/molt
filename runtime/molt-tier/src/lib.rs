@@ -225,7 +225,7 @@ impl TierCoordinator {
                 ExecutionDecision::Interpret
             }
             Tier::Compiling => {
-                // Still compiling — interpret for now
+                // While compilation is pending, continue on the interpreter.
                 state.call_count.fetch_add(1, Ordering::Relaxed);
                 ExecutionDecision::Interpret
             }
@@ -281,7 +281,7 @@ pub enum ExecutionDecision {
     Interpret,
     /// Execute the compiled artifact.
     RunCompiled(CompiledArtifact),
-    /// Tier-up: compile this function in the background, interpret for now.
+    /// Tier-up: compile this function in the background while interpreting.
     /// The caller should spawn a compilation task and call `compilation_done`
     /// when it completes.
     TierUp(Arc<FunctionState>),
