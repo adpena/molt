@@ -443,11 +443,13 @@ globs = [
   "src/molt/cli/target_python.py",
   "tools/stdlib_module_union.py",
   "tools/gen_stdlib_module_union.py",
-  # The gate itself.
+  # The gate itself + its mutation-proof teeth.
   "tools/check_table_drift.py",
+  "tests/test_table_drift_gate.py",
 ]
 gates = [
   "python3 tools/venv_exec.py python tools/check_table_drift.py --check",
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_table_drift_gate.py",
 ]
 
 # --- CI workflow / pyproject lint wiring ---------------------------------
