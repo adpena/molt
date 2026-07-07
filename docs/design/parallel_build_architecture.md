@@ -20,7 +20,7 @@ The live codebase and executable Cargo metadata remain authoritative.
   `unicodedata`
   portions of `molt-runtime-text`, `molt-runtime-zoneinfo`, the math-family
   modules owned by `molt-runtime-math`, XML owned by `molt-runtime-xml`,
-  `difflib` owned by `molt-runtime-difflib`, and `ipaddress` owned by
+  `difflib` owned by `molt-stdlib-difflib`, and `ipaddress` owned by
   `molt-runtime-ipaddress` are
   completed leaf-ownership examples: their in-facade fallback modules are
   deleted, their generated resolver arms delegate into leaf-owned intrinsic
@@ -138,7 +138,7 @@ Hard constraints / watch-items:
   lazy-loads formatting custody only for changed Rust files, and prevents
   repeated generation from dirtying mtimes or triggering needless Cargo
   rebuilds. `molt-runtime-stringprep`, `molt-runtime-math`,
-  `molt-runtime-xml`, `molt-runtime-difflib`, and `molt-runtime-ipaddress` now
+  `molt-runtime-xml`, `molt-stdlib-difflib`, and `molt-runtime-ipaddress` now
   own generated per-crate intrinsic sub-registries, with the `molt-runtime`
   category resolvers reduced to feature-gated facade delegates. `molt-runtime-path`
   now owns an event-specific audit bridge for `os_ext` and `pathlib`, replacing

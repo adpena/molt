@@ -7,39 +7,39 @@ pub fn resolve_symbol_with(
 ) -> Option<u64> {
     match symbol {
         "molt_difflib_context_diff" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_context_diff",
+            "molt_stdlib_difflib::difflib::molt_difflib_context_diff",
             crate::difflib::molt_difflib_context_diff as *const (),
         )),
         "molt_difflib_get_close_matches" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_get_close_matches",
+            "molt_stdlib_difflib::difflib::molt_difflib_get_close_matches",
             crate::difflib::molt_difflib_get_close_matches as *const (),
         )),
         "molt_difflib_get_matching_blocks" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_get_matching_blocks",
+            "molt_stdlib_difflib::difflib::molt_difflib_get_matching_blocks",
             crate::difflib::molt_difflib_get_matching_blocks as *const (),
         )),
         "molt_difflib_get_opcodes" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_get_opcodes",
+            "molt_stdlib_difflib::difflib::molt_difflib_get_opcodes",
             crate::difflib::molt_difflib_get_opcodes as *const (),
         )),
         "molt_difflib_is_junk" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_is_junk",
+            "molt_stdlib_difflib::difflib::molt_difflib_is_junk",
             crate::difflib::molt_difflib_is_junk as *const (),
         )),
         "molt_difflib_ndiff" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_ndiff",
+            "molt_stdlib_difflib::difflib::molt_difflib_ndiff",
             crate::difflib::molt_difflib_ndiff as *const (),
         )),
         "molt_difflib_quick_ratio" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_quick_ratio",
+            "molt_stdlib_difflib::difflib::molt_difflib_quick_ratio",
             crate::difflib::molt_difflib_quick_ratio as *const (),
         )),
         "molt_difflib_ratio" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_ratio",
+            "molt_stdlib_difflib::difflib::molt_difflib_ratio",
             crate::difflib::molt_difflib_ratio as *const (),
         )),
         "molt_difflib_unified_diff" => Some(runtime_fn_addr(
-            "molt_runtime_difflib::difflib::molt_difflib_unified_diff",
+            "molt_stdlib_difflib::difflib::molt_difflib_unified_diff",
             crate::difflib::molt_difflib_unified_diff as *const (),
         )),
         _ => None,
