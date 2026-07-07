@@ -2960,6 +2960,9 @@ def extension_build(
         if loaded_source_plan is not None:
             manifest_payload["source_plan"] = loaded_source_plan.manifest_payload()
             build_payload["source_plan_digest"] = loaded_source_plan.digest
+            build_payload["source_plan_skipped_generated_source_count"] = len(
+                loaded_source_plan.skipped_generated_sources
+            )
             if cython_regenerations:
                 manifest_payload["cython_standalone"] = [
                     cython_regenerations[key].manifest_payload()
