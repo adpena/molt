@@ -195,7 +195,11 @@ Queued rows are wait-list state and do not consume capacity; launch uses an
 atomic queued-to-dispatched claim that rechecks global capacity and contention
 key ownership immediately before spawning a detached runner. The scheduler skips
 rows whose contention key is already active or already selected in the same
-batch, so increasing queue size only admits independent work.
+batch, so increasing queue size only admits independent work. Build-heavy
+families (`native-build`, queue-native Rust/Cargo, `wasm`, and `wasm-browser`)
+also share the `compiler-build-resource` mutex: only one such row may be
+dispatched or running at a time even when their contention keys differ, while
+light rows with disjoint families can still use remaining queue capacity.
 `running-proof-launch-summary-stale` is diagnostic evidence only while the
 queue-owned guard is still live; it means the memory guard has not yet published
 child-process custody. Only terminal stale signals such as
