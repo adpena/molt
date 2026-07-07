@@ -16,11 +16,88 @@
 #![allow(non_snake_case)]
 
 use molt_cpython_abi::abi_types::*;
+use molt_cpython_abi::hooks::RuntimeHooks;
+use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// A minimal in-test runtime hook table. PyType_Ready builds `tp_dict` via
+// PyDict_New and populates method names via PyUnicode_FromString; both fail
+// closed (NULL) under the STUB table (alloc_dict / alloc_str return 0), so a
+// stub-only test cannot exercise the readiness flow this file is about. We
+// register a real-enough allocator so PyType_Ready genuinely constructs and
+// populates tp_dict — the same approach test_getset_member_descriptors uses.
+static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x7200_0000);
+static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
+static STRINGS: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
+
+fn fresh_handle() -> u64 {
+    NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+}
+
+fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
+    let mut guard = DICTS.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(HashMap::new());
+    }
+    guard
+}
+
+unsafe extern "C" fn fake_alloc_dict() -> u64 {
+    let handle = fresh_handle();
+    dicts().as_mut().unwrap().insert(handle, HashMap::new());
+    handle
+}
+
+unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) {
+    if let Some(map) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
+        map.insert(key_bits, val_bits);
+    }
+}
+
+unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> u64 {
+    dicts()
+        .as_ref()
+        .unwrap()
+        .get(&dict_bits)
+        .and_then(|map| map.get(&key_bits).copied())
+        .unwrap_or(0)
+}
+
+unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
+    let bytes = if data.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+    };
+    let mut guard = STRINGS.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(HashMap::new());
+    }
+    *guard.as_mut().unwrap().entry(bytes).or_insert_with(fresh_handle)
+}
+
+unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
+    MoltTypeTag::Other as u8
+}
+
+unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
 
 fn init() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
+    let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    hooks.alloc_dict = fake_alloc_dict;
+    hooks.dict_set = fake_dict_set;
+    hooks.dict_get = fake_dict_get;
+    hooks.alloc_str = fake_alloc_str;
+    hooks.classify_heap = fake_classify_heap;
+    hooks.inc_ref = fake_noop_ref;
+    hooks.dec_ref = fake_noop_ref;
+    unsafe {
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
+    }
 }
 
 unsafe fn ready(tp: *mut PyTypeObject) -> c_int {
