@@ -216,6 +216,43 @@ def _normalize_target_include_path(candidate: Path) -> Path | None:
     return candidate.parent.parent.resolve(strict=False)
 
 
+def wasi_libcxx_include_dir(
+    sysroot: str | Path | None,
+    *,
+    target_triple: str | None = None,
+    exceptions: bool = True,
+) -> Path | None:
+    """Resolve the C++ standard library (libc++) include dir inside a sysroot.
+
+    WASI SDK sysroots that ship multiple ABI variants (the ``+m``/multilib
+    layout) place libc++ headers under a per-target, per-exception-mode subtree
+    ``include/<target>/{eh,noeh}/c++/v1`` and leave the flat ``include/c++/v1``
+    empty, so ``clang++ --target wasm32-wasip1`` does NOT auto-discover
+    ``<atomic>``/``<vector>`` etc. Return the variant that matches how molt
+    compiles wasm C++ (``-mexception-handling`` on -> the ``eh`` subtree). Fall
+    back to the flat ``include/c++/v1`` for single-variant sysroots. Returns
+    ``None`` when no populated libc++ tree exists.
+    """
+    if sysroot is None:
+        return None
+    root = Path(sysroot).expanduser()
+    inc = root / "include"
+    eh_order = ("eh", "noeh") if exceptions else ("noeh", "eh")
+    targets: list[str] = []
+    if target_triple:
+        targets.append(target_triple)
+    targets.extend(t for t in _WASI_TARGET_INCLUDE_DIRS if t not in targets)
+    for target in targets:
+        for eh in eh_order:
+            cand = inc / target / eh / "c++" / "v1"
+            if (cand / "atomic").exists():
+                return cand.resolve(strict=False)
+    flat = inc / "c++" / "v1"
+    if (flat / "atomic").exists():
+        return flat.resolve(strict=False)
+    return None
+
+
 def normalize_wasi_sysroot(path: str | Path | None) -> Path | None:
     if path is None:
         return None
