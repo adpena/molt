@@ -87,12 +87,29 @@ A first-class standing deliverable, not a background chore. The swarm lands PRs
 fast; `origin/main` moves under you every few minutes. Keep the system coherent
 while it moves:
 
-- **Drift prevention.** Before assigning or accepting ANY lane, diff its target
-  against live `origin/main`. A task naming a branch is valid only if that branch
-  still exists AND is unlanded — verify `git rev-parse origin/<b>` +
-  `git merge-base --is-ancestor origin/<b> origin/main`. Re-landing merged work
-  (deleted branch, or logic already on main) is trampling; DROP it and say why.
-  Keep `docs/agent/ORCHESTRATION.md` synced to current main every arc.
+- **Drift prevention — SWEEP PROACTIVELY, don't wait for a surprise.** Drift
+  checking is a standing reflex, not a reaction. Cultivate the instinct: the
+  swarm lands PRs continuously, so treat `origin/main` as moving under you at all
+  times and *go look* before you assume anything is current. Run the DRIFT SWEEP:
+  - **At the START of every arc** — `git fetch origin`; scan
+    `git log --oneline <last-known>..origin/main`; for each active/assigned lane
+    diff its target against current `origin/main`; re-sync the board's
+    frontier/lane lines to whatever just landed.
+  - **Before ASSIGNING or accepting any lane** — a task naming a branch is valid
+    only if that branch still exists AND is unlanded: verify `git rev-parse
+    origin/<b>` + `git merge-base --is-ancestor origin/<b> origin/main`. If the
+    branch is deleted or the logic already sits on main, that's a merged lane —
+    DROP it and say why (re-landing it is trampling).
+  - **Before every LAND** — re-fetch, confirm fast-forward, and confirm no
+    parallel PR superseded your work by content (same-logic under a new hash).
+  - **On a REGULAR cadence during long work** — periodically re-fetch so a
+    fast-moving swarm landing can't silently invalidate an in-flight assumption,
+    a stale frontier note, or a diagnosis you're mid-way through.
+  Any diagnosis or file you read from the stale shared checkout is suspect until
+  re-verified against a clean `origin/main` worktree — the shared checkout lags
+  main and yields false regressions and phantom frontiers. When a sweep finds
+  drift, fix it in the same arc: re-sync the board, drop/refile the affected
+  lane, and note what moved. A stale board is itself drift you own.
 - **Signal-loss prevention.** Every unlanded piece lives in two durable places
   before you touch anything: a committed worktree branch AND an `origin` ref
   (`wip/*`). Local-only worktree commits are one prune from loss — push first.
