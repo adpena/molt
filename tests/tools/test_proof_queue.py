@@ -6056,38 +6056,55 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
 
 
 def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
-    log_path = tmp_path / "wasm-contract-import-missing.log"
-    conn = proof_queue._connect(db)
-    proof_queue._insert_run(
-        conn,
-        run_id="wasm-contract-import-missing-run",
-        logical_id="runtime-wasm-build",
-        reason="prove wasm preflight import-missing diagnosis",
-        command=[sys.executable, "-m", "molt.cli", "internal-runtime-wasm-build"],
-        cwd=proof_queue.ROOT,
-        resource_family="wasm",
-        contention_key="wasm:runtime",
-        scopes=["tools/proof_queue.py"],
-        git_snapshot={
-            "available": True,
-            "head": "abc123",
-            "dirty": False,
-            "status": [],
-        },
-        log_path=log_path,
-        summary_json=tmp_path / "wasm-contract-import-missing.memory_guard.json",
+    logs = tmp_path / "runs"
+    command_marker = tmp_path / "proof-command-ran.txt"
+
+    def fail_toolchain_import():
+        raise ModuleNotFoundError("No module named 'packaging.specifiers'")
+
+    monkeypatch.setattr(proof_queue, "_load_wasm_toolchain", fail_toolchain_import)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "wasm-contract-import-missing-run",
+            "--reason",
+            "prove wasm preflight import-missing diagnosis",
+            "--resource-family",
+            "wasm-browser",
+            "--contention-key",
+            "wasm:contract-import-missing",
+            "--",
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+            str(command_marker),
+        ]
     )
-    log_path.write_text(
-        "failed to import WASM toolchain contract: "
-        "No module named 'packaging.specifiers'\n",
-        encoding="utf-8",
+    assert rc == 2
+    assert not command_marker.exists()
+    rows = _rows(db)
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["returncode"] == 2
+    assert rows[0]["logical_id"] == "wasm-contract-import-missing-run"
+    run_id = str(rows[0]["run_id"])
+    log_path = Path(rows[0]["log_path"])
+    assert "failed to import WASM toolchain contract" in log_path.read_text(
+        encoding="utf-8"
     )
-    proof_queue._update_run(
-        conn, "wasm-contract-import-missing-run", status="failed", returncode=1
-    )
+    capsys.readouterr()
 
     assert (
         proof_queue.main(
@@ -6100,7 +6117,7 @@ def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
                 str(proof_queue.ROOT),
                 "evidence",
                 "--run-id",
-                "wasm-contract-import-missing-run",
+                run_id,
             ]
         )
         == 0
@@ -6112,7 +6129,7 @@ def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
     assert "packaging.specifiers" in diagnostics[0]["summary"]
     assert "active uv/project provisioning" in diagnostics[0]["next_action"]
     assert diagnostics[0]["artifacts"] == [
-        str(tmp_path / "wasm-contract-import-missing.memory_guard.json"),
+        str(rows[0]["summary_json"]),
         str(log_path),
     ]
     assert "python-exception" not in {item["signal_id"] for item in diagnostics}
