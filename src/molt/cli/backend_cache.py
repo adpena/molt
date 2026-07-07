@@ -72,6 +72,26 @@ def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> b
     return "no symbols" in text
 
 
+def _nm_read_timeout(default: float) -> float:
+    """Resolve the ``nm``/``llvm-nm`` object-symbol read timeout.
+
+    ``llvm-nm -g <object>`` is a bounded, read-only, non-spawning leaf tool, but
+    on slow volumes (network/OneDrive-backed checkouts, antivirus-scanned exFAT
+    build roots) a single spawn + read can exceed a few seconds. Expose the
+    ceiling via ``MOLT_NM_TIMEOUT_SEC`` so an operator on a slow host can raise
+    it without patching; the tight default keeps healthy hosts fast.
+    """
+    raw = os.environ.get("MOLT_NM_TIMEOUT_SEC")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    return default
+
+
 def _native_object_global_symbols_result(
     path: Path,
     *,
@@ -80,16 +100,25 @@ def _native_object_global_symbols_result(
     candidates = _nm_candidate_binaries()
     if not candidates:
         return None
+    read_timeout = _nm_read_timeout(timeout)
     last_failure: subprocess.CompletedProcess[str] | None = None
     for nm_bin in candidates:
         try:
+            # Reading a static object's global symbol table is a leaf,
+            # non-spawning, read-only operation: it can neither orphan a process
+            # tree nor run away on memory, so it does NOT go through the
+            # process-tree memory guard. Guarding it here regressed on slow
+            # hosts, where the guard's per-call repo-scoped orphan cleanup blew
+            # past the read timeout and killed a healthy `llvm-nm` mid-output
+            # (rc=124), stalling every source-recompiled extension seal at the
+            # object-fact step. A plain subprocess timeout is the correct bound.
             result = _run_completed_command(
                 _native_nm_command(nm_bin, path),
                 capture_output=True,
-                timeout=timeout,
+                timeout=read_timeout,
                 env=None,
                 cwd=path.parent,
-                memory_guard_prefix="MOLT_BUILD",
+                memory_guard_prefix=None,
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -250,15 +279,19 @@ def _nm_candidate_binaries() -> list[str]:
     if env_override:
         candidates.append(env_override)
     # The Rust toolchain's own llvm-nm (the `llvm-tools` component) matches the
-    # bitcode producer exactly when installed.
+    # bitcode producer exactly when installed. ``rustc --print sysroot`` is a
+    # leaf, read-only path probe (no child processes, no memory pressure), so it
+    # does NOT go through the process-tree memory guard: guarding it made this
+    # nm-candidate enumeration hang on slow hosts where the guard's per-call
+    # repo-scoped orphan cleanup dominates the probe.
     try:
         sysroot_result = _run_completed_command(
             ["rustc", "--print", "sysroot"],
             capture_output=True,
-            timeout=10,
+            timeout=_nm_read_timeout(10),
             env=None,
             cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
+            memory_guard_prefix=None,
         )
         sysroot = sysroot_result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
