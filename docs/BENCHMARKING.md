@@ -39,6 +39,16 @@ For `--target wasm --split-runtime`, the packaging contract is:
 - If any of those assumptions stop holding, treat it as a real regression in
   the split-runtime pipeline rather than “normal wasm variance”.
 
+Split-runtime pytest selectors that read generated worker/VFS artifacts are
+not necessarily cheap static tests: `split_build_a` performs a real
+`molt build --target wasm --split-runtime` fixture. On 2026-07-07,
+`tests/test_wasm_split_runtime.py::TestWorkerJsContent::test_worker_imports_split_vfs_adapter`
+plus `test_worker_exposes_vfs_host_imports` took 334.30s and skipped, producing
+no runtime acceptance evidence. Treat these selectors as build-backed proof:
+run them through `tools/proof_queue.py` with the wasm/browser contention family
+when they are needed, and prefer direct source/static checks only when the test
+does not instantiate the split build fixture.
+
 ## Running Benchmarks
 
 Maintainer and agent benchmark/profiling runs should enter through the active

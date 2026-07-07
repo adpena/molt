@@ -7,6 +7,7 @@ use crate::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub struct BundleFs {
     files: BTreeMap<String, Arc<Vec<u8>>>,
     dirs: BTreeSet<String>,
@@ -14,27 +15,39 @@ pub struct BundleFs {
 
 impl BundleFs {
     /// Create from explicit file entries.
+    ///
+    /// Panics when an entry path is not a portable bundle-relative path. Runtime
+    /// loading paths should use [`Self::try_from_entries`] so malformed host
+    /// input fails closed with a diagnostic instead of panicking.
     pub fn from_entries(entries: Vec<(String, Vec<u8>)>) -> Self {
+        Self::try_from_entries(entries).expect("invalid VFS bundle entries")
+    }
+
+    /// Create from explicit file entries, rejecting unsafe or ambiguous paths.
+    pub fn try_from_entries(entries: Vec<(String, Vec<u8>)>) -> Result<Self, VfsError> {
         let mut files = BTreeMap::new();
         let mut dirs = BTreeSet::new();
         for (path, content) in entries {
+            let path = normalize_bundle_entry_path(&path)?;
+            if dirs.contains(&path) || files.contains_key(&path) {
+                return Err(VfsError::AlreadyExists);
+            }
             // Register all parent directories
             let mut parent = String::new();
             for component in path.split('/') {
-                if !parent.is_empty() || component.is_empty() {
-                    if !parent.is_empty() {
-                        dirs.insert(parent.clone());
+                if !parent.is_empty() {
+                    if files.contains_key(&parent) {
+                        return Err(VfsError::NotDirectory);
                     }
-                    if !parent.is_empty() {
-                        parent.push('/');
-                    }
+                    dirs.insert(parent.clone());
+                    parent.push('/');
                 }
                 parent.push_str(component);
             }
             files.insert(path, Arc::new(content));
         }
         dirs.insert(String::new()); // root dir
-        Self { files, dirs }
+        Ok(Self { files, dirs })
     }
 
     /// Create from raw tar bytes.
@@ -93,8 +106,42 @@ impl BundleFs {
                 entries.push((path, content));
             }
         }
-        Ok(Self::from_entries(entries))
+        Self::try_from_entries(entries).map_err(|e| e.to_string())
     }
+}
+
+fn normalize_bundle_entry_path(path: &str) -> Result<String, VfsError> {
+    if path.is_empty() || path.contains('\0') {
+        return Err(VfsError::IoError("invalid bundle entry path".to_string()));
+    }
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with('/') {
+        return Err(VfsError::IoError("absolute bundle entry path".to_string()));
+    }
+
+    let mut parts = Vec::new();
+    for component in normalized.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(VfsError::IoError(format!(
+                "invalid bundle entry path component: {path}"
+            )));
+        }
+        if is_windows_drive_component(component) {
+            return Err(VfsError::IoError(format!(
+                "bundle entry path must be relative: {path}"
+            )));
+        }
+        parts.push(component);
+    }
+    if parts.is_empty() {
+        return Err(VfsError::IoError("invalid bundle entry path".to_string()));
+    }
+    Ok(parts.join("/"))
+}
+
+fn is_windows_drive_component(component: &str) -> bool {
+    let bytes = component.as_bytes();
+    bytes.len() == 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
 }
 
 impl VfsBackend for BundleFs {
@@ -194,5 +241,61 @@ impl VfsBackend for BundleFs {
 
     fn is_readonly(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundle_entries_reject_absolute_and_traversal_paths() {
+        for path in [
+            "/abs.txt",
+            "dir/../secret.txt",
+            "dir/./file.txt",
+            "dir//file.txt",
+            "C:/secret.txt",
+            "dir/\0/file.txt",
+        ] {
+            let err = BundleFs::try_from_entries(vec![(path.to_string(), b"x".to_vec())])
+                .expect_err(path);
+            assert!(matches!(err, VfsError::IoError(_)), "{path}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn bundle_entries_reject_duplicate_normalized_paths() {
+        let err = BundleFs::try_from_entries(vec![
+            ("dir/file.txt".to_string(), b"a".to_vec()),
+            ("dir\\file.txt".to_string(), b"b".to_vec()),
+        ])
+        .expect_err("duplicate normalized bundle path should fail");
+        assert!(matches!(err, VfsError::AlreadyExists));
+    }
+
+    #[test]
+    fn bundle_entries_reject_file_directory_collisions() {
+        let err = BundleFs::try_from_entries(vec![
+            ("dir".to_string(), b"file".to_vec()),
+            ("dir/nested.txt".to_string(), b"nested".to_vec()),
+        ])
+        .expect_err("file cannot later become directory");
+        assert!(matches!(err, VfsError::NotDirectory));
+
+        let err = BundleFs::try_from_entries(vec![
+            ("dir/nested.txt".to_string(), b"nested".to_vec()),
+            ("dir".to_string(), b"file".to_vec()),
+        ])
+        .expect_err("directory cannot later become file");
+        assert!(matches!(err, VfsError::AlreadyExists));
+    }
+
+    #[test]
+    fn bundle_entries_normalize_host_separators_to_portable_paths() {
+        let fs = BundleFs::try_from_entries(vec![("dir\\file.txt".to_string(), b"x".to_vec())])
+            .expect("portable normalized path");
+        assert_eq!(fs.open_read("dir/file.txt").unwrap(), b"x");
+        assert!(fs.exists("dir"));
     }
 }
