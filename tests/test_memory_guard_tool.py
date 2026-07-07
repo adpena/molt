@@ -2856,11 +2856,15 @@ def test_main_reports_incident_repro_context(
         encoding="utf-8",
     )
     env = {
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_INCREMENTAL": "1",
         "PATH": "/usr/bin",
         "PYTEST_CURRENT_TEST": "tests/test_memory_guard_tool.py::unit (call)",
         "MOLT_PYTEST_CURRENT_TEST_FILE": str(current_test_path),
         "MOLT_SESSION_ID": "unit-session",
         "SECRET_TOKEN": "must-not-leak",
+        "UV_LINK_MODE": "copy",
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "uv-project-env"),
     }
 
     def fake_run_guarded(_command, **_kwargs):
@@ -2917,8 +2921,29 @@ def test_main_reports_incident_repro_context(
         == "tests/test_memory_guard_tool.py::live_unit"
     )
     assert repro["env"]["MOLT_SESSION_ID"] == "unit-session"
+    assert repro["env"]["CARGO_BUILD_JOBS"] == "2"
+    assert repro["env"]["CARGO_INCREMENTAL"] == "1"
+    assert repro["env"]["UV_LINK_MODE"] == "copy"
+    assert repro["env"]["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "uv-project-env")
     assert "SECRET_TOKEN" not in repro["env"]
     assert repro["limits"]["max_total_rss_gb"] == pytest.approx(3.0)
+
+    env_delta = memory_guard._safe_repro_env_delta(
+        env,
+        baseline={
+            "CARGO_BUILD_JOBS": "8",
+            "CARGO_INCREMENTAL": "0",
+            "UV_PROJECT_ENVIRONMENT": str(tmp_path / "old-uv-project-env"),
+            "SECRET_TOKEN": "baseline-secret",
+        },
+    )
+    assert env_delta["changed"]["CARGO_BUILD_JOBS"] == {"from": "8", "to": "2"}
+    assert env_delta["changed"]["CARGO_INCREMENTAL"] == {"from": "0", "to": "1"}
+    assert env_delta["changed"]["UV_PROJECT_ENVIRONMENT"] == {
+        "from": str(tmp_path / "old-uv-project-env"),
+        "to": str(tmp_path / "uv-project-env"),
+    }
+    assert "SECRET_TOKEN" not in env_delta["changed"]
 
 
 def test_repro_context_platform_detail_does_not_spawn_subprocess(
