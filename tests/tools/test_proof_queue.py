@@ -6055,6 +6055,72 @@ def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
     assert str(log_path) in audit_out
 
 
+def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "wasm-contract-import-missing.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="wasm-contract-import-missing-run",
+        logical_id="runtime-wasm-build",
+        reason="prove wasm preflight import-missing diagnosis",
+        command=[sys.executable, "-m", "molt.cli", "internal-runtime-wasm-build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="wasm:runtime",
+        scopes=["tools/proof_queue.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "wasm-contract-import-missing.memory_guard.json",
+    )
+    log_path.write_text(
+        "failed to import WASM toolchain contract: "
+        "No module named 'packaging.specifiers'\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "wasm-contract-import-missing-run", status="failed", returncode=1
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "wasm-contract-import-missing-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "wasm-toolchain-contract-import-missing"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "packaging.specifiers" in diagnostics[0]["summary"]
+    assert "active uv/project provisioning" in diagnostics[0]["next_action"]
+    assert diagnostics[0]["artifacts"] == [
+        str(tmp_path / "wasm-contract-import-missing.memory_guard.json"),
+        str(log_path),
+    ]
+    assert "python-exception" not in {item["signal_id"] for item in diagnostics}
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_source_lease_contamination(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
