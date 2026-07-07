@@ -73,6 +73,8 @@ Exit 0 = green, 1 = drift / ratchet / anchor failure (violations printed).
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 import sys
 import tomllib
@@ -82,6 +84,110 @@ from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "tools" / "fail_closed_registry.toml"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pruned directory walk (DX: keep the scan fast on the shared build volume)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The scans below sweep the Molt SOURCE trees (include/, src/molt, runtime/…).
+# On the shared checkout / D: build volume those trees accumulate build output,
+# byte-compiled caches, and VCS metadata (``__pycache__`` full of ``.pyc``,
+# ``target/``, ``.git/`` …). A naive ``Path.rglob("*")`` enumerates and ``stat``s
+# every one of those entries even though the per-file suffix filter later drops
+# them — which is what turned this gate into a ~2-minute landing bottleneck.
+#
+# ``_walk_files`` is a pruned ``os.walk`` that skips those build/cache/VCS dirs
+# IN PLACE (editing ``dirnames``) so they are never descended into. This changes
+# NO detection semantics: the pruned directory names below hold only ``.pyc`` /
+# build output / VCS metadata, never ``.h``/``.c``/``.py``/``.rs`` source under
+# audit. To make that a PROVABLE invariant rather than an assumption, the walk is
+# suffix-aware and FAILS CLOSED: before it prunes a directory it verifies (via a
+# recursive scan that stops at the first hit) that the subtree holds NO
+# audited-suffix file. If one is found, the directory is NOT pruned — it is
+# walked exactly like the old ``rglob`` — and a loud warning is logged. A file is
+# therefore never silently skipped; pruning only ever elides ``.pyc`` / build /
+# VCS entries that the per-file suffix filter would have dropped anyway.
+#
+# Exact-name prunes plus a glob prune for build-output ``*_metadata`` dirs.
+_PRUNE_DIR_NAMES = frozenset(
+    {
+        ".git",
+        "target",
+        ".venv",
+        "node_modules",
+        "build",
+        "dist",
+        "__pycache__",
+        "tmp",
+        ".molt_cache",
+        "worktrees",
+    }
+)
+_PRUNE_DIR_GLOBS = ("*_metadata",)
+
+
+def _prune_candidate(name: str) -> bool:
+    if name in _PRUNE_DIR_NAMES:
+        return True
+    return any(fnmatch.fnmatch(name, pat) for pat in _PRUNE_DIR_GLOBS)
+
+
+def _subtree_has_audited_source(base: Path, suffixes: frozenset[str]) -> bool:
+    """True iff ``base`` (recursively) contains a file whose suffix is audited.
+    Stops at the first hit. Only called for prune-candidate dirs, which in a
+    healthy tree hold only ``.pyc`` / build output — so this returns ``False``
+    immediately after scanning cheap non-source entries."""
+
+    stack = [base]
+    while stack:
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif os.path.splitext(entry.name)[1] in suffixes:
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
+
+
+def _walk_files(base: Path, suffixes: frozenset[str]) -> Iterable[Path]:
+    """Yield every file under ``base`` in sorted order, pruning build/cache/VCS
+    directories that cannot contain audited source. Provably equivalent to
+    ``sorted(base.rglob("*"))`` filtered to files: a prune-candidate directory is
+    pruned ONLY after ``_subtree_has_audited_source`` confirms it holds no
+    ``suffixes`` file; otherwise it is walked normally (and a loud warning is
+    emitted) so no audited file is ever silently skipped."""
+
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Prune in place so os.walk never descends into excluded trees. A
+        # candidate is only actually pruned once proven source-free; sort the
+        # survivors for deterministic traversal order.
+        kept: list[str] = []
+        for d in dirnames:
+            if _prune_candidate(d):
+                sub = Path(dirpath) / d
+                if _subtree_has_audited_source(sub, suffixes):
+                    print(
+                        f"fail-closed gate: WARNING not pruning {sub.as_posix()!r}: "
+                        f"it holds audited source ({sorted(suffixes)}); scanning it "
+                        "in full to preserve detection coverage.",
+                        file=sys.stderr,
+                    )
+                    kept.append(d)
+                # else: proven source-free — safe to prune.
+            else:
+                kept.append(d)
+        dirnames[:] = sorted(kept)
+        d = Path(dirpath)
+        for fname in sorted(filenames):
+            yield d / fname
+
 
 _VALID_CLASSES = frozenset(
     {
@@ -183,11 +289,12 @@ class DiscoveredSite:
 def _iter_files(
     root: Path, dirs: Iterable[str], suffixes: tuple[str, ...]
 ) -> Iterable[Path]:
+    suffix_set = frozenset(suffixes)
     for rel in dirs:
         base = root / rel
         if not base.exists():
             continue
-        for path in sorted(base.rglob("*")):
+        for path in _walk_files(base, suffix_set):
             if not path.is_file():
                 continue
             if path.suffix not in suffixes:
@@ -366,7 +473,9 @@ def discover_fail_open_abi(root: Path) -> list[DiscoveredSite]:
     if not base.exists():
         return []
     found: list[DiscoveredSite] = []
-    for path in sorted(base.rglob("*.rs")):
+    for path in _walk_files(base, frozenset({".rs"})):
+        if path.suffix != ".rs":
+            continue
         posix = path.as_posix()
         if "/tests/" in posix:
             continue
@@ -681,7 +790,9 @@ def _molt_side_headers(root: Path) -> dict[str, Path]:
     base = root / _MOLT_INCLUDE_TREE
     if not base.exists():
         return out
-    for path in sorted(base.rglob("*.h")):
+    for path in _walk_files(base, frozenset({".h"})):
+        if path.suffix != ".h":
+            continue
         # Skip the abi tree itself if nested; skip numpy/scipy package dirs.
         posix = path.as_posix()
         if "/numpy/" in posix or "/scipy/" in posix:
@@ -709,7 +820,9 @@ def discover_duplicate_authority(root: Path) -> list[DiscoveredSite]:
     if not abi_base.exists():
         return []
     abi_names: dict[str, Path] = {}
-    for path in sorted(abi_base.rglob("*.h")):
+    for path in _walk_files(abi_base, frozenset({".h"})):
+        if path.suffix != ".h":
+            continue
         if path.name in _CPYTHON_HEADER_NAMES:
             n = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
             if n > _FORWARDER_LINE_CAP:
