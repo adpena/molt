@@ -1721,6 +1721,20 @@ extern PyObject *PyWeakref_GetObject(PyObject *ref);
 
 #define PYTHON_API_VERSION 1013
 
+/*
+ * Single-authority layout enforcement.
+ *
+ * Every traditional-representation struct declared above (PyObject, PyTypeObject,
+ * PyMethodDef, Py_buffer, …) mirrors a Rust `#[repr(C)]` struct in
+ * runtime/molt-cpython-abi/src/abi_types.rs, which is the SOLE authority for the
+ * standalone libmolt_cpython_abi object model. The generated header below asserts,
+ * at compile time, that these C declarations have byte-identical layout to that
+ * authority; a drift in either file fails to compile here rather than corrupting
+ * memory at runtime. Regenerate after editing abi_types.rs:
+ *   python tools/gen_cpython_abi_layout.py --write
+ */
+#include <_molt_abi_layout.generated.h>
+
 #ifdef __cplusplus
 }
 #endif
