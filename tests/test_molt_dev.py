@@ -231,7 +231,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
 
 def test_committed_gate_manifest_selects_codec_table_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
-    gates, matched = cfg.select(["runtime/molt-runtime-text/src/codec_registry.rs"])
+    gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
 
     assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
     assert "python3 tools/gen_codecs.py --check" in gates
@@ -242,13 +242,13 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     assert "python3 tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
-        ["runtime/molt-runtime-text/src/codec_aliases_generated.rs"]
+        ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
     )
     assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
     assert "python3 tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
-        ["runtime/molt-runtime-text/src/charmap_codecs_generated.rs"]
+        ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
     )
     assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
     assert "python3 tools/gen_codecs.py --check" in gates

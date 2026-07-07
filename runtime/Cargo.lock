@@ -2597,12 +2597,12 @@ dependencies = [
  "molt-runtime-regex",
  "molt-runtime-serial",
  "molt-runtime-stringprep",
- "molt-runtime-text",
  "molt-runtime-tk",
  "molt-runtime-vfs",
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
  "molt-stdlib-difflib",
+ "molt-stdlib-text",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -2818,16 +2818,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-text"
-version = "0.1.0"
-dependencies = [
- "memchr",
- "molt-lang-obj-model",
- "molt-runtime-core",
- "unicode_names2 3.1.0",
-]
-
-[[package]]
 name = "molt-runtime-tk"
 version = "0.1.0"
 dependencies = [
@@ -2878,6 +2868,16 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-stdlib-text"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+ "unicode_names2 3.1.0",
 ]
 
 [[package]]

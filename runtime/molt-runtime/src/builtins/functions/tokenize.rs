@@ -1,10 +1,10 @@
 // Tokenize and linecache source-encoding metadata ABI shims.
 //
-// Pure scanner and encoding-cookie algorithms live in `molt-runtime-text`; this
+// Pure scanner and encoding-cookie algorithms live in `molt-stdlib-text`; this
 // module owns Molt object conversion and exported ABI entrypoints.
 
 use super::*;
-use molt_runtime_text::tokenize::{detect_source_encoding, scan_tokens};
+use molt_stdlib_text::tokenize::{detect_source_encoding, scan_tokens};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tokenize_runtime_ready() -> u64 {

@@ -479,7 +479,10 @@ def _runtime_rust_files() -> tuple[Path, ...]:
         child
         for child in RUNTIME_ROOT.iterdir()
         if child.is_dir()
-        and (child.name.startswith("molt-runtime") or child.name.startswith("molt-stdlib"))
+        and (
+            child.name.startswith("molt-runtime")
+            or child.name.startswith("molt-stdlib")
+        )
     ]
     generator_owned_outputs = {OUT_RUNTIME_CALLABLES_RS.resolve()}
     return tuple(

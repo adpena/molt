@@ -1,4 +1,4 @@
-//! FFI bridge shims for `molt-runtime-text`.
+//! FFI bridge shims for `molt-stdlib-text`.
 //!
 //! Each function here is a thin `#[no_mangle] extern "C"` wrapper around an
 //! internal `pub(crate)` function.  The text crate declares matching
