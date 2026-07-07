@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports)]
-//! `molt-runtime-text` — Text/encoding intrinsics for the Molt runtime.
+//! `molt-stdlib-text` — text and encoding intrinsics for the Molt stdlib layer.
 //!
 //! Isolates text codec facts plus the unicodedata and html intrinsics into a
 //! dedicated crate.

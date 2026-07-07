@@ -4,7 +4,7 @@ use crate::object::ops::{
 };
 use crate::object::ops_encoding::DecodeFailure as OpsDecodeFailure;
 use crate::*;
-use molt_runtime_text::codec_registry::PYTHON_ENCODING_ALIASES;
+use molt_stdlib_text::codec_registry::PYTHON_ENCODING_ALIASES;
 
 fn codec_arg_to_str(
     _py: &PyToken<'_>,

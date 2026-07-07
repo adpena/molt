@@ -175,7 +175,7 @@ def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
 
 def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
-    text_manifest_path = ROOT / "runtime" / "molt-runtime-text" / "Cargo.toml"
+    text_manifest_path = ROOT / "runtime" / "molt-stdlib-text" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
         runtime_manifest = tomllib.load(handle)
     with text_manifest_path.open("rb") as handle:
@@ -188,7 +188,7 @@ def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
     )
     text_version = text_dep["version"] if isinstance(text_dep, dict) else text_dep
 
-    assert runtime_version == text_version == "2.0"
+    assert runtime_version == text_version == "3.1"
 
 
 def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:

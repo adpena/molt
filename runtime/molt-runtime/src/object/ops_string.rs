@@ -2309,7 +2309,7 @@ pub(super) fn wtf8_has_surrogates(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn push_wtf8_codepoint(out: &mut Vec<u8>, code: u32) {
-    molt_runtime_text::wtf8::push_wtf8_codepoint(out, code);
+    molt_stdlib_text::wtf8::push_wtf8_codepoint(out, code);
 }
 
 fn utf8_char_width(first: u8) -> usize {

@@ -274,9 +274,9 @@ description = "Text codec registry and generated single-byte charmap tables."
 globs = [
   "tools/gen_codecs.py",
   "runtime/molt-runtime/src/object/ops_encoding.rs",
-  "runtime/molt-runtime-text/src/codec_registry.rs",
-  "runtime/molt-runtime-text/src/charmap_codecs_generated.rs",
-  "runtime/molt-runtime-text/src/codec_aliases_generated.rs",
+  "runtime/molt-stdlib-text/src/codec_registry.rs",
+  "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
+  "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
   "src/molt/stdlib/encodings/*.py",
   "tests/test_gen_codecs.py",
 ]

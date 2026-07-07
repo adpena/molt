@@ -33,11 +33,12 @@ Do not use this document as permission to touch frozen or in-surgery lanes.
 
 ## Landed Satellite Pattern
 
-Existing satellites include text, regex, math, graphlib, difflib, logging,
+Existing satellites include text (`molt-stdlib-text`), regex, math, graphlib, difflib, logging,
 path, collections, itertools, compression, crypto, net, asyncio, serial, HTTP,
 stringprep, XML, ipaddress, zoneinfo, protobuf, and Tk. The canonical pattern is:
 
-1. Create `runtime/molt-runtime-X` with workspace edition/rust-version.
+1. Create `runtime/molt-stdlib-X` for stdlib modules, or `runtime/molt-runtime-X`
+   for runtime services such as VFS, with workspace edition/rust-version.
 2. Move the subsystem source into that crate; do not leave a duplicate module
    body in `molt-runtime`.
 3. Move feature-owned third-party dependencies to the new crate when the

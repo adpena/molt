@@ -24,7 +24,7 @@ use crate::object::ops_encoding::{
     unicode_name_escape,
 };
 use crate::*;
-use molt_runtime_text::wtf8::{push_backslash_bytes_vec, push_wtf8_codepoint};
+use molt_stdlib_text::wtf8::{push_backslash_bytes_vec, push_wtf8_codepoint};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
