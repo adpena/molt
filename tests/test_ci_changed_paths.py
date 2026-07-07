@@ -44,7 +44,7 @@ def test_python_source_change_runs_python_smoke_only() -> None:
 
 
 def test_runtime_text_leaf_change_runs_rust_without_llvm_or_kani() -> None:
-    classes = _classes("runtime/molt-runtime-text/src/tokenize.rs")
+    classes = _classes("runtime/molt-stdlib-text/src/tokenize.rs")
 
     assert classes["python_tooling"] is False
     assert classes["rust"] is True

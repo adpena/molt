@@ -146,10 +146,10 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_codecs.py"
 outputs = [
-  "runtime/molt-runtime-text/src/charmap_codecs_generated.rs",
-  "runtime/molt-runtime-text/src/codec_aliases_generated.rs",
+  "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
+  "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
 ]
-source = "runtime/molt-runtime-text/src/codec_registry.rs"
+source = "runtime/molt-stdlib-text/src/codec_registry.rs"
 check_mode = true
 check_command = "tools/gen_codecs.py --check"
 idempotent = true

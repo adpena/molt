@@ -16,9 +16,9 @@ The live codebase and executable Cargo metadata remain authoritative.
   `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
   `cargo metadata --no-deps` reports these as workspace packages.
 - `molt-runtime-stringprep`, the codec identity plus generated alias and
-  single-byte charmap table authority in `molt-runtime-text`, the `html` /
+  single-byte charmap table authority in `molt-stdlib-text`, the `html` /
   `unicodedata`
-  portions of `molt-runtime-text`, `molt-runtime-zoneinfo`, the math-family
+  portions of `molt-stdlib-text`, `molt-runtime-zoneinfo`, the math-family
   modules owned by `molt-runtime-math`, XML owned by `molt-runtime-xml`,
   `difflib` owned by `molt-runtime-difflib`, and `ipaddress` owned by
   `molt-runtime-ipaddress` are
@@ -113,7 +113,7 @@ sub-crates. Suggested cut (along the existing module seams):
   `builtins/codecs.rs`), `-num` (int/float/bigint), `-collections` (list/dict/set/
   tuple — note `molt-runtime-collections` already exists as a separate crate),
   `-exceptions`, `-iter`, `-io`, `-os`, etc. Each maps to a builtins/object cluster.
-- `molt-runtime` becomes a façade crate: `pub use molt_runtime_text::*; …` + the
+- `molt-runtime` becomes a façade crate: `pub use molt_stdlib_text::*; …` + the
   intrinsic resolver glue.
 
 Benefits: (a) cargo compiles leaf crates **in parallel across all cores**; (b)

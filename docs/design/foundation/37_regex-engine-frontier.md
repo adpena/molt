@@ -527,7 +527,7 @@ Tier-F gets prefilters for free via `meta::Regex` (literal extraction → `memch
 single-substring with x86_64/aarch64 "generic SIMD two-rare-bytes" + Teddy multi-substring
 ported from Hyperscan; burntsushi.net/regex-internals §prefilters). Tier-B gets the
 anchor-prefilter (§3-c.2). `memchr 2.8.0` is **already a direct dep** of `molt-runtime`,
-`molt-runtime-text`, and `molt-runtime-serial` (`Cargo.toml:184`, etc.) and
+`molt-stdlib-text`, and `molt-runtime-serial` (`Cargo.toml:184`, etc.) and
 `aho-corasick`/`regex-automata` are in `Cargo.lock` — the SIMD substrate is present.
 
 ### 4.3 Multi-pattern matching (`re.Scanner` / tokenizers)

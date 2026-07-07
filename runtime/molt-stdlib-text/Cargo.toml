@@ -1,11 +1,11 @@
 [package]
-name = "molt-runtime-text"
+name = "molt-stdlib-text"
 version = "0.1.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
-description = "Text/encoding intrinsics for the Molt runtime (unicodedata, html)"
+description = "Text and encoding intrinsics for the Molt stdlib layer (unicodedata, html)"
 
 [features]
 default = ["stdlib_text"]

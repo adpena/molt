@@ -253,7 +253,7 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
-name = "molt-runtime-text"
+name = "molt-stdlib-text"
 layer = 3
 role = "stdlib satellite"
 

@@ -12,7 +12,7 @@ members = [
     "molt-runtime-serial",
     "molt-runtime-regex",
     "molt-runtime-path",
-    "molt-runtime-text",
+    "molt-stdlib-text",
     "molt-runtime-difflib",
     "molt-runtime-graphlib",
     "molt-runtime-logging",

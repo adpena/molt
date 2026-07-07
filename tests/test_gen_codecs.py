@@ -81,7 +81,7 @@ def test_generated_python_aliases_cover_local_encoding_modules() -> None:
 
 
 def test_codec_registry_reexports_generated_aliases() -> None:
-    registry = ROOT / "runtime/molt-runtime-text/src/codec_registry.rs"
+    registry = ROOT / "runtime/molt-stdlib-text/src/codec_registry.rs"
     text = registry.read_text(encoding="utf-8")
     assert "pub use crate::codec_aliases_generated::ENCODING_ALIASES;" in text
     assert "pub use crate::codec_aliases_generated::PYTHON_ENCODING_ALIASES;" in text
@@ -95,6 +95,6 @@ def test_runtime_no_longer_owns_charmap_tables() -> None:
     consumer = (ROOT / "runtime/molt-runtime/src/object/ops_encoding.rs").read_text(
         encoding="utf-8"
     )
-    assert "molt_runtime_text::charmap_codecs_generated" in consumer
+    assert "molt_stdlib_text::charmap_codecs_generated" in consumer
     assert "mod charmap_codecs" not in consumer
     assert "crate::object::ops_encoding::charmap_codecs" not in consumer

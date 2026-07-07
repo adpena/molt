@@ -2598,10 +2598,11 @@ dependencies = [
  "molt-runtime-regex",
  "molt-runtime-serial",
  "molt-runtime-stringprep",
- "molt-runtime-text",
  "molt-runtime-tk",
+ "molt-runtime-vfs",
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
+ "molt-stdlib-text",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -2620,7 +2621,6 @@ dependencies = [
  "sha2 0.11.0",
  "simdutf",
  "socket2",
- "tar",
  "tempfile",
  "trybuild",
  "tungstenite",
@@ -2826,16 +2826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-text"
-version = "0.1.0"
-dependencies = [
- "memchr",
- "molt-lang-obj-model",
- "molt-runtime-core",
- "unicode_names2 3.1.0",
-]
-
-[[package]]
 name = "molt-runtime-tk"
 version = "0.1.0"
 dependencies = [
@@ -2843,6 +2833,15 @@ dependencies = [
  "libloading 0.9.0",
  "molt-lang-obj-model",
  "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-vfs"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
 ]
 
 [[package]]
@@ -2869,6 +2868,16 @@ dependencies = [
  "rmp-serde",
  "serde",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "molt-stdlib-text"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+ "unicode_names2 3.1.0",
 ]
 
 [[package]]

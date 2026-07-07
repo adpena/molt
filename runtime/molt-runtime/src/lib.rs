@@ -136,12 +136,12 @@ pub use molt_runtime_regex;
 pub use molt_runtime_serial;
 #[cfg(feature = "stdlib_stringprep")]
 pub use molt_runtime_stringprep;
-#[cfg(feature = "stdlib_text")]
-pub use molt_runtime_text;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo;
+#[cfg(feature = "stdlib_text")]
+pub use molt_stdlib_text;
 #[cfg(feature = "stdlib_tk")]
 mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
@@ -773,16 +773,16 @@ pub use molt_runtime_serial::structs::*;
 pub use molt_runtime_serial::zipfile::*;
 #[cfg(feature = "stdlib_stringprep")]
 pub use molt_runtime_stringprep::stringprep::*;
-#[cfg(feature = "stdlib_text")]
-pub use molt_runtime_text::html::*;
-#[cfg(feature = "stdlib_text")]
-pub use molt_runtime_text::unicodedata_mod::*;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml::xml_etree::*;
 #[cfg(feature = "stdlib_xml")]
 pub use molt_runtime_xml::xml_sax::*;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo::zoneinfo::*;
+#[cfg(feature = "stdlib_text")]
+pub use molt_stdlib_text::html::*;
+#[cfg(feature = "stdlib_text")]
+pub use molt_stdlib_text::unicodedata_mod::*;
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(unused_imports)]
