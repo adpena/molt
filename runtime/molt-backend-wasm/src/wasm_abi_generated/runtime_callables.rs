@@ -13007,6 +13007,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_zlib_decompressobj_unused_data",
+        import: WasmRuntimeImport::ZlibDecompressobjUnusedData,
+        arity: 1,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_zlib_def_buf_size",
         import: WasmRuntimeImport::ZlibDefBufSize,
         arity: 0,
@@ -18280,6 +18286,9 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_zlib_decompressobj_unconsumed_tail" => {
             Some(WasmRuntimeImport::ZlibDecompressobjUnconsumedTail)
         }
+        "molt_zlib_decompressobj_unused_data" => {
+            Some(WasmRuntimeImport::ZlibDecompressobjUnusedData)
+        }
         "molt_zlib_def_buf_size" => Some(WasmRuntimeImport::ZlibDefBufSize),
         "molt_zlib_def_mem_level" => Some(WasmRuntimeImport::ZlibDefMemLevel),
         "molt_zlib_max_wbits" => Some(WasmRuntimeImport::ZlibMaxWbits),
@@ -20886,6 +20895,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_zlib_decompressobj_flush" => Some(2),
         "molt_zlib_decompressobj_new" => Some(1),
         "molt_zlib_decompressobj_unconsumed_tail" => Some(1),
+        "molt_zlib_decompressobj_unused_data" => Some(1),
         "molt_zlib_def_buf_size" => Some(0),
         "molt_zlib_def_mem_level" => Some(0),
         "molt_zlib_max_wbits" => Some(0),
