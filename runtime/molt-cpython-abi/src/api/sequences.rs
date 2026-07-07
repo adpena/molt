@@ -365,68 +365,188 @@ pub unsafe extern "C" fn PyFrozenSet_Check(op: *mut PyObject) -> c_int {
     (std::ptr::eq(ob_type, &raw const crate::abi_types::PyFrozenSet_Type)) as c_int
 }
 
-/// Set a NotImplementedError for a not-yet-wired set operation and fail closed.
+/// Ensure a NULL / -1 error return always carries a pending exception.
 ///
-/// The CPython ABI has no runtime set hooks in the bridge vtable yet. Faking set
-/// operations (returning a list from PySet_New, reporting every membership test
-/// as "absent" from PySet_Contains, or claiming success from PySet_Add /
-/// PySet_Discard) silently corrupts set semantics for any extension that relies
-/// on dedup or membership. Until real set hooks exist we fail closed with a set
-/// exception + error sentinel so callers see an honest error, never a wrong
-/// answer.
-unsafe fn set_not_implemented(message: &'static [u8]) {
-    unsafe {
-        crate::api::errors::PyErr_SetString(
-            &raw mut crate::abi_types::PyExc_NotImplementedError,
-            message.as_ptr().cast(),
-        );
+/// The runtime set hooks return the CPython error sentinel (0 / -1) after
+/// setting a pending runtime exception. If a caller reaches a failure path with
+/// no pending exception (e.g. hooks unregistered, or a bridge resolution
+/// failure that the runtime never saw), the ABI contract still requires an
+/// exception on the error return — set a SystemError so callers never observe a
+/// NULL/-1 without `PyErr_Occurred()`.
+unsafe fn ensure_set_error(message: &'static core::ffi::CStr) {
+    let pending = crate::hooks::hooks()
+        .map(|h| unsafe { (h.exception_pending)() } != 0)
+        .unwrap_or(false);
+    if !pending {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                message.as_ptr(),
+            );
+        }
+    }
+}
+
+/// Resolve a bridge-managed set argument to its runtime handle bits, or set a
+/// SystemError and return None (matching CPython's SystemError for a non-set).
+unsafe fn set_arg_handle(anyset: *mut PyObject, message: &'static core::ffi::CStr) -> Option<u64> {
+    // Drop the bridge lock before any PyErr_SetString / hook call — both
+    // re-acquire GLOBAL_BRIDGE, so holding the guard would self-deadlock.
+    let handle = {
+        let bridge = GLOBAL_BRIDGE.lock();
+        bridge.pyobj_to_handle(anyset)
+    };
+    match handle {
+        Some(bits) => Some(bits),
+        None => {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    &raw mut crate::abi_types::PyExc_SystemError,
+                    message.as_ptr(),
+                );
+            }
+            None
+        }
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_New(iterable: *mut PyObject) -> *mut PyObject {
-    let _ = iterable;
-    // FAIL CLOSED (pending runtime set hooks): returning a list here would give
-    // the caller a non-set object with list semantics (no dedup, no set
-    // membership) — a silent-wrong-answer. NULL + NotImplementedError instead.
-    unsafe { set_not_implemented(b"PySet_New: set objects are not yet supported by the CPython ABI bridge\0") };
-    ptr::null_mut()
+    // NULL iterable → empty set (CPython accepts NULL). A non-NULL iterable must
+    // be a bridge-managed object; resolve it to handle bits (0 signals "empty"
+    // to the runtime authority).
+    let iterable_bits = if iterable.is_null() {
+        0
+    } else {
+        match unsafe {
+            set_arg_handle(
+                iterable,
+                c"PySet_New: iterable is not a bridge-managed object",
+            )
+        } {
+            Some(bits) => bits,
+            None => return ptr::null_mut(),
+        }
+    };
+    let h = hooks_or_stubs();
+    let result = unsafe { (h.set_new)(iterable_bits) };
+    if result == 0 {
+        unsafe { ensure_set_error(c"PySet_New failed: runtime set authority unavailable") };
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(result) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Size(anyset: *mut PyObject) -> Py_ssize_t {
-    // CPython returns -1 with an exception set on error. Without a real set
-    // object we cannot report a truthful size; fail closed rather than return 0.
-    let _ = anyset;
-    unsafe { set_not_implemented(b"PySet_Size: set objects are not yet supported by the CPython ABI bridge\0") };
-    -1
+    let bits = match unsafe {
+        set_arg_handle(anyset, c"PySet_Size: argument is not a bridge-managed set")
+    } {
+        Some(bits) => bits,
+        None => return -1,
+    };
+    let h = hooks_or_stubs();
+    let n = unsafe { (h.set_size)(bits) };
+    if n < 0 {
+        unsafe { ensure_set_error(c"PySet_Size failed: runtime set authority unavailable") };
+        return -1;
+    }
+    n as Py_ssize_t
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Contains(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
-    // CPython returns -1 (error) / 0 (absent) / 1 (present). Returning 0 here
-    // would falsely report every key as absent. Fail closed with -1.
-    let _ = (anyset, key);
-    unsafe { set_not_implemented(b"PySet_Contains: set objects are not yet supported by the CPython ABI bridge\0") };
-    -1
+    if key.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PySet_Contains: key must not be NULL".as_ptr(),
+            );
+        }
+        return -1;
+    }
+    let set_bits = match unsafe {
+        set_arg_handle(anyset, c"PySet_Contains: argument is not a bridge-managed set")
+    } {
+        Some(bits) => bits,
+        None => return -1,
+    };
+    let key_bits = match unsafe {
+        set_arg_handle(key, c"PySet_Contains: key is not a bridge-managed object")
+    } {
+        Some(bits) => bits,
+        None => return -1,
+    };
+    let h = hooks_or_stubs();
+    let rc = unsafe { (h.set_contains)(set_bits, key_bits) };
+    if rc < 0 {
+        unsafe { ensure_set_error(c"PySet_Contains failed: runtime set authority unavailable") };
+        return -1;
+    }
+    rc
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
-    // CPython returns 0 on success, -1 on error. Returning 0 (fake success)
-    // would silently drop the added element. Fail closed with -1.
-    let _ = (anyset, key);
-    unsafe { set_not_implemented(b"PySet_Add: set objects are not yet supported by the CPython ABI bridge\0") };
-    -1
+    if key.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PySet_Add: key must not be NULL".as_ptr(),
+            );
+        }
+        return -1;
+    }
+    let set_bits = match unsafe {
+        set_arg_handle(anyset, c"PySet_Add: argument is not a bridge-managed set")
+    } {
+        Some(bits) => bits,
+        None => return -1,
+    };
+    let key_bits =
+        match unsafe { set_arg_handle(key, c"PySet_Add: key is not a bridge-managed object") } {
+            Some(bits) => bits,
+            None => return -1,
+        };
+    let h = hooks_or_stubs();
+    let rc = unsafe { (h.set_add)(set_bits, key_bits) };
+    if rc != 0 {
+        unsafe { ensure_set_error(c"PySet_Add failed: runtime set authority unavailable") };
+        return -1;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PySet_Discard(anyset: *mut PyObject, key: *mut PyObject) -> c_int {
-    // CPython returns 1 (removed) / 0 (absent) / -1 (error). Fake success (0)
-    // would silently pretend a discard happened. Fail closed with -1.
-    let _ = (anyset, key);
-    unsafe { set_not_implemented(b"PySet_Discard: set objects are not yet supported by the CPython ABI bridge\0") };
-    -1
+    if key.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                &raw mut crate::abi_types::PyExc_SystemError,
+                c"PySet_Discard: key must not be NULL".as_ptr(),
+            );
+        }
+        return -1;
+    }
+    let set_bits = match unsafe {
+        set_arg_handle(anyset, c"PySet_Discard: argument is not a bridge-managed set")
+    } {
+        Some(bits) => bits,
+        None => return -1,
+    };
+    let key_bits = match unsafe {
+        set_arg_handle(key, c"PySet_Discard: key is not a bridge-managed object")
+    } {
+        Some(bits) => bits,
+        None => return -1,
+    };
+    let h = hooks_or_stubs();
+    let rc = unsafe { (h.set_discard)(set_bits, key_bits) };
+    if rc < 0 {
+        unsafe { ensure_set_error(c"PySet_Discard failed: runtime set authority unavailable") };
+        return -1;
+    }
+    rc
 }
 
 // ─── PyList_GetSlice / PyList_Sort / PyList_Reverse ──────────────────────

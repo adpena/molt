@@ -668,6 +668,44 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
     }
 }
 
+// ── Set protocol (PySet_*) ────────────────────────────────────────────────
+//
+// The single set authority is the runtime's `PySet_*` compat functions
+// (`crate::c_api::PySet_*`), which delegate to the runtime set object's hash
+// table (`molt_set_*` / `set_del_in_place`) with dedup, hashed membership,
+// frozenset immutability, and CPython-shaped exceptions (TypeError for
+// unhashable keys, SystemError for non-sets). These hooks are a thin routing
+// layer; they perform NO set logic themselves.
+
+/// `PySet_New(iterable)` — 0 (empty) or a populated set. Returns handle bits, or
+/// 0 with a pending exception on error.
+unsafe extern "C" fn hook_set_new(iterable_bits: u64) -> u64 {
+    crate::c_api::PySet_New(iterable_bits)
+}
+
+/// `PySet_Size(anyset)` — element count, or -1 with a pending exception.
+unsafe extern "C" fn hook_set_size(set_bits: u64) -> c_int {
+    // PySet_Size returns isize; the ABI hook narrows to c_int. A set never holds
+    // more than isize::MAX elements, and the only out-of-band value is -1
+    // (error), which round-trips through c_int unchanged.
+    crate::c_api::PySet_Size(set_bits) as c_int
+}
+
+/// `PySet_Contains(anyset, key)` — 1 / 0 / -1.
+unsafe extern "C" fn hook_set_contains(set_bits: u64, key_bits: u64) -> c_int {
+    crate::c_api::PySet_Contains(set_bits, key_bits)
+}
+
+/// `PySet_Add(set, key)` — 0 on success, -1 on error.
+unsafe extern "C" fn hook_set_add(set_bits: u64, key_bits: u64) -> c_int {
+    crate::c_api::PySet_Add(set_bits, key_bits)
+}
+
+/// `PySet_Discard(set, key)` — 1 (removed) / 0 (absent) / -1 (error).
+unsafe extern "C" fn hook_set_discard(set_bits: u64, key_bits: u64) -> c_int {
+    crate::c_api::PySet_Discard(set_bits, key_bits)
+}
+
 unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
     with_gil(|_py| {
         let module_obj = MoltObject::from_bits(module_bits);
@@ -1898,6 +1936,11 @@ pub fn register_cpython_hooks() {
         number_unary_op: hook_number_unary_op,
         number_power: hook_number_power,
         dict_op: hook_dict_op,
+        set_new: hook_set_new,
+        set_size: hook_set_size,
+        set_contains: hook_set_contains,
+        set_add: hook_set_add,
+        set_discard: hook_set_discard,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {

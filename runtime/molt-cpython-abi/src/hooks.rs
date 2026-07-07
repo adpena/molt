@@ -208,6 +208,32 @@ pub struct RuntimeHooks {
     // loss. This hook routes to the runtime dict authority. `op` is a [`DictOp`]
     // discriminant. Returns result bits, or 0 with a pending exception on error.
     pub dict_op: unsafe extern "C" fn(op: u32, dict_bits: u64) -> u64,
+    // ── Set protocol (PySet_*) ────────────────────────────────────────────────
+    //
+    // The runtime owns the single set authority (hash table, dedup, membership,
+    // frozenset immutability, CPython-shaped exceptions) in
+    // `molt-lang-runtime`. The ABI MUST NOT fake a set with a list (no dedup, no
+    // hashed membership) or report every membership test as absent — both are
+    // silent-wrong-answer. These hooks route `PySet_*` to that authority.
+    /// Allocate a new set, optionally populated from `iterable_bits` (0 = empty
+    /// set). Returns set handle bits, or 0 with a pending exception on error
+    /// (e.g. a non-iterable argument → TypeError).
+    pub set_new: unsafe extern "C" fn(iterable_bits: u64) -> u64,
+    /// Return the number of elements in a set/frozenset, or -1 with a pending
+    /// exception (SystemError) when `set_bits` is not a set/frozenset.
+    pub set_size: unsafe extern "C" fn(set_bits: u64) -> std::os::raw::c_int,
+    /// Membership test. Returns 1 (present) / 0 (absent) / -1 with a pending
+    /// exception on error (TypeError for an unhashable key, SystemError for a
+    /// non-set).
+    pub set_contains: unsafe extern "C" fn(set_bits: u64, key_bits: u64) -> std::os::raw::c_int,
+    /// Add `key_bits` to the set. Returns 0 on success, -1 with a pending
+    /// exception on error (TypeError for an unhashable key, SystemError for a
+    /// non-set).
+    pub set_add: unsafe extern "C" fn(set_bits: u64, key_bits: u64) -> std::os::raw::c_int,
+    /// Remove `key_bits` from the set if present. Returns 1 (found and removed)
+    /// / 0 (absent) / -1 with a pending exception on error. Never raises
+    /// KeyError (unlike `set.discard`).
+    pub set_discard: unsafe extern "C" fn(set_bits: u64, key_bits: u64) -> std::os::raw::c_int,
 }
 
 /// Discriminants for [`RuntimeHooks::dict_op`]. Kept in sync with the match in
@@ -479,6 +505,25 @@ unsafe extern "C" fn stub_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 
 unsafe extern "C" fn stub_dict_op(_op: u32, _dict: u64) -> u64 {
     0
 }
+// Set stubs fail closed with the CPython error sentinel (0 / -1). Without the
+// runtime set authority registered, returning a fake success would silently
+// corrupt set semantics; the API wrappers turn these sentinels into NULL / -1
+// with an exception set.
+unsafe extern "C" fn stub_set_new(_iterable: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_set_size(_set: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_set_contains(_set: u64, _key: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_set_add(_set: u64, _key: u64) -> std::os::raw::c_int {
+    -1
+}
+unsafe extern "C" fn stub_set_discard(_set: u64, _key: u64) -> std::os::raw::c_int {
+    -1
+}
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
@@ -528,6 +573,11 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     number_unary_op: stub_number_unary_op,
     number_power: stub_number_power,
     dict_op: stub_dict_op,
+    set_new: stub_set_new,
+    set_size: stub_set_size,
+    set_contains: stub_set_contains,
+    set_add: stub_set_add,
+    set_discard: stub_set_discard,
 };
 
 /// Return the registered hooks or fall back to the no-op stubs.
