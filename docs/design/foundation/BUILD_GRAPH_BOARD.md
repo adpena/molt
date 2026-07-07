@@ -10,7 +10,7 @@ Product board for the crate-cut enforcement fact (doc 56 FACT-A / Phase 1a). Gen
 | metric | value |
 | --- | --- |
 | crate_layer_backedges | 0 |
-| max_crate_blast_radius | 29 |
+| max_crate_blast_radius | 30 |
 | undeclared_crates | 0 |
 
 ## Layer back-edges (0)
@@ -21,9 +21,9 @@ None  -  every dependency edge respects the declared layer ordering.
 
 | radius | crate | layer | downstream cone (first 6) |
 | ---: | --- | ---: | --- |
-| 29 | `molt-codegen-abi` | L0 | molt-backend, molt-backend-native, molt-backend-wasm, molt-embed, molt-ffi, molt-lang-cpython-abi... |
-| 25 | `molt-lang-obj-model` | L1 | molt-embed, molt-ffi, molt-lang-cpython-abi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections... |
-| 23 | `molt-runtime-core` | L2 | molt-embed, molt-ffi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections, molt-runtime-compression... |
+| 30 | `molt-codegen-abi` | L0 | molt-backend, molt-backend-native, molt-backend-wasm, molt-embed, molt-ffi, molt-lang-cpython-abi... |
+| 26 | `molt-lang-obj-model` | L1 | molt-embed, molt-ffi, molt-lang-cpython-abi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections... |
+| 24 | `molt-runtime-core` | L2 | molt-embed, molt-ffi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections, molt-runtime-compression... |
 | 7 | `molt-ir` | L0 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-passes... |
 | 6 | `molt-passes` | L1 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-tir |
 | 5 | `molt-db` | L0 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host, molt-worker |
@@ -35,6 +35,7 @@ None  -  every dependency edge respects the declared layer ordering.
 | 4 | `molt-runtime-compression` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-crypto` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-difflib` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-graphlib` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-http` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-ipaddress` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-itertools` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
@@ -47,6 +48,7 @@ None  -  every dependency edge respects the declared layer ordering.
 | 4 | `molt-runtime-stringprep` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-text` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-tk` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
+| 4 | `molt-runtime-vfs` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-xml` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 4 | `molt-runtime-zoneinfo` | L3 | molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 3 | `molt-runtime` | L4 | molt-embed, molt-ffi, molt-wasm-host |
@@ -69,7 +71,7 @@ None  -  every dependency edge respects the declared layer ordering.
 - **Layer 0:** `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-runtime-protobuf`, `molt-snapshot`, `molt-tier`
 - **Layer 1:** `molt-lang-obj-model`, `molt-passes`, `molt-worker`
 - **Layer 2:** `molt-lang-cpython-abi`, `molt-runtime-core`, `molt-tir`
-- **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-runtime-asyncio`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-crypto`, `molt-runtime-difflib`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-regex`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-text`, `molt-runtime-tk`, `molt-runtime-xml`, `molt-runtime-zoneinfo`
+- **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-runtime-asyncio`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-crypto`, `molt-runtime-difflib`, `molt-runtime-graphlib`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-regex`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-text`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`
 - **Layer 4:** `molt-backend`, `molt-runtime`
 - **Layer 5:** `molt-embed`, `molt-ffi`, `molt-wasm-host`
 

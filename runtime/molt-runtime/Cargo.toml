@@ -146,7 +146,7 @@ source_extension_loader = ["dep:libloading"]
 # from getrandom Cargo features: getrandom 0.4 selects custom backends via
 # cfg(getrandom_backend = "..."), not via a Cargo feature named "custom".
 wasm_freestanding = []
-vfs_bundle_tar = ["dep:tar"]
+vfs_bundle_tar = ["molt-runtime-vfs/vfs_bundle_tar"]
 wasi_host = ["stdlib_fs_extra"]
 
 # Structured audit logging: enables audit event emission in capability checks.
@@ -185,6 +185,7 @@ molt-runtime-stringprep = { path = "../molt-runtime-stringprep", optional = true
 molt-runtime-xml = { path = "../molt-runtime-xml", optional = true }
 molt-runtime-ipaddress = { path = "../molt-runtime-ipaddress", optional = true }
 molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
+molt-runtime-vfs = { path = "../molt-runtime-vfs" }
 molt-gpu = { path = "../molt-gpu", optional = true, default-features = false, features = ["cpu-backend"] }
 serde_json = { workspace = true }
 crossbeam-deque = "0.8"
@@ -214,9 +215,8 @@ sha2 = "0.11"
 bzip2 = { version = "0.6", optional = true }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
-tar = { version = "0.4", optional = true }
 
-# Serialization (partial — serde_json is used by VFS, keep required)
+# Serialization (partial)
 rmpv = { version = "1.3", optional = true }
 serde_cbor = { version = "0.11", optional = true }
 

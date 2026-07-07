@@ -164,7 +164,8 @@ pub mod resource;
 mod socket_constants;
 mod state;
 mod utils;
-pub mod vfs;
+pub use molt_runtime_vfs as vfs;
+pub use molt_runtime_vfs::{molt_vfs_inject_entry, molt_vfs_inject_finish};
 mod wasm_abi_exports;
 #[cfg(windows)]
 mod windows_abi;

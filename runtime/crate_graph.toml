@@ -263,6 +263,11 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
+name = "molt-runtime-vfs"
+layer = 3
+role = "runtime filesystem satellite"
+
+[[crate]]
 name = "molt-runtime-xml"
 layer = 3
 role = "stdlib satellite"

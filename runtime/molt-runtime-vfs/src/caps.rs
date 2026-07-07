@@ -1,6 +1,6 @@
 //! Mount-to-capability mapping for VFS access control.
 
-use crate::vfs::VfsError;
+use crate::VfsError;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
