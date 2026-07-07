@@ -61,6 +61,12 @@ impl LuauBackend {
     }
 
     fn emit_unsupported_op(&mut self, op: &OpIR) {
+        // Fail-closed authority: record the unsupported op the moment the
+        // dispatch catch-all fires. `compile_checked` reads this list, so an
+        // unsupported op can never slip a fabricated `nil` past the gate by
+        // lacking the exact `-- [unsupported op:` marker string in the text.
+        self.unsupported_ops
+            .push(format!("`{}` (luau backend)", op.kind));
         if let Some(ref out_name) = op.out {
             let out = sanitize_ident(out_name);
             self.emit_line(&format!(

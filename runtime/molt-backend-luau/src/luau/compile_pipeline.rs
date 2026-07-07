@@ -2,6 +2,9 @@ use super::*;
 
 impl LuauBackend {
     pub fn compile(&mut self, ir: &SimpleIR) -> String {
+        // Reset the fail-closed accumulator for this compilation so a reused
+        // backend instance does not carry unsupported-op records across runs.
+        self.unsupported_ops.clear();
         // Phase 1: Emit all function bodies to a temporary buffer so we can
         // scan which runtime helpers are actually referenced.
         let emit_funcs: Vec<&FunctionIR> = ir
@@ -80,6 +83,21 @@ impl LuauBackend {
     /// Luau.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
         let source = self.compile(ir);
+        // Fail-closed authority: the dispatch catch-all records every op it
+        // could not lower into `self.unsupported_ops` at emit time, so the
+        // rejection here does NOT depend on `validate_luau_source` finding the
+        // `-- [unsupported op:` marker text. An unsupported op therefore cannot
+        // slip a fabricated `nil` past the gate by lacking that exact marker.
+        // `validate_luau_source` is retained for the other preview-blocker
+        // markers (e.g. control-flow `error("[unsupported op: ...]")` stubs and
+        // block-structure checks) it already owns.
+        if !self.unsupported_ops.is_empty() {
+            return Err(format!(
+                "luau backend refuses to emit fail-open codegen for unsupported op(s): {} \
+                 -- use --target native, or add lowering to the luau op dispatch",
+                self.unsupported_ops.join(", ")
+            ));
+        }
         validate_luau_source(&source)?;
 
         // Performance review — report remaining opportunities to stderr.

@@ -517,8 +517,50 @@ fn test_compile_via_ir_rejects_unsupported_output() {
     let err = backend
         .compile_via_ir(&ir)
         .expect_err("preview/IR path must reject unsupported output");
-    assert!(err.contains("unsupported marker"));
-    assert!(err.contains("[unsupported op: unknown_luau_op]"));
+    // Fail-closed authority is the emit-time `unsupported_ops` accumulator, not
+    // the downstream `-- [unsupported op:` text scan. The accumulator check
+    // fires first and names the op + backend.
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "error must come from the fail-closed accumulator, got: {err}"
+    );
+    assert!(
+        err.contains("`unknown_luau_op` (luau backend)"),
+        "diagnostic must name the unsupported op kind + backend, got: {err}"
+    );
+}
+
+/// The fail-closed accumulator is the authority, independent of the emitted
+/// text. An unsupported op with NO output emits only a `-- [unsupported op:]`
+/// comment (never a `local x = nil` value line), yet is still recorded and the
+/// build fails closed. Proves the gate does not rely on the `local x = nil`
+/// text ever appearing.
+#[test]
+fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![OpIR {
+                // No `out` → catch-all emits only a comment, never `local x = nil`.
+                kind: "molt_synthetic_unsupported_sink_probe".to_string(),
+                ..OpIR::default()
+            }],
+        }],
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let err = backend
+        .compile_via_ir(&ir)
+        .expect_err("an unsupported op with no output must still fail closed");
+    assert!(err.contains("refuses to emit fail-open codegen"), "got: {err}");
+    assert!(
+        err.contains("`molt_synthetic_unsupported_sink_probe` (luau backend)"),
+        "got: {err}"
+    );
 }
 
 #[test]
