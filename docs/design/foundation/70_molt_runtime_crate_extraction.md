@@ -62,6 +62,120 @@ The only intentional visibility widening is `load_vfs()`: runtime state still
 decides when VFS is lazily loaded, while the VFS crate owns how the state is
 constructed.
 
+Follow-up on the same C1 authority moved VFS load and host-injected bundle
+custody out of the root module into `runtime/molt-runtime-vfs/src/load.rs`.
+That file now owns quota parsing, native directory/tar loading, WASM injected
+entries, and shared `/tmp` + `/dev` runtime mount construction; `lib.rs`
+keeps only the root VFS API and public re-exports.
+
+Rebased proof on `origin/main` `fbb1eae15`:
+
+- `20260707T200553-c1-vfs-load-split-allfeatures-test-20260707e-74e66eaaa60f4b49`
+  passed `cargo test -p molt-runtime-vfs --all-features`.
+- `20260707T200643-c1-vfs-load-split-molt-runtime-check-20260707e-85414a30ee594bee`
+  passed `cargo check -p molt-runtime`.
+- `20260707T201403-c1-vfs-load-split-native-e2e-20260707a-afb8fe60d17d493a`
+  passed a real native `molt build examples/hello.py --target native --profile
+  dev --out-dir <clean-dir> --json`.
+- `uv run --active --project . --python 3.12 pytest -q tests/test_browser_vfs.py`
+  passed locally (`3 passed`).
+
+The next native bundled-VFS proof exposed a reusable runtime authority gap, not
+a VFS-specific defect. Row
+`20260707T202635-c1-vfs-load-split-native-vfs-bundle-20260707a-8120253ff1884ba9`
+failed because `open()` received a float default as its mode: frontend
+`builtin_func` carried only the executable runtime symbol
+(`molt_open_builtin`), while `molt_func_new_builtin_named` needs the Python
+builtin name (`open`) to resolve default metadata. The fix is shared authority:
+frontend builtin/runtime function emission now serializes a const-string name
+operand plus `builtin_name`; IR/TIR preserve the metadata; Cranelift, LLVM, and
+WASM use `molt_func_new_builtin_named` when the name operand is present; the raw
+constructor remains only as the legacy no-name fallback. This is deliberately not
+an `open` shim and not VFS-owned behavior. Proof:
+`20260707T210140-c1-builtin-named-constructor-check-20260707a-2289cdd1acb544e6`
+passed `cargo check -p molt-ir -p molt-backend-native -p molt-backend-wasm`.
+Adversarial review tightened the same boundary: `builtin_name` and the
+executable name operand are lockstep. `builtin_name` is rejected unless the
+`builtin_func` op carries exactly one executable name operand, and a name operand
+is rejected unless `builtin_name` metadata is present. LLVM now matches
+Cranelift/WASM by taking the raw constructor on no-name ops, and WASM emits
+`molt_func_new_builtin_named(name_bits, fn_ptr, trampoline_ptr, arity)` in the
+runtime ABI order.
+
+The rerun then moved the native bundled-VFS proof to a deeper shared IO blocker:
+`20260707T210532-c1-vfs-load-split-native-vfs-bundle-20260707b-0837ae1419b048a9`
+built successfully, then the compiled binary failed at startup with
+`RuntimeError: memory backend missing`. Diagnosis: `TextIOWrapper` over the VFS
+memory-backed binary buffer had `mem_bits == 0`; normal text files hid that
+because `std::fs::File` ignores `mem_bits`, but VFS memory files require the
+bytearray backing store. The fix routes shared read/write buffer operations
+through the child buffer's `mem_bits` when the text wrapper itself has none.
+This is reusable IO layering, not a VFS path special case. Compile proof:
+`20260707T211459-c1-vfs-text-memory-backend-check-20260707a-d7b91ea23b2e475b`
+passed `molt-runtime` + `molt-ir`; the remaining signal was the pre-existing
+nested memory-guard orphan-cleanup DX warning.
+
+Native bundled-VFS behavior then passed in
+`20260707T212019-c1-vfs-load-split-native-vfs-bundle-20260707c-55d529fb7e0e4c4a`:
+the compiled binary read `/bundle/data.txt`, read nested
+`/bundle/nested/more.txt`, wrote and read `/tmp/out.txt`, and rejected a
+write back into `/bundle` with `PermissionError`.
+
+Security model: VFS bundle loading is sandbox-by-default. Browser/worker bundle
+injection remains a byte-entry protocol that rejects absolute paths, `..`, NULs,
+and quota overflow before mounting `/bundle`. Native directory bundles now treat
+the host filesystem as untrusted input: the root and entries reject symlinks,
+junctions, mount points, and other Windows reparse points by default, stop
+ignoring `read_dir` errors, and track canonical visited directories to avoid
+cycles. Full host-link access is still available for explicit unsafe native
+development with exactly `MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS=1`; unset or
+`0` keeps sandbox behavior, and any other set value fails closed instead of
+guessing truthiness. Unsafe access remains full-control opt-in, not ambient
+behavior.
+
+The split-runtime/browser VFS assertion row is blocked before it reaches VFS:
+`20260707T200848-c1-vfs-load-split-wasm-split-vfs-adapter-20260707c-ee804b91561c476d`
+fails while compiling `molt-runtime` for `wasm32-wasip1` because
+`runtime/molt-runtime/src/cpython_abi_hooks.rs` references
+`crate::c_api::PyDict_Items` and `PySet_{New,Size,Contains,Add,Discard}`, while
+`runtime/molt-runtime/src/c_api/mod.rs` only re-exports the `cpython_compat`
+helpers on non-wasm32. That blocker is CPython-ABI hook/runtime-wasm visibility
+work, not VFS load authority.
+
+Validation ladder for this split and the next C1 cuts:
+
+- Structural proof: satellite crate test, then `cargo check -p molt-runtime`.
+- Real compiler proof: queue-owned `python -m molt build examples/hello.py
+  --target native --profile dev --out-dir <clean-dir> --json`; a cargo-only
+  proof is not enough for a runtime extraction.
+- Runtime behavior proof: queue-owned native bundle driver that reads nested
+  `/bundle` files, writes `/tmp`, and rejects writes back into `/bundle`.
+- Browser/split proof: `tests/test_wasm_split_runtime.py` and VFS browser
+  assertions after the CPython-ABI wasm32 blocker above moves out of the way.
+- Benchmark triage: `uv run --active --project . --python 3.12 python
+  tools/bench_individual.py --bench bench_etl_orders.py --bench
+  bench_json_roundtrip.py --samples 3 --warmup 1 --json-out
+  bench/results/c1_vfs_load_<stamp>.json`.
+- Citable performance gate, only for a release/perf claim: `uv run --active
+  --project . --python 3.12 python tools/perf_scoreboard.py --set core
+  --backend native --backend llvm --profile release-fast --samples 5 --warmup 2
+  --repeat 5 --classify --require-quiescent`.
+- Stress/endurance: run the loop/object stress differential files through queue
+  custody, serializing compiler-build resources rather than creating a parallel
+  rebuild storm.
+
+DX signal recorded during this arc: the split proof repeated the
+`nested-memory-guard-orphan-cleanup` warning on otherwise green cargo rows, an
+early VFS test row hit an sccache server disconnect (`os error 10054`) before it
+reached the changed crate, and even local Python `--help` probes were slow
+enough to notice while the native E2E build was active. Fresh current-main
+landing prep added a harder number: the required `tools/tree_drift_check.py
+--witness --fetch` reflex, invoked through `uv run --active`, spent 4m58s
+installing 57 packages before returning the one-line verdict. Treat those as
+iteration-loop evidence for the C1/R5 optimization queue, not as VFS correctness
+failures. Drift checks should become dependency-light or run from a stable warm
+RunContext environment so the board-required reflex stays cheap enough to use.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with

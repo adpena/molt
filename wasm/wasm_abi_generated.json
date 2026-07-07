@@ -1640,6 +1640,7 @@
     "frozenset_new": "molt_frozenset_new",
     "func_new": "molt_func_new",
     "func_new_builtin": "molt_func_new_builtin",
+    "func_new_builtin_named": "molt_func_new_builtin_named",
     "func_new_closure": "molt_func_new_closure",
     "function_closure_bits": "molt_function_closure_bits",
     "function_default_kind": "molt_function_default_kind",

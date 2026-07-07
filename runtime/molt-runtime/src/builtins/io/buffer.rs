@@ -34,7 +34,7 @@ pub(super) unsafe fn memory_backend_vec(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
 ) -> Result<&'static mut Vec<u8>, u64> {
-    unsafe { memory_backend_vec_from_bits(_py, handle.mem_bits) }
+    unsafe { memory_backend_vec_from_bits(_py, memory_backend_bits(handle)) }
 }
 
 pub(super) unsafe fn memory_backend_vec_ref_from_bits(
@@ -71,7 +71,28 @@ pub(super) unsafe fn memory_backend_vec_ref(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
 ) -> Result<&'static Vec<u8>, u64> {
-    unsafe { memory_backend_vec_ref_from_bits(_py, handle.mem_bits) }
+    unsafe { memory_backend_vec_ref_from_bits(_py, memory_backend_bits(handle)) }
+}
+
+pub(super) unsafe fn memory_backend_bits(handle: &MoltFileHandle) -> u64 {
+    if handle.mem_bits != 0 {
+        return handle.mem_bits;
+    }
+    if handle.buffer_bits == 0 {
+        return 0;
+    }
+    let buffer_obj = obj_from_bits(handle.buffer_bits);
+    let Some(buffer_ptr) = buffer_obj.as_ptr() else {
+        return 0;
+    };
+    if object_type_id(buffer_ptr) != TYPE_ID_FILE_HANDLE {
+        return 0;
+    }
+    let buffer_handle_ptr = file_handle_ptr(buffer_ptr);
+    if buffer_handle_ptr.is_null() {
+        return 0;
+    }
+    unsafe { (*buffer_handle_ptr).mem_bits }
 }
 
 pub(crate) unsafe fn collect_bytes_like(_py: &PyToken<'_>, bits: u64) -> Result<Vec<u8>, u64> {
@@ -169,9 +190,11 @@ pub(super) unsafe fn buffered_read_reserve_hint(
             MoltFileBackend::File(file) => {
                 file_remaining_bytes_hint(file).map(|n| n.saturating_add(unread))
             }
-            MoltFileBackend::Memory(mem) => memory_backend_vec_ref_from_bits(_py, handle.mem_bits)
-                .ok()
-                .map(|data| data.len().saturating_sub(mem.pos).saturating_add(unread)),
+            MoltFileBackend::Memory(mem) => {
+                memory_backend_vec_ref_from_bits(_py, memory_backend_bits(handle))
+                    .ok()
+                    .map(|data| data.len().saturating_sub(mem.pos).saturating_add(unread))
+            }
             MoltFileBackend::Text(_) => None,
         }
     }
@@ -391,7 +414,8 @@ pub(super) unsafe fn flush_write_buffer(
         handle.write_buf.clear();
         let mut written = 0usize;
         while written < bytes.len() {
-            let n = backend_write_bytes(_py, handle.mem_bits, backend, &bytes[written..])?;
+            let n =
+                backend_write_bytes(_py, memory_backend_bits(handle), backend, &bytes[written..])?;
             if n == 0 {
                 return Err(raise_exception::<_>(_py, "OSError", "write failed"));
             }
@@ -442,8 +466,12 @@ pub(super) unsafe fn buffered_read_bytes(
                 Some(mut remaining) => {
                     while remaining > 0 {
                         let to_read = remaining.min(tmp.len());
-                        let n =
-                            backend_read_bytes(_py, handle.mem_bits, backend, &mut tmp[..to_read])?;
+                        let n = backend_read_bytes(
+                            _py,
+                            memory_backend_bits(handle),
+                            backend,
+                            &mut tmp[..to_read],
+                        )?;
                         if n == 0 {
                             at_eof = true;
                             break;
@@ -453,7 +481,8 @@ pub(super) unsafe fn buffered_read_bytes(
                     }
                 }
                 None => loop {
-                    let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut tmp)?;
+                    let n =
+                        backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut tmp)?;
                     if n == 0 {
                         at_eof = true;
                         break;
@@ -497,7 +526,7 @@ pub(super) unsafe fn buffered_read_bytes(
             let buf_size = handle.buffer_size.max(1) as usize;
             let mut buf = std::mem::take(&mut handle.read_buf);
             buf.resize(buf_size, 0);
-            let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+            let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
             if n == 0 {
                 at_eof = true;
                 handle.read_buf = buf;
@@ -541,7 +570,12 @@ pub(super) unsafe fn buffered_read_into(
         if written >= buf.len() {
             return Ok(written);
         }
-        let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf[written..])?;
+        let n = backend_read_bytes(
+            _py,
+            memory_backend_bits(handle),
+            backend,
+            &mut buf[written..],
+        )?;
         written += n;
         Ok(written)
     }
@@ -583,7 +617,7 @@ pub(super) unsafe fn file_read1_bytes(
             return Ok((Vec::new(), false));
         }
         let mut buf = vec![0u8; read_size];
-        let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+        let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
         buf.truncate(n);
         Ok((buf, n == 0))
     }
@@ -607,7 +641,7 @@ pub(super) unsafe fn handle_read_byte(
                 let buf_size = handle.buffer_size.max(1) as usize;
                 let mut buf = std::mem::take(&mut handle.read_buf);
                 buf.resize(buf_size, 0);
-                let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+                let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
                 if n == 0 {
                     handle.read_buf = buf;
                     clear_read_buffer(handle);
@@ -628,7 +662,7 @@ pub(super) unsafe fn handle_read_byte(
             Ok(Some(byte))
         } else {
             let mut buf = [0u8; 1];
-            let n = backend_read_bytes(_py, handle.mem_bits, backend, &mut buf)?;
+            let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
             if n == 0 { Ok(None) } else { Ok(Some(buf[0])) }
         }
     }

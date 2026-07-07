@@ -2,7 +2,7 @@
 //! Populated from a tar archive or explicit file entries at init.
 
 #[cfg(feature = "vfs_bundle_tar")]
-use crate::VfsLoadQuota;
+use crate::load::VfsLoadQuota;
 use crate::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

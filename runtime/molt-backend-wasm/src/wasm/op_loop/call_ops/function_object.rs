@@ -18,6 +18,7 @@ pub(super) fn emit_function_object_call_op(
                 "func_new",
                 WasmRuntimeImport::FuncNew,
                 None,
+                None,
             );
             CallOpEmission::Handled
         }
@@ -34,6 +35,7 @@ pub(super) fn emit_function_object_call_op(
                 op,
                 "func_new_closure",
                 WasmRuntimeImport::FuncNewClosure,
+                None,
                 Some(closure_bits),
             );
             CallOpEmission::Handled
@@ -91,7 +93,15 @@ fn emit_builtin_func(
         func,
         op,
         "builtin_func",
-        WasmRuntimeImport::FuncNewBuiltin,
+        if op.args.as_ref().is_some_and(|args| !args.is_empty()) {
+            WasmRuntimeImport::FuncNewBuiltinNamed
+        } else {
+            WasmRuntimeImport::FuncNewBuiltin
+        },
+        op.args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(|name| call_ctx.locals[name]),
         None,
     );
     CallOpEmission::Handled
@@ -103,6 +113,7 @@ fn emit_function_constructor(
     op: &OpIR,
     table_context: &str,
     import: WasmRuntimeImport,
+    leading_local: Option<u32>,
     trailing_local: Option<u32>,
 ) {
     let func_name = op.s_value.as_ref().unwrap();
@@ -110,6 +121,9 @@ fn emit_function_constructor(
     let table_pair = call_ctx
         .call_site_abi
         .callable_table_pair(func_name, table_context);
+    if let Some(local) = leading_local {
+        func.instruction(&Instruction::LocalGet(local));
+    }
     emit_table_index_i64(
         func,
         call_ctx.reloc_enabled,

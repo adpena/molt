@@ -515,12 +515,15 @@ class FunctionMetadataMixin(_MixinBase):
     def _emit_builtin_function(self, func_id: str) -> MoltValue:
         spec = BUILTIN_FUNC_SPECS[func_id]
         arity = _builtin_func_abi_arity(spec)
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[func_id], result=name_val))
         func_val = MoltValue(self.next_var(), type_hint="function")
         self.emit(
             MoltOp(
                 kind="BUILTIN_FUNC",
-                args=[spec.runtime, arity],
+                args=[spec.runtime, arity, name_val],
                 result=func_val,
+                metadata={"builtin_name": func_id},
             )
         )
         self._emit_function_metadata(

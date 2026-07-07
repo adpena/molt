@@ -630,6 +630,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 5,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::FuncNewBuiltinNamed,
+        name: "func_new_builtin_named",
+        type_idx: 7,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::FuncNewClosure,
         name: "func_new_closure",
         type_idx: 7,
@@ -15109,6 +15114,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "fn_ptr_code_set" => Some(WasmRuntimeImport::FnPtrCodeSet),
         "func_new" => Some(WasmRuntimeImport::FuncNew),
         "func_new_builtin" => Some(WasmRuntimeImport::FuncNewBuiltin),
+        "func_new_builtin_named" => Some(WasmRuntimeImport::FuncNewBuiltinNamed),
+        "molt_func_new_builtin_named" => Some(WasmRuntimeImport::FuncNewBuiltinNamed),
         "func_new_closure" => Some(WasmRuntimeImport::FuncNewClosure),
         "function_closure_bits" => Some(WasmRuntimeImport::FunctionClosureBits),
         "function_default_kind" => Some(WasmRuntimeImport::FunctionDefaultKind),
