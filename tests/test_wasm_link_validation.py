@@ -894,6 +894,40 @@ def _module_with_linking_symbols(entries: list[bytes]) -> bytes:
     return wasm_link._build_sections([(0, custom)])
 
 
+def _linking_data_symbol_names(data: bytes) -> list[tuple[int, str]]:
+    """Return ``(flags, name)`` for every ``data`` symbol in the linking symtab."""
+    names: list[tuple[int, str]] = []
+    for section_id, payload in wasm_link._parse_sections(data):
+        if section_id != 0:
+            continue
+        name, custom_payload = wasm_link._parse_custom_section(payload)
+        if name != "linking":
+            continue
+        _version, subsections = wasm_link._parse_linking_payload(custom_payload)
+        for sub_id, sub_payload in subsections:
+            if sub_id != wasm_link.SYMTAB_SUBSECTION_ID:
+                continue
+            count, offset = wasm_link._read_varuint(sub_payload, 0)
+            for _ in range(count):
+                kind = sub_payload[offset]
+                offset += 1
+                flags, offset = wasm_link._read_varuint(sub_payload, offset)
+                if kind == 1:
+                    symbol_name, offset = wasm_link._read_string(sub_payload, offset)
+                    names.append((flags, symbol_name))
+                    if not (flags & wasm_link.FLAG_UNDEFINED):
+                        _seg, offset = wasm_link._read_varuint(sub_payload, offset)
+                        _off, offset = wasm_link._read_varuint(sub_payload, offset)
+                        _sz, offset = wasm_link._read_varuint(sub_payload, offset)
+                elif kind in (0, 2, 4, 5):
+                    _idx, _nm, offset = wasm_link._parse_indexed_symbol(
+                        sub_payload, offset, flags
+                    )
+                elif kind == 3:
+                    _sec, offset = wasm_link._read_varuint(sub_payload, offset)
+    return names
+
+
 def _module_with_flattenable_rec_group_type() -> bytes:
     func_type = b"\x60\x00\x00"
     type_payload = bytearray()
@@ -2269,6 +2303,109 @@ def test_rewrite_native_runtime_imports_split_runtime_uses_public_cpython_abi_ex
             ("env", "molt_cpython_abi_date_from_date"),
             ("env", "malloc"),
         ]
+
+
+def test_rewrite_native_runtime_imports_split_runtime_prefixes_cpython_abi_data_symbols(
+    tmp_path: Path,
+) -> None:
+    # CPython ABI type objects (PyLong_Type, PyType_Type, ...) surface as
+    # undefined *data* symbols in the relocatable object's linking symtab, not
+    # as function imports. The deployed split app must carry them as the
+    # molt_-prefixed public export names the shared split runtime provides.
+    native = tmp_path / "multiarray.molt.wasm"
+    native.write_bytes(
+        _module_with_linking_symbols(
+            [
+                _data_symbol_entry(
+                    flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                    name="PyLong_Type",
+                ),
+                _data_symbol_entry(
+                    flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                    name="PyType_Type",
+                ),
+                _data_symbol_entry(
+                    flags=wasm_link.FLAG_EXPLICIT_NAME,
+                    name="local_defined_datum",
+                    segment_index=0,
+                    offset=4,
+                    size=8,
+                ),
+            ]
+        )
+    )
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            {"molt_PyLong_Type", "molt_PyType_Type"},
+            temp_dir,
+            split_runtime=True,
+        )
+
+        assert force_exports == []
+        assert len(rewritten_paths) == 1
+        assert rewritten_paths[0] != native
+        assert _linking_data_symbol_names(rewritten_paths[0].read_bytes()) == [
+            (
+                wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                "molt_PyLong_Type",
+            ),
+            (
+                wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                "molt_PyType_Type",
+            ),
+            (wasm_link.FLAG_EXPLICIT_NAME, "local_defined_datum"),
+        ]
+    # The original relocatable object is never mutated in place.
+    assert _linking_data_symbol_names(native.read_bytes()) == [
+        (wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME, "PyLong_Type"),
+        (wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME, "PyType_Type"),
+        (wasm_link.FLAG_EXPLICIT_NAME, "local_defined_datum"),
+    ]
+
+
+def test_rewrite_native_runtime_imports_reloc_keeps_unprefixed_cpython_abi_data_symbols(
+    tmp_path: Path,
+) -> None:
+    # The monolithic runnable statically links native objects against the
+    # relocatable runtime, whose CPython ABI type objects are the real
+    # unprefixed `#[no_mangle]` symbols. The reloc naming convention
+    # (split_runtime=False) must leave the data symbol names untouched so
+    # wasm-ld resolves them directly against the relocatable runtime.
+    native = tmp_path / "multiarray.molt.wasm"
+    native.write_bytes(
+        _module_with_linking_symbols(
+            [
+                _data_symbol_entry(
+                    flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                    name="PyLong_Type",
+                ),
+            ]
+        )
+    )
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        rewritten_paths, force_exports = wasm_link._rewrite_native_runtime_imports(
+            (native,),
+            {"molt_PyLong_Type"},
+            temp_dir,
+            split_runtime=False,
+        )
+
+    # No molt_-prefix churn under the reloc convention: the data symbol name is
+    # left untouched (it already matches the relocatable runtime symbol) so the
+    # object is returned unchanged. The unprefixed name is flagged for
+    # force-export so wasm-ld retains it from the relocatable runtime.
+    assert force_exports == ["PyLong_Type"]
+    assert rewritten_paths == (native,)
+    assert _linking_data_symbol_names(native.read_bytes()) == [
+        (wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME, "PyLong_Type"),
+    ]
 
 
 def test_rewrite_native_runtime_imports_rejects_non_manifest_raw_c_api_symbol(
