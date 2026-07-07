@@ -202,6 +202,64 @@ def test_update_baseline_and_write_board_share_one_cli_scan(
     assert "board written:" in output
 
 
+def test_path_scope_json_limits_findings_and_metrics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    pkg = tmp_path / "src" / "molt"
+    pkg.mkdir(parents=True)
+    (pkg / "selected.py").write_text(
+        "# TODO(compiler): selected path debt marker\n", encoding="utf-8"
+    )
+    (pkg / "unselected.py").write_text(
+        "# FIXME(compiler): unselected path debt marker\n", encoding="utf-8"
+    )
+
+    assert (
+        SA.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--path",
+                "src/molt/selected.py",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["path_scope"] == ["src/molt/selected.py"]
+    assert payload["metrics"]["debt_markers_total"] == 1
+    assert [finding["location"] for finding in payload["findings"]] == [
+        "src/molt/selected.py:1"
+    ]
+
+
+def test_path_scope_is_diagnostic_only_not_a_ratchet_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    pkg = tmp_path / "src" / "molt"
+    pkg.mkdir(parents=True)
+    (pkg / "selected.py").write_text(
+        "# TODO(compiler): selected path debt marker\n", encoding="utf-8"
+    )
+
+    rc = SA.main(
+        [
+            "--root",
+            str(tmp_path),
+            "--path",
+            "src/molt/selected.py",
+            "--check",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "--path is diagnostic-only" in captured.err
+
+
 def test_debt_probe_ignores_domain_temporary_and_tool_regex_strings(tmp_path: Path):
     pkg = tmp_path / "src" / "molt"
     pkg.mkdir(parents=True)
