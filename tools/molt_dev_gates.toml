@@ -113,6 +113,22 @@ gates = [
 
 # --- Runtime crate Rust (object model / runtime library) -----------------
 [[rule]]
+name = "runtime-vfs"
+description = "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-runtime-vfs/**/*.rs",
+  "runtime/molt-runtime-vfs/Cargo.toml",
+  "tests/test_browser_vfs.py",
+  "wasm/molt_vfs_browser.js",
+]
+gates = [
+  "cargo clippy -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+  "cargo test -p molt-runtime-vfs --all-features",
+  "python3 -m pytest tests/test_browser_vfs.py -q",
+]
+
+[[rule]]
 name = "runtime-lib"
 description = "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary."
 require_fresh_toolchain = true
