@@ -16,6 +16,7 @@ from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
     _manifest_support_file_payloads,
 )
+from molt.cli.source_extensions import source_extension_manifest_source_path
 from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
 import pytest
@@ -2946,6 +2947,140 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
         assert sealed_manifest["runtime_python_import_modules"] == [
             "numpy._core._exceptions"
         ]
+
+
+def test_extension_seal_relativizes_object_closure_sources_to_source_plan_roots(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_root = tmp_path / "source"
+    build_root = tmp_path / "build"
+    artifact_dir = source_root / "numpy" / "_core"
+    source_dir = artifact_dir / "src"
+    generated_dir = build_root / "numpy" / "_core" / "libloops.a.p"
+    source_dir.mkdir(parents=True)
+    generated_dir.mkdir(parents=True)
+    (source_root / "numpy" / "__init__.py").write_text("V = 1\n", encoding="utf-8")
+    (artifact_dir / "__init__.py").write_text("", encoding="utf-8")
+    (build_root / "intro-targets.json").write_text("[]\n", encoding="utf-8")
+    (build_root / "compile_commands.json").write_text("[]\n", encoding="utf-8")
+    source_path = source_dir / "npy_static_data.c"
+    source_path.write_text(
+        "static int PyInit__multiarray_umath(PyObject *module) { return 0; }\n",
+        encoding="utf-8",
+    )
+    generated_source_path = generated_dir / "loops.dispatch.c"
+    generated_source_path.write_text(
+        "int npy_generated_loop(void) { return 1; }\n",
+        encoding="utf-8",
+    )
+    artifact_bytes = _wasm_exporting_i64_unary_symbol("PyInit__multiarray_umath")
+    artifact_path = artifact_dir / "_multiarray_umath.molt.wasm"
+    artifact_path.write_bytes(artifact_bytes)
+    extension_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    generated_source_sha256 = hashlib.sha256(
+        generated_source_path.read_bytes()
+    ).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "name": "numpy-probe",
+        "version": "0.1.0",
+        "module": "numpy._core._multiarray_umath",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "loader_kind": "libmolt_source",
+        "init_symbol": "PyInit__multiarray_umath",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "capabilities": ["module.extension.exec"],
+        "extension": "numpy/_core/_multiarray_umath.molt.wasm",
+        "extension_sha256": extension_sha256,
+        "provided_capsules": [],
+        "source_plan": {
+            "kind": "meson-intro-targets",
+            "plan": str((build_root / "intro-targets.json").resolve()),
+            "source_root": str(source_root.resolve()),
+            "build_root": str(build_root.resolve()),
+            "compile_commands": str((build_root / "compile_commands.json").resolve()),
+            "digest": "source-plan-digest",
+        },
+        "object_closure": {
+            "schema_version": 1,
+            "root_symbol": "PyInit__multiarray_umath",
+            "init_symbol_owner": "0_multiarray.o",
+            "closure_sha256": extension_sha256,
+            "runtime_symbols": [],
+            "required_capsules": [],
+            "objects": [
+                {
+                    "source": str(source_path),
+                    "object": "0_multiarray.o",
+                    "source_sha256": source_sha256,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["PyInit__multiarray_umath"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                },
+                {
+                    "source": str(generated_source_path),
+                    "object": "1_loops.o",
+                    "source_sha256": generated_source_sha256,
+                    "object_sha256": extension_sha256,
+                    "defined_symbols": ["npy_generated_loop"],
+                    "undefined_symbols": [],
+                    "required_c_api_symbols": [],
+                    "required_capsules": [],
+                },
+            ],
+        },
+    }
+    manifest_path = source_root / "extension_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sealed_root = tmp_path / "sealed"
+
+    rc = cli.extension_seal(
+        path=str(manifest_path),
+        out_dir=str(sealed_root),
+        python_export=["numpy"],
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    capsys.readouterr()
+    expected_sources = {
+        "numpy/_core/src/npy_static_data.c",
+        "numpy/_core/libloops.a.p/loops.dispatch.c",
+    }
+    for manifest_rel in (
+        "extension_manifest.json",
+        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
+    ):
+        sealed_manifest_path = sealed_root / manifest_rel
+        sealed_manifest = json.loads(
+            sealed_manifest_path.read_text(encoding="utf-8")
+        )
+        sealed_sources = {
+            item["source"]
+            for item in sealed_manifest["object_closure"]["objects"]
+        }
+        assert sealed_sources == expected_sources
+        assert all(not Path(source).is_absolute() for source in sealed_sources)
+        for item in sealed_manifest["object_closure"]["objects"]:
+            resolved, errors = source_extension_manifest_source_path(
+                item["source"],
+                manifest=sealed_manifest,
+                manifest_path=sealed_manifest_path,
+                expected_sha256=item["source_sha256"],
+            )
+            assert errors == []
+            assert resolved is not None
+            assert resolved.is_file()
 
 
 def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_custody(
