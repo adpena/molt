@@ -204,7 +204,8 @@ impl MountTable {
     pub fn add_mount(&mut self, prefix: &str, backend: Arc<dyn VfsBackend>) {
         let prefix = prefix.trim_end_matches('/').to_string();
         self.mounts.push((prefix, backend));
-        self.mounts.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        self.mounts
+            .sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
     }
 
     /// Resolve a path to (mount_prefix, backend, relative_path).
@@ -443,7 +444,7 @@ pub extern "C" fn molt_vfs_inject_finish() -> i32 {
 }
 
 /// Load VFS from injected entries (WASM) or environment (native).
-pub(crate) fn load_vfs() -> Option<VfsState> {
+pub fn load_vfs() -> Option<VfsState> {
     match load_vfs_inner() {
         Ok(state) => state,
         Err(err) => panic!("failed to load VFS bundle: {err}"),
@@ -517,10 +518,10 @@ fn load_vfs_inner() -> Result<Option<VfsState>, VfsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vfs::bundle::BundleFs;
-    use crate::vfs::dev::DevFs;
-    use crate::vfs::file::MoltVfsFile;
-    use crate::vfs::tmp::TmpFs;
+    use crate::bundle::BundleFs;
+    use crate::dev::DevFs;
+    use crate::file::MoltVfsFile;
+    use crate::tmp::TmpFs;
 
     #[test]
     fn normalize_rejects_empty() {
@@ -739,7 +740,7 @@ mod tests {
 
     #[test]
     fn capability_denies_without_grant() {
-        use crate::vfs::caps::check_mount_capability;
+        use crate::caps::check_mount_capability;
         let no_caps = |_: &str| false;
         assert!(matches!(
             check_mount_capability("/bundle", false, &no_caps),
@@ -749,7 +750,7 @@ mod tests {
 
     #[test]
     fn capability_allows_dev_always() {
-        use crate::vfs::caps::check_mount_capability;
+        use crate::caps::check_mount_capability;
         let no_caps = |_: &str| false;
         assert!(check_mount_capability("/dev", false, &no_caps).is_ok());
         assert!(check_mount_capability("/dev", true, &no_caps).is_ok());
@@ -757,7 +758,7 @@ mod tests {
 
     #[test]
     fn capability_denies_bundle_write() {
-        use crate::vfs::caps::check_mount_capability;
+        use crate::caps::check_mount_capability;
         let all_caps = |_: &str| true;
         assert!(matches!(
             check_mount_capability("/bundle", true, &all_caps),

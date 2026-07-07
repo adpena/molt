@@ -1,6 +1,6 @@
 //! Ephemeral read-write in-memory filesystem for /tmp mount.
 
-use crate::vfs::{VfsBackend, VfsError, VfsStat};
+use crate::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
