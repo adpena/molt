@@ -30,6 +30,9 @@ _MOLT_ZLIB_DECOMPRESSOBJ_EOF = _require_intrinsic("molt_zlib_decompressobj_eof")
 _MOLT_ZLIB_DECOMPRESSOBJ_UNCONSUMED_TAIL = _require_intrinsic(
     "molt_zlib_decompressobj_unconsumed_tail"
 )
+_MOLT_ZLIB_DECOMPRESSOBJ_UNUSED_DATA = _require_intrinsic(
+    "molt_zlib_decompressobj_unused_data"
+)
 
 # --- constants from Rust ---
 DEF_BUF_SIZE: int = _require_intrinsic("molt_zlib_def_buf_size")()
@@ -263,11 +266,14 @@ class Decompress:
 
     @property
     def unused_data(self) -> bytes:
-        """Bytes past the end of the compressed data stream."""
-        # The Rust intrinsic returns the same buffer as unconsumed_tail when
-        # the stream is complete; re-use the same intrinsic for now.
-        # TODO(stdlib-compat, owner:runtime, milestone:SL1, priority:P2, status:partial): expose a dedicated molt_zlib_decompressobj_unused_data intrinsic
-        return b""
+        """Bytes past the end of the compressed data stream.
+
+        Matches CPython zlib: this is ``b""`` until the last byte of
+        compressed data has been processed, after which it holds any trailing
+        bytes found after the compressed stream ended (e.g. concatenated
+        streams). It is distinct from :attr:`unconsumed_tail`.
+        """
+        return bytes(_MOLT_ZLIB_DECOMPRESSOBJ_UNUSED_DATA(self._handle))
 
     def __del__(self) -> None:
         handle = getattr(self, "_handle", None)
