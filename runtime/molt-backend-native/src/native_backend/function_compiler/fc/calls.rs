@@ -1785,17 +1785,43 @@ fn handle_invoke_ffi_op(
             nbc,
         )
     };
-    if let Some(export_name) = op.native_callable_export.as_deref() {
+    // Native callable exports carry the same executable `molt_invoke_ffi_ic`
+    // object-call dispatch the WASM backend uses (see
+    // `wasm/op_loop/call_ops/dynamic.rs`): `module_attr` binding resolves the
+    // imported callable object into `args[0]` and invokes it through the runtime
+    // FFI inline cache. `object_call_v1` forwards its positional payload; the
+    // fixed-arity `object_callargs_v1` receives an already-built callargs object
+    // as `args[1]`. Direct-symbol ABIs (`forward_f32`/`pyinit_module`) require a
+    // native import surface that is not part of this dispatch and fail closed
+    // with a precise diagnostic rather than a fake or fall-through.
+    let module_attr_dispatch = if let Some(export_name) = op.native_callable_export.as_deref() {
         let binding = op.native_callable_binding.as_deref().unwrap_or("<missing>");
         let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
-        let symbol = op
-            .native_callable_symbol
-            .as_deref()
-            .unwrap_or("<module-attr>");
-        panic!(
-            "native callable export `{export_name}` reached native backend without executable native ABI dispatch table: binding={binding} abi={abi} symbol={symbol}"
-        );
-    }
+        if binding != "module_attr" {
+            let symbol = op
+                .native_callable_symbol
+                .as_deref()
+                .unwrap_or("<module-attr>");
+            panic!(
+                "native callable export `{export_name}` uses binding `{binding}` (abi={abi} symbol={symbol}); native ABI dispatch supports only `module_attr` object-call exports"
+            );
+        }
+        let abi_contract = molt_ir::native_callable_abi::parse_native_callable_abi(abi)
+            .unwrap_or_else(|| {
+                panic!(
+                    "native callable module_attr export `{export_name}` declares unknown ABI `{abi}`"
+                )
+            });
+        if abi_contract.requires_direct_symbol_binding() {
+            panic!(
+                "native callable module_attr export `{export_name}` cannot use direct-symbol memory ABI `{}`",
+                abi_contract.token()
+            );
+        }
+        Some(abi_contract)
+    } else {
+        None
+    };
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let func_bits = var_get_boxed_overflow_safe(
         &mut *module,
@@ -1808,9 +1834,22 @@ fn handle_invoke_ffi_op(
         representation_plan,
     )
     .expect("Func not found");
-    let mut args = Vec::new();
-    for name in &args_names[1..] {
-        args.push(
+
+    // `object_callargs_v1` module_attr exports pass the callargs object through
+    // `args[1]` directly; every other lane materializes positional args into a
+    // fresh callargs builder.
+    let prebuilt_callargs = if matches!(
+        module_attr_dispatch,
+        Some(molt_ir::native_callable_abi::NativeCallableAbi::ObjectCallargsV1)
+    ) {
+        let export_name = op.native_callable_export.as_deref().unwrap_or("<export>");
+        if args_names.len() != 2 {
+            panic!(
+                "native callable module_attr export `{export_name}` object_callargs ABI expects the callable handle plus exactly one callargs payload; got {} arg(s)",
+                args_names.len()
+            );
+        }
+        Some(
             *var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -1818,42 +1857,66 @@ fn handle_invoke_ffi_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                name,
+                &args_names[1],
                 representation_plan,
             )
-            .expect("Arg not found"),
-        );
-    }
-    let callargs_new_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_callargs_new",
-        &[types::I64, types::I64],
-        &[types::I64],
-    );
-    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-    let kw_capacity = builder.ins().iconst(types::I64, 0);
-    let callargs_call = builder
-        .ins()
-        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-    let callargs_ptr = builder.inst_results(callargs_call)[0];
+            .expect("Callargs payload not found"),
+        )
+    } else {
+        None
+    };
 
-    let callargs_push_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_callargs_push_pos",
-        &[types::I64, types::I64],
-        &[types::I64],
-    );
-    for arg in &args {
-        builder
+    let callargs_ptr = if let Some(callargs_ptr) = prebuilt_callargs {
+        callargs_ptr
+    } else {
+        let mut args = Vec::new();
+        for name in &args_names[1..] {
+            args.push(
+                *var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    name,
+                    representation_plan,
+                )
+                .expect("Arg not found"),
+            );
+        }
+        let callargs_new_local = import_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            "molt_callargs_new",
+            &[types::I64, types::I64],
+            &[types::I64],
+        );
+        let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+        let kw_capacity = builder.ins().iconst(types::I64, 0);
+        let callargs_call = builder
             .ins()
-            .call(callargs_push_local, &[callargs_ptr, *arg]);
-    }
+            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+        let callargs_ptr = builder.inst_results(callargs_call)[0];
+
+        let callargs_push_local = import_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            "molt_callargs_push_pos",
+            &[types::I64, types::I64],
+            &[types::I64],
+        );
+        for arg in &args {
+            builder
+                .ins()
+                .call(callargs_push_local, &[callargs_ptr, *arg]);
+        }
+        callargs_ptr
+    };
 
     let bridge_lane = op.s_value.as_deref() == Some("bridge");
     let call_site_label = if bridge_lane {
