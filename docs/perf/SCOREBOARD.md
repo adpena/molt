@@ -226,11 +226,11 @@ do not optimize from this red list"* naming WHICH check failed:
 
 | check | signal | threshold / rule |
 |-------|--------|------------------|
-| active build processes | `pgrep -fl 'cargo\|rustc\|molt-backend\|molt build'` | **any** match (other than this tool's own tree) ⇒ not quiet. **Claude/Codex host-control processes are excluded by name** — never counted, never killed (project policy). |
-| 1-min load average | Python `os.getloadavg()` + `os.cpu_count()` (macOS `sysctl` fallback) | `load > ncpu × 0.5` ⇒ not quiet (18-core host ⇒ load > 9.0). Permissive enough that a quiet desktop still measures; an active build always trips this AND the process check. |
+| active build processes | POSIX: `pgrep -fl 'cargo\|rustc\|molt-backend\|molt build'` as broad discovery, then the shared image/argv classifier. Windows: headless `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden` + `Get-CimInstance Win32_Process`, then the same classifier. | **any real build worker** (other than this tool's own tree) ⇒ not quiet. Proof-log observers such as `tail`/`grep` are not counted merely because their command line contains a cargo/rustc log path. **Claude/Codex host-control processes are excluded by name** — never counted, never killed (project policy). |
+| 1-min load average | Python `os.getloadavg()` + `os.cpu_count()` (macOS `sysctl` fallback). Windows uses headless CIM `Win32_Processor.LoadPercentage`, normalized onto the same load scale as `cpu_percent / 100 * ncpu`. | `load > ncpu × 0.5` ⇒ not quiet (18-core host ⇒ load > 9.0). Permissive enough that a quiet desktop still measures; an active build always trips this AND the process check. |
 | runnable-thread storm | runnable thread count | `> max(2, ncpu × 0.5)` ⇒ contended (catches a build storm before the 1-min EWMA does). |
 | thermal / frequency throttle | `pmset -g therm` (best-effort) | throttle active ⇒ not quiet. Skipped if the probe is unavailable (never invents a result). |
-| probe failure | `pgrep` unavailable | **fail-closed**: if we cannot probe, we cannot certify quiet ⇒ not quiet. |
+| probe failure | process/load probe unavailable (`pgrep`, CIM, or the platform fallback) | **fail-closed**: if we cannot probe, we cannot certify quiet ⇒ not quiet. |
 | stale tree / dirty / tool-modified | git + tool blob | folded into `provenance.authoritative` (the existing stale-lore guard). |
 
 `--print-provenance` dumps the full block including the new fields
