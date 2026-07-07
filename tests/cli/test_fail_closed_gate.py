@@ -54,6 +54,7 @@ _EMPTY_REGISTRY = (
     "fail_open_stub = 0\n"
     "duplicate_authority = 0\n"
     "todo_as_plan = 0\n"
+    "fail_open_backend_dispatch = 0\n"
 )
 
 
@@ -103,7 +104,7 @@ def test_every_discovered_site_is_registered_in_seed() -> None:
     )
 
 
-def test_seed_covers_all_four_classes() -> None:
+def test_seed_covers_all_poison_classes() -> None:
     """Sanity: the seed is non-trivial — every poison class has at least one row,
     so each class's teeth are actually exercised on the real tree."""
     gate = _load_gate_module()
@@ -306,6 +307,90 @@ def test_negative_control_duplicate_authority_fails_then_passes(tmp_path: Path) 
         "a single-home header must not be flagged"
     )
     assert not gate.run_gate(tmp_path, registry)
+
+
+# ---------------------------------------------------------------------------
+# Negative control E — fail_open_backend_dispatch
+# ---------------------------------------------------------------------------
+def test_negative_control_backend_dispatch_fails_then_passes(tmp_path: Path) -> None:
+    """Injecting a NEW backend op-emitter catch-all that fabricates a result value
+    for an unlowered op (a `local x = nil` / `MoltValue::None` placeholder) must
+    make the gate FAIL; ripping it to a fail-closed emit makes it PASS. This is the
+    mutation proof for the silent-wrong-codegen class the accumulator fix closes."""
+    gate = _load_gate_module()
+    registry = _write_empty_registry(tmp_path)
+    # A synthetic backend op-emitter with a fail-open catch-all in one of the
+    # scanned dispatch files.
+    src = tmp_path / "runtime" / "molt-backend-luau" / "src" / "luau" / "op_emitter.rs"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    fail_open = (
+        "impl LuauBackend {\n"
+        "    fn emit_unsupported_op(&mut self, op: &OpIR) {\n"
+        "        let out = sanitize_ident(&op.out);\n"
+        '        self.emit_line(&format!("local {out} = nil -- [unsupported op: {}]", op.kind));\n'
+        "    }\n"
+        "}\n"
+    )
+    src.write_text(fail_open, encoding="utf-8")
+
+    discovered = gate.discover_fail_open_backend_dispatch(tmp_path)
+    assert any(
+        s.file == "runtime/molt-backend-luau/src/luau/op_emitter.rs"
+        and "luau_nil_unsupported" in s.detail
+        for s in discovered
+    ), f"Scan E failed to discover injected fail-open catch-all; got {discovered}"
+
+    fail = gate.run_gate(tmp_path, registry)
+    assert any(
+        v.kind == "unregistered-poison-site"
+        and "op_emitter.rs" in v.detail
+        and "fail_open_backend_dispatch" in v.detail
+        for v in fail
+    ), f"gate MUST fail on unregistered fail_open_backend_dispatch; got {fail}"
+
+    # Rip the fail-open: fail CLOSED by returning a compile error instead of a nil.
+    src.write_text(
+        "impl LuauBackend {\n"
+        "    fn emit_unsupported_op(&mut self, op: &OpIR) -> Result<(), String> {\n"
+        '        Err(format!("luau backend refuses unsupported op `{}`", op.kind))\n'
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert not gate.discover_fail_open_backend_dispatch(tmp_path), (
+        "a fail-closed emit (Err, no fabricated nil) must not be flagged"
+    )
+    assert not gate.run_gate(tmp_path, registry)
+
+
+def test_backend_dispatch_ignores_legit_none_fill_value(tmp_path: Path) -> None:
+    """A legitimate Python-`None` fill element (e.g. `list_fill_new`'s default
+    fill) carries NO unsupported/stub marker and must NOT be flagged — the scan
+    keys on the fabricated-result-for-unlowered-op shape, not every `MoltValue::None`."""
+    gate = _load_gate_module()
+    _write_empty_registry(tmp_path)
+    src = (
+        tmp_path
+        / "runtime"
+        / "molt-backend-rust"
+        / "src"
+        / "rust"
+        / "op_emitter"
+        / "gaps.rs"
+    )
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        "impl RustBackend {\n"
+        "    pub(super) fn emit_op_list_fill_new(&mut self, op: &OpIR) {\n"
+        '        let fill = op.args.get(1).map(|a| rust_ident(a)).unwrap_or_else(|| "MoltValue::None".to_string());\n'
+        "        self.emit_line(&fill);\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert not gate.discover_fail_open_backend_dispatch(tmp_path), (
+        "a legitimate None fill value (no unsupported/stub marker) must not be flagged"
+    )
 
 
 # ---------------------------------------------------------------------------
