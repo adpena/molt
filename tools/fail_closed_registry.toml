@@ -55,7 +55,7 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 8
-fail_open_stub = 14
+fail_open_stub = 13
 duplicate_authority = 3
 todo_as_plan = 0
 
@@ -402,18 +402,6 @@ duplicate-authority defect as D1_python_h_two_copies.
 #     unconsumed_tail per CPython zlib semantics
 #     (src/molt/stdlib/zlib.py + runtime/molt-runtime-compression/src/zlib.rs).
 # ===========================================================================
-
-[[site]]
-id = "F5_pyset_size_dropped_arg"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/sequences.rs"
-anchor = "let _ = anyset;"
-resolution_row = "task#12"
-justification = """
-PySet_Size ignores its set argument. Honest fail-closed interim: PySet_* raise
-NotImplementedError + CPython error sentinel pending the runtime set-object
-hooks (not a fake return). Being completed to real behavior in task #12.
-"""
 
 [[site]]
 id = "D2_structmember_h_duplicate"
