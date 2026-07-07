@@ -1,0 +1,17 @@
+[package]
+name = "molt-runtime-vfs"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Mount-oriented virtual filesystem for the Molt runtime"
+
+[features]
+default = []
+vfs_bundle_tar = ["dep:tar"]
+
+[dependencies]
+serde_json = { workspace = true }
+sha2 = "0.11"
+tar = { version = "0.4", optional = true }

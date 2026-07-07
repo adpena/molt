@@ -2,8 +2,8 @@
 //! Populated from a tar archive or explicit file entries at init.
 
 #[cfg(feature = "vfs_bundle_tar")]
-use crate::vfs::VfsLoadQuota;
-use crate::vfs::{VfsBackend, VfsError, VfsStat};
+use crate::VfsLoadQuota;
+use crate::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -78,11 +78,8 @@ impl BundleFs {
                 return Err(format!("bundle tar contains absolute path: {path}"));
             }
             if entry.header().entry_type().is_file() {
-                let expected_len = entry
-                    .size()
-                    .ok()
-                    .and_then(|value| usize::try_from(value).ok())
-                    .unwrap_or(0);
+                let expected_len = usize::try_from(entry.size())
+                    .map_err(|_| format!("bundle tar entry too large: {path}"))?;
                 quota
                     .reserve_entry(&path, expected_len)
                     .map_err(|e| e.to_string())?;

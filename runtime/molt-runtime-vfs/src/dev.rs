@@ -1,6 +1,6 @@
 //! Pseudo-device filesystem for /dev/stdin, /dev/stdout, /dev/stderr.
 
-use crate::vfs::{VfsBackend, VfsError, VfsStat};
+use crate::{VfsBackend, VfsError, VfsStat};
 use std::sync::Mutex;
 
 /// Maximum combined buffer size for stdout/stderr (16 MB).
