@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Tier {
-    /// Interpreted by Monty (or CPython fallback).
+    /// Interpreted by Monty or CPython.
     Interpreted = 0,
     /// Being compiled by Molt in the background.
     Compiling = 1,
@@ -225,7 +225,7 @@ impl TierCoordinator {
                 ExecutionDecision::Interpret
             }
             Tier::Compiling => {
-                // Still compiling — interpret for now
+                // Compilation is in flight; keep executing through the interpreter tier.
                 state.call_count.fetch_add(1, Ordering::Relaxed);
                 ExecutionDecision::Interpret
             }
@@ -277,11 +277,11 @@ impl TierCoordinator {
 /// What the caller should do after `on_call`.
 #[derive(Debug)]
 pub enum ExecutionDecision {
-    /// Interpret the function (Monty or CPython fallback).
+    /// Interpret the function through the active interpreter tier.
     Interpret,
     /// Execute the compiled artifact.
     RunCompiled(CompiledArtifact),
-    /// Tier-up: compile this function in the background, interpret for now.
+    /// Tier-up: compile this function in the background while the interpreter tier runs.
     /// The caller should spawn a compilation task and call `compilation_done`
     /// when it completes.
     TierUp(Arc<FunctionState>),
