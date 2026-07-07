@@ -1,7 +1,6 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 #[cfg(molt_has_net_io)]
 use std::collections::HashMap;
-use std::collections::HashSet;
 #[cfg(molt_has_net_io)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
@@ -9,7 +8,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 use std::sync::{Condvar, Mutex};
 
-use super::cancel_tokens;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use super::poll::ws_wait_poll_fn_addr;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -17,6 +15,7 @@ use super::sockets::require_net_capability;
 use super::sockets::{SendData, send_data_from_bits};
 #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
 use super::{current_token_id, token_id_from_bits};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
@@ -25,20 +24,18 @@ use crate::string_obj_to_owned;
 use crate::{
     GilReleaseGuard, MoltObject, PyToken, alloc_bytes, alloc_tuple, dec_ref_bits, inc_ref_bits,
     obj_from_bits, opaque_handle_bits, pending_bits_i64, ptr_from_bits, raise_exception,
-    release_ptr, runtime_state, to_i64, usize_from_bits,
+    release_ptr, to_i64, usize_from_bits,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, header_from_obj_ptr, monotonic_now_secs,
-    resolve_obj_ptr, to_f64,
+    resolve_obj_ptr, runtime_state, to_f64,
 };
 #[cfg(molt_has_net_io)]
 use crate::{
     alloc_string, exception_pending, intern_static_name, is_missing_bits, missing_bits,
     molt_getattr_builtin, raise_os_error, runtime_static_name_slot, string_obj_to_owned,
 };
-#[cfg(target_arch = "wasm32")]
-use crate::{molt_db_exec_host, molt_db_query_host};
 #[cfg(molt_has_net_io)]
 use mio::net::TcpStream as MioTcpStream;
 #[cfg(molt_has_net_io)]
@@ -65,6 +62,16 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket, connect};
 #[cfg(molt_has_net_io)]
 use webpki_roots::TLS_SERVER_ROOTS;
+
+mod capabilities;
+mod db;
+
+pub(crate) use capabilities::{
+    capability_fix_hint, has_capability, is_trusted, raise_capability_denied,
+};
+pub use db::{molt_db_exec, molt_db_exec_obj, molt_db_query, molt_db_query_obj};
+#[cfg(molt_has_net_io)]
+pub use db::{molt_db_set_exec_hook, molt_db_set_query_hook};
 
 // --- Channels ---
 
@@ -1142,15 +1149,9 @@ pub extern "C" fn molt_ws_new_with_hooks(
 
 #[cfg(molt_has_net_io)]
 type WsConnectHook = extern "C" fn(*const u8, usize) -> *mut u8;
-#[cfg(molt_has_net_io)]
-type DbHostHook = extern "C" fn(*const u8, usize, *mut u64, u64) -> i32;
 
 #[cfg(molt_has_net_io)]
 static WS_CONNECT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(molt_has_net_io)]
-static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
-#[cfg(molt_has_net_io)]
-static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn ws_ref_inc(ws_ptr: *mut MoltWebSocket) {
@@ -2068,229 +2069,6 @@ pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
-    crate::with_gil_entry_nopanic!(_py, {
-        DB_QUERY_HOOK.store(ptr, AtomicOrdering::Release);
-    })
-}
-
-#[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
-    crate::with_gil_entry_nopanic!(_py, {
-        DB_EXEC_HOOK.store(ptr, AtomicOrdering::Release);
-    })
-}
-
-// ── Capability tiers ─────────────────────────────────────────────────
-//
-// Three tiers replace the 80+ individual capability names for DX:
-//
-//   safe      Read-only. No network, no writes, no exec. Default for
-//             `molt deploy --cloudflare` and sandboxed environments.
-//
-//   standard  Adds filesystem writes, env writes, temp files, process
-//             signals, time access. Default for `molt run` in dev.
-//
-//   full      Everything except exec/eval/monkeypatching (which Molt
-//             never supports). Equivalent to MOLT_TRUSTED=1.
-//
-// Set via: MOLT_CAPABILITY_TIER=safe|standard|full
-// Override individual caps: MOLT_CAPABILITIES=cap1,cap2,...  (additive)
-// Legacy: MOLT_TRUSTED=1 is equivalent to tier=full.
-
-/// Capabilities granted at the `safe` tier (read-only operations).
-const TIER_SAFE: &[&str] = &[
-    "env.read",
-    "env.len",
-    "env.snapshot",
-    "fs.read",
-    "fs.stat",
-    "fs.readdir",
-    "glob.glob",
-    "os.access",
-    "os.getcwd",
-    "os.getpid",
-    "os.getppid",
-    "os.getuid",
-    "os.geteuid",
-    "os.getgid",
-    "os.getegid",
-    "os.getlogin",
-    "os.getpgrp",
-    "os.getloadavg",
-    "os.uname",
-    "os.readlink",
-    "os.listdir",
-    "os.scandir",
-    "os.walk",
-    "shutil.which",
-    "time.wall",
-];
-
-/// Additional capabilities granted at the `standard` tier.
-const TIER_STANDARD_EXTRA: &[&str] = &[
-    "env.write",
-    "env.clear",
-    "env.popitem",
-    "env.expanduser",
-    "env.expandvars",
-    "fs.write",
-    "os.mkdir",
-    "os.makedirs",
-    "os.rmdir",
-    "os.removedirs",
-    "os.link",
-    "os.symlink",
-    "os.chmod",
-    "os.utime",
-    "os.chdir",
-    "os.umask",
-    "os.truncate",
-    "os.ftruncate",
-    "os.lseek",
-    "shutil.copy",
-    "shutil.copyfile",
-    "shutil.copytree",
-    "shutil.move",
-    "tempfile.mkdtemp",
-    "tempfile.mkstemp",
-    "tempfile.named",
-    "tempfile.tempdir",
-    "tempfile.cleanup",
-    "signal.signal",
-    "signal.raise",
-    "signal.alarm",
-    "signal.pause",
-    "thread.spawn",
-    "thread.shared",
-];
-
-/// Additional capabilities granted at the `full` tier.
-const TIER_FULL_EXTRA: &[&str] = &[
-    "net.bind",
-    "net.listen",
-    "net.connect",
-    "net.poll",
-    "net.asyncio",
-    "ssl.read",
-    "ssl.write",
-    "websocket.connect",
-    "process.exec",
-    "process.asyncio",
-    "os.kill",
-    "os.waitpid",
-    "os.sendfile",
-    "os.setpgrp",
-    "os.setsid",
-    "select.select",
-    "select.poll",
-    "select.epoll",
-    "select.devpoll",
-    "db.read",
-    "db.write",
-    "db.query",
-    "db.exec",
-    "ffi.unsafe",
-    "ffi.require",
-    "ffi.sizeof",
-    "fcntl.fcntl",
-    "python.bridge",
-];
-
-fn load_capabilities() -> HashSet<String> {
-    // Determine tier: MOLT_CAPABILITY_TIER > MOLT_TRUSTED > default (standard).
-    let tier = std::env::var("MOLT_CAPABILITY_TIER")
-        .ok()
-        .map(|t| t.trim().to_ascii_lowercase())
-        .unwrap_or_else(|| "standard".to_string());
-
-    let mut set: HashSet<String> = HashSet::new();
-
-    // All tiers include safe.
-    for &cap in TIER_SAFE {
-        set.insert(cap.to_string());
-    }
-    if tier == "standard" || tier == "full" {
-        for &cap in TIER_STANDARD_EXTRA {
-            set.insert(cap.to_string());
-        }
-    }
-    if tier == "full" {
-        for &cap in TIER_FULL_EXTRA {
-            set.insert(cap.to_string());
-        }
-    }
-
-    // Additive individual capabilities from MOLT_CAPABILITIES.
-    let caps = std::env::var("MOLT_CAPABILITIES").unwrap_or_default();
-    for cap in caps.split(',') {
-        let cap = cap.trim();
-        if !cap.is_empty() {
-            set.insert(cap.to_string());
-        }
-    }
-    set
-}
-
-fn load_trusted() -> bool {
-    match std::env::var("MOLT_TRUSTED") {
-        Ok(val) => matches!(
-            val.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
-    }
-}
-
-pub(crate) fn is_trusted(_py: &PyToken<'_>) -> bool {
-    *runtime_state(_py).trusted.get_or_init(load_trusted)
-}
-
-pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
-    if is_trusted(_py) {
-        return true;
-    }
-    let caps = runtime_state(_py)
-        .capabilities
-        .get_or_init(load_capabilities);
-    caps.contains(name)
-}
-
-/// Suggest the minimum tier or env var needed to grant a missing capability.
-/// Raise a PermissionError with an actionable message including the
-/// capability name, tier suggestion, and `--trusted` escape hatch.
-pub(crate) fn raise_capability_denied<T: crate::builtins::exceptions::ExceptionSentinel>(
-    _py: &crate::concurrency::PyToken<'_>,
-    cap: &str,
-) -> T {
-    let hint = capability_fix_hint(cap);
-    crate::raise_exception::<T>(
-        _py,
-        "PermissionError",
-        &format!("missing '{cap}' capability. {hint}"),
-    )
-}
-
-/// Suggest the minimum tier or env var needed to grant a missing capability.
-pub(crate) fn capability_fix_hint(name: &str) -> String {
-    // Check which tier provides it.
-    if TIER_SAFE.contains(&name) {
-        return format!(
-            "'{name}' should be in the default tier. Set MOLT_CAPABILITIES={name} or MOLT_TRUSTED=1"
-        );
-    }
-    if TIER_STANDARD_EXTRA.contains(&name) {
-        return "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=standard (default for molt run)".to_string();
-    }
-    if TIER_FULL_EXTRA.contains(&name) {
-        return "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full".to_string();
-    }
-    format!("Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITIES={name}")
-}
-
-#[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass runtime-encoded values; returned handle is owned by the runtime.
 #[unsafe(no_mangle)]
@@ -3049,198 +2827,6 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             }
         }
         pending_bits_i64()
-    })
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_db_query(
-    req_ptr: *const u8,
-    len_bits: u64,
-    out: *mut u64,
-    token_bits: u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        db_query_impl(_py, req_ptr, len_bits, out, token_bits)
-    })
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `req_ptr` is valid for `len_bits` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_db_exec(
-    req_ptr: *const u8,
-    len_bits: u64,
-    out: *mut u64,
-    token_bits: u64,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        db_exec_impl(_py, req_ptr, len_bits, out, token_bits)
-    })
-}
-
-fn db_query_impl(
-    _py: &PyToken<'_>,
-    req_ptr: *const u8,
-    len_bits: u64,
-    out: *mut u64,
-    token_bits: u64,
-) -> i32 {
-    let len = usize_from_bits(len_bits);
-    if out.is_null() {
-        return 2;
-    }
-    if req_ptr.is_null() && len != 0 {
-        return 1;
-    }
-    let db_read_allowed = has_capability(_py, "db.read");
-    audit_capability_decision("db.query", "db.read", AuditArgs::None, db_read_allowed);
-    if !db_read_allowed {
-        return 6;
-    }
-    cancel_tokens(_py);
-    #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
-    let token_id = match token_id_from_bits(token_bits) {
-        Some(0) => current_token_id(),
-        Some(id) => id,
-        None => return 1,
-    };
-    #[cfg(not(any(target_arch = "wasm32", molt_has_net_io)))]
-    let _ = token_bits;
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) }
-    }
-    #[cfg(molt_has_net_io)]
-    {
-        let hook_ptr = DB_QUERY_HOOK.load(AtomicOrdering::Acquire);
-        if hook_ptr == 0 {
-            return 7;
-        }
-        // SAFETY: hook_ptr was stored into DB_QUERY_HOOK by the host embedder's
-        // registration function, which accepts only `DbHostHook`-typed values.
-        // The AtomicUsize load preserves the original function pointer bit pattern.
-        // The host must keep the function valid for the process lifetime.
-        // A stale or mistyped pointer causes UB on the subsequent call.
-        let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
-        hook(req_ptr, len, out, token_id)
-    }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        7
-    }
-}
-
-fn db_exec_impl(
-    _py: &PyToken<'_>,
-    req_ptr: *const u8,
-    len_bits: u64,
-    out: *mut u64,
-    token_bits: u64,
-) -> i32 {
-    let len = usize_from_bits(len_bits);
-    if out.is_null() {
-        return 2;
-    }
-    if req_ptr.is_null() && len != 0 {
-        return 1;
-    }
-    let db_write_allowed = has_capability(_py, "db.write");
-    audit_capability_decision("db.exec", "db.write", AuditArgs::None, db_write_allowed);
-    if !db_write_allowed {
-        return 6;
-    }
-    cancel_tokens(_py);
-    #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
-    let token_id = match token_id_from_bits(token_bits) {
-        Some(0) => current_token_id(),
-        Some(id) => id,
-        None => return 1,
-    };
-    #[cfg(not(any(target_arch = "wasm32", molt_has_net_io)))]
-    let _ = token_bits;
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) }
-    }
-    #[cfg(molt_has_net_io)]
-    {
-        let hook_ptr = DB_EXEC_HOOK.load(AtomicOrdering::Acquire);
-        if hook_ptr == 0 {
-            return 7;
-        }
-        // SAFETY: hook_ptr was stored into DB_EXEC_HOOK by the host embedder's
-        // registration function, which accepts only `DbHostHook`-typed values.
-        // The AtomicUsize load preserves the original function pointer bit pattern.
-        // The host must keep the function valid for the process lifetime.
-        // A stale or mistyped pointer causes UB on the subsequent call.
-        let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
-        hook(req_ptr, len, out, token_id)
-    }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        7
-    }
-}
-
-fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {
-    match code {
-        1 => raise_exception::<_>(_py, "ValueError", &format!("{op} invalid input")),
-        2 => raise_exception::<_>(_py, "RuntimeError", &format!("{op} output pointer invalid")),
-        6 => raise_exception::<_>(_py, "PermissionError", &format!("missing {cap} capability")),
-        7 => raise_exception::<_>(_py, "RuntimeError", &format!("{op} host unavailable")),
-        _ => raise_exception::<_>(_py, "RuntimeError", &format!("{op} failed")),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let send_data = match send_data_from_bits(req_bits) {
-            Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-        };
-        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
-            SendData::Borrowed(ptr, len) => (ptr, len, None),
-            SendData::Owned(vec) => {
-                let ptr = vec.as_ptr();
-                let len = vec.len();
-                (ptr, len, Some(vec))
-            }
-        };
-        let _owned_guard = owned;
-        let mut out = 0u64;
-        let rc = db_query_impl(_py, data_ptr, data_len as u64, &mut out, token_bits);
-        if rc != 0 {
-            return db_error(_py, "db_query", rc, "db.read");
-        }
-        out
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let send_data = match send_data_from_bits(req_bits) {
-            Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-        };
-        let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
-            SendData::Borrowed(ptr, len) => (ptr, len, None),
-            SendData::Owned(vec) => {
-                let ptr = vec.as_ptr();
-                let len = vec.len();
-                (ptr, len, Some(vec))
-            }
-        };
-        let _owned_guard = owned;
-        let mut out = 0u64;
-        let rc = db_exec_impl(_py, data_ptr, data_len as u64, &mut out, token_bits);
-        if rc != 0 {
-            return db_error(_py, "db_exec", rc, "db.write");
-        }
-        out
     })
 }
 
