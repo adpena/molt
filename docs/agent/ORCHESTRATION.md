@@ -1026,7 +1026,9 @@ from-import native-call provenance (3b0ca4a80, be516cbff).
 - **Evidence beats vigil.** At most ONE status read per 5 minutes on a row
   you own, ZERO on rows you don't. Two consecutive "still running" notes
   means you're idling — switch deliverables or end the arc.
-- **Sweep for drift proactively — every arc, before every commit.** `origin/main`
+- **Sweep for drift proactively — every arc, before every commit.** Instrument:
+  `python tools/tree_drift_check.py --witness --fetch` (one-line fail-closed
+  verdict on whether your tree is stale/masking vs `origin/main`). `origin/main`
   moves under you constantly; make checking a reflex, not a reaction. At the START
   of every arc: `git fetch origin`, scan what landed
   (`git log --oneline <last>..origin/main`), and re-read THIS board — it may have
