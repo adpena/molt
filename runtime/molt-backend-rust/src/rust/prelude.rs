@@ -4,6 +4,339 @@ mod callable;
 mod stateful;
 mod system;
 
+/// The emitted `format_float` prelude: a faithful, self-contained port of
+/// `runtime/molt-runtime/src/object/float_repr.rs` (`repr_float`), with
+/// `num_bigint::BigInt` replaced by the inline base-1e9 `MoltBig` so the
+/// generated crate has no external dependency. This string is the ONLY float
+/// formatter the rust-backend emits; it must format `repr(float)` /
+/// `str(float)` bit-for-bit identically to CPython 3.12 (validated in
+/// `tests_float.rs` and the differential harness). Do not diverge from the
+/// runtime authority — port changes there into here in the same arc.
+const MOLT_FORMAT_FLOAT_PRELUDE: &str = r####"// --- BEGIN CPython-exact repr(float): ported from
+// runtime/molt-runtime/src/object/float_repr.rs (repr_float). ---
+// A minimal self-contained arbitrary-precision unsigned integer, base 1e9,
+// little-endian limbs, only the ops the exact round-half-to-even formatter
+// needs. Replaces num_bigint::BigInt (which the runtime authority uses) so this
+// generated crate depends on no external crate.
+#[derive(Clone, PartialEq, Eq)]
+struct MoltBig {
+    limbs: Vec<u32>,
+}
+const MOLT_BIG_BASE: u64 = 1_000_000_000;
+impl MoltBig {
+    fn zero() -> MoltBig {
+        MoltBig { limbs: Vec::new() }
+    }
+    fn from_u64(mut v: u64) -> MoltBig {
+        let mut limbs = Vec::new();
+        while v > 0 {
+            limbs.push((v % MOLT_BIG_BASE) as u32);
+            v /= MOLT_BIG_BASE;
+        }
+        MoltBig { limbs }
+    }
+    fn is_zero(&self) -> bool {
+        self.limbs.is_empty()
+    }
+    fn trim(&mut self) {
+        while let Some(&0) = self.limbs.last() {
+            self.limbs.pop();
+        }
+    }
+    fn mul_small(&mut self, m: u32) {
+        if m == 0 {
+            self.limbs.clear();
+            return;
+        }
+        let mut carry: u64 = 0;
+        for limb in self.limbs.iter_mut() {
+            let cur = (*limb as u64) * (m as u64) + carry;
+            *limb = (cur % MOLT_BIG_BASE) as u32;
+            carry = cur / MOLT_BIG_BASE;
+        }
+        while carry > 0 {
+            self.limbs.push((carry % MOLT_BIG_BASE) as u32);
+            carry /= MOLT_BIG_BASE;
+        }
+    }
+    fn add_small(&mut self, a: u64) {
+        let mut carry = a;
+        let mut i = 0;
+        while carry > 0 {
+            if i == self.limbs.len() {
+                self.limbs.push(0);
+            }
+            let cur = self.limbs[i] as u64 + carry;
+            self.limbs[i] = (cur % MOLT_BIG_BASE) as u32;
+            carry = cur / MOLT_BIG_BASE;
+            i += 1;
+        }
+    }
+    fn mul_pow2(&mut self, mut n: u32) {
+        while n >= 30 {
+            self.mul_small(1u32 << 30);
+            n -= 30;
+        }
+        if n > 0 {
+            self.mul_small(1u32 << n);
+        }
+    }
+    fn mul_pow10(&mut self, mut p: u32) {
+        while p >= 9 {
+            self.mul_small(1_000_000_000u32);
+            p -= 9;
+        }
+        if p > 0 {
+            let mut m: u32 = 1;
+            for _ in 0..p {
+                m *= 10;
+            }
+            self.mul_small(m);
+        }
+    }
+    fn cmp(&self, other: &MoltBig) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        if self.limbs.len() != other.limbs.len() {
+            return self.limbs.len().cmp(&other.limbs.len());
+        }
+        for i in (0..self.limbs.len()).rev() {
+            match self.limbs[i].cmp(&other.limbs[i]) {
+                Ordering::Equal => continue,
+                ord => return ord,
+            }
+        }
+        Ordering::Equal
+    }
+    fn sub_assign(&mut self, other: &MoltBig) {
+        let mut borrow: i64 = 0;
+        for i in 0..self.limbs.len() {
+            let o = if i < other.limbs.len() { other.limbs[i] as i64 } else { 0 };
+            let mut cur = self.limbs[i] as i64 - o - borrow;
+            if cur < 0 {
+                cur += MOLT_BIG_BASE as i64;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            self.limbs[i] = cur as u32;
+        }
+        self.trim();
+    }
+    fn divmod(&self, d: &MoltBig) -> (MoltBig, MoltBig) {
+        if self.cmp(d) == std::cmp::Ordering::Less {
+            return (MoltBig::zero(), self.clone());
+        }
+        let mut quotient = vec![0u32; self.limbs.len()];
+        let mut rem = MoltBig::zero();
+        for i in (0..self.limbs.len()).rev() {
+            rem.mul_small(MOLT_BIG_BASE as u32);
+            rem.add_small(self.limbs[i] as u64);
+            let mut lo: u64 = 0;
+            let mut hi: u64 = MOLT_BIG_BASE - 1;
+            let mut qd: u64 = 0;
+            while lo <= hi {
+                let mid = (lo + hi) / 2;
+                let mut t = d.clone();
+                t.mul_small(mid as u32);
+                if t.cmp(&rem) != std::cmp::Ordering::Greater {
+                    qd = mid;
+                    if mid == MOLT_BIG_BASE - 1 {
+                        break;
+                    }
+                    lo = mid + 1;
+                } else {
+                    if mid == 0 {
+                        break;
+                    }
+                    hi = mid - 1;
+                }
+            }
+            quotient[i] = qd as u32;
+            let mut t = d.clone();
+            t.mul_small(qd as u32);
+            rem.sub_assign(&t);
+        }
+        let mut q = MoltBig { limbs: quotient };
+        q.trim();
+        (q, rem)
+    }
+    fn to_decimal(&self) -> String {
+        if self.limbs.is_empty() {
+            return "0".to_string();
+        }
+        let mut s = String::new();
+        s.push_str(&self.limbs[self.limbs.len() - 1].to_string());
+        for i in (0..self.limbs.len() - 1).rev() {
+            s.push_str(&format!("{:09}", self.limbs[i]));
+        }
+        s
+    }
+    fn is_odd(&self) -> bool {
+        self.limbs.first().map(|l| l % 2 == 1).unwrap_or(false)
+    }
+}
+fn molt_big_mul(a: &MoltBig, b: &MoltBig) -> MoltBig {
+    if a.is_zero() || b.is_zero() {
+        return MoltBig::zero();
+    }
+    let mut result = vec![0u64; a.limbs.len() + b.limbs.len()];
+    for (i, &av) in a.limbs.iter().enumerate() {
+        let mut carry: u64 = 0;
+        for (j, &bv) in b.limbs.iter().enumerate() {
+            let cur = result[i + j] + (av as u64) * (bv as u64) + carry;
+            result[i + j] = cur % MOLT_BIG_BASE;
+            carry = cur / MOLT_BIG_BASE;
+        }
+        result[i + b.limbs.len()] += carry;
+    }
+    let limbs: Vec<u32> = result.iter().map(|&x| x as u32).collect();
+    let mut m = MoltBig { limbs };
+    m.trim();
+    m
+}
+fn molt_float_shortest_sig_count(abs: f64) -> usize {
+    let sci = format!("{abs:e}");
+    let mant = sci.split('e').next().unwrap_or("0");
+    mant.chars().filter(|c| c.is_ascii_digit()).count().max(1)
+}
+fn molt_float_round_sig_half_even(abs: f64, k: usize) -> (String, i32) {
+    let bits = abs.to_bits();
+    let raw_exp = ((bits >> 52) & 0x7ff) as i64;
+    let raw_mant = (bits & 0x000f_ffff_ffff_ffff) as u64;
+    let (mant, exp2): (u64, i64) = if raw_exp == 0 {
+        (raw_mant, -1074)
+    } else {
+        (raw_mant | 0x0010_0000_0000_0000, raw_exp - 1075)
+    };
+    let mut num = MoltBig::from_u64(mant);
+    let mut den = MoltBig::from_u64(1);
+    if exp2 >= 0 {
+        num.mul_pow2(exp2 as u32);
+    } else {
+        den.mul_pow2((-exp2) as u32);
+    }
+    let mut e = abs.log10().floor() as i32;
+    loop {
+        let lower_ok = if e >= 0 {
+            let mut lhs = MoltBig::from_u64(1);
+            lhs.mul_pow10(e as u32);
+            let l = molt_big_mul(&lhs, &den);
+            l.cmp(&num) != std::cmp::Ordering::Greater
+        } else {
+            let mut r = num.clone();
+            r.mul_pow10((-e) as u32);
+            den.cmp(&r) != std::cmp::Ordering::Greater
+        };
+        if !lower_ok {
+            e -= 1;
+            continue;
+        }
+        let upper_ok = if (e + 1) >= 0 {
+            let mut rhs = MoltBig::from_u64(1);
+            rhs.mul_pow10((e + 1) as u32);
+            let r = molt_big_mul(&rhs, &den);
+            num.cmp(&r) == std::cmp::Ordering::Less
+        } else {
+            let mut l = num.clone();
+            l.mul_pow10((-(e + 1)) as u32);
+            l.cmp(&den) == std::cmp::Ordering::Less
+        };
+        if !upper_ok {
+            e += 1;
+            continue;
+        }
+        break;
+    }
+    let s = (k as i32) - 1 - e;
+    if s >= 0 {
+        num.mul_pow10(s as u32);
+    } else {
+        den.mul_pow10((-s) as u32);
+    }
+    let (q, r) = num.divmod(&den);
+    let mut twice = r.clone();
+    twice.mul_small(2);
+    let mut digit_int = q;
+    match twice.cmp(&den) {
+        std::cmp::Ordering::Greater => digit_int.add_small(1),
+        std::cmp::Ordering::Equal => {
+            if digit_int.is_odd() {
+                digit_int.add_small(1);
+            }
+        }
+        std::cmp::Ordering::Less => {}
+    }
+    let ds_full = digit_int.to_decimal();
+    let mut decpt = e + 1;
+    if ds_full.len() as i32 > k as i32 {
+        decpt += ds_full.len() as i32 - k as i32;
+    }
+    let trimmed = ds_full.trim_end_matches('0');
+    let ds = if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    };
+    (ds, decpt)
+}
+fn format_float(f: f64) -> String {
+    if f.is_nan() {
+        return "nan".to_string();
+    }
+    if f.is_infinite() {
+        return if f < 0.0 { "-inf".to_string() } else { "inf".to_string() };
+    }
+    let sign = if f.is_sign_negative() { "-" } else { "" };
+    let abs = f.abs();
+    if abs == 0.0 {
+        return format!("{sign}0.0");
+    }
+    let k = molt_float_shortest_sig_count(abs);
+    let (digits, decpt) = molt_float_round_sig_half_even(abs, k);
+    let dbytes = digits.as_bytes();
+    let ndigits = dbytes.len() as i32;
+    let use_exp = decpt <= -4 || decpt > 16;
+    let mut out = String::with_capacity(sign.len() + digits.len() + 6);
+    out.push_str(sign);
+    if use_exp {
+        let exp = decpt - 1;
+        out.push(dbytes[0] as char);
+        if ndigits > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push('e');
+        out.push(if exp < 0 { '-' } else { '+' });
+        let mag = exp.unsigned_abs();
+        if mag < 10 {
+            out.push_str(&format!("0{mag}"));
+        } else {
+            out.push_str(&format!("{mag}"));
+        }
+    } else if decpt <= 0 {
+        out.push_str("0.");
+        for _ in 0..(-decpt) {
+            out.push('0');
+        }
+        out.push_str(&digits);
+    } else if decpt >= ndigits {
+        out.push_str(&digits);
+        for _ in 0..(decpt - ndigits) {
+            out.push('0');
+        }
+        out.push_str(".0");
+    } else {
+        let cut = decpt as usize;
+        out.push_str(&digits[..cut]);
+        out.push('.');
+        out.push_str(&digits[cut..]);
+    }
+    out
+}
+// --- END CPython-exact repr(float) ---
+
+"####;
+
 impl RustBackend {
     // ── File header ──────────────────────────────────────────────────────────
 
@@ -137,13 +470,29 @@ impl RustBackend {
             "        MoltValue::Func(_) => \"<function>\".to_string(),\n",
             "    }\n",
             "}\n\n",
-            "fn format_float(f: f64) -> String {\n",
-            "    if f.fract() == 0.0 && f.is_finite() {\n",
-            "        format!(\"{f:.1}\")\n",
-            "    } else {\n",
-            "        format!(\"{f}\")\n",
-            "    }\n",
-            "}\n\n",
+        ));
+
+        // `format_float` — the CPython-exact `repr(float)` / `str(float)`
+        // authority, ported verbatim from
+        // runtime/molt-runtime/src/object/float_repr.rs (`repr_float` +
+        // `round_sig_half_even` + `shortest_sig_count`). The native and
+        // C-ABI lanes call `repr_float` directly; the rust-backend emits a
+        // STANDALONE crate that does not link molt-runtime, so the same
+        // algorithm is inlined here. The one substitution is num_bigint::BigInt
+        // → a self-contained base-1e9 `MoltBig`, so the generated crate needs
+        // no external dependency. It must stay bit-for-bit identical to
+        // `repr_float`: shortest round-tripping digit COUNT from Rust std, then
+        // re-render the exact f64 rounded to that many significant digits with
+        // round-half-to-even via exact big-integer arithmetic; the
+        // `decpt <= -4 || decpt > 16` threshold selects scientific vs fixed;
+        // the exponent is `%+.02d`; `.0` is appended to integer-valued fixed
+        // forms (Py_DTSF_ADD_DOT_0); `nan`/`inf`/`-inf`/`-0.0` are exact. Any
+        // divergence from the naive `{f}`/`{f:.1}` formatter that this replaces
+        // was a silent wrong-answer for scientific notation, ties, and
+        // non-finite values.
+        self.output.push_str(MOLT_FORMAT_FLOAT_PRELUDE);
+
+        self.output.push_str(concat!(
             "fn molt_repr_inner(x: &MoltValue) -> String {\n",
             "    match x {\n",
             "        MoltValue::Str(s) => format!(\"'{s}'\"),\n",
