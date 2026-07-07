@@ -64,6 +64,97 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
+## ⏸️ ORCHESTRATOR PAUSE HANDOFF — 2026-07-07 afternoon → back ~evening (READ THIS FIRST — you, Codex, drive during the pause)
+
+The orchestrator is paused for several hours (back ~evening 2026-07-07). **For the
+duration of this pause, the witness/E1 stand-down is RELEASED: Codex, you own
+driving E1 to green AND the standing lanes — land it all yourself.** When the
+orchestrator returns it resumes ownership; until then, this handoff is your
+authority. Preserve all parallel work; the operator-authority rules above still
+bind (exact-pathspec commits, no trampling, flag-don't-override).
+
+### Tools you MUST use (they fail closed — no silent stale/trample failures)
+- `python tools/tree_drift_check.py --witness --fetch` — run at the START of every
+  arc and before every land: one-line verdict on whether your tree is
+  stale/masking vs `origin/main`. The shared checkout is 377 behind + dirty and
+  MASKS the real frontier — verify against a clean `origin/main` worktree.
+- `python tools/ff_land.py` — land HEAD to `origin/main` ONLY as a clean
+  fast-forward (refuses on dirty tree / non-ff drift / nothing-to-land). Use it
+  for every land so you never trample a parallel PR.
+- `tools/proof_queue.py` — ALL heavy builds (APDataStore `D:\Molt`, contention
+  keys, `--detach`); `status` before queueing; `pact-witness-acceptance` is the
+  named acceptance lane. NEVER `git stash` on this shared repo (shared stack →
+  race-drops other lanes). Commit `-m MSG` BEFORE `--` (see working agreement).
+
+### LANDED on origin/main this session — DO NOT REDO (verify with git, don't trust memory)
+- `89e5160ea` E1 cpython-abi DATA-symbol link fix (`molt_PyType_Ready`/`PyLong_Type`
+  class — wasm_link_edit.py rewrites linking-symtab data symbols via the shared
+  naming authority, fail-closed).
+- `515b4b5cd` scipy NATIVE ndimage callable dispatch; `1ab11b154` asyncio
+  submodule-prefix; `6b2060807`+`435cf4d7c` asyncio exception-region; `1a2520b2f`+
+  `c5ae5bfe5` native-division fast_float (all verified, teeth green).
+- `f7d67fe2e` tree_drift_check DX; `2ba8ca242` ff_land DX; drift-sweep cadence +
+  shared-git-stash ban in the docs.
+
+### E1 ORDER-OF-OPERATIONS — drive this to green (each step names its resume point)
+1. **SEAL-REGEN (current frontier — it is a STALE SEAL ARTIFACT regen, NOT a code
+   fix).** Fully diagnosed by the orchestrator's seal-regen subagent (no code
+   changes — origin/main is already correct). **Do NOT change extension_seal.py /
+   external_native.py:** origin/main already PERSISTS `runtime_python_import_modules`
+   at seal time (`src/molt/cli/extension_seal.py:385-431`
+   `_canonicalize_runtime_python_import_modules`, called ~659) and FAILS CLOSED when
+   it's absent (`src/molt/cli/external_native.py:607-676`). The shared checkout's
+   uncommitted WIP REMOVED that persistence + made the consumer tolerant — that is
+   the mask; do NOT restore it. The only defect is the STALE on-disk artifact
+   `tmp/pact_numpy_multiarray_sealed_for_witness/extension_manifest.json` (no field;
+   object_closure `source` paths baked ABSOLUTE into a deleted worktree).
+   RE-SEAL BLOCKER (measured): of 130 object_closure sources, 113 already resolve
+   byte-identically from the live tree (105 upstream `.c` under
+   `bench/friends/repos/numpy_off_the_shelf` + 8 generated pyd.p sources that
+   byte-match `tmp/pact_numpy_linalg_meson_wasm_build/...pyd.p/`). The **17 missing**
+   are numpy SIMD-dispatch + npymath GENERATED sources
+   (`libnpymath.a.p/{ieee754.c,npy_math_complex.c}` + 15
+   `libloops_*.dispatch.h_baseline.a.p/*.dispatch.c`) — no `.c` exists under `tmp/`;
+   pure numeric kernels (no dynamic imports) but seal correctly refuses to prove
+   that from a partial scan and fails closed. RECIPE: (i) regenerate the 17 via
+   numpy's meson codegen custom_targets (`.dispatch.c` from `.dispatch.c.src` etc.,
+   `numpy/_core/code_generators`; TRY CODEGEN-ONLY first — cheaper than a full wasm
+   compile; same config as the linalg build → byte-identical) and drop them at
+   `tmp/pact_numpy_multiarray_meson_wasm_build_generated_metadata/numpy/_core/lib*.a.p/*.c`;
+   (ii) re-seal `uv run --active --project . --python 3.12 python
+   tools/pact_seal_witness_roots.py --root tmp/pact_numpy_multiarray_sealed_for_witness`
+   (this tool is on origin/main, ABSENT from the shared-checkout working tree — use
+   the origin/main / clean-worktree copy); verify the manifest gains the field;
+   (iii) prove past-seal via `pact-witness-acceptance --detach` from a clean
+   `origin/main` worktree. SAME ARC: add a re-seal GATE (test: sealed manifest
+   carries `runtime_python_import_modules` AND all object_closure sources resolve,
+   fail-closed) and RELATIVIZE the seal's object_closure `source` paths to
+   source_plan roots so it's relocatable and can't rot to a deleted worktree again.
+   Find the meson-wasm configure recipe via the proof_queue pact-witness lane /
+   `_pact_witness_native_roots` / `collab/pact/STATUS.md`. POISON rules bind.
+2. **LINK.** Once seal passes, the build reaches the WASM link — the cpython-abi
+   data-symbol fix (`89e5160ea`) already resolves that class. Next likely: 17
+   variadic C-shim exports (existing `MOLT_WASM_CPYTHON_ABI_EXPORTS` mechanism).
+3. **STATIC-LIB LINK.** Land the HELD witness linked-static-library closure branch
+   **`origin/wip/reconciled-witness-linked-static-20260707`** (numpy
+   `libunique_hash.a`→`unique.cpp`; verified reconciled + non-regressive; it lacks
+   a positive test so land it WHEN the build actually reaches the numpy static-lib
+   link stage and it's exercised — cherry-pick onto current main, `ff_land`).
+4. **EXEC + PARITY.** `pact-witness-acceptance` produces `candidate_outputs.npz`;
+   the oracle (`_prepare_reference_oracle` regenerates a fresh CPython reference +
+   `check_parity.py`, order-robust, tight ATOL) gives the honest verdict. E1 GREEN
+   = check_parity PASS. Faster-than-CPython timing goes on the R8 scoreboard.
+
+### Standing Codex lanes (parallel, subordinate to E1) — see CURRENT CODEX LANES below
+B = R5c frontend-lowering reuse/parallelize; C = reconcile+land
+`codex/proofqueue-preflight-diagnosis-20260707` (`02d85f922`); D = R6/R8. The
+compiler-build-resource mutex is LANDED (PR #100) — do NOT re-chase.
+
+### If you get E1 to green (or hit a true external blocker)
+Update THIS handoff with what landed + the new frontier, leave the evidence
+(queue run ids, candidate_outputs.npz, check_parity output), and keep the standing
+lanes moving. The orchestrator will reconcile on return.
+
 ## 🔄 ORCHESTRATOR UPDATE — 2026-07-07 (late, post-recovery; READ FIRST — supersedes the burndown frontier + coordination below)
 
 Session recovered after a clean pause (desktop relaunch). No signal lost: the four
