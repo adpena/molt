@@ -3,9 +3,30 @@
 #![allow(non_snake_case)]
 
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
+}
+
+// A hook table whose `alloc_list` SUCCEEDS (so PyList_New returns a non-null
+// empty list) while `dict_op` stays stubbed (returns 0). This makes the fail-open
+// placeholder (`PyList_New(0)`) observably DIFFERENT from the real routing
+// (`PyDict_Items` -> dict_op -> fail closed NULL): the mutation-proof for the
+// Items burndown depends on that difference.
+static LIST_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
+
+unsafe extern "C" fn fake_alloc_list() -> u64 {
+    LIST_HANDLE.fetch_add(0x10, Ordering::Relaxed)
+}
+
+fn init_with_working_list_alloc() {
+    let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    hooks.alloc_list = fake_alloc_list;
+    unsafe {
+        molt_cpython_abi::bridge::molt_cpython_abi_init();
+        let _ = molt_cpython_abi::try_set_runtime_hooks(hooks);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,15 +87,21 @@ fn test_dict_copy_keys_values_fail_closed_without_runtime() {
 #[test]
 fn test_dict_items_fails_closed_without_runtime() {
     // F6 teeth (fail-open burndown): PyDict_Items routes through the runtime dict
-    // authority (DictOp::Items). Without runtime hooks the dict_op hook returns 0,
-    // so it must fail closed with NULL + an exception, never a fabricated empty
-    // list. (PyMapping_Items delegates here — same guarantee.)
-    init();
+    // authority (DictOp::Items). The dict_op hook returns 0 here, so it must fail
+    // closed with NULL + an exception, never a fabricated empty list.
+    //
+    // The hook table gives alloc_list a WORKING allocator on purpose: it makes
+    // this test distinguish the real routing from the old `PyList_New(0)`
+    // placeholder. If PyDict_Items regressed to returning an empty list, that list
+    // would now allocate to a NON-null value and this assertion would fail —
+    // giving the burndown real mutation teeth (a fail-closed-under-stubs-only test
+    // cannot tell the two apart, since PyList_New(0) itself fails closed there).
+    init_with_working_list_alloc();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_Items(ptr::null_mut()) };
     assert!(
         result.is_null(),
-        "PyDict_Items must fail closed (NULL), not return an empty list"
+        "PyDict_Items must fail closed (NULL), not return an (allocatable) empty list"
     );
     assert!(
         !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
@@ -87,14 +114,16 @@ fn test_dict_items_fails_closed_without_runtime() {
 fn test_mapping_items_fails_closed_without_runtime() {
     // PyMapping_Items delegated to an empty-list placeholder before the burndown
     // (silent data loss). It now routes through PyDict_Items -> runtime authority
-    // and must fail closed with NULL + an exception under stubs.
-    init();
+    // and must fail closed with NULL + an exception. alloc_list works here so a
+    // regression to the PyList_New(0) placeholder would return non-null and be
+    // caught (mutation teeth) — see test_dict_items_fails_closed_without_runtime.
+    init_with_working_list_alloc();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result =
         unsafe { molt_cpython_abi::api::abstract_mapping::PyMapping_Items(ptr::null_mut()) };
     assert!(
         result.is_null(),
-        "PyMapping_Items must fail closed (NULL), not return an empty list"
+        "PyMapping_Items must fail closed (NULL), not return an (allocatable) empty list"
     );
     assert!(
         !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
