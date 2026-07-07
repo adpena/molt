@@ -228,6 +228,7 @@ class _SourceExtensionBuildPlan:
     build_root: Path
     sources: tuple[Path, ...]
     generated_sources: tuple[Path, ...]
+    skipped_generated_sources: tuple[Path, ...]
     non_compiled_inputs: tuple[Path, ...]
     compile_units: tuple[_SourceExtensionCompileUnit, ...]
     include_dirs: tuple[Path, ...]
@@ -254,6 +255,9 @@ class _SourceExtensionBuildPlan:
             "digest": self.digest,
             "sources": [str(path) for path in self.sources],
             "generated_sources": [str(path) for path in self.generated_sources],
+            "skipped_generated_sources": [
+                str(path) for path in self.skipped_generated_sources
+            ],
             "non_compiled_inputs": [str(path) for path in self.non_compiled_inputs],
             "compile_units": [unit.manifest_payload() for unit in self.compile_units],
             "include_dirs": [str(path) for path in self.include_dirs],
@@ -372,6 +376,9 @@ def _source_extension_build_plan_digest(plan: _SourceExtensionBuildPlan) -> str:
         "build_root": str(plan.build_root),
         "sources": [str(path) for path in plan.sources],
         "generated_sources": [str(path) for path in plan.generated_sources],
+        "skipped_generated_sources": [
+            str(path) for path in plan.skipped_generated_sources
+        ],
         "non_compiled_inputs": [str(path) for path in plan.non_compiled_inputs],
         "compile_units": [
             {
@@ -789,16 +796,19 @@ def _filter_meson_source_group_to_existing(
     *,
     source_root: Path,
     build_root: Path,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], tuple[Path, ...]]:
     """Copy a linked static-lib source group keeping only on-disk source files.
 
     Generated sources of a linked static library may be transient build
     artifacts already cleaned from the build dir; those are dropped so a linked
     lib contributes exactly the translation units still present on disk. Non
     source-file keys (language/compiler/parameters/linker) are preserved so the
-    compile-unit metadata for the surviving sources stays intact.
+    compile-unit metadata for the surviving sources stays intact. Dropped
+    generated sources are returned as source-plan diagnostics so a cleaned unit
+    is explicit manifest evidence, never a silent producer-side skip.
     """
     filtered: dict[str, Any] = dict(group)
+    skipped_generated_sources: list[Path] = []
     for key, prefer_build_root in (("sources", False), ("generated_sources", True)):
         raw_values = group.get(key)
         if not isinstance(raw_values, (list, tuple)):
@@ -813,8 +823,10 @@ def _filter_meson_source_group_to_existing(
             )
             if source_path.exists():
                 kept.append(raw_source)
+            elif key == "generated_sources":
+                skipped_generated_sources.append(source_path.resolve())
         filtered[key] = kept
-    return filtered
+    return filtered, _dedupe_paths(skipped_generated_sources)
 
 
 def _load_meson_intro_targets_source_extension_plan(
@@ -910,6 +922,7 @@ def _load_meson_intro_targets_source_extension_plan(
         payload=payload,
     )
     combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
+    skipped_generated_sources: list[Path] = []
     for linked_target in linked_static_targets:
         linked_sources = linked_target.get("target_sources")
         if not isinstance(linked_sources, list):
@@ -925,13 +938,13 @@ def _load_meson_intro_targets_source_extension_plan(
             # than hard-failing the whole plan. Sources present on disk (the
             # linked-in symbols the reachability demands, e.g. unique.cpp) are
             # included.
-            combined_source_groups.append(
-                _filter_meson_source_group_to_existing(
-                    group,
-                    source_root=resolved_source_root,
-                    build_root=resolved_build_root,
-                )
+            filtered_group, skipped = _filter_meson_source_group_to_existing(
+                group,
+                source_root=resolved_source_root,
+                build_root=resolved_build_root,
             )
+            combined_source_groups.append(filtered_group)
+            skipped_generated_sources.extend(skipped)
 
     target_output_roots = _meson_target_object_roots(
         target.get("filename"),
@@ -1090,6 +1103,7 @@ def _load_meson_intro_targets_source_extension_plan(
 
     deduped_sources = _dedupe_paths(sources)
     deduped_generated_sources = _dedupe_paths(generated_sources)
+    deduped_skipped_generated_sources = _dedupe_paths(skipped_generated_sources)
     all_sources = (*deduped_sources, *deduped_generated_sources)
     if not all_sources:
         errors.append(
@@ -1125,6 +1139,7 @@ def _load_meson_intro_targets_source_extension_plan(
         build_root=resolved_build_root,
         sources=deduped_sources,
         generated_sources=deduped_generated_sources,
+        skipped_generated_sources=deduped_skipped_generated_sources,
         non_compiled_inputs=deduped_non_compiled_inputs,
         compile_units=tuple(compile_units),
         include_dirs=_dedupe_paths(include_dirs),
@@ -1146,6 +1161,7 @@ def _load_meson_intro_targets_source_extension_plan(
             build_root=plan.build_root,
             sources=plan.sources,
             generated_sources=plan.generated_sources,
+            skipped_generated_sources=plan.skipped_generated_sources,
             non_compiled_inputs=plan.non_compiled_inputs,
             compile_units=plan.compile_units,
             include_dirs=plan.include_dirs,
