@@ -420,6 +420,41 @@ def test_run_context_env_can_emit_session_scoped_uv_project_environment(
     )
 
 
+def test_run_context_env_session_id_overrides_missing_ambient_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _clear_run_context_env(monkeypatch)
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+
+    assert (
+        run_context_env.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--session-id",
+                "witness-warm",
+                "--dx",
+                "--session-scoped-uv-project-env",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    env = payload["env"]
+    assert env["MOLT_SESSION_ID"] == "witness-warm"
+    assert env["CARGO_TARGET_DIR"] == str(
+        tmp_path.resolve() / "target" / "sessions" / "witness-warm"
+    )
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(
+        tmp_path.resolve() / "tmp" / "uv-project-envs" / "witness-warm"
+    )
+
+
 def test_run_context_env_preserves_explicit_uv_project_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
