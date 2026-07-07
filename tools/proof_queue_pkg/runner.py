@@ -58,38 +58,15 @@ def _run_one(
     if edge_kind not in pq.EDGE_KINDS:
         allowed = ", ".join(sorted(pq.EDGE_KINDS))
         raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
-    active = []
-    for row in pq._active_for_key(conn, contention_key):
-        if existing_run_id is not None and row["run_id"] == existing_run_id:
-            continue
-        if existing_run_id is not None and row["status"] == "queued":
-            continue
-        active.append(row)
-    if active:
-        print(
-            f"contention key {contention_key!r} already has active run(s):",
-            file=sys.stderr,
-        )
-        for row in active:
-            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
-        return 2
-    active_resource = []
-    for row in pq._active_for_resource_mutex(
+    active = pq._active_contention_conflicts(
         conn,
-        resource_family,
-        exclude_run_id=existing_run_id,
-    ):
-        if existing_run_id is not None and row["run_id"] == existing_run_id:
-            continue
-        active_resource.append(row)
-    if active_resource:
-        print(
-            f"resource group {pq.COMPILER_BUILD_RESOURCE_KEY!r} "
-            "already has active run(s):",
-            file=sys.stderr,
-        )
-        for row in active_resource:
-            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
+        resource_family=resource_family,
+        contention_key=contention_key,
+        command=command,
+        existing_run_id=existing_run_id,
+    )
+    if active:
+        pq._print_active_contention_conflicts(active)
         return 2
     suffix = uuid.uuid4().hex[:16]
     run_id = existing_run_id or f"{pq._compact_utc()}-{pq._slug(logical_id)}-{suffix}"
