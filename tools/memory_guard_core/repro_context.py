@@ -16,6 +16,8 @@ class ProcessSampleLike(Protocol):
 
 
 REPRO_ENV_KEYS = {
+    "CARGO_BUILD_JOBS",
+    "CARGO_INCREMENTAL",
     "CARGO_TARGET_DIR",
     "CI",
     "CODEX_SESSION_ID",
@@ -37,6 +39,8 @@ REPRO_ENV_KEYS = {
     "RUSTC_WRAPPER",
     "TMPDIR",
     "UV_CACHE_DIR",
+    "UV_LINK_MODE",
+    "UV_PROJECT_ENVIRONMENT",
     "VIRTUAL_ENV",
 }
 REPRO_ENV_PREFIXES = ("CODEX_", "GITHUB_", "MOLT_", "PYTEST_")
