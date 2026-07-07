@@ -361,7 +361,11 @@ fn ready_populates_tp_dict_from_members_and_getset() {
 
 #[test]
 fn new_member_descriptor_has_correct_type_and_name() {
-    init();
+    // Needs a runtime alloc_str: PyDescr_NewMember builds the descriptor's name
+    // via PyUnicode_FromString, which fails closed (NULL) under stub hooks. The
+    // previous placeholder let a name-less descriptor be fabricated; the real
+    // descriptor requires the fake allocator table.
+    install_runtime_hooks();
     let mut memb = member(
         b"num\0",
         T_INT,
@@ -401,7 +405,8 @@ fn new_member_descriptor_has_correct_type_and_name() {
 
 #[test]
 fn new_getset_descriptor_has_correct_type() {
-    init();
+    // Needs a runtime alloc_str (see new_member_descriptor_has_correct_type_and_name).
+    install_runtime_hooks();
     let mut gs = getset_def(b"names\0", Some(fake_getter), None);
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_name = c"owner".as_ptr();
@@ -423,7 +428,8 @@ fn new_getset_descriptor_has_correct_type() {
 
 #[test]
 fn member_descriptor_get_reads_struct_field() {
-    init();
+    // Needs a runtime alloc_str for the descriptor name (fails closed under stubs).
+    install_runtime_hooks();
     // Build an instance with a known type_num, then read it back through the
     // member_descriptor's tp_descr_get.
     let mut inst = FakeDescrObject {
@@ -471,7 +477,8 @@ fn member_descriptor_get_reads_struct_field() {
 
 #[test]
 fn getset_descriptor_get_invokes_getter() {
-    init();
+    // Needs a runtime alloc_str for the descriptor name (fails closed under stubs).
+    install_runtime_hooks();
     let mut gs = getset_def(b"names\0", Some(fake_getter), None);
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_name = c"owner".as_ptr();
@@ -502,7 +509,8 @@ fn getset_descriptor_get_invokes_getter() {
 
 #[test]
 fn readonly_getset_set_raises_attributeerror() {
-    init();
+    // Needs a runtime alloc_str for the descriptor name (fails closed under stubs).
+    install_runtime_hooks();
     // A getset with no setter is read-only; writing through it must raise
     // AttributeError (never a silent success).
     let mut gs = getset_def(b"names\0", Some(fake_getter), None);
