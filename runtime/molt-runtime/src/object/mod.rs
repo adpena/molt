@@ -31,6 +31,7 @@ pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
 pub(crate) mod cold_header;
+pub mod float_repr;
 pub(crate) mod gc;
 #[allow(dead_code)]
 pub mod gil;
@@ -47,7 +48,6 @@ pub(crate) mod ops_compare;
 pub(crate) mod ops_convert;
 pub(crate) mod ops_dict;
 pub(crate) mod ops_encoding;
-pub mod float_repr;
 pub(crate) mod ops_format;
 pub(crate) mod ops_hash;
 pub(crate) mod ops_heapq;
