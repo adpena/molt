@@ -2564,6 +2564,7 @@ pub(crate) enum WasmRuntimeImport {
     ZlibDecompressobjFlush,
     ZlibDecompressobjNew,
     ZlibDecompressobjUnconsumedTail,
+    ZlibDecompressobjUnusedData,
     ZlibDefBufSize,
     ZlibDefMemLevel,
     ZlibMaxWbits,
