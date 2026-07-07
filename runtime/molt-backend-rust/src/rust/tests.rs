@@ -469,7 +469,13 @@ fn compile_checked_reports_stub_markers() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("unsupported ops should be rejected with marker details");
-    assert!(err.contains("MOLT_STUB: matmul"));
+    // Fail-closed authority is the emit-time accumulator, which names the op kind
+    // and backend and refuses to emit fail-open codegen.
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "error must come from the fail-closed accumulator, got: {err}"
+    );
+    assert!(err.contains("matmul"), "diagnostic must name the op kind, got: {err}");
 }
 
 #[test]
@@ -701,11 +707,17 @@ fn compile_checked_rejects_unrepresented_literal_values() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("unsupported literal value representations must fail closed");
-    assert!(err.contains("MOLT_STUB: const_bigint"));
+    // The fail-closed accumulator (authority) names each unsupported op kind and
+    // carries its reason; it fires before the retained MOLT_STUB text scan.
+    assert!(
+        err.contains("refuses to emit fail-open codegen"),
+        "error must come from the fail-closed accumulator, got: {err}"
+    );
+    assert!(err.contains("const_bigint"), "got: {err}");
     assert!(err.contains("bigint literal exceeds Rust backend i64 value representation"));
-    assert!(err.contains("MOLT_STUB: const_bytes"));
+    assert!(err.contains("const_bytes"), "got: {err}");
     assert!(err.contains("bytes literals require a Rust backend bytes value representation"));
-    assert!(err.contains("MOLT_STUB: const_ellipsis"));
+    assert!(err.contains("const_ellipsis"), "got: {err}");
 }
 
 #[test]
