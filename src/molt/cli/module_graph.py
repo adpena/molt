@@ -32,6 +32,7 @@ from molt.cli.models import (
 )
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
+from molt.cli.source_extensions import source_extension_manifest_source_path
 from molt.cli.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -883,6 +884,9 @@ def _missing_native_support_artifact_imports(
     runtime_import_modules = (
         native_artifact_plan.runtime_python_import_module_names()
     )
+    object_closure_source_paths = _native_artifact_object_closure_source_paths(
+        native_artifact_plan
+    )
     missing: list[str] = []
     for import_name in sorted(set(support_explicit_imports)):
         if import_name in source_modules or import_name in native_modules:
@@ -892,10 +896,16 @@ def _missing_native_support_artifact_imports(
             for package in native_packages
         ):
             continue
-        if _native_support_artifact_source_candidates(
+        source_candidates = _native_support_artifact_source_candidates(
             native_artifact_plan=native_artifact_plan,
             module_name=import_name,
-        ):
+        )
+        if source_candidates:
+            if _native_support_import_has_object_closure_custody(
+                source_candidates=source_candidates,
+                object_closure_source_paths=object_closure_source_paths,
+            ):
+                continue
             # A genuine native submodule whose upstream native source
             # (.pyx/.c/.cpp) is present but carries no compiled artifact or
             # source-graph custody must fail closed as a missing artifact, even
@@ -921,6 +931,57 @@ def _missing_native_support_artifact_imports(
             continue
         missing.append(import_name)
     return tuple(missing)
+
+
+def _native_support_import_has_object_closure_custody(
+    *,
+    source_candidates: Sequence[Path],
+    object_closure_source_paths: Collection[Path],
+) -> bool:
+    if not source_candidates:
+        return False
+    closure_sources = frozenset(path.resolve() for path in object_closure_source_paths)
+    return any(path.resolve() in closure_sources for path in source_candidates)
+
+
+def _native_artifact_object_closure_source_paths(native_artifact_plan) -> frozenset[Path]:
+    sources: set[Path] = set()
+    for artifact in native_artifact_plan.artifacts:
+        try:
+            manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, Mapping):
+            continue
+        object_closure = manifest.get("object_closure")
+        objects = (
+            object_closure.get("objects")
+            if isinstance(object_closure, Mapping)
+            else None
+        )
+        if not isinstance(objects, list):
+            continue
+        for item in objects:
+            if not isinstance(item, Mapping):
+                continue
+            raw_source = item.get("source")
+            if not isinstance(raw_source, str) or not raw_source.strip():
+                continue
+            raw_sha256 = item.get("source_sha256")
+            source_path, errors = source_extension_manifest_source_path(
+                raw_source,
+                manifest=manifest,
+                manifest_path=artifact.manifest_path,
+                expected_sha256=(
+                    raw_sha256.strip()
+                    if isinstance(raw_sha256, str) and raw_sha256.strip()
+                    else None
+                ),
+            )
+            if errors or source_path is None:
+                continue
+            sources.add(source_path.resolve())
+    return frozenset(sources)
 
 
 def _native_support_artifact_source_candidates(
