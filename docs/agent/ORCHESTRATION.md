@@ -69,18 +69,26 @@ trampling, and absolute respect for a stand-down order.
 Session recovered after a clean pause (desktop relaunch). No signal lost: the four
 paused worktree branches are banked to `origin/wip/recover-*-20260707`.
 
-- **CONFIRMED E1 FRONTIER (fresh run `20260707T183013-pact-witness-acceptance`,
-  live tree):** the witness build now reaches the **WASM LINK** stage — PAST the
-  "8 numpy support-module seal gap" AND past static init — and fails at link:
-  `wasm-ld: undefined symbol: molt_PyType_Ready` in `native_runtime_imports_0.wasm`.
-  ABI-alias/object-closure naming gap: `PyType_Ready` is exported UNPREFIXED
-  (`#[unsafe(no_mangle)]`, `runtime/molt-cpython-abi/src/api/typeobj.rs:45`) but the
-  wasm runtime-import closure references molt-prefixed `molt_PyType_Ready` (nothing
-  defines it). Same class as `molt_gpu_tensor___product` + the wasm-op triple.
-  ORCHESTRATOR SUBAGENT OWNS IT — close the alias as ONE naming authority for the
-  whole cpython-abi symbol class (PyLong_Type etc. already flow correctly; make
-  PyType_Ready flow the same way), fail-closed on genuinely-missing symbols.
-  **The "8 support-module seal gap" frontier line below is STALE — superseded.**
+- **E1 LINK FIX LANDED + VERIFIED (origin/main `89e5160ea`).** The real frontier
+  was the whole cpython-abi **DATA-symbol** class, not one symbol: `wasm_link_edit.py`
+  rewrote only kind==0 function imports, so ~54 linking-symtab DATA type-objects
+  (PyLong_Type, PyType_Type…) kept UNPREFIXED edges the molt_-prefixed split runtime
+  can't satisfy (queue run `20260707T162126` = `undefined symbol: PyLong_Type`).
+  Fix extends the rewrite to data symbols + kind==3 globals via the SAME
+  `_runtime_import_rewrite_target` authority, fail-closed on unknown kind. Verified:
+  teeth reproduced (FAIL without fix, pass with), 105/105 green, cherry-picked clean
+  onto current main (avoided a stale-base trample of the vfs lane's files). **NEXT E1
+  frontier:** acceptance re-run on a coherent tree → likely the 17 variadic C-shim
+  exports (existing `MOLT_WASM_CPYTHON_ABI_EXPORTS` mechanism), then execution-time
+  parity (candidate_outputs.npz → check_parity).
+- **⚠️ #2 REGRESSION — parallel lane, DROP IT.** The `molt_PyType_Ready` symptom in
+  run `20260707T183013` was a SEPARATE uncommitted regression in the shared checkout:
+  a parallel lane deleted `linked_native_inputs = tuple(native_objects)` in
+  `wasm_link_edit.py`, linking molt_-prefixed inputs against the unprefixed reloc
+  runtime. That lane's correct data-symbol rewrite (#1) is now on main as `89e5160ea`
+  — that lane must DROP its whole `wasm_link_edit.py` WIP (drift-sweep will show #1
+  landed) and NOT commit #2. Do NOT run `pact-witness-acceptance` from the shared
+  checkout until #2 is gone — it will re-fail on `molt_PyType_Ready`.
 - **Compiler-build-resource mutex is LANDED (PR #100).** The "LAND the mutex fix"
   directive in the CODEX COORDINATION block below is DONE — both
   `codex/compiler-build-resource-mutex-*` and `codex/proofqueue-build-resource-mutex-*`
@@ -1044,6 +1052,14 @@ from-import native-call provenance (3b0ca4a80, be516cbff).
   queue row makes the defect the work: file it with the row ID.
 - **Side worktrees for runtime/backend edits.** The shared checkout's cargo
   state is everyone's build cache.
+- **NEVER use `git stash` on this shared repo.** The stash stack is SHARED across
+  all worktrees (`.git/refs/stash` is common): a `stash pop` in one worktree can
+  race-apply and silently DROP another lane's stash, and can contaminate a clean
+  worktree with a foreign/partial diff (validated 2026-07-07: a shared `stash pop`
+  dropped a vfs-lane stash — recovered — and gutted a clean worktree's `locks.rs`
+  to a 5-line truncation). Bank WIP to a `wip/*` branch (`git branch`/push), never
+  `git stash`. If you find a contaminated file you didn't edit, preserve it to a
+  patch and flag the orchestrator — do not commit it.
 - Never revert or checkout files outside your lane, even transiently. A
   file you didn't edit that shows up dirty is another lane's live WIP.
 
