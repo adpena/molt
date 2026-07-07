@@ -711,6 +711,112 @@ def _load_compile_command_units(
     return commands_by_source, []
 
 
+def _meson_link_archive_names(target: Mapping[str, Any]) -> set[str]:
+    """Static-library archive basenames referenced by a target's link line.
+
+    A Meson shared-module extension (e.g. numpy ``_multiarray_umath``) links
+    same-project ``static_library`` targets (``libunique_hash.a``,
+    ``libnpymath.a``, ...). Molt recompiles the extension from source for the
+    target triple, so the host-built ``.a`` archives are unusable; their source
+    translation units MUST join the extension's own compile closure or their
+    symbols are missing at link. This returns the archive basenames so the
+    matching static-library targets can be discovered in the intro-targets plan.
+    """
+    names: set[str] = set()
+
+    def _collect(values: Any) -> None:
+        if not isinstance(values, (list, tuple)):
+            return
+        for value in values:
+            text = str(value).strip()
+            if not text:
+                continue
+            # Archive references appear as paths like
+            # ``numpy/_core/libunique_hash.a``.
+            base = Path(text.replace("\\", "/")).name
+            if base.lower().endswith(".a"):
+                names.add(base)
+
+    # Meson intro-targets carry the link line inside each shared-module
+    # target_sources group's ``parameters``/``linker`` lists (the archive paths
+    # are linker inputs), not a top-level link_args key.
+    _collect(_meson_link_args(target))
+    target_sources = target.get("target_sources")
+    if isinstance(target_sources, list):
+        for group in target_sources:
+            if isinstance(group, Mapping):
+                _collect(group.get("parameters"))
+                _collect(group.get("linker"))
+    return names
+
+
+def _meson_linked_static_library_targets(
+    *,
+    primary_target: Mapping[str, Any],
+    payload: Sequence[Any],
+) -> list[Mapping[str, Any]]:
+    """In-project ``static_library`` targets linked by ``primary_target``.
+
+    Follows the primary target's link archives to the ``static library`` targets
+    in the same intro-targets plan whose output filename matches. Molt compiles
+    those targets' sources into the extension closure so linked-in symbols
+    (e.g. numpy ``unique.cpp`` in ``libunique_hash.a``) are present.
+    """
+    archive_names = _meson_link_archive_names(primary_target)
+    if not archive_names:
+        return []
+    linked: list[Mapping[str, Any]] = []
+    for entry in payload:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("type", "")).strip() != "static library":
+            continue
+        entry_filenames = entry.get("filename")
+        raw_filenames = (
+            entry_filenames if isinstance(entry_filenames, list) else (entry_filenames,)
+        )
+        for raw_filename in raw_filenames:
+            if not isinstance(raw_filename, str):
+                continue
+            if Path(raw_filename.replace("\\", "/")).name in archive_names:
+                linked.append(entry)
+                break
+    return linked
+
+
+def _filter_meson_source_group_to_existing(
+    group: Mapping[str, Any],
+    *,
+    source_root: Path,
+    build_root: Path,
+) -> dict[str, Any]:
+    """Copy a linked static-lib source group keeping only on-disk source files.
+
+    Generated sources of a linked static library may be transient build
+    artifacts already cleaned from the build dir; those are dropped so a linked
+    lib contributes exactly the translation units still present on disk. Non
+    source-file keys (language/compiler/parameters/linker) are preserved so the
+    compile-unit metadata for the surviving sources stays intact.
+    """
+    filtered: dict[str, Any] = dict(group)
+    for key, prefer_build_root in (("sources", False), ("generated_sources", True)):
+        raw_values = group.get(key)
+        if not isinstance(raw_values, (list, tuple)):
+            continue
+        kept: list[Any] = []
+        for raw_source in raw_values:
+            source_path = _resolve_meson_plan_artifact_path(
+                raw_source,
+                source_root=source_root,
+                build_root=build_root,
+                prefer_build_root=prefer_build_root,
+            )
+            if source_path.exists():
+                kept.append(raw_source)
+        filtered[key] = kept
+    return filtered
+
+
 def _load_meson_intro_targets_source_extension_plan(
     *,
     plan_path: Path,
@@ -792,13 +898,58 @@ def _load_meson_intro_targets_source_extension_plan(
     if not isinstance(target_sources, list):
         errors.append(f"Meson target {target_name or target_id!r} lacks target_sources")
         target_sources = []
+
+    # Follow linked in-project static libraries: a shared-module extension links
+    # same-project static_library targets whose host ``.a`` archives are unusable
+    # for the recompiled target triple, so their source translation units must
+    # join this extension's compile closure (else linked-in symbols like numpy
+    # ``unique.cpp`` in ``libunique_hash.a`` are missing). The primary target's
+    # own sources come first so its compile metadata wins on any overlap.
+    linked_static_targets = _meson_linked_static_library_targets(
+        primary_target=target,
+        payload=payload,
+    )
+    combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
+    for linked_target in linked_static_targets:
+        linked_sources = linked_target.get("target_sources")
+        if not isinstance(linked_sources, list):
+            continue
+        for group in linked_sources:
+            if not isinstance(group, Mapping):
+                continue
+            # Static-library groups can list generated sources whose on-disk
+            # ``.c`` was a transient build artifact that has since been cleaned
+            # (numpy's tempita ``.c.src`` templates). The primary target already
+            # links what it needs; a linked-lib source is admitted ONLY when its
+            # file still resolves, so a cleaned generated unit is skipped rather
+            # than hard-failing the whole plan. Sources present on disk (the
+            # linked-in symbols the reachability demands, e.g. unique.cpp) are
+            # included.
+            combined_source_groups.append(
+                _filter_meson_source_group_to_existing(
+                    group,
+                    source_root=resolved_source_root,
+                    build_root=resolved_build_root,
+                )
+            )
+
     target_output_roots = _meson_target_object_roots(
         target.get("filename"),
         build_root=resolved_build_root,
     )
+    for linked_target in linked_static_targets:
+        target_output_roots = _dedupe_paths(
+            (
+                *target_output_roots,
+                *_meson_target_object_roots(
+                    linked_target.get("filename"),
+                    build_root=resolved_build_root,
+                ),
+            )
+        )
 
     target_compile_command_sources: list[Path] = []
-    for source_group in target_sources:
+    for source_group in combined_source_groups:
         if not isinstance(source_group, Mapping):
             continue
         for raw_source in source_group.get("sources") or ():
@@ -867,7 +1018,7 @@ def _load_meson_intro_targets_source_extension_plan(
         compile_args.extend(unit_args)
         include_dirs.extend(unit_includes)
 
-    for source_group in target_sources:
+    for source_group in combined_source_groups:
         if not isinstance(source_group, Mapping):
             continue
         language_value = source_group.get("language")

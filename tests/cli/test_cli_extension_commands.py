@@ -178,7 +178,11 @@ def _write_extension_project(
     )
 
 
-def _write_meson_source_plan_project(project_root: Path) -> Path:
+def _write_meson_source_plan_project(
+    project_root: Path,
+    *,
+    linked_static_library: bool = False,
+) -> Path:
     src_dir = project_root / "pkg"
     include_dir = src_dir / "include"
     generated_dir = project_root / "build" / "generated"
@@ -230,6 +234,14 @@ def _write_meson_source_plan_project(project_root: Path) -> Path:
         encoding="utf-8",
     )
     (generated_dir / "generated_only.h").write_text("#define GENERATED_ONLY 1\n")
+    if linked_static_library:
+        (src_dir / "unique.cpp").write_text(
+            "int array__unique_hash(void) { return 1; }\n",
+            encoding="utf-8",
+        )
+    linker_parameters = ["-Wl,--as-needed"]
+    if linked_static_library:
+        linker_parameters.append("pkg/libunique_hash.a")
     intro_targets = [
         {
             "id": "pkg.demoext",
@@ -255,9 +267,27 @@ def _write_meson_source_plan_project(project_root: Path) -> Path:
                     ],
                 },
             ],
-            "linker_parameters": ["-Wl,--as-needed"],
+            "linker_parameters": linker_parameters,
         }
     ]
+    if linked_static_library:
+        intro_targets.append(
+            {
+                "id": "pkg.libunique_hash",
+                "name": "unique_hash",
+                "type": "static library",
+                "filename": str(project_root / "build" / "pkg" / "libunique_hash.a"),
+                "target_sources": [
+                    {
+                        "language": "cpp",
+                        "machine": "host",
+                        "parameters": ["-I", "pkg/include", "-DSTATIC_LIB=1"],
+                        "sources": ["pkg/unique.cpp"],
+                        "generated_sources": ["generated/cleaned_unique.c"],
+                    }
+                ],
+            }
+        )
     intro_path = meson_info_dir / "intro-targets.json"
     intro_path.write_text(json.dumps(intro_targets, indent=2) + "\n")
     compile_commands = [
@@ -289,6 +319,23 @@ def _write_meson_source_plan_project(project_root: Path) -> Path:
             ],
         },
     ]
+    if linked_static_library:
+        compile_commands.append(
+            {
+                "directory": str(project_root),
+                "file": "pkg/unique.cpp",
+                "arguments": [
+                    "c++",
+                    "-I",
+                    "pkg/include",
+                    "-DSTATIC_LIB=1",
+                    "-c",
+                    "pkg/unique.cpp",
+                    "-o",
+                    "build/unique.cpp.o",
+                ],
+            }
+        )
     (project_root / "build" / "compile_commands.json").write_text(
         json.dumps(compile_commands, indent=2) + "\n",
         encoding="utf-8",
@@ -1524,6 +1571,78 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
         artifact_manifest["source_plan"]["digest"] == manifest["source_plan"]["digest"]
     )
     assert artifact_manifest["python_exports"] == ["pkg.demoext"]
+
+
+def test_extension_build_follows_linked_static_library_source_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "meson_extproj"
+    project_root.mkdir()
+    _write_meson_source_plan_project(project_root, linked_static_library=True)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": (
+                {"PyInit_demoext"},
+                {"array__unique_hash", "helper_generated"},
+            ),
+            "helper_generated": ({"helper_generated"}, set()),
+            "unique": ({"array__unique_hash"}, set()),
+        },
+    )
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    assert any(
+        "-c" in cmd and any("unique.cpp" in part for part in cmd)
+        for cmd in commands
+    )
+    link_cmd = next(cmd for cmd in commands if "-shared" in cmd)
+    assert any("2_unique.o" in part for part in link_cmd)
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["build"]["object_count"] == 3
+    assert manifest["build"]["linked_object_count"] == 3
+    assert str((project_root / "pkg" / "unique.cpp").resolve()) in (
+        manifest["source_plan"]["sources"]
+    )
+    object_sources = {
+        Path(obj["source"]).resolve()
+        for obj in manifest["object_closure"]["objects"]
+    }
+    assert (project_root / "pkg" / "unique.cpp").resolve() in object_sources
+    defined_symbols = {
+        symbol
+        for obj in manifest["object_closure"]["objects"]
+        for symbol in obj["defined_symbols"]
+    }
+    assert "array__unique_hash" in defined_symbols
 
 
 def test_extension_build_rejects_parallel_sources_with_source_plan(
