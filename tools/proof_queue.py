@@ -16,7 +16,7 @@ import sys
 import time
 import tomllib
 import traceback
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +75,10 @@ DEFAULT_EDGE_KIND = "depends_on"
 _SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
+COMPILER_BUILD_RESOURCE_KEY = "compiler-build-resource"
+COMPILER_BUILD_RESOURCE_FAMILIES = frozenset(
+    {"native-build", "rust", "cargo", "wasm", "wasm-browser"}
+)
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
@@ -1936,6 +1940,54 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     )
 
 
+def _resource_mutex_key(resource_family: str) -> str | None:
+    if resource_family in COMPILER_BUILD_RESOURCE_FAMILIES:
+        return COMPILER_BUILD_RESOURCE_KEY
+    return None
+
+
+def _active_for_resource_mutex(
+    conn: sqlite3.Connection,
+    resource_family: str,
+    *,
+    exclude_run_id: str | None = None,
+) -> list[sqlite3.Row]:
+    resource_key = _resource_mutex_key(resource_family)
+    if resource_key is None:
+        return []
+    conn.row_factory = sqlite3.Row
+    placeholders = ", ".join("?" for _ in COMPILER_BUILD_RESOURCE_FAMILIES)
+    params: list[object] = sorted(COMPILER_BUILD_RESOURCE_FAMILIES)
+    exclude_sql = ""
+    if exclude_run_id is not None:
+        exclude_sql = " AND run_id != ?"
+        params.append(exclude_run_id)
+    return list(
+        conn.execute(
+            f"""
+            SELECT * FROM proof_runs
+            WHERE status IN ({LAUNCHED_SQL_STATUSES})
+              AND resource_family IN ({placeholders}){exclude_sql}
+            ORDER BY started_at DESC
+            """,
+            params,
+        )
+    )
+
+
+def _active_resource_mutex_keys(
+    rows: Iterable[sqlite3.Row], *, exclude_run_id: str | None = None
+) -> set[str]:
+    keys: set[str] = set()
+    for row in rows:
+        if exclude_run_id is not None and row["run_id"] == exclude_run_id:
+            continue
+        key = _resource_mutex_key(str(row["resource_family"]))
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
 def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     conn.row_factory = sqlite3.Row
     return list(
@@ -3467,6 +3519,18 @@ def _claim_detached_run(
                 f"waiting {run_id} contention_key={row['contention_key']} active",
             )
 
+        active_for_resource = _active_for_resource_mutex(
+            conn,
+            str(row["resource_family"]),
+            exclude_run_id=run_id,
+        )
+        if active_for_resource:
+            conn.rollback()
+            return (
+                None,
+                f"waiting {run_id} resource_group={COMPILER_BUILD_RESOURCE_KEY} active",
+            )
+
         now = _utc_now()
         updated = conn.execute(
             """
@@ -3987,6 +4051,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         for row in active_running
         if not (args.run_id is not None and row["run_id"] == args.run_id)
     }
+    active_resource_keys = _active_resource_mutex_keys(
+        active_running, exclude_run_id=args.run_id
+    )
     if args.run_id:
         selected = conn.execute(
             "SELECT * FROM proof_runs WHERE run_id = ?",
@@ -4021,15 +4088,30 @@ def _cmd_run(args: argparse.Namespace) -> int:
             selection_limit = run_limit
     rows = []
     selected_detached_keys = set(active_keys)
+    selected_detached_resource_keys = set(active_resource_keys)
     candidate_rows = queued if selection_limit > 0 else []
     for row in candidate_rows:
         contention_key = str(row["contention_key"])
+        resource_key = _resource_mutex_key(str(row["resource_family"]))
         if contention_key in active_keys:
             print(f"waiting {row['run_id']} contention_key={contention_key} active")
+            continue
+        if resource_key is not None and resource_key in active_resource_keys:
+            print(f"waiting {row['run_id']} resource_group={resource_key} active")
             continue
         if args.detach and contention_key in selected_detached_keys:
             print(
                 f"waiting {row['run_id']} contention_key={contention_key} "
+                "already selected"
+            )
+            continue
+        if (
+            args.detach
+            and resource_key is not None
+            and resource_key in selected_detached_resource_keys
+        ):
+            print(
+                f"waiting {row['run_id']} resource_group={resource_key} "
                 "already selected"
             )
             continue
@@ -4038,6 +4120,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             rows.append(row)
             if args.detach:
                 selected_detached_keys.add(contention_key)
+                if resource_key is not None:
+                    selected_detached_resource_keys.add(resource_key)
             if args.run_id or len(rows) >= selection_limit:
                 break
             continue
