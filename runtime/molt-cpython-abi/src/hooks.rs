@@ -121,6 +121,14 @@ pub struct RuntimeHooks {
         unsafe extern "C" fn(obj_bits: u64, name_bits: u64, value_bits: u64) -> std::os::raw::c_int,
     /// Return format(obj, spec) using the runtime object model. Returns 0 on error.
     pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> u64,
+    /// Format an `f64` as CPython's `repr(float)` / `str(float)` using the
+    /// runtime's single float-format authority (`object::float_repr`). Writes
+    /// up to `cap` UTF-8 bytes into `out` and returns the total byte length of
+    /// the formatted string. When the return value exceeds `cap`, `out` is left
+    /// untouched and the caller must retry with a buffer of at least that size.
+    /// The ABI MUST NOT reimplement float formatting; Rust's own `{f}` breaks
+    /// round-half-to-even ties differently from CPython.
+    pub float_repr: unsafe extern "C" fn(value: f64, out: *mut u8, cap: usize) -> usize,
     pub sys_get_object_borrowed: unsafe extern "C" fn(name_data: *const u8, name_len: usize) -> u64,
     // ── Type classification ───────────────────────────────────────────────────
     /// Classify a heap-pointer handle into a `MoltTypeTag` discriminant (u8).
@@ -442,6 +450,30 @@ unsafe extern "C" fn stub_object_set_attr(
 unsafe extern "C" fn stub_object_format(_obj: u64, _spec: u64) -> u64 {
     0
 }
+/// Degraded fallback used only when the runtime float-format authority is not
+/// installed (pure-ABI unit tests without `molt-lang-runtime` linked). This is
+/// NOT CPython-exact — the real authority lives in the runtime and is wired
+/// through the `float_repr` hook. It exists solely so ABI-only tests do not
+/// crash; production always installs the runtime hook.
+unsafe extern "C" fn stub_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
+    let s = if value.is_nan() {
+        "nan".to_string()
+    } else if value.is_infinite() {
+        if value < 0.0 { "-inf".to_string() } else { "inf".to_string() }
+    } else {
+        let raw = format!("{value}");
+        if raw.contains('.') || raw.contains('e') || raw.contains('E') {
+            raw
+        } else {
+            format!("{raw}.0")
+        }
+    };
+    let bytes = s.as_bytes();
+    if bytes.len() <= cap && !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    bytes.len()
+}
 unsafe extern "C" fn stub_sys_get_object_borrowed(_data: *const u8, _len: usize) -> u64 {
     0
 }
@@ -565,6 +597,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     object_get_attr: stub_object_get_attr,
     object_set_attr: stub_object_set_attr,
     object_format: stub_object_format,
+    float_repr: stub_float_repr,
     sys_get_object_borrowed: stub_sys_get_object_borrowed,
     classify_heap: stub_classify_heap,
     inc_ref: stub_inc_ref,
