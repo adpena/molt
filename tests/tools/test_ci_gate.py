@@ -282,6 +282,20 @@ def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
     assert str(module.TESTS / "tools" / "test_perf_scoreboard.py") in check.cmd
 
 
+def test_ci_gate_tier1_includes_release_exit_contract() -> None:
+    module = _load_ci_gate()
+
+    checks = {check.name: check for check in module._build_checks()}
+    check = checks["release-exit-contract"]
+
+    assert check.tier == 1
+    assert check.required is True
+    assert check.needs_pytest is True
+    assert check.needs_rust is False
+    assert check.timeout == 30
+    assert str(module.TESTS / "tools" / "test_release_exit_gate.py") in check.cmd
+
+
 def test_ci_gate_tier1_includes_ratio_direction_scan() -> None:
     module = _load_ci_gate()
 
