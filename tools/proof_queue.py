@@ -178,6 +178,10 @@ RUNTIME_WASM_RUST_TARGET_MISSING_RE = re.compile(
     r"but the active Rust toolchain does not provide it\. "
     r"Run: (?P<command>rustup target add [^\r\n]+)\r?$"
 )
+WASM_TOOLCHAIN_CONTRACT_IMPORT_MISSING_RE = re.compile(
+    r"(?m)^failed to import WASM toolchain contract: "
+    r"No module named ['\"](?P<module>[A-Za-z0-9_.]+)['\"]\r?$"
+)
 PYTHON_EXCEPTION_RE = re.compile(
     r"(?m)^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>.+)$"
 )
@@ -249,6 +253,7 @@ AUDIT_WARNING_DIAGNOSTICS = frozenset(
         "nested-memory-guard-orphan-cleanup",
         "queue-policy-rejection",
         "runtime-wasm-rust-target-missing",
+        "wasm-toolchain-contract-import-missing",
         "running-pytest-failures-observed",
         "running-pytest-current-test-missing",
     }
