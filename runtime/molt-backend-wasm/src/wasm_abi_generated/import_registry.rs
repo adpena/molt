@@ -12810,6 +12810,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ZlibDecompressobjUnusedData,
+        name: "zlib_decompressobj_unused_data",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ZlibDefBufSize,
         name: "zlib_def_buf_size",
         type_idx: 0,
@@ -20264,6 +20269,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "molt_zlib_decompressobj_unconsumed_tail" => {
             Some(WasmRuntimeImport::ZlibDecompressobjUnconsumedTail)
+        }
+        "zlib_decompressobj_unused_data" => Some(WasmRuntimeImport::ZlibDecompressobjUnusedData),
+        "molt_zlib_decompressobj_unused_data" => {
+            Some(WasmRuntimeImport::ZlibDecompressobjUnusedData)
         }
         "zlib_def_buf_size" => Some(WasmRuntimeImport::ZlibDefBufSize),
         "molt_zlib_def_buf_size" => Some(WasmRuntimeImport::ZlibDefBufSize),
