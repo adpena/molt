@@ -175,7 +175,30 @@ pub(super) fn insert_exception_region_match_drops(
         audit_start.elapsed().as_millis(),
     );
 
-    for (position, release_facts) in release_to_matches {
+    // Process release positions per block in DESCENDING op-index order. Both
+    // mutation branches below rewrite `position.block`'s op stream at
+    // `position.op_index`: the direct branch inserts `DecRef`s immediately after
+    // the carrier (shifting every higher index), and the split branch truncates
+    // the block at `op_index + 1` and relocates the tail to a fresh `after_block`.
+    // Either mutation invalidates the recorded op-index of any *later* release
+    // position that lives higher in the SAME block. The source `BTreeMap` yields
+    // ascending `(block, op_index)`, so ascending processing would leave a
+    // second same-block carrier pointing at a freshly inserted `DecRef` (or into
+    // the moved tail) — the `debug_assert_eq!(.. Copy ..)` below then fires and a
+    // release-time refcount fixup is skipped, leaking the handler MatchRef.
+    // Descending op-index means every mutation only ever touches indices at or
+    // above the current position, so the still-unprocessed lower carriers in the
+    // block keep their exact indices. Blocks are independent, so their relative
+    // order is irrelevant.
+    let mut ordered_positions: Vec<_> = release_to_matches.into_iter().collect();
+    ordered_positions.sort_by(|(a, _), (b, _)| {
+        a.block
+            .0
+            .cmp(&b.block.0)
+            .then(b.op_index.cmp(&a.op_index))
+    });
+
+    for (position, release_facts) in ordered_positions {
         emit_drop_inner_stage_audit(
             func,
             "exception-region-position-start",
