@@ -107,7 +107,7 @@ jobs:
         run: uv run python3 tools/canonicalization_contract.py --check
 
       - name: Check runtime bridge test stubs are in sync
-        run: uv run python3 tools/check_runtime_bridge_test_stubs.py
+        run: uv run python3 tools/check_runtime_bridge_test_stubs.py --check
 
       - name: Check call-fact representation ratchet (attached call facts; up-only + evidence fresh)
         run: uv run python3 tools/call_fact_coverage.py --check

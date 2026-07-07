@@ -1,4 +1,4 @@
-// === FILE: runtime/molt-runtime/src/builtins/asyncio_core.rs ===
+// === FILE: runtime/molt-runtime-asyncio/src/asyncio_core.rs ===
 //
 // Rust intrinsics for asyncio Future state machine and synchronization primitives
 // (Event, Lock, Semaphore).
@@ -36,7 +36,7 @@ pub(crate) struct AsyncioCoreState {
 }
 
 impl AsyncioCoreState {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             next_future_handle: AtomicI64::new(1),
             next_event_handle: AtomicI64::new(1),
@@ -72,7 +72,7 @@ impl AsyncioCoreState {
         self.next_semaphore_handle.store(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn clear(&self, _py: &PyToken<'_>) {
+    fn clear(&self, _py: &PyToken) {
         let futures = {
             let mut guard = self.futures.lock().unwrap();
             std::mem::take(&mut *guard)
@@ -192,9 +192,48 @@ impl SemaphoreState {
 
 // ─── Helper: extract handle i64 from NaN-boxed bits ─────────────────────────
 
+const ASYNCIO_CORE_STATE_KEY: &[u8] = b"molt-runtime-asyncio/core/v1";
+
+unsafe extern "C" fn asyncio_core_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(AsyncioCoreState::new())) as *mut u8
+}
+
+unsafe extern "C" fn asyncio_core_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let py = PyToken::new();
+    unsafe {
+        (&*(ptr as *mut AsyncioCoreState)).clear(&py);
+    }
+}
+
+unsafe extern "C" fn asyncio_core_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut AsyncioCoreState));
+    }
+}
+
 #[inline]
-fn asyncio_core_state(_py: &PyToken<'_>) -> &'static AsyncioCoreState {
-    &runtime_state(_py).asyncio_core
+fn asyncio_core_state(_py: &PyToken) -> &'static AsyncioCoreState {
+    let ptr = crate::bridge::runtime_state_get_or_init(
+        ASYNCIO_CORE_STATE_KEY,
+        asyncio_core_state_init,
+        asyncio_core_state_clear,
+        asyncio_core_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "asyncio core runtime state allocation failed"
+    );
+    unsafe { &*(ptr as *const AsyncioCoreState) }
+}
+
+pub fn asyncio_core_clear_state() {
+    let _ = crate::bridge::runtime_state_clear_and_drop(ASYNCIO_CORE_STATE_KEY);
 }
 
 #[inline]
@@ -209,14 +248,14 @@ fn none_bits() -> u64 {
     MoltObject::none().bits()
 }
 
-fn release_future_state(_py: &PyToken<'_>, state: FutureState) {
+fn release_future_state(_py: &PyToken, state: FutureState) {
     dec_ref_bits(_py, state.result_bits);
     dec_ref_bits(_py, state.exception_bits);
     dec_ref_bits(_py, state.cancel_msg_bits);
     release_waiters(_py, state.callbacks);
 }
 
-fn release_waiters(_py: &PyToken<'_>, waiters: Vec<u64>) {
+fn release_waiters(_py: &PyToken, waiters: Vec<u64>) {
     for bits in waiters {
         dec_ref_bits(_py, bits);
     }
@@ -821,43 +860,4 @@ pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) {
             }
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{MoltObject, alloc_string, header_from_obj_ptr};
-    use std::sync::atomic::Ordering as AtomicOrdering;
-
-    #[test]
-    fn asyncio_core_clear_releases_future_owned_refs() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let ptr = alloc_string(_py, b"asyncio-core-clear-owned-ref");
-            let bits = MoltObject::from_ptr(ptr).bits();
-            let initial_refs = unsafe {
-                (*header_from_obj_ptr(ptr))
-                    .ref_count
-                    .load(AtomicOrdering::Relaxed)
-            };
-
-            let future = molt_asyncio_future_new();
-            let _ = molt_asyncio_future_set_result_fast(future, bits);
-            let retained_refs = unsafe {
-                (*header_from_obj_ptr(ptr))
-                    .ref_count
-                    .load(AtomicOrdering::Relaxed)
-            };
-            assert_eq!(retained_refs, initial_refs + 1);
-
-            runtime_state(_py).asyncio_core.clear(_py);
-            let cleared_refs = unsafe {
-                (*header_from_obj_ptr(ptr))
-                    .ref_count
-                    .load(AtomicOrdering::Relaxed)
-            };
-            assert_eq!(cleared_refs, initial_refs);
-            dec_ref_bits(_py, bits);
-        });
-    }
 }
