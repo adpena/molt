@@ -1,5 +1,5 @@
 [package]
-name = "molt-runtime-difflib"
+name = "molt-stdlib-difflib"
 version = "0.1.0"
 publish = false
 edition.workspace = true

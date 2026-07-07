@@ -28,6 +28,7 @@ STUB_RE = re.compile(r"aborting_bridge_stub!\(([A-Za-z_][A-Za-z0-9_]*)\);")
 def bridge_sources() -> list[Path]:
     sources = [REPO_ROOT / "runtime/molt-runtime-core/src/lib.rs"]
     sources.extend(sorted((REPO_ROOT / "runtime").glob("molt-runtime-*/src/bridge.rs")))
+    sources.extend(sorted((REPO_ROOT / "runtime").glob("molt-stdlib-*/src/bridge.rs")))
     return sources
 
 

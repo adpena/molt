@@ -292,7 +292,7 @@ jobs:
             -p molt-runtime-compression \
             -p molt-runtime-core \
             -p molt-runtime-crypto \
-            -p molt-runtime-difflib \
+            -p molt-stdlib-difflib \
             -p molt-runtime-graphlib \
             -p molt-runtime-http \
             -p molt-runtime-ipaddress \

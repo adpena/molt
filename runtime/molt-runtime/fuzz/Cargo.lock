@@ -935,7 +935,7 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
- "molt-runtime-difflib",
+ "molt-stdlib-difflib",
  "molt-runtime-http",
  "molt-runtime-ipaddress",
  "molt-runtime-itertools",
@@ -1038,7 +1038,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-runtime-difflib"
+name = "molt-stdlib-difflib"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",

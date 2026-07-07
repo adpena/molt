@@ -193,7 +193,7 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
-name = "molt-runtime-difflib"
+name = "molt-stdlib-difflib"
 layer = 3
 role = "stdlib satellite"
 

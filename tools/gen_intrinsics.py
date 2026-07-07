@@ -32,7 +32,7 @@ MATH_LEAF_RESOLVER_INDEX = MATH_LEAF_RESOLVERS_DIR / "mod.rs"
 XML_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-xml/src/intrinsics_generated"
 XML_LEAF_RESOLVER_INDEX = XML_LEAF_RESOLVERS_DIR / "mod.rs"
 DIFFLIB_LEAF_RESOLVERS_DIR = (
-    ROOT / "runtime/molt-runtime-difflib/src/intrinsics_generated"
+    ROOT / "runtime/molt-stdlib-difflib/src/intrinsics_generated"
 )
 DIFFLIB_LEAF_RESOLVER_INDEX = DIFFLIB_LEAF_RESOLVERS_DIR / "mod.rs"
 GRAPHLIB_LEAF_RESOLVERS_DIR = (
@@ -131,9 +131,9 @@ LEAF_RESOLVER_REGISTRIES = {
     "difflib": {
         "output": DIFFLIB_LEAF_RESOLVERS_DIR / "difflib_resolver.rs",
         "module_index": DIFFLIB_LEAF_RESOLVER_INDEX,
-        "crate_path": "molt_runtime_difflib",
-        "crate_resolver_path": "molt_runtime_difflib::intrinsics_generated::difflib_resolver",
-        "symbol_path_prefix": "molt_runtime_difflib::difflib",
+        "crate_path": "molt_stdlib_difflib",
+        "crate_resolver_path": "molt_stdlib_difflib::intrinsics_generated::difflib_resolver",
+        "symbol_path_prefix": "molt_stdlib_difflib::difflib",
         "function_path_prefix": "crate::difflib",
     },
     "graphlib": {
