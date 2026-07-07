@@ -728,8 +728,15 @@ struct DecompressorHandle {
     format: ZlibFormat,
     /// Buffered input not yet consumed by the decompressor.
     leftover: Vec<u8>,
-    /// Unconsumed tail after a max_length-limited decompress.
+    /// Unconsumed tail after a max_length-limited decompress. Per CPython
+    /// zlib, this is input that was part of the compressed stream but not yet
+    /// processed because `max_length` capped the returned output.
     unconsumed_tail: Vec<u8>,
+    /// Bytes found *after* the end of the compressed data stream. Per CPython
+    /// zlib, `unused_data` stays b"" until the final byte of compressed data
+    /// has been seen (i.e. EOF), then holds any trailing/concatenated bytes.
+    /// This is distinct from `unconsumed_tail`.
+    unused_data: Vec<u8>,
     eof: bool,
 }
 
@@ -761,6 +768,7 @@ pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
             format: format_from_wbits(wbits),
             leftover: Vec::new(),
             unconsumed_tail: Vec::new(),
+            unused_data: Vec::new(),
             eof: false,
         });
         let ptr = Box::into_raw(handle) as *mut u8;
@@ -849,21 +857,33 @@ pub extern "C" fn molt_zlib_decompressobj_decompress(
         };
 
         let remaining = &input[consumed..];
-        if consumed > 0 {
-            handle.eof = true;
-        }
+        let reached_eof = consumed > 0;
 
         // Honour max_length
         if max_length > 0 && out.len() > max_length as usize {
             // We cannot truly "re-feed" partial output to flate2, so we
             // stash everything beyond max_length as unconsumed_tail and mark
-            // not-EOF so the caller can call flush() to get the rest.
+            // not-EOF so the caller can call flush() to get the rest. The
+            // remaining input is part of the (still-unfinished-from the
+            // caller's view) stream, so it is unconsumed_tail, not unused_data.
             handle.unconsumed_tail = remaining.to_vec();
+            handle.unused_data.clear();
             // Keep the excess output in leftover so flush() can return it.
             let excess = out.split_off(max_length as usize);
             handle.leftover = excess;
             handle.eof = false;
+        } else if reached_eof {
+            // The compressed stream ended and its whole output fit within
+            // max_length. Any bytes after `consumed` are past the end of the
+            // compressed data — CPython exposes these as `unused_data`, not
+            // `unconsumed_tail`. unconsumed_tail is empty once the stream is
+            // complete.
+            handle.unused_data = remaining.to_vec();
+            handle.unconsumed_tail.clear();
+            handle.eof = true;
         } else {
+            // Stream not yet complete (flate2 consumed nothing decisive): the
+            // whole remainder is still pending compressed input.
             handle.unconsumed_tail = remaining.to_vec();
         }
 
@@ -904,6 +924,21 @@ pub extern "C" fn molt_zlib_decompressobj_unconsumed_tail(handle_bits: u64) -> u
             return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
         };
         return_bytes(_py, &handle.unconsumed_tail)
+    })
+}
+
+/// `decompressobj.unused_data` property.
+///
+/// Per CPython zlib semantics, this is b"" until the last byte of compressed
+/// data has been processed; once the stream ends it holds any bytes found
+/// past the end of the compressed data (e.g. trailing/concatenated streams).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_zlib_decompressobj_unused_data(handle_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let Some(handle) = decompressor_from_bits(handle_bits) else {
+            return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
+        };
+        return_bytes(_py, &handle.unused_data)
     })
 }
 
