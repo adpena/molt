@@ -12888,6 +12888,80 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     )
 
 
+def test_module_lowering_allows_submodule_cross_module_references() -> None:
+    """A parent package calling into a submodule whose symbol shares the parent's
+    prefix (e.g. ``asyncio`` -> ``asyncio._debug``) must not be misread as a
+    missing same-module local reference.
+
+    ``asyncio._debug``'s ``_debug_gather_enabled`` mangles to
+    ``asyncio__debug___debug_gather_enabled`` which lexically starts with
+    ``asyncio__``. The bare prefix test wrongly claims the parent owns it; the
+    known-module-aware ownership rule (longest matching module symbol wins) must
+    attribute it to ``asyncio._debug`` and leave the parent's payload valid.
+    """
+    functions = [
+        {
+            "name": "asyncio__molt_module_chunk_3",
+            "params": [],
+            "ops": [
+                {
+                    "kind": "call",
+                    "s_value": "asyncio__debug___debug_gather_enabled",
+                    "args": [],
+                    "out": "v0",
+                },
+                {
+                    "kind": "call",
+                    "s_value": "asyncio__debug___debug_wait_for_enabled",
+                    "args": [],
+                    "out": "v1",
+                },
+            ],
+        },
+        {
+            "name": "asyncio__genuinely_local",
+            "params": [],
+            "ops": [
+                {
+                    "kind": "call",
+                    "s_value": "asyncio__missing_same_module_body",
+                    "args": [],
+                    "out": "v2",
+                }
+            ],
+        },
+    ]
+    known_modules = ["asyncio", "asyncio._debug", "asyncio.tasks"]
+
+    # Without submodule context the loose prefix test flags all three (the two
+    # cross-module refs plus the genuine miss): the historical false-positive.
+    legacy = cli_module_cache._module_lowering_local_reference_issue(
+        "asyncio", functions
+    )
+    assert legacy is not None
+    assert "asyncio__debug___debug_gather_enabled" in legacy
+
+    # With submodule ownership the two ``asyncio._debug`` cross-module references
+    # are correctly excluded, but a genuine same-module missing body is still
+    # reported (the gate keeps its teeth).
+    issue = cli_module_cache._module_lowering_local_reference_issue(
+        "asyncio", functions, known_modules=known_modules
+    )
+    assert issue is not None
+    assert "asyncio__debug___debug_gather_enabled" not in issue
+    assert "asyncio__debug___debug_wait_for_enabled" not in issue
+    assert "asyncio__missing_same_module_body" in issue
+
+    # A package whose entire referenced closure lives in submodules lowers clean.
+    debug_only = [functions[0]]
+    assert (
+        cli_module_cache._module_lowering_local_reference_issue(
+            "asyncio", debug_only, known_modules=known_modules
+        )
+        is None
+    )
+
+
 def test_persisted_module_lowering_tracks_source_content(
     tmp_path: Path,
 ) -> None:

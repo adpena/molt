@@ -63,6 +63,38 @@ def emitted_name_matches_module_symbol(name: str, module_symbol: str) -> bool:
     return name.startswith(f"{module_symbol}__")
 
 
+def name_owned_by_other_module_symbol(
+    name: str,
+    module_symbol: str,
+    other_module_symbols: Iterable[str],
+) -> bool:
+    """Return True when *name* is owned by a longer known module symbol.
+
+    Molt mangles ``module.submodule``'s function ``fn`` as
+    ``module__submodule__fn``. A parent module symbol (``module``) is therefore a
+    lexical prefix of every child module symbol (``module__submodule``), so the
+    bare ``startswith(f"{module_symbol}__")`` prefix test cannot tell a genuine
+    same-module reference apart from a cross-module call into a submodule whose
+    symbol shares the parent's prefix (e.g. ``asyncio`` vs ``asyncio._debug``).
+
+    This mirrors the backend's longest-symbol-wins ownership rule
+    (``_module_owned_symbol_map``): a name belongs to ``module_symbol`` only if no
+    strictly longer known module symbol also claims it. When a longer symbol
+    matches, the name is owned by that other module and must not be treated as a
+    missing local reference of ``module_symbol``.
+    """
+    for other in other_module_symbols:
+        if other == module_symbol:
+            continue
+        if len(other) <= len(module_symbol):
+            continue
+        if not other.startswith(f"{module_symbol}__"):
+            continue
+        if emitted_name_matches_module_symbol(name, other):
+            return True
+    return False
+
+
 def is_protected_runtime_entrypoint(name: str) -> bool:
     return name in PROTECTED_RUNTIME_ENTRYPOINTS or any(
         name.startswith(prefix) for prefix in PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
@@ -140,13 +172,30 @@ def reachable_function_names(
 def missing_local_function_references(
     module_name: str,
     functions: Sequence[Mapping[str, object]],
+    *,
+    known_modules: Iterable[str] = (),
 ) -> tuple[FunctionReferenceEdge, ...]:
     module_symbol = module_symbol_name(module_name)
+    other_module_symbols = tuple(
+        symbol
+        for name in known_modules
+        if isinstance(name, str)
+        and name
+        and (symbol := module_symbol_name(name)) != module_symbol
+    )
     defined = {
         name
         for func in functions
         if isinstance((name := func.get("name")), str) and name
     }
+
+    def _owned_locally(target: str) -> bool:
+        if not emitted_name_matches_module_symbol(target, module_symbol):
+            return False
+        return not name_owned_by_other_module_symbol(
+            target, module_symbol, other_module_symbols
+        )
+
     missing: list[FunctionReferenceEdge] = []
     for func in functions:
         owner = func.get("name")
@@ -166,15 +215,11 @@ def missing_local_function_references(
             target = op.get("s_value")
             if not isinstance(target, str):
                 continue
-            if target not in defined and emitted_name_matches_module_symbol(
-                target, module_symbol
-            ):
+            if target not in defined and _owned_locally(target):
                 missing.append(FunctionReferenceEdge(owner, op_index, kind, target))
             if kind in POLL_COMPANION_OP_KINDS and not target.endswith("_poll"):
                 poll_target = f"{target}_poll"
-                if poll_target not in defined and emitted_name_matches_module_symbol(
-                    poll_target, module_symbol
-                ):
+                if poll_target not in defined and _owned_locally(poll_target):
                     missing.append(
                         FunctionReferenceEdge(owner, op_index, kind, poll_target)
                     )
