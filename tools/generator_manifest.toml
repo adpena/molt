@@ -255,6 +255,19 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/check_runtime_bridge_test_stubs.py"
+outputs = [
+  "runtime/molt-runtime-core/src/bridge_test_stubs.rs",
+]
+source = "runtime/molt-runtime-core/src/lib.rs + runtime/*/src/bridge.rs extern declarations"
+check_mode = true
+check_command = "tools/check_runtime_bridge_test_stubs.py --check"
+idempotent = true
+sync_test = "tests/tools/test_runtime_bridge_test_stubs.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_stdlib_module_union.py"
 outputs = [
   "tools/stdlib_module_union.py",

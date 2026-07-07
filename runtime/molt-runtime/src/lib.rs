@@ -44,6 +44,8 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
 // isolate-import symbol. wasm32 keeps its env import until PR3.
 
 mod async_rt;
+#[cfg(feature = "stdlib_asyncio")]
+mod asyncio_bridge;
 #[cfg(any(
     not(feature = "stdlib_http"),
     not(feature = "stdlib_itertools"),
@@ -62,6 +64,7 @@ mod bridge;
     feature = "stdlib_math",
     feature = "stdlib_path",
     feature = "stdlib_regex",
+    feature = "stdlib_asyncio",
     feature = "stdlib_serial",
     feature = "stdlib_stringprep",
     feature = "stdlib_text",
@@ -108,6 +111,10 @@ mod xml_bridge;
 #[cfg(feature = "stdlib_zoneinfo")]
 mod zoneinfo_bridge;
 // Re-export extracted crates so their symbols are available at link time.
+#[cfg(feature = "stdlib_asyncio")]
+pub use molt_runtime_asyncio;
+#[cfg(feature = "stdlib_asyncio")]
+pub use molt_runtime_asyncio::*;
 #[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections;
 #[cfg(feature = "stdlib_compression")]
@@ -393,8 +400,6 @@ pub use crate::builtins::abc::*;
 pub use crate::builtins::array_mod::*;
 #[cfg(feature = "stdlib_ast")]
 pub use crate::builtins::ast::*;
-pub use crate::builtins::asyncio_core::*;
-pub use crate::builtins::asyncio_queue::*;
 pub use crate::builtins::atexit::*;
 pub(crate) use crate::builtins::attr::{
     apply_class_slots_layout, attr_error, attr_error_with_message, attr_error_with_obj,

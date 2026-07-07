@@ -1,7 +1,6 @@
 use crate::PyToken;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::async_rt::sockets::socket_runtime_state_clear;
-use crate::builtins::asyncio_queue::asyncio_queue_clear_state;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::attributes_clear_runtime_state;
 use crate::builtins::concurrent::concurrent_clear_runtime_state;
@@ -44,6 +43,9 @@ use super::{
     RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache,
     cache::clear_runtime_static_names, runtime_extension_states_clear_and_drop,
 };
+
+#[cfg(feature = "stdlib_asyncio")]
+use crate::asyncio_bridge::{asyncio_core_clear_state, asyncio_queue_clear_state};
 
 thread_local! {
     static TLS_GUARD: ThreadLocalGuard = ThreadLocalGuard::new();
@@ -112,8 +114,11 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     }
     trace_shutdown("process_exit_clear_task_state");
     clear_task_state(_py, state);
-    trace_shutdown("process_exit_clear_asyncio_queue_state");
-    asyncio_queue_clear_state(_py, state);
+    #[cfg(feature = "stdlib_asyncio")]
+    {
+        trace_shutdown("process_exit_clear_asyncio_queue_state");
+        asyncio_queue_clear_state(_py);
+    }
     trace_shutdown("process_exit_clear_exception_state");
     clear_exception_state(_py);
     trace_shutdown("process_exit_run_atexit_callbacks");
@@ -211,8 +216,11 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_async_hang_probe(state);
     trace_shutdown("clear_task_state");
     clear_task_state(_py, state);
-    trace_shutdown("clear_asyncio_queue_state");
-    asyncio_queue_clear_state(_py, state);
+    #[cfg(feature = "stdlib_asyncio")]
+    {
+        trace_shutdown("clear_asyncio_queue_state");
+        asyncio_queue_clear_state(_py);
+    }
     trace_shutdown("clear_exception_state");
     clear_exception_state(_py);
     trace_shutdown("run_atexit_callbacks");
@@ -504,7 +512,8 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
     state.event_loop_registry.clear(_py);
     state.pipe_transport_registry.clear();
-    state.asyncio_core.clear(_py);
+    #[cfg(feature = "stdlib_asyncio")]
+    asyncio_core_clear_state(_py);
     clear_await_graph_state(_py, state);
     clear_native_task_states(_py, state);
     let stacks = {

@@ -3,9 +3,6 @@ pub(crate) mod annotations;
 pub(crate) mod array_mod;
 #[cfg(feature = "stdlib_ast")]
 pub(crate) mod ast;
-pub(crate) mod asyncio_core;
-pub(crate) mod asyncio_helpers;
-pub(crate) mod asyncio_queue;
 pub(crate) mod atexit;
 pub(crate) mod attr;
 pub(crate) mod attributes;

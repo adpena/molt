@@ -26,8 +26,8 @@ pub(crate) use recursion::{
 };
 pub(crate) use runtime_state::runtime_extension_state_get_or_init;
 pub(crate) use runtime_state::{
-    RuntimeState, clear_thread_runtime_state, runtime_extension_states_clear_and_drop,
-    set_thread_runtime_state,
+    RuntimeState, clear_thread_runtime_state, runtime_extension_state_clear_and_drop_key,
+    runtime_extension_states_clear_and_drop, set_thread_runtime_state,
 };
 pub(crate) use tls::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
