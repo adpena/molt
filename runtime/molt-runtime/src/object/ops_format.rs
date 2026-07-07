@@ -51,63 +51,14 @@ pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
     })
 }
 
+/// Thin adapter over the single float-format authority
+/// (`super::float_repr::repr_float`), which reproduces CPython's
+/// `repr(float)` / `str(float)` bit-for-bit (shortest round-tripping decimal,
+/// CPython's fixed-vs-scientific threshold, `e%+.02d` exponent, `.0` for
+/// integer-valued floats, `nan`/`inf`/`-inf`/`-0.0`). There is no separate
+/// hand-rolled formatting or scientific-notation lane in this module.
 fn format_float(f: f64) -> String {
-    if f.is_nan() {
-        return "nan".to_string();
-    }
-    if f.is_infinite() {
-        if f.is_sign_negative() {
-            return "-inf".to_string();
-        }
-        return "inf".to_string();
-    }
-    let abs = f.abs();
-    if abs != 0.0 && !(1e-4..1e16).contains(&abs) {
-        return format_float_scientific(f);
-    }
-    if f.fract() == 0.0 {
-        format!("{f:.1}")
-    } else {
-        f.to_string()
-    }
-}
-
-fn format_float_scientific(f: f64) -> String {
-    let raw = f.to_string();
-    if raw.contains('e') || raw.contains('E') {
-        return normalize_scientific(&raw);
-    }
-    let mut digits = raw.as_str();
-    if let Some(rest) = digits.strip_prefix('-') {
-        digits = rest;
-    }
-    let digits_only: String = digits.chars().filter(|ch| *ch != '.').collect();
-    let sig_digits = digits_only.trim_start_matches('0').len().max(1);
-    let precision = sig_digits.saturating_sub(1).min(16);
-    let formatted = format!("{:.*e}", precision, f);
-    normalize_scientific(&formatted)
-}
-
-fn normalize_scientific(formatted: &str) -> String {
-    let normalized = formatted.to_lowercase();
-    let Some(exp_pos) = normalized.find('e') else {
-        return normalized;
-    };
-    let (mantissa, exp) = normalized.split_at(exp_pos);
-    let mut mant = mantissa.to_string();
-    if mant.contains('.') {
-        while mant.ends_with('0') {
-            mant.pop();
-        }
-        if mant.ends_with('.') {
-            mant.pop();
-        }
-    }
-    let exp_val: i32 = exp[1..].parse().unwrap_or(0);
-    let sign = if exp_val < 0 { "-" } else { "+" };
-    let exp_abs = exp_val.unsigned_abs();
-    let exp_text = format!("{exp_abs:02}");
-    format!("{mant}e{sign}{exp_text}")
+    super::float_repr::repr_float(f)
 }
 
 fn format_complex_float(f: f64) -> String {
