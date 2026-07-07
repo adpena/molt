@@ -109,6 +109,7 @@ mod cleanup_roots;
 mod compile;
 mod list_index_fast_path;
 mod megafn_codegen_snapshot;
+mod native_callable_dispatch;
 mod loops;
 mod preanalysis_alias_and_loops;
 mod preanalysis_classification;
