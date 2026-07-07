@@ -2129,4 +2129,5 @@ tests/differential/stdlib/zipimport_api_surface_basic.py
 tests/differential/stdlib/zipimport_basic.py
 tests/differential/stdlib/zipimport_prefix_error_edges.py
 tests/differential/stdlib/zlib_basic.py
+tests/differential/stdlib/zlib_decompressobj_unused_data.py
 tests/differential/stdlib/zoneinfo_dst_fold.py
