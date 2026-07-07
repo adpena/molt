@@ -1584,9 +1584,35 @@ pub extern "C" fn PyFrozenSet_New(iterable: u64) -> u64 {
     })
 }
 
-/// `PySet_Size(set)` — return the number of elements in the set.
+/// Return `true` when `bits` is a `set` or `frozenset` heap object.
+///
+/// CPython's set-protocol functions raise `SystemError` (via the
+/// `PyAnySet_Check` / `PySet_Check` guards in `Objects/setobject.c`) when
+/// handed a non-set. Faking a size of 0, "not present", or "success" for a
+/// non-set object would silently corrupt caller logic, so the wrappers below
+/// gate on this and fail closed with `SystemError` — matching CPython.
+fn is_any_set_bits(bits: u64) -> bool {
+    match obj_from_bits(bits).as_ptr() {
+        Some(ptr) => {
+            let tid = unsafe { object_type_id(ptr) };
+            tid == TYPE_ID_SET || tid == TYPE_ID_FROZENSET
+        }
+        None => false,
+    }
+}
+
+/// `PySet_Size(anyset)` — return the number of elements in the set/frozenset.
+/// Returns -1 with `SystemError` set if `anyset` is not a set or frozenset.
 pub extern "C" fn PySet_Size(set: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
+        if !is_any_set_bits(set) {
+            let _ = raise_exception::<u64>(
+                _py,
+                "SystemError",
+                "PySet_Size: expected a set or frozenset",
+            );
+            return -1;
+        }
         let res = molt_len(set);
         if exception_pending(_py) {
             return -1;
@@ -1597,9 +1623,19 @@ pub extern "C" fn PySet_Size(set: u64) -> isize {
     })
 }
 
-/// `PySet_Contains(set, key)` — return 1 if key is in set, 0 if not, -1 on error.
+/// `PySet_Contains(anyset, key)` — return 1 if key is in set, 0 if not, -1 on error.
+/// Raises `SystemError` if `anyset` is not a set/frozenset, `TypeError` if `key`
+/// is unhashable (both surfaced as -1 with the exception set).
 pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
+        if !is_any_set_bits(set) {
+            let _ = raise_exception::<u64>(
+                _py,
+                "SystemError",
+                "PySet_Contains: expected a set or frozenset",
+            );
+            return -1;
+        }
         let res = molt_set_contains(set, key);
         if exception_pending(_py) {
             return -1;
@@ -1613,9 +1649,26 @@ pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
 }
 
 /// `PySet_Add(set, key)` — add key to set. Returns 0 on success, -1 on error.
+/// Raises `SystemError` if `set` is not a set/frozenset, `TypeError` if `key`
+/// is unhashable (both surfaced as -1 with the exception set).
 pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_set_add(set, key);
+        // CPython PySet_Add accepts set or frozenset (frozenset only during
+        // construction, before the object is shared). molt's set_add/frozenset
+        // hashing authority owns the mutation; gate the type here so a non-set
+        // fails closed with SystemError rather than silently no-op'ing.
+        let tid = match obj_from_bits(set).as_ptr() {
+            Some(ptr) => unsafe { object_type_id(ptr) },
+            None => u32::MAX,
+        };
+        let res = if tid == TYPE_ID_SET {
+            molt_set_add(set, key)
+        } else if tid == TYPE_ID_FROZENSET {
+            molt_frozenset_add(set, key)
+        } else {
+            let _ = raise_exception::<u64>(_py, "SystemError", "PySet_Add: expected a set");
+            return -1;
+        };
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -1629,19 +1682,38 @@ pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
     })
 }
 
-/// `PySet_Discard(set, key)` — remove key from set if present. Returns 1 if found, 0 if not, -1 on error.
+/// `PySet_Discard(set, key)` — remove key from set if present. Returns 1 if the
+/// key was found and removed, 0 if it was absent, -1 on error. Raises
+/// `SystemError` if `set` is not a set/frozenset and `TypeError` if `key` is
+/// unhashable. Never raises `KeyError` (unlike `set.discard`).
 pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_set_discard(set, key);
+        let ptr = match obj_from_bits(set).as_ptr() {
+            Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_SET => ptr,
+            _ => {
+                let _ =
+                    raise_exception::<u64>(_py, "SystemError", "PySet_Discard: expected a set");
+                return -1;
+            }
+        };
+        // `molt_set_contains` runs the ensure_hashable gate (an unhashable key
+        // raises TypeError, surfaced here as -1) and reports presence, giving us
+        // the found bit CPython's PySet_Discard returns (1 removed / 0 absent).
+        // `set_del_in_place` alone returns false both for "absent" and "raised",
+        // which would collapse the two cases.
+        let contains = molt_set_contains(set, key);
         if exception_pending(_py) {
             return -1;
         }
-        // discard returns None on success; check if key was present by trying contains first
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
+        let present = is_truthy(_py, obj_from_bits(contains));
+        if !present {
+            return 0;
         }
-        // CPython returns 1 if found, but discard doesn't tell us — return 0 (no error)
-        0
+        let removed = unsafe { set_del_in_place(_py, ptr, key) };
+        if exception_pending(_py) {
+            return -1;
+        }
+        if removed { 1 } else { 0 }
     })
 }
 
