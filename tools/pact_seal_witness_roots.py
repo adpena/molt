@@ -75,6 +75,11 @@ from molt.cli.extension_manifest import (  # noqa: E402
 from molt.cli.external_native import _resolve_manifest_runtime_python_imports  # noqa: E402
 from molt.cli.extension_seal import extension_seal  # noqa: E402
 from molt.cli.file_hashing import _sha256_file  # noqa: E402
+from molt.cli.source_extensions import (  # noqa: E402
+    _manifest_source_plan_relocation_roots,
+    _source_extension_relocation_roots,
+    source_extension_manifest_source_path,
+)
 
 
 # The witness sealed roots, relative to the repo root. These mirror the primary
@@ -207,6 +212,141 @@ def _runtime_python_import_custody_problems(
     return [f"{manifest_path}: {error}" for error in errors]
 
 
+def _object_source_expected_sha256(item: dict) -> str | None:
+    value = item.get("source_sha256")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _object_closure_source_problems(
+    manifest: dict,
+    manifest_path: Path,
+) -> list[str]:
+    problems: list[str] = []
+    object_closure = manifest.get("object_closure")
+    objects = object_closure.get("objects") if isinstance(object_closure, dict) else None
+    if not isinstance(objects, list):
+        return problems
+    for index, item in enumerate(objects):
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        source_path, errors = source_extension_manifest_source_path(
+            source,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            expected_sha256=_object_source_expected_sha256(item),
+        )
+        if errors:
+            problems.extend(f"{manifest_path}: {error}" for error in errors)
+            continue
+        if source_path is None:
+            problems.append(
+                f"{manifest_path}: object_closure.objects[{index}].source "
+                f"does not resolve through source_plan roots: {source}"
+            )
+            continue
+        if Path(source).expanduser().is_absolute():
+            problems.append(
+                f"{manifest_path}: object_closure.objects[{index}].source "
+                f"is absolute; re-seal must relativize it to source_plan roots: "
+                f"{source}"
+            )
+    return problems
+
+
+def _source_plan_relative_source(
+    *,
+    manifest: dict,
+    manifest_path: Path,
+    raw_source: str,
+    resolved_source: Path,
+) -> str | None:
+    raw_path = Path(raw_source).expanduser()
+    roots = _manifest_source_plan_relocation_roots(manifest)
+    if not roots:
+        return None
+    if not raw_path.is_absolute():
+        return raw_path.as_posix()
+    for root in roots:
+        try:
+            return raw_path.relative_to(root).as_posix()
+        except ValueError:
+            pass
+    resolved = resolved_source.resolve()
+    for logical_root in roots:
+        for relocated_root in _source_extension_relocation_roots(
+            logical_root,
+            manifest_path=manifest_path,
+        ):
+            try:
+                return resolved.relative_to(relocated_root).as_posix()
+            except ValueError:
+                continue
+    return None
+
+
+def _relativize_object_closure_sources(manifest_path: Path) -> bool:
+    manifest = _load_manifest(manifest_path)
+    object_closure = manifest.get("object_closure")
+    objects = object_closure.get("objects") if isinstance(object_closure, dict) else None
+    if not isinstance(objects, list):
+        return False
+    changed = False
+    for index, item in enumerate(objects):
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        source_path, errors = source_extension_manifest_source_path(
+            source,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            expected_sha256=_object_source_expected_sha256(item),
+        )
+        if errors or source_path is None:
+            detail = "; ".join(errors) if errors else source
+            raise RegenError(
+                f"{manifest_path}: cannot resolve "
+                f"object_closure.objects[{index}].source before relativizing: "
+                f"{detail}"
+            )
+        relative_source = _source_plan_relative_source(
+            manifest=manifest,
+            manifest_path=manifest_path,
+            raw_source=source,
+            resolved_source=source_path,
+        )
+        if relative_source is None:
+            raise RegenError(
+                f"{manifest_path}: object_closure.objects[{index}].source "
+                f"is outside source_plan roots and cannot be made relocatable: "
+                f"{source}"
+            )
+        if source != relative_source:
+            item["source"] = relative_source
+            changed = True
+    if changed:
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    return changed
+
+
+def _relativize_root_object_closure_sources(root: Path) -> None:
+    manifest_paths = _artifact_manifests(root)
+    root_manifest = root / _ROOT_MANIFEST_NAME
+    if root_manifest.is_file():
+        manifest_paths.append(root_manifest)
+    for manifest_path in manifest_paths:
+        _relativize_object_closure_sources(manifest_path)
+
+
 def _check_root(root: Path, expected_abi: str, expected_tag: str) -> list[str]:
     problems: list[str] = []
     manifests = _artifact_manifests(root)
@@ -224,6 +364,7 @@ def _check_root(root: Path, expected_abi: str, expected_tag: str) -> list[str]:
                 f"(expected {expected_abi} / {expected_tag})"
             )
         problems.extend(_runtime_python_import_custody_problems(manifest, manifest_path))
+        problems.extend(_object_closure_source_problems(manifest, manifest_path))
         # Only per-artifact manifests declare a resealable artifact path we can
         # checksum; the root manifest mirrors the primary artifact manifest.
         if manifest_path.name.endswith(_ARTIFACT_MANIFEST_SUFFIX):
@@ -249,6 +390,7 @@ def _regenerate_root(root: Path, expected_abi: str, expected_tag: str) -> None:
             raise RegenError(
                 f"molt extension seal failed (rc={rc}) for {manifest_path}"
             )
+    _relativize_root_object_closure_sources(root)
     problems = _check_root(root, expected_abi, expected_tag)
     if problems:
         raise RegenError(

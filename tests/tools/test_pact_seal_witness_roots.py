@@ -142,6 +142,66 @@ def test_recipe_check_fails_on_stale_runtime_import_custody(
     assert "object_closure.objects[0].source" in captured.out
 
 
+def test_recipe_relativizes_object_closure_sources_to_source_plan_roots(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root = tmp_path / "pact_numpy_sealed"
+    expected_abi = _default_molt_c_api_version(REPO_ROOT)
+    expected_tag = f"molt_abi{expected_abi.split('.', 1)[0]}"
+    _write_sealed_root(root, molt_c_api_version=expected_abi, abi_tag=expected_tag)
+    source_root = tmp_path / "numpy_source"
+    stale_source_root = tmp_path / "deleted" / "numpy_source"
+    source_path = source_root / "numpy" / "_core" / "npy_static_data.c"
+    stale_source_path = (
+        stale_source_root / "numpy" / "_core" / "npy_static_data.c"
+    )
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "int PyInit__multiarray_umath(void) {\n"
+        "    IMPORT_GLOBAL(\"numpy._core._exceptions\", NULL);\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    expected_relative = "numpy/_core/npy_static_data.c"
+    for rel in (
+        "extension_manifest.json",
+        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
+    ):
+        manifest_path = root / rel
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["source_plan"] = {"source_root": str(stale_source_root)}
+        manifest["object_closure"]["objects"][0]["source"] = str(
+            stale_source_path
+        )
+        manifest["object_closure"]["objects"][0]["source_sha256"] = source_sha256
+        manifest.pop("runtime_python_import_modules", None)
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    assert recipe.main(["--check", "--root", str(root)]) == 1
+    captured = capsys.readouterr()
+    assert "is absolute; re-seal must relativize" in captured.out
+
+    assert recipe.main(["--root", str(root)]) == 0
+    assert recipe.main(["--check", "--root", str(root)]) == 0
+
+    for rel in (
+        "extension_manifest.json",
+        "numpy/_core/_multiarray_umath.molt.wasm.extension_manifest.json",
+    ):
+        manifest_path = root / rel
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["runtime_python_import_modules"] == [
+            "numpy._core._exceptions"
+        ]
+        assert (
+            manifest["object_closure"]["objects"][0]["source"]
+            == expected_relative
+        )
+
+
 def test_recipe_reports_missing_roots(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist"
     assert recipe.main(["--root", str(missing)]) == 1
