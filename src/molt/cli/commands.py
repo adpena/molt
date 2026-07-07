@@ -110,7 +110,11 @@ from molt.cli.wrapper_build import (
     _build_args_has_python_version_flag,
     _run_wrapper_build,
 )
-from molt.cli.wasm_toolchain import normalize_wasi_sysroot, resolve_wasi_sysroot
+from molt.cli.wasm_toolchain import (
+    normalize_wasi_sysroot,
+    resolve_wasi_sysroot,
+    wasi_libcxx_include_dir,
+)
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
 
@@ -2619,6 +2623,26 @@ def extension_build(
                         cc_cmd=unit_cc_cmd,
                     )
                 )
+                # C++ sources on wasm need the sysroot's libc++ include tree.
+                # WASI multilib sysroots hide libc++ under
+                # include/<target>/{eh,noeh}/c++/v1 (flat include/c++/v1 empty),
+                # so clang++ can't auto-find <atomic>/<vector>. numpy's C++
+                # sources (einsum.cpp, npysort/*.cpp, ...) fail
+                # `fatal error: 'atomic' file not found` without it. molt enables
+                # exception handling (-mexception-handling), so select the eh
+                # variant.
+                if wasm_static_link and source_path.suffix.lower() in {
+                    ".cpp",
+                    ".cxx",
+                    ".cc",
+                }:
+                    libcxx_inc = wasi_libcxx_include_dir(
+                        wasi_sysroot,
+                        target_triple=runtime_target_triple,
+                        exceptions=True,
+                    )
+                    if libcxx_inc is not None:
+                        cmd.extend(["-I", str(libcxx_inc)])
             cmd.extend(
                 _source_extensions._source_extension_unit_args_for_driver(
                     unit_compile_args,
