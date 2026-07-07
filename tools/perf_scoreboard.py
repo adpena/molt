@@ -55,6 +55,8 @@ import datetime as dt
 import json
 import os
 import platform
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -231,8 +233,32 @@ from perf_scoreboard_resolver import (  # noqa: E402
 # always caught (a build also trips the process check directly).
 QUIESCENT_LOAD_FRACTION = 0.5
 # Process-name patterns that mean "build/test work is competing for cycles".
-# Matched against the FULL command line (pgrep -fl). Codex is excluded by name.
+# ``pgrep -fl`` uses these only as a broad discovery filter; the final decision
+# is argv/image-aware so proof-log observers do not count as build workers just
+# because a log path contains "cargo" or "rustc".
 _BUILD_PROC_PATTERNS = ("cargo", "rustc", "molt-backend", "molt build")
+_BUILD_IMAGE_NAMES = frozenset(
+    {
+        "cargo",
+        "cargo.exe",
+        "rustc",
+        "rustc.exe",
+        "molt-backend",
+        "molt-backend.exe",
+    }
+)
+_MOLT_CLI_IMAGE_NAMES = frozenset({"molt", "molt.exe"})
+_PYTHON_IMAGE_NAMES = frozenset({"python", "python.exe", "python3", "python3.exe", "py", "py.exe"})
+_OBSERVER_IMAGE_NAMES = frozenset(
+    {
+        "tail",
+        "tail.exe",
+        "grep",
+        "grep.exe",
+        "findstr",
+        "findstr.exe",
+    }
+)
 _CODEX_EXCLUDE = "codex"  # never counted/killed (project policy)
 # Dimensional-win materiality gate: a non-warm-flip improvement must beat the
 # baseline by at least this fraction on a dimension (alloc/RSS/size/cold) to be
@@ -349,6 +375,80 @@ def _metadata_probe(
         return None
 
 
+def _windows_process_snapshot() -> list[dict[str, object]] | None:
+    """Bounded Win32 process snapshot with command lines."""
+
+    if os.name != "nt":
+        return None
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+    )
+    res = _metadata_probe(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ],
+        timeout_s=15,
+    )
+    if res is None or res.returncode != 0:
+        return None
+    text = (res.stdout or "").strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    rows = payload if isinstance(payload, list) else [payload]
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _split_process_args(cmd: str) -> list[str]:
+    try:
+        return shlex.split(cmd, posix=os.name != "nt")
+    except ValueError:
+        return [part for part in re.split(r"\s+", cmd.strip()) if part]
+
+
+def _process_arg_basename(arg: str) -> str:
+    stripped = arg.strip().strip("'\"").rstrip("\\/")
+    return stripped.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _is_build_process_command(cmd: str, *, image_name: str | None = None) -> bool:
+    image = _process_arg_basename(image_name or "")
+    if image in _OBSERVER_IMAGE_NAMES:
+        return False
+    if image in _BUILD_IMAGE_NAMES:
+        return True
+
+    args = _split_process_args(cmd)
+    bases = [_process_arg_basename(arg) for arg in args]
+    if any(base in _BUILD_IMAGE_NAMES for base in bases):
+        return True
+
+    for idx, base in enumerate(bases):
+        if base in _MOLT_CLI_IMAGE_NAMES and idx + 1 < len(args) and args[idx + 1] == "build":
+            return True
+        if (
+            base in _PYTHON_IMAGE_NAMES
+            and idx + 3 < len(args)
+            and args[idx + 1] == "-m"
+            and args[idx + 2] == "molt"
+            and args[idx + 3] == "build"
+        ):
+            return True
+    return False
+
+
 def _list_build_processes() -> list[dict]:
     """Active cargo/rustc/molt-backend/molt-build processes, EXCLUDING codex.
 
@@ -360,6 +460,30 @@ def _list_build_processes() -> list[dict]:
     self_pid = os.getpid()
     parent_pid = os.getppid()
     pattern = "|".join(_BUILD_PROC_PATTERNS)
+    if os.name == "nt":
+        rows = _windows_process_snapshot()
+        if rows is None:
+            return [
+                {
+                    "pid": -1,
+                    "cmd": "windows-process-probe-unavailable",
+                    "probe_failed": True,
+                }
+            ]
+        out: list[dict] = []
+        for row in rows:
+            try:
+                pid = int(row.get("ProcessId", -1))
+            except (TypeError, ValueError):
+                continue
+            image_name = str(row.get("Name") or "")
+            cmd = str(row.get("CommandLine") or image_name)
+            cmdl = cmd.lower()
+            if not cmd or _CODEX_EXCLUDE in cmdl or pid in (self_pid, parent_pid):
+                continue
+            if _is_build_process_command(cmd, image_name=image_name):
+                out.append({"pid": pid, "cmd": cmd})
+        return out
     res = _metadata_probe(["pgrep", "-fl", pattern], timeout_s=15)
     if res is None:
         # If we cannot probe, we cannot certify quiet — report a sentinel so the
@@ -383,17 +507,58 @@ def _list_build_processes() -> list[dict]:
             continue
         if pid in (self_pid, parent_pid):
             continue
-        out.append({"pid": pid, "cmd": cmd})
+        if _is_build_process_command(cmd):
+            out.append({"pid": pid, "cmd": cmd})
     return out
+
+
+def _windows_cpu_load_as_loadavg() -> float | None:
+    """Return Windows CPU load normalized onto the loadavg threshold scale."""
+
+    if os.name != "nt":
+        return None
+    script = (
+        "(Get-CimInstance Win32_Processor | "
+        "Measure-Object -Property LoadPercentage -Average).Average"
+    )
+    res = _metadata_probe(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ],
+        timeout_s=10,
+    )
+    if res is None or res.returncode != 0:
+        return None
+    lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        pct = float(lines[-1])
+    except ValueError:
+        return None
+    ncpu = _ncpu()
+    if ncpu is None:
+        return None
+    return max(0.0, pct) / 100.0 * float(ncpu)
 
 
 def _loadavg_1m() -> float | None:
     """1-minute load average from the host OS.
 
     Prefer Python's portable Unix binding (Linux/macOS runners), then fall back
-    to the macOS ``sysctl`` spelling. Windows legitimately returns ``None``:
-    without a load-average authority, ``--require-quiescent`` fails closed.
+    to the macOS ``sysctl`` spelling. On Windows, use a bounded CPU-load CIM
+    probe normalized to the same ``ncpu * QUIESCENT_LOAD_FRACTION`` scale.
     """
+    if os.name == "nt":
+        return _windows_cpu_load_as_loadavg()
     getloadavg = getattr(os, "getloadavg", None)
     if getloadavg is not None:
         try:
