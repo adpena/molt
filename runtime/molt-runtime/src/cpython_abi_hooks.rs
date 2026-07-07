@@ -2777,4 +2777,275 @@ mod tests {
         assert!(message.contains("static extension PyInit returned an invalid module definition"));
         assert!(message.contains("module definition missing name"));
     }
+
+    // ── PySet_* CPython ABI hook coverage ────────────────────────────────────
+    //
+    // These exercise the real set primitive end to end: the ABI `PySet_*`
+    // functions route through the registered `set_*` hooks to the runtime set
+    // authority (`crate::c_api::PySet_*` → hashed set object). They prove
+    // membership, dedup, size, and discard semantics match CPython
+    // (docs.python.org/3/c-api/set.html, Objects/setobject.c), not the prior
+    // fail-closed sentinels.
+
+    /// Wrap raw runtime handle bits into a bridge-managed `PyObject*` the ABI
+    /// set functions accept as an argument.
+    fn bridge_pyobj_from_bits(bits: u64) -> *mut PyObject {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .handle_to_pyobj(bits)
+    }
+
+    fn bridge_int_pyobj(value: i64) -> *mut PyObject {
+        let bits = unsafe { hook_int_from_i64(value) };
+        assert!(bits != 0, "hook_int_from_i64 must allocate an int");
+        bridge_pyobj_from_bits(bits)
+    }
+
+    fn release_bridge_pyobj(ptr: *mut PyObject) {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .lock()
+            .release_pyobj(ptr);
+    }
+
+    #[test]
+    fn pyset_add_contains_size_discard_round_trip() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        // PySet_New(NULL) creates a real, empty runtime set — not a list.
+        let set = unsafe { molt_cpython_abi::api::sequences::PySet_New(std::ptr::null_mut()) };
+        assert!(!set.is_null(), "PySet_New(NULL) must return a set object");
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Check(set) },
+            1,
+            "PySet_New must produce a set (PySet_Check == 1)"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            0,
+            "a fresh set is empty"
+        );
+
+        let key7 = bridge_int_pyobj(7);
+        let key9 = bridge_int_pyobj(9);
+
+        // Absent before add.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(set, key7) },
+            0,
+            "key must be absent before add"
+        );
+
+        // Add 7 → success (0), then present (1), size 1.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, key7) },
+            0,
+            "PySet_Add success returns 0"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(set, key7) },
+            1,
+            "PySet_Contains after add returns 1"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            1,
+            "size is 1 after one add"
+        );
+
+        // Dedup: adding an equal value twice keeps size at 1.
+        let key7_dup = bridge_int_pyobj(7);
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, key7_dup) },
+            0
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            1,
+            "dedup: adding an equal element must not grow the set"
+        );
+
+        // Add 9 → size 2.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, key9) },
+            0
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            2
+        );
+
+        // Discard present key → 1, then absent, size back to 1.
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Discard(set, key7) },
+            1,
+            "PySet_Discard of a present key returns 1"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(set, key7) },
+            0,
+            "discarded key is absent"
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            1
+        );
+
+        // Discard absent key → 0 (no error, no KeyError).
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Discard(set, key7) },
+            0,
+            "PySet_Discard of an absent key returns 0"
+        );
+        assert!(
+            !with_gil(|_py| crate::exception_pending(&_py)),
+            "PySet_Discard of an absent key must not raise: {}",
+            pending_exception_message_for_assertion()
+        );
+
+        release_bridge_pyobj(key7);
+        release_bridge_pyobj(key7_dup);
+        release_bridge_pyobj(key9);
+        release_bridge_pyobj(set);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pyset_new_from_iterable_dedups() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        // Build a list [3, 3, 5] via the runtime list authority, bridge it, and
+        // feed it to PySet_New — the result must be a set of size 2 (deduped).
+        let list_bits = unsafe { hook_alloc_list() };
+        assert!(list_bits != 0);
+        let three = unsafe { hook_int_from_i64(3) };
+        let five = unsafe { hook_int_from_i64(5) };
+        unsafe {
+            hook_list_append(list_bits, three);
+            hook_list_append(list_bits, three);
+            hook_list_append(list_bits, five);
+        }
+        let list = bridge_pyobj_from_bits(list_bits);
+
+        let set = unsafe { molt_cpython_abi::api::sequences::PySet_New(list) };
+        assert!(
+            !set.is_null(),
+            "PySet_New(iterable) must succeed: {}",
+            pending_exception_message_for_assertion()
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Check(set) },
+            1
+        );
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(set) },
+            2,
+            "PySet_New from [3,3,5] dedups to {{3,5}} (size 2)"
+        );
+
+        release_bridge_pyobj(list);
+        release_bridge_pyobj(set);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pyset_ops_fail_closed_on_non_set() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        // A dict is a bridge-managed object but not a set: every mutating/query
+        // op must fail closed with the CPython error sentinel + SystemError,
+        // never silently succeed.
+        let dict_bits = unsafe { hook_alloc_dict() };
+        assert!(dict_bits != 0);
+        let not_a_set = bridge_pyobj_from_bits(dict_bits);
+        let key = bridge_int_pyobj(1);
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Size(not_a_set) },
+            -1,
+            "PySet_Size on a non-set returns -1"
+        );
+        assert!(
+            with_gil(|_py| crate::exception_pending(&_py)),
+            "PySet_Size on a non-set must set an exception"
+        );
+        let _ = crate::molt_exception_clear();
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Contains(not_a_set, key) },
+            -1,
+            "PySet_Contains on a non-set returns -1"
+        );
+        assert!(with_gil(|_py| crate::exception_pending(&_py)));
+        let _ = crate::molt_exception_clear();
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(not_a_set, key) },
+            -1,
+            "PySet_Add on a non-set returns -1"
+        );
+        assert!(with_gil(|_py| crate::exception_pending(&_py)));
+        let _ = crate::molt_exception_clear();
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Discard(not_a_set, key) },
+            -1,
+            "PySet_Discard on a non-set returns -1"
+        );
+        assert!(with_gil(|_py| crate::exception_pending(&_py)));
+        let _ = crate::molt_exception_clear();
+
+        release_bridge_pyobj(key);
+        release_bridge_pyobj(not_a_set);
+    }
+
+    #[test]
+    fn pyset_add_unhashable_key_raises_typeerror() {
+        let _guard = cpython_abi_test_guard();
+        register_cpython_hooks();
+        let _ = crate::molt_exception_clear();
+
+        let set = unsafe { molt_cpython_abi::api::sequences::PySet_New(std::ptr::null_mut()) };
+        assert!(!set.is_null());
+
+        // A list is unhashable — PySet_Add must raise TypeError and return -1,
+        // matching CPython, not silently drop the element.
+        let list_bits = unsafe { hook_alloc_list() };
+        assert!(list_bits != 0);
+        let unhashable = bridge_pyobj_from_bits(list_bits);
+
+        assert_eq!(
+            unsafe { molt_cpython_abi::api::sequences::PySet_Add(set, unhashable) },
+            -1,
+            "PySet_Add of an unhashable key returns -1"
+        );
+        let message = pending_exception_message_for_assertion();
+        assert!(
+            message.to_lowercase().contains("unhashable"),
+            "PySet_Add of an unhashable key must raise a TypeError mentioning 'unhashable', got: {message}"
+        );
+
+        release_bridge_pyobj(unhashable);
+        release_bridge_pyobj(set);
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn pyset_stub_hooks_fail_closed() {
+        // Mutation guard: the pre-init STUB_HOOKS set ops must return the
+        // CPython error sentinel (0 / -1). If a future edit swapped a stub for a
+        // fake-success value, this catches it before it could mask a missing
+        // runtime authority.
+        use molt_cpython_abi::hooks::STUB_HOOKS;
+        assert_eq!(unsafe { (STUB_HOOKS.set_new)(0) }, 0);
+        assert_eq!(unsafe { (STUB_HOOKS.set_size)(0) }, -1);
+        assert_eq!(unsafe { (STUB_HOOKS.set_contains)(0, 0) }, -1);
+        assert_eq!(unsafe { (STUB_HOOKS.set_add)(0, 0) }, -1);
+        assert_eq!(unsafe { (STUB_HOOKS.set_discard)(0, 0) }, -1);
+    }
 }
