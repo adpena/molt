@@ -844,6 +844,62 @@ def test_proof_queue_refuses_duplicate_active_contention_key(tmp_path: Path) -> 
     assert len(_rows(db)) == 1
 
 
+def test_proof_queue_refuses_concurrent_compiler_build_resource_mutex(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="active-pact",
+        logical_id="active-pact",
+        reason="browser witness already building runtime",
+        command=[sys.executable, "tools/pact_witness_acceptance.py"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact-witness",
+        scopes=[],
+        log_path=tmp_path / "active-pact.log",
+        summary_json=tmp_path / "active-pact.memory_guard.json",
+    )
+    proof_queue._update_run(
+        conn,
+        "active-pact",
+        status="running",
+        started_at=proof_queue._utc_now(),
+    )
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(tmp_path / "runs"),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "exec",
+            "--id",
+            "r4a-probe",
+            "--reason",
+            "should not overlap runtime wasm build",
+            "--resource-family",
+            "wasm",
+            "--contention-key",
+            "wasm:r4a-lirfast",
+            "--",
+            sys.executable,
+            "-c",
+            "raise SystemExit(99)",
+        ]
+    )
+
+    stderr = capsys.readouterr().err
+    assert rc == 2
+    assert len(_rows(db)) == 1
+    assert "resource mutex 'compiler-build-resource' already has active run(s)" in stderr
+    assert "active-pact" in stderr
+
+
 def test_proof_queue_status_shows_active_log_phase(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2772,6 +2828,69 @@ def test_proof_queue_run_detach_respects_queue_size_and_contention_keys(
     assert rows["queued-a-duplicate"]["status"] == "queued"
     assert rows["queued-b"]["status"] == "dispatched"
     assert rows["queued-c"]["status"] == "dispatched"
+
+
+def test_proof_queue_run_detach_serializes_compiler_build_resource_mutex(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    conn = proof_queue._connect(db)
+    for run_id, resource_family, key in (
+        ("queued-wasm", "wasm-browser", "wasm:pact-witness"),
+        ("queued-native", "native-build", "native:molt-runtime"),
+        ("queued-rust", "rust", "cargo:molt-runtime"),
+        ("queued-python", "python", "python:light"),
+    ):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason=run_id,
+            command=[sys.executable, "-c", f"print({run_id!r})"],
+            cwd=proof_queue.ROOT,
+            resource_family=resource_family,
+            contention_key=key,
+            scopes=[],
+            log_path=logs / f"{run_id}.log",
+            summary_json=logs / f"{run_id}.memory_guard.json",
+        )
+    launched: list[str] = []
+
+    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+        del args, timeout
+        launched.append(run_id)
+        return 12345, logs / f"{run_id}.runner.log"
+
+    monkeypatch.setattr(proof_queue, "_launch_detached_runner", fake_launch)
+
+    rc = proof_queue.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(logs),
+            "--repo-root",
+            str(proof_queue.ROOT),
+            "run",
+            "--detach",
+            "--queue-size",
+            "3",
+        ]
+    )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert launched == ["queued-wasm", "queued-python"]
+    assert rows["queued-wasm"]["status"] == "dispatched"
+    assert rows["queued-native"]["status"] == "queued"
+    assert rows["queued-rust"]["status"] == "queued"
+    assert rows["queued-python"]["status"] == "dispatched"
+    assert "waiting queued-native resource_mutex=compiler-build-resource" in output
+    assert "waiting queued-rust resource_mutex=compiler-build-resource" in output
 
 
 def test_proof_queue_run_jobs_alias_limits_detached_rows(
@@ -8216,6 +8335,49 @@ def test_contention_key_admits_only_one_running_run(tmp_path: Path) -> None:
     assert running[0]["run_id"] == "first-active"
 
 
+def test_compiler_build_resource_mutex_admits_only_one_launched_run(
+    tmp_path: Path,
+) -> None:
+    """Different heavy contention keys still share one compiler-build slot."""
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id, resource_family, contention_key in (
+        ("wasm-active", "wasm-browser", "wasm:pact-witness"),
+        ("native-active", "native-build", "native:runtime-build"),
+    ):
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="compiler build admission",
+            command=[sys.executable, "-c", "print('x')"],
+            cwd=proof_queue.ROOT,
+            resource_family=resource_family,
+            contention_key=contention_key,
+            scopes=[],
+            log_path=tmp_path / f"{run_id}.log",
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+
+    rows = {row["run_id"]: row for row in _rows(db)}
+    assert rows["wasm-active"]["resource_mutex_key"] == "compiler-build-resource"
+    assert rows["native-active"]["resource_mutex_key"] == "compiler-build-resource"
+
+    proof_queue._update_run(
+        conn, "wasm-active", status="running", started_at=proof_queue._utc_now()
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        proof_queue._update_run(
+            conn,
+            "native-active",
+            status="dispatched",
+            started_at=proof_queue._utc_now(),
+        )
+
+    active = [row for row in _rows(db) if row["status"] in {"dispatched", "running"}]
+    assert [row["run_id"] for row in active] == ["wasm-active"]
+
+
 def test_admit_run_allows_multiple_queued_rows_per_contention_key(
     tmp_path: Path,
 ) -> None:
@@ -8300,10 +8462,55 @@ def test_detached_claim_serializes_contention_key(tmp_path: Path) -> None:
     )
     assert blocked is None
     assert reason is not None
-    assert "contention_key=cargo:gate active" in reason
+    assert "contention key 'cargo:gate' already has active run(s)" in reason
+    assert "gate-first" in reason
     rows = {r["run_id"]: r for r in _rows(db)}
     assert rows["gate-first"]["status"] == "dispatched"
     assert rows["gate-second"]["status"] == "queued"
+
+
+def test_detached_claim_serializes_compiler_build_resource_mutex(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._admit_run(
+        conn,
+        run_id="gate-wasm",
+        logical_id="wasm",
+        reason="wasm",
+        command=[sys.executable, "-c", "print('wasm')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact-witness",
+        scopes=[],
+        log_path=tmp_path / "gate-wasm.log",
+        summary_json=tmp_path / "gate-wasm.memory_guard.json",
+    )
+    proof_queue._admit_run(
+        conn,
+        run_id="gate-rust",
+        logical_id="rust",
+        reason="rust",
+        command=[sys.executable, "-c", "print('rust')"],
+        cwd=proof_queue.ROOT,
+        resource_family="rust",
+        contention_key="cargo:molt-runtime",
+        scopes=[],
+        log_path=tmp_path / "gate-rust.log",
+        summary_json=tmp_path / "gate-rust.memory_guard.json",
+    )
+
+    claimed, reason = proof_queue._claim_detached_run(conn, "gate-wasm", queue_size=2)
+    assert claimed is not None
+    assert reason is None
+    blocked, reason = proof_queue._claim_detached_run(conn, "gate-rust", queue_size=2)
+    assert blocked is None
+    assert reason is not None
+    assert "resource mutex 'compiler-build-resource'" in reason
+    rows = {r["run_id"]: r for r in _rows(db)}
+    assert rows["gate-wasm"]["status"] == "dispatched"
+    assert rows["gate-rust"]["status"] == "queued"
 
 
 def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:

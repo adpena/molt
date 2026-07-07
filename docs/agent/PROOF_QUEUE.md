@@ -66,6 +66,17 @@ work reuse a warm worktree plus queue-assigned target/session roots.
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
 
+Compiler build rows share a queue-owned `compiler-build-resource` mutex on this
+Windows/APDataStore workstation. `rust`, `native-build`, `queue-native-rust`,
+`wasm`, and `wasm-browser` resource families, plus `cargo:*`, `rust:*`,
+`wasm:*`, and `wasm-browser:*` contention keys, may keep different
+human-facing contention keys for lane identity, but they must not overlap
+rustc/Cargo/backend build work just because the keys differ. This protects the
+host from cold-build resource failures such as Windows `os error 1450` while
+writing Rust bytecode under `D:\Molt\target\sessions\...`. The queue derives the
+shared mutex itself; do not bypass it with a hand-chosen key or a raw background
+command.
+
 ## Cargo Proof Lanes
 
 Cargo proofs use the queue-native `cargo` subcommand. Do not submit raw
