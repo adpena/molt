@@ -256,13 +256,29 @@ def test_github_workflows_use_current_setup_uv_release() -> None:
         )
 
 
+def test_github_workflows_keep_cargo_target_dirs_cache_stable() -> None:
+    unstable_tokens = ("${{ github.run_id }}", "${{ github.run_attempt }}")
+    offenders: list[str] = []
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        for line_no, line in enumerate(
+            workflow.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if "CARGO_TARGET_DIR" not in line:
+                continue
+            if any(token in line for token in unstable_tokens):
+                rel = workflow.relative_to(REPO_ROOT).as_posix()
+                offenders.append(f"{rel}:{line_no}: {line.strip()}")
+
+    assert offenders == []
+
+
 def test_proof_queue_portability_workflow_is_cross_os_and_path_filtered() -> None:
     workflow_text = _read(".github/workflows/proof-queue-portability.yml")
 
     assert "name: Proof Queue Portability" in workflow_text
     assert "os: [ubuntu-latest, macos-14, windows-2022]" in workflow_text
     assert "fail-fast: false" in workflow_text
-    assert "python-version-file: \".python-version\"" in workflow_text
+    assert 'python-version-file: ".python-version"' in workflow_text
     assert "uv sync --frozen --group dev" in workflow_text
     assert "timeout-minutes: 10" in workflow_text
     assert (
@@ -649,11 +665,11 @@ def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
 
     assert "MOLT_SESSION_ID: perf-demo-${{ github.run_id }}" in perf_demo_text
     assert (
-        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}"
+        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo"
         in perf_demo_text
     )
     assert (
-        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}"
+        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo"
         in perf_demo_text
     )
     assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_demo_text
@@ -692,11 +708,10 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "- '.python-version'" in wasm_text
     assert "- 'tools/venv_exec.py'" in wasm_text
     assert (
-        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
-        in wasm_text
+        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci" in wasm_text
     )
     assert (
-        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci"
         in wasm_text
     )
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
@@ -707,7 +722,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "cancel-in-progress: true" in wasm_text
     assert "MOLT_CI_PYTHON" not in wasm_text
     assert (
-        "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+        "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci"
         in wasm_text
     )
     assert "enable-cache: true" in wasm_text
