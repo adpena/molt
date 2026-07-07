@@ -2977,7 +2977,6 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
- "molt-runtime-difflib",
  "molt-runtime-graphlib",
  "molt-runtime-http",
  "molt-runtime-ipaddress",
@@ -2994,6 +2993,7 @@ dependencies = [
  "molt-runtime-vfs",
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
+ "molt-stdlib-difflib",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -3083,14 +3083,6 @@ dependencies = [
  "sha3",
  "shake",
  "subtle",
-]
-
-[[package]]
-name = "molt-runtime-difflib"
-version = "0.1.0"
-dependencies = [
- "molt-lang-obj-model",
- "molt-runtime-core",
 ]
 
 [[package]]
@@ -3269,6 +3261,14 @@ dependencies = [
  "rmp-serde",
  "serde",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "molt-stdlib-difflib"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
 ]
 
 [[package]]
