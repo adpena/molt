@@ -2790,9 +2790,14 @@ mod tests {
     /// Wrap raw runtime handle bits into a bridge-managed `PyObject*` the ABI
     /// set functions accept as an argument.
     fn bridge_pyobj_from_bits(bits: u64) -> *mut PyObject {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .lock()
-            .handle_to_pyobj(bits)
+        // SAFETY: handle_to_pyobj materializes a bridge PyObject entry for a
+        // live runtime handle; `bits` here always comes from a hook that just
+        // allocated the object, so it is valid for the bridge round-trip.
+        unsafe {
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .lock()
+                .handle_to_pyobj(bits)
+        }
     }
 
     fn bridge_int_pyobj(value: i64) -> *mut PyObject {
