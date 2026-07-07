@@ -57,7 +57,7 @@
 ecosystem_baked = 8
 fail_open_stub = 14
 duplicate_authority = 3
-todo_as_plan = 2
+todo_as_plan = 0
 
 # ===========================================================================
 # ecosystem_baked (Scan A) — numpy package headers/config defined in-tree.
@@ -375,38 +375,34 @@ duplicate-authority defect as D1_python_h_two_copies.
 """
 
 # ===========================================================================
-# todo_as_plan (Scan C) — a status:divergent|partial / "ignore for now" marker
-# INSIDE the body of a shipped public API that returns a divergent value on an
-# accepted call (as opposed to failing closed with a raise, which is honest).
-# `status:planned` honest stubs and fail-closed raises are NOT swept here.
+# todo_as_plan (Scan C) — RESOLVED to zero.
+#
+# A status:divergent|partial / "ignore for now" marker INSIDE the body of a
+# shipped public API that returns a divergent value on an accepted call (as
+# opposed to failing closed with a raise, which is honest). `status:planned`
+# honest stubs and fail-closed raises are NOT swept here.
+#
+# All three formerly-registered sites are ripped; the baseline is 0. New
+# todo-as-plan poison must not land (an unregistered discovered site fails the
+# gate). The rips:
+#
+#   * C1_pynumber_power_modulus_for_now — PyNumber_Power now performs a real
+#     3-argument modular pow via the runtime numeric authority (molt_pow_mod);
+#     the "ignore for now" `let _ = o3;` shortcut is gone
+#     (runtime/molt-cpython-abi/src/api/abstract_number.rs). Same fix as
+#     fail_open_stub F3. Landed by task#9 (062fb5301).
+#   * F8_multiprocessing_fork_maps_to_spawn — get_all_start_methods() no longer
+#     advertises fork/forkserver (Molt has no os.fork()/HAVE_SEND_HANDLE), and
+#     get_context()/set_start_method() now fail closed with CPython's
+#     ValueError("cannot find context for %r") instead of silently running
+#     spawn semantics (src/molt/stdlib/multiprocessing/_core.py).
+#   * F9_zlib_unused_data_partial — Decompress.unused_data now returns the true
+#     trailing bytes past the end of the compressed stream via the real
+#     molt_zlib_decompressobj_unused_data intrinsic, tracked separately from
+#     unconsumed_tail per CPython zlib semantics
+#     (src/molt/stdlib/zlib.py + runtime/molt-runtime-compression/src/zlib.rs).
 # ===========================================================================
 
-[[site]]
-id = "F8_multiprocessing_fork_maps_to_spawn"
-class = "todo_as_plan"
-file = "src/molt/stdlib/multiprocessing/_core.py"
-anchor = "status:divergent"
-resolution_row = "task#9"
-justification = """
-multiprocessing.get_context() accepts "fork"/"forkserver" and silently returns a
-Context whose semantics are actually spawn (status:divergent TODO). A user
-depending on fork's shared-address-space semantics gets spawn behaviour with no
-error — a shipped API diverging on an accepted argument. Must implement true fork
-or fail closed on the unsupported start method.
-"""
-
-[[site]]
-id = "F9_zlib_unused_data_partial"
-class = "todo_as_plan"
-file = "src/molt/stdlib/zlib.py"
-anchor = "molt_zlib_decompressobj_unused_data"
-resolution_row = "task#9"
-justification = """
-zlib decompressobj's `unused_data` property (status:partial) returns b"" because the
-dedicated intrinsic is not yet exposed — a shipped public property that ships an
-empty (wrong) answer for a stream with real trailing data. Must expose the
-molt_zlib_decompressobj_unused_data intrinsic and return the true unused bytes.
-"""
 [[site]]
 id = "F5_pyset_size_dropped_arg"
 class = "fail_open_stub"
@@ -432,4 +428,3 @@ the header-custody arc 410ada3ad to make the cpython-abi tier self-complete) --
 two hand-synced copies of the CPython legacy T_*/READONLY aliases. Retire under
 task #10's remaining surface (generate/collapse to one authority).
 """
-
