@@ -1526,6 +1526,8 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     )
     assert manifest["source_plan"]["digest"]
     assert manifest["build"]["source_plan_digest"] == manifest["source_plan"]["digest"]
+    assert manifest["source_plan"]["skipped_generated_sources"] == []
+    assert manifest["build"]["source_plan_skipped_generated_source_count"] == 0
     assert manifest["build"]["object_count"] == 2
     assert manifest["build"]["linked_object_count"] == 2
     assert manifest["build"]["source_c_api_scan"][
@@ -1630,6 +1632,10 @@ def test_extension_build_follows_linked_static_library_source_closure(
     manifest = json.loads((out_dir / "extension_manifest.json").read_text())
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 3
+    assert manifest["source_plan"]["skipped_generated_sources"] == [
+        str((project_root / "build" / "generated" / "cleaned_unique.c").resolve())
+    ]
+    assert manifest["build"]["source_plan_skipped_generated_source_count"] == 1
     assert str((project_root / "pkg" / "unique.cpp").resolve()) in (
         manifest["source_plan"]["sources"]
     )
