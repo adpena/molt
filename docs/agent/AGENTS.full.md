@@ -649,7 +649,7 @@ Read these first instead of rediscovering project structure:
   do not hand-roll raw `cargo`/`uv` commands without first exporting those facts.
   The resolver sets `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
   `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
-  `MOLT_DIFF_TMPDIR`, `UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`,
+  `MOLT_DIFF_TMPDIR`, `UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`, `VIRTUAL_ENV`,
   `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP` under the
   selected artifact root. Default Cargo output is session-scoped as
   `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
@@ -660,10 +660,12 @@ Read these first instead of rediscovering project structure:
   before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
   `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
   POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
-  In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
-  (`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env,
-  so repeated checks reuse the same uv environment while Cargo output remains
-  session-scoped by `MOLT_SESSION_ID`. Use
+  In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT` and
+  matching `VIRTUAL_ENV` keyed by source root, purpose, and Python version
+  rather than a per-process `run-<pid>` env, so repeated checks in one worktree
+  reuse the same uv environment while adjacent worktrees do not rewrite each
+  other's editable install. Cargo output remains session-scoped by
+  `MOLT_SESSION_ID`. Use
   `--session-scoped-uv-project-env` only when the uv environment must be
   isolated too. Do not use `uv run` to obtain this first env in a cold checkout,
   and never run parallel uv bootstrap/sync commands against the same project
@@ -1225,7 +1227,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   future CPython versions), do not let `uv run` rewrite the shared interactive
   `.venv`. Wrap the inner uv command with
   `uv run --python 3.12 python tools/uv_project_env.py --python <ver> --purpose <lane> -- uv run --python <ver> ...`;
-  the wrapper sets `UV_PROJECT_ENVIRONMENT=tmp/uv-project-envs/<lane>__py<ver>`.
+  the wrapper sets `UV_PROJECT_ENVIRONMENT` under `tmp/uv-project-envs/` keyed by
+  source root, lane/purpose, and Python version.
 - If the panic mentions `system-configuration` (macOS proxy lookup), pin explicit
   proxy envs to bypass system proxy detection, for example:
   `HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1`.

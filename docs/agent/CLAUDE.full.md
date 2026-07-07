@@ -664,8 +664,9 @@ select a healthy external root when one is available but are not public compile
 location bans. macOS/Linux use the configured external candidates. The resolver
 owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `MOLT_TARGET_ROOT`, `MOLT_CACHE`, diff/tmp roots, `UV_CACHE_DIR`,
-`UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`,
-`TMP`, `TEMP`, and DX-only `UV_LINK_MODE`. Default Cargo output is session-scoped as
+`UV_PROJECT_ENVIRONMENT`, matching `VIRTUAL_ENV`, `PIP_CACHE_DIR`,
+`PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, `TEMP`, and DX-only `UV_LINK_MODE`.
+Default Cargo output is session-scoped as
 `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR`
 remains an operator-owned override. On this Windows workstation the selected
 external root is the APDataStore volume (`D:\Molt`) when healthy, and the
@@ -681,11 +682,13 @@ Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
 before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
 `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
 POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
-In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
-(`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env, so
-repeated checks reuse the same uv environment while Cargo output remains
-session-scoped by `MOLT_SESSION_ID`. Use `--session-scoped-uv-project-env` only
-when the uv environment must be isolated too.
+In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT` and matching
+`VIRTUAL_ENV` keyed by source root, purpose, and Python version rather than a
+per-process `run-<pid>` env, so repeated checks in one worktree reuse the same uv
+environment while adjacent worktrees do not rewrite each other's editable
+install. Cargo output remains session-scoped by `MOLT_SESSION_ID`. Use
+`--session-scoped-uv-project-env` only when the uv environment must be isolated
+too.
 Do not use `uv run` to obtain this first env in a cold checkout, and never run
 parallel uv bootstrap/sync commands against the same `.venv`.
 

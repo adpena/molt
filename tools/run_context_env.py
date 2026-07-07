@@ -93,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         base_env["MOLT_SESSION_ID"] = args.session_id
     # ONE authority owns the stable-vs-session uv project env decision
     # (dx.uv_project_env_dir). The CLI only wires its knobs into the env that
-    # authority reads, so --dx emits the stable `dx__py3.12` env by default and
+    # authority reads, so --dx emits the stable source-root-scoped env by default
     # --session-scoped-uv-project-env opts back into MOLT_SESSION_ID isolation —
     # no separate CLI override lane that could drift from the authority.
     if args.dx:

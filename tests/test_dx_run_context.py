@@ -385,10 +385,15 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
 
     payload = json.loads(capsys.readouterr().out)
     env = payload["env"]
-    assert env["MOLT_SESSION_ID"].startswith("run-")
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(
-        tmp_path.resolve() / "tmp" / "uv-project-envs" / "dx__py3.12"
+    expected = dx.stable_uv_project_env_dir(
+        tmp_path,
+        purpose="dx",
+        python="3.12",
+        source_root=tmp_path,
     )
+    assert env["MOLT_SESSION_ID"].startswith("run-")
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(expected)
+    assert env["VIRTUAL_ENV"] == str(expected)
 
 
 def test_run_context_env_can_emit_session_scoped_uv_project_environment(
@@ -742,15 +747,37 @@ def test_uv_project_env_is_stable_across_sessions(tmp_path: Path) -> None:
 
     The DX churn fix: repeated `uv run --active` proofs (each a fresh
     MOLT_SESSION_ID) reuse ONE uv project environment instead of minting a fresh
-    `.venv` per session. The env is keyed on (purpose, python), never the session.
+    `.venv` per session. The env is keyed on (source root, purpose, python),
+    never the session.
     """
     ctx = RunContext(tmp_path, session_prefix="proof")
     base = {"MOLT_EXT_ROOT": str(tmp_path)}
     env_a = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-aaa-111"})
     env_b = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-bbb-222"})
+    expected = dx.stable_uv_project_env_dir(
+        tmp_path,
+        purpose="dx",
+        python="3.12",
+        source_root=tmp_path,
+    )
     assert env_a == env_b
-    assert env_a == (tmp_path / "tmp" / "uv-project-envs" / "dx__py3.12").resolve()
+    assert env_a == expected
     assert "sess-aaa" not in str(env_a) and "sess-bbb" not in str(env_b)
+
+
+def test_uv_project_env_is_isolated_across_worktrees(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifact-root"
+    repo_a = tmp_path / "worktrees" / "branch-a"
+    repo_b = tmp_path / "worktrees" / "branch-b"
+    repo_a.mkdir(parents=True)
+    repo_b.mkdir(parents=True)
+    base = {"MOLT_EXT_ROOT": str(artifact_root)}
+
+    env_a = RunContext(repo_a, session_prefix="proof").uv_project_env_dir(base)
+    env_b = RunContext(repo_b, session_prefix="proof").uv_project_env_dir(base)
+
+    assert env_a != env_b
+    assert env_a.parent == env_b.parent == (artifact_root / "tmp" / "uv-project-envs")
 
 
 def test_uv_project_env_session_scoped_opt_in(tmp_path: Path) -> None:
@@ -785,4 +812,9 @@ def test_uv_project_env_custom_purpose_and_python(tmp_path: Path) -> None:
             "MOLT_SESSION_ID": "sess-ignored",
         }
     )
-    assert env == (tmp_path / "tmp" / "uv-project-envs" / "witness__py3.13").resolve()
+    assert env == dx.stable_uv_project_env_dir(
+        tmp_path,
+        purpose="witness",
+        python="3.13",
+        source_root=tmp_path,
+    )

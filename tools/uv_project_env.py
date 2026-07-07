@@ -31,9 +31,12 @@ def project_environment_path(
     env: Mapping[str, str] | None = None,
 ) -> Path:
     env_view = os.environ if env is None else env
+    merged = dict(env_view)
+    merged["MOLT_UV_PROJECT_PURPOSE"] = purpose
+    merged["MOLT_UV_PROJECT_PYTHON"] = python
     resolved = development_artifact_env(
         repo_root,
-        env_view,
+        merged,
         session_prefix="uv-project-env",
         session_id=_session_id(python=python, purpose=purpose, env=env_view),
         create_dirs=False,
@@ -55,6 +58,8 @@ def uv_project_env(
         if not explicit_path.is_absolute():
             explicit_path = repo_root / explicit_path
         merged["UV_PROJECT_ENVIRONMENT"] = str(explicit_path.resolve())
+    merged["MOLT_UV_PROJECT_PURPOSE"] = purpose
+    merged["MOLT_UV_PROJECT_PYTHON"] = python
     merged = development_artifact_env(
         repo_root,
         merged,

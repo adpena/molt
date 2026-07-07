@@ -41,6 +41,7 @@ CANONICAL_RUN_ENV_KEYS = (
 )
 DX_ENV_KEYS = (
     *CANONICAL_RUN_ENV_KEYS,
+    "VIRTUAL_ENV",
     "MOLT_BACKEND_DAEMON_SOCKET_DIR",
     "MOLT_USE_SCCACHE",
     "MOLT_DIFF_ALLOW_RUSTC_WRAPPER",
@@ -91,13 +92,28 @@ def uv_project_env_component(value: str) -> str:
     return component or "default"
 
 
+def uv_project_env_source_component(source_root: Path) -> str:
+    resolved = source_root.expanduser().resolve()
+    identity = os.path.normcase(str(resolved))
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    label = uv_project_env_component(resolved.name)
+    return f"{label}-{digest}"
+
+
 def stable_uv_project_env_dir(
     artifact_root: Path,
     *,
     purpose: str,
     python: str,
+    source_root: Path | None = None,
 ) -> Path:
-    name = f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
+    parts = [
+        uv_project_env_component(purpose),
+        f"py{uv_project_env_component(python)}",
+    ]
+    if source_root is not None:
+        parts.append(f"src-{uv_project_env_source_component(source_root)}")
+    name = "__".join(parts)
     return (
         artifact_root.expanduser().resolve() / "tmp" / "uv-project-envs" / name
     ).resolve()
@@ -122,11 +138,17 @@ def uv_project_env_session_scoped(env: Mapping[str, str]) -> bool:
     }
 
 
-def stable_uv_project_env_from_env(env: Mapping[str, str], artifact_root: Path) -> Path:
+def stable_uv_project_env_from_env(
+    env: Mapping[str, str],
+    artifact_root: Path,
+    *,
+    source_root: Path | None = None,
+) -> Path:
     return stable_uv_project_env_dir(
         artifact_root,
         purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or DEFAULT_UV_PROJECT_PURPOSE,
         python=env.get("MOLT_UV_PROJECT_PYTHON") or DEFAULT_UV_PROJECT_PYTHON,
+        source_root=source_root,
     )
 
 
@@ -661,9 +683,10 @@ def _provision_sccache() -> str | None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as td:
             archive = Path(td) / url.rsplit("/", 1)[-1]
-            with urllib.request.urlopen(url, timeout=90) as resp, open(
-                archive, "wb"
-            ) as out:
+            with (
+                urllib.request.urlopen(url, timeout=90) as resp,
+                open(archive, "wb") as out,
+            ):
                 shutil.copyfileobj(resp, out)
             if archive.suffix == ".zip":
                 with zipfile.ZipFile(archive) as zf:
@@ -735,6 +758,10 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
     env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
+    if env.get("UV_PROJECT_ENVIRONMENT"):
+        env["VIRTUAL_ENV"] = str(
+            Path(env["UV_PROJECT_ENVIRONMENT"]).expanduser().resolve()
+        )
     _ensure_sccache_wrapper(env)
     if _artifact_root_is_windows_exfat(artifact_root):
         env.setdefault("UV_LINK_MODE", "copy")
@@ -827,7 +854,7 @@ class RunContext:
         if uv_project_env_session_scoped(env):
             session = env.get("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
             return (ext_root / "tmp" / "uv-project-envs" / session).resolve()
-        return stable_uv_project_env_from_env(env, ext_root)
+        return stable_uv_project_env_from_env(env, ext_root, source_root=self.root)
 
     def canonical_env(
         self,
@@ -1004,7 +1031,7 @@ class DxProject:
         if uv_project_env_session_scoped(env):
             session = env.get("MOLT_SESSION_ID", f"dev-{os.getpid()}")
             return (artifact_root / "tmp" / "uv-project-envs" / session).resolve()
-        return stable_uv_project_env_from_env(env, artifact_root)
+        return stable_uv_project_env_from_env(env, artifact_root, source_root=self.root)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
         if env is not None:
