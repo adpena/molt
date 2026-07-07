@@ -16,7 +16,7 @@ import sys
 import time
 import tomllib
 import traceback
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +43,7 @@ from tools.dirty_tree_policy import (  # noqa: E402
 )
 
 RUNNING = {"queued", "dispatched", "running"}
+LAUNCHED = {"dispatched", "running"}
 ACTIVE_SQL_STATUSES = "'queued', 'dispatched', 'running'"
 LAUNCHED_SQL_STATUSES = "'dispatched', 'running'"
 ACTIVE_OR_STALE_SQL_STATUSES = "'queued', 'dispatched', 'running', 'stale'"
@@ -75,10 +76,10 @@ DEFAULT_EDGE_KIND = "depends_on"
 _SCHEDULING_EDGE_KINDS = frozenset({"depends_on"})
 
 WASM_RESOURCE_FAMILIES = frozenset({"wasm", "wasm-browser"})
-COMPILER_BUILD_RESOURCE_KEY = "compiler-build-resource"
-COMPILER_BUILD_RESOURCE_FAMILIES = frozenset(
-    {"native-build", "rust", "cargo", "wasm", "wasm-browser"}
+COMPILER_BUILD_RESOURCE_FAMILIES = WASM_RESOURCE_FAMILIES | frozenset(
+    {"native-build", "queue-native-rust", "rust"}
 )
+COMPILER_BUILD_RESOURCE_MUTEX_KEY = "compiler-build-resource"
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 DEFAULT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC = "2.0"
 DIAGNOSTIC_LOG_TAIL_BYTES = 256 * 1024
@@ -941,6 +942,7 @@ def _connect(db: Path) -> sqlite3.Connection:
             cwd TEXT NOT NULL,
             resource_family TEXT NOT NULL,
             contention_key TEXT NOT NULL,
+            resource_mutex_key TEXT,
             scopes_json TEXT NOT NULL,
             env_json TEXT NOT NULL DEFAULT '{}',
             git_json TEXT NOT NULL DEFAULT '{}',
@@ -1105,6 +1107,40 @@ def _connect(db: Path) -> sqlite3.Connection:
         )
     if "guard_identity" not in columns:
         conn.execute("ALTER TABLE proof_runs ADD COLUMN guard_identity TEXT")
+    if "resource_mutex_key" not in columns:
+        conn.execute("ALTER TABLE proof_runs ADD COLUMN resource_mutex_key TEXT")
+    claimed_active_mutexes: set[str] = set()
+    for row in conn.execute(
+        """
+        SELECT run_id, resource_family, contention_key, command_json, status
+        FROM proof_runs
+        WHERE resource_mutex_key IS NULL
+        ORDER BY rowid
+        """
+    ):
+        try:
+            command = json.loads(row[3])
+        except (TypeError, json.JSONDecodeError):
+            command = []
+        if not isinstance(command, list):
+            command = []
+        resource_mutex_key = _resource_mutex_key(
+            resource_family=str(row[1]),
+            contention_key=str(row[2]),
+            command=[str(part) for part in command],
+        )
+        if resource_mutex_key is not None:
+            if (
+                row[4] in LAUNCHED
+                and resource_mutex_key in claimed_active_mutexes
+            ):
+                continue
+            if row[4] in LAUNCHED:
+                claimed_active_mutexes.add(resource_mutex_key)
+            conn.execute(
+                "UPDATE proof_runs SET resource_mutex_key = ? WHERE run_id = ?",
+                (resource_mutex_key, row[0]),
+            )
     # At most one active launched run per contention key. A partial UNIQUE index makes
     # SQLite itself enforce the hard serialization invariant, closing the
     # check-then-insert / transition TOCTOU where two concurrent admissions each
@@ -1126,6 +1162,14 @@ def _connect(db: Path) -> sqlite3.Connection:
         CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_launched_per_contention_key
         ON proof_runs(contention_key)
         WHERE status IN ('dispatched', 'running')
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS proof_runs_one_launched_per_resource_mutex
+        ON proof_runs(resource_mutex_key)
+        WHERE resource_mutex_key IS NOT NULL
+          AND status IN ('dispatched', 'running')
         """
     )
     conn.commit()
@@ -1940,52 +1984,96 @@ def _active_for_key(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
     )
 
 
-def _resource_mutex_key(resource_family: str) -> str | None:
-    if resource_family in COMPILER_BUILD_RESOURCE_FAMILIES:
-        return COMPILER_BUILD_RESOURCE_KEY
+def _row_command(row: sqlite3.Row) -> list[str]:
+    try:
+        payload = json.loads(row["command_json"])
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(part) for part in payload]
+
+
+def _resource_mutex_key(
+    *, resource_family: str, contention_key: str, command: Sequence[str]
+) -> str | None:
+    del command
+    family = resource_family.strip().lower()
+    key = contention_key.strip().lower()
+    if family in COMPILER_BUILD_RESOURCE_FAMILIES:
+        return COMPILER_BUILD_RESOURCE_MUTEX_KEY
+    if key.startswith(("cargo:", "rust:", "wasm:", "wasm-browser:")):
+        return COMPILER_BUILD_RESOURCE_MUTEX_KEY
+    if key in {"wasm-build", "native-build", "queue-native-rust"}:
+        return COMPILER_BUILD_RESOURCE_MUTEX_KEY
     return None
 
 
-def _active_for_resource_mutex(
+def _active_contention_conflicts(
     conn: sqlite3.Connection,
-    resource_family: str,
     *,
-    exclude_run_id: str | None = None,
-) -> list[sqlite3.Row]:
-    resource_key = _resource_mutex_key(resource_family)
-    if resource_key is None:
-        return []
+    resource_family: str,
+    contention_key: str,
+    command: Sequence[str],
+    existing_run_id: str | None = None,
+) -> list[tuple[str, sqlite3.Row]]:
     conn.row_factory = sqlite3.Row
-    placeholders = ", ".join("?" for _ in COMPILER_BUILD_RESOURCE_FAMILIES)
-    params: list[object] = sorted(COMPILER_BUILD_RESOURCE_FAMILIES)
-    exclude_sql = ""
-    if exclude_run_id is not None:
-        exclude_sql = " AND run_id != ?"
-        params.append(exclude_run_id)
-    return list(
+    mutex_key = _resource_mutex_key(
+        resource_family=resource_family,
+        contention_key=contention_key,
+        command=command,
+    )
+    conflicts: list[tuple[str, sqlite3.Row]] = []
+    seen: set[str] = set()
+
+    def consider(kind: str, row: sqlite3.Row) -> None:
+        if existing_run_id is not None and row["run_id"] == existing_run_id:
+            return
+        run_id = str(row["run_id"])
+        if run_id in seen:
+            return
+        seen.add(run_id)
+        conflicts.append((kind, row))
+
+    for row in _active_for_key(conn, contention_key):
+        consider(f"contention key {contention_key!r}", row)
+    if mutex_key is None:
+        return conflicts
+
+    rows = list(
         conn.execute(
             f"""
             SELECT * FROM proof_runs
             WHERE status IN ({LAUNCHED_SQL_STATUSES})
-              AND resource_family IN ({placeholders}){exclude_sql}
             ORDER BY started_at DESC
-            """,
-            params,
+            """
         )
     )
-
-
-def _active_resource_mutex_keys(
-    rows: Iterable[sqlite3.Row], *, exclude_run_id: str | None = None
-) -> set[str]:
-    keys: set[str] = set()
     for row in rows:
-        if exclude_run_id is not None and row["run_id"] == exclude_run_id:
-            continue
-        key = _resource_mutex_key(str(row["resource_family"]))
-        if key is not None:
-            keys.add(key)
-    return keys
+        row_mutex = _resource_mutex_key(
+            resource_family=str(row["resource_family"]),
+            contention_key=str(row["contention_key"]),
+            command=_row_command(row),
+        )
+        if row_mutex == mutex_key:
+            consider(f"resource mutex {mutex_key!r}", row)
+    return conflicts
+
+
+def _format_active_contention_conflicts(
+    conflicts: Sequence[tuple[str, sqlite3.Row]],
+) -> str:
+    lines = [f"{conflicts[0][0]} already has active run(s):"]
+    for kind, row in conflicts:
+        lines.append(f"- {row['status']} {row['run_id']} {row['reason']} ({kind})")
+    return "\n".join(lines)
+
+
+def _print_active_contention_conflicts(
+    conflicts: Sequence[tuple[str, sqlite3.Row]],
+) -> None:
+    if conflicts:
+        print(_format_active_contention_conflicts(conflicts), file=sys.stderr)
 
 
 def _active_running_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -2149,13 +2237,18 @@ def _insert_run(
     log_path: Path,
     summary_json: Path,
 ) -> None:
+    resource_mutex_key = _resource_mutex_key(
+        resource_family=resource_family,
+        contention_key=contention_key,
+        command=command,
+    )
     conn.execute(
         """
         INSERT INTO proof_runs (
             run_id, logical_id, reason, status, command_json, cwd,
-            resource_family, contention_key, scopes_json, env_json, git_json,
-            log_path, summary_json
-        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            resource_family, contention_key, resource_mutex_key, scopes_json,
+            env_json, git_json, log_path, summary_json
+        ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -2165,6 +2258,7 @@ def _insert_run(
             str(cwd),
             resource_family,
             contention_key,
+            resource_mutex_key,
             json.dumps(scopes),
             json.dumps(env_overrides or {}, sort_keys=True),
             json.dumps(
@@ -2206,13 +2300,18 @@ def _admit_run(
         conn.commit()
     conn.execute("BEGIN IMMEDIATE")
     try:
+        resource_mutex_key = _resource_mutex_key(
+            resource_family=resource_family,
+            contention_key=contention_key,
+            command=command,
+        )
         conn.execute(
             """
             INSERT INTO proof_runs (
                 run_id, logical_id, reason, status, command_json, cwd,
-                resource_family, contention_key, scopes_json, env_json,
-                git_json, log_path, summary_json
-            ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                resource_family, contention_key, resource_mutex_key,
+                scopes_json, env_json, git_json, log_path, summary_json
+            ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -2222,6 +2321,7 @@ def _admit_run(
                 str(cwd),
                 resource_family,
                 contention_key,
+                resource_mutex_key,
                 json.dumps(scopes),
                 json.dumps(env_overrides or {}, sort_keys=True),
                 json.dumps(
@@ -3502,33 +3602,19 @@ def _claim_detached_run(
                 f"queue capacity full active={active_count} queue_size={queue_size}",
             )
 
-        active_for_key = list(
-            conn.execute(
-                f"""
-                SELECT * FROM proof_runs
-                WHERE contention_key = ? AND status IN ({LAUNCHED_SQL_STATUSES})
-                ORDER BY started_at DESC
-                """,
-                (row["contention_key"],),
-            )
-        )
-        if active_for_key:
-            conn.rollback()
-            return (
-                None,
-                f"waiting {run_id} contention_key={row['contention_key']} active",
-            )
-
-        active_for_resource = _active_for_resource_mutex(
+        active = _active_contention_conflicts(
             conn,
-            str(row["resource_family"]),
-            exclude_run_id=run_id,
+            resource_family=str(row["resource_family"]),
+            contention_key=str(row["contention_key"]),
+            command=_row_command(row),
+            existing_run_id=run_id,
         )
-        if active_for_resource:
+        if active:
             conn.rollback()
             return (
                 None,
-                f"waiting {run_id} resource_group={COMPILER_BUILD_RESOURCE_KEY} active",
+                f"waiting {run_id} "
+                + _format_active_contention_conflicts(active).replace("\n", "; "),
             )
 
         now = _utc_now()
@@ -4051,9 +4137,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
         for row in active_running
         if not (args.run_id is not None and row["run_id"] == args.run_id)
     }
-    active_resource_keys = _active_resource_mutex_keys(
-        active_running, exclude_run_id=args.run_id
-    )
+    active_mutexes = {
+        mutex
+        for row in active_running
+        if not (args.run_id is not None and row["run_id"] == args.run_id)
+        for mutex in (
+            _resource_mutex_key(
+                resource_family=str(row["resource_family"]),
+                contention_key=str(row["contention_key"]),
+                command=_row_command(row),
+            ),
+        )
+        if mutex is not None
+    }
     if args.run_id:
         selected = conn.execute(
             "SELECT * FROM proof_runs WHERE run_id = ?",
@@ -4088,16 +4184,20 @@ def _cmd_run(args: argparse.Namespace) -> int:
             selection_limit = run_limit
     rows = []
     selected_detached_keys = set(active_keys)
-    selected_detached_resource_keys = set(active_resource_keys)
+    selected_detached_mutexes = set(active_mutexes)
     candidate_rows = queued if selection_limit > 0 else []
     for row in candidate_rows:
         contention_key = str(row["contention_key"])
-        resource_key = _resource_mutex_key(str(row["resource_family"]))
+        mutex_key = _resource_mutex_key(
+            resource_family=str(row["resource_family"]),
+            contention_key=contention_key,
+            command=_row_command(row),
+        )
         if contention_key in active_keys:
             print(f"waiting {row['run_id']} contention_key={contention_key} active")
             continue
-        if resource_key is not None and resource_key in active_resource_keys:
-            print(f"waiting {row['run_id']} resource_group={resource_key} active")
+        if mutex_key is not None and mutex_key in active_mutexes:
+            print(f"waiting {row['run_id']} resource_mutex={mutex_key} active")
             continue
         if args.detach and contention_key in selected_detached_keys:
             print(
@@ -4105,13 +4205,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 "already selected"
             )
             continue
-        if (
-            args.detach
-            and resource_key is not None
-            and resource_key in selected_detached_resource_keys
-        ):
+        if args.detach and mutex_key is not None and mutex_key in selected_detached_mutexes:
             print(
-                f"waiting {row['run_id']} resource_group={resource_key} "
+                f"waiting {row['run_id']} resource_mutex={mutex_key} "
                 "already selected"
             )
             continue
@@ -4120,8 +4216,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             rows.append(row)
             if args.detach:
                 selected_detached_keys.add(contention_key)
-                if resource_key is not None:
-                    selected_detached_resource_keys.add(resource_key)
+                if mutex_key is not None:
+                    selected_detached_mutexes.add(mutex_key)
             if args.run_id or len(rows) >= selection_limit:
                 break
             continue
