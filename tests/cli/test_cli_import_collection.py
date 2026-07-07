@@ -2175,6 +2175,117 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     assert "target-specific source plan" in message
 
 
+def test_materialize_import_plan_accepts_object_closure_native_support_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root = tmp_path / "site"
+    support_path = external_root / "nativepkg" / "ndimage" / "_measurements.py"
+    support_path.parent.mkdir(parents=True)
+    source_candidate = (
+        external_root / "nativepkg" / "ndimage" / "src" / "_ni_label.c"
+    )
+    source_candidate.parent.mkdir(parents=True)
+    source_candidate.write_text(
+        "int PyInit__ni_label(void) { return 0; }\n", encoding="utf-8"
+    )
+    source_sha = hashlib.sha256(source_candidate.read_bytes()).hexdigest()
+    support_path.write_text(
+        "from . import _ni_label\n\n"
+        "def label(value):\n"
+        "    return _ni_label.label(value)\n",
+        encoding="utf-8",
+    )
+    support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "support_files": [
+                {
+                    "path": "nativepkg/ndimage/_measurements.py",
+                    "sha256": support_sha,
+                }
+            ],
+            "object_closure": {
+                "objects": [
+                    {
+                        "source": str(source_candidate),
+                        "object": "_ni_label.o",
+                        "source_sha256": source_sha,
+                        "object_sha256": "0" * 64,
+                        "defined_symbols": ["PyInit__ni_label"],
+                        "undefined_symbols": [],
+                        "required_c_api_symbols": [],
+                        "required_capsules": [],
+                    }
+                ],
+            },
+            "callable_exports": [
+                {
+                    "module": "nativepkg.ndimage",
+                    "name": "label",
+                    "binding": "module_attr",
+                    "provider_module": "nativepkg.ndimage._measurements",
+                    "abi": "molt.object_callargs_v1",
+                }
+            ],
+        },
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+    prepared = replace(
+        prepared,
+        runtime_import_dispatch_roots=frozenset({"nativepkg.ndimage.label"}),
+    )
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert "nativepkg.ndimage._measurements" in import_plan.module_graph
+    assert "nativepkg.ndimage._measurements" in import_plan.compile_modules
+    assert "nativepkg.ndimage._ni_label" not in import_plan.module_graph
+    assert [
+        artifact.module for artifact in import_plan.native_artifact_plan.artifacts
+    ] == ["nativepkg.ndimage._nd_image"]
+
+
 def test_native_support_source_stdlib_imports_join_compile_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
