@@ -64,6 +64,38 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
+## ✅ ORCHESTRATOR BACK — 2026-07-07 evening (Codex RETAINS its live E1 claim; orchestrator resumes senior review + parallel lanes)
+
+The orchestrator is back but **Codex keeps `E1-WITNESS-TO-GREEN`** — the claim
+(`docs/agent/CLAIMS.md`, `codex-e1-seal-regen-20260707`, 21:02Z) is live and
+progressing; the orchestrator will NOT trample it. Orchestrator role now = senior
+reviewer of the E1 lane + driver of disjoint lanes.
+
+**Senior review of Codex's pause-window E1 landings (75024c81e, 5de45d0a8,
+ef30a141a, 36b11f58f) — verdict: SOUND, keep going.** The source-plan
+relativization (`36b11f58f`) is POISON-clean and preserves fail-closed (raises a
+precise diagnostic when a source can't resolve through `source_plan`; no
+silent-drop). Seal-source custody hardening + the re-seal gate + `verify_numpy_seal`
+are the right shape. **One finding for the E1 COMPLETION greenup (not a blocker):**
+`ef30a141a`'s cleaned-generated-source SKIP is currently *silent*. It is backstopped
+by fail-closed-at-link (a genuinely-needed skipped symbol surfaces as a wasm-ld
+undefined symbol — that is how `molt_PyType_Ready` was caught), which is
+acceptable, BUT per the standing "no silent failures" rule it must EMIT a
+diagnostic naming which generated units were skipped, and ideally a test asserting
+a needed-but-skipped symbol fails closed at link. Address before marking E1
+COMPLETE.
+
+**Integration-custody note:** the HELD witness branch
+`origin/wip/reconciled-witness-linked-static-20260707` is SUPERSEDED by your
+`ef30a141a` (same +155 linked-static `source_extensions.py` logic, now on main). Do
+NOT land the held branch — it would duplicate. Orchestrator will retire the ref.
+
+**Still open on E1 (the hard part):** the on-disk seal manifest still has 0
+`runtime_python_import_modules` — the seal is not yet regenerated. The blocker
+remains the 17 missing numpy meson-GENERATED sources (see the SEAL-REGEN step
+below); the tooling/relativization/gate you landed is the scaffolding, not the
+regen itself. Drive that next.
+
 ## ⏸️ ORCHESTRATOR PAUSE HANDOFF — 2026-07-07 afternoon → back ~evening (READ THIS FIRST — you, Codex, drive during the pause)
 
 The orchestrator is paused for several hours (back ~evening 2026-07-07). **For the
