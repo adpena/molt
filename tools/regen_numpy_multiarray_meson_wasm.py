@@ -316,34 +316,68 @@ def main() -> int:
     if not gen_c:
         print("[regen] WARNING: no generated .c sources found for _multiarray_umath")
 
-    # Family 2: every generated header + #include-only API .c source declared by
-    # a numpy ``custom_target`` (intro-targets ``type == "custom"``). Discovered
-    # from numpy's own meson authority — no hand-written header list.
-    gen_hdr: set[str] = set()
+    ninja = _tool("ninja", "ninja")
+
+    # Family 2: the #include-only API .c sources declared by numpy
+    # ``custom_target``s (intro-targets ``type == "custom"``). These are
+    # ``#include``d into other .c, never compiled as their own object, so they
+    # are not in any target's ``generated_sources``.
+    gen_api_c: set[str] = set()
     for t in targets:
         if t.get("type") != "custom":
             continue
         for f in t.get("filename", []):
             fp = str(f)
-            if fp.endswith(".h") or fp.endswith(
+            if fp.endswith(
                 ("__multiarray_api.c", "__ufunc_api.c", "__umath_generated.c")
             ):
-                gen_hdr.add(fp)
+                gen_api_c.add(fp)
+
+    # Family 3: EVERY generated header numpy declares. numpy's generated headers
+    # come from two meson shapes — top-level ``custom_target``s
+    # (``__multiarray_api.h``, ``__ufunc_api.h``, ``npy_math_internal.h``,
+    # ``_umath_doc_generated.h``) AND per-target ``src_file.process('*.h.src')``
+    # outputs materialized into a target's private ``*.p/`` dir
+    # (``templ_common.h``, ``arraytypes.h``, ``loops.h``, ``loops_utils.h``,
+    # ``matmul.h``, ``npy_sort.h`` under ``_multiarray_umath.*.p/``). Neither
+    # shape is enumerable from the extension target's ``generated_sources``, but
+    # BOTH are Ninja ``CUSTOM_COMMAND`` outputs. Ask Ninja's own target graph for
+    # every generated ``.h`` — numpy's build is the authority, no hand-written
+    # header list, nothing vendored. Building all of them keeps the meson build
+    # dir's include path complete regardless of which private ``*.p/`` copy molt
+    # resolves against.
+    tg = subprocess.run(
+        [ninja, "-C", str(build_root), "-t", "targets", "all"],
+        cwd=str(build_root),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if tg.returncode != 0:
+        sys.stderr.write(tg.stderr)
+        raise SystemExit(f"ninja -t targets all failed rc={tg.returncode}")
+    gen_hdr: set[str] = set()
+    for line in tg.stdout.splitlines():
+        target, sep, rule = line.partition(":")
+        if not sep:
+            continue
+        target = target.strip()
+        if rule.strip() == "CUSTOM_COMMAND" and target.endswith(".h"):
+            gen_hdr.add((build_root / target).as_posix())
     if not gen_hdr:
         print(
-            "[regen] WARNING: no custom-target generated headers found "
-            "(intro-targets has no type=='custom' .h/.c outputs)"
+            "[regen] WARNING: ninja target graph names no generated .h "
+            "CUSTOM_COMMAND outputs"
         )
 
-    ninja = _tool("ninja", "ninja")
     rel_targets = [
         os.path.relpath(g, build_root).replace(os.sep, "/")
-        for g in sorted(gen_c | gen_hdr)
+        for g in sorted(gen_c | gen_api_c | gen_hdr)
     ]
     print(
         f"[regen] ninja generated-output targets "
-        f"({len(gen_c)} .c sources + {len(gen_hdr)} generated headers/api-.c "
-        f"= {len(rel_targets)}):"
+        f"({len(gen_c)} .c sources + {len(gen_api_c)} api-.c includes + "
+        f"{len(gen_hdr)} generated headers = {len(rel_targets)}):"
     )
     for r_t in rel_targets:
         print(f"           {r_t}")
@@ -354,6 +388,8 @@ def main() -> int:
             raise SystemExit(
                 f"ninja generated-output build failed rc={r.returncode}"
             )
+    # Downstream verification (below) treats gen_hdr as the generated-header set.
+    gen_hdr = gen_hdr | gen_api_c
 
     cc = build_root / "compile_commands.json"
     if not cc.is_file():
