@@ -1018,6 +1018,19 @@ from-import native-call provenance (3b0ca4a80, be516cbff).
 - **Evidence beats vigil.** At most ONE status read per 5 minutes on a row
   you own, ZERO on rows you don't. Two consecutive "still running" notes
   means you're idling — switch deliverables or end the arc.
+- **Sweep for drift proactively — every arc, before every commit.** `origin/main`
+  moves under you constantly; make checking a reflex, not a reaction. At the START
+  of every arc: `git fetch origin`, scan what landed
+  (`git log --oneline <last>..origin/main`), and re-read THIS board — it may have
+  been re-synced. BEFORE you start a lane: confirm it isn't already landed or
+  superseded (`git merge-base --is-ancestor origin/<branch> origin/main`; grep
+  main for the symbol/logic) — building work that already merged is wasted effort
+  and a trample. BEFORE every commit: re-fetch and confirm your base is current,
+  so you don't land against a stale tree. Anything you read from the shared
+  checkout is suspect (it lags main) — verify against `origin/main`. If you spot
+  drift (a lane that landed, a stale frontier line, a merged branch you were
+  told to chase), STOP and flag the orchestrator with evidence; do not act on the
+  stale instruction.
 - **Diagnosis is time-boxed.** 15 minutes per fault to a hypothesis with a
   bounded experiment; builds go detached while you work elsewhere. Never
   re-run a failed shape unchanged.
