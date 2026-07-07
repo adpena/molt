@@ -64,12 +64,55 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
-## ✅ ORCHESTRATOR BACK — 2026-07-07 evening (Codex RETAINS its live E1 claim; orchestrator resumes senior review + parallel lanes)
+## ✅ ORCHESTRATOR IN FULL CONTROL — 2026-07-07 evening (efficiency-optimized model)
 
-The orchestrator is back but **Codex keeps `E1-WITNESS-TO-GREEN`** — the claim
-(`docs/agent/CLAIMS.md`, `codex-e1-seal-regen-20260707`, 21:02Z) is live and
-progressing; the orchestrator will NOT trample it. Orchestrator role now = senior
-reviewer of the E1 lane + driver of disjoint lanes.
+Orchestrator has resumed full control of the board + lane allocation. **Codex keeps
+its live `E1-WITNESS-TO-GREEN` claim** (`codex-e1-seal-regen-20260707`, 21:02Z) —
+it has context + is progressing; yanking it would WASTE that, so it is not
+trampled. Orchestrator = senior reviewer of E1 + allocator of all other capacity.
+
+### Efficiency verdict (grounded 2026-07-07, evidence-based) — we optimize for CORRECTNESS FIRST, then shortest wall-clock
+- **Correctness discipline: STRONG, keep it.** Fail-closed tooling
+  (tree_drift_check / ff_land / claim_lane / dirty_tree_landing_audit), the
+  solo-lane claim protocol (no collision/masking), POISON contract, and the
+  adversarial+senior-review completion gate. This is the right priority order and
+  is well-enforced. Do NOT trade it for speed.
+- **Parallelism: HEALTHY.** ~55 commits/18h on origin/main across E1-E4, swarm
+  self-coordinating via claims.
+- **THE dominant wall-clock bottleneck is BUILD THROUGHPUT.** Queue runs are
+  5–53 min (one at 3190s). Every E1 acceptance, E2 bench, E3 shard pays this. The
+  single highest-leverage wall-clock investment — it accelerates EVERY lane.
+- **The correctness-of-optimization gap is ATTESTATION.** Measurement infra exists
+  (perf_scoreboard*, *profile*, effect_proof.rs) but a landed optimization that is
+  never PROVEN to fire is a silent-degradation waiting to happen (sccache was off
+  for months while "configured"; the shared lowering cache "landed" but cold
+  starts persisted). "Extreme performance everywhere" is UNPROVABLE — and possibly
+  false — until every perf/capability path emits a machine-checkable proof-of-effect.
+
+### BINDING EFFICIENCY PRINCIPLE — attest every optimization (serves correctness AND performance)
+You cannot optimize what you do not measure, and "landed" ≠ "effective". Every
+perf/capability path (cache, raw-lane, parallelism, incremental) MUST emit a
+machine-checkable proof-of-effect on a representative run (cache-hit-rate>0,
+raw-lane fire-count, shared-cache reuse, worker-count) or fail LOUD — never a
+silent skip. An unmeasured perf claim is a correctness defect, not just a missing
+number. Wall-clock work is ranked by LEVERAGE: fix the thing that speeds up every
+lane (build throughput, shared caches actually hitting) before micro-optimizing one.
+
+### Capacity allocation (priority order; maximize parallel E1-E4 progress)
+1. **E1-WITNESS-TO-GREEN** — Codex (claimed). The critical path to the goal.
+2. **BUILD THROUGHPUT** (highest wall-clock leverage) — shared content-addressed
+   caches proven to HIT, frontend lowering cache shared+attested (task #37),
+   memory-bounded parallel builds. Accelerates E1's own acceptance loop. (Codex-B
+   R5c overlaps — keep it here.)
+3. **EFFECT-ATTESTATION + PERF SCOREBOARD (E2)** — wire perf_scoreboard live+green
+   and make optimizations self-attest, so "faster than CPython everywhere claimed"
+   is provable and silent degradation is caught. (Orchestrator is auditing this now.)
+4. **E3 parity (R6) + E4 structural floor** — continuous/background via gates.
+
+### Standing note: the coordination toolchain is COMPLETE — do NOT build more of it.
+tree_drift_check + ff_land + claim_lane + dirty_tree_landing_audit cover
+detection / safe-landing / solo-claims / dirty-replay-coverage. Spend cycles on
+the goal (E1-E4) and the leverage frontiers above, not more meta-tooling.
 
 **Senior review of Codex's pause-window E1 landings (75024c81e, 5de45d0a8,
 ef30a141a, 36b11f58f) — verdict: SOUND, keep going.** The source-plan
