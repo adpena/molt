@@ -486,10 +486,29 @@ file = "include/molt/Python.h"
 anchor = "#ifndef MOLT_C_API_PYTHON_H"
 resolution_row = "task#10"
 justification = """
-include/molt/Python.h (14k lines) and runtime/molt-cpython-abi/include/Python.h
-(1.7k lines) are two substantive, DIFFERENT copies of the CPython umbrella header.
-The C-API surface now has two homes that must be hand-synced; one is always about
-to drift. One must own the contract and the other re-export or be deleted.
+include/molt/Python.h (14k lines, NaN-box source-recompile tier) and
+runtime/molt-cpython-abi/include/Python.h (1.7k lines, traditional
+ob_refcnt/ob_type standalone-dylib tier) are two substantive copies of the
+CPython umbrella header. The two serve two genuinely different runtime ABIs, so
+this is a real representation boundary, not gratuitous duplication — but the
+boundary must be GENERATED from one authority, not two hand-maintained headers.
+
+PROGRESS (task#10, commit generating the layout from the one Rust authority):
+the memory-unsafe half of this drift is now closed. The standalone tier's struct
+layout is authored ONCE in Rust repr(C) form (runtime/molt-cpython-abi/src/
+abi_types.rs); include/_molt_abi_layout.generated.h is generated from it by
+tools/gen_cpython_abi_layout.py and #included by the ABI Python.h, so any drift
+between the C structs and the Rust authority the dylib operates on now fails to
+COMPILE (crate build + every extension compile) instead of corrupting memory.
+gen_cpython_abi_layout.py --check gates the artifact against the authority.
+
+REMAINING (why this row is not yet retired): the ABI Python.h still hand-maintains
+its DECLARATION surface (macros, extern PyAPI_FUNC decls, inline helpers) beyond
+the struct layouts, so it remains a substantive independent header the coarse
+line-count D-scan still flags. Full resolution = generate that declaration surface
+from the same authority (or a shared symbol table) and teach the D-scan to
+recognise a generated single-authority header, then retire this row + lower the
+duplicate_authority baseline. Tracked under task#10.
 """
 
 [[site]]
