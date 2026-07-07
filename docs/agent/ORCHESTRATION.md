@@ -1071,11 +1071,18 @@ from-import native-call provenance (3b0ca4a80, be516cbff).
   any pause longer than a few minutes.
 - Regenerate generated files in the same edit as their consumers; never
   leave a consumer referencing a symbol its generated file lacks.
-- Commit with pathspecs only (`git commit -- <files>`); never `git add -A`;
-  never sweep another lane's dirty files.
+- Commit with pathspecs only, options BEFORE the `--`: `git commit -m MSG --
+  <files>`; never `git add -A`; never sweep another lane's dirty files. NOTE:
+  `git commit -- <files> -m MSG` silently treats `-m MSG` as a pathspec, so the
+  commit never happens — a real, easy-to-miss footgun. Keep `-m`/`-F` before `--`.
 - Land small and complete: one coherent arc per commit, replaced code
   deleted in the same commit, tests with teeth (proven to fail on
   violation).
+- Land via fail-closed fast-forward: `python tools/ff_land.py` pushes HEAD to
+  `origin/main` ONLY as a clean fast-forward (refuses on a dirty tree, a
+  non-fast-forward / drifted base, or nothing-to-land), so you never trample a
+  parallel landing. It complements `tools/tree_drift_check.py` (staleness) and
+  `tools/dirty_tree_landing_audit.py` (dirty-replay path coverage).
 - Run the gates you touched before landing; cite queue run IDs as evidence.
 - Compatibility floor: CPython >= 3.12 parity with explicit VERSION GATING
   keyed on the TargetPythonVersion authority, and Windows/macOS/Linux with
