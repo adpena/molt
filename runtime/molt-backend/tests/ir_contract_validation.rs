@@ -181,6 +181,57 @@ fn validate_simple_ir_rejects_fast_int_on_non_scalar_owner() {
     assert!(err.contains("does not own fast_int scalar specialization"));
 }
 
+// floordiv/mod (and their inplace variants) own the fast_float scalar
+// specialization: the frontend emits fast_float on them when both operands
+// are float-typed, so the SimpleIR contract must accept it. A mutation that
+// drops floordiv/mod from SCALAR_FAST_FLOAT_KINDS re-breaks the native build
+// for `f // f` / `f % f` (tests/differential/basic/float_ops.py).
+#[test]
+fn validate_simple_ir_accepts_fast_float_floordiv_and_mod() {
+    for kind in ["floordiv", "inplace_floordiv", "mod", "inplace_mod"] {
+        let mut a = op("const_float");
+        a.f_value = Some(7.0);
+        a.out = Some("lhs".to_string());
+        let mut b = op("const_float");
+        b.f_value = Some(2.0);
+        b.out = Some("rhs".to_string());
+
+        let mut scalar = op(kind);
+        scalar.args = Some(vec!["lhs".to_string(), "rhs".to_string()]);
+        scalar.out = Some("quot".to_string());
+        scalar.fast_float = Some(true);
+
+        let ir = SimpleIR {
+            functions: vec![test_func(
+                "molt_test_validate_fast_float_owner",
+                vec![a, b, scalar],
+            )],
+            profile: None,
+        };
+        assert!(
+            validate_simple_ir(&ir).is_ok(),
+            "op `{kind}` must own the fast_float scalar specialization it emits"
+        );
+    }
+}
+
+// Mutation teeth: an op that does NOT own the fast_float specialization must
+// still be rejected, so the whitelist stays exact rather than fail-open.
+#[test]
+fn validate_simple_ir_rejects_fast_float_on_non_scalar_owner() {
+    let mut call = op("call");
+    call.s_value = Some("opaque".to_string());
+    call.out = Some("v0".to_string());
+    call.fast_float = Some(true);
+
+    let ir = SimpleIR {
+        functions: vec![test_func("molt_test_validate_fast_float_owner_reject", vec![call])],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected fast_float owner rejection");
+    assert!(err.contains("does not own fast_float scalar specialization"));
+}
+
 #[test]
 fn validate_simple_ir_rejects_unknown_container_type() {
     let mut idx = op("index");
