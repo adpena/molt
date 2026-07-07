@@ -7886,6 +7886,46 @@ def test_proof_queue_native_molt_run_rejects_outside_repo(tmp_path: Path) -> Non
         proof_queue._native_molt_run_spec(str(outside), repo_root=tmp_path)
 
 
+def _write_current_numpy_seal_manifest(root: Path, source_root: Path) -> None:
+    source_rel = Path("numpy/_core/src/multiarray/npy_static_data.c")
+    source_path = source_root / source_rel
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text(
+        "IMPORT_GLOBAL(\"numpy._core._exceptions\", NULL);\n",
+        encoding="utf-8",
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "extension_manifest.json").write_text(
+        json.dumps(
+            {
+                "module": "numpy._core._multiarray_umath",
+                "runtime_python_import_modules": ["numpy._core._exceptions"],
+                "source_plan": {"source_root": str(source_root)},
+                "object_closure": {
+                    "objects": [{"source": source_rel.as_posix()}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_stale_numpy_seal_manifest(root: Path, stale_source: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "extension_manifest.json").write_text(
+        json.dumps(
+            {
+                "module": "numpy._core._multiarray_umath",
+                "source_plan": {"source_root": str(stale_source.parent)},
+                "object_closure": {
+                    "objects": [{"source": str(stale_source)}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_proof_queue_r6_target_version_parity_print_spec(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -7942,7 +7982,8 @@ def test_proof_queue_pact_witness_acceptance_admits_staged_native_roots(
         root.mkdir(parents=True)
     for root in stale_roots:
         root.mkdir(parents=True)
-    for root in [*expected_roots[:3], *stale_roots]:
+    _write_current_numpy_seal_manifest(expected_roots[0], expected_roots[3])
+    for root in [*expected_roots[1:3], *stale_roots]:
         (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
 
     spec = proof_queue._pact_witness_acceptance_spec(repo_root=tmp_path)
@@ -7970,8 +8011,10 @@ def test_proof_queue_pact_witness_acceptance_discovers_sibling_worktree_roots(
     ]
     for root in expected_roots:
         root.mkdir(parents=True)
-    for root in expected_roots[:2]:
-        (root / "extension_manifest.json").write_text("{}", encoding="utf-8")
+    _write_current_numpy_seal_manifest(expected_roots[0], expected_roots[2])
+    (expected_roots[1] / "extension_manifest.json").write_text(
+        "{}", encoding="utf-8"
+    )
     monkeypatch.setattr(
         proof_queue,
         "_git_worktree_roots",
@@ -7984,6 +8027,39 @@ def test_proof_queue_pact_witness_acceptance_discovers_sibling_worktree_roots(
     assert env["MOLT_MODULE_ROOTS"].split(os.pathsep) == [
         str(root.resolve()) for root in expected_roots
     ]
+
+
+def test_proof_queue_pact_witness_acceptance_skips_stale_numpy_seal_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    side_worktree = tmp_path / "worktrees" / "side"
+    stale_worktree = tmp_path / "main"
+    current_worktree = tmp_path / "worktrees" / "seal-current"
+    side_worktree.mkdir(parents=True)
+    stale_numpy = stale_worktree / "tmp/pact_numpy_multiarray_sealed_for_witness"
+    current_numpy = (
+        current_worktree / "tmp/pact_numpy_multiarray_sealed_for_witness"
+    )
+    current_numpy_source = current_worktree / "bench/friends/repos/numpy_off_the_shelf"
+    _write_stale_numpy_seal_manifest(
+        stale_numpy,
+        stale_worktree / "deleted" / "numpy" / "_core" / "npy_static_data.c",
+    )
+    _write_current_numpy_seal_manifest(current_numpy, current_numpy_source)
+    monkeypatch.setattr(
+        proof_queue,
+        "_git_worktree_roots",
+        lambda repo_root: (
+            (stale_worktree, current_worktree) if repo_root == side_worktree else ()
+        ),
+    )
+
+    roots = proof_queue._pact_witness_native_roots(repo_root=side_worktree)
+
+    assert current_numpy.resolve() in roots
+    assert stale_numpy.resolve() not in roots
+    assert roots[0] == current_numpy.resolve()
 
 
 def test_proof_queue_pact_witness_acceptance_prefers_canonical_sibling_root(

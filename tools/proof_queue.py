@@ -16,7 +16,7 @@ import sys
 import time
 import tomllib
 import traceback
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2929,6 +2929,65 @@ def _first_existing_manifest_root(
     return None
 
 
+def _load_json_mapping(path: Path) -> Mapping[str, object] | None:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, Mapping) else None
+
+
+def _pact_manifest_source_plan_roots(
+    manifest: Mapping[str, object],
+) -> tuple[Path, ...]:
+    source_plan = manifest.get("source_plan")
+    if not isinstance(source_plan, Mapping):
+        return ()
+    roots: list[Path] = []
+    for field_name in ("source_root", "build_root"):
+        value = source_plan.get(field_name)
+        if isinstance(value, str) and value.strip():
+            roots.append(Path(value).expanduser())
+    return tuple(roots)
+
+
+def _pact_manifest_object_sources_resolve(
+    manifest: Mapping[str, object],
+) -> bool:
+    object_closure = manifest.get("object_closure")
+    if not isinstance(object_closure, Mapping):
+        return True
+    objects = object_closure.get("objects")
+    if not isinstance(objects, list):
+        return True
+    roots = _pact_manifest_source_plan_roots(manifest)
+    for item in objects:
+        if not isinstance(item, Mapping):
+            continue
+        source = item.get("source")
+        if not isinstance(source, str) or not source.strip():
+            continue
+        source_path = Path(source).expanduser()
+        if source_path.is_absolute():
+            return False
+        if roots and not any((root / source_path).is_file() for root in roots):
+            return False
+    return True
+
+
+def _pact_numpy_multiarray_seal_root_is_current(root: Path) -> bool:
+    manifest = _load_json_mapping(root / "extension_manifest.json")
+    if manifest is None:
+        return False
+    runtime_imports = manifest.get("runtime_python_import_modules")
+    if not (
+        isinstance(runtime_imports, list)
+        and any(isinstance(item, str) and item.strip() for item in runtime_imports)
+    ):
+        return False
+    return _pact_manifest_object_sources_resolve(manifest)
+
+
 def _git_worktree_roots(repo_root: Path) -> tuple[Path, ...]:
     result = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
@@ -2967,12 +3026,15 @@ def _pact_witness_candidate_repo_roots(repo_root: Path) -> tuple[Path, ...]:
 
 
 def _first_existing_manifest_root_across(
-    repo_roots: Sequence[Path], candidates: list[str]
+    repo_roots: Sequence[Path],
+    candidates: list[str],
+    *,
+    validator: Callable[[Path], bool] | None = None,
 ) -> Path | None:
     for candidate in candidates:
         for repo_root in repo_roots:
             root = _first_existing_manifest_root(repo_root, [candidate])
-            if root is not None:
+            if root is not None and (validator is None or validator(root)):
                 return root
     return None
 
@@ -2996,8 +3058,12 @@ def _pact_witness_native_roots(repo_root: Path = ROOT) -> list[Path]:
         ],
     ]
     artifact_roots = [
-        _first_existing_manifest_root_across(candidate_repo_roots, candidates)
-        for candidates in artifact_groups
+        _first_existing_manifest_root_across(
+            candidate_repo_roots,
+            artifact_groups[0],
+            validator=_pact_numpy_multiarray_seal_root_is_current,
+        ),
+        _first_existing_manifest_root_across(candidate_repo_roots, artifact_groups[1]),
     ]
     artifact_roots.extend(
         root
