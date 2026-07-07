@@ -318,10 +318,8 @@ pub(crate) fn load_vfs_inner() -> Result<Option<VfsState>, VfsError> {
         }
         if !state.entries.is_empty() {
             let mut mt = MountTable::new();
-            mt.add_mount(
-                "/bundle",
-                Arc::new(bundle::BundleFs::from_entries(state.entries)),
-            );
+            let bundle = bundle::BundleFs::try_from_entries(state.entries)?;
+            mt.add_mount("/bundle", Arc::new(bundle));
             add_runtime_mounts(&mut mt);
             return Ok(Some(VfsState::from_table(mt)));
         }
@@ -336,7 +334,8 @@ pub(crate) fn load_vfs_inner() -> Result<Option<VfsState>, VfsError> {
 
     if std::path::Path::new(&bundle_path).is_dir() {
         let entries = read_dir_recursive(&bundle_path, &mut quota)?;
-        mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
+        let bundle = bundle::BundleFs::try_from_entries(entries)?;
+        mt.add_mount("/bundle", Arc::new(bundle));
     } else if bundle_path.ends_with(".tar") {
         #[cfg(feature = "vfs_bundle_tar")]
         {
