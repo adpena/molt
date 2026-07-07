@@ -90,7 +90,11 @@ while it moves:
 - **Drift prevention — SWEEP PROACTIVELY, don't wait for a surprise.** Drift
   checking is a standing reflex, not a reaction. Cultivate the instinct: the
   swarm lands PRs continuously, so treat `origin/main` as moving under you at all
-  times and *go look* before you assume anything is current. Run the DRIFT SWEEP:
+  times and *go look* before you assume anything is current. Instrument:
+  `python tools/tree_drift_check.py --witness --fetch` gives a one-line
+  fail-closed verdict (exit non-zero) on whether the current tree is
+  stale/masking vs `origin/main`, per-file for the witness-frontier set. Run the
+  DRIFT SWEEP:
   - **At the START of every arc** — `git fetch origin`; scan
     `git log --oneline <last-known>..origin/main`; for each active/assigned lane
     diff its target against current `origin/main`; re-sync the board's
