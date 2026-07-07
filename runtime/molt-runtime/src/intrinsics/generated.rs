@@ -12575,6 +12575,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_zlib_decompressobj_unused_data",
+        symbol: "molt_zlib_decompressobj_unused_data",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_zlib_def_buf_size",
         symbol: "molt_zlib_def_buf_size",
         arity: 0,
