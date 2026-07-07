@@ -1,0 +1,68 @@
+# Solo-Owner Lane Claims
+
+Some lanes must be driven **END-TO-END by ONE agent**. Splitting them across
+agents causes exactly the failures this collaboration has hit repeatedly:
+colliding edits, trampled landings, and *masked frontiers* (one agent's local
+state hiding the real blocker from another). Those lanes are **SOLO lanes**.
+
+Before working a SOLO lane you MUST claim it here. The claim is a git-atomic
+lock: because claims are landed by fast-forward (`tools/ff_land.py`), exactly one
+agent can win a claim race — the loser's push is refused and it backs off.
+
+This registry is authoritative at `origin/main`. Read it there, not from a stale
+checkout (`python tools/tree_drift_check.py --fetch` first).
+
+## SOLO lanes (claim before starting)
+
+- **`E1-WITNESS-TO-GREEN`** — the entire witness closure, owned end-to-end by one
+  agent: seal-regen → WASM link → numpy static-lib link → execution →
+  `candidate_outputs.npz` → `check_parity.py` PASS. Do NOT split this across
+  agents; the seal artifacts, cpython-abi link, and acceptance lane are one
+  coherent arc. (See the E1 order-of-operations in the PAUSE HANDOFF /
+  `ORCHESTRATION.md`.)
+
+(Add new SOLO lanes here as the orchestrator or a claimant identifies them.)
+
+## Protocol (binding)
+
+1. **Drift-sweep first.** `git fetch origin`; read THIS file at current
+   `origin/main`. `python tools/tree_drift_check.py --fetch` to confirm your tree
+   isn't masking.
+2. **Check the claim.** If the SOLO lane you want is `CLAIMED` and not STALE (see
+   §6), **BACK OFF** — pick a different unclaimed SOLO lane, or a standing lane
+   (Codex B/C/D). Never work a lane another agent holds.
+3. **Claim it.** Append ONE row to the log (lane, your agent-id, UTC ISO
+   timestamp, `CLAIMED`, first-step note) and land it with
+   `python tools/ff_land.py`. Because landing is a fast-forward, exactly ONE
+   claim wins a race. **If `ff_land` REFUSES (non-ff), someone moved first** —
+   `git fetch`, re-read this file; if your lane is now claimed, discard your claim
+   row and BACK OFF.
+4. **Own it end-to-end.** While your claim is active, no other agent touches the
+   lane's files, artifacts, or tests. Post append-only `PROGRESS` rows (with
+   evidence: queue run ids, commits) at least every few hours so the claim is
+   visibly alive.
+5. **Final completion is NOT a green build.** Mark `COMPLETE` only after ALL of:
+   - **(a) FINAL EXIT CRITERIA met, with evidence.** For `E1-WITNESS-TO-GREEN`:
+     `candidate_outputs.npz` produced through Molt WASM AND `check_parity.py`
+     PASS — cite the `pact-witness-acceptance` queue run id and paste the parity
+     verdict. Zero fakes, no host-CPython/Pyodide fallback, POISON-clean.
+   - **(b) RECURSIVE ADVERSARIAL REVIEW accomplished.** You (or a reviewer you
+     spawn) actively tried to REFUTE the result from independent angles
+     (re-run on a clean origin/main worktree; probe determinism/tolerances;
+     confirm no masking, no fake symbol, no weakened assert) and it SURVIVED.
+     Record what you tried and why it held.
+   - **(c) SENIOR-ENGINEER REVIEW green.** Correctness incl. memory safety;
+     performance (faster than CPython on the claimed target, honest numbers);
+     CPython ≥3.12 compatibility in the verified subset; fidelity; no
+     duplicate-authority / no partials. Record the sign-off.
+   Only then append a `COMPLETE` row with the evidence links and `ff_land` it.
+6. **Stale / release.** A claim with no `PROGRESS` row for >4h, or an explicit
+   `RELEASED` row, may be RECLAIMED by another agent landing a `RECLAIM` row that
+   CITES the staleness evidence (last progress timestamp). Never silently take
+   over a live claim; escalate to the orchestrator if ownership is contested.
+
+## Log (append-only; newest at bottom; land each row via `ff_land`)
+
+| lane | agent-id | UTC (ISO) | status | note / evidence |
+|------|----------|-----------|--------|-----------------|
+| _(none yet — first claimant of E1-WITNESS-TO-GREEN appends here)_ | | | | |
