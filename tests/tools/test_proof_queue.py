@@ -8306,6 +8306,74 @@ def test_detached_claim_serializes_contention_key(tmp_path: Path) -> None:
     assert rows["gate-second"]["status"] == "queued"
 
 
+def test_detached_claim_serializes_compiler_build_resource_group(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    proof_queue._admit_run(
+        conn,
+        run_id="native-build-first",
+        logical_id="native",
+        reason="native build",
+        command=[sys.executable, "-c", "print('native')"],
+        cwd=proof_queue.ROOT,
+        resource_family="native-build",
+        contention_key="native:molt-run",
+        scopes=[],
+        log_path=tmp_path / "native.log",
+        summary_json=tmp_path / "native.memory_guard.json",
+    )
+    proof_queue._admit_run(
+        conn,
+        run_id="wasm-browser-second",
+        logical_id="wasm",
+        reason="wasm browser build",
+        command=[sys.executable, "-c", "print('wasm')"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-browser",
+        contention_key="wasm:pact",
+        scopes=[],
+        log_path=tmp_path / "wasm.log",
+        summary_json=tmp_path / "wasm.memory_guard.json",
+    )
+    proof_queue._admit_run(
+        conn,
+        run_id="python-third",
+        logical_id="python",
+        reason="light python proof",
+        command=[sys.executable, "-c", "print('python')"],
+        cwd=proof_queue.ROOT,
+        resource_family="python",
+        contention_key="python:light",
+        scopes=[],
+        log_path=tmp_path / "python.log",
+        summary_json=tmp_path / "python.memory_guard.json",
+    )
+
+    claimed, reason = proof_queue._claim_detached_run(
+        conn, "native-build-first", queue_size=3
+    )
+    assert claimed is not None
+    assert reason is None
+
+    blocked, reason = proof_queue._claim_detached_run(
+        conn, "wasm-browser-second", queue_size=3
+    )
+    assert blocked is None
+    assert reason is not None
+    assert "resource_group=compiler-build-resource active" in reason
+
+    light, reason = proof_queue._claim_detached_run(conn, "python-third", queue_size=3)
+    assert light is not None
+    assert reason is None
+
+    rows = {r["run_id"]: r for r in _rows(db)}
+    assert rows["native-build-first"]["status"] == "dispatched"
+    assert rows["wasm-browser-second"]["status"] == "queued"
+    assert rows["python-third"]["status"] == "dispatched"
+
+
 def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
     """The partial-unique index must not block the queued->running->done path.
 

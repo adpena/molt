@@ -73,6 +73,24 @@ def _run_one(
         for row in active:
             print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
         return 2
+    active_resource = []
+    for row in pq._active_for_resource_mutex(
+        conn,
+        resource_family,
+        exclude_run_id=existing_run_id,
+    ):
+        if existing_run_id is not None and row["run_id"] == existing_run_id:
+            continue
+        active_resource.append(row)
+    if active_resource:
+        print(
+            f"resource group {pq.COMPILER_BUILD_RESOURCE_KEY!r} "
+            "already has active run(s):",
+            file=sys.stderr,
+        )
+        for row in active_resource:
+            print(f"- {row['status']} {row['run_id']} {row['reason']}", file=sys.stderr)
+        return 2
     suffix = uuid.uuid4().hex[:16]
     run_id = existing_run_id or f"{pq._compact_utc()}-{pq._slug(logical_id)}-{suffix}"
     logs_root.mkdir(parents=True, exist_ok=True)
