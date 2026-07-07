@@ -18,53 +18,24 @@ fn test_contextvar_new_rejects_null_name() {
 }
 
 #[test]
-fn test_contextvar_get_uses_constructor_default() {
+fn test_contextvar_new_name_alloc_fails_closed_under_stubs() {
+    // PyContextVar_New builds the variable's name via PyUnicode_FromString. After
+    // the fail-open burndown that allocation fails closed (NULL) under the stub
+    // hook table, so PyContextVar_New propagates the failure and returns NULL
+    // rather than constructing a var around a fabricated None-name placeholder.
+    // (Get/Set semantics with a real name require a runtime and are covered by the
+    // c_extensions integration suite.)
     init();
     let default_value = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
     let var = unsafe {
         molt_cpython_abi::api::contextvars::PyContextVar_New(c"answer".as_ptr(), default_value)
     };
-    assert!(!var.is_null());
-
-    let mut out = ptr::null_mut();
-    let rc = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out)
-    };
-    assert_eq!(rc, 0);
-    assert_eq!(out, default_value);
-
+    assert!(
+        var.is_null(),
+        "PyContextVar_New must fail closed when its name string cannot be allocated"
+    );
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(out);
-        molt_cpython_abi::api::refcount::Py_DECREF(var);
+        molt_cpython_abi::api::errors::PyErr_Clear();
         molt_cpython_abi::api::refcount::Py_DECREF(default_value);
-    }
-}
-
-#[test]
-fn test_contextvar_set_updates_current_value() {
-    init();
-    let var = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_New(c"state".as_ptr(), ptr::null_mut())
-    };
-    assert!(!var.is_null());
-    let value = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(11) };
-    let token = unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Set(var, value) };
-    assert!(std::ptr::eq(
-        token,
-        &raw mut molt_cpython_abi::abi_types::Py_None
-    ));
-
-    let mut out = ptr::null_mut();
-    let rc = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out)
-    };
-    assert_eq!(rc, 0);
-    assert_eq!(out, value);
-
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(out);
-        molt_cpython_abi::api::refcount::Py_DECREF(token);
-        molt_cpython_abi::api::refcount::Py_DECREF(var);
-        molt_cpython_abi::api::refcount::Py_DECREF(value);
     }
 }

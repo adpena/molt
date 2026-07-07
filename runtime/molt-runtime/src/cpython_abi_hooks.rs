@@ -658,6 +658,7 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
         x if x == DictOp::Copy as u32 => crate::c_api::PyDict_Copy(dict_bits),
         x if x == DictOp::Keys as u32 => crate::c_api::PyDict_Keys(dict_bits),
         x if x == DictOp::Values as u32 => crate::c_api::PyDict_Values(dict_bits),
+        x if x == DictOp::Items as u32 => crate::c_api::PyDict_Items(dict_bits),
         _ => with_gil(|_py| {
             crate::raise_exception::<u64>(
                 &_py,
@@ -704,6 +705,18 @@ unsafe extern "C" fn hook_set_add(set_bits: u64, key_bits: u64) -> c_int {
 /// `PySet_Discard(set, key)` — 1 (removed) / 0 (absent) / -1 (error).
 unsafe extern "C" fn hook_set_discard(set_bits: u64, key_bits: u64) -> c_int {
     crate::c_api::PySet_Discard(set_bits, key_bits)
+}
+
+/// `PyObject_Dir(o)` — return `dir(o)` as a list. Routes to the runtime dir
+/// authority (`molt_object_dir_method`), which walks the MRO / `__dict__` /
+/// `__dir__`. Returns 0 with a pending exception on error so the ABI side fails
+/// closed instead of fabricating an empty list.
+unsafe extern "C" fn hook_object_dir(obj_bits: u64) -> u64 {
+    let result = crate::molt_object_dir_method(obj_bits);
+    if with_gil(|_py| crate::exception_pending(&_py)) {
+        return 0;
+    }
+    result
 }
 
 unsafe extern "C" fn hook_module_get_dict(module_bits: u64) -> u64 {
@@ -1941,6 +1954,7 @@ pub fn register_cpython_hooks() {
         set_contains: hook_set_contains,
         set_add: hook_set_add,
         set_discard: hook_set_discard,
+        object_dir: hook_object_dir,
     };
     // SAFETY: all fn pointers are valid for the process lifetime.
     unsafe {
