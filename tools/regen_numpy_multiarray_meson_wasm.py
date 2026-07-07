@@ -333,19 +333,26 @@ def main() -> int:
             ):
                 gen_api_c.add(fp)
 
-    # Family 3: EVERY generated header numpy declares. numpy's generated headers
-    # come from two meson shapes — top-level ``custom_target``s
+    # Family 3: EVERY generated ``#include``-only source numpy declares —
+    # generated headers (``.h``) AND generated text-included ``.inc`` bodies.
+    # These come from two meson shapes: top-level ``custom_target``s
     # (``__multiarray_api.h``, ``__ufunc_api.h``, ``npy_math_internal.h``,
-    # ``_umath_doc_generated.h``) AND per-target ``src_file.process('*.h.src')``
-    # outputs materialized into a target's private ``*.p/`` dir
+    # ``_umath_doc_generated.h``) AND per-target ``src_file.process('*.h.src' /
+    # '*.inc.src')`` outputs materialized into a target's private ``*.p/`` dir
     # (``templ_common.h``, ``arraytypes.h``, ``loops.h``, ``loops_utils.h``,
-    # ``matmul.h``, ``npy_sort.h`` under ``_multiarray_umath.*.p/``). Neither
-    # shape is enumerable from the extension target's ``generated_sources``, but
-    # BOTH are Ninja ``CUSTOM_COMMAND`` outputs. Ask Ninja's own target graph for
-    # every generated ``.h`` — numpy's build is the authority, no hand-written
-    # header list, nothing vendored. Building all of them keeps the meson build
-    # dir's include path complete regardless of which private ``*.p/`` copy molt
-    # resolves against.
+    # ``matmul.h``, ``npy_sort.h``, and ``funcs.inc`` under
+    # ``_multiarray_umath.*.p/``). None of these are enumerable from the
+    # extension target's ``generated_sources`` (they are ``#include``d, never
+    # compiled as their own object), but ALL are Ninja ``CUSTOM_COMMAND``
+    # outputs. Ask Ninja's own target graph for every generated ``.h``/``.inc``
+    # — numpy's build is the authority, no hand-written list, nothing vendored.
+    # Building all of them keeps the meson build dir's include path complete
+    # regardless of which private ``*.p/`` copy molt resolves against.
+    #
+    # Without this, molt's downstream compile fails e.g.
+    # ``fatal error: 'templ_common.h' file not found`` (alloc.c) or
+    # ``fatal error: 'funcs.inc' file not found`` (umathmodule.c).
+    _GEN_INCLUDE_SUFFIXES = (".h", ".inc")
     tg = subprocess.run(
         [ninja, "-C", str(build_root), "-t", "targets", "all"],
         cwd=str(build_root),
@@ -362,12 +369,14 @@ def main() -> int:
         if not sep:
             continue
         target = target.strip()
-        if rule.strip() == "CUSTOM_COMMAND" and target.endswith(".h"):
+        if rule.strip() == "CUSTOM_COMMAND" and target.endswith(
+            _GEN_INCLUDE_SUFFIXES
+        ):
             gen_hdr.add((build_root / target).as_posix())
     if not gen_hdr:
         print(
-            "[regen] WARNING: ninja target graph names no generated .h "
-            "CUSTOM_COMMAND outputs"
+            "[regen] WARNING: ninja target graph names no generated "
+            ".h/.inc CUSTOM_COMMAND outputs"
         )
 
     rel_targets = [
@@ -377,7 +386,7 @@ def main() -> int:
     print(
         f"[regen] ninja generated-output targets "
         f"({len(gen_c)} .c sources + {len(gen_api_c)} api-.c includes + "
-        f"{len(gen_hdr)} generated headers = {len(rel_targets)}):"
+        f"{len(gen_hdr)} generated headers/inc = {len(rel_targets)}):"
     )
     for r_t in rel_targets:
         print(f"           {r_t}")
