@@ -25,6 +25,13 @@ checkout (`python tools/tree_drift_check.py --fetch` first).
 
 ## Protocol (binding)
 
+**Helper (does steps 1-3 correctly for you):** `python tools/claim_lane.py <lane>
+--check` (read-only; exit 0 = claimable, 1 = held → back off) and
+`python tools/claim_lane.py <lane> --claim --agent <id> --note "..."` (pre-checks,
+appends the row, `ff_land`s, and backs off on a lost race). Log progress/finish
+with `--append PROGRESS|COMPLETE|RELEASED --agent <id> --note "..."`. The manual
+steps below are the contract it implements.
+
 1. **Drift-sweep first.** `git fetch origin`; read THIS file at current
    `origin/main`. `python tools/tree_drift_check.py --fetch` to confirm your tree
    isn't masking.
