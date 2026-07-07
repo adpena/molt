@@ -186,14 +186,6 @@ def _find_tool(name: str) -> str | None:
 def _molt_build_cmd() -> list[str]:
     """Return the command prefix for invoking ``molt build``."""
     _ensure_repo_pythonpath()
-    # Try the installed binary first
-    molt = _find_tool("molt")
-    if molt:
-        return [molt, "build"]
-    # Fall back to running through uv/python with PYTHONPATH
-    uv = _find_tool("uv")
-    if uv:
-        return [uv, "run", "python", "-m", "molt.cli", "build"]
     return [sys.executable, "-m", "molt.cli", "build"]
 
 
