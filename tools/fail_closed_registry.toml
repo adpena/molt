@@ -55,7 +55,7 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 8
-fail_open_stub = 13
+fail_open_stub = 12
 duplicate_authority = 3
 todo_as_plan = 0
 
@@ -242,18 +242,6 @@ F4_object_none_bits_fallback.
 """
 
 # --- PySet / mapping placeholder: empty list stands in for a real object -------
-
-[[site]]
-id = "F5_sequences_pyset_drops_iterable"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/sequences.rs"
-anchor = "let _ = iterable;"
-resolution_row = "task#9"
-justification = """
-PySet_New drops its iterable argument (`let _ = iterable;`), so even the placeholder
-ignores the caller's contents. Part of the same PySet fail-open as
-F5_sequences_pyset_new_placeholder_list.
-"""
 
 [[site]]
 id = "F5_sequences_drops_op"
