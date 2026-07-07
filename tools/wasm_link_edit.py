@@ -11,6 +11,7 @@ from wasm_link_format import (
     FLAG_EXPLICIT_NAME,
     FLAG_EXPORTED,
     FLAG_NO_STRIP,
+    FLAG_UNDEFINED,
     SYMBOL_KIND_FUNCTION,
     SYMTAB_SUBSECTION_ID,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
@@ -38,6 +39,7 @@ from wasm_link_format import (
     _parse_custom_section,
     _parse_func_type_indices,
     _parse_import_desc,
+    _parse_indexed_symbol,
     _parse_linking_payload,
     _parse_sections,
     _parse_type_section,
@@ -67,6 +69,7 @@ _STANDARD_SECTION_ORDER = {
 }
 
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
+_SYMBOL_KIND_DATA = 1
 
 
 def _append_table_ref_elements(
@@ -1022,6 +1025,123 @@ def _runtime_import_rewrite_target(
     return export_name, False
 
 
+def _runtime_import_kind_can_rewrite(kind: int, name: str) -> bool:
+    """Return whether an import of this wasm kind may carry a Molt ABI edge.
+
+    Function imports (kind 0) are always eligible. CPython ABI *type objects*
+    (``PyLong_Type`` and friends) are static-storage globals that source-compiled
+    extensions reference as imported wasm globals (kind 3) holding the object's
+    address, so those must be rewritable too — otherwise the split app keeps an
+    unprefixed ``PyLong_Type`` edge the molt_-prefixed split runtime cannot
+    satisfy.
+    """
+    if kind == 0:
+        return True
+    return (
+        kind == 3
+        and WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
+        == _CPYTHON_ABI_LINK_IMPORT_CLASS
+    )
+
+
+def _rewrite_linking_data_runtime_imports(
+    data: bytes,
+    *,
+    runtime_exports: set[str],
+    split_runtime: bool,
+) -> tuple[bytes | None, list[str]]:
+    """Rewrite undefined CPython ABI *data* symbols in the linking symtab.
+
+    Source-recompiled extensions reference runtime-owned type objects
+    (``PyLong_Type``, ``PyType_Type``, ...) as undefined ``data`` symbols in the
+    relocatable object's linking section, distinct from function imports. The
+    deployed split app must carry these as the molt_-prefixed public export
+    names so the shared split runtime satisfies them at instantiation; the
+    monolithic relocatable link keeps the real unprefixed ``#[no_mangle]`` names
+    resolved directly against the relocatable runtime.
+    """
+    sections = _parse_sections(data)
+    force_exports: list[str] = []
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 0:
+            new_sections.append((section_id, payload))
+            continue
+        name, custom_payload = _parse_custom_section(payload)
+        if name != "linking":
+            new_sections.append((section_id, payload))
+            continue
+        version, subsections = _parse_linking_payload(custom_payload)
+        new_subsections: list[tuple[int, bytes]] = []
+        for sub_id, sub_payload in subsections:
+            if sub_id != SYMTAB_SUBSECTION_ID:
+                new_subsections.append((sub_id, sub_payload))
+                continue
+            count, offset = _read_varuint(sub_payload, 0)
+            rebuilt = bytearray()
+            rebuilt.extend(_write_varuint(count))
+            for _ in range(count):
+                entry_start = offset
+                if offset >= len(sub_payload):
+                    raise ValueError("Unexpected EOF while reading linking symbols")
+                kind = sub_payload[offset]
+                offset += 1
+                flags, offset = _read_varuint(sub_payload, offset)
+                if kind == SYMBOL_KIND_FUNCTION:
+                    _, _, offset = _parse_indexed_symbol(sub_payload, offset, flags)
+                    rebuilt.extend(sub_payload[entry_start:offset])
+                    continue
+                if kind in (2, 4, 5):
+                    _, _, offset = _parse_indexed_symbol(sub_payload, offset, flags)
+                    rebuilt.extend(sub_payload[entry_start:offset])
+                    continue
+                if kind == _SYMBOL_KIND_DATA:
+                    symbol_name, offset = _read_string(sub_payload, offset)
+                    target_name = symbol_name
+                    if flags & FLAG_UNDEFINED:
+                        rewrite_name, force_export = _runtime_import_rewrite_target(
+                            symbol_name,
+                            runtime_exports,
+                            split_runtime=split_runtime,
+                        )
+                        if rewrite_name is not None:
+                            target_name = rewrite_name
+                            if target_name != symbol_name:
+                                changed = True
+                            if force_export:
+                                force_exports.append(target_name)
+                    rebuilt.append(kind)
+                    rebuilt.extend(_write_varuint(flags))
+                    rebuilt.extend(_write_string(target_name))
+                    if not (flags & FLAG_UNDEFINED):
+                        segment_index, offset = _read_varuint(sub_payload, offset)
+                        data_offset, offset = _read_varuint(sub_payload, offset)
+                        size, offset = _read_varuint(sub_payload, offset)
+                        rebuilt.extend(_write_varuint(segment_index))
+                        rebuilt.extend(_write_varuint(data_offset))
+                        rebuilt.extend(_write_varuint(size))
+                    continue
+                if kind == 3:
+                    _, offset = _read_varuint(sub_payload, offset)
+                    rebuilt.extend(sub_payload[entry_start:offset])
+                    continue
+                raise ValueError(f"Unknown linking symbol kind: {kind}")
+            new_subsections.append((sub_id, bytes(rebuilt)))
+        new_sections.append(
+            (
+                section_id,
+                _build_custom_section(
+                    name,
+                    _build_linking_payload(version, new_subsections),
+                ),
+            )
+        )
+    if not changed:
+        return None, force_exports
+    return _build_sections(new_sections), force_exports
+
+
 def _rewrite_runtime_imports_in_module(
     data: bytes,
     *,
@@ -1055,7 +1175,9 @@ def _rewrite_runtime_imports_in_module(
 
             new_module = module
             new_name = name
-            if module == source_module and kind == 0:
+            if module == source_module and _runtime_import_kind_can_rewrite(
+                kind, name
+            ):
                 target_name, force_export = _runtime_import_rewrite_target(
                     name, runtime_exports, split_runtime=split_runtime
                 )
@@ -1073,9 +1195,18 @@ def _rewrite_runtime_imports_in_module(
             rebuilt.extend(desc)
         new_sections.append((section_id, bytes(rebuilt)))
 
+    import_rewritten = _build_sections(new_sections) if changed else data
+    symbol_rewritten, symbol_force_exports = _rewrite_linking_data_runtime_imports(
+        import_rewritten,
+        runtime_exports=runtime_exports,
+        split_runtime=split_runtime,
+    )
+    force_exports.extend(symbol_force_exports)
+    if symbol_rewritten is not None:
+        return symbol_rewritten, force_exports
     if not changed:
         return None, force_exports
-    return _build_sections(new_sections), force_exports
+    return import_rewritten, force_exports
 
 
 def _rewrite_native_runtime_imports(
