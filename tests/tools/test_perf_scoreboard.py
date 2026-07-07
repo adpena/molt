@@ -1139,6 +1139,7 @@ def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
 
 
 def test_loadavg_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "name", "posix", raising=False)
     monkeypatch.setattr(ps.os, "getloadavg", lambda: (3.25, 2.0, 1.0), raising=False)
     monkeypatch.setattr(
         ps,
@@ -1149,6 +1150,7 @@ def test_loadavg_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
 
 
 def test_loadavg_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "name", "posix", raising=False)
     monkeypatch.delattr(ps.os, "getloadavg", raising=False)
 
     def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
@@ -1157,6 +1159,27 @@ def test_loadavg_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None
 
     monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
     assert ps._loadavg_1m() == 4.5
+
+
+def test_loadavg_uses_windows_cpu_load_probe(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "name", "nt", raising=False)
+    monkeypatch.setattr(ps, "_ncpu", lambda: 8)
+
+    def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
+        assert cmd[:6] == [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+        ]
+        assert "Win32_Processor" in cmd[-1]
+        return SimpleNamespace(returncode=0, stdout="25\n", stderr="")
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+
+    assert ps._loadavg_1m() == 2.0
 
 
 def test_ncpu_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
@@ -1178,6 +1201,78 @@ def test_ncpu_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
 
     monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
     assert ps._ncpu() == 12
+
+
+def test_list_build_processes_uses_windows_cim_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "name", "nt", raising=False)
+    monkeypatch.setattr(ps.os, "getpid", lambda: 100)
+    monkeypatch.setattr(ps.os, "getppid", lambda: 101)
+    payload = [
+        {"ProcessId": 100, "Name": "python.exe", "CommandLine": "self rustc.exe"},
+        {"ProcessId": 200, "Name": "cargo.exe", "CommandLine": "cargo build"},
+        {"ProcessId": 201, "Name": "rustc.exe", "CommandLine": None},
+        {"ProcessId": 202, "Name": "Codex.exe", "CommandLine": "codex cargo"},
+        {
+            "ProcessId": 203,
+            "Name": "python.exe",
+            "CommandLine": "python -m molt build app.py",
+        },
+        {
+            "ProcessId": 204,
+            "Name": "tail.exe",
+            "CommandLine": (
+                '"C:\\Program Files\\Git\\usr\\bin\\tail.exe" -f '
+                "logs/proof_queue/runs/20260707-backend-failclosed-cargo.runner.log"
+            ),
+        },
+        {
+            "ProcessId": 205,
+            "Name": "grep.exe",
+            "CommandLine": '"grep.exe" -E "Compiling molt-backend|cargo" proof.log',
+        },
+    ]
+
+    def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
+        assert cmd[:6] == [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+        ]
+        assert "Win32_Process" in cmd[-1]
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+
+    procs = ps._list_build_processes()
+
+    assert [p["pid"] for p in procs] == [200, 201, 203]
+    assert all("codex" not in p["cmd"].lower() for p in procs)
+
+
+def test_list_build_processes_filters_posix_log_observers(monkeypatch) -> None:
+    monkeypatch.setattr(ps.os, "name", "posix", raising=False)
+    monkeypatch.setattr(ps.os, "getpid", lambda: 10)
+    monkeypatch.setattr(ps.os, "getppid", lambda: 11)
+
+    def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
+        assert cmd[:2] == ["pgrep", "-fl"]
+        return SimpleNamespace(
+            stdout=(
+                "20 cargo build -p molt-runtime\n"
+                "21 /usr/bin/tail -f logs/proof_queue/runs/proof-cargo.runner.log\n"
+                "22 /usr/bin/grep -E 'Compiling molt-backend|cargo' proof.log\n"
+                "23 python -m molt build app.py\n"
+            )
+        )
+
+    monkeypatch.setattr(ps, "_metadata_probe", fake_metadata_probe)
+
+    procs = ps._list_build_processes()
+
+    assert [p["pid"] for p in procs] == [20, 23]
 
 
 def test_gather_quiescence_quiet_when_idle(monkeypatch) -> None:
