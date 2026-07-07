@@ -412,6 +412,18 @@ unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> u64 {
     crate::molt_format_builtin(obj_bits, spec_bits)
 }
 
+/// Route the ABI's `repr(float)` / `str(float)` through the runtime's single
+/// float-format authority (`crate::object::float_repr::repr_float`), so the
+/// C-API path produces byte-identical output to native `repr(float)`.
+unsafe extern "C" fn hook_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
+    let s = crate::object::float_repr::repr_float(value);
+    let bytes = s.as_bytes();
+    if bytes.len() <= cap && !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    bytes.len()
+}
+
 fn clear_speculative_sys_lookup_exception(had_pending_exception: bool) {
     if !had_pending_exception && with_gil(|_py| crate::exception_pending(&_py)) {
         let _ = crate::molt_exception_clear();
@@ -1930,6 +1942,7 @@ pub fn register_cpython_hooks() {
         object_get_attr: hook_object_get_attr,
         object_set_attr: hook_object_set_attr,
         object_format: hook_object_format,
+        float_repr: hook_float_repr,
         sys_get_object_borrowed: hook_sys_get_object_borrowed,
         classify_heap: hook_classify_heap,
         inc_ref: hook_inc_ref,

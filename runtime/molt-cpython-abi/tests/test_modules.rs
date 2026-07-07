@@ -340,6 +340,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_get_attr: fake_object_get_attr,
     object_set_attr: fake_object_set_attr,
     object_format: fake_object_format,
+    float_repr: fake_float_repr,
     sys_get_object_borrowed: fake_sys_get_object_borrowed,
     classify_heap: fake_classify_heap,
     inc_ref: fake_inc_ref,
@@ -370,6 +371,14 @@ unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> u64 {
 }
 unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 {
     0
+}
+unsafe extern "C" fn fake_float_repr(value: f64, out: *mut u8, cap: usize) -> usize {
+    let s = format!("{value}");
+    let bytes = s.as_bytes();
+    if bytes.len() <= cap && !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
+    }
+    bytes.len()
 }
 unsafe extern "C" fn fake_dict_op(_op: u32, _dict: u64) -> u64 {
     0
