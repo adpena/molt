@@ -283,6 +283,14 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="table-drift-check",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_table_drift.py"), "--json"),
+            timeout=60,
+        )
+    )
+    checks.append(
+        Check(
             name="differential-suite-layout",
             tier=1,
             cmd=_uv_run(str(TOOLS / "check_differential_suite_layout.py")),
