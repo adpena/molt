@@ -1502,6 +1502,21 @@ extern void PyGILState_Release(PyGILState_STATE state);
 extern int PyGILState_Check(void);
 extern PyThreadState *PyEval_SaveThread(void);
 extern void PyEval_RestoreThread(PyThreadState *tstate);
+
+/* GIL allow-threads block macros. Verbatim from CPython 3.12 Include/ceval.h
+ * (python/cpython v3.12.0); defined unconditionally there (no WITH_THREAD /
+ * Py_LIMITED_API guard). numpy's _multiarray_umath wraps blocking sections in
+ * NPY_BEGIN/END_ALLOW_THREADS, which expand to these; without them the
+ * cpython-abi source-recompiled build fails
+ * `use of undeclared identifier 'Py_BEGIN_ALLOW_THREADS'`. The underlying
+ * PyEval_SaveThread/PyEval_RestoreThread are already declared above. */
+#define Py_BEGIN_ALLOW_THREADS { \
+                        PyThreadState *_save; \
+                        _save = PyEval_SaveThread();
+#define Py_BLOCK_THREADS        PyEval_RestoreThread(_save);
+#define Py_UNBLOCK_THREADS      _save = PyEval_SaveThread();
+#define Py_END_ALLOW_THREADS    PyEval_RestoreThread(_save); \
+                 }
 extern PyInterpreterState *PyInterpreterState_Get(void);
 extern PyInterpreterState *PyInterpreterState_Main(void);
 extern PyInterpreterState *PyThreadState_GetInterpreter(PyThreadState *tstate);
