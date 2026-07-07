@@ -32,6 +32,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--session-prefix", default="run")
     parser.add_argument(
+        "--session-id",
+        default=None,
+        help=(
+            "Explicit Molt session identity. This is equivalent to setting "
+            "MOLT_SESSION_ID and is useful for shell interop layers that cannot "
+            "reliably pass custom environment variables to the host Python."
+        ),
+    )
+    parser.add_argument(
         "--uv-project-python",
         default="3.12",
         help=(
@@ -79,6 +88,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         session_prefix=args.session_prefix,
         prefer_external_artifacts=args.prefer_external_artifacts,
     )
+    base_env = dict(os.environ)
+    if args.session_id:
+        base_env["MOLT_SESSION_ID"] = args.session_id
     # ONE authority owns the stable-vs-session uv project env decision
     # (dx.uv_project_env_dir). The CLI only wires its knobs into the env that
     # authority reads, so --dx emits the stable `dx__py3.12` env by default and
@@ -86,13 +98,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     # no separate CLI override lane that could drift from the authority.
     if args.dx:
         if args.session_scoped_uv_project_env:
-            os.environ["MOLT_UV_PROJECT_ENV_SESSION_SCOPED"] = "1"
-        os.environ.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
-        os.environ.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
+            base_env["MOLT_UV_PROJECT_ENV_SESSION_SCOPED"] = "1"
+        base_env.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
+        base_env.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
     env = (
-        context.dx_env(os.environ, create_dirs=False)
+        context.dx_env(base_env, create_dirs=False)
         if args.dx
-        else context.canonical_env(os.environ, create_dirs=False)
+        else context.canonical_env(base_env, create_dirs=False)
     )
     keys = DX_ENV_KEYS if args.dx else CANONICAL_RUN_ENV_KEYS
     fmt = cast(

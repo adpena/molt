@@ -8,15 +8,17 @@ set -euo pipefail
 #   eval "$(tools/throughput_env.sh --print)"
 #   tools/throughput_env.sh --apply
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SHELL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$SHELL_ROOT/tools/molt_shell_env.sh"
+molt_init_shell_context "$SHELL_ROOT"
+ROOT="$MOLT_HOST_ROOT"
+PYTHON="$MOLT_PYTHON"
 _run_context_exports() {
-  PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 "$ROOT/tools/run_context_env.py" \
-      --root "$ROOT" \
-      --session-prefix "${MOLT_SESSION_PREFIX:-throughput}" \
-      --prefer-external-artifacts \
-      --dx \
-      --format posix
+  molt_run_context_env "$SHELL_ROOT" \
+    --session-prefix "${MOLT_SESSION_PREFIX:-throughput}" \
+    --prefer-external-artifacts \
+    --dx \
+    --format posix
 }
 
 _choose_defaults() {
@@ -31,14 +33,15 @@ _emit_exports() {
 _apply() {
   eval "$(_emit_exports)"
   mkdir -p \
-    "$MOLT_CACHE" \
-    "$CARGO_TARGET_DIR" \
-    "$MOLT_DIFF_ROOT" \
-    "$MOLT_DIFF_TMPDIR" \
-    "$UV_CACHE_DIR" \
-    "$TMPDIR" \
-    "$MOLT_BACKEND_DAEMON_SOCKET_DIR" \
-    "$SCCACHE_DIR"
+    "$(molt_shell_path "$MOLT_CACHE")" \
+    "$(molt_shell_path "$CARGO_TARGET_DIR")" \
+    "$(molt_shell_path "$MOLT_TARGET_ROOT")" \
+    "$(molt_shell_path "$MOLT_DIFF_ROOT")" \
+    "$(molt_shell_path "$MOLT_DIFF_TMPDIR")" \
+    "$(molt_shell_path "$UV_CACHE_DIR")" \
+    "$(molt_shell_path "$TMPDIR")" \
+    "$(molt_shell_path "$MOLT_BACKEND_DAEMON_SOCKET_DIR")" \
+    "$(molt_shell_path "$SCCACHE_DIR")"
 
   if command -v sccache >/dev/null 2>&1; then
     SCCACHE_DIR="$SCCACHE_DIR" sccache --stop-server >/dev/null 2>&1 || true
@@ -47,8 +50,8 @@ _apply() {
   fi
 
   if [[ "${MOLT_CACHE_PRUNE:-1}" != "0" ]]; then
-    PYTHONPATH=src UV_NO_SYNC=1 \
-      python3 "$ROOT/tools/molt_cache_prune.py" \
+    PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" UV_NO_SYNC=1 \
+      "$PYTHON" "$ROOT/tools/molt_cache_prune.py" \
       --cache-dir "$MOLT_CACHE" \
       --max-gb "$MOLT_CACHE_MAX_GB" \
       --max-age-days "$MOLT_CACHE_MAX_AGE_DAYS"
@@ -59,6 +62,7 @@ _apply() {
   echo "  MOLT_CACHE=$MOLT_CACHE"
   echo "  CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
   echo "  MOLT_DIFF_CARGO_TARGET_DIR=$MOLT_DIFF_CARGO_TARGET_DIR"
+  echo "  MOLT_TARGET_ROOT=$MOLT_TARGET_ROOT"
   echo "  MOLT_DIFF_ROOT=$MOLT_DIFF_ROOT"
   echo "  MOLT_DIFF_TMPDIR=$MOLT_DIFF_TMPDIR"
   echo "  UV_CACHE_DIR=$UV_CACHE_DIR"
