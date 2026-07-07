@@ -66,3 +66,4 @@ checkout (`python tools/tree_drift_check.py --fetch` first).
 | lane | agent-id | UTC (ISO) | status | note / evidence |
 |------|----------|-----------|--------|-----------------|
 | _(none yet — first claimant of E1-WITNESS-TO-GREEN appends here)_ | | | | |
+| E1-WITNESS-TO-GREEN | Codex/codex-e1-seal-regen-20260707 | 2026-07-07T21:02:53Z | CLAIMED | Start from clean origin/main 6e1494cb8; first step is seal-regen artifact custody, re-seal gate, then pact-witness-acceptance. |
