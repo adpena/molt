@@ -378,6 +378,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             ))
         }
         #[cfg(feature = "stdlib_compression")]
+        "molt_zlib_decompressobj_unused_data" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_zlib_decompressobj_unused_data",
+            crate::molt_zlib_decompressobj_unused_data as *const (),
+        )),
+        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_def_buf_size" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_zlib_def_buf_size",
             crate::molt_zlib_def_buf_size as *const (),
