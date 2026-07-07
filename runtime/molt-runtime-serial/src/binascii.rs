@@ -1208,11 +1208,11 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
                 break;
             }
 
-            // Try normal decode; on error, use broken-uuencoder workaround
+            // CPython accepts malformed uuencoder lines by honoring the
+            // byte-count header prefix when the full line does not decode.
             match uu_decode(line) {
                 Ok(decoded) => out.extend_from_slice(&decoded),
                 Err(_) => {
-                    // Workaround for broken uuencoders: use byte-count header
                     if !line.is_empty() {
                         let nbytes = ((((line[0].wrapping_sub(32)) & 63) as usize) * 4 + 5) / 3;
                         let truncated = &line[..std::cmp::min(nbytes, line.len())];
