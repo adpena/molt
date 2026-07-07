@@ -539,6 +539,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_func_new_builtin_named",
+        import: WasmRuntimeImport::FuncNewBuiltinNamed,
+        arity: 4,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_function_defaults_version",
         import: WasmRuntimeImport::FunctionDefaultsVersion,
         arity: 1,
@@ -15820,6 +15826,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_property_new" => Some(WasmRuntimeImport::PropertyNew),
         "molt_staticmethod_new" => Some(WasmRuntimeImport::StaticmethodNew),
         "molt_super_builtin" => Some(WasmRuntimeImport::SuperBuiltin),
+        "molt_func_new_builtin_named" => Some(WasmRuntimeImport::FuncNewBuiltinNamed),
         "molt_function_defaults_version" => Some(WasmRuntimeImport::FunctionDefaultsVersion),
         "molt_function_init_metadata_packed" => Some(WasmRuntimeImport::FunctionInitMetadataPacked),
         "molt_function_set_builtin" => Some(WasmRuntimeImport::FunctionSetBuiltin),
@@ -18817,6 +18824,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_property_new" => Some(3),
         "molt_staticmethod_new" => Some(1),
         "molt_super_builtin" => Some(2),
+        "molt_func_new_builtin_named" => Some(4),
         "molt_function_defaults_version" => Some(1),
         "molt_function_init_metadata_packed" => Some(4),
         "molt_function_set_builtin" => Some(1),

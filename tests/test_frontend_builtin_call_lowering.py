@@ -893,10 +893,20 @@ def test_frontend_intrinsic_function_objects_carry_manifest_defaults() -> None:
     gen.visit(ast.parse(source))
 
     ops = [op for func in gen.funcs_map.values() for op in func["ops"]]
+    const_str_by_var = {
+        op.result.name: op.args[0]
+        for op in ops
+        if op.kind == "CONST_STR" and isinstance(op.args[0], str)
+    }
     builtin_index = next(
         idx
         for idx, op in enumerate(ops)
-        if op.kind == "BUILTIN_FUNC" and op.args == ["molt_operator_length_hint", 2]
+        if op.kind == "BUILTIN_FUNC"
+        and len(op.args) == 3
+        and op.args[:2] == ["molt_operator_length_hint", 2]
+        and isinstance(op.args[2], MoltValue)
+        and const_str_by_var.get(op.args[2].name) == "molt_operator_length_hint"
+        and op.metadata == {"builtin_name": "molt_operator_length_hint"}
     )
     func_var = ops[builtin_index].result
     tuple_vars = {
@@ -915,6 +925,31 @@ def test_frontend_intrinsic_function_objects_carry_manifest_defaults() -> None:
         and op.args[2].name in tuple_vars
         for op in ops[builtin_index + 1 :]
     )
+
+
+def test_python_builtin_func_serializes_metadata_name_operand() -> None:
+    gen = SimpleTIRGenerator(module_name="open_builtin_metadata_probe")
+    gen.visit(ast.parse("f = open('data.txt')\n"))
+    main_ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+    )
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    open_ops = [
+        op
+        for op in main_ops
+        if op.get("kind") == "builtin_func" and op.get("s_value") == "molt_open_builtin"
+    ]
+    assert open_ops
+    open_op = open_ops[0]
+    assert open_op.get("builtin_name") == "open"
+    assert len(open_op.get("args") or []) == 1
+    assert const_str[open_op["args"][0]] == "open"
 
 
 def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:

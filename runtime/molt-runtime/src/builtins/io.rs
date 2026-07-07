@@ -32,7 +32,8 @@ use buffer::{
     backend_flush, backend_read_bytes, backend_seek, backend_tell, backend_truncate,
     backend_write_bytes, buffered_read_bytes, buffered_read_into, clear_read_buffer,
     clear_write_buffer, file_read1_bytes, flush_write_buffer, handle_read_byte,
-    memory_backend_vec_ref, prepend_read_buffer, rewind_read_buffer, unread_bytes,
+    memory_backend_bits, memory_backend_vec_ref, prepend_read_buffer, rewind_read_buffer,
+    unread_bytes,
 };
 #[path = "io/handle.rs"]
 mod handle;

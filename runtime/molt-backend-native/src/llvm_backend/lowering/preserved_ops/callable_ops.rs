@@ -61,24 +61,41 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "builtin_trampoline_ptr",
                     )
                     .unwrap();
-                let name_bits = self.intern_string_const(func_name).into_int_value();
-                let new_fn = self.ensure_runtime_i64_fn("molt_func_new_builtin_named", 4);
-                let func_bits = self
-                    .backend
-                    .builder
-                    .build_call(
-                        new_fn,
-                        &[
-                            name_bits.into(),
-                            fn_ptr.into(),
-                            tramp_ptr.into(),
-                            i64_ty.const_int(arity as u64, false).into(),
-                        ],
-                        "builtin_func_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
+                let func_bits = if let Some(&name_id) = op.operands.first() {
+                    let name_bits = self.materialize_dynbox_operand(name_id);
+                    let new_fn = self.ensure_runtime_i64_fn("molt_func_new_builtin_named", 4);
+                    self.backend
+                        .builder
+                        .build_call(
+                            new_fn,
+                            &[
+                                name_bits.into(),
+                                fn_ptr.into(),
+                                tramp_ptr.into(),
+                                i64_ty.const_int(arity as u64, false).into(),
+                            ],
+                            "builtin_func_new",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                } else {
+                    let new_fn = self.ensure_runtime_i64_fn("molt_func_new_builtin", 3);
+                    self.backend
+                        .builder
+                        .build_call(
+                            new_fn,
+                            &[
+                                fn_ptr.into(),
+                                tramp_ptr.into(),
+                                i64_ty.const_int(arity as u64, false).into(),
+                            ],
+                            "builtin_func_new",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                };
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, func_bits);
                     self.value_types.insert(result_id, TirType::DynBox);
