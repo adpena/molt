@@ -64,6 +64,37 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
+## 🎯 CURRENT SWARM BURNDOWN — 2026-07-07 (orchestrator; READ FIRST — supersedes stale State-of-the-World below)
+
+### FINAL EXIT CRITERIA — the swarm is DONE only when ALL FOUR hold
+- **E1 · WITNESS GREEN.** `collab/pact/pact_witness_kernel/field_solve.py` (numpy + scipy.ndimage) → Molt **WASM** → `candidate_outputs.npz` → `check_parity.py` **PASS**. Zero fakes, zero host-CPython/Pyodide fallback, executable ABI dispatch only, all ecosystem behavior through real custody primitives.
+- **E2 · PERF > CPython** on the claimed benchmarks: R3b/R4a numeric raw-lane + `spectral_norm` + the 54–67 portfolio, proven on `tools/perf_scoreboard`.
+- **E3 · PARITY.** CPython ≥3.12 within the verified subset — R6 conformance shards + differential green.
+- **E4 · STRUCTURAL FLOOR.** god-file/god-crate ratchet green; fail_closed poison classes at/under baseline and trending to zero (live: ecosystem_baked=8, fail_open_stub=1, duplicate_authority=3, todo_as_plan=0, fail_open_backend_dispatch=2 — read the live TOML, drive DOWN); effect-attestation live so no capability silently degrades (task #33); warm shared builds via auto-wired fast toolchain (tasks #33/#34).
+
+### LANDED on origin/main this session — DO NOT REDO
+SCC frontend-parallel condensation; shared content-addressed lowering cache; degrade-to-slow gate; fail_closed gate (Scans A–E, ~2min→<15s); numpy header custody; fail-open ABI burndown (fail_open_stub 12→1); PySet real ABI hooks; cross-language table-drift gate; DX uv-project-env stability; **float shortest-round-trip authority** (`0f65cb8b1`); **ABI-layout wasm32 ILP32 fix** (`6b95abd5e`, unblocks ALL wasm32 cpython-abi rebuilds); **sccache auto-provision + loud-degrade, hardened** (`9e8390d2a`, kills the cold-build metabug — builds are now warm+shared).
+
+### WITNESS FRONTIER (E1) — ORCHESTRATOR + SUBAGENTS OWN. CODEX STAND DOWN.
+Each acceptance failure has been FORWARD progress down the real dependency closure:
+R0 header custody ✅ → numpy `_multiarray_umath` wasm build ✅ → ABI-layout wasm32 ✅ → numpy **provided_capsules (4)** ✅ → **CURRENT blocker:** `field_solve` transitively reaches 8 numpy support modules lacking source/artifact custody (`numpy._core.{clip,dtype,einsum,matmul,number,shape,vdot}` + `numpy.lib._arraysetops_impl.unique`) — likely a seal-declaration/reachability-mapping gap (the sources already compile into `_multiarray_umath`). NEXT: seal-module completeness → scipy.ndimage capsule linkage → `pact-witness-acceptance` → `check_parity`.
+
+### CODEX LANES — EXPLICIT BURNDOWN (priority order). Cite queue run-ids; commit by EXACT pathspec; run the ownership audit before EVERY commit. sccache is auto-provisioned so heavy builds are WARM/SHARED — you MAY build, but ONE heavy build per contention-family and the WITNESS keeps priority (do not run unbounded parallel cargo/wasm).
+- **LANE C1 · GOD-FILE / GOD-CRATE DECOMPOSITION (standing P0 — your #1 dev-velocity obligation).** EXIT: the god-file/god-crate ratchet is GREEN. Burndown, largest first: `molt-runtime` is a **425-file god-crate** (the dominant single-crate compile cost — it serializes compile parallelism and taxes every build) → decompose along the CPython-mirrored axis; then `molt-backend-wasm` (163), `molt-backend-native` (123), `molt-passes` (114). Each split = pure renames + PRECISE pub-widening (never blanket `pub(crate)`→`pub`) + a per-crate clippy gate; VALIDATE every decomposition with a real `molt build` E2E (non-build gates pass atop a broken compiler). DONE when the ratchet is green AND molt-runtime cold-compile time measurably drops.
+- **LANE C2 · R3b/R4a NUMERIC RAW-LANE PERF (E2).** ⚠️ COORDINATE: the live R3b/R4a WIP (`scalar_carriers.rs` + `runtime/molt-backend-wasm/src/wasm/lir_fast/*`) is TAKEN OVER by an orchestrator subagent (task #30) — do NOT double-drive those files. Your R4 lane = the OTHER numeric keystones (non-carrier raw-lanes). EXIT: numeric cluster A + `spectral_norm` faster than CPython on the perf scoreboard, teeth green (`tests/test_r3b_numeric_cluster_manifest.py`, `tests/differential/basic/R3B_NUMERIC_CLUSTER_A.txt`). Run `proof_queue.py diagnose <run-id>` on a failed build before resubmitting the same shape.
+- **LANE C3 · R6 CPython ≥3.12 PARITY/CONFORMANCE (E3, continuous).** EXIT: conformance shards + differential parity green within the verified subset; feed corrections back as typed facts.
+- **LANE C4 · R8 SCOREBOARDS + RELEASE GATES (makes E2/E4 MEASURABLE — do this early).** EXIT: `tools/perf_scoreboard` wired + green so E2 is provable; release gates assert E1–E4 so "done" is machine-checkable, not asserted.
+
+### CODEX STAND DOWN — orchestrator/subagent-owned, ZERO exceptions, do NOT edit
+- **WITNESS closure:** numpy seal/custody, `scipy.ndimage` ABI-dispatch (task #28), ALL of `runtime/molt-cpython-abi/**` (capsules, `_molt_abi_layout.generated.h`, ABI-layout generator).
+- **DX / THROUGHPUT authority:** `src/molt/dx.py` (sccache/attestation), `tools/proof_queue.py`, `tools/{fail_closed,degrade_to_slow}_*`, `.cargo/config*` (lld auto-wire — task #34).
+- **FRONTEND metabug lanes:** `src/molt/cli/{frontend_*,module_*}.py`.
+- **IN-FLIGHT subagent lanes:** asyncio drop-insertion (`molt-passes/.../drop_insertion/exception_region.rs`, #16), float repr (`molt-runtime/src/object/float_repr.rs` + `molt-backend-rust` prelude, #22), native divmod/floordiv/unary (#23/#24/#25), R3b/R4a carrier authority (`scalar_carriers.rs` + `lir_fast/*`, #30).
+- **ENFORCEMENT/attestation:** effect-attestation invariant (#33), fast-toolchain auto-wire (#34).
+
+### META-META BINDING (all agents, all lanes)
+A configured capability that never PROVES it fired is a silent-degradation waiting to happen (sccache was off for months while "configured"). Every perf/capability path you land must emit a machine-checkable proof-of-effect (cache-hit-rate>0, raw-lane fire-count, worker-count) or fail LOUD — never a silent skip. "Landed" ≠ "effective"; measure the effect on a representative run. See task #33.
+
 ## ⚠️ INCIDENT 2026-07-03 + git_guard (all agents read)
 
 **Signal loss + recovery ask.** A `git reset --hard HEAD` in an orchestrator
