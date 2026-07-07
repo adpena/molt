@@ -55,9 +55,9 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 8
-fail_open_stub = 26
-duplicate_authority = 2
-todo_as_plan = 3
+fail_open_stub = 14
+duplicate_authority = 3
+todo_as_plan = 2
 
 # ===========================================================================
 # ecosystem_baked (Scan A) — numpy package headers/config defined in-tree.
@@ -169,98 +169,6 @@ config/custody primitive, not a hand-authored overlay in the build driver.
 # --- abstract_number.rs: arbitrary-precision int silently truncated -----------
 
 [[site]]
-id = "F2_pynumber_add_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "pyobj_from_int(x.wrapping_add(y))"
-resolution_row = "task#9"
-justification = """
-PyNumber_Add wraps int addition to machine width. CPython ints are arbitrary
-precision, so on overflow this returns a plausible NON-NULL but WRONG result
-instead of promoting to bignum. Must compute the true (possibly big) sum.
-"""
-
-[[site]]
-id = "F2_pynumber_sub_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "pyobj_from_int(x.wrapping_sub(y))"
-resolution_row = "task#9"
-justification = """
-PyNumber_Subtract wraps int subtraction to machine width — same arbitrary-precision
-truncation poison as F2_pynumber_add_wrapping.
-"""
-
-[[site]]
-id = "F2_pynumber_mul_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "pyobj_from_int(x.wrapping_mul(y))"
-resolution_row = "task#9"
-justification = """
-PyNumber_Multiply wraps int multiplication to machine width; a large product
-silently wraps instead of promoting to bignum.
-"""
-
-[[site]]
-id = "F2_pynumber_pow_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "pyobj_from_int(x.wrapping_pow(y as u32))"
-resolution_row = "task#9"
-justification = """
-PyNumber_Power wraps integer exponentiation; even small bases overflow i64 fast and
-silently wrap. Must produce the true big-integer power.
-"""
-
-[[site]]
-id = "F2_pynumber_lshift_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "pyobj_from_int(x.wrapping_shl(y as u32))"
-resolution_row = "task#9"
-justification = """
-PyNumber_Lshift wraps a left shift; shifting bits past the machine width silently
-discards them instead of widening the int.
-"""
-
-[[site]]
-id = "F2_pynumber_rshift_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "pyobj_from_int(x.wrapping_shr(y as u32))"
-resolution_row = "task#9"
-justification = """
-PyNumber_Rshift uses wrapping_shr; while less prone to overflow than lshift it is
-part of the same machine-width int-semantics shortcut and must use true int shift.
-"""
-
-[[site]]
-id = "F2_pynumber_abs_wrapping"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "Some(v) => pyobj_from_int(v.wrapping_abs()),"
-resolution_row = "task#9"
-justification = """
-PyNumber_Absolute uses wrapping_abs, so abs(i64::MIN) returns i64::MIN (negative) —
-a plausible non-NULL wrong answer. abs of an arbitrary-precision int must widen.
-"""
-
-[[site]]
-id = "F3_pynumber_power_drops_modulus"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "let _ = o3;"
-resolution_row = "task#9"
-justification = """
-PyNumber_Power drops its modulus argument o3 (`let _ = o3;`), so pow(a, b, m) is
-computed as a**b ignoring the modulus — a silently wrong result. Must honour the
-three-argument modular-exponentiation contract or fail closed.
-"""
-
-# --- errors.rs: real error state dropped --------------------------------------
-
-[[site]]
 id = "F1_pyerr_setobject_drops_value"
 class = "fail_open_stub"
 file = "runtime/molt-cpython-abi/src/api/errors.rs"
@@ -296,29 +204,6 @@ input on a path that advertises using it.
 """
 
 # --- alloc-failure returns a plausible None instead of NULL -------------------
-
-[[site]]
-id = "F4_sequences_pylist_new_none_fallback"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/sequences.rs"
-anchor = "let fallback = MoltObject::none().bits();"
-resolution_row = "task#9"
-justification = """
-PyList_New, on allocation failure, returns a bridged MoltObject::none() instead of
-NULL. CPython callers treat non-NULL as success, so an OOM is masked as an empty
-success. Must return NULL (and set MemoryError) on alloc failure.
-"""
-
-[[site]]
-id = "F4_mapping_pydict_new_none_fallback"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/mapping.rs"
-anchor = "let fallback = MoltObject::none().bits();"
-resolution_row = "task#9"
-justification = """
-PyDict_New mirrors the PyList_New OOM fail-open: returns MoltObject::none() rather
-than NULL on alloc failure, masking the error as success.
-"""
 
 [[site]]
 id = "F4_strings_none_fallback"
@@ -359,18 +244,6 @@ F4_object_none_bits_fallback.
 # --- PySet / mapping placeholder: empty list stands in for a real object -------
 
 [[site]]
-id = "F5_sequences_pyset_new_placeholder_list"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/sequences.rs"
-anchor = "unsafe { PyList_New(0) }"
-resolution_row = "task#9"
-justification = """
-PySet_New returns an empty LIST as a placeholder ("so extensions that create sets
-do not crash"). A C extension gets back the wrong type presented as success. Must
-implement a real set or fail closed with a precise unsupported diagnostic.
-"""
-
-[[site]]
 id = "F5_sequences_pyset_drops_iterable"
 class = "fail_open_stub"
 file = "runtime/molt-cpython-abi/src/api/sequences.rs"
@@ -391,28 +264,6 @@ resolution_row = "task#9"
 justification = """
 A sequence-API export drops its `op` argument (`let _ = op;`) on a path that
 advertises inspecting it, returning a fixed answer regardless of input.
-"""
-
-[[site]]
-id = "F6_mapping_placeholder_list"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/mapping.rs"
-anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
-resolution_row = "task#9"
-justification = """
-A mapping-API export returns an empty list placeholder (via PyList_New(0)) instead
-of the mapping object/view it advertises, handing back the wrong type as success.
-"""
-
-[[site]]
-id = "F6_mapping_drops_op"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/mapping.rs"
-anchor = "let _ = op;"
-resolution_row = "task#9"
-justification = """
-A mapping-API export drops its `op` argument (`let _ = op;`), ignoring the caller
-input on a path that claims to use it. Multiple mapping exports share this anchor.
 """
 
 [[site]]
@@ -531,19 +382,6 @@ duplicate-authority defect as D1_python_h_two_copies.
 # ===========================================================================
 
 [[site]]
-id = "C1_pynumber_power_modulus_for_now"
-class = "todo_as_plan"
-file = "runtime/molt-cpython-abi/src/api/abstract_number.rs"
-anchor = "let _ = o3;"
-resolution_row = "task#9"
-justification = """
-The PyNumber_Power modulus argument is dropped with an "ignore for now" comment on
-a SHIPPED, exported ABI symbol that advertises three-argument pow. "for now" on a
-live export is todo-as-plan: the incomplete path ships as if complete. The fix is
-the same as fail_open_stub F3_pynumber_power_drops_modulus.
-"""
-
-[[site]]
 id = "F8_multiprocessing_fork_maps_to_spawn"
 class = "todo_as_plan"
 file = "src/molt/stdlib/multiprocessing/_core.py"
@@ -569,3 +407,29 @@ dedicated intrinsic is not yet exposed — a shipped public property that ships 
 empty (wrong) answer for a stream with real trailing data. Must expose the
 molt_zlib_decompressobj_unused_data intrinsic and return the true unused bytes.
 """
+[[site]]
+id = "F5_pyset_size_dropped_arg"
+class = "fail_open_stub"
+file = "runtime/molt-cpython-abi/src/api/sequences.rs"
+anchor = "let _ = anyset;"
+resolution_row = "task#12"
+justification = """
+PySet_Size ignores its set argument. Honest fail-closed interim: PySet_* raise
+NotImplementedError + CPython error sentinel pending the runtime set-object
+hooks (not a fake return). Being completed to real behavior in task #12.
+"""
+
+[[site]]
+id = "D2_structmember_h_duplicate"
+class = "duplicate_authority"
+file = "include/structmember.h"
+anchor = "#ifndef MOLT_STRUCTMEMBER_H"
+resolution_row = "task#10"
+justification = """
+structmember.h lives at both include/structmember.h (source-compat overlay tier)
+and runtime/molt-cpython-abi/include/structmember.h (the ABI authority added by
+the header-custody arc 410ada3ad to make the cpython-abi tier self-complete) --
+two hand-synced copies of the CPython legacy T_*/READONLY aliases. Retire under
+task #10's remaining surface (generate/collapse to one authority).
+"""
+
