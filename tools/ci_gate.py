@@ -464,6 +464,18 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The release-exit gate composes the board's E1-E4 criteria into one
+            # fail-closed manifest contract. It consumes proof receipts; it does
+            # not run witness/perf/parity/decomposition proofs itself.
+            name="release-exit-contract",
+            tier=1,
+            cmd=_uv_pytest(str(TESTS / "tools" / "test_release_exit_gate.py"), "-q"),
+            timeout=30,
+            needs_pytest=True,
+        )
+    )
+    checks.append(
+        Check(
             # Fail closed if the perf-plane gate can no longer FAIL on a synthetic
             # CPython-red regression (doc 64 §5 falsifiable gate). A gate that
             # cannot fail certifies nothing -- the proxy-measurement meta-bug.
