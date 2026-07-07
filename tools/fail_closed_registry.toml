@@ -55,7 +55,7 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 8
-fail_open_stub = 12
+fail_open_stub = 1
 duplicate_authority = 3
 todo_as_plan = 0
 fail_open_backend_dispatch = 2
@@ -170,81 +170,6 @@ config/custody primitive, not a hand-authored overlay in the build driver.
 # --- abstract_number.rs: arbitrary-precision int silently truncated -----------
 
 [[site]]
-id = "F1_pyerr_setobject_drops_value"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/errors.rs"
-anchor = "let _ = value;"
-resolution_row = "task#9"
-justification = """
-PyErr_SetObject drops the actual exception value (`let _ = value;`) and sets a
-generic c"<exception>" string. The raised exception loses its payload — a
-fail-open that misreports the error. Must propagate the real value.
-"""
-
-[[site]]
-id = "F1_errors_drops_exc"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/errors.rs"
-anchor = "let _ = exc;"
-resolution_row = "task#9"
-justification = """
-An error-API export drops its exception argument (`let _ = exc;`) rather than
-acting on it, silently no-op'ing an error operation the C extension expects to take
-effect.
-"""
-
-[[site]]
-id = "F1_errors_drops_obj"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/errors.rs"
-anchor = "let _ = obj;"
-resolution_row = "task#9"
-justification = """
-An error-API export drops its object argument (`let _ = obj;`), ignoring the caller
-input on a path that advertises using it.
-"""
-
-# --- alloc-failure returns a plausible None instead of NULL -------------------
-
-[[site]]
-id = "F4_strings_none_fallback"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/strings.rs"
-anchor = "let fallback = MoltObject::none().bits();"
-resolution_row = "task#9"
-justification = """
-String-API exports return a bridged MoltObject::none() on the failure path instead
-of NULL, so a failed string construction reads as a non-NULL success to the C
-caller. Multiple str builders share this shape; must fail closed with NULL + PyErr.
-"""
-
-[[site]]
-id = "F4_object_none_bits_fallback"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "let none_bits = MoltObject::none().bits();"
-resolution_row = "task#9"
-justification = """
-An object-API export materializes MoltObject::none() bits as its result on a path
-that has no real value to return, handing back a plausible non-NULL None instead of
-failing closed.
-"""
-
-[[site]]
-id = "F4_object_none_bits_tail"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "MoltObject::none().bits()"
-resolution_row = "task#9"
-justification = """
-A second object-API export ends by returning MoltObject::none().bits() as a success
-value on an unimplemented branch — same placeholder-None fail-open as
-F4_object_none_bits_fallback.
-"""
-
-# --- PySet / mapping placeholder: empty list stands in for a real object -------
-
-[[site]]
 id = "F5_sequences_drops_op"
 class = "fail_open_stub"
 file = "runtime/molt-cpython-abi/src/api/sequences.rs"
@@ -254,70 +179,6 @@ justification = """
 A sequence-API export drops its `op` argument (`let _ = op;`) on a path that
 advertises inspecting it, returning a fixed answer regardless of input.
 """
-
-[[site]]
-id = "F6_abstract_mapping_placeholder_list"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_mapping.rs"
-anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
-resolution_row = "task#9"
-justification = """
-An abstract-mapping export (e.g. PyMapping_Keys/Values/Items) returns an empty list
-placeholder instead of the real mapping view, presenting the wrong result as
-success.
-"""
-
-[[site]]
-id = "F6_abstract_mapping_drops_o"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/abstract_mapping.rs"
-anchor = "let _ = o;"
-resolution_row = "task#9"
-justification = """
-The abstract-mapping placeholder drops its object argument (`let _ = o;`), ignoring
-the mapping whose keys/values it claims to return.
-"""
-
-[[site]]
-id = "F6_object_placeholder_list"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "unsafe { crate::api::sequences::PyList_New(0) }"
-resolution_row = "task#9"
-justification = """
-An object-API export returns an empty list placeholder instead of the real result
-(e.g. dir()/attribute enumeration), handing back a plausible-but-empty success.
-"""
-
-[[site]]
-id = "F6_object_drops_o"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/object.rs"
-anchor = "let _ = o;"
-resolution_row = "task#9"
-justification = """
-The object-API placeholder drops its object argument (`let _ = o;`), ignoring the
-input whose properties it advertises returning.
-"""
-
-[[site]]
-id = "F7_strings_drops_newpart"
-class = "fail_open_stub"
-file = "runtime/molt-cpython-abi/src/api/strings.rs"
-anchor = "let _ = newpart;"
-resolution_row = "task#9"
-justification = """
-A string-mutation export (PyUnicode_Append-family) drops its `newpart` argument
-(`let _ = newpart;`), so the append/concat silently does nothing while reporting
-success to the caller.
-"""
-
-# ===========================================================================
-# duplicate_authority (Scan D) — one C-API contract, two hand-synced copies.
-# Resolution: task#10 (single CPython-header authority) with task#7 for the
-# custody-facing side. One header tree must own each symbol; the other becomes a
-# generated re-export or is deleted.
-# ===========================================================================
 
 [[site]]
 id = "D1_python_h_two_copies"
