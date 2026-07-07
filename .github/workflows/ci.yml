@@ -307,6 +307,7 @@ jobs:
             -p molt-runtime-stringprep \
             -p molt-runtime-text \
             -p molt-runtime-tk \
+            -p molt-runtime-vfs \
             -p molt-runtime-xml \
             -p molt-runtime-zoneinfo \
             -- -D warnings

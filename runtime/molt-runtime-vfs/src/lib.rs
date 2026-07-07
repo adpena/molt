@@ -522,6 +522,25 @@ mod tests {
     use crate::dev::DevFs;
     use crate::file::MoltVfsFile;
     use crate::tmp::TmpFs;
+    use std::sync::{MutexGuard, OnceLock};
+
+    fn vfs_global_test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        let guard = LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
+        unsafe {
+            std::env::remove_var("MOLT_VFS_BUNDLE");
+            std::env::remove_var("MOLT_VFS_TMP_QUOTA_MB");
+            std::env::remove_var("MOLT_VFS_BUNDLE_MAX_BYTES");
+            std::env::remove_var("MOLT_VFS_BUNDLE_MAX_ENTRIES");
+            std::env::remove_var("MOLT_VFS_BUNDLE_MAX_PATH_BYTES");
+            std::env::remove_var("MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES");
+        }
+        let _ = super::load_vfs_inner();
+        guard
+    }
 
     #[test]
     fn normalize_rejects_empty() {
@@ -821,6 +840,7 @@ mod tests {
 
     #[test]
     fn load_vfs_returns_none_without_env() {
+        let _guard = vfs_global_test_lock();
         // When MOLT_VFS_BUNDLE is not set, load_vfs must return None.
         unsafe { std::env::remove_var("MOLT_VFS_BUNDLE") };
         assert!(super::load_vfs().is_none());
@@ -828,6 +848,7 @@ mod tests {
 
     #[test]
     fn load_vfs_from_directory() {
+        let _guard = vfs_global_test_lock();
         let dir = std::env::temp_dir().join("molt_vfs_test_load_dir");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -851,6 +872,45 @@ mod tests {
         // cleanup
         unsafe { std::env::remove_var("MOLT_VFS_BUNDLE") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn injected_bundle_loads_once_for_wasm_hosts() {
+        let _guard = vfs_global_test_lock();
+        let path = b"dir/hello.txt";
+        let data = b"from-wasm-host";
+
+        unsafe {
+            super::molt_vfs_inject_entry(path.as_ptr(), path.len(), data.as_ptr(), data.len());
+        }
+
+        assert_eq!(super::molt_vfs_inject_finish(), 1);
+        let state = super::load_vfs().expect("injected bundle should load");
+        let (prefix, backend, rel) = state.resolve("/bundle/dir/hello.txt").unwrap();
+        assert_eq!(prefix, "/bundle");
+        assert_eq!(rel, "dir/hello.txt");
+        assert_eq!(backend.open_read(&rel).unwrap(), data.to_vec());
+        assert!(state.resolve("/tmp/scratch").is_some());
+        assert!(state.resolve("/dev/stdout").is_some());
+        assert!(super::load_vfs().is_none());
+    }
+
+    #[test]
+    fn injected_bundle_rejects_browser_host_path_escape() {
+        let _guard = vfs_global_test_lock();
+        let path = b"../secret.txt";
+        let data = b"nope";
+
+        unsafe {
+            super::molt_vfs_inject_entry(path.as_ptr(), path.len(), data.as_ptr(), data.len());
+        }
+
+        assert_eq!(super::molt_vfs_inject_finish(), -1);
+        assert!(matches!(
+            super::load_vfs_inner(),
+            Err(VfsError::IoError(message)) if message == "invalid injected VFS path"
+        ));
+        assert!(super::load_vfs().is_none());
     }
 
     #[test]

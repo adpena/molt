@@ -45,6 +45,16 @@ class BundleFs {
 
             offset += 512; // skip header
 
+            if (typeFlag === 49 || typeFlag === 50) { // hard link or symlink
+                throw new Error(`bundle tar contains link entry: ${name}`);
+            }
+            if (name.startsWith('/')) {
+                throw new Error(`bundle tar contains absolute path: ${name}`);
+            }
+            if (name.split('/').includes('..')) {
+                throw new Error(`bundle tar contains '..' component in path: ${name}`);
+            }
+
             if (typeFlag === 48 || typeFlag === 0) { // regular file ('0' or null)
                 if (name) {
                     files.set(
