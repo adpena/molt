@@ -42,6 +42,17 @@ _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
 }
 _DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
 
+# Single authority for the set of supported target-Python short versions
+# ("3.12", "3.13", ...). This is the `TargetPythonVersion` authority; the
+# stdlib-coverage tooling (tools/stdlib_module_union.py baseline and
+# tools/gen_stdlib_module_union.py generator) must NOT re-declare this list —
+# they derive from or are gated against this tuple by
+# tools/check_table_drift.py so a version bump here cannot silently drift stdlib
+# coverage.
+SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS: tuple[str, ...] = tuple(
+    version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
+)
+
 
 def _parse_target_python_version(value: str | None) -> TargetPythonVersion:
     if value is None or not value.strip():

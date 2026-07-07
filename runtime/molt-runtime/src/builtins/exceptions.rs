@@ -2246,29 +2246,31 @@ fn builtin_exception_class_cache_for_tag(
     tag: u64,
 ) -> Option<(&'static AtomicU64, &'static str)> {
     let state = exceptions_state(_py);
-    match tag {
-        1 => Some((&state.base_exception_class_cache, "BaseException")),
-        2 => Some((&state.exception_class_cache, "Exception")),
-        3 => Some((&state.key_error_class_cache, "KeyError")),
-        4 => Some((&state.index_error_class_cache, "IndexError")),
-        5 => Some((&state.value_error_class_cache, "ValueError")),
-        6 => Some((&state.type_error_class_cache, "TypeError")),
-        7 => Some((&state.runtime_error_class_cache, "RuntimeError")),
-        8 => Some((&state.stop_iteration_class_cache, "StopIteration")),
-        9 => Some((
-            &state.stop_async_iteration_class_cache,
-            "StopAsyncIteration",
-        )),
-        10 => Some((&state.assertion_error_class_cache, "AssertionError")),
-        11 => Some((&state.import_error_class_cache, "ImportError")),
-        12 => Some((&state.name_error_class_cache, "NameError")),
-        13 => Some((&state.unbound_local_error_class_cache, "UnboundLocalError")),
-        14 => Some((
-            &state.not_implemented_error_class_cache,
-            "NotImplementedError",
-        )),
-        _ => None,
-    }
+    // The tag -> name ordinal mapping has ONE authority
+    // (`builtin_exception_name_for_tag`); this switch selects only the
+    // per-name atomic cache slot. Do not re-hardcode the name strings here —
+    // that reintroduced the drift `builtin_exception_class_cache_for_tag`
+    // used to carry and is gated by tools/check_table_drift.py (category
+    // `exception-ordinals`).
+    let name = builtin_exception_name_for_tag(tag)?;
+    let cache = match tag {
+        1 => &state.base_exception_class_cache,
+        2 => &state.exception_class_cache,
+        3 => &state.key_error_class_cache,
+        4 => &state.index_error_class_cache,
+        5 => &state.value_error_class_cache,
+        6 => &state.type_error_class_cache,
+        7 => &state.runtime_error_class_cache,
+        8 => &state.stop_iteration_class_cache,
+        9 => &state.stop_async_iteration_class_cache,
+        10 => &state.assertion_error_class_cache,
+        11 => &state.import_error_class_cache,
+        12 => &state.name_error_class_cache,
+        13 => &state.unbound_local_error_class_cache,
+        14 => &state.not_implemented_error_class_cache,
+        _ => return None,
+    };
+    Some((cache, name))
 }
 
 fn builtin_exception_class_bits_for_tag(_py: &PyToken<'_>, tag: u64) -> Option<u64> {
