@@ -476,3 +476,8 @@ pub unsafe extern "C" fn PyDict_Keys(op: *mut PyObject) -> *mut PyObject {
 pub unsafe extern "C" fn PyDict_Values(op: *mut PyObject) -> *mut PyObject {
     unsafe { dict_op(crate::hooks::DictOp::Values, op) }
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyDict_Items(op: *mut PyObject) -> *mut PyObject {
+    unsafe { dict_op(crate::hooks::DictOp::Items, op) }
+}

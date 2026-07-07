@@ -257,3 +257,84 @@ fn test_overwrite_exception() {
 
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
+
+// ---------------------------------------------------------------------------
+// Fail-open burndown teeth: PyErr_SetObject / PyErr_ExceptionMatches /
+// PyErr_WriteUnraisable no longer drop their real argument.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_err_setobject_sets_exception_without_generic_placeholder() {
+    // F1 teeth: PyErr_SetObject previously dropped `value` (`let _ = value;`) and
+    // set a generic c"<exception>" message. It must set the exception with the
+    // caller's type and NOT fabricate the "<exception>" placeholder payload.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let exc = &raw mut PyExc_ValueError;
+    // A NULL value cannot be resolved; the fix records the type with an empty
+    // message rather than the misleading "<exception>" string.
+    unsafe { molt_cpython_abi::api::errors::PyErr_SetObject(exc, ptr::null_mut()) };
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "PyErr_SetObject must leave an exception pending"
+    );
+    let msg = molt_cpython_abi::api::errors::take_current_error_message();
+    assert_ne!(
+        msg.as_deref(),
+        Some("<exception>"),
+        "PyErr_SetObject must not fabricate the generic <exception> placeholder"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_err_exception_matches_no_exception_returns_zero() {
+    // PyErr_ExceptionMatches with no pending exception must return 0 (CPython's
+    // PyErr_GivenExceptionMatches(NULL, exc) == 0), NOT the old "is any set" 1.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let exc = &raw mut PyExc_ValueError;
+    let rc = unsafe { molt_cpython_abi::api::errors::PyErr_ExceptionMatches(exc) };
+    assert_eq!(rc, 0, "no pending exception => ExceptionMatches returns 0");
+}
+
+#[test]
+fn test_err_exception_matches_does_not_report_any_pending() {
+    // The old stub dropped `exc` and returned "is ANY exception set", so a pending
+    // TypeError falsely matched PyExc_KeyError. The fix compares the pending
+    // exception's stored type against `exc`. Under the stub bridge the PyExc_*
+    // statics resolve to type bits 0, so a genuine match cannot be asserted here;
+    // what we CAN prove is the burned-down fail-open: a pending exception must NOT
+    // make ExceptionMatches return 1 unconditionally.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let type_exc = &raw mut PyExc_TypeError;
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(type_exc, c"boom".as_ptr());
+    }
+    // A NULL candidate must never match.
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_ExceptionMatches(ptr::null_mut()) },
+        0,
+        "ExceptionMatches(NULL) must be 0 even with a pending exception"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_err_write_unraisable_does_not_panic_with_object() {
+    // F1 teeth: PyErr_WriteUnraisable previously dropped `obj` (`let _ = obj;`).
+    // It now includes obj's context in the report and must clear the exception.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let exc = &raw mut PyExc_ValueError;
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(exc, c"unraisable".as_ptr());
+    }
+    // NULL obj is a valid input (no context); must not panic and must clear.
+    unsafe { molt_cpython_abi::api::errors::PyErr_WriteUnraisable(ptr::null_mut()) };
+    assert!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "PyErr_WriteUnraisable must clear the reported exception"
+    );
+}

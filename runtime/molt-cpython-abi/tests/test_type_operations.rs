@@ -23,25 +23,38 @@ fn test_type_ready_null_returns_error() {
 }
 
 #[test]
-fn test_type_ready_sets_ready_flag() {
+fn test_type_ready_fails_closed_when_tp_dict_alloc_fails() {
+    // PyType_Ready builds tp_dict via PyDict_New, which fails closed under the
+    // stub hook table (alloc_dict returns 0 => NULL + MemoryError). PyType_Ready
+    // then correctly returns -1 and does NOT set Py_TPFLAGS_READY rather than
+    // marking a half-initialized type ready. (A real runtime supplies alloc_dict;
+    // the fully-readied hierarchy is covered by test_type_ready_inheritance.rs
+    // against a registered hook table.)
     init();
-    // Create a minimal type object
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_flags = 0;
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
-    assert_eq!(result, 0);
-    assert_ne!(tp.tp_flags & Py_TPFLAGS_READY, 0);
+    assert_eq!(result, -1, "PyType_Ready must fail closed when tp_dict cannot be allocated");
+    assert_eq!(
+        tp.tp_flags & Py_TPFLAGS_READY,
+        0,
+        "a failed PyType_Ready must not mark the type READY"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
-fn test_type_ready_idempotent() {
+fn test_type_ready_idempotent_when_already_ready() {
+    // With Py_TPFLAGS_READY pre-set, PyType_Ready short-circuits to success
+    // without touching tp_dict, so it is idempotent even under stubs.
     init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
-    unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
-    let flags_after_first = tp.tp_flags;
-    unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
-    // Calling twice should not break anything
-    assert_eq!(tp.tp_flags, flags_after_first);
+    tp.tp_flags = Py_TPFLAGS_READY;
+    let flags_before = tp.tp_flags;
+    let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
+    assert_eq!(rc, 0);
+    assert_eq!(tp.tp_flags, flags_before);
 }
 
 // ---------------------------------------------------------------------------

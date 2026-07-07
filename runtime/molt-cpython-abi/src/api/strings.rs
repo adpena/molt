@@ -3,12 +3,20 @@
 use crate::abi_types::{Py_ssize_t, PyByteArrayObject, PyObject, PyVarObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
-use molt_lang_obj_model::MoltObject;
 use std::cmp::Ordering;
 use std::ffi::{CStr, c_void};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+
+/// Fail-closed helper for str/bytes constructors whose runtime allocation
+/// returned 0 (out of memory). CPython's `PyUnicode_*`/`PyBytes_*` constructors
+/// return NULL with `MemoryError` set on allocation failure (Objects/unicodeobject.c,
+/// Objects/bytesobject.c). The previous code fabricated a `MoltObject::none()`
+/// handle, which reads to the C caller as a non-NULL success and masks the OOM.
+unsafe fn str_alloc_failed() -> *mut PyObject {
+    unsafe { crate::api::errors::PyErr_NoMemory() }
+}
 
 fn unicode_range(len: usize, start: Py_ssize_t, end: Py_ssize_t) -> (usize, usize) {
     let len_i = len as Py_ssize_t;
@@ -322,9 +330,8 @@ pub unsafe extern "C" fn PyUnicode_FromString(s: *const c_char) -> *mut PyObject
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
-        // Fallback: return a placeholder None handle so the caller doesn't crash.
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
+        return unsafe { str_alloc_failed() };
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -341,8 +348,8 @@ pub unsafe extern "C" fn PyUnicode_FromStringAndSize(
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
+        return unsafe { str_alloc_failed() };
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -649,8 +656,8 @@ pub unsafe extern "C" fn PyBytes_FromStringAndSize(
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_bytes)(data.as_ptr(), data.len()) };
     if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
+        return unsafe { str_alloc_failed() };
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -664,8 +671,8 @@ pub unsafe extern "C" fn PyBytes_FromString(s: *const c_char) -> *mut PyObject {
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_bytes)(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
+        return unsafe { str_alloc_failed() };
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -790,8 +797,8 @@ pub unsafe extern "C" fn PyUnicode_Concat(
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_str)(combined.as_ptr(), combined.len()) };
     if bits == 0 {
-        let fallback = MoltObject::none().bits();
-        return unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(fallback) };
+        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
+        return unsafe { str_alloc_failed() };
     }
     unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
 }
@@ -1087,14 +1094,50 @@ pub unsafe extern "C" fn PyUnicode_GET_LENGTH(op: *mut PyObject) -> Py_ssize_t {
 
 // ─── Additional PyBytes functions ────────────────────────────────────────
 
+/// `PyBytes_Concat(pv, w)` — set `*pv = *pv + w`, dropping the old `*pv`
+/// (Objects/bytesobject.c). On failure CPython clears `*pv` to NULL. The stub
+/// dropped `newpart` (`let _ = newpart;`), so the concatenation silently did
+/// nothing while the caller believed `*pv` had grown. This reads both operands'
+/// bytes through the runtime `bytes_data` authority, builds the joined bytes, and
+/// replaces `*pv`; on OOM it clears `*pv` and sets MemoryError.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBytes_Concat(bytes: *mut *mut PyObject, newpart: *mut PyObject) {
     if bytes.is_null() || unsafe { *bytes }.is_null() || newpart.is_null() {
         return;
     }
-    // Simplified: just keep the original bytes.
-    // Full concat requires bytes_data + alloc_bytes.
-    let _ = newpart;
+    let old = unsafe { *bytes };
+
+    // Read the left operand's bytes.
+    let Some(left_bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(old) else {
+        return;
+    };
+    let Some(right_bits) = GLOBAL_BRIDGE.lock().pyobj_to_handle(newpart) else {
+        return;
+    };
+    let h = hooks_or_stubs();
+    let mut left_len: usize = 0;
+    let left_ptr = unsafe { (h.bytes_data)(left_bits, std::ptr::addr_of_mut!(left_len)) };
+    let mut right_len: usize = 0;
+    let right_ptr = unsafe { (h.bytes_data)(right_bits, std::ptr::addr_of_mut!(right_len)) };
+    if left_ptr.is_null() || right_ptr.is_null() {
+        // Not bytes-like / no runtime: leave *pv untouched rather than corrupting it.
+        return;
+    }
+    let mut combined = Vec::with_capacity(left_len + right_len);
+    combined.extend_from_slice(unsafe { std::slice::from_raw_parts(left_ptr, left_len) });
+    combined.extend_from_slice(unsafe { std::slice::from_raw_parts(right_ptr, right_len) });
+
+    let new_obj = unsafe {
+        PyBytes_FromStringAndSize(combined.as_ptr().cast(), combined.len() as Py_ssize_t)
+    };
+    if new_obj.is_null() {
+        // OOM: CPython clears *pv to NULL; the constructor already set MemoryError.
+        unsafe { crate::api::refcount::Py_DECREF(old) };
+        unsafe { *bytes = ptr::null_mut() };
+        return;
+    }
+    unsafe { crate::api::refcount::Py_DECREF(old) };
+    unsafe { *bytes = new_obj };
 }
 
 #[unsafe(no_mangle)]

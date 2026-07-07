@@ -63,6 +63,46 @@ fn test_dict_copy_keys_values_fail_closed_without_runtime() {
     }
 }
 
+#[test]
+fn test_dict_items_fails_closed_without_runtime() {
+    // F6 teeth (fail-open burndown): PyDict_Items routes through the runtime dict
+    // authority (DictOp::Items). Without runtime hooks the dict_op hook returns 0,
+    // so it must fail closed with NULL + an exception, never a fabricated empty
+    // list. (PyMapping_Items delegates here — same guarantee.)
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let result = unsafe { molt_cpython_abi::api::mapping::PyDict_Items(ptr::null_mut()) };
+    assert!(
+        result.is_null(),
+        "PyDict_Items must fail closed (NULL), not return an empty list"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a NULL return from PyDict_Items must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn test_mapping_items_fails_closed_without_runtime() {
+    // PyMapping_Items delegated to an empty-list placeholder before the burndown
+    // (silent data loss). It now routes through PyDict_Items -> runtime authority
+    // and must fail closed with NULL + an exception under stubs.
+    init();
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let result =
+        unsafe { molt_cpython_abi::api::abstract_mapping::PyMapping_Items(ptr::null_mut()) };
+    assert!(
+        result.is_null(),
+        "PyMapping_Items must fail closed (NULL), not return an empty list"
+    );
+    assert!(
+        !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
+        "a NULL return from PyMapping_Items must leave an exception set"
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
 // ---------------------------------------------------------------------------
 // PyDict_SetItem — null safety
 // ---------------------------------------------------------------------------

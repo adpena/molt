@@ -164,7 +164,9 @@ pub unsafe extern "C" fn PyMapping_Values(o: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMapping_Items(o: *mut PyObject) -> *mut PyObject {
-    // Return an empty list — full iteration requires dict_iter hook.
-    let _ = o;
-    unsafe { crate::api::sequences::PyList_New(0) }
+    // Delegate to PyDict_Items, which routes through the runtime dict authority
+    // (DictOp::Items) and fails closed with an exception when unavailable. The
+    // previous empty-list placeholder was silent data loss — every extension
+    // PyMapping_Items(dict) came back empty.
+    unsafe { crate::api::mapping::PyDict_Items(o) }
 }

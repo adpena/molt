@@ -359,6 +359,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
     dict_op: fake_dict_op,
+    object_dir: fake_object_dir,
 };
 
 unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> u64 {
@@ -371,6 +372,9 @@ unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> u64 
     0
 }
 unsafe extern "C" fn fake_dict_op(_op: u32, _dict: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
     0
 }
 
