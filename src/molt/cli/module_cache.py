@@ -1309,8 +1309,12 @@ def _normalize_backend_ir_functions(
 def _module_lowering_local_reference_issue(
     module_name: str,
     functions: Sequence[dict[str, Any]],
+    *,
+    known_modules: Iterable[str] = (),
 ) -> str | None:
-    missing = missing_local_function_references(module_name, functions)
+    missing = missing_local_function_references(
+        module_name, functions, known_modules=known_modules
+    )
     if not missing:
         return None
     return (
@@ -1552,6 +1556,7 @@ def _validate_persisted_module_lowering_payload(
     module_name: str,
     context_digest: str,
     path_stat: os.stat_result | None,
+    known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Validate one lowering payload; the single correctness gate for both tiers.
 
@@ -1585,7 +1590,9 @@ def _validate_persisted_module_lowering_payload(
             [func for func in raw_functions if isinstance(func, dict)]
         )
         if (
-            _module_lowering_local_reference_issue(module_name, result["functions"])
+            _module_lowering_local_reference_issue(
+                module_name, result["functions"], known_modules=known_modules
+            )
             is not None
         ):
             return None
@@ -1601,6 +1608,7 @@ def _read_persisted_module_lowering(
     context_digest: str,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     cache_path = _module_lowering_cache_path(
         project_root,
@@ -1615,6 +1623,7 @@ def _read_persisted_module_lowering(
         module_name=module_name,
         context_digest=context_digest,
         path_stat=path_stat,
+        known_modules=known_modules,
     )
     if result is not None:
         return result
@@ -1639,6 +1648,7 @@ def _read_persisted_module_lowering(
         module_name=module_name,
         context_digest=context_digest,
         path_stat=path_stat,
+        known_modules=known_modules,
     )
 
 
@@ -1787,6 +1797,7 @@ def _load_cached_module_lowering_result(
         context_digest=context_digest,
         path_stat=path_stat,
         target_python=target_python,
+        known_modules=known_modules,
     )
 
 
