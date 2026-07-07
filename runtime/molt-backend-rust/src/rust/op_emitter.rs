@@ -26,6 +26,13 @@ impl RustBackend {
     }
 
     fn emit_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) {
+        let reason = reason.into();
+        // Fail-closed authority: record the unsupported op the moment the
+        // dispatch catch-all fires. `compile_checked` reads this list, so an
+        // unsupported op can never slip a fabricated `MoltValue::None` past the
+        // gate by lacking the exact stub-marker string in the emitted text.
+        self.unsupported_ops
+            .push(format!("`{}` (rust backend): {reason}", op.kind));
         let marker = rust_stub_marker(op, reason);
         let o = out_var(op);
         if is_assignable_var(&o) {

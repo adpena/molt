@@ -92,6 +92,14 @@ pub struct LuauBackend {
     in_spill_do_block: bool,
     /// True when the current function needs local spilling (>190 ops with output).
     needs_local_spill: bool,
+    /// Authoritative fail-closed record of op kinds the dispatch could not
+    /// lower. Populated by `emit_unsupported_op` at the moment the catch-all
+    /// fires, so the fail-closed check in `compile_checked` does NOT depend on
+    /// text-scanning the emitted output for the `-- [unsupported op:` marker (a
+    /// caller emitting `local x = nil` without that exact string would
+    /// otherwise slip a fabricated `nil` past the gate — the silent
+    /// wrong-codegen class this field closes).
+    unsupported_ops: Vec<String>,
 }
 
 impl Default for LuauBackend {
@@ -117,6 +125,7 @@ impl LuauBackend {
             func_body_indent: 1,
             in_spill_do_block: false,
             needs_local_spill: false,
+            unsupported_ops: Vec::new(),
         }
     }
 }
