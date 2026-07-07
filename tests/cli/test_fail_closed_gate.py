@@ -104,15 +104,17 @@ def test_every_discovered_site_is_registered_in_seed() -> None:
     )
 
 
-def test_seed_covers_all_poison_classes() -> None:
-    """Sanity: the seed is non-trivial — every poison class has at least one row,
-    so each class's teeth are actually exercised on the real tree."""
+def test_registry_rows_use_only_known_classes() -> None:
+    """Integrity: every registry row names a KNOWN poison class (catches a typo'd
+    class in the TOML). A class may legitimately have ZERO rows once its poison is
+    fully burned down — that is the goal of the ratchet, not a failure (e.g.
+    todo_as_plan reached 0). Each class's scanner teeth are exercised by the
+    negative-control tests below, independent of whether a live row exists."""
     gate = _load_gate_module()
     registry = gate.load_registry()
     classes = {row.cls for row in registry.rows}
-    assert classes == gate._VALID_CLASSES, (
-        f"seed must cover all classes; missing {gate._VALID_CLASSES - classes}"
-    )
+    unknown = classes - gate._VALID_CLASSES
+    assert not unknown, f"registry rows use unknown poison classes: {unknown}"
 
 
 # ---------------------------------------------------------------------------
