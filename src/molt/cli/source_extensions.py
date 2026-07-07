@@ -1512,13 +1512,21 @@ def source_extension_manifest_source_path(
     if not source_roots:
         return None, []
     relative_roots: list[tuple[Path, Path]] = []
-    for source_root in source_roots:
-        try:
-            relative_roots.append(
-                (source_root, raw_source_path.relative_to(source_root))
-            )
-        except ValueError:
-            continue
+    if raw_source_path.is_absolute():
+        for source_root in source_roots:
+            try:
+                relative_roots.append(
+                    (source_root, raw_source_path.relative_to(source_root))
+                )
+            except ValueError:
+                continue
+    else:
+        # Sealed roots normalize relocatable source custody by storing
+        # object_closure.source relative to source_plan.source_root/build_root.
+        # Resolve those through the same root-relocation machinery as stale
+        # absolute source paths so manifests do not need deleted-worktree
+        # absolute paths to remain usable.
+        relative_roots.extend((source_root, raw_source_path) for source_root in source_roots)
     if not relative_roots:
         return None, []
     mismatched_candidates: list[Path] = []

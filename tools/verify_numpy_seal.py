@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 from pathlib import Path
+
+from molt.cli.source_extensions import source_extension_manifest_source_path
 
 
 def _load(path: Path) -> tuple[dict, Path]:
@@ -65,8 +65,25 @@ def main() -> int:
         if not src:
             continue
         checked += 1
-        if not os.path.exists(src):
+        source_sha256 = o.get("source_sha256") if isinstance(o, dict) else None
+        source_path, source_errors = source_extension_manifest_source_path(
+            src,
+            manifest=manifest,
+            manifest_path=mpath,
+            expected_sha256=(
+                source_sha256.strip()
+                if isinstance(source_sha256, str) and source_sha256.strip()
+                else None
+            ),
+        )
+        if source_errors:
+            missing.extend(source_errors)
+        elif source_path is None:
             missing.append(src)
+        elif Path(src).expanduser().is_absolute():
+            missing.append(
+                f"object_closure source is absolute, not source_plan-relative: {src}"
+            )
     print(f"[verify] object_closure objects: {len(objs)} (with source: {checked})")
     if missing:
         failures.append(
@@ -81,7 +98,7 @@ def main() -> int:
     sp = manifest.get("source_plan") or {}
     for key in ("build_root", "source_root", "compile_commands"):
         val = sp.get(key)
-        if val and not os.path.exists(val):
+        if val and not Path(val).expanduser().exists():
             failures.append(f"source_plan.{key} does not resolve: {val}")
             print(f"[verify] source_plan.{key}: MISSING {val}")
         elif val:
