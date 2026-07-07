@@ -20,6 +20,19 @@ behavior — in favour of a shortcut that silently ships a wrong or degraded ans
     returns a mismatch code with no ``PyErr`` set. The C extension calling it
     cannot tell success from a lie — the opposite of failing closed.
 
+  * fail_open_backend_dispatch — a backend op-emitter dispatch catch-all
+    (``_ =>`` / ``other =>`` / an ``emit_unsupported*`` / ``emit_op_other``
+    helper) that, for an op kind the backend does NOT lower, emits a FABRICATED
+    result value (``local x = nil`` / ``MoltValue::None`` / a placeholder) and
+    lets compilation continue. The generated program then runs with a silent
+    wrong value where the unlowered op's result should be — the codegen analogue
+    of ``fail_open_stub``. The end-state backend records the unsupported op into
+    a fail-closed accumulator that ``compile_checked`` rejects; a catch-all that
+    emits a placeholder is the poison. (Backends whose catch-all ``panic!``s /
+    ``bail!``s, or whose catch-all is a REAL generic lowering — e.g. MLIR's
+    ``emit_opaque_molt_op`` that emits a properly-named opaque op — are fail-CLOSED
+    and are NOT this class.)
+
   * duplicate_authority — two live copies of the SAME authority (e.g. two
     ``Python.h`` files, two copies of a CPython header) that must be kept in sync
     by hand. One of them is always about to drift.
@@ -71,7 +84,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "tools" / "fail_closed_registry.toml"
 
 _VALID_CLASSES = frozenset(
-    {"ecosystem_baked", "fail_open_stub", "duplicate_authority", "todo_as_plan"}
+    {
+        "ecosystem_baked",
+        "fail_open_stub",
+        "duplicate_authority",
+        "todo_as_plan",
+        "fail_open_backend_dispatch",
+    }
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -391,6 +410,114 @@ def _line_index_of_offset(text: str, offset: int) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scan E — fail-open backend op-dispatch catch-all
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A backend op-emitter whose dispatch catch-all, for an op kind the backend does
+# NOT lower, emits a FABRICATED result value and continues — the codegen analogue
+# of the fail_open_stub ABI class. The generated program then carries a silent
+# wrong value (a Luau ``nil`` / a Rust ``MoltValue::None``) where the unlowered
+# op's result should be. The end-state backend instead records the unsupported op
+# into a fail-closed accumulator that ``compile_checked`` rejects.
+#
+# Only the *preview/transpiler* backends that emit source text (luau, rust) can
+# express this shape: they have a single catch-all that fabricates a value. The
+# native and wasm backends ``panic!`` on an unhandled result-producing op (loud,
+# fail-closed) and the MLIR backend's catch-all is a REAL generic lowering
+# (``emit_opaque_molt_op`` emits a properly-named opaque op, not a placeholder),
+# so those are not swept.
+#
+# The op-emitter files a fail-open catch-all could hide in. Scoped tightly to the
+# dispatch/emit surface so unrelated ``MoltValue::None`` (e.g. a legitimate Python
+# ``None`` fill element in ``list_fill_new``) is not swept in.
+_BACKEND_DISPATCH_FILES = (
+    "runtime/molt-backend-luau/src/luau/op_emitter.rs",
+    "runtime/molt-backend-rust/src/rust/op_emitter.rs",
+    "runtime/molt-backend-rust/src/rust/op_emitter/gaps.rs",
+    "runtime/molt-backend-wasm/src/wasm/op_loop/control_ops.rs",
+    "runtime/molt-backend-mlir/src/tir_to_mlir/ops.rs",
+    "runtime/molt-backend-mlir/src/tir_to_mlir/opaque_ops.rs",
+)
+
+# The fabricated-result signatures. Each is a way a catch-all hands back a
+# plausible value for an op it did not lower:
+#   * luau: ``local <x> = nil -- [unsupported op: ...]`` — a nil result tagged
+#     with the unsupported-op marker.
+#   * rust: ``/* <MOLT_STUB marker> */ MoltValue::None`` — a None result wrapped
+#     in the stub marker the catch-all emits.
+# Both are anchored to the co-located ``unsupported``/``MOLT_STUB`` marker so a
+# legitimate ``nil`` default or a real Python-``None`` fill value (which carry no
+# such marker) is NOT flagged.
+_BACKEND_FAIL_OPEN_RES = (
+    (
+        "luau_nil_unsupported",
+        re.compile(r"=\s*nil\s*--\s*\[unsupported op:"),
+    ),
+    (
+        "rust_none_stub",
+        re.compile(r"/\*\s*\{?marker\}?\s*\*/\s*MoltValue::None"),
+    ),
+    # Generic structural backstop for a NEW backend adding the same shape: a
+    # placeholder value (nil / None / none()) emitted next to an
+    # ``unsupported``/``unhandled`` op marker on the same line.
+    (
+        "generic_placeholder_unsupported",
+        re.compile(
+            r"(?:unsupported|unhandled).{0,80}?(?:=\s*nil\b|MoltValue::None|"
+            r"MoltObject::none\(\))",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def discover_fail_open_backend_dispatch(root: Path) -> list[DiscoveredSite]:
+    """Sweep the backend op-emitter dispatch files for a catch-all that fabricates
+    a result value for an unlowered op instead of failing closed."""
+
+    found: list[DiscoveredSite] = []
+    seen: set[tuple[str, int]] = set()
+    for rel in _BACKEND_DISPATCH_FILES:
+        path = root / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for i, raw_line in enumerate(text.splitlines(), start=1):
+            # Ignore lines that are wholly Rust/Lua comments describing the
+            # pattern (e.g. the doc-comment in emit_unsupported_op that MENTIONS
+            # `MoltValue::None`): a fabricated *emit* is a real statement, not a
+            # `//`/`--` comment line.
+            stripped = raw_line.strip()
+            is_comment = stripped.startswith("//") or stripped.startswith("--")
+            for marker, rex in _BACKEND_FAIL_OPEN_RES:
+                if not rex.search(raw_line):
+                    continue
+                # The luau `-- [unsupported op:` and rust `/* {marker} */` forms
+                # are real emit statements even though they contain comment
+                # syntax; only skip pure leading-comment lines for the GENERIC
+                # backstop, which would otherwise match prose.
+                if is_comment and marker == "generic_placeholder_unsupported":
+                    continue
+                key = (rel, i)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    DiscoveredSite(
+                        "E",
+                        "fail_open_backend_dispatch",
+                        rel,
+                        stripped,
+                        i,
+                        f"backend op-dispatch catch-all fabricates a result value "
+                        f"({marker}) for an unlowered op instead of failing closed",
+                    )
+                )
+                break
+    return found
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Scan C — todo-as-plan reachable from a shipped support surface
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -627,6 +754,7 @@ def discover_all(root: Path) -> list[DiscoveredSite]:
     return (
         discover_ecosystem_baked(root)
         + discover_fail_open_abi(root)
+        + discover_fail_open_backend_dispatch(root)
         + discover_todo_as_plan(root)
         + discover_duplicate_authority(root)
     )
