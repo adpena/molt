@@ -246,6 +246,33 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = pq.WASM_TOOLCHAIN_CONTRACT_IMPORT_MISSING_RE.search(log_tail)
+    if match is not None:
+        module = match.group("module")
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="wasm-toolchain-contract-import-missing",
+                severity="infra",
+                summary=(
+                    "WASM proof preflight could not import the toolchain "
+                    f"contract because Python module {module} is missing."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Repair active uv/project provisioning before resubmitting "
+                    "the WASM row; this failed before the proof command ran, so "
+                    "do not treat it as product evidence or rerun a heavy build "
+                    "unchanged."
+                ),
+                scopes=(
+                    "tools/proof_queue.py",
+                    "src/molt/cli/wasm_toolchain.py",
+                    "pyproject.toml",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
     match = pq.STATIC_PYMOD_EXEC_RE.search(log_tail)
     if match is not None:
         module = match.group("module")
