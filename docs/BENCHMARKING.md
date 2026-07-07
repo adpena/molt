@@ -41,6 +41,12 @@ For `--target wasm --split-runtime`, the packaging contract is:
 
 ## Running Benchmarks
 
+Maintainer and agent benchmark/profiling runs should enter through the active
+project environment, for example `uv run --active --project . --python 3.12 ...`.
+Harness internals must reuse `sys.executable` for nested Molt builds and helper
+tools instead of launching another `uv run`; otherwise a warm benchmark loop can
+still pay project-env setup and extra launcher/process churn.
+
 The citable release performance authority is the canonical scoreboard, not the
 developer harness:
 

@@ -171,6 +171,7 @@ def test_wasm_pipeline_molt_build_uses_guarded_process(
     output = _molt_build(source, out_dir)
 
     assert output == out_dir / "output.wasm"
+    assert captured["cmd"][:4] == [sys.executable, "-m", "molt.cli", "build"]
     assert captured["kwargs"]["cwd"] == ROOT
     assert captured["kwargs"]["timeout"] == 300
 

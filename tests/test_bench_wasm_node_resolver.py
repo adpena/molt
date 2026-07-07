@@ -77,6 +77,10 @@ def test_resolve_runner_node_enforces_stable_wasm_flags(
     assert cmd[-1] == "wasm/run_wasm.js"
 
 
+def test_python_cmd_reuses_active_harness_interpreter() -> None:
+    assert bench_wasm._python_cmd() == [bench_wasm.sys.executable]
+
+
 def test_prepare_wasm_binary_sets_linked_table_base(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
