@@ -25,6 +25,7 @@ proven-correct work. The signal lives in the NON-exhaustive remainder.
 Modes (mirrors tools/gen_op_kinds.py / tools/audit_op_kinds.py CI convention):
   structural_audit.py                  human-readable ranked board (stdout)
   structural_audit.py --json           machine-readable findings (stdout)
+  structural_audit.py --path FILE      path-scoped diagnostic findings/metrics
   structural_audit.py --write-board    regenerate docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md
   structural_audit.py --check          fail (exit 1) if any ratchet metric regressed vs baseline
   structural_audit.py --update-baseline  re-pin tools/structural_audit_baseline.json
@@ -72,6 +73,7 @@ _EXCLUDE_PATH_FRAGMENTS = ("memory/recovery/", "memory/index_snapshots")
 
 # Source roots actually owned by the project.
 _SOURCE_ROOTS = ("runtime", "src", "tools")
+_ACTIVE_SOURCE_FILE_SCOPE: frozenset[str] | None = None
 
 
 def _is_excluded(path: Path, root: Path) -> bool:
@@ -147,6 +149,17 @@ def _is_generated(path: Path) -> bool:
 
 
 def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    if _ACTIVE_SOURCE_FILE_SCOPE is not None:
+        scoped: list[Path] = []
+        for rel_str in sorted(_ACTIVE_SOURCE_FILE_SCOPE):
+            path = root / rel_str
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            if _is_excluded(path, root):
+                continue
+            scoped.append(path)
+        return scoped
+
     out: list[Path] = []
     for sub in _SOURCE_ROOTS:
         base = root / sub
@@ -159,6 +172,57 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
                 continue
             out.append(path)
     return sorted(out, key=lambda path: path.relative_to(root).as_posix())
+
+
+def _is_project_source_file(root: Path, path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    if not rel.parts or rel.parts[0] not in _SOURCE_ROOTS:
+        return False
+    if path.suffix not in (".rs", ".py"):
+        return False
+    return not _is_excluded(path, root)
+
+
+def resolve_path_scope(root: Path, paths: list[Path]) -> frozenset[str]:
+    """Resolve a path-scoped diagnostic request into project-source files.
+
+    This is intentionally diagnostic-only. The CI ratchet remains whole-tree;
+    path scope exists so a local decomposition can explain which findings are
+    attributable to touched files without paying a full-tree scan.
+    """
+
+    selected: set[str] = set()
+    for raw_path in paths:
+        candidate = raw_path if raw_path.is_absolute() else root / raw_path
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            candidate = candidate.absolute()
+
+        if candidate.is_dir():
+            for suffix in (".rs", ".py"):
+                for path in candidate.rglob(f"*{suffix}"):
+                    if _is_project_source_file(root, path):
+                        selected.add(path.relative_to(root).as_posix())
+            continue
+
+        if candidate.is_file():
+            if _is_project_source_file(root, candidate):
+                selected.add(candidate.relative_to(root).as_posix())
+            continue
+
+        raise ValueError(f"path does not exist: {raw_path}")
+
+    if not selected:
+        raise ValueError(
+            "path scope selected no project-owned .rs/.py files under runtime/, src/, or tools/"
+        )
+    return frozenset(sorted(selected))
 
 
 # --- findings -------------------------------------------------------------
@@ -1468,12 +1532,23 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     path optimized around one plan: handlers may ask plan predicates, but may
     not clone carrier or scalar-kind membership into local side sets.
     """
-    targets = [
-        root / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-    ]
-    base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
-    if base.is_dir():
-        targets.extend(sorted(base.rglob("*.rs")))
+    if _ACTIVE_SOURCE_FILE_SCOPE is not None:
+        targets = []
+        surface_prefix = f"{_NATIVE_SCALAR_PLAN_SURFACE_REL}/"
+        for path in _iter_source_files(root, (".rs",)):
+            rel = path.relative_to(root).as_posix()
+            if (
+                rel == "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
+                or rel.startswith(surface_prefix)
+            ):
+                targets.append(path)
+    else:
+        targets = [
+            root / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+        ]
+        base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
+        if base.is_dir():
+            targets.extend(sorted(base.rglob("*.rs")))
 
     findings: list[Finding] = []
     for path in targets:
@@ -1732,10 +1807,18 @@ PROBES = (
 )
 
 
-def run_all(root: Path) -> list[Finding]:
+def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Finding]:
     findings: list[Finding] = []
-    for probe in PROBES:
-        findings.extend(probe(root))
+    global _ACTIVE_SOURCE_FILE_SCOPE
+    previous_scope = _ACTIVE_SOURCE_FILE_SCOPE
+    _ACTIVE_SOURCE_FILE_SCOPE = path_scope
+    try:
+        for probe in PROBES:
+            if path_scope is not None and probe is probe_registry_reconciliation:
+                continue
+            findings.extend(probe(root))
+    finally:
+        _ACTIVE_SOURCE_FILE_SCOPE = previous_scope
     findings.sort(key=lambda f: f.sort_key())
     return findings
 
@@ -2029,6 +2112,40 @@ def format_board(
     return "\n".join(lines).rstrip("\n")
 
 
+def format_path_scope_report(
+    findings: list[Finding], metrics: dict[str, float], path_scope: frozenset[str]
+) -> str:
+    lines = [
+        "Path-scoped structural audit (diagnostic only; CI --check remains whole-tree)",
+        "",
+        "## Scope",
+    ]
+    for rel in sorted(path_scope):
+        lines.append(f"- `{rel}`")
+
+    nonzero_metrics = {key: value for key, value in metrics.items() if value}
+    lines.append("")
+    lines.append("## Ratchet Metrics In Scope")
+    if nonzero_metrics:
+        for key in sorted(nonzero_metrics):
+            lines.append(f"- `{key}`: {nonzero_metrics[key]:g}")
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    lines.append("## Findings")
+    if not findings:
+        lines.append("- none")
+        return "\n".join(lines)
+
+    for finding in findings:
+        lines.append(
+            f"- `{finding.probe}` {finding.severity}: {finding.title} at "
+            f"`{finding.location}` ({finding.detail})"
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -2041,6 +2158,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--json", action="store_true", help="emit machine-readable findings"
+    )
+    ap.add_argument(
+        "--path",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "diagnostic scope: report findings/metrics for a project-owned file "
+            "or directory under runtime/, src/, or tools/; repeatable"
+        ),
     )
     ap.add_argument(
         "--check",
@@ -2060,7 +2187,22 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root: Path = args.root.resolve()
-    findings = run_all(root)
+    path_scope: frozenset[str] | None = None
+    if args.path:
+        if args.check or args.update_baseline or args.write_board:
+            print(
+                "ERROR: --path is diagnostic-only and cannot be combined with "
+                "--check, --update-baseline, or --write-board",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            path_scope = resolve_path_scope(root, args.path)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
+    findings = run_all(root, path_scope=path_scope)
     metrics = ratchet_metrics(findings)
     baseline_path = root / BASELINE_PATH_REL
 
@@ -2087,15 +2229,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "metrics": metrics,
-                    "findings": [asdict(f) for f in findings],
-                },
-                indent=2,
-            )
-        )
+        payload = {
+            "metrics": metrics,
+            "findings": [asdict(f) for f in findings],
+        }
+        if path_scope is not None:
+            payload["path_scope"] = sorted(path_scope)
+        print(json.dumps(payload, indent=2))
         return 0
 
     if args.check:
@@ -2130,6 +2270,10 @@ def main(argv: list[str] | None = None) -> int:
             f"structural ratchet OK ({len(findings)} findings; "
             f"{len(improved)} metric(s) improved)"
         )
+        return 0
+
+    if path_scope is not None:
+        print(format_path_scope_report(findings, metrics, path_scope))
         return 0
 
     # default: human board to stdout
