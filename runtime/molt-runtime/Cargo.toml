@@ -112,7 +112,7 @@ stdlib_text = ["molt-runtime-text/stdlib_text"]
 stdlib_itertools = ["dep:molt-runtime-itertools"]
 stdlib_serial = ["dep:molt-runtime-serial"]
 stdlib_csv = ["stdlib_serial"]
-stdlib_difflib = ["dep:molt-runtime-difflib"]
+stdlib_difflib = ["dep:molt-stdlib-difflib"]
 stdlib_graphlib = ["dep:molt-runtime-graphlib"]
 stdlib_http = ["dep:molt-runtime-http"]
 stdlib_logging_ext = ["dep:molt-runtime-logging"]
@@ -177,7 +177,7 @@ molt-runtime-regex = { path = "../molt-runtime-regex", optional = true }
 molt-runtime-text = { path = "../molt-runtime-text", default-features = false }
 molt-runtime-itertools = { path = "../molt-runtime-itertools", optional = true }
 molt-runtime-serial = { path = "../molt-runtime-serial", optional = true }
-molt-runtime-difflib = { path = "../molt-runtime-difflib", optional = true }
+molt-stdlib-difflib = { path = "../molt-stdlib-difflib", optional = true }
 molt-runtime-graphlib = { path = "../molt-runtime-graphlib", optional = true }
 molt-runtime-logging = { path = "../molt-runtime-logging", optional = true }
 molt-runtime-http = { path = "../molt-runtime-http", optional = true }

@@ -4,7 +4,7 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     #[cfg(feature = "stdlib_difflib")]
     {
-        molt_runtime_difflib::intrinsics_generated::difflib_resolver::resolve_symbol_with(
+        molt_stdlib_difflib::intrinsics_generated::difflib_resolver::resolve_symbol_with(
             symbol,
             crate::builtins::functions::runtime_fn_addr,
         )

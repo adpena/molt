@@ -1,4 +1,4 @@
-//! FFI bridge shims for `molt-runtime-difflib`.
+//! FFI bridge entrypoints for `molt-stdlib-difflib`.
 //!
 //! Each function here is a thin `#[no_mangle] extern "C"` wrapper around an
 //! internal `pub(crate)` function.  The difflib crate declares matching

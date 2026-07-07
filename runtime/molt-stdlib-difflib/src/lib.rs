@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports)]
-//! `molt-runtime-difflib` -- difflib intrinsics for the Molt runtime.
+//! `molt-stdlib-difflib` -- difflib intrinsics for the Molt runtime.
 //!
 //! Isolates the `difflib` Python module (SequenceMatcher, unified_diff,
 //! context_diff, ndiff, get_close_matches) into a dedicated crate.

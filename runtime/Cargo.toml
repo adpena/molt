@@ -13,7 +13,7 @@ members = [
     "molt-runtime-regex",
     "molt-runtime-path",
     "molt-runtime-text",
-    "molt-runtime-difflib",
+    "molt-stdlib-difflib",
     "molt-runtime-graphlib",
     "molt-runtime-logging",
     "molt-runtime-stringprep",

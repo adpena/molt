@@ -1,8 +1,8 @@
 //! FFI bridge to molt-runtime internal functions.
 //!
 //! These `extern "C"` declarations are resolved at link time when
-//! molt-runtime-difflib is linked into the same binary as molt-runtime.
-//! Each function has a corresponding `#[no_mangle]` shim in
+//! molt-stdlib-difflib is linked into the same binary as molt-runtime.
+//! Each function has a corresponding `#[no_mangle]` bridge entrypoint in
 //! `molt-runtime/src/difflib_bridge.rs`.
 
 use molt_runtime_core::prelude::*;
