@@ -4,10 +4,12 @@
 //! normalization, and regex translation so fnmatch behavior has one stdlib-text
 //! authority.
 
-fn fnmatch_parse_char_class(
-    pat: &[char],
-    mut idx: usize,
-) -> Option<(Vec<char>, Vec<(char, char)>, bool, usize)> {
+type CharClassRange = (char, char);
+type ParsedCharClass = (Vec<char>, Vec<CharClassRange>, bool, usize);
+type ByteClassRange = (u8, u8);
+type ParsedByteClass = (Vec<u8>, Vec<ByteClassRange>, bool, usize);
+
+fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<ParsedCharClass> {
     if idx >= pat.len() || pat[idx] != '[' {
         return None;
     }
@@ -26,7 +28,7 @@ fn fnmatch_parse_char_class(
     }
 
     let mut singles: Vec<char> = Vec::new();
-    let mut ranges: Vec<(char, char)> = Vec::new();
+    let mut ranges: Vec<CharClassRange> = Vec::new();
 
     if pat[idx] == ']' {
         singles.push(']');
@@ -129,10 +131,7 @@ pub fn fnmatch_match_impl(name: &str, pat: &str) -> bool {
     pi == pat_chars.len()
 }
 
-fn fnmatch_parse_char_class_bytes(
-    pat: &[u8],
-    mut idx: usize,
-) -> Option<(Vec<u8>, Vec<(u8, u8)>, bool, usize)> {
+fn fnmatch_parse_char_class_bytes(pat: &[u8], mut idx: usize) -> Option<ParsedByteClass> {
     if idx >= pat.len() || pat[idx] != b'[' {
         return None;
     }
@@ -151,7 +150,7 @@ fn fnmatch_parse_char_class_bytes(
     }
 
     let mut singles: Vec<u8> = Vec::new();
-    let mut ranges: Vec<(u8, u8)> = Vec::new();
+    let mut ranges: Vec<ByteClassRange> = Vec::new();
 
     if pat[idx] == b']' {
         singles.push(b']');
