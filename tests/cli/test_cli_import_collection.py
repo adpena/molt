@@ -15188,6 +15188,11 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
         ) -> bool:
             return False
 
+        def shutdown(
+            self, wait: bool = True, cancel_futures: bool = False
+        ) -> None:
+            del wait, cancel_futures
+
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
             nonlocal submit_calls
             submit_calls += 1
@@ -15339,6 +15344,11 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         ) -> bool:
             return False
 
+        def shutdown(
+            self, wait: bool = True, cancel_futures: bool = False
+        ) -> None:
+            del wait, cancel_futures
+
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
             assert fn is cli_frontend_worker._frontend_lower_module_worker
             return _FakeFuture(payload)
@@ -15473,6 +15483,11 @@ def test_parallel_build_allows_scoped_type_facts(
 
         def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
             return False
+
+        def shutdown(
+            self, wait: bool = True, cancel_futures: bool = False
+        ) -> None:
+            del wait, cancel_futures
 
         def submit(self, fn: object, payload: dict[str, object]) -> _FakeFuture:
             assert fn is cli_frontend_worker._frontend_lower_module_worker
