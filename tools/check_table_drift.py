@@ -21,10 +21,14 @@ asserts equality, failing on any mismatch. The bound tables are:
                                      <-> runtime `exception_base_spec` + roots)
   #4 supported target-Python vers  (cli authority <-> stdlib-union baseline
                                      <-> gen_stdlib_module_union generator)
+  #5 PyModuleDef_Slot tokens        (inline `include/molt/Python.h`
+                                     <-> standalone `molt-cpython-abi/include/Python.h`
+                                     both vs CPython 3.12 moduleobject.h)
 
 Authority: the Rust runtime is the constructor-of-truth for #1/#2/#3; the CLI
-`TargetPythonVersion` tuple is the single source for #4. This gate binds the
-mirrors to those authorities.
+`TargetPythonVersion` tuple is the single source for #4; CPython 3.12
+`Include/moduleobject.h` is the authority for #5. This gate binds the mirrors to
+those authorities.
 
 Usage:
     uv run --python 3.12 python3 tools/check_table_drift.py
@@ -69,6 +73,11 @@ TYPE_IDS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "object" / "type_ids.r
 EXCEPTIONS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "builtins" / "exceptions.rs"
 STDLIB_UNION_PY = ROOT / "tools" / "stdlib_module_union.py"
 GEN_STDLIB_UNION_PY = ROOT / "tools" / "gen_stdlib_module_union.py"
+# CPython-ABI PyModuleDef_Slot token headers (two ABI homes: inline + standalone lib).
+CPYTHON_ABI_HEADER = ROOT / "include" / "molt" / "Python.h"
+CPYTHON_ABI_STANDALONE_HEADER = (
+    ROOT / "runtime" / "molt-cpython-abi" / "include" / "Python.h"
+)
 
 
 # --- Result model ---------------------------------------------------------
@@ -552,11 +561,98 @@ def check_target_python_versions() -> CategoryResult:
     return result
 
 
+# PyModuleDef_Slot tokens per CPython 3.12 Include/moduleobject.h.
+#   Slot IDs (int, assigned to PyModuleDef_Slot.slot):
+_PYMOD_SLOT_IDS = {
+    "Py_mod_create": "1",
+    "Py_mod_exec": "2",
+    "Py_mod_multiple_interpreters": "3",
+    "Py_mod_gil": "4",
+}
+#   Slot VALUES (void*, assigned to PyModuleDef_Slot.value) — CPython casts to
+#   (void *) so they slot directly into the pointer field without -Wint-conversion.
+_PYMOD_SLOT_VALUES = {
+    "Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED": "((void *)0)",
+    "Py_MOD_MULTIPLE_INTERPRETERS_SUPPORTED": "((void *)1)",
+    "Py_MOD_PER_INTERPRETER_GIL_SUPPORTED": "((void *)2)",
+    "Py_MOD_GIL_USED": "((void *)0)",
+    "Py_MOD_GIL_NOT_USED": "((void *)1)",
+}
+
+
+def _parse_c_defines(path: Path, names: set[str]) -> dict[str, str]:
+    """Return {macro: whitespace-normalized body} for the requested #define names."""
+    found: dict[str, str] = {}
+    text = _read(path)
+    if not text:
+        return found
+    for name in names:
+        m = re.search(
+            r"^[ \t]*#[ \t]*define[ \t]+" + re.escape(name) + r"[ \t]+(.+?)[ \t]*$",
+            text,
+            re.MULTILINE,
+        )
+        if m:
+            # Collapse whitespace so ((void *)2) and ((void  *) 2) compare equal.
+            found[name] = re.sub(r"\s+", "", m.group(1).strip())
+    return found
+
+
+def check_pymod_slot_tokens() -> CategoryResult:
+    """Bind PyModuleDef_Slot token values across both CPython-ABI header homes.
+
+    The inline header (include/molt/Python.h) and the standalone-lib header
+    (runtime/molt-cpython-abi/include/Python.h) both declare the Py_mod_* slot
+    IDs and Py_MOD_* slot values. A value-token drift (e.g. a plain ``2`` instead
+    of ``((void *)2)``) breaks any extension whose PyModuleDef_Slot array assigns
+    the token into the void* value field — the SciPy _nd_image build hit exactly
+    this. Authority is CPython 3.12 Include/moduleobject.h; this gate asserts both
+    headers match it and thus each other.
+    """
+    result = CategoryResult(
+        key="pymod-slot-tokens",
+        title="CPython-ABI PyModuleDef_Slot tokens (both header homes vs CPython 3.12)",
+    )
+    expected = {
+        k: re.sub(r"\s+", "", v)
+        for k, v in {**_PYMOD_SLOT_IDS, **_PYMOD_SLOT_VALUES}.items()
+    }
+    headers = {
+        "inline (include/molt/Python.h)": CPYTHON_ABI_HEADER,
+        "standalone (molt-cpython-abi/include/Python.h)": CPYTHON_ABI_STANDALONE_HEADER,
+    }
+    all_names = set(expected)
+    for label, path in headers.items():
+        if not path.exists():
+            result.items.append(CheckItem(label, False, f"missing header {path}"))
+            continue
+        got = _parse_c_defines(path, all_names)
+        for name, want in expected.items():
+            have = got.get(name)
+            if have is None:
+                result.items.append(
+                    CheckItem(f"{label}:{name}", False, "define not found")
+                )
+            else:
+                ok = have == want
+                result.items.append(
+                    CheckItem(
+                        f"{label}:{name}",
+                        ok,
+                        f"{name} = {have}"
+                        if ok
+                        else f"DRIFT: expected {want}, got {have}",
+                    )
+                )
+    return result
+
+
 CATEGORIES = {
     "type-tags": check_type_tags,
     "exception-ordinals": check_exception_ordinals,
     "exception-names": check_exception_names,
     "target-python": check_target_python_versions,
+    "pymod-slot-tokens": check_pymod_slot_tokens,
 }
 
 
