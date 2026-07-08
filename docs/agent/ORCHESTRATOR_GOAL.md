@@ -147,18 +147,16 @@ while it moves:
 
 ## Process / resource custody (binding, hard-won)
 
-- APDataStore = `D:` (exFAT, ~2TB) is THE build volume. Route fresh DX/proof
-  builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts
-  --dx`, `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so
-  build/cache/temp roots resolve to `D:\Molt` and `MOLT_TARGET_ROOT` resolves
-  to `D:\Molt\target-root`. exFAT has no hard-links: the backend cache owns the
-  lock+rename/copy fallback — a "Failed to
-  publish backend cache output" under `D:\Molt` is a DX defect to diagnose through
-  the cache authority, never a reason to reroute to `E:` or hand-copy. Treat
-  `E:\Molt` / `E:\molt-target` as legacy evidence only; preserve inherited
-  legacy roots only with `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` or an explicit
-  `MOLT_EXTERNAL_ARTIFACT_ROOTS` override. The daily `MoltSSDJanitor` keeps
-  `D:` clean.
+- `C:\Molt` is THE checkout/artifact volume. Route fresh DX/proof builds through
+  RunContext (`tools/run_context_env.py --prefer-external-artifacts --dx`,
+  `tools/throughput_env.sh`, `tools/dev.py`, or the proof queue) so
+  build/cache/temp roots resolve to `C:\Molt` and `MOLT_TARGET_ROOT` resolves to
+  `C:\Molt\target-root`. Treat inherited `D:\Molt`, `E:\Molt`,
+  `D:\molt-target`, and `E:\molt-target` roots as stale legacy state unless the
+  operator explicitly sets `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` for a fallback
+  row. The janitor keeps `C:\Molt` bounded; legacy clone/worktree/bundle piles
+  must have signal harvested by reviewed cherry-pick/pathspec landing onto
+  `main`, then be deleted/pruned instead of preserved as backups.
 - HARD build cap: ≤2-3 build agents at once (rustc/cargo are NOT RSS-guarded; 5
   concurrent OOM'd a 32GB host at 97GB and got Codex killed). When builds stall,
   STOP feeding and let in-flight drain — don't cram. Use fast feedback loops

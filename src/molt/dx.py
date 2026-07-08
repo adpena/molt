@@ -57,11 +57,18 @@ DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/VertigoDataTier/Molt",
 )
 DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME = "Molt"
-# The maintainer/agent artifact volume is selected by VOLUME LABEL, never by
-# drive-letter order — the legacy letter-order scan silently picked E:\Molt
-# (the contended legacy drive). There is exactly one preferred label here; the
-# explicit MOLT_EXTERNAL_ARTIFACT_ROOTS override is the escape hatch for any
-# other volume. Add labels here rather than reintroducing a letter fallback.
+DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
+LEGACY_WINDOWS_MOLT_ROOTS = (
+    r"D:\Molt",
+    r"E:\Molt",
+    r"D:\molt-target",
+    r"E:\molt-target",
+)
+# The maintainer/agent artifact root prefers C:\Molt, then fallback volumes
+# selected by VOLUME LABEL, never by drive-letter order. The deleted
+# letter-order scan silently picked E:\Molt (the contended legacy drive).
+# Explicit MOLT_EXTERNAL_ARTIFACT_ROOTS remains the escape hatch for any other
+# fallback volume.
 DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS = ("APDataStore",)
 # Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the selected
 # artifact root so MOLT_TARGET_ROOT follows the one root authority instead of
@@ -374,23 +381,28 @@ def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]
 
 
 def _default_windows_external_artifact_roots() -> tuple[Path, ...]:
-    """Artifact roots on volumes whose LABEL is in the preferred set.
+    """Windows artifact roots, with C:\\Molt primary when present.
 
-    Selection is by volume label only. The legacy drive-letter-order scan is
-    deleted: it silently returned ``E:\\Molt`` (the contended legacy volume)
-    ahead of the intended APDataStore SSD whenever the labels went unchecked. A
-    volume without a preferred label is not a default candidate; attach the
-    APDataStore volume or set MOLT_EXTERNAL_ARTIFACT_ROOTS explicitly.
+    APDataStore-labeled volumes remain fallback candidates. The legacy
+    drive-letter-order scan is deleted: it silently returned ``E:\\Molt`` (the
+    contended legacy volume) ahead of the intended root whenever labels went
+    unchecked. A volume without a preferred label is not a default candidate;
+    set MOLT_EXTERNAL_ARTIFACT_ROOTS explicitly for any other fallback.
     """
     preferred_labels = {
         label.casefold() for label in DEFAULT_WINDOWS_PREFERRED_VOLUME_LABELS
     }
-    roots: list[Path] = []
+    roots: list[Path] = list(_default_windows_primary_artifact_roots())
     for drive_root in _windows_drive_roots():
         label = _windows_volume_label(drive_root)
         if label is not None and label.casefold() in preferred_labels:
             roots.append(drive_root / DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME)
     return _dedupe_paths(roots)
+
+
+def _default_windows_primary_artifact_roots() -> tuple[Path, ...]:
+    root = DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT
+    return (root,) if root.is_dir() else ()
 
 
 def _windows_drive_roots() -> tuple[Path, ...]:
@@ -480,10 +492,38 @@ def _legacy_sibling_toolchain_root_for_artifact_root(
 
 
 def _same_path_text(left: Path, right: Path) -> bool:
-    def normalize(path: Path) -> str:
-        return os.path.normcase(str(path.expanduser())).rstrip("\\/")
+    return _path_text_key(left) == _path_text_key(right)
 
-    return normalize(left) == normalize(right)
+
+def _path_text_key(path: Path) -> str:
+    return os.path.normcase(str(path.expanduser())).rstrip("\\/")
+
+
+def _windows_path_text_key(raw: str | Path) -> str:
+    return str(raw).strip().replace("/", "\\").rstrip("\\").casefold()
+
+
+def _windows_path_is_under(raw: str | Path, root: str) -> bool:
+    path_key = _windows_path_text_key(raw)
+    root_key = _windows_path_text_key(root)
+    return path_key == root_key or path_key.startswith(root_key + "\\")
+
+
+def _stale_windows_molt_root_value(raw: str, env: Mapping[str, str]) -> bool:
+    if os.name != "nt":
+        return False
+    if _env_bool(env, ("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS",), default=False):
+        return False
+    if not _default_windows_primary_artifact_roots():
+        return False
+    return any(_windows_path_is_under(raw, root) for root in LEGACY_WINDOWS_MOLT_ROOTS)
+
+
+def _drop_stale_windows_root_env(env: dict[str, str]) -> None:
+    for key in CANONICAL_ROOT_ENV_KEYS:
+        raw = env.get(key, "")
+        if raw and _stale_windows_molt_root_value(raw, env):
+            env.pop(key, None)
 
 
 def _should_rehome_toolchain_root(
@@ -550,11 +590,9 @@ def _reject_c_drive_artifact_path(
     if _is_windows_c_drive_path(path.resolve()):
         raise DxConfigError(
             f"{key} resolved to {path}; Molt build artifacts must live on an "
-            "external non-C: drive. Prefer the APDataStore root "
-            "(D:\\Molt on this Windows workstation) or set "
-            "MOLT_EXTERNAL_ARTIFACT_ROOTS to another external root; set "
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 only for an explicit emergency "
-            "override."
+            "approved artifact root. Prefer C:\\Molt on this workstation; set "
+            "MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 for the canonical C:\\Molt root "
+            "or MOLT_EXTERNAL_ARTIFACT_ROOTS for an explicit fallback."
         )
 
 
@@ -569,6 +607,8 @@ def _candidate_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
     for candidate in candidates:
         text = candidate.strip()
         if not text:
+            continue
+        if _stale_windows_molt_root_value(text, env):
             continue
         roots.append(Path(text).expanduser())
     return _dedupe_paths(roots) if roots else _default_external_artifact_roots(env)
@@ -655,11 +695,10 @@ def select_external_artifact_root(
         return candidate
     if require_external:
         raise DxConfigError(
-            "no healthy external non-C: Molt artifact root was found. Attach an "
-            "external drive or set MOLT_EXTERNAL_ARTIFACT_ROOTS to the "
-            "APDataStore root (D:\\Molt on this Windows workstation) with "
-            "sufficient free space; set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 only "
-            "for an explicit emergency override."
+            "no healthy Molt artifact root was found. Prefer C:\\Molt on this "
+            "workstation; set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 for the canonical "
+            "C:\\Molt root or MOLT_EXTERNAL_ARTIFACT_ROOTS for an explicit "
+            "fallback with sufficient free space."
         )
     return None
 
@@ -1015,6 +1054,7 @@ class RunContext:
         force_default_keys: Collection[str] = (),
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
+        _drop_stale_windows_root_env(env)
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
         forced = set(force_default_keys)
 
@@ -1243,6 +1283,7 @@ class DxProject:
     ) -> dict[str, str]:
         dx = self.load_config()
         env = dict(os.environ if base is None else base)
+        _drop_stale_windows_root_env(env)
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             env.pop(name, None)
         prefer_external = bool(dx.get("prefer_external_artifacts"))

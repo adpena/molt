@@ -128,33 +128,34 @@ is reconciled.
   the proof queue): it resolves `MOLT_EXT_ROOT=C:\Molt`,
   `CARGO_TARGET_DIR=C:\Molt\target` (a STABLE persistent target — do NOT set
   `MOLT_SESSION_ID` for ordinary builds), cache/temp under it, and the managed
-  toolchain root
-  `MOLT_TARGET_ROOT=D:\Molt\target-root`. Stale inherited
-  `MOLT_TARGET_ROOT=E:\molt-target`, `E:\Molt\target-root`, or
-  `D:\molt-target` is rehomed unless the operator sets
+  toolchain root `MOLT_TARGET_ROOT=C:\Molt\target-root`. Stale inherited
+  `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, cache/temp roots, or
+  `MOLT_TARGET_ROOT` under `D:\Molt`, `E:\Molt`, `D:\molt-target`, or
+  `E:\molt-target` are rehomed unless the operator sets
+  `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` for an explicit fallback row. Preserve
+  an intentional off-default toolchain root only with
   `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext also emits `UV_LINK_MODE=copy` for
-  exFAT APDataStore roots unless an explicit operator value is present. In
+  exFAT fallback roots unless an explicit operator value is present. In
   `--dx` mode it emits stable `UV_PROJECT_ENVIRONMENT=tmp/uv-project-envs/dx__py3.12`
   for the standard Python 3.12 lane instead of a per-process `run-<pid>` env, so
   repeated checks reuse one uv environment while Cargo output remains
   session-scoped. Use `--session-scoped-uv-project-env` only when the uv
   environment must be isolated too.
-  Maintainer/agent git worktrees go under `D:\Molt\worktrees`, never
-  `E:\Molt\worktrees` (legacy) or `C:`. APDataStore is exFAT: it records no
-  ownership, so a fresh worktree needs
-  `git config --global --add safe.directory <path>` or git aborts with "detected
-  dubious ownership"; and it has no hard-link support, so cache publication uses
-  the backend cache lock+rename/copy fallback â€” do not disable caching, reroute to
-  `E:`, or hand-copy artifacts to work around it. Treat `Failed to publish
-  backend cache output` under `D:\Molt` as a DX defect to diagnose through the
-  cache authority; treat `E:\Molt`/`E:\molt-target` as legacy/fallback evidence.
-- APDataStore accumulates per-session cargo targets, pytest temproots, dated
-  scratch, and orphaned worktrees; `tools/molt_ssd_janitor.py` reclaims them
+  Maintainer/agent git worktrees go under `C:\Molt\worktrees` only when real
+  isolation is required; the canonical checkout and landing root is
+  `C:\Molt\molt-src`. Never use OneDrive worktrees, and do not create new
+  `D:\Molt\worktrees` / `E:\Molt\worktrees` lanes. Harvest useful signal by
+  reviewed cherry-pick/pathspec landing onto `main`, then delete/prune the
+  source worktree, branch, and any temporary bundle; do not let backup piles
+  become a second repository.
+- `C:\Molt` accumulates cargo targets, pytest temproots, dated scratch, and
+  orphaned worktrees; `tools/molt_ssd_janitor.py` reclaims them
   (dry-run by default; `--apply`; scoped to the artifact root; age-gated; it
   never touches registered git worktrees, the current session, or paths
   modified within `--min-idle-hours`). A daily Windows scheduled task runs the
   safe classes; run `--all` (adds stale `cargo-target-*`) manually to reclaim
-  more. Do not hand-`rm` under `D:\Molt` â€” route through the janitor.
+  more. Do not hand-delete under `C:\Molt` or fallback artifact roots; route
+  through the janitor.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`.
 - Pact Kernel A acceptance must use the named queue lane
   `tools/proof_queue.py pact-witness-acceptance`. A row that only runs
