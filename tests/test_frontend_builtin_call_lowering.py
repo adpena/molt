@@ -931,7 +931,9 @@ def test_python_builtin_func_serializes_metadata_name_operand() -> None:
     gen = SimpleTIRGenerator(module_name="open_builtin_metadata_probe")
     gen.visit(ast.parse("f = open('data.txt')\n"))
     main_ops = next(
-        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
     )
     const_str = {
         op["out"]: op["s_value"]
@@ -2042,10 +2044,7 @@ def test_known_module_import_uses_runtime_import_boundary() -> None:
 
 def test_target_sys_platform_prunes_unreachable_darwin_guarded_module_code() -> None:
     source = (
-        "import sys\n"
-        "if sys.platform == 'darwin':\n"
-        "    polyval([1], [2])\n"
-        "answer = 1\n"
+        "import sys\nif sys.platform == 'darwin':\n    polyval([1], [2])\nanswer = 1\n"
     )
     gen = SimpleTIRGenerator(
         module_name="numpy",
@@ -2063,10 +2062,7 @@ def test_target_sys_platform_prunes_unreachable_darwin_guarded_module_code() -> 
 
 def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> None:
     source = (
-        "import sys\n"
-        "if sys.platform == 'darwin':\n"
-        "    polyval([1], [2])\n"
-        "answer = 1\n"
+        "import sys\nif sys.platform == 'darwin':\n    polyval([1], [2])\nanswer = 1\n"
     )
     gen = SimpleTIRGenerator(
         module_name="numpy",
@@ -2080,6 +2076,82 @@ def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> 
     )
 
     assert any(op.get("s_value") == "polyval" for op in main_ops)
+
+
+def test_target_sys_platform_elides_deleted_unreachable_module_helper_body() -> None:
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "def _mac_os_check():\n"
+        "    y = polyval([1], [2])\n"
+        "if sys.platform == 'darwin':\n"
+        "    _mac_os_check()\n"
+        "del _mac_os_check\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert all(func["name"] != "numpy___mac_os_check" for func in ir["functions"])
+    assert all(
+        op.get("kind") != "call_indirect"
+        for func in ir["functions"]
+        for op in func["ops"]
+    )
+
+
+def test_target_sys_platform_keeps_deleted_helper_body_when_platform_branch_live() -> (
+    None
+):
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "def _mac_os_check():\n"
+        "    y = polyval([1], [2])\n"
+        "if sys.platform == 'darwin':\n"
+        "    _mac_os_check()\n"
+        "del _mac_os_check\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="darwin",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert any(func["name"] == "numpy___mac_os_check" for func in ir["functions"])
+    assert any(
+        op.get("s_value") == "polyval" for func in ir["functions"] for op in func["ops"]
+    )
+
+
+def test_target_sys_platform_keeps_deleted_helper_when_globals_escape() -> None:
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "def _mac_os_check():\n"
+        "    y = polyval([1], [2])\n"
+        "snapshot = globals()\n"
+        "if sys.platform == 'darwin':\n"
+        "    _mac_os_check()\n"
+        "del _mac_os_check\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert any(func["name"] == "numpy___mac_os_check" for func in ir["functions"])
 
 
 def test_source_import_statements_use_import_transaction_details() -> None:

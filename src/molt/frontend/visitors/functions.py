@@ -137,6 +137,11 @@ class FunctionVisitorMixin(_MixinBase):
         return None
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if (
+            self.current_func_name == "molt_main"
+            and node.name in self.module_elided_deleted_funcs
+        ):
+            return None
         self._maybe_record_local_intrinsic_wrapper(node)
         if self.current_func_name == "molt_main":
             new_globals = self._collect_global_decls(node.body)

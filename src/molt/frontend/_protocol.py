@@ -21,6 +21,7 @@ import ast
 from typing import (
     Any,
     Callable,
+    Iterable,
     Literal,
     Protocol,
     Sequence,
@@ -62,7 +63,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_names: dict[str, str]
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
@@ -108,6 +108,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_declared_classes: set[str]
     module_declared_funcs: dict[str, FunctionKind]
     module_defined_funcs: set[str]
+    module_elided_deleted_funcs: set[str]
     module_frame_code_id: int | None
     module_frame_emitted: Any
     module_frame_entered: Any
@@ -1892,11 +1893,22 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _module_chunk_stmt_cost(self, stmt: ast.stmt) -> int: ...
 
+    def _module_elidable_deleted_functions(
+        self, node: ast.Module
+    ) -> frozenset[str]: ...
+
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool: ...
 
     def _module_has_future_annotations(self, node: ast.Module) -> bool: ...
 
+    def _module_live_statements_for_target(
+        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+    ) -> list[ast.stmt]: ...
+
     def _module_stable_funcs(self, node: ast.Module) -> set[str]: ...
+
+    @staticmethod
+    def _module_static_sys_aliases(node: ast.Module) -> frozenset[str]: ...
 
     def _name_resolves_to_builtin(self, name: str) -> bool: ...
 
@@ -2270,6 +2282,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _should_track_module_overrides(self) -> bool: ...
 
+    @staticmethod
+    def _side_effect_free_module_function_def(node: ast.FunctionDef) -> bool: ...
+
     def _source_imports_use_transaction(self) -> bool: ...
 
     @staticmethod
@@ -2308,6 +2323,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _suppress_check_exception(self, *, emit_on_exit: bool = True) -> Any: ...
 
     def _sync_module_pressure_counts_from_funcs_map(self) -> None: ...
+
+    def _sys_platform_static_truth_kwargs(
+        self, extra_sys_platform_module_aliases: Iterable[str] = ()
+    ) -> dict[str, object]: ...
 
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
