@@ -132,13 +132,14 @@ def test_canonical_gate_names_full_release_fast_backend_contract() -> None:
 
 def _canonical_scoreboard_doc(
     *,
+    benchmarks: tuple[str, ...] | None = None,
     backends: tuple[str, ...] = ("native", "llvm"),
     profile: str = "release-fast",
     classify_active: bool = True,
 ) -> dict:
-    benchmark = "tests/benchmarks/bench_fib.py"
+    suite = benchmarks or pa.CANONICAL_PERF_BENCHMARKS
 
-    def cell_for(backend: str) -> dict[str, object]:
+    def cell_for(benchmark: str, backend: str) -> dict[str, object]:
         return {
             "benchmark": benchmark,
             "target": "native",
@@ -165,11 +166,10 @@ def _canonical_scoreboard_doc(
             "codon_equivalent": None,
             "cpython_peak_rss_mib": 15.0,
             "output_parity": True,
-            "log_artifact": f"bench/scoreboard/logs/fib-{backend}.log",
+            "log_artifact": f"bench/scoreboard/logs/{Path(benchmark).stem}-{backend}.log",
             "classification": "GREEN_STABLE",
         }
 
-    cells = {backend: cell_for(backend) for backend in backends}
     return {
         "summary": {"classify_active": classify_active},
         "provenance": {
@@ -178,10 +178,15 @@ def _canonical_scoreboard_doc(
                 for backend in backends
             }
         },
+        "benchmarks_run": list(suite),
         "scoreboard": {
             benchmark: {
-                "native": {backend: {profile: cell} for backend, cell in cells.items()}
+                "native": {
+                    backend: {profile: cell_for(benchmark, backend)}
+                    for backend in backends
+                }
             }
+            for benchmark in suite
         },
     }
 
@@ -190,13 +195,15 @@ def test_canonical_scoreboard_command_accepts_only_release_gate_shape() -> None:
     assert pa.canonical_scoreboard_command_problems(pa.CANONICAL_GATE) == []
 
     problems = pa.canonical_scoreboard_command_problems(
-        "tools/perf_scoreboard.py --backend native --profile dev --classify"
+        "tools/perf_scoreboard.py --backend native --profile dev --classify "
+        "--benchmark tests/benchmarks/bench_fib.py"
     )
 
     assert any("must include --set core" in p for p in problems)
     assert any("missing canonical backends: llvm" in p for p in problems)
     assert any("must use only --profile release-fast" in p for p in problems)
     assert any("missing --require-quiescent" in p for p in problems)
+    assert any("uses non-release perf flags: --benchmark" in p for p in problems)
 
 
 def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> None:
@@ -221,6 +228,27 @@ def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> N
     assert any(
         "may only contain native+llvm release-fast cells" in p
         for p in wrong_profile
+    )
+
+    partial_suite = pa.canonical_scoreboard_shape_problems(
+        _canonical_scoreboard_doc(benchmarks=(pa.CANONICAL_PERF_BENCHMARKS[0],))
+    )
+    assert any("missing canonical core benchmarks" in p for p in partial_suite)
+    assert any(
+        "must include both native and llvm release-fast cells for every benchmark"
+        in p
+        for p in partial_suite
+    )
+
+    empty_board = pa.canonical_scoreboard_shape_problems({"scoreboard": {}})
+    assert any(
+        "benchmarks_run must list the canonical core suite" in p
+        for p in empty_board
+    )
+    assert any("lacks backend binary identities" in p for p in empty_board)
+    assert any(
+        "contains no native+llvm release-fast benchmark cells" in p
+        for p in empty_board
     )
 
 

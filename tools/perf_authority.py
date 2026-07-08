@@ -57,9 +57,11 @@ from molt.metric_ratios import (  # noqa: E402
     signed_ratio_value as signed_ratio_value,
 )
 import perf_schema as perf_schema  # noqa: E402
+import bench_suites as bench_suites  # noqa: E402
 
 __all__ = [
     "CANONICAL_GATE",
+    "CANONICAL_PERF_BENCHMARKS",
     "CANONICAL_PERF_BACKENDS",
     "CANONICAL_PERF_PROFILE",
     "CANONICAL_PERF_REPEAT",
@@ -100,6 +102,7 @@ CANONICAL_GATE = (
 # profile, but we record the actual profile so the stamp is honest.
 CONTRACT_PROFILE = "release-fast"
 CANONICAL_PERF_SET = "core"
+CANONICAL_PERF_BENCHMARKS = tuple(bench_suites.BENCHMARKS)
 CANONICAL_PERF_BACKENDS = frozenset({"native", "llvm"})
 CANONICAL_PERF_PROFILE = CONTRACT_PROFILE
 CANONICAL_PERF_SAMPLES = "5"
@@ -114,6 +117,7 @@ _CANONICAL_PERF_FORBIDDEN_FLAGS = frozenset(
         "--no-gate",
         "--sample-hot-only",
         "--self-test",
+        "--benchmark",
     }
 )
 
@@ -345,6 +349,13 @@ def _cell_label(cell: Mapping[str, Any]) -> str:
     )
 
 
+def _sample_items(items: Sequence[str], *, limit: int = 5) -> str:
+    sample = ", ".join(items[:limit])
+    if len(items) > limit:
+        sample += f", ... {len(items) - limit} more"
+    return sample
+
+
 def canonical_scoreboard_shape_problems(
     doc: Mapping[str, Any],
     *,
@@ -353,12 +364,32 @@ def canonical_scoreboard_shape_problems(
     """Return problems proving a scoreboard is not the canonical release shape."""
     problems: list[str] = []
     cells = perf_schema.flatten_cells(doc)
-    if not cells:
-        return problems
 
     summary = doc.get("summary")
     if not isinstance(summary, Mapping) or summary.get("classify_active") is not True:
         problems.append(f"{label} must be generated with --classify")
+
+    expected_benchmarks = set(CANONICAL_PERF_BENCHMARKS)
+    benchmarks_run = doc.get("benchmarks_run")
+    if not isinstance(benchmarks_run, list) or not all(
+        isinstance(item, str) for item in benchmarks_run
+    ):
+        problems.append(f"{label} benchmarks_run must list the canonical core suite")
+        run_benchmarks: set[str] = set()
+    else:
+        run_benchmarks = set(benchmarks_run)
+        missing = sorted(expected_benchmarks - run_benchmarks)
+        if missing:
+            problems.append(
+                f"{label} missing canonical core benchmarks: "
+                f"{_sample_items(missing)}"
+            )
+        extra = sorted(run_benchmarks - expected_benchmarks)
+        if extra:
+            problems.append(
+                f"{label} has non-core benchmarks despite --set core: "
+                f"{_sample_items(extra)}"
+            )
 
     provenance = doc.get("provenance")
     binary_identities = (
@@ -402,10 +433,13 @@ def canonical_scoreboard_shape_problems(
         )
 
     by_benchmark: dict[str, set[str]] = {}
+    cell_benchmarks: set[str] = set()
     for cell in cells:
         benchmark = cell.get("benchmark")
         backend = cell.get("backend")
         profile = cell.get("profile")
+        if isinstance(benchmark, str):
+            cell_benchmarks.add(benchmark)
         if (
             isinstance(benchmark, str)
             and isinstance(backend, str)
@@ -414,6 +448,13 @@ def canonical_scoreboard_shape_problems(
         ):
             by_benchmark.setdefault(benchmark, set()).add(backend)
 
+    extra_cell_benchmarks = sorted(cell_benchmarks - expected_benchmarks)
+    if extra_cell_benchmarks:
+        problems.append(
+            f"{label} contains non-core benchmark cells despite --set core: "
+            f"{_sample_items(extra_cell_benchmarks)}"
+        )
+
     if not by_benchmark:
         problems.append(
             f"{label} contains no native+llvm {CANONICAL_PERF_PROFILE} "
@@ -421,18 +462,18 @@ def canonical_scoreboard_shape_problems(
         )
     else:
         missing_rows = [
-            f"{benchmark} missing "
-            f"{', '.join(sorted(CANONICAL_PERF_BACKENDS - backends))}"
-            for benchmark, backends in sorted(by_benchmark.items())
-            if CANONICAL_PERF_BACKENDS - backends
+            (
+                f"{benchmark} missing "
+                f"{', '.join(sorted(CANONICAL_PERF_BACKENDS - by_benchmark.get(benchmark, set())))}"
+            )
+            for benchmark in sorted(expected_benchmarks)
+            if CANONICAL_PERF_BACKENDS - by_benchmark.get(benchmark, set())
         ]
         if missing_rows:
-            sample = "; ".join(missing_rows[:5])
-            if len(missing_rows) > 5:
-                sample += f"; ... {len(missing_rows) - 5} more"
             problems.append(
                 f"{label} must include both native and llvm "
-                f"{CANONICAL_PERF_PROFILE} cells for every benchmark; {sample}"
+                f"{CANONICAL_PERF_PROFILE} cells for every benchmark; "
+                f"{_sample_items(missing_rows)}"
             )
 
     return problems

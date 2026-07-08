@@ -23,8 +23,9 @@ true`, fresh under `DEFAULT_STALE_DAYS`, on `origin/main` ancestry, and has
 native+LLVM release-fast gate above (`--set core`, `--backend native`,
 `--backend llvm`, `--samples 5`, `--warmup 2`, `--repeat 5`, `--classify`,
 `--require-quiescent`) and the scoreboard itself must contain classified
-release-fast cells for both native and LLVM for every benchmark, with backend
-binary identity receipts for both backends. E3 must include a
+release-fast cells for both native and LLVM across the full canonical core
+suite (`bench_suites.BENCHMARKS`), with backend binary identity receipts for
+both backends. E3 must include a
 `tools/parity_gate.py` receipt with the no-Tier-1-violations PASS verdict.
 
 The same release gate treats E4 `status: pass` as typed structural evidence, not
