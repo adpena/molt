@@ -228,6 +228,25 @@ rerun,
 `20260708T025448-c1-platform-importlib-support-fanin-20260708d-e198f95e263342b9`,
 passed the same default-feature runtime fan-in in 89.938s.
 
+2026-07-08 C1 follow-up: runtime-local bind/table constants, WASM table-base
+state, and runtime counters now live in `molt-runtime-constants`.
+`molt-runtime` privately re-exports the satellite and keeps only the
+`molt-codegen-abi`-derived constants in the fan-in crate, so the new satellite
+has no workspace dependencies and does not widen the build graph. The old
+in-crate `constants.rs` module is deleted. Proof rows:
+`20260708T030343-c1-runtime-constants-clippy-20260708c-eafc9391fdee4200`
+passed the satellite lint boundary,
+`20260708T031005-c1-runtime-constants-fanin-j1-20260708c-b965c77a0d7746fb`
+passed the dependency-cleanup fan-in check with max blast radius still 30, and
+`20260708T031427-c1-runtime-constants-fanin-postrebase-20260708a-e9b5ccca7d264560`
+passed after rebasing over the importlib-platform and stdlib-surface commits.
+The real native compiler proof
+`20260708T030216-c1-runtime-constants-native-hello-20260708a-d5dd9f355fc9448c`
+passed `python -m molt build examples/hello.py --target native --profile dev
+--out-dir <clean-dir> --json`. The repeated nested memory-guard orphan-cleanup
+warning is DX evidence for guard lifecycle cleanup, not a constants authority
+failure.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
