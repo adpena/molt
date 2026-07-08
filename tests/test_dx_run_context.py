@@ -31,11 +31,14 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["MOLT_SESSION_ID"].startswith("test-")
-    assert env["CARGO_TARGET_DIR"] == str(
-        tmp_path.resolve() / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    # No explicit MOLT_SESSION_ID -> STABLE persistent target dir (survives across
+    # sessions for warm incremental rebuilds), not a per-session cold dir.
+    assert env["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
-    assert env["CARGO_INCREMENTAL"] == "0"
+    # Incremental is ON by default now (fast warm rebuilds against the persistent
+    # target dir); it is forced to "0" only where sccache is actually wired, which
+    # canonical_env does not do.
+    assert env["CARGO_INCREMENTAL"] == "1"
     assert env["MOLT_CACHE"] == str(tmp_path.resolve() / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(tmp_path.resolve() / "tmp" / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path.resolve() / "tmp")
@@ -68,6 +71,26 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(explicit_target)
     assert env["CARGO_INCREMENTAL"] == "1"
     assert env["MOLT_SESSION_ID"] == "caller-session"
+
+
+def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
+    tmp_path: Path,
+) -> None:
+    # The cold-every-session killer: without a caller-pinned MOLT_SESSION_ID the
+    # Cargo target dir is STABLE (persistent incremental cache reused across
+    # sessions/processes); a caller that pins MOLT_SESSION_ID (perf/bench/test-shard
+    # isolation) still gets an isolated per-session dir. Regressing this to a
+    # per-PID default reintroduces a full cold compile on every invocation.
+    ctx = RunContext(tmp_path, session_prefix="test")
+    stable = ctx.canonical_env({"PATH": "/usr/bin"}, create_dirs=False)
+    assert stable["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
+
+    pinned = ctx.canonical_env(
+        {"PATH": "/usr/bin", "MOLT_SESSION_ID": "shard-7"}, create_dirs=False
+    )
+    assert pinned["CARGO_TARGET_DIR"] == str(
+        tmp_path.resolve() / "target" / "sessions" / "shard-7"
+    )
 
 
 def test_development_artifact_env_session_id_overrides_ambient_session(
@@ -110,9 +133,7 @@ def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> N
 
     resolved_external = external_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_external)
-    assert env["CARGO_TARGET_DIR"] == str(
-        resolved_external / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
     assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
     assert resolved_external.is_dir()
 
@@ -143,9 +164,7 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
 
     resolved_external = external_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_external)
-    assert env["CARGO_TARGET_DIR"] == str(
-        resolved_external / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
     assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
     assert env["TMPDIR"] == str(resolved_external / "tmp")
     assert resolved_external.is_dir()
@@ -238,9 +257,7 @@ def test_run_context_prefers_external_without_rejecting_explicit_user_output_roo
 
     resolved_output_root = user_output_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_output_root)
-    assert env["CARGO_TARGET_DIR"] == str(
-        resolved_output_root / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    assert env["CARGO_TARGET_DIR"] == str(resolved_output_root / "target")
 
 
 def test_run_context_require_external_artifacts_forces_candidate(
@@ -260,9 +277,7 @@ def test_run_context_require_external_artifacts_forces_candidate(
     )
 
     assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
-    assert env["CARGO_TARGET_DIR"] == str(
-        external_root.resolve() / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    assert env["CARGO_TARGET_DIR"] == str(external_root.resolve() / "target")
 
 
 def test_development_artifacts_requested_is_explicit_dev_control_plane() -> None:
@@ -495,7 +510,9 @@ def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     )
     assert env["SCCACHE_DIR"] == str(tmp_path.resolve() / ".sccache")
     assert env["SCCACHE_CACHE_SIZE"] == "10G"
-    assert env["MOLT_USE_SCCACHE"] == "1"
+    # sccache is off-by-default on Windows (0 hits + mid-compile crashes there);
+    # auto-on elsewhere. The default is platform-derived, so assert accordingly.
+    assert env["MOLT_USE_SCCACHE"] == ("0" if os.name == "nt" else "1")
     assert env["MOLT_DIFF_ALLOW_RUSTC_WRAPPER"] == "1"
     assert env["MOLT_CACHE_MAX_GB"] == "30"
     assert env["MOLT_CACHE_MAX_AGE_DAYS"] == "30"
@@ -608,9 +625,7 @@ PYTHONPATH = "{root}/src"
 
     resolved_root = explicit_root.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_root)
-    assert env["CARGO_TARGET_DIR"] == str(
-        resolved_root / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
     assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
     assert env["PYTHONPATH"] == str(project_root / "src")
 
