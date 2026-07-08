@@ -26,6 +26,7 @@ when it cannot be provisioned.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -399,16 +400,119 @@ def _cimport_pxd_roots(
     return tuple(roots)
 
 
+def _cimport_package_roots_from_env() -> tuple[Path, ...]:
+    """Package/source custody roots supplied through ``MOLT_MODULE_ROOTS``.
+
+    ``MOLT_MODULE_ROOTS`` is the existing import-custody surface for external
+    package roots. Entries may be plain paths or dotted aliases
+    (``pkg.name=/path/to/pkg``); Cython regeneration only needs the path side.
+    """
+    raw_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
+    if not raw_roots:
+        return ()
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for entry in raw_roots.split(os.pathsep):
+        if not entry:
+            continue
+        _prefix, sep, value = entry.partition("=")
+        raw_path = value if sep else entry
+        if not raw_path.strip():
+            continue
+        try:
+            path = Path(raw_path.strip()).expanduser().resolve()
+        except OSError:
+            continue
+        if path in seen or not path.is_dir():
+            continue
+        seen.add(path)
+        roots.append(path)
+    return tuple(roots)
+
+
+def _cimport_header_dirs_from_pxd_roots(
+    packages: Sequence[str],
+    pxd_roots: Sequence[Path],
+) -> tuple[Path, ...]:
+    """Package-owned C-header include dirs adjacent to resolved ``.pxd`` roots.
+
+    Cython ``.pxd`` files can generate C includes such as ``numpy/arrayobject.h``.
+    For source-recompiled packages, those headers live in the same package source
+    custody root that supplied ``pkg/__init__.pxd``. Resolve that shape
+    generically: any directory named ``pkg`` under the package source tree that
+    contains C headers contributes its parent as an include root.
+    """
+    requested = tuple(
+        sorted(
+            {
+                package
+                for package in packages
+                if package and package not in _CYTHON_BUILTIN_CIMPORT_ROOTS
+            }
+        )
+    )
+    if not requested or not pxd_roots:
+        return ()
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    def _has_header_child(path: Path) -> bool:
+        try:
+            return any(
+                child.is_file() and child.suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
+                for child in path.iterdir()
+            )
+        except OSError:
+            return False
+
+    for root in pxd_roots:
+        try:
+            resolved_root = Path(root).resolve()
+        except OSError:
+            continue
+        for package in requested:
+            package_dir = resolved_root / package
+            if not package_dir.is_dir():
+                continue
+            if _has_header_child(package_dir):
+                _add(package_dir.parent)
+            try:
+                package_named_dirs = (
+                    candidate
+                    for candidate in package_dir.rglob(package)
+                    if candidate.is_dir()
+                )
+                for candidate in package_named_dirs:
+                    if _has_header_child(candidate):
+                        _add(candidate.parent)
+            except OSError:
+                continue
+    return tuple(roots)
+
+
 def _cimport_header_include_dirs(
     interpreter: str,
     packages: Sequence[str],
+    *,
+    cimport_pxd_roots: Sequence[Path] = (),
 ) -> tuple[Path, ...]:
     """Package-owned C header include dirs exposed by cimported dependencies.
 
     A pxd-shipping dependency may emit C that must be compiled against headers
     from the same package version that supplied the pxd. Resolve generic
-    ``get_include()`` hooks in the build interpreter; packages without such a
-    hook are skipped fail-safe, leaving source-plan metadata authoritative.
+    source-custody header roots first, then ``get_include()`` hooks in the build
+    interpreter; packages without either are skipped fail-safe, leaving
+    source-plan metadata authoritative.
     """
     requested = tuple(
         sorted(
@@ -421,6 +525,25 @@ def _cimport_header_include_dirs(
     )
     if not requested:
         return ()
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if resolved in seen or not resolved.is_dir():
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    for path in _cimport_header_dirs_from_pxd_roots(
+        requested,
+        cimport_pxd_roots,
+    ):
+        _add(path)
+
     probe = r"""
 import importlib
 import json
@@ -458,11 +581,13 @@ print(json.dumps(roots))
     except (OSError, subprocess.SubprocessError):
         return ()
     if result.returncode != 0:
-        return ()
+        return tuple(roots)
     payload = _json_from_probe_stdout(result.stdout)
     if not isinstance(payload, list):
-        return ()
-    return _existing_unique_dirs(payload)
+        return tuple(roots)
+    for path in _existing_unique_dirs(payload):
+        _add(path)
+    return tuple(roots)
 
 
 def _json_from_probe_stdout(stdout: str) -> Any:
@@ -543,6 +668,7 @@ def regenerate_cython_c_standalone(
     include_dirs: Sequence[Path],
     cython_version: str,
     python_exe: str | None = None,
+    package_roots: Sequence[Path] = (),
 ) -> tuple[CythonRegeneration | None, str | None]:
     """Run ``cython -3`` STANDALONE for ``pyx_path`` into ``out_dir``.
 
@@ -555,14 +681,21 @@ def regenerate_cython_c_standalone(
     out_dir.mkdir(parents=True, exist_ok=True)
     regenerated_c = out_dir / f"{pyx_path.stem}{original_c.suffix.lower()}"
     cimport_packages = _parse_cimported_packages(pyx_path)
+    cimport_search_roots = [
+        *include_dirs,
+        pyx_path.parent,
+        *package_roots,
+        *_cimport_package_roots_from_env(),
+    ]
     cimport_pxd_roots = _cimport_pxd_roots(
         interpreter,
         cimport_packages,
-        search_roots=[*include_dirs, pyx_path.parent],
+        search_roots=cimport_search_roots,
     )
     cimport_header_include_dirs = _cimport_header_include_dirs(
         interpreter,
         cimport_packages,
+        cimport_pxd_roots=cimport_pxd_roots,
     )
     resolved_includes = _cython_include_dirs(
         pyx_path=pyx_path,

@@ -1738,6 +1738,185 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert artifact_manifest["python_exports"] == ["pkg.demoext"]
 
 
+def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "cython_extproj"
+    project_root.mkdir()
+    pkg = project_root / "pkg"
+    build_root = project_root / "build"
+    meson_info = build_root / "meson-info"
+    pkg.mkdir(parents=True)
+    meson_info.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "_cyext.pyx").write_text("cdef int value = 1\n", encoding="utf-8")
+    (pkg / "_cyext.c").write_text("/* upstream generated C */\n", encoding="utf-8")
+    (meson_info / "intro-targets.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "pkg._cyext",
+                    "name": "_cyext",
+                    "type": "shared module",
+                    "filename": str(build_root / "pkg" / "_cyext.so"),
+                    "target_sources": [
+                        {
+                            "language": "c",
+                            "machine": "host",
+                            "parameters": [],
+                            "sources": ["pkg/_cyext.pyx", "pkg/_cyext.c"],
+                            "generated_sources": [],
+                        }
+                    ],
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (build_root / "compile_commands.json").write_text(
+        json.dumps(
+            [
+                {
+                    "directory": str(project_root),
+                    "file": "pkg/_cyext.c",
+                    "arguments": [
+                        "cc",
+                        "-c",
+                        "pkg/_cyext.c",
+                        "-o",
+                        "build/_cyext.o",
+                    ],
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "cython-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "pkg._cyext"',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                'python_exports = ["pkg._cyext"]',
+                "",
+                "[tool.molt.extension.source_plan]",
+                'kind = "meson-intro-targets"',
+                'path = "build/meson-info/intro-targets.json"',
+                'target = "pkg._cyext"',
+                'source_root = "."',
+                'build_root = "build"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+    observed_package_roots: list[tuple[Path, ...]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fake_regenerate(
+        *,
+        pyx_path: Path,
+        original_c: Path,
+        out_dir: Path,
+        include_dirs: object,
+        cython_version: str,
+        python_exe: str | None = None,
+        package_roots: object = (),
+    ) -> tuple[cli_commands._source_extension_cython.CythonRegeneration, None]:
+        del include_dirs, cython_version, python_exe
+        observed_package_roots.append(
+            tuple(Path(path).resolve() for path in package_roots)
+        )
+        regenerated_c = out_dir / original_c.name
+        regenerated_c.parent.mkdir(parents=True, exist_ok=True)
+        regenerated_c.write_text(
+            "#include <Python.h>\n"
+            "static PyModuleDef module = {PyModuleDef_HEAD_INIT, \"_cyext\", NULL, -1, NULL};\n"
+            "PyMODINIT_FUNC PyInit__cyext(void) { return PyModule_Create(&module); }\n",
+            encoding="utf-8",
+        )
+        return (
+            cli_commands._source_extension_cython.CythonRegeneration(
+                pyx_path=pyx_path.resolve(),
+                original_c=original_c.resolve(),
+                regenerated_c=regenerated_c.resolve(),
+                cython_version="test",
+                cython_argv=("python", "-m", "cython", "-3"),
+                cimport_packages=("widget",),
+                cimport_pxd_roots=(project_root.resolve(),),
+                cimport_header_include_dirs=((project_root / "pkg").resolve(),),
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        cli_commands._source_extension_cython,
+        "provision_cython",
+        lambda *, python_exe, requirement: ("test", None),
+    )
+    monkeypatch.setattr(
+        cli_commands._source_extension_cython,
+        "regenerate_cython_c_standalone",
+        fake_regenerate,
+    )
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit__cyext",
+        by_stem={"_cyext": ({"PyInit__cyext"}, {"PyModule_Create"})},
+    )
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit__cyext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    assert observed_package_roots == [
+        (project_root.resolve(), build_root.resolve())
+    ]
+    assert any(
+        "-c" in cmd
+        and any("molt_cython_standalone" in part and "_cyext.c" in part for part in cmd)
+        for cmd in commands
+    )
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["cython_standalone"][0]["cimport_pxd_roots"] == [
+        str(project_root.resolve())
+    ]
+    assert manifest["cython_standalone"][0]["cimport_header_include_dirs"] == [
+        str((project_root / "pkg").resolve())
+    ]
+
+
 def test_extension_build_derives_module_attr_support_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
