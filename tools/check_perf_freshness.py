@@ -17,9 +17,12 @@ the matching structured ``perf_authority`` stale record for JSON. A stamped
 artifact is an acknowledged historical record and passes; an UNSTAMPED stale
 artifact is a hazard and fails the gate.
 
-The canonical board itself is exempt: it carries its own ``authoritative`` /
-``FAIL_STALE`` provenance machinery (``perf_scoreboard.gather_provenance``) and is
-the live truth, so freshness is enforced there, not here.
+Root CPython-floor scoreboards under ``bench/scoreboard/*.json`` are stricter:
+an unstamped board is claiming current release evidence, so it must be schema
+valid, generated at the current ``origin/main`` tip, authoritative, fresh, and
+green (``summary.gate_fails == false``). A stale/red/non-authoritative scoreboard
+must either be refreshed by ``tools/perf_scoreboard.py`` or stamped as historical
+so it cannot masquerade as E2 proof.
 
 Usage::
 
@@ -54,11 +57,13 @@ TOP_LEVEL_ARTIFACT_DIRS = {
 RECURSIVE_ARTIFACT_DIRS = {
     REPO_ROOT / "bench" / "results",
 }
+SCOREBOARD_DIR = REPO_ROOT / "bench" / "scoreboard"
 
-# The canonical board's own directory is governed by perf_scoreboard's
-# provenance gate, not this freshness checker.
+# Root scoreboard JSON gets a stricter current-vs-historical pass below; keep it
+# out of the generic stale snapshot scanner so support files such as cold-start
+# budget docs do not inherit the CPython-floor release policy accidentally.
 EXEMPT_DIRS = {
-    REPO_ROOT / "bench" / "scoreboard",
+    SCOREBOARD_DIR,
 }
 
 # A doc "presents CITABLE perf numbers" if it contains a measured ratio token:
@@ -182,6 +187,22 @@ def _iter_perf_artifacts() -> list[Path]:
 
 def _iter_perf_docs() -> list[Path]:
     return [p for p in _iter_perf_artifacts() if p.suffix.lower() in (".md", ".txt")]
+
+
+def _iter_scoreboard_artifacts() -> list[Path]:
+    tracked = _tracked_perf_artifacts()
+    if tracked is None:
+        candidates = (
+            list(SCOREBOARD_DIR.glob("*.json")) if SCOREBOARD_DIR.exists() else []
+        )
+    else:
+        candidates = [
+            path
+            for path in tracked
+            if path.parent.resolve() == SCOREBOARD_DIR.resolve()
+            and path.suffix.lower() == ".json"
+        ]
+    return sorted(path for path in candidates if path.is_file())
 
 
 def _doc_git_rev(text: str) -> str | None:
@@ -341,6 +362,91 @@ def evaluate_json(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
     )
 
 
+def evaluate_scoreboard(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
+    """Classify one root ``bench/scoreboard`` JSON artifact."""
+    try:
+        payload = json.loads(_read_text(path))
+    except json.JSONDecodeError as exc:
+        return {
+            "path": _rel_path(path),
+            "artifact_kind": "scoreboard",
+            "verdict": "scoreboard-hazard",
+            "hazard": True,
+            "has_perf_numbers": True,
+            "stamped": False,
+            "git_rev": None,
+            "generated_at": None,
+            "age_days": None,
+            "git_rev_ancestor_of_origin": None,
+            "origin_main_rev": pa.current_origin_main_rev(),
+            "scoreboard_kind": None,
+            "reasons": [f"invalid JSON: {exc.msg}"],
+        }
+
+    if not isinstance(payload, dict) or payload.get("kind") != "cpython_floor_scoreboard":
+        return _classify_artifact(
+            path=path,
+            artifact_kind="scoreboard-support",
+            has_numbers=False,
+            stamped=False,
+            git_rev=None,
+            generated_at=None,
+            max_age_days=max_age_days,
+            now=now,
+        )
+
+    meta = payload.get(pa.STALE_METADATA_KEY)
+    stamped = pa.is_stale_snapshot_metadata(meta)
+    raw_generated_at = payload.get("generated_at")
+    generated_at = raw_generated_at if isinstance(raw_generated_at, str) else None
+    age = pa.doc_age_days(generated_at, now=now)
+    rev_fields = pa.scoreboard_revision_fields(payload)
+    primary_rev = rev_fields[0][1] if rev_fields else None
+    ancestor = pa.git_rev_is_ancestor_of_origin(primary_rev)
+    origin_rev = pa.current_origin_main_rev()
+
+    if stamped:
+        return {
+            "path": _rel_path(path),
+            "artifact_kind": "scoreboard",
+            "verdict": "scoreboard-historical-stamped",
+            "hazard": False,
+            "has_perf_numbers": True,
+            "stamped": True,
+            "git_rev": primary_rev,
+            "generated_at": generated_at,
+            "age_days": round(age, 1) if age is not None else None,
+            "git_rev_ancestor_of_origin": ancestor,
+            "origin_main_rev": origin_rev,
+            "scoreboard_kind": payload.get("kind"),
+            "reasons": [],
+        }
+
+    reasons = pa.current_scoreboard_problems(
+        payload,
+        label="scoreboard",
+        now=now,
+        max_age_days=max_age_days,
+        require_canonical_shape=False,
+    )
+
+    return {
+        "path": _rel_path(path),
+        "artifact_kind": "scoreboard",
+        "verdict": "scoreboard-current-green" if not reasons else "scoreboard-hazard",
+        "hazard": bool(reasons),
+        "has_perf_numbers": True,
+        "stamped": False,
+        "git_rev": primary_rev,
+        "generated_at": generated_at,
+        "age_days": round(age, 1) if age is not None else None,
+        "git_rev_ancestor_of_origin": ancestor,
+        "origin_main_rev": origin_rev,
+        "scoreboard_kind": payload.get("kind"),
+        "reasons": reasons,
+    }
+
+
 def evaluate_artifact(path: Path, *, max_age_days: float, now: dt.datetime) -> dict:
     if path.suffix.lower() == ".json":
         return evaluate_json(path, max_age_days=max_age_days, now=now)
@@ -353,9 +459,19 @@ def run(max_age_days: float) -> dict:
         evaluate_artifact(p, max_age_days=max_age_days, now=now)
         for p in _iter_perf_artifacts()
     ]
+    records.extend(
+        evaluate_scoreboard(p, max_age_days=max_age_days, now=now)
+        for p in _iter_scoreboard_artifacts()
+    )
     hazards = [r for r in records if r["hazard"]]
     docs_scanned = sum(1 for r in records if r["artifact_kind"] == "text")
     json_scanned = sum(1 for r in records if r["artifact_kind"] == "json")
+    scoreboards_scanned = sum(
+        1 for r in records if r["artifact_kind"] == "scoreboard"
+    )
+    scoreboard_support_scanned = sum(
+        1 for r in records if r["artifact_kind"] == "scoreboard-support"
+    )
     return {
         "kind": "perf_freshness",
         "max_age_days": max_age_days,
@@ -363,6 +479,8 @@ def run(max_age_days: float) -> dict:
         "artifacts_scanned": len(records),
         "docs_scanned": docs_scanned,
         "json_scanned": json_scanned,
+        "scoreboards_scanned": scoreboards_scanned,
+        "scoreboard_support_scanned": scoreboard_support_scanned,
         "hazards": len(hazards),
         "records": records,
     }
@@ -386,8 +504,10 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"perf-freshness: scanned {report['artifacts_scanned']} perf "
             f"artifact(s) ({report['docs_scanned']} text, "
-            f"{report['json_scanned']} JSON); "
-            f"{report['hazards']} unstamped-stale hazard(s)."
+            f"{report['json_scanned']} JSON, "
+            f"{report['scoreboards_scanned']} scoreboard, "
+            f"{report['scoreboard_support_scanned']} scoreboard-support); "
+            f"{report['hazards']} perf authority hazard(s)."
         )
         for rec in report["records"]:
             if rec["hazard"]:

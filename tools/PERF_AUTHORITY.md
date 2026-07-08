@@ -75,6 +75,13 @@ document whose recorded `git_rev` is not on `origin/main`, or whose generated
 timestamp is stale relative to `perf_authority.DEFAULT_STALE_DAYS`, must be
 treated as non-authoritative and point readers back to the canonical gate.
 
+Checked-in root `bench/scoreboard/*.json` CPython-floor boards are current
+evidence only when they are schema-valid, generated at the current `origin/main`
+tip, `authoritative: true`, fresh, and `summary.gate_fails == false`. Any older,
+red, non-authoritative, or schema-legacy board must carry the structured
+`perf_authority` stale metadata; then it is only a historical fixture and cannot
+serve as E2 proof.
+
 See also:
 
 - `docs/perf/SCOREBOARD.md`

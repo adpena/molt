@@ -11,6 +11,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import perf_schema as schema  # noqa: E402
 import perf_scoreboard as scoreboard  # noqa: E402
+import perf_authority as pa  # noqa: E402
 
 
 def _cell(**overrides: object) -> dict[str, object]:
@@ -293,14 +294,14 @@ def test_schema_rejects_red_stable_without_quiescent_repeat_ci() -> None:
     assert any("numeric repeat CI" in problem for problem in problems)
 
 
-def test_schema_accepts_checked_in_quiet_native_board_cells() -> None:
+def test_checked_in_quiet_native_is_historical_projection_fixture() -> None:
     doc = json.loads(
         (REPO_ROOT / "bench" / "scoreboard" / "quiet_native.json").read_text(
             encoding="utf-8"
         )
     )
 
-    assert schema.validate_board(doc) == []
+    assert pa.is_stale_snapshot_metadata(doc.get(pa.STALE_METADATA_KEY))
     cells = schema.flatten_cells(doc)
     assert cells
-    assert all(schema.PerfCell.from_payload(cell).benchmark for cell in cells)
+    assert all(cell.get("benchmark") for cell in cells)
