@@ -68,10 +68,23 @@ steps below are the contract it implements.
      CPython ≥3.12 compatibility in the verified subset; fidelity; no
      duplicate-authority / no partials. Record the sign-off.
    Only then append a `COMPLETE` row with the evidence links and `ff_land` it.
-6. **Stale / release.** A claim with no `PROGRESS` row for >4h, or an explicit
-   `RELEASED` row, may be RECLAIMED by another agent landing a `RECLAIM` row that
-   CITES the staleness evidence (last progress timestamp). Never silently take
-   over a live claim; escalate to the orchestrator if ownership is contested.
+6. **Stale / release.** A claim with an explicit `RELEASED` row may be reclaimed.
+   Otherwise a claim is STALE **only if BOTH** (a) no `PROGRESS` row for >4h AND
+   (b) an OBJECTIVE-LIVENESS check shows no real activity. A missing PROGRESS row
+   is NOT sufficient — an active agent often works silently in its worktree/queue
+   without touching this log (this cost a wrong reclaim 2026-07-08). Before landing
+   a `RECLAIM` row you MUST verify NO objective activity in the last ~2h:
+   - the claimant's worktree commit log: `git -C <worktree> log --oneline --since="3 hours ago"`;
+   - recent proof-queue rows for the lane: `tools/proof_queue.py status` (+ any
+     worktree-local `logs/proof_queue`);
+   - recent `origin/main` commits by that agent.
+   If ANY show recent activity, the claim is ALIVE — do NOT reclaim (post a
+   PROGRESS observation instead and ping the claimant to log its own progress).
+   Cite the objective-liveness evidence (or its absence) in the `RECLAIM` row.
+   Never silently take over a live claim; escalate to the orchestrator if contested.
+   **Claimants:** post a `PROGRESS` row (or `python tools/claim_lane.py <lane>
+   --append PROGRESS ...`) at least every few hours — silence forces others to
+   guess your liveness from commits/queue, which is fragile.
 
 ## Log (append-only; newest at bottom; land each row via `ff_land`)
 
