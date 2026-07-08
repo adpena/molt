@@ -23,7 +23,7 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py status
 ```
 
 On this Windows workstation, expensive queue rows must refresh the canonical DX
-environment before submission so APDataStore is the selected artifact and
+environment before submission so `C:\Molt` is the selected artifact and
 toolchain authority:
 
 ```powershell
@@ -31,7 +31,7 @@ $dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format 
 Invoke-Expression ($dx -join [Environment]::NewLine)
 ```
 
-This bootstrap intentionally does not use `uv`: on a cold APDataStore/exFAT
+This bootstrap intentionally does not use `uv`: on an explicit exFAT fallback
 checkout, `UV_LINK_MODE=copy` must be exported before uv creates or syncs
 `.venv`, otherwise uv first attempts hard links and emits slow fallback noise.
 Use an already-installed host Python 3.12+ for this dependency-free resolver
@@ -45,35 +45,35 @@ isolated with `MOLT_SESSION_ID`. Do not run two uv bootstrap/sync commands in
 parallel in the same fresh checkout; one process owns project-environment
 creation.
 
-The healthy default is `MOLT_EXT_ROOT=D:\Molt`,
-`CARGO_TARGET_DIR=D:\Molt\target\sessions\<MOLT_SESSION_ID>`, and
-`MOLT_TARGET_ROOT=D:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` stable at
-`D:\Molt\tmp\uv-project-envs\dx__py3.12` for the standard Python 3.12 DX lane
-and `UV_LINK_MODE=copy` emitted for APDataStore/exFAT unless an explicit
-operator value is present. Do not submit
-rows with inherited `E:\molt-target`, `E:\Molt\target-root`, or the empty
-legacy `D:\molt-target` default unless the operator explicitly set
-`MOLT_PRESERVE_TARGET_ROOT=1` for that row. APDataStore is exFAT, so hard-link
-fallbacks are cache-authority defects to diagnose, not a reason to reroute
-proof lanes to legacy `E:` roots.
+The healthy default is `MOLT_EXT_ROOT=C:\Molt`,
+`CARGO_TARGET_DIR=C:\Molt\target`, and
+`MOLT_TARGET_ROOT=C:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` stable at
+`C:\Molt\tmp\uv-project-envs\dx__py3.12` for the standard Python 3.12 DX lane.
+Do not submit rows with inherited `D:\Molt`, `E:\Molt`, `D:\molt-target`, or
+`E:\molt-target` roots unless the operator explicitly set
+`MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` for that row. ExFAT fallback hard-link
+behavior is a cache-authority defect to diagnose, not a reason to reroute proof
+lanes to legacy `E:` roots.
 
-APDataStore is the artifact and warm-worktree tier, not a disposable cold-clone
-treadmill. Create a new `D:\Molt\worktrees\...` checkout only for real isolation
-from dirty WIP or branch surgery; for read-only doc/status checks prefer
-`git show origin/main:<path>` from an existing checkout, and for repeated proof
-work reuse a warm worktree plus queue-assigned target/session roots.
+`C:\Molt` is the artifact and warm-checkout tier, not a disposable cold-clone or
+backup treadmill. Create a new `C:\Molt\worktrees\...` checkout only for real
+isolation from dirty WIP or branch surgery; for read-only doc/status checks
+prefer `git show origin/main:<path>` from the canonical checkout, and for
+repeated proof work reuse the warm checkout plus queue-assigned roots. Harvest
+unique signal by reviewed cherry-pick/pathspec landing onto `main`, then delete
+the source worktree/branch/bundle rather than preserving backup piles.
 
 Do not use the queue as proof theater. Submit the narrow proof that covers the
 changed contract, then return to structural work.
 
 Compiler build rows share a queue-owned `compiler-build-resource` mutex on this
-Windows/APDataStore workstation. `rust`, `native-build`, `queue-native-rust`,
+Windows/C:\Molt workstation. `rust`, `native-build`, `queue-native-rust`,
 `wasm`, and `wasm-browser` resource families, plus `cargo:*`, `rust:*`,
 `wasm:*`, and `wasm-browser:*` contention keys, may keep different
 human-facing contention keys for lane identity, but they must not overlap
 rustc/Cargo/backend build work just because the keys differ. This protects the
 host from cold-build resource failures such as Windows `os error 1450` while
-writing Rust bytecode under `D:\Molt\target\sessions\...`. The queue derives the
+writing Rust bytecode under `C:\Molt\target\...`. The queue derives the
 shared mutex itself; do not bypass it with a hand-chosen key or a raw background
 command.
 
@@ -238,14 +238,14 @@ environment syntax while leaving scheduling and validation in
 spawning the queue process, so bad values do not leak as latent environment
 state. Use either that shorthand or `run --queue-size N`, not both. The command
 surface also installs the canonical Molt DX environment around the child queue:
-APDataStore/artifact roots, target/cache/temp roots, `MOLT_TARGET_ROOT`, and
+`C:\Molt` artifact roots, target/cache/temp roots, `MOLT_TARGET_ROOT`, and
 `UV_LINK_MODE=copy` flow through the same RunContext authority as other build
 wrappers. When a warm project environment is visible, `molt queue` preserves it
 as `UV_PROJECT_ENVIRONMENT` instead of creating a fresh session venv. Resolution
 is explicit and ordered: existing `UV_PROJECT_ENVIRONMENT`, active
 `VIRTUAL_ENV`, checkout-local `.venv`, main-worktree `.venv`, then `MOLT_VENV`.
-This keeps APDataStore fast: use `D:\Molt` for shared build/cache/toolchain
-state, not as disposable cold worktree churn.
+This keeps the NVMe root warm: use `C:\Molt` for shared build/cache/toolchain
+state, not as disposable cold worktree or backup churn.
 
 The command surface is the same on Windows, macOS, and Linux, and it must not be
 replaced with PowerShell-specific launch wrappers, POSIX backgrounding, or

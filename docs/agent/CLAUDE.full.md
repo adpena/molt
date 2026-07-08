@@ -668,17 +668,18 @@ owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `TMP`, `TEMP`, and DX-only `UV_LINK_MODE`. Default Cargo output is session-scoped as
 `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR`
 remains an operator-owned override. On this Windows workstation the selected
-external root is the APDataStore volume (`D:\Molt`) when healthy, and the
-managed toolchain root is `D:\Molt\target-root`. Stale `E:\molt-target`,
-`E:\Molt\target-root`, and old same-volume `D:\molt-target` defaults are
-legacy evidence/fallbacks, not active discovery authority; preserve an
-intentional off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`.
-RunContext emits `UV_LINK_MODE=copy` for exFAT APDataStore roots unless an
-explicit operator value is present.
+root is `C:\Molt`, and the managed toolchain root is
+`C:\Molt\target-root`. Stale inherited `D:\Molt`, `E:\Molt`,
+`D:\molt-target`, and `E:\molt-target` roots are legacy evidence/fallbacks, not
+active discovery authority; preserve them only with
+`MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1`, and preserve an intentional
+off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext
+emits `UV_LINK_MODE=copy` for exFAT fallback roots unless an explicit operator
+value is present.
 
 In a fresh checkout/worktree, import RunContext with an already-installed host
 Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
-before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
+before uv touches `.venv` on an exFAT fallback root. Windows bootstrap:
 `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
 POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
 In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`

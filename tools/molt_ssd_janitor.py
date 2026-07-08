@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Reclaim space on the Molt artifact SSD (APDataStore / MOLT_EXT_ROOT) safely.
+"""Reclaim space on the Molt artifact root (C:\\Molt / MOLT_EXT_ROOT) safely.
 
-The external artifact root (``D:\\Molt`` on the Windows workstation,
-``/Volumes/APDataStore/Molt`` on macOS) accumulates per-session cargo targets,
+The artifact root (``C:\\Molt`` on the Windows workstation,
+``/Volumes/APDataStore/Molt`` on macOS fallback) accumulates cargo targets,
 pytest temproots, uv locks, dated one-off scratch, orphaned worktrees, and
 unbounded caches. Nothing swept these, so the volume grows without bound. This
 janitor sweeps them by AGE, dry-run by default, scoped strictly to the artifact
@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
 
 AUTO_SAFE_CLASSES = ("tmp", "sessions", "scratch", "worktrees", "caches")
 ALL_CLASSES = (*AUTO_SAFE_CLASSES, "cargo")
@@ -112,7 +113,7 @@ def _resolve_root(raw: str | None, *, force: bool) -> Path:
     if root is None:
         raise SystemExit(
             "molt_ssd_janitor: could not resolve the artifact root; pass --root "
-            "or set MOLT_EXT_ROOT (e.g. D:\\Molt or /Volumes/APDataStore/Molt)."
+            "or set MOLT_EXT_ROOT (e.g. C:\\Molt or /Volumes/APDataStore/Molt)."
         )
     root = root.resolve()
     if not root.is_dir():
@@ -122,34 +123,53 @@ def _resolve_root(raw: str | None, *, force: bool) -> Path:
         raise SystemExit(f"molt_ssd_janitor: refusing to operate on root {root}")
     repo_root = REPO_ROOT.resolve()
     # Refuse the repo checkout itself or any path inside it. The artifact root
-    # may contain this checkout as <root>/worktrees/<name>; that is the normal
-    # APDataStore layout and must remain usable from linked worktrees.
+    # may contain this checkout as <root>/molt-src or <root>/worktrees/<name>;
+    # that is the normal maintained layout and must remain usable.
     if root == repo_root or repo_root in root.parents:
         raise SystemExit(f"molt_ssd_janitor: refusing to operate inside the repo {root}")
-    if root in repo_root.parents and not _repo_is_artifact_worktree_under_root(
+    if root in repo_root.parents and not _repo_is_artifact_checkout_under_root(
         repo_root, root
     ):
         raise SystemExit(
             "molt_ssd_janitor: refusing parent of repo checkout that is not "
             f"an artifact worktree root: {root}"
         )
-    # On Windows, refuse a C: root unless forced (artifacts must not live on C:).
+    # On Windows, refuse arbitrary C: roots unless forced; C:\Molt is canonical.
     drive = root.drive.rstrip(":").upper()
-    if os.name == "nt" and drive == "C" and not force:
+    if (
+        os.name == "nt"
+        and drive == "C"
+        and not force
+        and not _is_windows_primary_artifact_root(root)
+    ):
         raise SystemExit(
             f"molt_ssd_janitor: refusing C:-drive root {root} (use --force to override)"
         )
     return root
 
 
-def _repo_is_artifact_worktree_under_root(repo_root: Path, root: Path) -> bool:
-    return (
+def _repo_is_artifact_checkout_under_root(repo_root: Path, root: Path) -> bool:
+    return _same_path(repo_root, root / "molt-src") or (
         repo_root.parent.name == "worktrees"
         and repo_root.parent.parent == root
     )
 
 
+def _is_windows_primary_artifact_root(root: Path) -> bool:
+    return _same_path(root, WINDOWS_PRIMARY_ARTIFACT_ROOT)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left.resolve())).rstrip("\\/") == os.path.normcase(
+        str(right.resolve())
+    ).rstrip("\\/")
+
+
 def _autodetect_root() -> Path | None:
+    if os.name == "nt":
+        cand = WINDOWS_PRIMARY_ARTIFACT_ROOT
+        if cand.is_dir():
+            return cand
     if sys.platform == "darwin":
         cand = Path("/Volumes/APDataStore/Molt")
         return cand if cand.is_dir() else None
@@ -512,7 +532,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--root", help="artifact root (default: $MOLT_EXT_ROOT or autodetect APDataStore)")
+    ap.add_argument(
+        "--root",
+        help="artifact root (default: $MOLT_EXT_ROOT or autodetect C:\\Molt/APDataStore)",
+    )
     ap.add_argument("--apply", action="store_true", help="delete (default: dry-run report only)")
     ap.add_argument("--classes", help=f"comma list of {ALL_CLASSES}; default = auto-safe {AUTO_SAFE_CLASSES}")
     ap.add_argument("--all", action="store_true", help="all classes including cargo")
