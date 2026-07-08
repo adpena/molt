@@ -96,7 +96,7 @@ __all__ = [
 CANONICAL_GATE = (
     "tools/perf_scoreboard.py --set core --backend native --backend llvm "
     "--profile release-fast --samples 5 --warmup 2 --repeat 5 --classify "
-    "--require-quiescent"
+    "--require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15"
 )
 
 # The release-fast cargo profile is the daily perf contract. A board is only
@@ -111,6 +111,8 @@ CANONICAL_PERF_PROFILE = CONTRACT_PROFILE
 CANONICAL_PERF_SAMPLES = "5"
 CANONICAL_PERF_WARMUP = "2"
 CANONICAL_PERF_REPEAT = "5"
+CANONICAL_PERF_QUIESCENCE_WAIT = "180"
+CANONICAL_PERF_QUIESCENCE_POLL = "15"
 CANONICAL_PERF_BINARY_IDENTITIES = frozenset(
     f"{backend}/{CANONICAL_PERF_PROFILE}" for backend in CANONICAL_PERF_BACKENDS
 )
@@ -326,6 +328,8 @@ def canonical_scoreboard_command_problems(
         "--samples": CANONICAL_PERF_SAMPLES,
         "--warmup": CANONICAL_PERF_WARMUP,
         "--repeat": CANONICAL_PERF_REPEAT,
+        "--quiescence-wait-s": CANONICAL_PERF_QUIESCENCE_WAIT,
+        "--quiescence-poll-s": CANONICAL_PERF_QUIESCENCE_POLL,
     }
     for flag, required in required_singletons.items():
         values = set(_flag_values(tokens, flag))
