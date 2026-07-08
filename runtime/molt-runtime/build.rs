@@ -42,7 +42,6 @@ fn main() {
     // consume the runtime directly.
     let _ = &target_os;
     println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
-    emit_runtime_builtins_cfg();
     emit_cpython_abi_requested_export_anchors(&out_dir, &target_arch);
 
     // Emit `molt_has_net_io` only when the target has Molt's native socket ABI
@@ -79,27 +78,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../build_support/wasi_sysroot.rs");
     println!("cargo:rerun-if-changed=src/object/ops.rs");
     println!("cargo:rerun-if-changed=build.rs");
-}
-
-fn emit_runtime_builtins_cfg() {
-    println!("cargo:rustc-check-cfg=cfg(molt_runtime_builtins)");
-
-    let needs_runtime_builtins = env::vars_os().any(|(key, _value)| {
-        let Some(key) = key.to_str() else {
-            return false;
-        };
-        key.strip_prefix("CARGO_FEATURE_")
-            .is_some_and(runtime_feature_uses_builtins)
-    });
-    if needs_runtime_builtins {
-        println!("cargo:rustc-cfg=molt_runtime_builtins");
-    }
-}
-
-fn runtime_feature_uses_builtins(feature: &str) -> bool {
-    feature.starts_with("STDLIB_")
-        || feature.starts_with("BUILTIN_")
-        || matches!(feature, "SQLITE" | "MOLT_GPU_PRIMITIVES")
 }
 
 fn emit_cpython_abi_requested_export_anchors(out_dir: &Path, target_arch: &str) {

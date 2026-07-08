@@ -128,27 +128,115 @@ def test_empty_cargo_group_features_are_not_link_affecting() -> None:
         assert feature not in LINK_AFFECTING_FEATURES
 
 
-def test_runtime_builtins_cfg_is_derived_from_cargo_feature_namespace() -> None:
-    """The root builtins module must not maintain a stale feature allowlist.
+def _mod_builtins_cfg_prefix(lib_rs: str) -> str | None:
+    """Return the `#[cfg(...)]` attribute gating `mod builtins;`, or None.
 
-    `builtins` currently contains true runtime/core authorities (callable
-    identity, exceptions, module table, builtin type wiring) in addition to
-    stdlib implementations. Any stdlib/builtin Cargo feature needs that module
-    available; the build script derives one cfg from Cargo's enabled feature
-    namespace so new `stdlib_*` features do not have to remember a second list.
+    Matches an optional attribute line immediately preceding the module
+    declaration. When `mod builtins;` is declared unconditionally (the correct
+    core-authority shape) this returns None.
+    """
+    match = re.search(
+        r"(?:#\[cfg\(([^\]]+)\)\]\s*\n)?[ \t]*mod builtins;",
+        lib_rs,
+    )
+    assert match is not None, "lib.rs must declare `mod builtins;`"
+    return match.group(1)
+
+
+def _expand_cargo_feature_names(feature: str, features: dict) -> set[str]:
+    """Transitively expand *feature* to the molt-runtime feature names reached.
+
+    Skips ``dep:crate`` and ``crate/feat`` / ``crate?/feat`` cross-crate
+    activations (they select dependency features, not molt-runtime's own).
+    Includes the seed feature itself so a directly-triggering seed is caught.
+    """
+    reached: set[str] = set()
+    stack = [feature]
+    while stack:
+        current = stack.pop()
+        if current in reached:
+            continue
+        reached.add(current)
+        for entry in features.get(current, []):
+            if entry.startswith("dep:") or "/" in entry:
+                continue
+            stack.append(entry)
+    return reached
+
+
+def test_core_builtins_authority_compiles_unconditionally() -> None:
+    """`builtins` is the crate-root CORE authority and must never be gated.
+
+    `runtime/molt-runtime/src/builtins/mod.rs` re-exports the core runtime
+    symbols (`raise_exception`, `to_i64`/`to_f64`, `molt_type_new`,
+    `attr_lookup_ptr`, `ellipsis_bits`, the whole exception machinery) that
+    ~230 files reference UNCONDITIONALLY via `crate::…`. Gating the module
+    behind a derived `molt_runtime_builtins` cfg (or any other cfg) drops it for
+    feature subsets that enable no `stdlib_*`/`builtin_*` feature — e.g. the
+    wasm-browser split-runtime numpy/scipy compute plan — producing thousands of
+    `E0433 cannot find 'builtins' in 'crate'` / `E0432 unresolved import`
+    errors. Only the OPTIONAL stdlib submodules inside `builtins/mod.rs` may be
+    feature-gated (they already are, internally); the core module is
+    unconditional by construction.
     """
 
-    build_rs = (RUNTIME_CRATE / "build.rs").read_text(encoding="utf-8")
     lib_rs = (RUNTIME_CRATE / "src" / "lib.rs").read_text(encoding="utf-8")
+    build_rs = (RUNTIME_CRATE / "build.rs").read_text(encoding="utf-8")
 
-    assert 'cargo:rustc-check-cfg=cfg(molt_runtime_builtins)' in build_rs
-    assert 'cargo:rustc-cfg=molt_runtime_builtins' in build_rs
-    assert 'feature.starts_with("STDLIB_")' in build_rs
-    assert 'feature.starts_with("BUILTIN_")' in build_rs
-    assert 'matches!(feature, "SQLITE" | "MOLT_GPU_PRIMITIVES")' in build_rs
-    assert "#[cfg(molt_runtime_builtins)]\nmod builtins;" in lib_rs
-    assert 'feature = "stdlib_' not in re.search(
-        r"#\[cfg\([^\]]+\)\]\s*\nmod builtins;",
-        lib_rs,
-        flags=re.DOTALL,
-    ).group(0)
+    cfg = _mod_builtins_cfg_prefix(lib_rs)
+    assert cfg is None, (
+        "`mod builtins;` must compile UNCONDITIONALLY (it is the crate-root "
+        "core authority), but it is gated behind "
+        f"`#[cfg({cfg})]`. Remove the outer gate; keep only the per-feature "
+        "gates on the OPTIONAL stdlib submodules inside builtins/mod.rs."
+    )
+
+    # The vestigial derived cfg must be fully removed, not merely unreferenced,
+    # so a future edit cannot silently re-gate the core module.
+    assert "molt_runtime_builtins" not in lib_rs
+    assert "molt_runtime_builtins" not in build_rs
+
+
+def test_zero_stdlib_wasm_browser_profile_keeps_core_builtins() -> None:
+    """Regression for the witness blocker: the MINIMAL zero-stdlib wasm-browser
+    split-runtime feature set must still compile the core builtins authority.
+
+    The browser split-runtime numpy/scipy compute runtime is built with
+    ``cargo rustc -p molt-runtime --target wasm32-wasip1 --lib
+    --no-default-features --features wasm_freestanding`` — a feature set that
+    enables NONE of the ``stdlib_*``/``builtin_*``/``sqlite``/
+    ``molt_gpu_primitives`` features. This test asserts that fact from
+    Cargo.toml (so the reproduction stays honest), then asserts the core
+    ``builtins`` module is not gated out of such a build. Under the previous
+    ``#[cfg(molt_runtime_builtins)]`` gating this feature set dropped
+    ``mod builtins`` and produced 2824 compile errors that reached the witness;
+    the existing gate tests never exercised a zero-stdlib profile, which is the
+    coverage gap this closes.
+    """
+
+    cargo = tomllib.loads((RUNTIME_CRATE / "Cargo.toml").read_text())
+    features = cargo.get("features", {})
+
+    def _triggers_builtins(feature: str) -> bool:
+        upper = feature.upper()
+        return (
+            upper.startswith("STDLIB_")
+            or upper.startswith("BUILTIN_")
+            or upper in {"SQLITE", "MOLT_GPU_PRIMITIVES"}
+        )
+
+    reached = _expand_cargo_feature_names("wasm_freestanding", features)
+    triggering = sorted(f for f in reached if _triggers_builtins(f))
+    assert triggering == [], (
+        "wasm_freestanding unexpectedly chains builtins-triggering features "
+        f"{triggering}; the zero-stdlib reproduction is no longer minimal — "
+        "update this test to a feature set that truly enables no stdlib_/"
+        "builtin_ feature."
+    )
+
+    lib_rs = (RUNTIME_CRATE / "src" / "lib.rs").read_text(encoding="utf-8")
+    assert _mod_builtins_cfg_prefix(lib_rs) is None, (
+        "The zero-stdlib wasm-browser split-runtime feature set enables no "
+        "builtins-triggering feature, so any cfg gating `mod builtins;` drops "
+        "the crate-root core authority and reintroduces the witness blocker."
+    )
