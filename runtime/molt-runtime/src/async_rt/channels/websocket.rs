@@ -39,8 +39,9 @@ use crate::libc_compat as libc;
 use crate::string_obj_to_owned;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::{
-    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, header_from_obj_ptr, monotonic_now_secs,
-    resolve_obj_ptr, runtime_state, to_f64,
+    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, dec_ref_bits, has_capability,
+    header_from_obj_ptr, inc_ref_bits, monotonic_now_secs, obj_from_bits, resolve_obj_ptr,
+    runtime_state, to_f64, to_i64,
 };
 use crate::{
     MoltObject, PyToken, alloc_bytes, alloc_tuple, opaque_handle_bits, pending_bits_i64,
