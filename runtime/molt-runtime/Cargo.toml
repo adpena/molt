@@ -186,6 +186,7 @@ molt-runtime-xml = { path = "../molt-runtime-xml", optional = true }
 molt-runtime-ipaddress = { path = "../molt-runtime-ipaddress", optional = true }
 molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
 molt-runtime-vfs = { path = "../molt-runtime-vfs" }
+molt-runtime-audit = { path = "../molt-runtime-audit" }
 molt-runtime-resource = { path = "../molt-runtime-resource" }
 molt-gpu = { path = "../molt-gpu", optional = true, default-features = false, features = ["cpu-backend"] }
 serde_json = { workspace = true }

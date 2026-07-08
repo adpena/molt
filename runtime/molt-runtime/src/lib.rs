@@ -153,12 +153,12 @@ pub use molt_stdlib_graphlib;
 mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
 pub use molt_runtime_tk;
-pub mod audit;
 pub mod cpython_abi_hooks;
 pub use cpython_abi_hooks::{
     molt_cpython_abi_cext_call_trampoline, molt_cpython_abi_prepare_static_extension,
     molt_cpython_abi_pyinit_module_to_bits,
 };
+pub use molt_runtime_audit as audit;
 mod diagnostics;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
