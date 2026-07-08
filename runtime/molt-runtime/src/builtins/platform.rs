@@ -20,6 +20,9 @@ pub(crate) use molt_runtime_platform::env_support::{
     env_state, env_state_get, locale_encoding_label, locale_state, os_name_str, process_env_state,
     sys_platform_str, trace_env_get,
 };
+pub(crate) use molt_runtime_platform::importlib_support::{
+    append_unique_path, append_unique_path_hashed, split_nonempty_paths,
+};
 use molt_runtime_platform::uuid_support::{
     uuid_node, uuid_v1_bytes, uuid_v3_bytes, uuid_v4_bytes, uuid_v5_bytes,
 };
@@ -115,37 +118,6 @@ fn extension_metadata_cache_stats() -> (u64, u64) {
         EXTENSION_METADATA_CACHE_HITS.load(Ordering::Relaxed),
         EXTENSION_METADATA_CACHE_MISSES.load(Ordering::Relaxed),
     )
-}
-
-fn append_unique_path(paths: &mut Vec<String>, entry: &str) {
-    if entry.is_empty() {
-        return;
-    }
-    if paths.iter().any(|existing| existing == entry) {
-        return;
-    }
-    paths.push(entry.to_string());
-}
-
-fn append_unique_path_hashed(paths: &mut Vec<String>, seen: &mut HashSet<String>, entry: &str) {
-    if entry.is_empty() {
-        return;
-    }
-    if seen.insert(entry.to_string()) {
-        paths.push(entry.to_string());
-    }
-}
-
-fn split_nonempty_paths(raw: &str, sep: char) -> Vec<String> {
-    raw.split(sep)
-        .filter_map(|part| {
-            if part.is_empty() {
-                None
-            } else {
-                Some(part.to_string())
-            }
-        })
-        .collect()
 }
 
 fn bootstrap_stdlib_root_from_module_file(module_file: &str, path_sep: char) -> Option<String> {
