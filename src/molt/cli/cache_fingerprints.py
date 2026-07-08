@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import functools
 import hashlib
 import os
@@ -282,97 +283,183 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 )
 
 
-# ``cli/*.py`` modules that run strictly AFTER the frontend has produced its
-# import-scan / analysis / lowering result -- backend codegen, native/wasm
-# linking and artifact staging -- or are orthogonal build machinery (the backend
-# daemon, cargo/toolchain provisioning, packaging, SBOM/signing, the dx/queue CLI
-# surface, and terminal output formatting). None of them can change *what* a
-# module lowers to; they only consume a finished lowering or manage the build
-# environment. An edit to any of them must therefore NOT invalidate the persisted
-# per-module frontend caches (analysis, lowering, import graph), which is exactly
-# the needless cold-start the ranked witness modules pay today when unrelated
-# CLI/runtime/link code is touched.
+# Roots of the frontend lowering computation. Reachability starts here and
+# follows module-level ``molt`` imports; anything not reached provably never runs
+# while a module is lowered and so cannot change the lowering result.
 #
-# Membership is deliberately CONSERVATIVE: a file belongs here only when it
-# provably cannot alter a frontend result. Anything that participates in module
-# resolution, import admission, capability/type facts, native-export discovery,
-# or frontend compute -- or whose role is uncertain -- is intentionally *omitted*
-# so it keeps invalidating the caches. Over-scoping (a spurious invalidation) is a
-# harmless perf cost; under-scoping (reusing a stale lowering) is a miscompile, so
-# the bias is strictly toward inclusion.
-_POST_LOWERING_ORTHOGONAL_CLI_BASENAMES: frozenset[str] = frozenset(
-    {
-        "backend_binary.py",
-        "backend_cache.py",
-        "backend_cache_setup.py",
-        "backend_compile.py",
-        "backend_daemon_config.py",
-        "backend_daemon_logs.py",
-        "backend_daemon_paths.py",
-        "backend_daemon_startup.py",
-        "backend_diagnostics.py",
-        "backend_execution.py",
-        "backend_ir.py",
-        "backend_output_pipeline.py",
-        "backend_pipeline.py",
-        "binary_image_analysis.py",
-        "cargo_execution.py",
-        "cargo_profiles.py",
-        "completion.py",
-        "dx_cli.py",
-        # NOTE: external_native.py is NOT orthogonal — frontend_pipeline imports its
-        # `_resolve_import_admission_policy`, which feeds `direct_call_modules`, a
-        # lowering-affecting input (native-direct-call vs Python-call lowering).
-        # Excluding it would risk STALE lowering (miscompile). Kept in scope.
-        "link_pipeline.py",
-        "maintenance.py",
-        "mlir_backend.py",
-        "native_binary.py",
-        "native_link_command.py",
-        "native_link_deps.py",
-        "native_main_stub.py",
-        "native_toolchain.py",
-        "non_native_output.py",
-        "queue_cli.py",
-        "runtime_build.py",
-        "runtime_wasm_cache.py",
-        "runtime_wasm_validation.py",
-        "sbom.py",
-        "signing.py",
-        "wasm.py",
-        "wasm_toolchain.py",
-    }
-)
+#   * ``frontend/`` -- the whole Python->TIR frontend (visitors, sema, lowering),
+#     kept wholesale because its subpackages import one another.
+#   * ``cli/frontend_*.py`` and ``cli/module_*.py`` -- the CLI-level frontend /
+#     module-graph drivers that invoke and cache the frontend (frontend pipeline,
+#     workers, module resolution / graph / source / cache authorities).
+#
+# These are a structural naming rule, not a hand-maintained membership list: a new
+# ``frontend_*`` / ``module_*`` driver is picked up automatically, and a new
+# backend/link/cargo file is excluded automatically because it is not a seed and
+# is not reachable from one.
+_LOWERING_SCOPE_SEED_CLI_PREFIXES: tuple[str, ...] = ("frontend_", "module_")
+
+
+def _module_level_molt_import_targets(path: Path, src_root: Path) -> set[str]:
+    """Fully-qualified ``molt`` modules imported at MODULE LEVEL from ``path``.
+
+    Only top-level ``import`` / ``from ... import`` statements are considered:
+    reachability models the closure that executes as a side effect of *importing*
+    the frontend drivers, which is exactly the set of files whose code runs to
+    produce a lowering. A dependency pulled in only inside a function body is
+    deferred work (post-lowering command dispatch, native linking, diagnostics)
+    that runs after the cached lowering is computed, so it is intentionally not
+    followed -- following it would drag the backend back onto the frontend path.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return set()
+    try:
+        module_name = _module_name_for_source(path, src_root)
+    except ValueError:
+        module_name = None
+    package = (
+        module_name.rsplit(".", 1)[0]
+        if module_name and "." in module_name
+        else module_name
+    )
+    targets: set[str] = set()
+    for node in tree.body:  # module level only
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("molt"):
+                    targets.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                base = node.module or ""
+                if not base.startswith("molt"):
+                    continue
+            else:
+                if package is None:
+                    continue
+                base_parts = package.split(".")
+                if node.level > 1:
+                    trim = node.level - 1
+                    base_parts = base_parts[:-trim] if trim < len(base_parts) else []
+                base = ".".join(
+                    base_parts + ([node.module] if node.module else [])
+                )
+                if not base.startswith("molt"):
+                    continue
+            targets.add(base)
+            for alias in node.names:
+                targets.add(f"{base}.{alias.name}")
+    return targets
+
+
+def _module_name_for_source(path: Path, src_root: Path) -> str:
+    rel = path.resolve().relative_to(src_root)
+    parts = list(rel.parts)
+    if parts[-1] == "__init__.py":
+        parts = parts[:-1]
+    elif parts[-1].endswith(".py"):
+        parts[-1] = parts[-1][: -len(".py")]
+    return ".".join(parts)
+
+
+def _molt_module_source_file(module: str, src_root: Path) -> Path | None:
+    rel = Path(*module.split("."))
+    candidate = src_root / f"{rel}.py"
+    if candidate.exists():
+        return candidate.resolve()
+    package_init = src_root / rel / "__init__.py"
+    if package_init.exists():
+        return package_init.resolve()
+    return None
+
+
+def _resolve_import_targets_to_files(targets: set[str], src_root: Path) -> set[Path]:
+    files: set[Path] = set()
+    for target in targets:
+        source = _molt_module_source_file(target, src_root)
+        if source is not None:
+            files.add(source)
+            continue
+        # ``from pkg.mod import name`` yields ``pkg.mod.name``; ``name`` may be an
+        # attribute rather than a submodule -- fall back to the owning module.
+        if "." in target:
+            owner = _molt_module_source_file(target.rsplit(".", 1)[0], src_root)
+            if owner is not None:
+                files.add(owner)
+    return files
+
+
+@functools.lru_cache(maxsize=64)
+def _lowering_scope_source_files_cached(project_root_str: str) -> tuple[str, ...]:
+    """Module-level import closure of the frontend lowering seeds.
+
+    Returns every ``molt``-owned source file reachable by following module-level
+    imports from the frontend/module drivers. After the frontend<->backend import
+    seams were cut, this closure provably excludes the backend / native-link /
+    cargo / daemon / toolchain layer, so an edit to any of those files leaves the
+    persisted analysis / lowering / import-graph fingerprints unchanged. The set
+    is cached per project root (mirroring ``_frontend_tooling_source_paths``); the
+    per-module cache's own source-stat + ``context_digest`` gate remains the
+    correctness authority for individual module edits.
+    """
+    project_root = pathlib.Path(project_root_str)
+    src_root = (project_root / "src").resolve()
+    molt_root = src_root / "molt"
+    cli_root = molt_root / "cli"
+
+    seeds: set[Path] = set()
+    frontend_root = molt_root / "frontend"
+    if frontend_root.exists():
+        for source in frontend_root.rglob("*.py"):
+            seeds.add(source.resolve())
+    if cli_root.exists():
+        for source in cli_root.glob("*.py"):
+            if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
+                seeds.add(source.resolve())
+
+    reached: set[Path] = set()
+    pending = list(seeds)
+    while pending:
+        current = pending.pop()
+        if current in reached:
+            continue
+        reached.add(current)
+        targets = _module_level_molt_import_targets(current, src_root)
+        for source in _resolve_import_targets_to_files(targets, src_root):
+            if source not in reached:
+                pending.append(source)
+    return tuple(sorted(str(path) for path in reached))
 
 
 def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
     """Source paths the persisted per-module *frontend* caches must key on.
 
-    This is the ``_frontend_tooling_source_paths`` closure MINUS the post-lowering
-    / orthogonal ``cli/*.py`` modules named in
-    ``_POST_LOWERING_ORTHOGONAL_CLI_BASENAMES``. The whole ``frontend/`` tree is
-    kept intact: its subpackages (``visitors``, ``sema``, ``lowering``) import one
-    another, so no subtree can be soundly excluded from one phase without risking
-    a stale result. The single sound reduction is dropping the CLI files that
-    provably run after (or beside) lowering.
+    Derived structurally by import reachability (see
+    ``_lowering_scope_source_files_cached``): the whole ``frontend/`` tree plus
+    every ``molt``-owned file reachable from the frontend/module drivers by
+    module-level import, plus the shared aux semantic files. No hand-maintained
+    denylist: adding a backend/link/cargo file never enters this scope (it is not
+    reachable from a lowering seed), while a new lowering-relevant module that a
+    driver imports is picked up automatically.
 
-    The import-scan, analysis, and lowering caches all key on this one set: each
-    phase depends on the frontend semantic tooling and is independent of the
-    orthogonal backend/link/toolchain tooling, so they share the identical sound
-    scope. Keeping this as one authority (rather than three coincidentally-equal
-    lists) preserves a single source of truth for the cache identity.
-
-    ``cli/*.py`` is enumerated on every call so that a newly-added CLI module is
-    included by default (and therefore keeps invalidating the caches) unless it is
-    explicitly classified as orthogonal above -- the fail-safe direction.
+    The bias is strictly toward inclusion -- every file on the frontend import
+    path is hashed, so a spurious cold-start is the worst outcome; a stale
+    lowering (miscompile) cannot arise from under-scoping here. ``frontend/`` is
+    returned as a directory (its subpackages import one another and are kept
+    whole); reachable files under it are therefore skipped from the per-file list
+    to avoid hashing them twice.
     """
     molt_root = project_root / "src" / "molt"
-    cli_root = molt_root / "cli"
+    frontend_root = (molt_root / "frontend").resolve()
     paths: list[Path] = [molt_root / "frontend"]
-    for cli_file in sorted(cli_root.glob("*.py"), key=lambda candidate: str(candidate)):
-        if cli_file.name in _POST_LOWERING_ORTHOGONAL_CLI_BASENAMES:
+    for path_str in _lowering_scope_source_files_cached(os.fspath(project_root)):
+        source = pathlib.Path(path_str)
+        if frontend_root == source or frontend_root in source.parents:
             continue
-        paths.append(cli_file)
+        paths.append(source)
+    # Force-include the shared aux semantic files even if a future refactor drops
+    # them from the import closure -- they are load-bearing frontend inputs.
     paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
     return paths
 

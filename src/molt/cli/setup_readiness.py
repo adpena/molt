@@ -17,7 +17,11 @@ from molt.cli.default_paths import _default_molt_cache
 from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
-from molt.cli.project_roots import _find_molt_root, _require_molt_root
+from molt.cli.project_roots import (
+    _find_molt_root,
+    _is_path_within,
+    _require_molt_root,
+)
 from molt.cli.runtime_paths import _runtime_lib_path
 from molt.llvm_toolchain import (
     LlvmBackendPin,
@@ -353,14 +357,6 @@ def _resolved_env_dir_from_root(root: Path, var: str) -> Path | None:
     if not path.is_absolute():
         path = (root / path).absolute()
     return path
-
-
-def _is_path_within(path: Path, container: Path) -> bool:
-    try:
-        path.resolve().relative_to(container.resolve())
-    except ValueError:
-        return False
-    return True
 
 
 def _canonical_env_defaults(root: Path) -> dict[str, str]:

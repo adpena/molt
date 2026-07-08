@@ -9,16 +9,20 @@ cache and forced a needless cold re-lower of every witness module.
 
 These tests pin the fix: the lowering-scoped fingerprint
 (:func:`_frontend_semantic_tooling_fingerprint`) is *invariant* under an edit to
-a post-lowering / orthogonal CLI module, while it still changes for any edit that
-could genuinely affect lowering (a ``frontend/`` file or a non-orthogonal CLI
-file). The broad :func:`_cache_tooling_fingerprint` -- the input the caches used
-before the fix -- is asserted to *still change* on the unrelated edit, so the
-tests have teeth: without the scoping fix the cache keys would move.
+a post-lowering CLI module, while it still changes for any edit that could
+genuinely affect lowering (a ``frontend/`` file or a frontend-driver CLI file).
+The scope is derived structurally by module-level import reachability from the
+frontend/module drivers -- no hand-maintained denylist -- so a post-lowering file
+is out of scope precisely because no lowering-reachable module imports it. The
+broad :func:`_cache_tooling_fingerprint` -- the input the caches used before the
+fix -- is asserted to *still change* on the unrelated edit, so the tests have
+teeth: without the scoping the cache keys would move.
 """
 
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -28,8 +32,9 @@ MC = importlib.import_module("molt.cli.module_cache")
 
 
 _AUX_FILES = CF._FRONTEND_AUX_SOURCE_RELPATHS
-# One provably post-lowering CLI module (in the orthogonal denylist) and one
-# frontend-driver CLI module that must keep invalidating the caches.
+# One provably post-lowering CLI module (not reachable from any lowering seed) and
+# one frontend-driver CLI module (a ``frontend_*`` seed) that must keep
+# invalidating the caches.
 _ORTHOGONAL_CLI = "link_pipeline.py"
 _NON_ORTHOGONAL_CLI = "frontend_pipeline.py"
 
@@ -66,10 +71,11 @@ def _build_fake_molt_tree(root: Path) -> Path:
 def fake_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     molt = _build_fake_molt_tree(tmp_path)
     monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
-    # The broad path helper is lru-cached per root; a fresh tmp_path is a new key
-    # so it never serves a stale dir list. Clear the content-digest memo so each
-    # recompute reads the freshly edited bytes.
+    # The broad path helper and the reachability closure are lru-cached per root; a
+    # fresh tmp_path is a new key so neither serves a stale set. Clear the
+    # content-digest memo so each recompute reads the freshly edited bytes.
     CF._frontend_tooling_source_paths_cached.cache_clear()
+    CF._lowering_scope_source_files_cached.cache_clear()
     CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
     return molt
 
@@ -168,16 +174,25 @@ def test_analysis_and_lowering_cache_keys_ignore_orthogonal_cli_edit(
     assert broad_after != broad_before
 
 
-def test_orthogonal_denylist_is_real_and_disjoint_from_frontend_drivers() -> None:
-    """Every denylisted basename is a real cli module, and none of them are
-    frontend-compute drivers -- guards against a rename silently under-scoping or
-    a frontend file being mis-denylisted (which would serve a stale lowering)."""
-    cli_dir = CF._compiler_root() / "src" / "molt" / "cli"
-    real_cli = {path.name for path in cli_dir.glob("*.py")}
-    denylist = CF._POST_LOWERING_ORTHOGONAL_CLI_BASENAMES
+def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
+    """The structurally-derived scope includes every frontend/module driver and
+    excludes the post-lowering backend/link/cargo/toolchain layer.
 
-    missing = sorted(denylist - real_cli)
-    assert not missing, f"orthogonal denylist names not present in cli/: {missing}"
+    This replaces the old hand-maintained orthogonal denylist: instead of asserting
+    a curated list is disjoint from drivers, it asserts the reachability-derived
+    source set (the real cache key input) has the two required properties. A
+    frontend driver falling out of scope would serve a stale lowering; a backend
+    file falling into scope would needlessly cold-start it.
+    """
+    root = CF._compiler_root()
+    # Restrict to ``cli/`` basenames: other packages may legitimately reuse a
+    # basename (e.g. ``compiler_analysis/backend_ir.py`` is frontend-analysis IR,
+    # unrelated to the post-lowering ``cli/backend_ir.py``).
+    scoped = {
+        path.name
+        for path in CF._frontend_semantic_tooling_source_paths(root)
+        if path.parent.name == "cli"
+    }
 
     frontend_drivers = {
         "frontend_execution.py",
@@ -199,8 +214,78 @@ def test_orthogonal_denylist_is_real_and_disjoint_from_frontend_drivers() -> Non
         "cache_fingerprints.py",
         "models.py",
     }
-    overlap = sorted(denylist & frontend_drivers)
-    assert not overlap, f"frontend drivers wrongly marked orthogonal: {overlap}"
+    missing_drivers = sorted(frontend_drivers - scoped)
+    assert not missing_drivers, (
+        f"frontend drivers fell out of the lowering scope: {missing_drivers}"
+    )
+
+    post_lowering = {
+        "backend_cache.py",
+        "backend_execution.py",
+        "backend_pipeline.py",
+        "backend_ir.py",
+        "cargo_execution.py",
+        "cargo_profiles.py",
+        "link_pipeline.py",
+        "mlir_backend.py",
+        "native_binary.py",
+        "native_link_command.py",
+        "native_toolchain.py",
+        "runtime_build.py",
+        "wasm.py",
+        "wasm_toolchain.py",
+        "toolchain_validation.py",
+        "setup_readiness.py",
+    }
+    leaked = sorted(post_lowering & scoped)
+    assert not leaked, f"post-lowering files leaked into the lowering scope: {leaked}"
+
+
+def test_reachability_follows_driver_imports_but_not_backend() -> None:
+    """Reachability genuinely follows a driver's module-level import into a
+    non-seed cli helper, while a file nothing imports stays out of scope.
+
+    Builds a fake tree where a ``module_*`` seed imports a plain ``cli`` helper,
+    which in turn imports another; both must be pulled into scope. An unrelated
+    ``backend_*`` helper that no in-scope file imports must stay excluded. This
+    exercises the import-following mechanism the denylist never had.
+    """
+    import importlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        molt = root / "src" / "molt"
+        cli = molt / "cli"
+        _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
+        for rel in _AUX_FILES:
+            _write(molt / rel, "MARKER = 1\n")
+        # seed -> helper_a -> helper_b (all must be in scope)
+        _write(
+            cli / "module_resolution.py",
+            "from molt.cli.helper_a import thing\nMARKER = 1\n",
+        )
+        _write(
+            cli / "helper_a.py",
+            "from molt.cli.helper_b import other\nMARKER = 1\n",
+        )
+        _write(cli / "helper_b.py", "other = 1\nthing = 1\n")
+        # backend helper that nothing in scope imports
+        _write(cli / "backend_orphan.py", "MARKER = 1\n")
+
+        CF._lowering_scope_source_files_cached.cache_clear()
+        try:
+            reached = {
+                Path(p).name
+                for p in CF._lowering_scope_source_files_cached(str(root))
+            }
+        finally:
+            CF._lowering_scope_source_files_cached.cache_clear()
+
+    assert "module_resolution.py" in reached  # seed
+    assert "helper_a.py" in reached  # imported by seed
+    assert "helper_b.py" in reached  # imported transitively
+    assert "backend_orphan.py" not in reached  # unreferenced -> excluded
 
 
 def test_scoped_fingerprint_differs_from_broad_on_real_tree() -> None:
@@ -229,3 +314,51 @@ def test_admission_policy_files_stay_in_scope() -> None:
     # sanity: the genuinely post-lowering files stay excluded (perf win intact)
     assert "link_pipeline.py" not in names
     assert "backend_cache.py" not in names
+
+
+def test_import_molt_cli_does_not_load_backend() -> None:
+    """``import molt.cli`` must not pull the backend / native-link / cargo layer.
+
+    The reachability-derived lowering scope is only sound if the runtime import
+    graph matches the static one: the frontend/module drivers reach ``molt.cli``
+    (its ``__init__``), so ``__init__`` importing the backend eagerly would both
+    load it on every frontend import *and* drag it back into the fingerprint
+    scope. Runs in a fresh subprocess so the assertion is not polluted by modules
+    an earlier test already imported.
+    """
+    import subprocess
+    import sys
+
+    root = Path(cf_module_file()).resolve().parents[3]
+    probe = (
+        "import sys, molt.cli\n"
+        "backend = sorted(\n"
+        "    m for m in sys.modules\n"
+        "    if m.startswith('molt.cli.backend_')\n"
+        "    or m.startswith('molt.cli.cargo')\n"
+        "    or m in {\n"
+        "        'molt.cli.link_pipeline', 'molt.cli.wasm',\n"
+        "        'molt.cli.mlir_backend', 'molt.cli.native_toolchain',\n"
+        "        'molt.cli.native_binary', 'molt.cli.native_link_command',\n"
+        "        'molt.cli.runtime_build', 'molt.cli.setup_readiness',\n"
+        "    }\n"
+        ")\n"
+        "assert not backend, 'backend loaded on import molt.cli: ' + repr(backend)\n"
+        "print('OK')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(root / "src")}
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, (
+        f"import-smoke failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+
+
+def cf_module_file() -> str:
+    from molt.cli import cache_fingerprints as cf
+
+    return cf.__file__

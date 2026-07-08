@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from molt.cli.backend_cache import _native_object_global_symbol_sets
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
@@ -1341,6 +1340,10 @@ def _source_extension_object_fact(
     source_path: Path,
     object_path: Path,
 ) -> tuple[_SourceExtensionObjectFact | None, str | None]:
+    # Reading a native object file's global symbols is a backend/native-link
+    # concern; import it lazily so this module stays off the frontend import path.
+    from molt.cli.backend_cache import _native_object_global_symbol_sets
+
     symbol_sets = _native_object_global_symbol_sets(object_path)
     if symbol_sets is None:
         return (
