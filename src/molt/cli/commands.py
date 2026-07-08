@@ -65,7 +65,6 @@ from molt.cli.extension_manifest import (
     _infer_module_attr_callable_export_payloads,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
-    _manifest_support_file_payloads,
     _module_parts,
     _normalize_effects,
     _wheel_record_line,
@@ -73,6 +72,7 @@ from molt.cli.extension_manifest import (
     _wheel_version_token,
     _write_zip_member,
 )
+from molt.cli.extension_support import module_attr_support_files
 from molt.cli.external_native import (
     _source_recompiled_external_package_root,
 )
@@ -1981,13 +1981,6 @@ def extension_build(
     if module_parts is None:
         errors.append("tool.molt.extension.module must be a dotted Python identifier")
         module_parts = ["extension"]
-    support_files = _manifest_support_file_payloads(
-        raw_support_files,
-        field_name="tool.molt.extension.support_files",
-        root=project_root,
-        errors=errors,
-    )
-
     source_paths: list[Path] = []
     include_paths: list[Path] = []
     compile_args: list[str] = []
@@ -2198,6 +2191,15 @@ def extension_build(
     python_exports, callable_exports = _extension_manifest_public_exports(
         extension_export_meta,
         package=_extension_export_package(module_parts),
+        errors=errors,
+    )
+    support_files = module_attr_support_files(
+        raw_support_files,
+        field_name="tool.molt.extension.support_files",
+        source_root=project_root,
+        package=_extension_export_package(module_parts),
+        extension_module=".".join(module_parts),
+        callable_exports=callable_exports,
         errors=errors,
     )
     source_recompiled_root = _source_recompiled_external_package_root(
