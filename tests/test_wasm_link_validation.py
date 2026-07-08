@@ -1903,9 +1903,40 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module_many(["molt_err_pending"])
+    runtime_bytes = wasm_link._build_sections(
+        [
+            *wasm_link._parse_sections(
+                _build_exported_runtime_module_many(["molt_err_pending"])
+            ),
+            (
+                0,
+                wasm_link._build_custom_section(
+                    "linking",
+                    wasm_link._build_linking_payload(
+                        2,
+                        [
+                            (
+                                wasm_link.SYMTAB_SUBSECTION_ID,
+                                _build_symbol_subsection(
+                                    [
+                                        _data_symbol_entry(
+                                            flags=wasm_link.FLAG_EXPLICIT_NAME,
+                                            name="PyLong_Type",
+                                            segment_index=0,
+                                            offset=4096,
+                                            size=208,
+                                        )
+                                    ]
+                                ),
+                            )
+                        ],
+                    ),
+                ),
+            ),
+        ]
+    )
     output_bytes = _build_runtime_import_module(["molt_err_pending"])
-    runtime = tmp_path / "molt_runtime.wasm"
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
@@ -1913,14 +1944,46 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     link_calls: list[list[str]] = []
     linked_app_imports: list[list[tuple[str, str]]] = []
     deployed_native_imports: list[list[tuple[str, str]]] = []
+    data_alias_symbols: list[list[tuple[int, str]]] = []
     allowlists: list[set[str]] = []
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(
-        _build_env_function_import_module(
-            ["molt_err_pending", "malloc", "__trunctfdf2"]
+        wasm_link._build_sections(
+            [
+                *wasm_link._parse_sections(
+                    _build_env_function_import_module(
+                        ["molt_err_pending", "malloc", "__trunctfdf2"]
+                    )
+                ),
+                (
+                    0,
+                    wasm_link._build_custom_section(
+                        "linking",
+                        wasm_link._build_linking_payload(
+                            2,
+                            [
+                                (
+                                    wasm_link.SYMTAB_SUBSECTION_ID,
+                                    _build_symbol_subsection(
+                                        [
+                                            _data_symbol_entry(
+                                                flags=(
+                                                    wasm_link.FLAG_UNDEFINED
+                                                    | wasm_link.FLAG_EXPLICIT_NAME
+                                                ),
+                                                name="PyLong_Type",
+                                            )
+                                        ]
+                                    ),
+                                )
+                            ],
+                        ),
+                    ),
+                ),
+            ]
         )
     )
     compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
@@ -1938,6 +2001,10 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
                 if path.name.startswith("native_runtime_imports_"):
                     deployed_native_imports.append(
                         _function_import_pairs(path.read_bytes())
+                    )
+                if path.name == "split_runtime_data_aliases.wasm":
+                    data_alias_symbols.append(
+                        _linking_data_symbol_names(path.read_bytes())
                     )
                 if part.startswith("--allow-undefined-file="):
                     allowlists.append(_parse_allowlist(Path(part.split("=", 1)[1])))
@@ -2003,8 +2070,14 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert not any(
         Path(part).name.startswith("native_runtime_imports_") for part in monolithic_cmd
     )
+    assert not any(
+        Path(part).name == "split_runtime_data_aliases.wasm" for part in monolithic_cmd
+    )
     assert any(
         Path(part).name.startswith("native_runtime_imports_") for part in split_app_cmd
+    )
+    assert any(
+        Path(part).name == "split_runtime_data_aliases.wasm" for part in split_app_cmd
     )
     assert linked_app_imports == [[("env", "molt_err_pending")]]
     assert deployed_native_imports == [
@@ -2013,6 +2086,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
             ("env", "malloc"),
             ("env", "__trunctfdf2"),
         ]
+    ]
+    assert data_alias_symbols == [
+        [(wasm_link.FLAG_EXPLICIT_NAME, "molt_PyLong_Type")]
     ]
     assert "molt_err_pending" not in allowlists[0]
     assert "molt_err_pending" in allowlists[1]
@@ -2406,6 +2482,58 @@ def test_rewrite_native_runtime_imports_reloc_keeps_unprefixed_cpython_abi_data_
     assert _linking_data_symbol_names(native.read_bytes()) == [
         (wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME, "PyLong_Type"),
     ]
+
+
+def test_split_runtime_data_alias_object_uses_runtime_reloc_data_symbols(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    native = tmp_path / "native_runtime_imports_0.wasm"
+    runtime.write_bytes(
+        _module_with_linking_symbols(
+            [
+                _data_symbol_entry(
+                    flags=wasm_link.FLAG_EXPLICIT_NAME,
+                    name="PyLong_Type",
+                    segment_index=0,
+                    offset=4096,
+                    size=208,
+                ),
+            ]
+        )
+    )
+    native.write_bytes(
+        _module_with_linking_symbols(
+            [
+                _data_symbol_entry(
+                    flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                    name="molt_PyLong_Type",
+                ),
+            ]
+        )
+    )
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        temp_dir = type("_Tmp", (), {"name": raw_tmp})()
+
+        alias = wasm_link._split_runtime_data_alias_object(
+            native_objects=(native,),
+            runtime=runtime,
+            temp_dir=temp_dir,
+        )
+
+        assert alias is not None
+        assert alias != native
+        assert _linking_data_symbol_names(alias.read_bytes()) == [
+            (wasm_link.FLAG_EXPLICIT_NAME, "molt_PyLong_Type"),
+        ]
+        data_sections = [
+            payload
+            for section_id, payload in wasm_link._parse_sections(alias.read_bytes())
+            if section_id == 11
+        ]
+        assert data_sections
+        assert b"PyLong_Type" not in data_sections[0]
 
 
 def test_rewrite_native_runtime_imports_rejects_non_manifest_raw_c_api_symbol(

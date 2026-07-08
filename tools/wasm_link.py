@@ -31,6 +31,10 @@ from molt.cli.runtime_wasm_validation import (  # noqa: E402
 )
 from molt._wasm_runtime_exports import (  # noqa: E402
     wasm_split_runtime_export_name_for_import,
+    wasm_split_runtime_import_name_for_export,
+)
+from molt._wasm_abi_generated import (  # noqa: E402
+    WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
 )
 
 from wasm_link_format import (  # noqa: E402
@@ -74,6 +78,7 @@ from wasm_link_format import (  # noqa: E402
     _parse_custom_section as _parse_custom_section,
     _parse_func_type_indices as _parse_func_type_indices,
     _parse_import_desc as _parse_import_desc,
+    _parse_indexed_symbol as _parse_indexed_symbol,
     _parse_linking_payload as _parse_linking_payload,
     _parse_sections as _parse_sections,
     _parse_symbol_flags as _parse_symbol_flags,
@@ -518,6 +523,7 @@ def _read_link_allowlist_symbols(path: Path) -> list[str]:
 _COMPILER_RT_LINK_IMPORT_CLASS = "wasm_compiler_rt_link_import"
 _CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
 _DEFAULT_SPLIT_APP_GLOBAL_BASE = 64 * 1024 * 1024
+_SYMBOL_KIND_DATA = 1
 
 
 def _external_native_host_link_imports() -> tuple[str, ...]:
@@ -530,6 +536,200 @@ def _external_native_host_link_imports() -> tuple[str, ...]:
             _CPYTHON_ABI_LINK_IMPORT_CLASS,
         }
     )
+
+
+def _iter_linking_data_symbols(
+    data: bytes, *, undefined: bool
+) -> Iterable[tuple[str, int | None, int | None]]:
+    """Yield linking-section data symbols from a wasm object.
+
+    For defined data symbols, yields ``(name, data_offset, size)``. For
+    undefined symbols, ``data_offset`` and ``size`` are ``None``.
+    """
+    for section_id, payload in _parse_sections(data):
+        if section_id != 0:
+            continue
+        name, custom_payload = _parse_custom_section(payload)
+        if name != "linking":
+            continue
+        _version, subsections = _parse_linking_payload(custom_payload)
+        for sub_id, sub_payload in subsections:
+            if sub_id != SYMTAB_SUBSECTION_ID:
+                continue
+            count, offset = _read_varuint(sub_payload, 0)
+            for _ in range(count):
+                if offset >= len(sub_payload):
+                    raise ValueError("Unexpected EOF while reading linking symbols")
+                kind = sub_payload[offset]
+                offset += 1
+                flags, offset = _read_varuint(sub_payload, offset)
+                if kind == SYMBOL_KIND_FUNCTION:
+                    _index, _name, offset = _parse_indexed_symbol(
+                        sub_payload, offset, flags
+                    )
+                    continue
+                if kind in (2, 4, 5):
+                    _index, _name, offset = _parse_indexed_symbol(
+                        sub_payload, offset, flags
+                    )
+                    continue
+                if kind == 3:
+                    _index, offset = _read_varuint(sub_payload, offset)
+                    continue
+                if kind != _SYMBOL_KIND_DATA:
+                    raise ValueError(f"Unknown linking symbol kind: {kind}")
+                symbol_name, offset = _read_string(sub_payload, offset)
+                is_undefined = bool(flags & FLAG_UNDEFINED)
+                if is_undefined:
+                    if undefined:
+                        yield symbol_name, None, None
+                    continue
+                segment_index, offset = _read_varuint(sub_payload, offset)
+                data_offset, offset = _read_varuint(sub_payload, offset)
+                size, offset = _read_varuint(sub_payload, offset)
+                del segment_index
+                if not undefined:
+                    yield symbol_name, data_offset, size
+
+
+def _defined_runtime_data_symbol_offsets(runtime_data: bytes) -> dict[str, tuple[int, int]]:
+    return {
+        name: (offset, size)
+        for name, offset, size in _iter_linking_data_symbols(
+            runtime_data, undefined=False
+        )
+        if offset is not None and size is not None
+    }
+
+
+def _undefined_cpython_abi_data_symbols(
+    native_objects: Sequence[Path],
+) -> tuple[str, ...]:
+    symbols: set[str] = set()
+    for native_object in native_objects:
+        try:
+            data = native_object.read_bytes()
+        except OSError:
+            continue
+        if not _is_wasm_binary(data):
+            continue
+        try:
+            undefined_symbols = _iter_linking_data_symbols(data, undefined=True)
+            for split_name, _offset, _size in undefined_symbols:
+                canonical = wasm_split_runtime_import_name_for_export(split_name)
+                if canonical is None:
+                    canonical = split_name
+                if (
+                    WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(canonical)
+                    == _CPYTHON_ABI_LINK_IMPORT_CLASS
+                    and WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS.get(canonical)
+                    == "data"
+                ):
+                    symbols.add(split_name)
+        except ValueError:
+            continue
+    return tuple(sorted(symbols))
+
+
+def _data_symbol_entry(
+    *,
+    name: str,
+    segment_index: int,
+    size: int,
+) -> bytes:
+    entry = bytearray()
+    entry.append(_SYMBOL_KIND_DATA)
+    entry.extend(_write_varuint(FLAG_EXPLICIT_NAME))
+    entry.extend(_write_string(name))
+    entry.extend(_write_varuint(segment_index))
+    entry.extend(_write_varuint(0))
+    entry.extend(_write_varuint(size))
+    return bytes(entry)
+
+
+def _build_runtime_data_alias_object(
+    symbol_offsets: Sequence[tuple[str, int, int]]
+) -> bytes:
+    """Build a tiny wasm object that defines runtime-owned data symbols.
+
+    Each definition uses an empty active data segment at the runtime-owned
+    address. The segment gives wasm-ld a concrete symbol value for native
+    relocations while copying zero bytes into imported memory, so the split app
+    does not duplicate or reinitialize runtime storage.
+    """
+    sections: list[tuple[int, bytes]] = []
+
+    import_payload = bytearray()
+    import_payload.extend(_write_varuint(1))
+    import_payload.extend(_write_string("env"))
+    import_payload.extend(_write_string("memory"))
+    import_payload.append(2)  # memory import
+    import_payload.append(0)  # min-only limits
+    import_payload.extend(_write_varuint(1))
+    sections.append((2, bytes(import_payload)))
+
+    data_payload = bytearray()
+    data_payload.extend(_write_varuint(len(symbol_offsets)))
+    symbol_entries: list[bytes] = []
+    for segment_index, (name, address, size) in enumerate(symbol_offsets):
+        data_payload.append(0)  # active segment, memory 0 implicit
+        data_payload.append(0x41)  # i32.const
+        data_payload.extend(_write_varuint(address))
+        data_payload.append(0x0B)  # end
+        data_payload.extend(_write_varuint(0))  # empty payload
+        symbol_entries.append(
+            _data_symbol_entry(
+                name=name,
+                segment_index=segment_index,
+                size=size,
+            )
+        )
+    sections.append((11, bytes(data_payload)))
+
+    symbol_payload = _write_varuint(len(symbol_entries)) + b"".join(symbol_entries)
+    sections.append(
+        (
+            0,
+            _build_custom_section(
+                "linking",
+                _build_linking_payload(2, [(SYMTAB_SUBSECTION_ID, symbol_payload)]),
+            ),
+        )
+    )
+    return _build_sections(sections)
+
+
+def _split_runtime_data_alias_object(
+    *,
+    native_objects: Sequence[Path],
+    runtime: Path,
+    temp_dir: tempfile.TemporaryDirectory,
+) -> Path | None:
+    required_symbols = _undefined_cpython_abi_data_symbols(native_objects)
+    if not required_symbols:
+        return None
+    runtime_offsets = _defined_runtime_data_symbol_offsets(runtime.read_bytes())
+    alias_symbols: list[tuple[str, int, int]] = []
+    missing: list[str] = []
+    for split_name in required_symbols:
+        canonical = wasm_split_runtime_import_name_for_export(split_name)
+        if canonical is None:
+            canonical = split_name
+        offset_size = runtime_offsets.get(canonical)
+        if offset_size is None:
+            missing.append(f"{split_name} (canonical {canonical})")
+            continue
+        offset, size = offset_size
+        alias_symbols.append((split_name, offset, size))
+    if missing:
+        raise ValueError(
+            "split-runtime native data symbol bridge missing runtime reloc "
+            "definition(s): "
+            + ", ".join(missing)
+        )
+    alias_path = Path(temp_dir.name) / "split_runtime_data_aliases.wasm"
+    alias_path.write_bytes(_build_runtime_data_alias_object(alias_symbols))
+    return alias_path
 
 
 def _compiler_rt_link_imports() -> frozenset[str]:
@@ -1814,12 +2014,6 @@ def _run_wasm_ld(
         native_objects=native_objects,
         temp_dir=temp_dir,
     )
-    split_native_allowlist = _compose_split_runtime_native_allowlist(
-        base_allowlist=base_allowlist,
-        native_objects=native_link_inputs,
-        runtime_exports=runtime_exports,
-        temp_dir=temp_dir,
-    )
     linked_rewritten_path = rewritten_path
     linked_native_inputs = native_link_inputs
     if split_runtime and native_objects:
@@ -1944,6 +2138,24 @@ def _run_wasm_ld(
     split_native_app_path: Path | None = None
     split_native_app_cmd: list[str] | None = None
     if split_runtime and native_objects:
+        split_native_inputs = native_link_inputs
+        try:
+            data_alias_object = _split_runtime_data_alias_object(
+                native_objects=native_link_inputs,
+                runtime=link_runtime_path,
+                temp_dir=temp_dir,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if data_alias_object is not None:
+            split_native_inputs = (*native_link_inputs, data_alias_object)
+        split_native_allowlist = _compose_split_runtime_native_allowlist(
+            base_allowlist=base_allowlist,
+            native_objects=split_native_inputs,
+            runtime_exports=runtime_exports,
+            temp_dir=temp_dir,
+        )
         split_native_app_path = Path(temp_dir.name) / "app_native_linked.wasm"
         split_app_global_base = _split_app_global_base(output_data)
         split_app_table_base = output_table_min if output_table_min is not None else 1
@@ -1963,7 +2175,7 @@ def _run_wasm_ld(
             "-o",
             str(split_native_app_path),
             str(rewritten_path),
-            *(str(native_object) for native_object in native_link_inputs),
+            *(str(native_object) for native_object in split_native_inputs),
         ]
 
     res = _run_external_tool(cmd, capture_output=True, text=True)
