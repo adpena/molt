@@ -52,7 +52,13 @@ mod asyncio_bridge;
     not(feature = "stdlib_path"),
 ))]
 mod bridge;
-#[cfg(molt_runtime_builtins)]
+// `builtins` is the crate-root runtime authority: it re-exports the CORE
+// symbols (raise_exception, to_i64/to_f64, molt_type_new, attr_lookup_ptr,
+// ellipsis_bits, the exception machinery, ...) that ~230 files reference
+// UNCONDITIONALLY, so it must compile for EVERY feature subset — including the
+// wasm-browser split-runtime plan that enables no stdlib_*/builtin_* feature.
+// Optional stdlib submodules stay individually `#[cfg]`-gated inside
+// `builtins/mod.rs`; only those are feature-conditional, never the core module.
 mod builtins;
 mod c_api;
 mod call;
