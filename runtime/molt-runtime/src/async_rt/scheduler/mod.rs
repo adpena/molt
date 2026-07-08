@@ -67,10 +67,10 @@ pub(crate) use sleep_queue::{
 mod task_state;
 pub(crate) use task_state::{
     AwaitWaiterIndex, asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
-    fn_ptr_code_get, fn_ptr_code_map, fn_ptr_code_set, process_task_drop, process_task_state,
-    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
-    task_last_exceptions, task_waiting_on, task_waiting_on_blocked, task_waiting_on_event,
-    task_waiting_on_future, thread_task_drop, thread_task_state, wake_await_waiters,
+    fn_ptr_code_get, fn_ptr_code_set, process_task_drop, process_task_state, task_exception_depths,
+    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, task_waiting_on,
+    task_waiting_on_blocked, task_waiting_on_event, task_waiting_on_future, thread_task_drop,
+    thread_task_state, wake_await_waiters,
 };
 
 mod asyncio_runtime;
