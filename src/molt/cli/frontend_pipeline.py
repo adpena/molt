@@ -1016,6 +1016,7 @@ def _prepare_frontend_pipeline(
         exec_ms: float,
         roundtrip_ms: float,
         worker_pid: int | None,
+        reused_ms: float = 0.0,
     ) -> dict[str, Any]:
         item: dict[str, Any] = {
             "layer": layer_index,
@@ -1027,6 +1028,8 @@ def _prepare_frontend_pipeline(
             "exec_ms": round(max(0.0, exec_ms), 6),
             "roundtrip_ms": round(max(0.0, roundtrip_ms), 6),
         }
+        if reused_ms > 0.0:
+            item["reused_ms"] = round(reused_ms, 6)
         if isinstance(worker_pid, int):
             item["worker_pid"] = worker_pid
         frontend_parallel_worker_timings.append(item)

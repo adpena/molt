@@ -362,6 +362,7 @@ class _WorkerTimingSummary:
     exec_ms_total: float
     exec_ms_max: float
     roundtrip_ms_total: float
+    reused_ms_total: float
 
 
 @dataclass(frozen=True)

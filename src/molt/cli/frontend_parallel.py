@@ -196,6 +196,7 @@ def _summarize_worker_timing_items(
     wait_samples = [float(item.get("wait_ms", 0.0)) for item in items]
     exec_samples = [float(item.get("exec_ms", 0.0)) for item in items]
     roundtrip_samples = [float(item.get("roundtrip_ms", 0.0)) for item in items]
+    reused_samples = [float(item.get("reused_ms", 0.0)) for item in items]
     return _WorkerTimingSummary(
         count=len(items),
         queue_ms_total=round(sum(queue_samples), 6),
@@ -205,6 +206,7 @@ def _summarize_worker_timing_items(
         exec_ms_total=round(sum(exec_samples), 6),
         exec_ms_max=round(max(exec_samples, default=0.0), 6),
         roundtrip_ms_total=round(sum(roundtrip_samples), 6),
+        reused_ms_total=round(sum(reused_samples), 6),
     )
 
 
@@ -226,6 +228,7 @@ def _frontend_parallel_layer_detail(
     finished_ns: int,
     fallback_reason: str | None = None,
 ) -> dict[str, Any]:
+    cache_misses = max(0, timing_summary.count - cache_hits)
     detail: dict[str, Any] = {
         "index": layer_index,
         "mode": mode,
@@ -234,6 +237,13 @@ def _frontend_parallel_layer_detail(
         "candidate_count": candidate_count,
         "workers": workers,
         "cache_hits": cache_hits,
+        "cache_misses": cache_misses,
+        "lowering_cache": {
+            "hits": cache_hits,
+            "misses": cache_misses,
+            "reused_s": round(timing_summary.reused_ms_total / 1000.0, 6),
+            "relowered_s": round(timing_summary.exec_ms_total / 1000.0, 6),
+        },
         "predicted_cost_total": round(predicted_cost_total, 3),
         "effective_min_predicted_cost": round(effective_min_predicted_cost, 3),
         "stdlib_candidates": stdlib_candidates,
@@ -293,8 +303,9 @@ def _record_parallel_cached_module_result(
         "mode": "parallel_cache_hit",
         "queue_ms": 0.0,
         "wait_ms": 0.0,
-        "exec_ms": round(max(0.0, total_ms), 6),
-        "roundtrip_ms": round(max(0.0, total_ms), 6),
+        "exec_ms": 0.0,
+        "roundtrip_ms": 0.0,
+        "reused_ms": round(max(0.0, total_ms), 6),
         "worker_pid": None,
     }
 
@@ -446,6 +457,7 @@ def _worker_timing_summary_payload(summary: _WorkerTimingSummary) -> dict[str, A
         "wait_ms_max": summary.wait_ms_max,
         "exec_ms_total": summary.exec_ms_total,
         "exec_ms_max": summary.exec_ms_max,
+        "reused_ms_total": summary.reused_ms_total,
     }
 
 
@@ -642,7 +654,7 @@ def _frontend_parallel_result_error(
 def _frontend_parallel_worker_timing_inputs(
     result_timings: _FrontendModuleResultTimings,
     worker_timing: Mapping[str, Any] | None,
-) -> tuple[float, float, float, float, str, int | None]:
+) -> tuple[float, float, float, float, float, str, int | None]:
     total_ms = result_timings.total_s * 1000.0
     queue_ms = float((worker_timing or {}).get("queue_ms", 0.0))
     wait_ms = float((worker_timing or {}).get("wait_ms", 0.0))
@@ -650,10 +662,11 @@ def _frontend_parallel_worker_timing_inputs(
     roundtrip_ms = float(
         (worker_timing or {}).get("roundtrip_ms", max(queue_ms + wait_ms, exec_ms))
     )
+    reused_ms = float((worker_timing or {}).get("reused_ms", 0.0))
     worker_mode = str((worker_timing or {}).get("mode", "parallel"))
     worker_pid_raw = (worker_timing or {}).get("worker_pid")
     worker_pid = worker_pid_raw if isinstance(worker_pid_raw, int) else None
-    return queue_ms, wait_ms, exec_ms, roundtrip_ms, worker_mode, worker_pid
+    return queue_ms, wait_ms, exec_ms, roundtrip_ms, reused_ms, worker_mode, worker_pid
 
 
 def _take_frontend_parallel_layer_result(
@@ -678,6 +691,7 @@ def _record_parallel_layer_module_timing(
         wait_ms,
         exec_ms,
         roundtrip_ms,
+        reused_ms,
         worker_mode,
         worker_pid,
     ) = _frontend_parallel_worker_timing_inputs(result_timings, worker_timing)
@@ -691,6 +705,7 @@ def _record_parallel_layer_module_timing(
             wait_ms=wait_ms,
             exec_ms=exec_ms,
             roundtrip_ms=roundtrip_ms,
+            reused_ms=reused_ms,
             worker_pid=worker_pid,
         )
     )
