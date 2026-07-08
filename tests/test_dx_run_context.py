@@ -716,6 +716,34 @@ def test_run_context_scrubs_inherited_legacy_windows_artifact_roots(
     assert env["TEMP"] == env["TMPDIR"]
 
 
+def test_run_context_attests_selected_windows_c_artifact_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    primary = tmp_path / "Molt"
+    repo_root.mkdir()
+    primary.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(dx, "DEFAULT_WINDOWS_PRIMARY_ARTIFACT_ROOT", primary)
+    monkeypatch.setattr(dx, "_windows_drive_roots", lambda: ())
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: True)
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).dx_env(
+        {"PATH": "/usr/bin", "MOLT_EXTERNAL_MIN_FREE_GB": "0"},
+        create_dirs=False,
+    )
+    payload = dx.dx_env_payload(env, DX_ENV_KEYS)["env"]
+
+    assert env["MOLT_EXT_ROOT"] == str(primary.resolve())
+    assert env["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] == "1"
+    assert payload["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] == "1"
+
+
 def test_default_toolchain_root_is_child_of_artifact_root(tmp_path: Path) -> None:
     molt_root = tmp_path / dx.DEFAULT_WINDOWS_EXTERNAL_ARTIFACT_DIRNAME
     assert dx._default_toolchain_root_for_artifact_root(molt_root) == (

@@ -40,6 +40,7 @@ CANONICAL_RUN_ENV_KEYS = (
     *CANONICAL_ROOT_ENV_KEYS,
     "CARGO_INCREMENTAL",
     "MOLT_SESSION_ID",
+    "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
 )
 DX_ENV_KEYS = (
     *CANONICAL_RUN_ENV_KEYS,
@@ -1078,6 +1079,11 @@ class RunContext:
             prefer_external=self.prefer_external_artifacts,
         )
         env["MOLT_EXT_ROOT"] = str(ext_root)
+        if _is_windows_c_drive_path(ext_root.resolve()):
+            # RunContext is the artifact-root authority. Once it has accepted a
+            # Windows C: root, downstream guards must receive the same policy
+            # attestation instead of re-litigating the old non-C default.
+            env["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] = "1"
         if create_dirs:
             # Keep the artifact volume tidy BY DEFAULT — throttled, detached,
             # best-effort. Only in real (create_dirs) contexts, never in tests.
