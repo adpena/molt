@@ -66,13 +66,20 @@ trampling, and absolute respect for a stand-down order.
 
 ## ✅ CODEX-B DONE + CODEX-C DONE — 2026-07-08 (READ FIRST)
 
-- **CODEX-B is DONE — landed `b9d6963fb`.** The frontend lowering/analysis/import-graph
-  caches now key on `_frontend_semantic_tooling_fingerprint` (frontend tooling closure
-  MINUS 33 provably post-lowering cli files), so unrelated backend/link/cargo/native/
-  wasm/daemon edits no longer cold-start the numpy re-lower (~180-250s, ~40-50% of a
-  485s acceptance). Correctness-reviewed (external_native kept in scope — it feeds
-  direct_call_modules; miscompile guarded by a regression test); 7/7 teeth green.
-  **If you hold uncommitted `cache_fingerprints.py` CODEX-B WIP: DROP it — superseded.**
+- **CODEX-B DONE + STRUCTURALLY HARDENED (`b9d6963fb` then `a16921a8d`).** The
+  lowering cache now keys only on lowering-relevant tooling, so unrelated backend/
+  link/cargo/wasm/daemon edits no longer cold-start the numpy re-lower (~180-250s,
+  ~40-50% of a 485s acceptance). The initial fix used a hand-maintained 33-file
+  denylist (a code smell); the follow-up (`a16921a8d`) **eliminated it** — cut the
+  two frontend→backend import seams (de-godded `cli/__init__` to lazy backend
+  re-exports so `import molt.cli` loads ZERO backend; relocated `module_cache`'s
+  artifact-sync to `cli/artifact_sync.py`) and now DERIVES the scope by static
+  import-reachability. No hardcoded list; correct by construction. Verified: 826/826
+  public API preserved, 0 backend on `import molt.cli`, backend excluded /
+  external_native+frontend_worker in scope (no miscompile), 9/9 invariance + 26/26
+  cache-module suites. **`cli/__init__` + `module_cache` were massively refactored —
+  if you hold uncommitted WIP in `cli/__init__` / `module_cache` / `cache_fingerprints`,
+  DROP it (superseded) and rebase.**
 - **CODEX-C is DONE** (`109cb15ce` = reconciled `02d85f922`; do not re-land). A
   `pact-witness-acceptance` row already fails closed pre-build on a missing toolchain
   import with `signal_id="wasm-toolchain-contract-import-missing"` + evidence.
