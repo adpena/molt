@@ -906,15 +906,30 @@
           ` args=[${printableArgs}]${described}`,
       );
     }
-    if (callArgs.length !== entry.arity) {
+    // Reserved runtime callables are reached through the generic
+    // `molt_call_indirectN` fixed-arity lane, whose N is chosen by the
+    // *caller's* positional-argument count, not by the callable's true C
+    // signature. A type `__new__` slot, for instance, forwards `(cls, *args)`,
+    // so `molt_types_capsule_new(cls) -> u64` (declared arity 1) can be invoked
+    // as `capsule(cls, x, None, None)` and arrive here with 4 operands. The
+    // callable reads only its declared leading params and ignores the surplus —
+    // exactly as the native C ABI silently drops extra positional arguments.
+    // WASM cannot invoke a 1-param function with 4 operands (a call_indirect
+    // type-mismatch trap), so this host bridge is the single point that
+    // reconciles the two conventions: forward exactly `entry.arity` leading
+    // args. Under-supply (fewer operands than the declared arity) remains a hard
+    // error because the missing arguments cannot be fabricated.
+    if (callArgs.length < entry.arity) {
       throw new Error(
         `${indirectName} reserved runtime callable ${entry.runtimeExport} arity mismatch: expected ${entry.arity}, got ${callArgs.length}`,
       );
     }
+    const forwardedArgs =
+      callArgs.length === entry.arity ? callArgs : callArgs.slice(0, entry.arity);
     return callWithWasmSignature(
       fn,
       { params: Array.from({ length: entry.arity }, () => 'i64'), result: 'i64' },
-      callArgs,
+      forwardedArgs,
     );
   };
 
