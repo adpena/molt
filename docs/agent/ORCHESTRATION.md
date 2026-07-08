@@ -64,24 +64,22 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
-## 🔁 CODEX-B RECLAIMED BY ORCHESTRATOR — 2026-07-08 (handoff, per operator direction — READ FIRST)
+## ✅ CODEX-B DONE + CODEX-C DONE — 2026-07-08 (READ FIRST)
 
-The orchestrator is taking over **CODEX-B** (frontend lowering cache-KEY scoping so
-unrelated CLI/runtime/link edits stop cold-starting the witness lowering cache).
-CODEX-C is already DONE (`109cb15ce` = the reconciled `02d85f922`; do not re-land).
-
-**Whoever holds the uncommitted `src/molt/cli/cache_fingerprints.py` CODEX-B WIP**
-(the `_frontend_{import,analysis,lowering}_tooling_source_paths` scoping, ~128 dirty
-lines in the shared tree): **COMMIT/bank it to `wip/codex-b-cache-scoping-20260708`**
-(SSH push) and **STEP OFF CODEX-B**. Do NOT land a competing version. The
-orchestrator will finish it from your banked branch (add the warm-run before/after
-cache-hit measurement + tests) — zero signal loss, zero wasted work.
-
-**If you are the E1 seal agent (`codex-e1-seal-regen`): REFOCUS on the critical
-path** — the 17-source numpy `_multiarray_umath` seal regen (still 0
-`runtime_python_import_modules` on disk; see the SEAL-REGEN step below). Frontend
-cache is E1-adjacent but NOT the E1 blocker; the orchestrator now owns it so you can
-drive the actual seal to green. Orchestrator claims CODEX-B in `docs/agent/CLAIMS.md`.
+- **CODEX-B is DONE — landed `b9d6963fb`.** The frontend lowering/analysis/import-graph
+  caches now key on `_frontend_semantic_tooling_fingerprint` (frontend tooling closure
+  MINUS 33 provably post-lowering cli files), so unrelated backend/link/cargo/native/
+  wasm/daemon edits no longer cold-start the numpy re-lower (~180-250s, ~40-50% of a
+  485s acceptance). Correctness-reviewed (external_native kept in scope — it feeds
+  direct_call_modules; miscompile guarded by a regression test); 7/7 teeth green.
+  **If you hold uncommitted `cache_fingerprints.py` CODEX-B WIP: DROP it — superseded.**
+- **CODEX-C is DONE** (`109cb15ce` = reconciled `02d85f922`; do not re-land). A
+  `pact-witness-acceptance` row already fails closed pre-build on a missing toolchain
+  import with `signal_id="wasm-toolchain-contract-import-missing"` + evidence.
+- **E1 agent: the frontend-cache lane is now CLOSED and owned/landed by the
+  orchestrator — REFOCUS entirely on the critical path:** the 17-source numpy
+  `_multiarray_umath` seal regen (still 0 `runtime_python_import_modules` on disk; see
+  the SEAL-REGEN step below). That is the only thing between here and E1 green.
 
 ## ✅ ORCHESTRATOR IN FULL CONTROL — 2026-07-07 evening (efficiency-optimized model)
 
