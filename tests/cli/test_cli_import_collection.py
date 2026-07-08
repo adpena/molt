@@ -18,7 +18,7 @@ import sys
 import tarfile
 import time
 import types
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, Collection, Mapping, Sequence, cast
 
 import molt.cli as cli
 from molt.cli import commands as cli_commands
@@ -13306,6 +13306,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         context_digest: str,
         path_stat: os.stat_result | None = None,
         target_python: cli.TargetPythonVersion = cli._DEFAULT_TARGET_PYTHON_VERSION,
+        known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
         assert root == project_root
         assert path == module_path
@@ -13314,6 +13315,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         assert context_digest == "digest"
         assert path_stat is not None
         assert target_python == cli._DEFAULT_TARGET_PYTHON_VERSION
+        assert known_modules == {"alpha"}
         return {"module": module_name, "kind": "cached"}
 
     monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
@@ -13361,6 +13363,120 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
     assert context_digest_by_module == {"alpha": "digest"}
     assert context_payload_calls == 1
+
+
+def test_prepare_frontend_parallel_batch_reuses_dirty_module_lowering_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "alpha.py"
+    module_path.write_text("VALUE = 1\n")
+    project_root = tmp_path
+    reads: list[str] = []
+
+    monkeypatch.setattr(
+        cli_module_cache,
+        "_module_lowering_context_payload",
+        lambda *args, **kwargs: {"module": "alpha"},
+    )
+    monkeypatch.setattr(
+        cli_module_cache, "_module_lowering_context_digest", lambda payload: "digest"
+    )
+
+    def fake_read(
+        root: Path,
+        path: Path,
+        *,
+        module_name: str,
+        is_package: bool,
+        context_digest: str,
+        path_stat: os.stat_result | None = None,
+        target_python: cli.TargetPythonVersion = cli._DEFAULT_TARGET_PYTHON_VERSION,
+        known_modules: Collection[str] | None = None,
+    ) -> dict[str, object] | None:
+        assert root == project_root
+        assert path == module_path
+        assert module_name == "alpha"
+        assert is_package is False
+        assert context_digest == "digest"
+        assert path_stat is not None
+        assert target_python == cli._DEFAULT_TARGET_PYTHON_VERSION
+        assert known_modules == {"alpha"}
+        reads.append(module_name)
+        return {"module": module_name, "kind": "cached"}
+
+    monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
+    module_graph_metadata = cli._build_module_graph_metadata(
+        {"alpha": module_path},
+        generated_module_source_paths={},
+        entry_module="__main__",
+        namespace_module_names=set(),
+    )
+
+    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+        cli_frontend_worker._prepare_frontend_parallel_batch(
+            ["alpha"],
+            module_graph={"alpha": module_path},
+            module_sources={},
+            project_root=project_root,
+            known_classes_snapshot={},
+            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=True,
+            known_modules={"alpha"},
+            stdlib_allowlist=set(),
+            known_func_defaults={},
+            known_func_kinds={},
+            module_deps={"alpha": set()},
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=set(),
+            known_modules_sorted=("alpha",),
+            stdlib_allowlist_sorted=(),
+            pgo_hot_function_names_sorted=(),
+            module_dep_closures={"alpha": frozenset({"alpha"})},
+            module_graph_metadata=module_graph_metadata,
+            module_chunking=False,
+            dirty_lowering_modules={"alpha"},
+            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        )
+    )
+
+    assert batch_error is None
+    assert worker_payloads == []
+    assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
+    assert context_digest_by_module == {"alpha": "digest"}
+    assert reads == ["alpha"]
+
+
+def test_frontend_lowering_cache_summary_attests_hits_and_relowered_work() -> None:
+    summary = cli_build_diagnostics._frontend_lowering_cache_summary(
+        {
+            "worker_timings": [
+                {
+                    "module": "cached",
+                    "mode": "parallel_cache_hit",
+                    "exec_ms": 0.0,
+                    "reused_ms": 1250.0,
+                },
+                {
+                    "module": "relowered",
+                    "mode": "parallel",
+                    "exec_ms": 500.0,
+                },
+            ]
+        }
+    )
+
+    assert summary == {
+        "hits": 1,
+        "misses": 1,
+        "reused_s": 1.25,
+        "relowered_s": 0.5,
+        "message": "lowering cache: 1/1, 1.250000s reused / 0.500000s re-lowered",
+    }
 
 
 def test_load_cached_module_lowering_result_reuses_single_module_stat(
@@ -15061,11 +15177,22 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
 
     payload = json.loads(second_stdout.getvalue())
     compile_diagnostics = payload["data"]["compile_diagnostics"]
+    lowering_cache = compile_diagnostics["frontend_lowering_cache"]
+    assert lowering_cache["hits"] > 0
+    assert lowering_cache["message"].startswith("lowering cache: ")
     worker_modes = {
         item["mode"]
         for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
     }
     assert "parallel_cache_hit" in worker_modes
+    cache_hit_items = [
+        item
+        for item in compile_diagnostics["frontend_parallel"]["worker_timings"]
+        if item["mode"] == "parallel_cache_hit"
+    ]
+    assert cache_hit_items
+    assert all(item["exec_ms"] == 0.0 for item in cache_hit_items)
+    assert any(item.get("reused_ms", 0.0) >= 0.0 for item in cache_hit_items)
 
 
 def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(

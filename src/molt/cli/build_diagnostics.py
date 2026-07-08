@@ -1001,7 +1001,13 @@ def _build_build_diagnostics_payload(
         allocations_payload = _capture_build_allocation_diagnostics()
         if allocations_payload is not None:
             payload["allocations"] = allocations_payload
-    payload["frontend_parallel"] = dict(diagnostics_context.frontend_parallel_details)
+    frontend_parallel_payload = dict(diagnostics_context.frontend_parallel_details)
+    payload["frontend_parallel"] = frontend_parallel_payload
+    lowering_cache_summary = _frontend_lowering_cache_summary(
+        frontend_parallel_payload
+    )
+    if lowering_cache_summary is not None:
+        payload["frontend_lowering_cache"] = lowering_cache_summary
     midend_payload = _build_midend_diagnostics_payload(
         requested_profile=cast(BuildProfile, diagnostics_context.profile),
         policy_outcomes_by_function=dict(
@@ -1037,6 +1043,41 @@ def _build_build_diagnostics_payload(
             diagnostics_context.artifacts_root,
         )
     return payload, out_path
+
+
+def _frontend_lowering_cache_summary(
+    frontend_parallel_details: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    worker_timings = frontend_parallel_details.get("worker_timings")
+    if not isinstance(worker_timings, list):
+        return None
+    hits = 0
+    reused_ms = 0.0
+    relowered_ms = 0.0
+    for raw_item in worker_timings:
+        if not isinstance(raw_item, Mapping):
+            continue
+        mode = raw_item.get("mode")
+        if mode == "parallel_cache_hit":
+            hits += 1
+            reused_ms += float(raw_item.get("reused_ms", 0.0))
+        else:
+            relowered_ms += float(raw_item.get("exec_ms", 0.0))
+    observed = sum(1 for item in worker_timings if isinstance(item, Mapping))
+    if observed == 0:
+        return None
+    misses = max(0, observed - hits)
+    return {
+        "hits": hits,
+        "misses": misses,
+        "reused_s": round(reused_ms / 1000.0, 6),
+        "relowered_s": round(relowered_ms / 1000.0, 6),
+        "message": (
+            f"lowering cache: {hits}/{misses}, "
+            f"{reused_ms / 1000.0:.6f}s reused / "
+            f"{relowered_ms / 1000.0:.6f}s re-lowered"
+        ),
+    }
 
 
 def _record_frontend_timing_item(
