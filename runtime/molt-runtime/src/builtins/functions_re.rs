@@ -4,8 +4,6 @@
 // with god-crate consumers:
 //   * the `this` easter-egg (Zen of Python) text, consumed by the `__molt_this`
 //     builtin in `functions.rs`.
-//   * the `CharClassParse` tuple alias, consumed by `functions_fnmatch.rs`
-//     (and mirrored locally by the glob translator in `io_path_utils.rs`).
 
 const THIS_ENCODED: &str = concat!(
     "Gur Mra bs Clguba, ol Gvz Crgref\n\n",
@@ -29,8 +27,6 @@ const THIS_ENCODED: &str = concat!(
     "Vs gur vzcyrzragngvba vf rnfl gb rkcynva, vg znl or n tbbq vqrn.\n",
     "Anzrfcnprf ner bar ubaxvat terng vqrn -- yrg'f qb zber bs gubfr!",
 );
-
-pub(crate) type CharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
 
 pub(crate) fn this_rot13_char(ch: char) -> char {
     match ch {

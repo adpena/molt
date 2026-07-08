@@ -247,6 +247,40 @@ passed `python -m molt build examples/hello.py --target native --profile dev
 warning is DX evidence for guard lifecycle cleanup, not a constants authority
 failure.
 
+2026-07-08 C1 follow-up: the pure `fnmatch` matcher, byte matcher,
+normcase, and regex translation authority now lives in
+`molt-stdlib-text::fnmatch`. `molt-runtime` keeps the object/ABI entrypoints in
+`builtins/functions_fnmatch.rs` and `builtins/fnmatch.rs`, but both surfaces now
+import the same stdlib-text implementation instead of carrying duplicate
+runtime-local behavior. The old `stdlib_fs_extra`/`glob::Pattern` lane and its
+fail-closed `false` fallback are deleted, and the stale
+`functions_re::CharClassParse` alias disappeared with the old in-runtime
+matcher. Queue row
+`20260708T031128-c1-stdlib-text-fnmatch-satellite-20260708b-846028c322c6481c`
+passed `cargo test -p molt-stdlib-text` in 16.5s. Runtime fan-in row
+`20260708T032554-c1-stdlib-text-fnmatch-fanin-20260708e-01990725cb5640d5`
+passed `cargo check -p molt-runtime` in an isolated proof target in 170.5s; the
+fresh target was required because the shared `compiler-build-resource` target
+session reused stale runtime-facing `molt-stdlib-text` metadata from another
+worktree while a newer test artifact already contained `fnmatch.rs`. That is
+DX evidence: the compiler mutex fixed unsafe parallel heavy builds, but the
+target-session key still needs enough worktree/source-epoch isolation to avoid
+cross-worktree stale fingerprints. After rebasing over the runtime-constants
+origin/main commits, row
+`20260708T033407-c1-stdlib-text-fnmatch-satellite-postrebase-20260708a-71d224bdac52460d`
+passed the satellite tests in 18.7s, and row
+`20260708T033516-c1-stdlib-text-fnmatch-fanin-postrebase-20260708a-b8b0b492c84e4cb0`
+passed the runtime fan-in in 172.5s. The fan-in rows also repeated the
+`nested-memory-guard-orphan-cleanup` warning. After rebasing again over the
+async scheduler split on origin/main, row
+`20260708T034048-c1-stdlib-text-fnmatch-fanin-final-20260708a-dc2486d556ec441d`
+passed the final runtime fan-in in 114.9s. Receipts:
+`D:\Molt\target\sessions\proof-rust-67233f77c6b3-cargo-mo\.molt_state\quarantine\cargo_incremental\20260708-032843-pid5776-orphaned_processes_cleaned\receipt.json`
+and
+`D:\Molt\target\sessions\proof-rust-2862251e65dc-cargo-mo\.molt_state\quarantine\cargo_incremental\20260708-033808-pid26036-orphaned_processes_cleaned\receipt.json`
+and
+`D:\Molt\target\sessions\proof-rust-d6f2053093bf-cargo-mo\.molt_state\quarantine\cargo_incremental\20260708-034241-pid4740-orphaned_processes_cleaned\receipt.json`.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
