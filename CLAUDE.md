@@ -115,12 +115,20 @@ is reconciled.
 ## DX, Queue, And Proof Discipline
 
 - Use `uv run --active --project . --python 3.12 ...` for Python commands.
-- On this Windows workstation APDataStore (`D:`, exFAT, ~2 TB) is the maintainer/
-  agent artifact volume; `E:` is legacy/contended and `C:` is near-full. Route
-  builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts
-  --dx`, `tools/dev.py`, `tools/throughput_env.sh`, or the proof queue): it
-  selects APDataStore by volume label and sets `MOLT_EXT_ROOT=D:\Molt`,
-  `CARGO_TARGET_DIR`/cache/temp under it, and the managed toolchain root
+- On this Windows workstation the PRIMARY fast artifact volume is now `C:\Molt`
+  (internal NVMe) — set via persistent `MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` +
+  `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` (2026-07-08; freed by deleting games). It beats
+  the external USB `D:` (exFAT: no hard links, 128 KB clusters, metadata-slow) for
+  the git+cargo small-file workload. **Do NOT override the root back to `D:`/`E:`** —
+  they are exFAT fallback/overflow only. Stale artifacts self-clean BY DEFAULT
+  (dx.py auto-janitor, throttled/detached, `--free-below-gb 80`; opt out
+  `MOLT_DISABLE_AUTO_JANITOR=1`). See docs/agent/ORCHESTRATION.md DEV-VELOCITY
+  PROTOCOL. Route builds through RunContext (`tools/run_context_env.py
+  --prefer-external-artifacts --dx`, `tools/dev.py`, `tools/throughput_env.sh`, or
+  the proof queue): it resolves `MOLT_EXT_ROOT=C:\Molt`,
+  `CARGO_TARGET_DIR=C:\Molt\target` (a STABLE persistent target — do NOT set
+  `MOLT_SESSION_ID` for ordinary builds), cache/temp under it, and the managed
+  toolchain root
   `MOLT_TARGET_ROOT=D:\Molt\target-root`. Stale inherited
   `MOLT_TARGET_ROOT=E:\molt-target`, `E:\Molt\target-root`, or
   `D:\molt-target` is rehomed unless the operator sets
