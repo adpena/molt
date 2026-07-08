@@ -1,4 +1,6 @@
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
+#[cfg(test)]
+use crossbeam_channel::TrySendError;
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 #[cfg(molt_has_net_io)]
 use std::collections::HashMap;
 #[cfg(molt_has_net_io)]
