@@ -1,4 +1,6 @@
-use super::*;
+use std::sync::atomic::AtomicU64;
+
+use crate::PyToken;
 
 pub(crate) struct OperatorRuntimeState {
     pub(crate) itemgetter_class: AtomicU64,

@@ -1,4 +1,19 @@
-use super::*;
+use molt_obj_model::MoltObject;
+use num_traits::{Signed, ToPrimitive};
+
+use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
+use crate::builtins::numbers::index_bigint_from_obj;
+use crate::{
+    TYPE_ID_TUPLE, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bigint_ptr_from_bits,
+    bigint_ref, call_callable0, class_name_for_error, dec_ref_bits, exception_pending,
+    exception_stack_pop, exception_stack_push, is_truthy, molt_concat, molt_contains,
+    molt_delitem_method, molt_eq, molt_getitem_method, molt_inplace_add, molt_inplace_bit_and,
+    molt_inplace_bit_or, molt_inplace_bit_xor, molt_inplace_concat, molt_inplace_div,
+    molt_inplace_floordiv, molt_inplace_lshift, molt_inplace_matmul, molt_inplace_mod,
+    molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub, molt_iter_checked,
+    molt_iter_next, molt_len, molt_setitem_method, obj_from_bits, object_type_id, raise_exception,
+    seq_vec_ref, to_i64, type_name, type_of_bits,
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_contains(container_bits: u64, item_bits: u64) -> u64 {
