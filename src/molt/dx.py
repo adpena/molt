@@ -143,6 +143,74 @@ def cargo_target_dir_for_artifact_root(
     return session_scoped_target_dir(artifact_root / "target", session_id)
 
 
+# Peak resident memory a single rustc codegen job for the heavy molt-runtime (and
+# source-recompiled numpy/scipy) build can reach. Cargo's default `-j<num_cpus>`
+# runs that many rustc processes in parallel, so on a small box (8GB) an unbounded
+# job count thrashes swap. Bounding jobs to available memory keeps a build inside a
+# memory ceiling AND — critically for throughput — scales UP to the CPU count on a
+# capable box instead of a fixed handful of jobs.
+_BYTES_PER_CARGO_JOB = 2 * 1024 * 1024 * 1024
+# Reserve headroom for the OS, the linker (peaks separately from parallel rustc),
+# sccache, and the driving Python before dividing the rest among parallel jobs.
+_CARGO_JOB_MEMORY_HEADROOM = 2 * 1024 * 1024 * 1024
+
+
+def _total_system_memory_bytes() -> int | None:
+    """Best-effort total physical memory in bytes, or ``None`` if unknown.
+
+    Uses only stdlib probes so the resource authority does not depend on
+    ``psutil`` or the ``tools/`` memory-guard package (a layering boundary).
+    """
+    if os.name == "nt":
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        try:
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys)
+        except (OSError, AttributeError, ValueError):
+            return None
+        return None
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return None
+    if page_size <= 0 or phys_pages <= 0:
+        return None
+    return int(page_size) * int(phys_pages)
+
+
+def _memory_bounded_cargo_jobs() -> int | None:
+    """Cargo ``--jobs`` ceiling that fits total memory, or ``None`` if unknown.
+
+    Caps parallel rustc jobs to roughly one per ``_BYTES_PER_CARGO_JOB`` of total
+    RAM, never exceeding the CPU count. Returns ``None`` when memory can't be
+    probed so callers leave cargo's default job count untouched.
+    """
+    total = _total_system_memory_bytes()
+    if total is None:
+        return None
+    cpu_count = os.cpu_count() or 1
+    usable = max(0, total - _CARGO_JOB_MEMORY_HEADROOM)
+    mem_jobs = max(1, usable // _BYTES_PER_CARGO_JOB)
+    return max(1, min(cpu_count, mem_jobs))
+
+
 def _env_bool(
     env: Mapping[str, str],
     names: Collection[str],
@@ -1127,7 +1195,17 @@ class DxProject:
         )
         env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
         env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
-        env.setdefault("CARGO_BUILD_JOBS", str(dx.get("cargo_build_jobs", 2)))
+        # Do NOT hardcode a conservative fixed job count here — it poisons the
+        # session env and DEFEATS the adaptive memory-bounded ceiling (a fixed 2
+        # ran a 24-core/34GB box at ~2 jobs instead of 14). Honor an explicit
+        # config value; otherwise use the memory-fit adaptive count (scales up on
+        # capable boxes, still safe on 8GB), leaving it unset only if RAM can't be
+        # probed (then the build path's own _apply_memory_bounded_cargo_jobs runs).
+        jobs_cfg = dx.get("cargo_build_jobs")
+        if jobs_cfg is None:
+            jobs_cfg = _memory_bounded_cargo_jobs()
+        if jobs_cfg is not None:
+            env.setdefault("CARGO_BUILD_JOBS", str(jobs_cfg))
         return env
 
     def dx_env(

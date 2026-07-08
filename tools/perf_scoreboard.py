@@ -1359,6 +1359,13 @@ def _authoritative_reason(
     return "; ".join(parts)
 
 
+def _refuses_nonauthoritative_measurement(
+    *, authoritative: bool, allow_nonauthoritative: bool
+) -> bool:
+    """Whether a release scoreboard must stop before expensive measurement."""
+    return not authoritative and not allow_nonauthoritative
+
+
 def _refresh_artifact_provenance(provenance: dict, cells: list[Cell]) -> None:
     """Fill in None artifact identities the CURRENT resolver can now compute.
 
@@ -2127,6 +2134,16 @@ def main(argv: list[str]) -> int:
                 "--allow-nonauthoritative to run for local debugging)",
                 file=sys.stderr,
             )
+    if _refuses_nonauthoritative_measurement(
+        authoritative=authoritative,
+        allow_nonauthoritative=ns.allow_nonauthoritative,
+    ):
+        print(
+            "[scoreboard] refusing non-authoritative measurement before "
+            "starting benchmark builds",
+            file=sys.stderr,
+        )
+        return 1
 
     # --- PyPy / Codon comparator lanes (council Lane C) --------------------
     pypy_bin = _resolve_pypy(ns.pypy) if ns.pypy is not None else None
