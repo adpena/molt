@@ -5,5 +5,12 @@ edition = "2024"
 publish = false
 license = "Apache-2.0"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("refcount_verify"))'] }
+
+[features]
+default = []
+refcount_verify = []
+
 [lib]
 path = "src/lib.rs"

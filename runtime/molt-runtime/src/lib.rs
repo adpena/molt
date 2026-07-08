@@ -175,7 +175,7 @@ pub(crate) use molt_runtime_platform::windows_abi;
 mod intrinsics;
 mod object;
 mod provenance;
-pub mod refcount_verify;
+pub use molt_runtime_audit::refcount_verify;
 pub use molt_runtime_resource as resource;
 mod state;
 pub use molt_runtime_vfs as vfs;
