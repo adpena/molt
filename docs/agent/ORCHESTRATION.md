@@ -98,6 +98,38 @@ silent skip. An unmeasured perf claim is a correctness defect, not just a missin
 number. Wall-clock work is ranked by LEVERAGE: fix the thing that speeds up every
 lane (build throughput, shared caches actually hitting) before micro-optimizing one.
 
+### EFFECT-ATTESTATION AUDIT RESULTS — 2026-07-07 (evidence-based; act on these)
+A read-only audit measured whether landed optimizations actually FIRE. Findings +
+owners (drive them down — a silent degradation taxes every build):
+- **sccache = was HARMFUL → FIXED (`39de31e67`).** Measured 0 requests / 0 hits +
+  mid-compile crashes (os error 10054 → rc=124 timeouts) yet enabled by default.
+  Now off-by-default on Windows (loud) + post-build stats attestation. Non-Windows
+  unchanged. This was NEGATIVE leverage on every cargo build.
+- **numpy frontend LOWERING re-lower ≈180-250s EVERY witness build (~40-50% of a
+  485s acceptance) — OPEN, highest remaining wall-clock item.** Root cause: the
+  dirty-gate at `src/molt/cli/frontend_worker.py:787` skips the persisted
+  lowering-cache READ for "dirty" modules, and numpy is dirty every run because the
+  E1 reseal churns numpy source stats. The `context_digest`+source-stat check
+  inside `_load_cached_module_lowering_result` is the real correctness authority, so
+  the dirty-gate defeats a still-valid cache. FIX (DX/throughput + frontend lane,
+  coordinate — frontend_worker.py is hot): consult the persisted cache even when
+  "dirty", trusting the digest check; partly transient (eases once E1 seal custody
+  stops churning). ATTEST: emit `lowering cache: {hits}/{misses}, {reused_s}s
+  reused / {relowered_s}s re-lowered` so this can't silently regress.
+- **numeric RAW-LANES (R3b/R4a) = UNPROVEN.** No fire-count attestation exists;
+  cannot confirm native-op emission fired. OWNER: R3b lane — add a per-build
+  raw-lane-vs-boxed fire count (representation_facts / effect_proof).
+- **perf_scoreboard (E2) = STALE + mostly RED, gate is contract-only.**
+  `bench/scoreboard/quiet_native.json` is ~4 weeks old, 1/56 green,
+  `gate_fails=true`; `ci_gate.py:414 perf-scoreboard-contract` only runs a schema
+  test, not freshness/greenness. So "faster than CPython everywhere" is NOT backed.
+  OWNER: E2/Codex-D — add a freshness (generated_at age vs HEAD) + greenness
+  (`gate_fails==false`) gate, then refresh the board. HIGH value: makes E2 provable.
+- **compiler-build-resource mutex = working (throughput ceiling, not a fault):** one
+  coarse global key serializes even disjoint native-vs-wasm builds on an 18-CPU
+  host. Future refinement (per-target-dir sub-keys) could raise throughput; low
+  priority vs the above.
+
 ### Capacity allocation (priority order; maximize parallel E1-E4 progress)
 1. **E1-WITNESS-TO-GREEN** — Codex (claimed). The critical path to the goal.
 2. **BUILD THROUGHPUT** (highest wall-clock leverage) — shared content-addressed
