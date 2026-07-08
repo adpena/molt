@@ -60,6 +60,7 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _StagedExternalPackageNativeArtifact,
+    _BuildDiagnosticsContext,
 )
 from molt.compat import CompatibilityError
 from molt.frontend import MoltValue, SimpleTIRGenerator
@@ -87,6 +88,7 @@ LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
+RUNTIME_WASM_CACHE = importlib.import_module("molt.cli.runtime_wasm_cache")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_CALLABLE_SYMBOLS = importlib.import_module("molt.cli.runtime_callable_symbols")
@@ -16958,6 +16960,40 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "midend.promotion_hotspot.1: pkg.mod::hot_fn B->A" in stderr
 
 
+def test_emit_build_diagnostics_includes_runtime_wasm_cache_summary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli_build_diagnostics._emit_build_diagnostics(
+        diagnostics={
+            "total_sec": 1.0,
+            "runtime_wasm_cache": {
+                "hydrate_attempts": 4,
+                "hydrate_hits": 1,
+                "hydrate_misses": 2,
+                "hydrate_failures": 1,
+                "hydrate_hit_rate": 0.25,
+                "publish_attempts": 3,
+                "publish_successes": 2,
+                "publish_failures": 1,
+                "publish_success_rate": 0.666667,
+                "last_publish_failure": "artifact copy failed: disk full",
+            },
+        },
+        diagnostics_path=None,
+        json_output=False,
+    )
+
+    stderr = capsys.readouterr().err
+    assert "- runtime_wasm_cache: hydrate_hits=1/4" in stderr
+    assert "hydrate_misses=2" in stderr
+    assert "publish_successes=2/3" in stderr
+    assert "publish_failures=1" in stderr
+    assert (
+        "- runtime_wasm_cache.last_publish_failure: "
+        "artifact copy failed: disk full"
+    ) in stderr
+
+
 def test_capture_build_allocation_diagnostics_returns_top_sites() -> None:
     cli.tracemalloc.start(5)
     try:
@@ -18752,6 +18788,183 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
 # Any 64-hex value is a valid runtime integrity-pin key; the real key is the
 # runtime fingerprint meta digest (resolved profile/feature identity).
 _TEST_RUNTIME_META_DIGEST = "ab" * 32
+_TEST_RUNTIME_HASH_DIGEST = "cd" * 32
+
+
+def _test_runtime_wasm_cache_fingerprint() -> dict[str, object]:
+    return {
+        "hash": _TEST_RUNTIME_HASH_DIGEST,
+        "meta_digest": _TEST_RUNTIME_META_DIGEST,
+        "rustc": "rustc 1.test",
+    }
+
+
+def test_runtime_wasm_cache_counts_misses_and_hits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fingerprint = _test_runtime_wasm_cache_fingerprint()
+    cache_root = tmp_path / "cache"
+    dest = tmp_path / "molt_runtime.wasm"
+
+    monkeypatch.setattr(
+        RUNTIME_WASM_CACHE,
+        "_shared_runtime_wasm_cache_root",
+        lambda: cache_root,
+    )
+    RUNTIME_WASM_CACHE._reset_runtime_wasm_cache_diagnostics()
+    try:
+        assert not RUNTIME_WASM_CACHE._hydrate_runtime_wasm_from_shared_cache(
+            dest=dest,
+            fingerprint=fingerprint,
+            reloc=False,
+            is_valid=lambda path: path.read_bytes() == b"runtime",
+        )
+        cache_path = RUNTIME_WASM_CACHE._shared_runtime_wasm_cache_path(
+            fingerprint,
+            reloc=False,
+        )
+        assert cache_path is not None
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b"runtime")
+
+        assert RUNTIME_WASM_CACHE._hydrate_runtime_wasm_from_shared_cache(
+            dest=dest,
+            fingerprint=fingerprint,
+            reloc=False,
+            is_valid=lambda path: path.read_bytes() == b"runtime",
+        )
+
+        snapshot = RUNTIME_WASM_CACHE._runtime_wasm_cache_diagnostics_snapshot()
+        assert snapshot is not None
+        assert snapshot["hydrate_attempts"] == 2
+        assert snapshot["hydrate_hits"] == 1
+        assert snapshot["hydrate_misses"] == 1
+        assert snapshot["hydrate_failures"] == 0
+        assert snapshot["hydrate_hit_rate"] == 0.5
+        assert dest.read_bytes() == b"runtime"
+    finally:
+        RUNTIME_WASM_CACHE._reset_runtime_wasm_cache_diagnostics()
+
+
+def test_runtime_wasm_cache_publish_failure_is_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fingerprint = _test_runtime_wasm_cache_fingerprint()
+    src = tmp_path / "molt_runtime.wasm"
+    src.write_bytes(b"runtime")
+
+    monkeypatch.setattr(
+        RUNTIME_WASM_CACHE,
+        "_shared_runtime_wasm_cache_root",
+        lambda: tmp_path / "cache",
+    )
+
+    def fail_copy(_src: Path, _dest: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RUNTIME_WASM_CACHE, "_atomic_copy_file", fail_copy)
+    RUNTIME_WASM_CACHE._reset_runtime_wasm_cache_diagnostics()
+    try:
+        reason = RUNTIME_WASM_CACHE._publish_runtime_wasm_to_shared_cache(
+            src=src,
+            fingerprint=fingerprint,
+            reloc=False,
+        )
+
+        assert reason == "artifact copy failed: disk full"
+        snapshot = RUNTIME_WASM_CACHE._runtime_wasm_cache_diagnostics_snapshot()
+        assert snapshot is not None
+        assert snapshot["publish_attempts"] == 1
+        assert snapshot["publish_successes"] == 0
+        assert snapshot["publish_failures"] == 1
+        assert snapshot["publish_success_rate"] == 0.0
+        assert snapshot["last_publish_failure"] == reason
+    finally:
+        RUNTIME_WASM_CACHE._reset_runtime_wasm_cache_diagnostics()
+
+
+def test_runtime_wasm_cache_publish_failure_warns_for_human_build_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    RUNTIME_BUILD._warn_runtime_wasm_cache_publish_failure(
+        "artifact copy failed: disk full",
+        json_output=False,
+    )
+    stderr = capsys.readouterr().err
+    assert "runtime wasm shared cache publish failed" in stderr
+    assert "artifact copy failed: disk full" in stderr
+
+    RUNTIME_BUILD._warn_runtime_wasm_cache_publish_failure(
+        "artifact copy failed: disk full",
+        json_output=True,
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_build_diagnostics_payload_includes_runtime_wasm_cache_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fingerprint = _test_runtime_wasm_cache_fingerprint()
+    src = tmp_path / "molt_runtime.wasm"
+    src.write_bytes(b"runtime")
+
+    monkeypatch.setattr(
+        RUNTIME_WASM_CACHE,
+        "_shared_runtime_wasm_cache_root",
+        lambda: tmp_path / "cache",
+    )
+
+    def fail_copy(_src: Path, _dest: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RUNTIME_WASM_CACHE, "_atomic_copy_file", fail_copy)
+    RUNTIME_WASM_CACHE._reset_runtime_wasm_cache_diagnostics()
+    try:
+        RUNTIME_WASM_CACHE._publish_runtime_wasm_to_shared_cache(
+            src=src,
+            fingerprint=fingerprint,
+            reloc=False,
+        )
+        context = _BuildDiagnosticsContext(
+            diagnostics_enabled=True,
+            diagnostics_start=time.perf_counter(),
+            phase_starts={},
+            image_scope=None,
+            binary_image_closure=None,
+            binary_image_analysis=None,
+            module_graph={},
+            module_reasons={},
+            frontend_module_timings=(),
+            allocation_diagnostics_enabled=False,
+            frontend_parallel_details={},
+            profile="dev",
+            midend_policy_outcomes_by_function={},
+            midend_pass_stats_by_function={},
+            backend_daemon_health=None,
+            backend_daemon_cached=None,
+            backend_daemon_cache_tier=None,
+            backend_daemon_config_digest=None,
+            diagnostics_path_spec=None,
+            artifacts_root=tmp_path,
+        )
+
+        payload, diagnostics_path = (
+            cli_build_diagnostics._build_build_diagnostics_payload(context)
+        )
+
+        assert diagnostics_path is None
+        assert payload is not None
+        assert payload["runtime_wasm_cache"]["publish_attempts"] == 1
+        assert payload["runtime_wasm_cache"]["publish_failures"] == 1
+        assert (
+            payload["runtime_wasm_cache"]["last_publish_failure"]
+            == "artifact copy failed: disk full"
+        )
+    finally:
+        RUNTIME_WASM_CACHE._reset_runtime_wasm_cache_diagnostics()
 
 
 def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(

@@ -49,10 +49,15 @@ divergent worktrees — that is how signal gets lost.
 4. **PROFILE BEFORE OPTIMIZING.** State the hot path + Big-O and attest a
    before/after delta for any perf/build change (tools/dx_build_timer.py,
    tools/build_graph_audit.py). No optimizing by feel.
-5. **DRIFT DISCIPLINE.** Bank unique WIP to `wip/<lane>-<date>` and PUSH it; keep
-   worktrees short-lived; rebase often; never accumulate long-lived divergent
-   worktrees. The orchestrator is pruning merged worktrees/branches — do not fight
-   it; if a worktree vanishes it was fully merged (zero loss).
+5. **DRIFT DISCIPLINE (P0, RECURRING).** Worktree/branch accumulation is POISON
+   and terrible OSS hygiene (it hit ~130 — operator-flagged P0). LAND your signal
+   onto main and DELETE your worktree+branch when a lane finishes — do not leave it.
+   Every session, run `python tools/drift_harvest.py --report`, land SIGNAL
+   surgically (per-commit, never whole-branch merge; regenerate generated files;
+   queue-verify), then `python tools/drift_harvest.py --prune` (it bundles all
+   unique-commit branches BEFORE removing anything → zero signal loss; keeps only
+   truly-fresh WIP). Keep worktrees short-lived; rebase often. If a worktree
+   vanishes it was SUPERSEDED (on main) or bundled — zero loss; do not re-create it.
 6. **REVIEW FINDINGS ARE LANES.** The full-stack adversarial review COMPLETED:
    **26 CONFIRMED** findings (bug classes / metabugs / optimizations), each
    independently refuted-then-survived, in
