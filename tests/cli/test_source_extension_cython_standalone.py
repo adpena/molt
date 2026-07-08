@@ -86,6 +86,8 @@ def test_parse_cimported_packages_derives_from_source(tmp_path: Path) -> None:
     pyx.write_text(
         "import numpy as np\n"
         "cimport numpy as np\n"
+        "cimport scipy.special as sc, pandas._libs as pdlibs\n"
+        "from widgetlib.tensor cimport Tensor\n"
         "from libc.stdlib cimport malloc\n"      # bundled -> excluded
         "cimport cython\n"                        # bundled -> excluded
         "from . cimport _helpers\n"               # relative -> excluded
@@ -94,9 +96,18 @@ def test_parse_cimported_packages_derives_from_source(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     # A sibling .pxd contributes its cimports too.
-    (tmp_path / "shared.pxd").write_text("cimport numpy\n", encoding="utf-8")
+    (tmp_path / "shared.pxd").write_text(
+        "from anotherpkg._headers cimport HeaderThing\n",
+        encoding="utf-8",
+    )
     pkgs = cython_authority._parse_cimported_packages(pyx)
-    assert pkgs == ("numpy", "scipy"), pkgs
+    assert pkgs == (
+        "anotherpkg",
+        "numpy",
+        "pandas",
+        "scipy",
+        "widgetlib",
+    ), pkgs
     for excluded in ("libc", "cython", "_helpers"):
         assert excluded not in pkgs
 
@@ -128,6 +139,58 @@ def test_cimport_pxd_roots_resolves_from_source_tree(tmp_path: Path) -> None:
     )
     assert roots == (src.resolve(),), roots
     assert (roots[0] / "widget" / "__init__.pxd").is_file()
+
+
+def test_cimport_pxd_roots_resolve_through_build_interpreter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site_root = tmp_path / "site"
+    pxd_package = site_root / "pxdpackage"
+    pxd_package.mkdir(parents=True)
+    (pxd_package / "__init__.py").write_text("", encoding="utf-8")
+    (pxd_package / "__init__.pxd").write_text(
+        "ctypedef unsigned long index_t\n",
+        encoding="utf-8",
+    )
+    header_only = site_root / "headeronly"
+    header_only.mkdir()
+    (header_only / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(site_root))
+
+    roots = cython_authority._cimport_pxd_roots(
+        sys.executable,
+        ("headeronly", "missingpkg", "pxdpackage", "libc"),
+    )
+
+    assert roots == (site_root.resolve(),)
+
+
+def test_cimport_header_include_dirs_resolve_package_get_include(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site_root = tmp_path / "site"
+    include_root = tmp_path / "headers"
+    include_root.mkdir()
+    pxd_package = site_root / "pxdpackage"
+    pxd_package.mkdir(parents=True)
+    (pxd_package / "__init__.py").write_text(
+        "def get_include():\n"
+        f"    return {str(include_root)!r}\n",
+        encoding="utf-8",
+    )
+    no_hook = site_root / "nohook"
+    no_hook.mkdir()
+    (no_hook / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(site_root))
+
+    roots = cython_authority._cimport_header_include_dirs(
+        sys.executable,
+        ("libc", "missingpkg", "nohook", "pxdpackage"),
+    )
+
+    assert roots == (include_root.resolve(),)
 
 
 def test_pair_generated_c_with_pyx_matches_by_stem() -> None:
@@ -192,6 +255,15 @@ def test_molt_regenerates_ni_label_standalone_without_cyutility(
     # ``-3`` (no ``--shared``) is the standalone contract.
     assert "-3" in regeneration.cython_argv
     assert "--shared" not in regeneration.cython_argv
+    assert "numpy" in regeneration.cimport_packages
+    assert any(
+        (path / "numpy" / "__init__.pxd").is_file()
+        for path in regeneration.cimport_pxd_roots
+    )
+    assert any(
+        (path / "numpy" / "arrayobject.h").is_file()
+        for path in regeneration.cimport_header_include_dirs
+    )
 
 
 @requires_ni_label
