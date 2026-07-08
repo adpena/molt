@@ -63,3 +63,41 @@ def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypat
         r for r in rows if r["state"] in ("SUPERSEDED", "SIGNAL")
     ]
     assert sorted(r["path"] for r in prunable_with_signal) == ["/sig", "/sup"]
+
+
+def test_bundle_signal_captures_detached_head_signal(monkeypatch, tmp_path):
+    # Regression for the zero-signal-loss bug: a detached-HEAD SIGNAL worktree
+    # (branch=None, uniq>0) MUST be captured — via a synthetic refs/harvest/<sha>
+    # ref — so prune-safety (path in captured) matches bundle-safety. Before the
+    # fix, bundle_signal skipped branch=None rows but --include-signal still pruned
+    # them, losing the commits to GC.
+    import tools.drift_harvest as dh
+
+    calls = []
+
+    class _R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_git(args, cwd=None):
+        calls.append(list(args))
+        return _R()
+
+    monkeypatch.setattr(dh, "_git", fake_git)
+    rows = [
+        {"path": "/branch-sig", "branch": "b", "head": "aaa", "uniq": 2, "dirty": 0, "state": "SIGNAL"},
+        {"path": "/detached-sig", "branch": None, "head": "deadbeef", "uniq": 3, "dirty": 0, "state": "SIGNAL"},
+        {"path": "/sup", "branch": None, "head": "ccc", "uniq": 0, "dirty": 0, "state": "SUPERSEDED"},
+    ]
+    captured = dh.bundle_signal(rows, tmp_path / "b.bundle")
+    # Both SIGNAL worktrees captured; the zero-unique one is not.
+    assert captured == {"/branch-sig", "/detached-sig"}
+    # Detached head pinned under a synthetic GC-safe ref AND put in the bundle.
+    assert ["update-ref", "refs/harvest/deadbeef", "deadbeef"] in calls
+    bundle_cmd = next(a for a in calls if a and a[0] == "bundle")
+    assert "b" in bundle_cmd and "refs/harvest/deadbeef" in bundle_cmd
+    # Prune-gate parity: a SIGNAL worktree is prunable under --include-signal ONLY
+    # if it is in `captured`. An un-captured SIGNAL row must never be prunable.
+    uncaptured = {"path": "/orphan", "state": "SIGNAL"}
+    assert uncaptured["path"] not in captured

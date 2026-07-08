@@ -142,6 +142,7 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
             {
                 "path": path,
                 "branch": wt.get("branch"),
+                "head": head,
                 "uniq": uniq,
                 "dirty": dirty,
                 "state": state,
@@ -150,17 +151,38 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
     return rows
 
 
-def bundle_signal(rows: list[dict], bundle_path: Path) -> int:
-    branches = sorted(
-        {r["branch"] for r in rows if r["branch"] and r["uniq"] > 0}
-    )
-    if not branches:
-        return 0
+def bundle_signal(rows: list[dict], bundle_path: Path) -> set[str]:
+    """Bundle every unique-commit worktree and return the set of worktree PATHS
+    whose commits are now durably captured.
+
+    A detached-HEAD worktree (no branch, but ``uniq > 0``) is captured under a
+    synthetic ``refs/harvest/<sha>`` ref — which ALSO protects it from GC — so it
+    can never be pruned without a backup. The returned set is the prune-safety
+    predicate: a SIGNAL worktree is prunable only if it is in this set. This must
+    stay in lockstep with the prune gate; keying bundle-safety on ``branch`` while
+    keying prune-safety on ``state`` alone loses detached-HEAD commits (the exact
+    zero-signal-loss violation this guards).
+    """
+    captured: set[str] = set()
+    refs: list[str] = []
+    for r in rows:
+        if r["uniq"] <= 0:
+            continue
+        if r["branch"]:
+            refs.append(r["branch"])
+            captured.add(r["path"])
+        elif r.get("head"):
+            synthetic = f"refs/harvest/{r['head']}"
+            if _git(["update-ref", synthetic, r["head"]]).returncode == 0:
+                refs.append(synthetic)
+                captured.add(r["path"])
+    if not refs:
+        return captured
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    r = _git(["bundle", "create", str(bundle_path), *branches])
-    if r.returncode != 0:
-        raise SystemExit(f"bundle failed: {r.stderr}")
-    return len(branches)
+    res = _git(["bundle", "create", str(bundle_path), *sorted(set(refs))])
+    if res.returncode != 0:
+        raise SystemExit(f"bundle failed: {res.stderr}")
+    return captured
 
 
 def main() -> int:
@@ -188,13 +210,14 @@ def main() -> int:
                 f"{r['branch'] or '(detached)'}  {r['path']}"
             )
 
+    captured: set[str] = set()
     if args.bundle or args.prune:
         bundle_path = Path(
             args.bundle
             or (REPO_ROOT.parent / f"drift-harvest-{int(now)}.bundle")
         )
-        n = bundle_signal(rows, bundle_path)
-        print(f"bundled {n} signal branches -> {bundle_path}")
+        captured = bundle_signal(rows, bundle_path)
+        print(f"bundled {len(captured)} signal worktrees -> {bundle_path}")
 
     if not args.prune:
         return 0
@@ -202,9 +225,14 @@ def main() -> int:
     removed = 0
     deleted = 0
     for r in rows:
-        prunable = r["state"] == "SUPERSEDED" or (
-            args.include_signal and r["state"] == "SIGNAL"
-        )
+        if r["state"] == "SUPERSEDED":
+            prunable = True  # commits already on origin/main
+        elif args.include_signal and r["state"] == "SIGNAL":
+            # NEVER prune SIGNAL unless its commits were durably captured this run
+            # (branch OR detached-HEAD synthetic ref). Prune-safety == bundle-safety.
+            prunable = r["path"] in captured
+        else:
+            prunable = False
         if not prunable:
             continue
         rm = _git(["worktree", "remove", r["path"]])
