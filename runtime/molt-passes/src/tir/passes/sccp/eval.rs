@@ -14,6 +14,17 @@ use crate::tir::op_kinds_generated::{SccpConstantEvalRule, opcode_sccp_constant_
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::passes::effects;
 
+/// Translate a UTF-8 byte offset into a Python code-point index.
+///
+/// Rust's `str::find`/`rfind` return byte offsets, but Python string index
+/// APIs (`find`, `rfind`, `index`) are defined over code points. Folding the
+/// raw byte offset silently miscompiles any receiver containing a non-ASCII
+/// character before the match. `byte_off` is assumed to be a valid char
+/// boundary within `s` (it always is when produced by `str::find`/`rfind`).
+fn byte_offset_to_char_index(s: &str, byte_off: usize) -> i64 {
+    s[..byte_off].chars().count() as i64
+}
+
 /// Try to evaluate a binary/unary op on constant operands.
 pub(super) fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     match opcode_sccp_constant_eval_rule_table(opcode) {
@@ -393,7 +404,10 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
         "len" => {
             let a = operands.first().copied().flatten()?;
             match a {
-                ConstVal::Str(s) => Some(ConstVal::Int(s.len() as i64)),
+                // Python `len(str)` counts Unicode code points, NOT UTF-8
+                // bytes. Folding `s.len()` here silently miscompiles every
+                // non-ASCII constant (e.g. len("café") == 4, not 5).
+                ConstVal::Str(s) => Some(ConstVal::Int(s.chars().count() as i64)),
                 ConstVal::List(elems) => Some(ConstVal::Int(elems.len() as i64)),
                 ConstVal::Dict(entries) => Some(ConstVal::Int(entries.len() as i64)),
                 ConstVal::Range { start, stop, step } => {
@@ -962,7 +976,14 @@ fn eval_concrete_method(
                 "find" => {
                     let needle = operands.get(1).copied().flatten()?;
                     if let ConstVal::Str(n) = needle {
-                        let idx = s.find(n.as_str()).map(|i| i as i64).unwrap_or(-1);
+                        // Python `str.find` returns a code-point index; Rust's
+                        // `str::find` returns a UTF-8 byte offset. Translate so
+                        // non-ASCII receivers ("héllo".find("llo") == 2, not 3)
+                        // are not silently miscompiled.
+                        let idx = s
+                            .find(n.as_str())
+                            .map(|byte_off| byte_offset_to_char_index(s, byte_off))
+                            .unwrap_or(-1);
                         Some(ConstVal::Int(idx))
                     } else {
                         None
@@ -971,7 +992,10 @@ fn eval_concrete_method(
                 "rfind" => {
                     let needle = operands.get(1).copied().flatten()?;
                     if let ConstVal::Str(n) = needle {
-                        let idx = s.rfind(n.as_str()).map(|i| i as i64).unwrap_or(-1);
+                        let idx = s
+                            .rfind(n.as_str())
+                            .map(|byte_off| byte_offset_to_char_index(s, byte_off))
+                            .unwrap_or(-1);
                         Some(ConstVal::Int(idx))
                     } else {
                         None
@@ -981,8 +1005,10 @@ fn eval_concrete_method(
                     let needle = operands.get(1).copied().flatten()?;
                     if let ConstVal::Str(n) = needle {
                         if n.is_empty() {
-                            // Python: "abc".count("") == 4 (len + 1)
-                            Some(ConstVal::Int(s.len() as i64 + 1))
+                            // Python: "abc".count("") == 4 (code-point len + 1).
+                            // Must count code points, not UTF-8 bytes, so
+                            // "café".count("") == 5 (not 6).
+                            Some(ConstVal::Int(s.chars().count() as i64 + 1))
                         } else {
                             Some(ConstVal::Int(s.matches(n.as_str()).count() as i64))
                         }
@@ -1023,8 +1049,15 @@ fn eval_concrete_method(
                 "zfill" => {
                     let width = operands.get(1).copied().flatten()?;
                     if let ConstVal::Int(w) = width {
-                        let w = *w as usize;
-                        if s.len() >= w {
+                        // Python pads to `width` CODE POINTS, not bytes, and a
+                        // width <= current length (including a negative width)
+                        // returns the string unchanged. Using `s.len()` bytes
+                        // both miscompiled non-ASCII ("é".zfill(3) == "00é") and
+                        // `*w as usize` on a negative width wrapped to a huge
+                        // value, driving `"0".repeat(...)` into a compile-time
+                        // OOM/panic.
+                        let char_len = s.chars().count() as i64;
+                        if *w <= char_len {
                             Some(ConstVal::Str(s.clone()))
                         } else {
                             let (prefix, body) = if s.starts_with('-') || s.starts_with('+') {
@@ -1032,7 +1065,7 @@ fn eval_concrete_method(
                             } else {
                                 ("", s.as_str())
                             };
-                            let fill = w - s.len();
+                            let fill = (*w - char_len) as usize;
                             Some(ConstVal::Str(format!(
                                 "{}{}{}",
                                 prefix,
@@ -1077,5 +1110,115 @@ fn eval_concrete_method(
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod unicode_fold_tests {
+    //! Teeth for finding #5: SCCP folding of str builtins/methods must use
+    //! CPython code-point semantics, never Rust UTF-8 byte offsets. Every
+    //! expected value below was captured from the CPython 3.12 reference
+    //! interpreter. A regression to byte semantics flips these and fails here.
+    use super::{ConstVal, eval_concrete_builtin, eval_concrete_method};
+
+    fn s(v: &str) -> ConstVal {
+        ConstVal::Str(v.to_string())
+    }
+
+    fn builtin(name: &str, args: &[ConstVal]) -> Option<ConstVal> {
+        let ops: Vec<Option<&ConstVal>> = args.iter().map(Some).collect();
+        eval_concrete_builtin(name, &ops)
+    }
+
+    fn method(recv_ty: &str, m: &str, args: &[ConstVal]) -> Option<ConstVal> {
+        let ops: Vec<Option<&ConstVal>> = args.iter().map(Some).collect();
+        eval_concrete_method(recv_ty, m, &ops)
+    }
+
+    #[test]
+    fn len_counts_code_points_not_bytes() {
+        // CPython: len("café") == 4, len("héllo") == 5, len("a😀b") == 3.
+        assert_eq!(builtin("len", &[s("café")]), Some(ConstVal::Int(4)));
+        assert_eq!(builtin("len", &[s("héllo")]), Some(ConstVal::Int(5)));
+        assert_eq!(builtin("len", &[s("a😀b")]), Some(ConstVal::Int(3)));
+        // ASCII fast path unchanged.
+        assert_eq!(builtin("len", &[s("abc")]), Some(ConstVal::Int(3)));
+    }
+
+    #[test]
+    fn find_returns_code_point_index() {
+        // CPython: "héllo".find("llo") == 2 (byte offset would be 3).
+        assert_eq!(
+            method("str", "find", &[s("héllo"), s("llo")]),
+            Some(ConstVal::Int(2))
+        );
+        // Astral needle placement: "a😀b".find("b") == 2 (byte offset 5).
+        assert_eq!(
+            method("str", "find", &[s("a😀b"), s("b")]),
+            Some(ConstVal::Int(2))
+        );
+        // Not found stays -1; ASCII unchanged.
+        assert_eq!(
+            method("str", "find", &[s("héllo"), s("z")]),
+            Some(ConstVal::Int(-1))
+        );
+        assert_eq!(
+            method("str", "find", &[s("abc"), s("bc")]),
+            Some(ConstVal::Int(1))
+        );
+    }
+
+    #[test]
+    fn rfind_returns_code_point_index() {
+        // CPython: "héllo".rfind("l") == 3 (byte offset would be 4).
+        assert_eq!(
+            method("str", "rfind", &[s("héllo"), s("l")]),
+            Some(ConstVal::Int(3))
+        );
+        assert_eq!(
+            method("str", "rfind", &[s("héllo"), s("z")]),
+            Some(ConstVal::Int(-1))
+        );
+    }
+
+    #[test]
+    fn count_empty_needle_is_code_point_len_plus_one() {
+        // CPython: "café".count("") == 5 (byte-len would give 6).
+        assert_eq!(
+            method("str", "count", &[s("café"), s("")]),
+            Some(ConstVal::Int(5))
+        );
+        assert_eq!(
+            method("str", "count", &[s("abc"), s("")]),
+            Some(ConstVal::Int(4))
+        );
+    }
+
+    #[test]
+    fn zfill_pads_to_code_point_width() {
+        // CPython: "é".zfill(3) == "00é"; "-é".zfill(4) == "-00é".
+        assert_eq!(
+            method("str", "zfill", &[s("é"), ConstVal::Int(3)]),
+            Some(s("00é"))
+        );
+        assert_eq!(
+            method("str", "zfill", &[s("-é"), ConstVal::Int(4)]),
+            Some(s("-00é"))
+        );
+    }
+
+    #[test]
+    fn zfill_non_positive_width_returns_unchanged_without_panic() {
+        // Negative width previously wrapped `*w as usize` to a huge value and
+        // drove "0".repeat(..) into a compile-time OOM/panic. CPython returns
+        // the string unchanged.
+        assert_eq!(
+            method("str", "zfill", &[s("5"), ConstVal::Int(-3)]),
+            Some(s("5"))
+        );
+        assert_eq!(
+            method("str", "zfill", &[s("café"), ConstVal::Int(0)]),
+            Some(s("café"))
+        );
     }
 }
