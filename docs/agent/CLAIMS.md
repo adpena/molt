@@ -26,6 +26,13 @@ checkout (`python tools/tree_drift_check.py --fetch` first).
   the witness lowering cache. Coherent structural move; one owner. (Orchestrator-held;
   handoff from the prior in-progress agent per the reclaim directive in `ORCHESTRATION.md`.)
 
+- **`REVIEW-5-SCCP-STR-UNICODE`** — adversarial-review finding #5 (P1
+  CODEX-CORRECTNESS): SCCP constant-folding of str builtins/methods must use
+  CPython code-point semantics, never Rust UTF-8 byte offsets. Single authority:
+  `runtime/molt-passes/src/tir/passes/sccp/eval.rs`
+  (`eval_concrete_builtin`/`eval_concrete_method`). One owner so the fix + teeth
+  land as a coherent cut.
+
 (Add new SOLO lanes here as the orchestrator or a claimant identifies them.)
 
 ## Protocol (binding)
@@ -99,3 +106,4 @@ steps below are the contract it implements.
 | E1-WITNESS-TO-GREEN | orchestrator (correction) | 2026-07-08T09:55:00Z | PROGRESS | CORRECTION: my 09:38 stale-reclaim was WRONG — the E1 Codex agent is ACTIVE and PAST THE SEAL. It has a working witness build (app.wasm, run 20260708T092032) that passes seal custody + WASM link (89e5160ea) + instantiation (its manifest link-import host-trap fix 985567256 cleared the libc++ bad_function_call frontier). NEW frontier = reserved-callable dispatch: molt_call_indirect4 idx=2108 molt_type_new arity mismatch (expected 5 got 4). Codex agent RETAINS witness E2E ownership; the molt_type_new reserved-callable frontier is ORCHESTRATOR-owned — orchestrator drives it. E1 agent: post PROGRESS rows so this doesn't recur. |
 | E1-WITNESS-TO-GREEN | orchestrator (correction) | 2026-07-08T10:53:27Z | PROGRESS | FRONTIER ADVANCED past molt_type_new. pact-witness-acceptance 4521da6aebe64770 fails unsupported-direct-call 'AxisError' at scipy/_lib/_util.py:6:14. Root: call_dispatch_named.py:2184-2237 — names imported from a SOURCE-COMPILED package in the witness closure (numpy) fail closed (Tier0 non-allowlisted) instead of resolving through package symbol-closure; only imported_from is None gets _emit_dynamic_call. POISON-clean fix: imported-from-compiled-package callables resolve through package/import symbol-closure custody (numpy compiled here), never Molt-baked. Driving via orchestrator worktree-isolated agent. |
 | E1-WITNESS-TO-GREEN | orchestrator (correction) | 2026-07-08T11:00:14Z | PROGRESS | E1 FRONTIER (past molt_type_new): pact-witness-acceptance 4521da6aebe64770 fails unsupported-direct-call 'AxisError' at scipy/_lib/_util.py:6. ROOT CAUSE ISOLATED (reproduced at frontend level, no build): scipy does 'from numpy.exceptions import AxisError'; the CHILD module numpy.exceptions is NOT in the witness import closure (known_modules), so the bare-name call fails closed. Verified: known_modules={numpy} alone -> RAISES; known_modules={numpy,numpy.exceptions} -> OK (call_bind). The fail-closed is CORRECT — do NOT loosen call_dispatch_named.py:2231 to emit call_bind for unknown modules (that is a fail-OPEN POISON: binds to an undiscovered module -> resolves to nothing at runtime). REAL FIX is upstream in numpy closure discovery: numpy.exceptions (and siblings) must be admitted into known_modules via package/import symbol-closure custody. Ties to the stale numpy seal (0 runtime_python_import_modules). E1 SOLO-lane witness-closure work, needs full build loop. |
+| REVIEW-5-SCCP-STR-UNICODE | Claude/claude-review5-sccp-unicode-20260708 | 2026-07-08T17:23:09Z | CLAIMED | Finding #5 (P1 CODEX-CORRECTNESS). Verified free (no origin/main sccp touches in 2d; no other claim). Root: sccp/eval.rs folds len/find/rfind/count("")/zfill with Rust UTF-8 byte semantics -> silent miscompile of every non-ASCII string constant. Fix in flight: code-point semantics at the single fold authority + non-ASCII teeth (CPython 3.12-captured expectations). |
