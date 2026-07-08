@@ -97,6 +97,19 @@ from molt.wasm_artifact import (
 )
 
 
+def _warn_runtime_wasm_cache_publish_failure(
+    failure: str | None,
+    *,
+    json_output: bool,
+) -> None:
+    if failure is None or json_output:
+        return
+    print(
+        f"Warning: runtime wasm shared cache publish failed: {failure}",
+        file=sys.stderr,
+    )
+
+
 _RUNTIME_LIB_VERIFIED: set[
     tuple[
         str,
@@ -1950,10 +1963,13 @@ def _ensure_runtime_wasm(
                 # Publish the freshly built reloc runtime wasm to the shared,
                 # session-independent cache so the next fresh session/worktree
                 # reuses it instead of recompiling the runtime crate.
-                _publish_runtime_wasm_to_shared_cache(
-                    src=runtime_wasm,
-                    fingerprint=fingerprint,
-                    reloc=reloc,
+                _warn_runtime_wasm_cache_publish_failure(
+                    _publish_runtime_wasm_to_shared_cache(
+                        src=runtime_wasm,
+                        fingerprint=fingerprint,
+                        reloc=reloc,
+                    ),
+                    json_output=json_output,
                 )
             return True
         src_state = _inspect_wasm_binary(src)
@@ -2173,10 +2189,13 @@ def _ensure_runtime_wasm(
                 # session-independent shared cache so the next fresh
                 # session/worktree reuses it instead of recompiling the runtime
                 # crate from a cold per-session target dir.
-                _publish_runtime_wasm_to_shared_cache(
-                    src=runtime_wasm,
-                    fingerprint=fingerprint,
-                    reloc=reloc,
+                _warn_runtime_wasm_cache_publish_failure(
+                    _publish_runtime_wasm_to_shared_cache(
+                        src=runtime_wasm,
+                        fingerprint=fingerprint,
+                        reloc=reloc,
+                    ),
+                    json_output=json_output,
                 )
             except OSError:
                 if not json_output:
