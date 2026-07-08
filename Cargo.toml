@@ -9,6 +9,7 @@ members = [
     "runtime/molt-runtime-stringprep",
     "runtime/molt-runtime-vfs",
     "runtime/molt-runtime-audit",
+    "runtime/molt-runtime-diagnostics",
     "runtime/molt-runtime-resource",
     "runtime/molt-stdlib-text",
     "runtime/molt-runtime-tk",

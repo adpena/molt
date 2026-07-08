@@ -159,7 +159,7 @@ pub use cpython_abi_hooks::{
     molt_cpython_abi_pyinit_module_to_bits,
 };
 pub use molt_runtime_audit as audit;
-mod diagnostics;
+pub(crate) use molt_runtime_diagnostics as diagnostics;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
