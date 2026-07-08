@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import contextlib
 import json
 import os
 from pathlib import Path
@@ -109,19 +108,36 @@ def _cargo_target_dir(
 def _cargo_incremental_dirs(target_dir: Path) -> tuple[Path, ...]:
     if not target_dir.exists():
         return ()
-    state_root = target_dir / ".molt_state"
-    found: list[Path] = []
     try:
-        candidates = tuple(target_dir.rglob("incremental"))
+        target_children = tuple(target_dir.iterdir())
     except OSError:
         raise
-    for candidate in candidates:
-        if not candidate.is_dir():
+
+    found: list[Path] = []
+
+    def add_if_incremental(candidate: Path) -> None:
+        try:
+            if candidate.is_dir():
+                found.append(candidate)
+        except OSError:
+            return
+
+    for profile_dir in target_children:
+        if not profile_dir.is_dir():
             continue
-        with contextlib.suppress(ValueError):
-            if candidate.is_relative_to(state_root):
+        if profile_dir.name in {".molt_state", "sessions"}:
+            continue
+        add_if_incremental(profile_dir / "incremental")
+        try:
+            nested_profile_dirs = tuple(profile_dir.iterdir())
+        except OSError:
+            continue
+        for nested_profile_dir in nested_profile_dirs:
+            if not nested_profile_dir.is_dir():
                 continue
-        found.append(candidate)
+            if nested_profile_dir.name == ".molt_state":
+                continue
+            add_if_incremental(nested_profile_dir / "incremental")
     return tuple(sorted(found, key=lambda p: p.relative_to(target_dir).parts))
 
 

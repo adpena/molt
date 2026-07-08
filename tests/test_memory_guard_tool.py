@@ -2304,13 +2304,119 @@ def test_cargo_incremental_quarantine_moves_only_incremental_dirs(
     assert len(payload["moved_paths"]) == 2
 
 
+def test_cargo_incremental_quarantine_skips_sibling_session_targets(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    root_incremental = target / "release-fast" / "incremental" / "unit-a" / "work.o"
+    session_incremental = (
+        target
+        / "sessions"
+        / "proof-rust"
+        / "debug"
+        / "incremental"
+        / "unit-b"
+        / "work.o"
+    )
+    session_triple_incremental = (
+        target
+        / "sessions"
+        / "proof-wasm"
+        / "wasm32-wasip1"
+        / "release-output"
+        / "incremental"
+        / "unit-c"
+        / "work.o"
+    )
+    old_receipt_incremental = (
+        target
+        / ".molt_state"
+        / "quarantine"
+        / "cargo_incremental"
+        / "old"
+        / "debug"
+        / "incremental"
+        / "unit-d"
+        / "work.o"
+    )
+    nested_session_receipt_incremental = (
+        target
+        / "sessions"
+        / "proof-wasm"
+        / ".molt_state"
+        / "quarantine"
+        / "cargo_incremental"
+        / "old"
+        / "debug"
+        / "incremental"
+        / "unit-e"
+        / "work.o"
+    )
+    for path in (
+        root_incremental,
+        session_incremental,
+        session_triple_incremental,
+        old_receipt_incremental,
+        nested_session_receipt_incremental,
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+
+    receipt = memory_guard._quarantine_cargo_incremental_state(
+        reason="orphaned_processes_cleaned",
+        target_dir=target,
+        command=["cargo", "test"],
+        cwd=tmp_path,
+    )
+
+    assert not (target / "release-fast" / "incremental").exists()
+    assert session_incremental.exists()
+    assert session_triple_incremental.exists()
+    assert old_receipt_incremental.exists()
+    assert nested_session_receipt_incremental.exists()
+    assert receipt.errors == ()
+    assert [Path(move.original_path) for move in receipt.moved_paths] == [
+        target / "release-fast" / "incremental"
+    ]
+
+
+def test_cargo_incremental_quarantine_moves_explicit_session_target(
+    tmp_path: Path,
+) -> None:
+    sessions_root = tmp_path / "target" / "sessions"
+    target = sessions_root / "proof-rust"
+    session_incremental = target / "debug" / "incremental" / "unit-a" / "work.o"
+    sibling_incremental = (
+        sessions_root / "proof-wasm" / "debug" / "incremental" / "unit-b" / "work.o"
+    )
+    for path in (session_incremental, sibling_incremental):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+
+    receipt = memory_guard._quarantine_cargo_incremental_state(
+        reason="signal_exit",
+        target_dir=target,
+        command=["cargo", "build"],
+        cwd=tmp_path,
+    )
+
+    assert not (target / "debug" / "incremental").exists()
+    assert sibling_incremental.exists()
+    assert receipt.errors == ()
+    assert [Path(move.original_path) for move in receipt.moved_paths] == [
+        target / "debug" / "incremental"
+    ]
+
+
 def test_cargo_incremental_quarantine_prunes_old_receipts(tmp_path: Path) -> None:
     target = tmp_path / "target"
     parent = target / ".molt_state" / "quarantine" / "cargo_incremental"
+    base_mtime = time.time() - 600
     for index in range(3):
         stale = parent / f"stale-{index}"
         stale.mkdir(parents=True)
-        os.utime(stale, (index + 1, index + 1))
+        stale_mtime = base_mtime + index
+        os.utime(stale, (stale_mtime, stale_mtime))
     live_file = target / "debug" / "incremental" / "unit" / "work.o"
     live_file.parent.mkdir(parents=True, exist_ok=True)
     live_file.write_text("work", encoding="utf-8")
