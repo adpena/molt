@@ -69,6 +69,14 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   and `molt_list_int_new` use the same specialized-list allocation primitive
   instead of hand-allocating storage/object pairs. Verified with `cargo test -p
   molt-runtime specialized_list --lib` (`5 passed`, `484 filtered out`).
+- **#16 SCCP float/repr constant-fold parity: LANDED** (`af7fe19820`). The
+  single SCCP concrete-eval authority now folds `str()`/`repr()` of floats only
+  inside the finite non-scientific CPython/Rust-agreeing regime and defers
+  exponent/non-finite values to the runtime formatter; `repr(str)` folds only
+  byte-for-byte safe printable ASCII and defers quote/escape cases. Re-verified
+  on the current tree with proof-queue run
+  `20260708T225511-review16-molt-passes-lib-84f936bef4a14683`
+  (`cargo test -p molt-passes --lib`: `841 passed`).
 - **#18 WASM data segment alignment: LANDED**. Each segment now aligns its own
   start before emission instead of inheriting the previous segment's alignment;
   re-verified with `cargo test -p molt-backend-wasm --features test-util
