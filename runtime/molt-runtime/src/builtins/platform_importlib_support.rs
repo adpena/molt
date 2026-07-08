@@ -1,4 +1,11 @@
 use super::*;
+pub(super) use molt_runtime_platform::importlib_support::{
+    importlib_is_archive_member_path, importlib_metadata_first_nonempty,
+    importlib_metadata_header_values, importlib_metadata_normalize_name,
+    importlib_metadata_parse_csv_row, importlib_metadata_parse_entry_points,
+    importlib_metadata_parse_headers, importlib_package_root_from_origin, split_zip_archive_path,
+    zip_entry_join,
+};
 
 pub(super) struct SourceLoaderResolution {
     pub(super) is_package: bool,
@@ -247,48 +254,6 @@ pub(super) fn importlib_source_exec_payload(
         module_package: resolution.module_package,
         package_root: resolution.package_root,
     })
-}
-
-pub(super) fn split_zip_archive_path(path: &str) -> Option<(String, String)> {
-    const ARCHIVE_SUFFIXES: [&str; 3] = [".zip", ".whl", ".egg"];
-    if path.is_empty() {
-        return None;
-    }
-    let lower = path.to_ascii_lowercase();
-    let mut best_idx: Option<usize> = None;
-    let mut best_suffix_len: usize = 0;
-    for suffix in ARCHIVE_SUFFIXES {
-        let Some(idx) = lower.rfind(suffix) else {
-            continue;
-        };
-        let archive_end = idx + suffix.len();
-        if archive_end < path.len() {
-            let tail = path.as_bytes()[archive_end];
-            if tail != b'/' && tail != b'\\' {
-                continue;
-            }
-        }
-        if best_idx.is_none_or(|current| idx > current) {
-            best_idx = Some(idx);
-            best_suffix_len = suffix.len();
-        }
-    }
-    let idx = best_idx?;
-    let archive_end = idx + best_suffix_len;
-    let archive = path[..archive_end].to_string();
-    let remainder = path[archive_end..]
-        .replace('\\', "/")
-        .trim_matches('/')
-        .to_string();
-    Some((archive, remainder))
-}
-
-pub(super) fn zip_entry_join(prefix: &str, rel: &str) -> String {
-    if prefix.is_empty() {
-        rel.to_string()
-    } else {
-        format!("{prefix}/{rel}")
-    }
 }
 
 #[cfg(feature = "stdlib_archive")]
@@ -1017,25 +982,6 @@ pub(super) fn importlib_metadata_entry_points_filter_payload(
     out
 }
 
-pub(super) fn importlib_metadata_normalize_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut prev_sep = false;
-    for ch in name.chars() {
-        if matches!(ch, '-' | '_' | '.') {
-            if !prev_sep {
-                out.push('-');
-                prev_sep = true;
-            }
-            continue;
-        }
-        for lowered in ch.to_lowercase() {
-            out.push(lowered);
-        }
-        prev_sep = false;
-    }
-    out
-}
-
 pub(super) fn importlib_enforce_extension_spec_boundary(
     _py: &PyToken<'_>,
     module_name: &str,
@@ -1093,114 +1039,6 @@ pub(super) fn importlib_find_spec_payload(
         meta_path_count,
         path_hooks_count,
     }))
-}
-
-pub(super) fn importlib_metadata_parse_headers(text: &str) -> Vec<(String, String)> {
-    let mut mapping: Vec<(String, String)> = Vec::new();
-    let mut current_idx: Option<usize> = None;
-    for raw_line in text.lines() {
-        if raw_line.is_empty() {
-            current_idx = None;
-            continue;
-        }
-        let bytes = raw_line.as_bytes();
-        if !bytes.is_empty() && (bytes[0] == b' ' || bytes[0] == b'\t') {
-            if let Some(idx) = current_idx {
-                mapping[idx].1.push('\n');
-                mapping[idx].1.push_str(raw_line.trim());
-            }
-            continue;
-        }
-        if let Some((key, value)) = raw_line.split_once(':') {
-            mapping.push((key.trim().to_string(), value.trim().to_string()));
-            current_idx = Some(mapping.len() - 1);
-        }
-    }
-    mapping
-}
-
-pub(super) fn importlib_metadata_header_values(
-    headers: &[(String, String)],
-    key: &str,
-) -> Vec<String> {
-    headers
-        .iter()
-        .filter_map(|(k, v)| {
-            if k.eq_ignore_ascii_case(key) {
-                Some(v.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub(super) fn importlib_metadata_first_nonempty(
-    headers: &[(String, String)],
-    key: &str,
-) -> Option<String> {
-    importlib_metadata_header_values(headers, key)
-        .into_iter()
-        .find(|value| !value.is_empty())
-}
-
-pub(super) fn importlib_metadata_parse_entry_points(text: &str) -> Vec<(String, String, String)> {
-    let mut group: Option<String> = None;
-    let mut out: Vec<(String, String, String)> = Vec::new();
-    for line in text.lines() {
-        let stripped = line.trim();
-        if stripped.is_empty() || stripped.starts_with('#') {
-            continue;
-        }
-        if stripped.starts_with('[') && stripped.ends_with(']') {
-            group = Some(stripped[1..stripped.len() - 1].trim().to_string());
-            continue;
-        }
-        let Some(current_group) = group.as_ref() else {
-            continue;
-        };
-        let Some((name, value)) = stripped.split_once('=') else {
-            continue;
-        };
-        out.push((
-            name.trim().to_string(),
-            value.trim().to_string(),
-            current_group.clone(),
-        ));
-    }
-    out
-}
-
-pub(super) fn importlib_metadata_parse_csv_row(row: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut chars = row.chars().peekable();
-    let mut in_quotes = false;
-    while let Some(ch) = chars.next() {
-        if in_quotes {
-            if ch == '"' {
-                if chars.peek().is_some_and(|next| *next == '"') {
-                    current.push('"');
-                    let _ = chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                current.push(ch);
-            }
-            continue;
-        }
-        match ch {
-            ',' => {
-                out.push(current);
-                current = String::new();
-            }
-            '"' => in_quotes = true,
-            _ => current.push(ch),
-        }
-    }
-    out.push(current);
-    out
 }
 
 pub(super) fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMetadataRecordEntry> {
@@ -1336,24 +1174,6 @@ pub(super) fn importlib_spec_from_file_location_payload(
         is_package,
         package_root,
     }
-}
-
-pub(super) fn importlib_normalize_path_text(path: &str) -> String {
-    path.replace('\\', "/")
-}
-
-pub(super) fn importlib_is_archive_member_path(path: &str) -> bool {
-    importlib_normalize_path_text(path).contains(".zip/")
-}
-
-pub(super) fn importlib_package_root_from_origin(path: &str) -> Option<String> {
-    let normalized = importlib_normalize_path_text(path);
-    if normalized.ends_with("/__init__.py") || normalized.ends_with("/__init__.pyc") {
-        return normalized
-            .rsplit_once('/')
-            .map(|(root, _)| root.to_string());
-    }
-    None
 }
 
 pub(super) fn importlib_iter_next_value_bits(
