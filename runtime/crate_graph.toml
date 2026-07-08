@@ -248,6 +248,11 @@ layer = 3
 role = "runtime audit policy satellite"
 
 [[crate]]
+name = "molt-runtime-diagnostics"
+layer = 3
+role = "runtime diagnostics policy satellite"
+
+[[crate]]
 name = "molt-runtime-resource"
 layer = 3
 role = "runtime resource policy satellite"

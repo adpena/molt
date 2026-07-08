@@ -2978,6 +2978,7 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
+ "molt-runtime-diagnostics",
  "molt-runtime-http",
  "molt-runtime-ipaddress",
  "molt-runtime-itertools",
@@ -3090,6 +3091,10 @@ dependencies = [
  "shake",
  "subtle",
 ]
+
+[[package]]
+name = "molt-runtime-diagnostics"
+version = "0.1.0"
 
 [[package]]
 name = "molt-runtime-http"
