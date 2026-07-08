@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 use crate::PtrSlot;
-use crate::arena::TempArena;
 use crate::builtins::frames::FrameEntry;
+use crate::resource::TempArena;
 
 pub(crate) const DEFAULT_RECURSION_LIMIT: usize = 1000;
 
