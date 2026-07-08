@@ -40,6 +40,7 @@ CANONICAL_RUN_ENV_KEYS = (
     *CANONICAL_ROOT_ENV_KEYS,
     "CARGO_INCREMENTAL",
     "MOLT_SESSION_ID",
+    "MOLT_SESSION_ID_GENERATED",
     "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
 )
 DX_ENV_KEYS = (
@@ -95,6 +96,10 @@ class DxConfigError(RuntimeError):
 
 def session_artifact_component(session_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
+
+
+def generated_session_id(env: Mapping[str, str]) -> bool:
+    return env.get("MOLT_SESSION_ID_GENERATED", "").strip().lower() in TRUE_VALUES
 
 
 def uv_project_env_component(value: str) -> str:
@@ -1117,8 +1122,14 @@ class RunContext:
         # compile every invocation. Cargo's own build lock plus the compiler-build
         # resource mutex serialize concurrent writers safely. This is the
         # cold-every-session killer; do not reintroduce a per-PID default here.
-        session_pinned = "MOLT_SESSION_ID" in forced or bool(env.get("MOLT_SESSION_ID"))
-        install_default("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+        session_pinned = "MOLT_SESSION_ID" in forced or (
+            bool(env.get("MOLT_SESSION_ID")) and not generated_session_id(env)
+        )
+        if "MOLT_SESSION_ID" in forced or not env.get("MOLT_SESSION_ID"):
+            env["MOLT_SESSION_ID"] = f"{self.session_prefix}-{os.getpid()}"
+            env["MOLT_SESSION_ID_GENERATED"] = "1"
+        elif session_pinned:
+            env.pop("MOLT_SESSION_ID_GENERATED", None)
         target_session_id = env["MOLT_SESSION_ID"] if session_pinned else None
         install_default(
             "CARGO_TARGET_DIR",

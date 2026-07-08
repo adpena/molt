@@ -684,8 +684,12 @@ Read these first instead of rediscovering project structure:
   `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
   `MOLT_DIFF_TMPDIR`, `UV_CACHE_DIR`, `UV_PROJECT_ENVIRONMENT`,
   `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`, `TMP`, and `TEMP` under the
-  selected artifact root. Default Cargo output is session-scoped as
-  `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
+  selected artifact root. Ordinary maintainer/agent builds use the persistent
+  `<MOLT_EXT_ROOT>/target` directory so warm Cargo incremental state survives
+  across commands and work sessions. A caller-pinned `MOLT_SESSION_ID`
+  (`--session-id` or an explicitly exported value before resolving RunContext)
+  opts into `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>` for perf,
+  benchmark, test-shard, or other deliberate isolation lanes. Explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
 - DX wrappers prefer the canonical workstation artifact root when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). On this workstation `C:\Molt` is the primary NVMe checkout/artifact authority (faster than the external USB `D:` exFAT for git+cargo small-file workload; 2026-07-08 dev-velocity migration). **Do NOT override the root back to `D:`/`E:`** (exFAT fallback/overflow). Stale artifacts self-clean by default (dx.py auto-janitor). Windows defaults select `C:\Molt` when present, then APDataStore-labeled fallback roots; old `D:\Molt`, `E:\Molt`, `D:\molt-target`, and `E:\molt-target` roots are stale inherited state unless `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` explicitly opts into fallback. `MOLT_TARGET_ROOT` is derived from the selected artifact root as `C:\Molt\target-root` on this workstation; preserve an intentional off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext emits `UV_LINK_MODE=copy` for exFAT fallback roots unless an explicit operator value is present. POSIX defaults prefer `/Volumes/APDataStore/Molt` before `/Volumes/VertigoDataTier/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
 - In a fresh checkout/worktree, import RunContext with an already-installed host
@@ -695,8 +699,9 @@ Read these first instead of rediscovering project structure:
   POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
   In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
   (`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env,
-  so repeated checks reuse the same uv environment while Cargo output remains
-  session-scoped by `MOLT_SESSION_ID`. Use
+  so repeated checks reuse the same uv environment while ordinary Cargo output
+  remains the persistent `<MOLT_EXT_ROOT>/target` unless the caller explicitly
+  pins a session id for isolation. Use
   `--session-scoped-uv-project-env` only when the uv environment must be
   isolated too. Do not use `uv run` to obtain this first env in a cold checkout,
   and never run parallel uv bootstrap/sync commands against the same project
@@ -1265,29 +1270,40 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Concurrent Development (Required for Multi-Agent)
 
-`MOLT_SESSION_ID` is available when a workflow needs session-scoped build state.
-For maintainer/agent proof lanes, the canonical artifact root is resolved by
-the DX environment authority; do not pin heavy local work to repo-local
-`target/` on Windows `C:` unless an explicit emergency override is set. Public
-users may still compile in place, use Molt/Cargo defaults, or pass explicit
-output/cache flags.
+`MOLT_SESSION_ID` is custody metadata by default and an isolation request only
+when the caller pins it before RunContext resolves the environment. For
+ordinary maintainer/agent builds, bootstrap the DX environment and leave
+`CARGO_TARGET_DIR` at the persistent selected-root target (`C:\Molt\target` on
+this workstation). That is the warm incremental path. Pin `MOLT_SESSION_ID`
+only for perf, benchmark, test-shard, proof-isolation, or deliberately
+parallel lanes that need an independent Cargo target and daemon/build-state
+root. Public users may still compile in place, use Molt/Cargo defaults, or pass
+explicit output/cache flags. RunContext marks its default custody id with
+`MOLT_SESSION_ID_GENERATED=1`; wrappers that re-enter RunContext must preserve
+that marker with `MOLT_SESSION_ID`, or explicitly pass `--session-id` when they
+really want target isolation.
 
 ```bash
-export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
+# Optional isolation lane only:
+export MOLT_SESSION_ID="<unique-name>"  # e.g., "bench-baseline", "test-shard-7"
 ```
 
 **What it does:**
-- Keeps build state and daemon/socket isolation session-scoped under the active DX artifact root
-- Isolates daemon socket — no kill/restart conflicts between sessions
-- Isolates build state, lock-check caches, and staleness checks — fully independent build lifecycle
+- When explicitly pinned, keeps Cargo build state and daemon/socket isolation
+  session-scoped under the active DX artifact root
+- Isolates daemon socket for lanes that intentionally run independent daemons
+- Isolates build state, lock-check caches, and staleness checks for fully
+  independent benchmark/proof lifecycles
 - Disables `cargo clean` — incremental builds only, no binary deletion
 
-**Pre-build step** (first build in a new session takes ~5 min for full compile):
+**Ordinary warm pre-build step** (do not pin a session id):
 ```bash
-export MOLT_SESSION_ID="agent-1"
 eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 cargo build --profile release-fast -p molt-backend --features native-backend
 ```
+Use `--session-id <name>` or export `MOLT_SESSION_ID=<name>` before the
+RunContext bootstrap only when the lane needs isolated target/session state; the
+first build in a new isolated session is a cold compile by design.
 For Codex/Claude development proof lanes, prefer a healthy external target root
 when available. This is agent custody policy, not a public-user requirement.
 
@@ -1296,13 +1312,20 @@ when available. This is agent custody policy, not a public-user requirement.
 - Use verified identity custody (`src/molt/backend_daemon_custody.py`) or the
   guarded process sentinel (`molt clean --apply --kill-processes`) when cleanup
   is required.
-- Each session's daemon has a unique socket path derived from the session ID
+- The DX resolver gives each checkout a short daemon socket path; pinned
+  isolation lanes get their own build-state root as well.
 
-**Without it:** All sessions share the canonical `target/` and the same daemon. One agent's `cargo build` can block others, and one agent's rebuild can delete artifacts that other sessions depend on.
+**Without a pinned isolation id:** ordinary sessions share the canonical
+`target/` and the compiler-build resource mutex/locks serialize Cargo writers.
+That sharing is intentional for warm incremental rebuilds; use the queue mutex
+and explicit isolation lanes for heavy benchmark or proof runs rather than
+recreating cold targets by habit.
 
 **Resource limits:** Maximum 2 concurrent builds (OOM risk on machines with less than 128GB RAM).
 
-**Rule:** If you are an agent and another agent may be running, ALWAYS set `MOLT_SESSION_ID` before ANY build command.
+**Rule:** Agents must resolve the DX environment before build commands. Do not
+export `MOLT_SESSION_ID` for ordinary builds; pin it only when isolation is the
+explicit goal.
 
 **Coordination discovery:** Before intentionally starting long differential,
 conformance, regrtest, benchmark, or validation work, read
