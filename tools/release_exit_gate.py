@@ -16,12 +16,20 @@ over receipts, so the final "done" decision cannot be replaced by prose.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import perf_authority as pa  # noqa: E402
+import perf_schema as perf_schema  # noqa: E402
 
 SCHEMA_VERSION = 1
 
@@ -55,6 +63,7 @@ CRITERIA: dict[str, str] = {
 }
 
 REQUIRED_EVIDENCE_FIELDS = frozenset({"path", "command", "summary"})
+E2_SCOREBOARD_KIND = "cpython_floor_scoreboard"
 
 
 @dataclass(frozen=True)
@@ -133,6 +142,84 @@ def _validate_evidence(
     return problems, paths
 
 
+def _load_json_evidence(path: Path) -> tuple[Mapping[str, Any] | None, str | None]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return None, f"cannot read {path}: {exc}"
+    except json.JSONDecodeError as exc:
+        return None, f"invalid JSON in {path}: {exc.msg}"
+    if not isinstance(raw, Mapping):
+        return None, f"JSON evidence root must be an object: {path}"
+    return raw, None
+
+
+def _validate_e2_perf_scoreboard(
+    evidence_paths: Sequence[str],
+    *,
+    now: dt.datetime | None = None,
+) -> list[str]:
+    problems: list[str] = []
+    scoreboard_count = 0
+    current = now or dt.datetime.now(dt.timezone.utc)
+
+    for raw_path in evidence_paths:
+        path = Path(raw_path)
+        doc, error = _load_json_evidence(path)
+        if error is not None:
+            problems.append(f"E2: {error}")
+            continue
+        assert doc is not None
+        if doc.get("kind") != E2_SCOREBOARD_KIND:
+            continue
+        scoreboard_count += 1
+
+        schema_problems = perf_schema.validate_board(doc)
+        problems.extend(
+            f"E2: scoreboard schema violation in {path}: {p}" for p in schema_problems
+        )
+
+        provenance = doc.get("provenance")
+        if (
+            not isinstance(provenance, Mapping)
+            or provenance.get("authoritative") is not True
+        ):
+            problems.append(f"E2: scoreboard is not authoritative: {path}")
+
+        summary = doc.get("summary")
+        if not isinstance(summary, Mapping) or summary.get("gate_fails") is not False:
+            problems.append(f"E2: scoreboard gate_fails is not false: {path}")
+
+        generated_at = doc.get("generated_at")
+        age = pa.doc_age_days(
+            generated_at if isinstance(generated_at, str) else None, now=current
+        )
+        if age is None:
+            problems.append(
+                f"E2: scoreboard generated_at is missing or unparseable: {path}"
+            )
+        elif age > pa.DEFAULT_STALE_DAYS:
+            problems.append(
+                f"E2: scoreboard generated_at is {age:.0f}d old "
+                f"(>{pa.DEFAULT_STALE_DAYS}d): {path}"
+            )
+
+        git_rev = doc.get("git_rev")
+        ancestor = pa.git_rev_is_ancestor_of_origin(
+            git_rev if isinstance(git_rev, str) else None
+        )
+        if ancestor is not True:
+            state = "not on origin/main" if ancestor is False else "not provable"
+            problems.append(f"E2: scoreboard git_rev ancestry is {state}: {path}")
+
+    if scoreboard_count == 0:
+        problems.append(
+            "E2: passing performance criteria require at least one canonical "
+            f"{E2_SCOREBOARD_KIND} evidence artifact"
+        )
+    return problems
+
+
 def validate_manifest(
     doc: Mapping[str, Any],
     *,
@@ -183,6 +270,8 @@ def validate_manifest(
                     require_existing_evidence=require_existing_evidence,
                 )
                 item_problems.extend(evidence_problems)
+                if key == "E2" and not evidence_problems:
+                    item_problems.extend(_validate_e2_perf_scoreboard(evidence_paths))
         results.append(
             CriterionResult(
                 criterion=key,
