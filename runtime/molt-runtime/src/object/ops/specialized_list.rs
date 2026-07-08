@@ -21,6 +21,51 @@ fn list_assignment_out_of_range_error() -> u64 {
     })
 }
 
+#[inline]
+fn list_fast_load_needs_gil(val_bits: u64) -> bool {
+    crate::object::refcount_opt::is_heap_ref(val_bits)
+}
+
+#[inline]
+fn list_fast_store_needs_gil(old_bits: u64, val_bits: u64) -> bool {
+    old_bits != val_bits
+        && (crate::object::refcount_opt::is_heap_ref(old_bits)
+            || crate::object::refcount_opt::is_heap_ref(val_bits))
+}
+
+#[inline]
+unsafe fn list_store_refcounted_fast(
+    ptr: *mut u8,
+    idx: usize,
+    val_bits: u64,
+    success_bits: u64,
+) -> u64 {
+    let old_bits = unsafe { seq_vec(ptr)[idx] };
+    if old_bits == val_bits {
+        return success_bits;
+    }
+    if !list_fast_store_needs_gil(old_bits, val_bits) {
+        unsafe {
+            seq_vec(ptr)[idx] = val_bits;
+        }
+        return success_bits;
+    }
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let elems = seq_vec(ptr);
+            if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                inc_ref_bits(_py, val_bits);
+                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            }
+            elems[idx] = val_bits;
+            if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                dec_ref_bits(_py, old_bits);
+            }
+            success_bits
+        }
+    })
+}
+
 unsafe fn list_int_slice_to_boxed_list(_py: &PyToken<'_>, ptr: *mut u8, slice_ptr: *mut u8) -> u64 {
     unsafe {
         let len = list_len(ptr) as isize;
@@ -480,27 +525,8 @@ pub extern "C" fn molt_list_setitem_int_fast(
         if idx < 0 || idx >= len {
             return molt_store_index(list_bits, index_bits, val_bits);
         }
-        // 7. Direct array store with reference count update.
-        crate::with_gil_entry_nopanic!(_py, {
-            let elems = seq_vec(ptr);
-            let old_bits = elems[idx as usize];
-            if old_bits != val_bits {
-                // Skip refcount ops for inline primitives (bool, int, None, float).
-                // These are NaN-boxed values with no heap allocation — as_ptr()
-                // returns None so inc_ref_bits/dec_ref_bits would be no-ops, but
-                // skipping the function call eliminates overhead in hot loops
-                // (e.g., sieve: is_prime[i] = False millions of times).
-                if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                    inc_ref_bits(_py, val_bits);
-                    (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
-                }
-                elems[idx as usize] = val_bits;
-                if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                    dec_ref_bits(_py, old_bits);
-                }
-            }
-            list_bits
-        })
+        // 7. Direct array store; enter the GIL only when a heap refcount changes.
+        list_store_refcounted_fast(ptr, idx as usize, val_bits, list_bits)
     }
 }
 
@@ -523,10 +549,12 @@ pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64
         let elems = seq_vec_ref(ptr);
         // Safety: caller guarantees 0 <= index < len.
         let val = *elems.get_unchecked(index as usize);
-        crate::with_gil_entry_nopanic!(_py, {
-            inc_ref_bits(_py, val);
-            val
-        })
+        if list_fast_load_needs_gil(val) {
+            crate::with_gil_entry_nopanic!(_py, {
+                inc_ref_bits(_py, val);
+            });
+        }
+        val
     }
 }
 
@@ -655,52 +683,37 @@ pub extern "C" fn molt_list_getitem_raw_idx(list_bits: u64, raw_idx: i64) -> u64
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn molt_list_setitem_raw_idx(list_bits: u64, raw_idx: i64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let list_obj = obj_from_bits(list_bits);
-        let Some(ptr) = list_obj.as_ptr() else {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return molt_list_setitem_int_fast(
+            list_bits,
+            MoltObject::from_int(raw_idx).bits(),
+            val_bits,
+        );
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_LIST {
             return molt_list_setitem_int_fast(
                 list_bits,
                 MoltObject::from_int(raw_idx).bits(),
                 val_bits,
             );
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_LIST {
-                return molt_list_setitem_int_fast(
-                    list_bits,
-                    MoltObject::from_int(raw_idx).bits(),
-                    val_bits,
-                );
-            }
-            let mut idx = raw_idx;
-            let elems = &mut *seq_vec_ptr(ptr);
-            let len = elems.len() as i64;
-            if idx < 0 {
-                idx += len;
-            }
-            if idx < 0 || idx >= len {
-                // Out of bounds — fall back to generic path which raises IndexError
-                return molt_list_setitem_int_fast(
-                    list_bits,
-                    MoltObject::from_int(raw_idx).bits(),
-                    val_bits,
-                );
-            }
-            // Dec-ref old value, store new, inc-ref new.
-            // Skip refcount ops for inline primitives (bool, int, None, float)
-            // — they have no heap allocation, so inc/dec_ref_bits are no-ops.
-            let old = elems[idx as usize];
-            elems[idx as usize] = val_bits;
-            if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                inc_ref_bits(_py, val_bits);
-                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
-            }
-            if crate::object::refcount_opt::is_heap_ref(old) {
-                dec_ref_bits(_py, old);
-            }
-            MoltObject::none().bits()
         }
-    })
+        let mut idx = raw_idx;
+        let len = list_len(ptr) as i64;
+        if idx < 0 {
+            idx += len;
+        }
+        if idx < 0 || idx >= len {
+            // Out of bounds - fall back to generic path which raises IndexError.
+            return molt_list_setitem_int_fast(
+                list_bits,
+                MoltObject::from_int(raw_idx).bits(),
+                val_bits,
+            );
+        }
+        list_store_refcounted_fast(ptr, idx as usize, val_bits, MoltObject::none().bits())
+    }
 }
 
 // ── Specialized list[int] operations ────────────────────────────────
@@ -810,4 +823,49 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
         }
         MoltObject::from_ptr(ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::alloc::{Layout, alloc, dealloc};
+
+    fn with_heap_bits(assertion: impl FnOnce(u64)) {
+        let layout = Layout::from_size_align(8, 8).unwrap();
+        let ptr = unsafe { alloc(layout) };
+        assert!(!ptr.is_null());
+        assertion(MoltObject::from_ptr(ptr).bits());
+        unsafe { dealloc(ptr, layout) };
+    }
+
+    #[test]
+    fn list_fast_load_enters_gil_only_for_heap_refs() {
+        for bits in [
+            MoltObject::from_int(1).bits(),
+            MoltObject::from_float(2.5).bits(),
+            MoltObject::from_bool(true).bits(),
+            MoltObject::none().bits(),
+        ] {
+            assert!(!list_fast_load_needs_gil(bits));
+        }
+        with_heap_bits(|bits| assert!(list_fast_load_needs_gil(bits)));
+    }
+
+    #[test]
+    fn list_fast_store_enters_gil_only_when_heap_refs_change() {
+        let int_bits = MoltObject::from_int(1).bits();
+        let float_bits = MoltObject::from_float(2.5).bits();
+        let bool_bits = MoltObject::from_bool(false).bits();
+        let none_bits = MoltObject::none().bits();
+
+        assert!(!list_fast_store_needs_gil(int_bits, int_bits));
+        assert!(!list_fast_store_needs_gil(int_bits, float_bits));
+        assert!(!list_fast_store_needs_gil(bool_bits, none_bits));
+
+        with_heap_bits(|heap_bits| {
+            assert!(list_fast_store_needs_gil(int_bits, heap_bits));
+            assert!(list_fast_store_needs_gil(heap_bits, float_bits));
+            assert!(!list_fast_store_needs_gil(heap_bits, heap_bits));
+        });
+    }
 }

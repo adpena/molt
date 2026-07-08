@@ -48,6 +48,12 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   import failure on both CPython and Molt downgrades to skip. Re-verified
   2026-07-08 with `pytest tests/tools/test_parity_gate.py -q` (`5 passed`).
 - **#11 release-fast debug=0: LANDED** (`f21cf71aa`).
+- **#13 specialized-list primitive GIL fast paths: LANDED**. Regular
+  `STORE_SUBSCR_LIST_INT`, raw-index list store, and unchecked list getitem now
+  share an explicit primitive-vs-heap-ref gate: inline primitives bypass
+  `with_gil_entry_nopanic`, while heap-ref updates still enter the canonical
+  refcount path. Verified with `cargo test -p molt-runtime specialized_list
+  --lib` (`2 passed`, `484 filtered out`).
 - **#18 WASM data segment alignment: LANDED**. Each segment now aligns its own
   start before emission instead of inheriting the previous segment's alignment;
   re-verified with `cargo test -p molt-backend-wasm --features test-util
