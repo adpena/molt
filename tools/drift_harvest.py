@@ -146,10 +146,48 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
                 "head": head,
                 "uniq": uniq,
                 "dirty": dirty,
+                "last": last,
                 "state": state,
             }
         )
     return rows
+
+
+def gate(rows: list[dict], now: float, *, max_worktrees: int, max_signal_age_hours: float) -> list[str]:
+    """Return a list of drift violations (empty == clean).
+
+    The gate makes worktree/branch drift BLOCKING instead of a silent slow
+    accumulation. Two failure classes, matching the exact 100-worktree /
+    165-branch incident this tool exists to prevent:
+
+      * SPRAWL   — more than ``max_worktrees`` live worktrees. Long-lived
+                   worktrees are the drift substrate; agents must work in
+                   short-lived worktrees off the canonical checkout and prune
+                   after landing.
+      * STALE-SIGNAL — a SIGNAL worktree (unique unlanded commits) whose tip is
+                   older than ``max_signal_age_hours``. Unlanded signal that
+                   ages is drift: harvest it (cherry-pick/reconcile onto
+                   origin/main) and prune, or it rots into a 130-worktree mess.
+
+    Fresh SIGNAL (recent WIP) never trips the gate — only aged, unlanded work.
+    """
+    violations: list[str] = []
+    live = [r for r in rows if r["state"] not in ("STALE",)]
+    if len(live) > max_worktrees:
+        violations.append(
+            f"SPRAWL: {len(live)} live worktrees > max {max_worktrees}. "
+            f"Prune landed/superseded worktrees: drift_harvest.py --prune"
+        )
+    cutoff = now - max_signal_age_hours * 3600
+    for r in rows:
+        if r["state"] == "SIGNAL" and r.get("last", 0) and r["last"] < cutoff:
+            age_h = (now - r["last"]) / 3600
+            violations.append(
+                f"STALE-SIGNAL ({age_h:.0f}h, uniq={r['uniq']}): "
+                f"{r['branch'] or '(detached)'} {r['path']} — harvest onto "
+                f"origin/main + prune, or record an evidence-backed blocker"
+            )
+    return violations
 
 
 def bundle_signal(rows: list[dict], bundle_path: Path) -> set[str]:
@@ -194,6 +232,13 @@ def main() -> int:
     ap.add_argument("--fresh-hours", type=float, default=24.0)
     ap.add_argument("--bundle", default=None, help="bundle output path")
     ap.add_argument("--now", type=float, default=None, help="override epoch (tests)")
+    ap.add_argument(
+        "--gate",
+        action="store_true",
+        help="fail (exit 1) on drift: worktree sprawl or aged unlanded SIGNAL",
+    )
+    ap.add_argument("--max-worktrees", type=int, default=24)
+    ap.add_argument("--max-signal-age-hours", type=float, default=72.0)
     args = ap.parse_args()
 
     _git(["fetch", "origin", "--quiet"])
@@ -210,6 +255,21 @@ def main() -> int:
                 f"  {r['state']:11s} uniq={r['uniq']} dirty={r['dirty']} "
                 f"{r['branch'] or '(detached)'}  {r['path']}"
             )
+
+    if args.gate:
+        violations = gate(
+            rows,
+            now,
+            max_worktrees=args.max_worktrees,
+            max_signal_age_hours=args.max_signal_age_hours,
+        )
+        if violations:
+            print(f"\nDRIFT GATE FAILED ({len(violations)} violation(s)):")
+            for v in violations:
+                print(f"  ✗ {v}")
+            return 1
+        print("\nDRIFT GATE PASSED (no sprawl, no aged unlanded signal)")
+        return 0
 
     captured: set[str] = set()
     if args.bundle or args.prune:
