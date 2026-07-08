@@ -1754,6 +1754,136 @@ extern PyObject *PyWeakref_GetObject(PyObject *ref);
  */
 #include <_molt_abi_layout.generated.h>
 
+/* ========================================================================
+ * CPython 3.12 ABI surface required by Cython-generated extension C.
+ *
+ * Cython emits calls to a broad slice of the public/stable CPython C-API.
+ * These entry points were absent from this standalone cpython-abi header, so
+ * Cython-generated extensions (e.g. scipy.ndimage._ni_label) failed to compile
+ * with implicit-declaration errors. Each is defined here as a macro or a
+ * static inline over the ABI primitives this header ALREADY declares — one
+ * header authority, no new runtime export, standard CPython 3.12 semantics.
+ * ======================================================================== */
+
+#ifndef PyDoc_STR
+#define PyDoc_STR(str) str
+#endif
+#ifndef PyDoc_STRVAR
+#define PyDoc_STRVAR(name, str) static const char name[] = PyDoc_STR(str)
+#endif
+
+#ifndef PyType_IS_GC
+#define PyType_IS_GC(t) PyType_HasFeature((t), Py_TPFLAGS_HAVE_GC)
+#endif
+
+#ifndef PyExceptionInstance_Check
+#define PyExceptionInstance_Check(x) \
+    PyType_FastSubclass(Py_TYPE(x), Py_TPFLAGS_BASE_EXC_SUBCLASS)
+#endif
+
+/* A traceback is identified by its type name: Molt exports no PyTraceBack_Type
+ * symbol, so the CPython `Py_IS_TYPE(x, &PyTraceBack_Type)` form is unavailable. */
+static inline int PyTraceBack_Check(PyObject *ob) {
+    if (ob == NULL) {
+        return 0;
+    }
+    return strcmp(Py_TYPE(ob)->tp_name, "traceback") == 0;
+}
+
+/* dict.update(b): merge b into a, overwriting (override=1). */
+static inline int PyDict_Update(PyObject *a, PyObject *b) {
+    return PyDict_Merge(a, b, 1);
+}
+
+/* Remove key from dict, returning a new ref to its value; on absence return a
+ * new ref to deflt, or NULL+KeyError when deflt is NULL. */
+static inline PyObject *_PyDict_Pop(PyObject *dict, PyObject *key, PyObject *deflt) {
+    PyObject *value = PyDict_GetItemWithError(dict, key);
+    if (value != NULL) {
+        Py_INCREF(value);
+        if (PyDict_DelItem(dict, key) < 0) {
+            Py_DECREF(value);
+            return NULL;
+        }
+        return value;
+    }
+    if (PyErr_Occurred() != NULL) {
+        return NULL;
+    }
+    if (deflt != NULL) {
+        return Py_NewRef(deflt);
+    }
+    PyErr_SetObject(PyExc_KeyError, key);
+    return NULL;
+}
+
+/* sys.modules[name], new ref, or NULL (without error) when absent. */
+static inline PyObject *PyImport_GetModule(PyObject *name) {
+    PyObject *modules = PyImport_GetModuleDict();
+    if (modules == NULL) {
+        return NULL;
+    }
+    return Py_XNewRef(PyDict_GetItemWithError(modules, name));
+}
+
+/* Validate that every key of a keyword dict is a str. 1 = ok, 0 = TypeError. */
+static inline int PyArg_ValidateKeywordArguments(PyObject *kwargs) {
+    Py_ssize_t pos = 0;
+    PyObject *key, *value;
+    if (kwargs == NULL) {
+        return 1;
+    }
+    if (!PyDict_Check(kwargs)) {
+        PyErr_SetString(PyExc_TypeError, "keywords must be a dict");
+        return 0;
+    }
+    while (PyDict_Next(kwargs, &pos, &key, &value)) {
+        if (!PyUnicode_Check(key)) {
+            PyErr_SetString(PyExc_TypeError, "keywords must be strings");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* 3.12 single-object exception state. GetRaised returns a new ref (normalized)
+ * and clears the error; SetRaised steals its argument. */
+static inline PyObject *PyErr_GetRaisedException(void) {
+    PyObject *type, *value, *tb;
+    PyErr_Fetch(&type, &value, &tb);
+    PyErr_NormalizeException(&type, &value, &tb);
+    if (value != NULL && tb != NULL) {
+        PyException_SetTraceback(value, tb);
+    }
+    Py_XDECREF(type);
+    Py_XDECREF(tb);
+    return value;
+}
+
+static inline void PyErr_SetRaisedException(PyObject *exc) {
+    PyObject *tb;
+    if (exc == NULL) {
+        return;
+    }
+    tb = PyException_GetTraceback(exc);
+    PyErr_Restore(Py_NewRef((PyObject *)Py_TYPE(exc)), exc, tb);
+}
+
+/* Copy how_many code points from `from` into `to` via the kind/data macros. */
+static inline void _PyUnicode_FastCopyCharacters(
+        PyObject *to, Py_ssize_t to_start,
+        PyObject *from, Py_ssize_t from_start, Py_ssize_t how_many) {
+    int from_kind = PyUnicode_KIND(from);
+    int to_kind = PyUnicode_KIND(to);
+    const void *from_data = PyUnicode_DATA(from);
+    void *to_data = PyUnicode_DATA(to);
+    Py_ssize_t i;
+    for (i = 0; i < how_many; i++) {
+        Py_UCS4 ch = PyUnicode_READ(from_kind, from_data, from_start + i);
+        PyUnicode_WRITE(to_kind, to_data, to_start + i, ch);
+    }
+}
+
 #ifdef __cplusplus
 }
 #endif
