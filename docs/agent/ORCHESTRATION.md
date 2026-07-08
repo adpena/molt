@@ -47,14 +47,17 @@ independent landings were counted). There is no OneDrive checkout, no orphan
 worktree, and no signal bundle left anywhere. Canonical is `C:\Molt\molt-src` only;
 agents work in short-lived worktrees off it and prune after landing.
 
-## 🎯 EXIT-CRITERIA WORK PORTFOLIO (2026-07-08 — CLAIM THESE, STOP FIXATING ON C1)
+## 🎯 EXIT-CRITERIA WORK PORTFOLIO (2026-07-08 — ADDITIVE backlog, spread out)
 
-**STOP starting new C1 runtime/ops decomposition splits.** C1 decomposition is
-INSTRUMENTAL, not an exit criterion, and it is saturated — multiple agents are
-piling onto it while the 100-year exit criteria (E1 witness / E2 perf / E3 parity
-/ E4 structural floor) go under-staffed. If you are reaching for "another C1 split,"
-STOP and claim one of the lanes below instead. Only finish a C1 split already
-IN-FLIGHT with landed WIP; do not open new ones.
+**Decomposition is REAL structural work — keep doing it.** Breaking god-files into
+focused single-authority modules serves E4 (structural floor) and is exactly the
+kind of work that keeps the codebase world-class; nobody is blocked from it. The
+ONLY problem this portfolio solves is *dogpiling* — several agents converging on the
+same C1 lane while E1 witness / E2 perf / E3 parity go under-staffed. So: if your
+decomposition lane is landing signal, continue it. If you're between lanes, or about
+to start a split another agent already holds (check CLAIMS.md), claim one of the
+below instead so the swarm spreads across all four exit criteria. Every lane here is
+claimable, POISON-bound, and queue-verified.
 
 The witness E2E lane (`E1-WITNESS-TO-GREEN`) stays SOLO/orchestrator-owned, but its
 **feeders are now OPEN to Codex** — discrete, independently-verifiable artifacts that
