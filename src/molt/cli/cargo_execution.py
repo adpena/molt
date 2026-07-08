@@ -112,14 +112,61 @@ def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
             env["CARGO_BUILD_RUSTFLAGS"] = flags
 
 
+_SCCACHE_DIAG_EMITTED = False
+
+
+def _sccache_diag(msg: str) -> None:
+    """Emit a one-time-per-process LOUD diagnostic about sccache enablement.
+
+    A configured-but-ineffective compiler cache is a silent-degradation trap
+    (measured 2026-07-07: 0 requests / 0 hits + mid-compile crashes on Windows
+    turning cacheable builds into rc=124 timeouts), so every enable/skip decision
+    is announced rather than hidden.
+    """
+    global _SCCACHE_DIAG_EMITTED
+    if _SCCACHE_DIAG_EMITTED:
+        return
+    _SCCACHE_DIAG_EMITTED = True
+    print(f"[molt sccache] {msg}", file=sys.stderr, flush=True)
+
+
+def _sccache_server_responsive(sccache: str) -> bool:
+    """Fast healthcheck: does the sccache server answer at all? Catches a dead
+    server. A server that answers --show-stats but crashes mid-compile is caught
+    by the retry-degrade in `_run_cargo_with_sccache_retry`."""
+    try:
+        result = subprocess.run(
+            [sccache, "--show-stats"], capture_output=True, text=True, timeout=15
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if env.get("RUSTC_WRAPPER"):
         return
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
         return
+    forced = mode in {"1", "true", "yes", "on"}
     sccache = shutil.which("sccache")
     if sccache is None:
+        if forced:
+            _sccache_diag("MOLT_USE_SCCACHE set but sccache is not on PATH; using direct rustc.")
+        return
+    # sccache delivers 0 cache hits on this Windows host and crashes builds
+    # mid-compile (os error 10054), converting cacheable compiler builds into
+    # multi-minute timeouts + manual reruns. Default it OFF on Windows (no value
+    # lost) unless explicitly forced; power users can set MOLT_USE_SCCACHE=1.
+    if os.name == "nt" and not forced:
+        _sccache_diag(
+            "disabled by default on Windows (0 cache hits + mid-compile crashes here); "
+            "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
+        )
+        return
+    if not _sccache_server_responsive(sccache):
+        _sccache_diag("server healthcheck failed; using direct rustc (set MOLT_USE_SCCACHE=0 to silence).")
         return
     root = _find_molt_root(Path.cwd()) or Path.cwd()
     ext_root = Path(env.get("MOLT_EXT_ROOT", root)).expanduser()
@@ -128,6 +175,7 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env["RUSTC_WRAPPER"] = sccache
+    _sccache_diag(f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness.")
 
 
 def _cargo_build_env() -> dict[str, str]:
@@ -146,6 +194,34 @@ def _cargo_build_env() -> dict[str, str]:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
     return env
+
+
+def _attest_sccache_stats(sccache: str, label: str) -> None:
+    """Log post-build sccache stats so a configured-but-0-hit cache is VISIBLE
+    (the 'sccache was on but doing nothing' class) instead of silently wasting
+    the wrapper overhead. Cumulative counts: requests==0 after a build means the
+    cache did nothing."""
+    try:
+        result = subprocess.run(
+            [sccache, "--show-stats"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    requests = hits = "?"
+    for line in result.stdout.splitlines():
+        low = line.lower()
+        if "compile requests" in low and "executed" not in low:
+            requests = line.split()[-1]
+        elif "cache hits" in low and "rate" not in low:
+            hits = line.split()[-1]
+    print(
+        f"{label}: sccache attest — compile_requests={requests} cache_hits={hits} "
+        f"(requests=0 => cache ineffective this session)",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _is_sccache_wrapper_failure(result: subprocess.CompletedProcess[str]) -> bool:
@@ -196,6 +272,9 @@ def _run_cargo_with_sccache_retry(
             memory_guard_prefix="MOLT_BUILD",
             timeout=timeout,
         )
+    active_wrapper = env.get("RUSTC_WRAPPER", "")
+    if not json_output and active_wrapper and Path(active_wrapper).name == "sccache":
+        _attest_sccache_stats(active_wrapper, label)
     return build
 
 
