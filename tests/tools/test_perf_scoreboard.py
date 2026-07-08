@@ -1408,6 +1408,78 @@ def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
     assert prov2["quiescent"] is False
 
 
+def test_main_refuses_nonauthoritative_before_batch_build(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setattr(
+        ps,
+        "_resolve_benchmark_set",
+        lambda _set, _benchmark: [Path("tests/benchmarks/bench_fib.py")],
+    )
+    monkeypatch.setattr(
+        ps,
+        "_resolve_system_cpython",
+        lambda _explicit: SimpleNamespace(
+            version="3.12.13",
+            display="fake-cpython",
+            sys_platform="win32",
+            arch="x86_64",
+            pointer_bits=64,
+            cmd=(sys.executable,),
+            host_metadata=lambda: {"version": "3.12.13"},
+        ),
+    )
+    monkeypatch.setattr(
+        ps,
+        "gather_quiescence",
+        lambda: {
+            "quiet": False,
+            "reasons": ["1 active build process(es): 1:cargo"],
+            "active_molt_processes": [],
+            "active_cargo_or_rustc_processes": [{"pid": 1}],
+            "loadavg_1m": 12.0,
+            "ncpu": 18,
+            "runnable_signal": 5,
+            "loadavg_threshold": 9.0,
+            "thermal_ok": True,
+            "thermal_note": None,
+        },
+    )
+    monkeypatch.setattr(
+        ps,
+        "gather_provenance",
+        lambda *_args, **_kwargs: {
+            "authoritative": False,
+            "authoritative_reason": "machine NOT quiescent",
+            "backend_binary_identity": {},
+        },
+    )
+
+    def fail_batch_server(*_args, **_kwargs):
+        raise AssertionError("batch build server must not start")
+
+    monkeypatch.setattr(ps.bench, "_BenchBatchBuildServer", fail_batch_server)
+    out = tmp_path / "board.json"
+
+    rc = ps.main(
+        [
+            "--benchmark",
+            "tests/benchmarks/bench_fib.py",
+            "--backend",
+            "native",
+            "--profile",
+            "release-fast",
+            "--require-quiescent",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert rc == 1
+    assert not out.exists()
+    assert "refusing non-authoritative measurement" in capsys.readouterr().err
+
+
 # --- safe_run custody -------------------------------------------------------
 
 

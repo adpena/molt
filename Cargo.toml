@@ -365,6 +365,12 @@ lto = "thin"
 # AND, with thin LTO, parallelizes the daemon-bin LTO itself.
 codegen-units = 256
 strip = "symbols"
+# debug = 0: release-fast is a build-ITERATION profile that strips symbols anyway,
+# so inheriting release's debug=1 only pays rustc debuginfo emission + a Windows
+# PDB link (on the link.exe long pole) for artifacts that are immediately stripped.
+# Turning it off directly cuts iteration wall-clock with zero observable loss
+# (symbols were already gone). Backtraces here are symbol-less regardless of strip.
+debug = 0
 panic = "unwind"       # required for catch_unwind in Cranelift retry path
 
 # Hot-path dependency overrides for release-fast: ensure the register
