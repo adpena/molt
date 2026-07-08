@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossbeam_deque::{Injector, Worker};
 
@@ -14,29 +14,21 @@ use crate::{
     ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GIL_DEPTH, GilGuard, GilReleaseGuard,
     HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
     HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, MoltHeader, MoltObject, PtrSlot,
-    alloc_list, alloc_string, anext_default_poll_fn_addr, async_sleep_poll_fn_addr,
-    asyncgen_poll_fn_addr, bits_from_ptr, call_poll_fn, class_name_for_error, code_filename_bits,
-    code_name_bits, context_stack_unwind, dec_ref_bits, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_handler_active,
-    exception_kind_bits, exception_pending, exception_stack_baseline_get,
+    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
+    class_name_for_error, code_filename_bits, code_name_bits, context_stack_unwind, dec_ref_bits,
+    exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
+    exception_handler_active, exception_kind_bits, exception_pending, exception_stack_baseline_get,
     exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
     format_exception_with_traceback, generator_raise_active, handle_system_exit,
-    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, is_missing_bits, is_truthy,
-    maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_getattr_builtin, obj_from_bits,
-    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr,
-    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
-    runtime_state, set_task_raise_active, task_exception_baseline_store,
+    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, maybe_ptr_from_bits,
+    molt_exception_last, obj_from_bits, object_class_bits, object_type_id, pending_bits_i64,
+    process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception,
+    resolve_task_ptr, runtime_state, set_task_raise_active, task_exception_baseline_store,
     task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_store, task_exception_stack_take, task_last_exception_contains_valid,
-    task_raise_active, thread_poll_fn_addr, to_i64, with_gil,
+    task_raise_active, thread_poll_fn_addr, with_gil,
 };
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::IoPoller;
-use crate::ProcessTaskState;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::ThreadTaskState;
 
 use super::cancellation::{
     cancel_tokens, clear_task_token, current_token_id, ensure_task_token,
@@ -53,6 +45,10 @@ use diagnostics::debug_current_task;
 pub(crate) use diagnostics::{
     AsyncHangProbe, async_trace_enabled, record_async_poll, trace_task_result,
 };
+
+mod block_wait;
+pub(crate) use block_wait::block_on_wait_spec;
+use block_wait::{BLOCK_ON_MAX_WAIT, BLOCK_ON_MIN_SLEEP, BlockOnWaitSpec, block_on_poll_timeout};
 
 mod compile_governor;
 pub(crate) use compile_governor::{
@@ -120,129 +116,6 @@ pub(crate) fn current_task_key() -> Option<PtrSlot> {
             }
         })
         .unwrap_or(None)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) enum BlockOnWaitSpec {
-    Io {
-        poller: Arc<IoPoller>,
-        socket_ptr: *mut u8,
-        events: u32,
-        timeout: Option<Duration>,
-    },
-    Thread {
-        state: Arc<ThreadTaskState>,
-        timeout: Option<Duration>,
-    },
-    Process {
-        state: Arc<ProcessTaskState>,
-        timeout: Option<Duration>,
-    },
-}
-
-const BLOCK_ON_MIN_SLEEP: Duration = Duration::from_micros(50);
-const BLOCK_ON_MAX_WAIT: Duration = Duration::from_millis(5);
-
-fn block_on_poll_timeout(timeout: Option<Duration>) -> Duration {
-    match timeout {
-        Some(val) => val.min(BLOCK_ON_MAX_WAIT),
-        None => BLOCK_ON_MAX_WAIT,
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) enum BlockOnWaitSpec {}
-
-pub(crate) fn block_on_wait_spec(
-    _py: &PyToken<'_>,
-    awaited_ptr: *mut u8,
-    deadline: Option<Instant>,
-) -> Option<BlockOnWaitSpec> {
-    if awaited_ptr.is_null() {
-        return None;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = deadline;
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        #[inline]
-        fn remaining_timeout(deadline: Option<Instant>) -> Option<Duration> {
-            deadline.and_then(|dl| {
-                let now = Instant::now();
-                if dl > now { Some(dl - now) } else { None }
-            })
-        }
-        #[inline]
-        unsafe fn wait_spec_for_ptr(
-            _py: &PyToken<'_>,
-            cursor: *mut u8,
-            timeout: Option<Duration>,
-        ) -> Option<BlockOnWaitSpec> {
-            unsafe {
-                let _header = header_from_obj_ptr(cursor);
-                let poll_fn = crate::object::object_poll_fn(cursor);
-                if poll_fn == io_wait_poll_fn_addr() {
-                    let payload_bytes = crate::object::object_payload_size(cursor);
-                    if payload_bytes < 2 * std::mem::size_of::<u64>() {
-                        return None;
-                    }
-                    let payload_ptr = cursor as *mut u64;
-                    let socket_bits = *payload_ptr;
-                    let events_bits = *payload_ptr.add(1);
-                    let socket_ptr = ptr_from_bits(socket_bits);
-                    if socket_ptr.is_null() {
-                        return None;
-                    }
-                    let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
-                    if events == 0 {
-                        return None;
-                    }
-                    let poller = Arc::clone(runtime_state(_py).io_poller());
-                    return Some(BlockOnWaitSpec::Io {
-                        poller,
-                        socket_ptr,
-                        events,
-                        timeout,
-                    });
-                }
-                if poll_fn == thread_poll_fn_addr()
-                    && let Some(state) = thread_task_state(_py, cursor)
-                {
-                    return Some(BlockOnWaitSpec::Thread { state, timeout });
-                }
-                if poll_fn == process_poll_fn_addr()
-                    && let Some(state) = process_task_state(_py, cursor)
-                {
-                    return Some(BlockOnWaitSpec::Process { state, timeout });
-                }
-                None
-            }
-        }
-        unsafe {
-            let mut cursor = awaited_ptr;
-            for _ in 0..8 {
-                let timeout = remaining_timeout(deadline);
-                if let Some(spec) = wait_spec_for_ptr(_py, cursor, timeout) {
-                    return Some(spec);
-                }
-                let next = {
-                    let waiting_map = task_waiting_on(_py).lock().unwrap();
-                    waiting_map.get(&PtrSlot(cursor)).map(|val| val.0)
-                };
-                let Some(next_ptr) = next else {
-                    break;
-                };
-                if next_ptr.is_null() || next_ptr == cursor {
-                    break;
-                }
-                cursor = next_ptr;
-            }
-        }
-        None
-    }
 }
 
 pub struct MoltTask {
