@@ -2154,6 +2154,36 @@ def test_target_sys_platform_keeps_deleted_helper_when_globals_escape() -> None:
     assert any(func["name"] == "numpy___mac_os_check" for func in ir["functions"])
 
 
+def test_target_sys_platform_elides_helper_when_globals_escape_precedes_definition() -> (
+    None
+):
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "globals()['ta'] = 1\n"
+        "submodules = globals().keys()\n"
+        "def _mac_os_check():\n"
+        "    y = polyval([1], [2])\n"
+        "if sys.platform == 'darwin':\n"
+        "    _mac_os_check()\n"
+        "del _mac_os_check\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert all(func["name"] != "numpy___mac_os_check" for func in ir["functions"])
+    assert all(
+        op.get("kind") != "call_indirect"
+        for func in ir["functions"]
+        for op in func["ops"]
+    )
+
+
 def test_source_import_statements_use_import_transaction_details() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"json", "json.tool", "pkg", "pkg.child"},

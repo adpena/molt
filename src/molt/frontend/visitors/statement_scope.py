@@ -83,27 +83,59 @@ class StatementScopeVisitorMixin(_MixinBase):
         return True
 
     def _module_elidable_deleted_functions(self, node: ast.Module) -> frozenset[str]:
-        if self._module_globals_dict_escapes(node):
-            return frozenset()
+        sys_aliases = self._module_static_sys_aliases(node)
+        return self._module_elidable_deleted_functions_in_block(
+            list(node.body), sys_aliases=sys_aliases
+        )
+
+    def _module_elidable_deleted_functions_in_block(
+        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+    ) -> frozenset[str]:
+        live = self._module_live_statements_for_target(
+            statements, sys_aliases=sys_aliases
+        )
+        elidable = set(self._module_elidable_deleted_functions_in_live_block(live))
+        for stmt in live:
+            if not isinstance(stmt, ast.If):
+                continue
+            elidable.update(
+                self._module_elidable_deleted_functions_in_block(
+                    list(stmt.body), sys_aliases=sys_aliases
+                )
+            )
+            elidable.update(
+                self._module_elidable_deleted_functions_in_block(
+                    list(stmt.orelse), sys_aliases=sys_aliases
+                )
+            )
+        return frozenset(elidable)
+
+    def _module_elidable_deleted_functions_in_live_block(
+        self, live: list[ast.stmt]
+    ) -> frozenset[str]:
         candidates = {
             stmt.name
-            for stmt in node.body
+            for stmt in live
             if isinstance(stmt, ast.FunctionDef)
             and self._side_effect_free_module_function_def(stmt)
         }
         if not candidates:
             return frozenset()
-        sys_aliases = self._module_static_sys_aliases(node)
-        live = self._module_live_statements_for_target(
-            list(node.body), sys_aliases=sys_aliases
-        )
-        deleted: set[str] = set()
-        for stmt in live:
+        live_def_index: dict[str, int] = {}
+        live_delete_index: dict[str, int] = {}
+        globals_escape_indices: set[int] = set()
+        for index, stmt in enumerate(live):
+            if isinstance(stmt, ast.FunctionDef) and stmt.name in candidates:
+                live_def_index.setdefault(stmt.name, index)
+            if self._module_globals_dict_escapes(
+                ast.Module(body=[stmt], type_ignores=[])
+            ):
+                globals_escape_indices.add(index)
             if not isinstance(stmt, ast.Delete):
                 continue
             for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    deleted.add(target.id)
+                if isinstance(target, ast.Name) and target.id in candidates:
+                    live_delete_index.setdefault(target.id, index)
 
         class LoadCollector(ast.NodeVisitor):
             def __init__(self) -> None:
@@ -119,7 +151,14 @@ class StatementScopeVisitorMixin(_MixinBase):
         return frozenset(
             name
             for name in candidates
-            if name in deleted and name not in collector.loads
+            if name in live_def_index
+            and name in live_delete_index
+            and live_def_index[name] < live_delete_index[name]
+            and name not in collector.loads
+            and not any(
+                live_def_index[name] < index < live_delete_index[name]
+                for index in globals_escape_indices
+            )
         )
 
     def _native_support_function_roots(self) -> frozenset[str]:
