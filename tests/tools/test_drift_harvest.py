@@ -162,3 +162,24 @@ def test_gate_fails_on_sprawl_and_aged_signal_but_not_fresh():
     ]
     v2 = dh.gate(aged, now, max_worktrees=24, max_signal_age_hours=72.0)
     assert len(v2) == 1 and v2[0].startswith("STALE-SIGNAL")
+
+
+def test_no_fetch_flag_skips_origin_refresh(monkeypatch, capsys):
+    calls = []
+
+    class _R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_git(args, cwd=None):
+        calls.append(list(args))
+        return _R()
+
+    monkeypatch.setattr(dh, "_git", fake_git)
+    monkeypatch.setattr(dh, "_worktrees", lambda: [])
+    monkeypatch.setattr("sys.argv", ["drift_harvest.py", "--gate", "--no-fetch", "--now", "1"])
+
+    assert dh.main() == 0
+    assert ["fetch", "origin", "--quiet"] not in calls
+    assert "DRIFT GATE PASSED" in capsys.readouterr().out
