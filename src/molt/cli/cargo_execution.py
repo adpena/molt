@@ -175,6 +175,10 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env["RUSTC_WRAPPER"] = sccache
+    # sccache SKIPS incremental compilation units, so with sccache enabled we must
+    # turn incremental off (else the wrapper caches nothing). When sccache is OFF
+    # (the Windows default now), incremental stays ON — see _cargo_build_env.
+    env["CARGO_INCREMENTAL"] = "0"
     _sccache_diag(f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness.")
 
 
@@ -189,7 +193,17 @@ def _cargo_build_env() -> dict[str, str]:
             session_id=env.get("MOLT_SESSION_ID") or f"cargo-build-{os.getpid()}",
             create_dirs=True,
         )
-    env.setdefault("CARGO_INCREMENTAL", "0")
+    # Incremental compilation is the primary WARM-REBUILD accelerator: edit one
+    # file -> recompile only that crate's changed codegen units, not the whole
+    # runtime cold. Default it ON. It is mutually exclusive with sccache (which
+    # skips incremental units), so the sccache-enable paths force it back to "0";
+    # with sccache OFF (the Windows default) incremental is the ONLY compiler
+    # cache we have and must be on, else every rebuild pays the full cold compile.
+    # An explicit operator-provided CARGO_INCREMENTAL always wins (setdefault).
+    if Path(env.get("RUSTC_WRAPPER", "") or "").name == "sccache":
+        env.setdefault("CARGO_INCREMENTAL", "0")
+    else:
+        env.setdefault("CARGO_INCREMENTAL", "1")
     if sys.executable:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)

@@ -888,7 +888,10 @@ class RunContext:
             cargo_target_dir_for_artifact_root(ext_root, env.get("MOLT_SESSION_ID")),
         )
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-        install_default("CARGO_INCREMENTAL", "0")
+        # Incremental ON by default (fast warm rebuilds against the persistent
+        # per-artifact-root CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces
+        # it back to "0" wherever it actually enables sccache (mutually exclusive).
+        install_default("CARGO_INCREMENTAL", "1")
         install_default("MOLT_CACHE", ext_root / ".molt_cache")
         install_default("MOLT_DIFF_ROOT", ext_root / "tmp" / "diff")
         install_default("MOLT_DIFF_TMPDIR", ext_root / "tmp")
