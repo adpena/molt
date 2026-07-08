@@ -11,6 +11,7 @@ that consumed the ``--shared`` C would fail this test.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,15 +39,29 @@ def _find_ni_label_pyx() -> Path | None:
     return None
 
 
+def _find_numpy_source_root() -> Path | None:
+    """Locate the package-custody NumPy source root when the bench repo exists."""
+    relative = Path("bench/friends/repos/numpy_off_the_shelf")
+    for base in (ROOT, Path.cwd(), *ROOT.parents):
+        candidate = base / relative
+        if (candidate / "numpy" / "__init__.pxd").is_file():
+            return candidate.resolve()
+    return None
+
+
 def _cython_available() -> bool:
     return cython_authority._installed_cython_version(sys.executable) is not None
 
 
 PYX_PATH = _find_ni_label_pyx()
+NUMPY_SOURCE_ROOT = _find_numpy_source_root()
 
 requires_ni_label = pytest.mark.skipif(
-    PYX_PATH is None,
-    reason="vendored scipy _ni_label.pyx (bench/friends/repos/...) is not present",
+    PYX_PATH is None or NUMPY_SOURCE_ROOT is None,
+    reason=(
+        "vendored scipy _ni_label.pyx and numpy package-custody source root "
+        "(bench/friends/repos/...) are not present"
+    ),
 )
 requires_cython = pytest.mark.skipif(
     not _cython_available(),
@@ -141,6 +156,45 @@ def test_cimport_pxd_roots_resolves_from_source_tree(tmp_path: Path) -> None:
     assert (roots[0] / "widget" / "__init__.pxd").is_file()
 
 
+def test_cimport_roots_use_module_roots_package_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dep_root = tmp_path / "deps" / "widget_off_the_shelf"
+    header_root = dep_root / "widget" / "_core" / "include"
+    (header_root / "widget").mkdir(parents=True)
+    (dep_root / "widget" / "__init__.pxd").write_text(
+        "ctypedef unsigned long index_t\n",
+        encoding="utf-8",
+    )
+    (header_root / "widget" / "arrayobject.h").write_text(
+        "/* package-owned header */\n",
+        encoding="utf-8",
+    )
+    consumer = tmp_path / "consumer" / "scipy" / "ndimage" / "src"
+    consumer.mkdir(parents=True)
+    monkeypatch.setenv(
+        "MOLT_MODULE_ROOTS",
+        os.pathsep.join((f"widget={dep_root}", str(tmp_path / "missing"))),
+    )
+
+    roots = cython_authority._cimport_pxd_roots(
+        sys.executable,
+        ("widget",),
+        search_roots=[
+            consumer,
+            *cython_authority._cimport_package_roots_from_env(),
+        ],
+    )
+
+    assert roots == (dep_root.resolve(),), roots
+    assert cython_authority._cimport_header_include_dirs(
+        sys.executable,
+        ("widget",),
+        cimport_pxd_roots=roots,
+    ) == (header_root.resolve(),)
+
+
 def test_cimport_pxd_roots_resolve_through_build_interpreter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -226,9 +280,9 @@ def test_molt_regenerates_ni_label_standalone_without_cyutility(
     tmp_path: Path,
 ) -> None:
     assert PYX_PATH is not None
+    assert NUMPY_SOURCE_ROOT is not None
     version = cython_authority._installed_cython_version(sys.executable)
     assert version is not None
-
     regeneration, error = cython_authority.regenerate_cython_c_standalone(
         pyx_path=PYX_PATH,
         original_c=Path("_ni_label.c"),
@@ -236,6 +290,7 @@ def test_molt_regenerates_ni_label_standalone_without_cyutility(
         include_dirs=[PYX_PATH.parent],
         cython_version=version,
         python_exe=sys.executable,
+        package_roots=[NUMPY_SOURCE_ROOT],
     )
     assert error is None, error
     assert regeneration is not None
@@ -277,7 +332,23 @@ def test_shared_variant_would_import_cyutility_proving_teeth(
     fail if Molt regressed to consuming the upstream ``--shared`` C.
     """
     assert PYX_PATH is not None
+    assert NUMPY_SOURCE_ROOT is not None
     shared_c = tmp_path / "_ni_label_shared.c"
+    cimport_packages = cython_authority._parse_cimported_packages(PYX_PATH)
+    cimport_pxd_roots = cython_authority._cimport_pxd_roots(
+        sys.executable,
+        cimport_packages,
+        search_roots=[PYX_PATH.parent, NUMPY_SOURCE_ROOT],
+    )
+    include_args = [
+        arg
+        for include_dir in cython_authority._cython_include_dirs(
+            pyx_path=PYX_PATH,
+            plan_include_dirs=[PYX_PATH.parent],
+            cimport_pxd_roots=cimport_pxd_roots,
+        )
+        for arg in ("-I", str(include_dir))
+    ]
     result = subprocess.run(
         [
             sys.executable,
@@ -286,8 +357,7 @@ def test_shared_variant_would_import_cyutility_proving_teeth(
             "-3",
             "--shared",
             "scipy._cyutility",
-            "-I",
-            str(PYX_PATH.parent),
+            *include_args,
             str(PYX_PATH),
             "-o",
             str(shared_c),

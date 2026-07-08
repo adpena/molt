@@ -2577,6 +2577,10 @@ def extension_build(
                             include_dirs=flat_includes,
                             cython_version=cython_version,
                             python_exe=cython_python_exe,
+                            package_roots=(
+                                loaded_source_plan.source_root,
+                                loaded_source_plan.build_root,
+                            ),
                         )
                     )
                     if regen_error is not None:
