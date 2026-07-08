@@ -698,10 +698,6 @@ pub(crate) use crate::object::{
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
-#[allow(unused_imports)]
-pub(crate) use crate::provenance::{
-    opaque_handle_bits, release_ptr, reset_ptr_registry, resolve_ptr,
-};
 pub(crate) use crate::state::cache::{
     InternedNames, MethodCache, RuntimeStaticNames, intern_runtime_static_name, intern_static_name,
     runtime_static_name_slot,
@@ -716,6 +712,8 @@ pub(crate) use crate::state::{
     recursion_guard_exit, recursion_limit_get, recursion_limit_set, sample_peak_rss,
     traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
 };
+#[allow(unused_imports)]
+pub(crate) use molt_obj_model::{opaque_handle_bits, release_ptr, reset_ptr_registry, resolve_ptr};
 #[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections::argparse::*;
 #[cfg(feature = "stdlib_collections")]

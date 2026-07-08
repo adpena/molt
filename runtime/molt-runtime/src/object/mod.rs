@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use molt_obj_model::MoltObject;
+use molt_obj_model::{MoltObject, release_ptr, resolve_ptr};
 use num_bigint::BigInt;
 
 /// Global type version counter. Incremented whenever ANY class is modified
@@ -86,7 +86,6 @@ use crate::builtins::{
     functools::functools_drop_instance, operator::operator_drop_instance,
     types::types_drop_instance,
 };
-use crate::provenance::{release_ptr, resolve_ptr};
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,
     ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
