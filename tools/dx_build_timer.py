@@ -197,7 +197,7 @@ def _test_build_cmd(args: argparse.Namespace) -> list[str]:
         args.package,
         "--features",
         args.features,
-        "--tests",
+        "--lib",
         "--no-run",
     ]
 
