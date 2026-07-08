@@ -150,17 +150,20 @@ pub fn get_refcount(_bits: u64) -> Option<i64> {
 pub fn reset_refcount_tracking() {}
 
 // ---------------------------------------------------------------------------
-// Tests (run with: cargo test -p molt-runtime --features refcount_verify)
+// Tests (run with: cargo test -p molt-runtime-audit --features refcount_verify)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[cfg(feature = "refcount_verify")]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     // Tests mutate global state, so serialize them.
     fn with_fresh_tracking<F: FnOnce()>(f: F) {
-        let _lock = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         init_refcount_tracking();
         f();
         reset_refcount_tracking();

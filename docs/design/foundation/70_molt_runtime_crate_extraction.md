@@ -281,6 +281,29 @@ and
 and
 `D:\Molt\target\sessions\proof-rust-d6f2053093bf-cargo-mo\.molt_state\quarantine\cargo_incremental\20260708-034241-pid4740-orphaned_processes_cleaned\receipt.json`.
 
+2026-07-08 C1 follow-up: refcount verification diagnostics now live in
+`molt-runtime-audit::refcount_verify`. `molt-runtime` keeps the public module
+name only as a re-export, and its `refcount_verify` feature forwards to the
+audit satellite. This removes the diagnostic tracking map and adversarial
+underflow/leak tests from the runtime fan-in crate without touching object
+storage or refcount implementation. Queue row
+`20260708T032526-c1-refcount-verify-audit-satellite-20260708a-858ae231b1864674`
+passed `cargo test -p molt-runtime-audit --features refcount_verify
+refcount_verify`. The first parent fan-in row,
+`20260708T032639-c1-refcount-verify-runtime-fanin-20260708a-32d9587df8fd4df2`,
+was an invalid proof shape: `--no-default-features --features refcount_verify`
+configured out `builtins`, so generated intrinsic resolvers failed before
+reaching the moved boundary and then took 683s to close as stale. The corrected
+row,
+`20260708T034218-c1-refcount-verify-runtime-fanin-20260708b-aed2145d003a4417`,
+passed `cargo check -p molt-runtime --no-default-features --features
+stdlib_micro,refcount_verify -j1` in 59.531s. After rebasing across the later
+fnmatch text-authority extraction, row
+`20260708T035749-c1-refcount-verify-runtime-fanin-post-fnmatch-20260708a-15f4bb3b660140f0`
+passed the same parent fan-in proof in 53.5s. Treat the stale invalid row and the
+repeated nested memory-guard cleanup warning as proof-queue/Cargo-lock DX defects
+to drive down separately, not as refcount authority failures.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
