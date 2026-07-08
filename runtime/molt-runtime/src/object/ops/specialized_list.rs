@@ -66,7 +66,7 @@ unsafe fn list_store_refcounted_fast(
     })
 }
 
-unsafe fn list_int_slice_to_boxed_list(_py: &PyToken<'_>, ptr: *mut u8, slice_ptr: *mut u8) -> u64 {
+unsafe fn list_int_slice_to_flat_list(_py: &PyToken<'_>, ptr: *mut u8, slice_ptr: *mut u8) -> u64 {
     unsafe {
         let len = list_len(ptr) as isize;
         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
@@ -78,37 +78,14 @@ unsafe fn list_int_slice_to_boxed_list(_py: &PyToken<'_>, ptr: *mut u8, slice_pt
                 Err(err) => return slice_error(_py, err),
             };
         let elems = crate::object::layout::list_int_vec_ref(ptr);
-        let mut out: Vec<u64>;
-        if step == 1 {
-            let s = start as usize;
-            let mut e = stop as usize;
-            if s > e {
-                e = s;
-            }
-            out = Vec::with_capacity(e.saturating_sub(s));
-            for raw in elems.iter().skip(s).take(e.saturating_sub(s)) {
-                out.push(MoltObject::from_int(*raw).bits());
-            }
-        } else {
-            let indices = collect_slice_indices(start, stop, step);
-            out = Vec::with_capacity(indices.len());
-            for idx in indices {
-                out.push(MoltObject::from_int(elems[idx]).bits());
-            }
+        match alloc_list_int_from_normalized_slice(_py, elems.as_slice(), start, stop, step) {
+            Ok(out_ptr) => MoltObject::from_ptr(out_ptr).bits(),
+            Err(bits) => bits,
         }
-        let out_ptr = alloc_list_with_capacity_owned(_py, &out, out.len());
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(out_ptr).bits()
     }
 }
 
-unsafe fn list_bool_slice_to_boxed_list(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    slice_ptr: *mut u8,
-) -> u64 {
+unsafe fn list_bool_slice_to_flat_list(_py: &PyToken<'_>, ptr: *mut u8, slice_ptr: *mut u8) -> u64 {
     unsafe {
         let len = list_len(ptr) as isize;
         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
@@ -120,30 +97,86 @@ unsafe fn list_bool_slice_to_boxed_list(
                 Err(err) => return slice_error(_py, err),
             };
         let elems = crate::object::layout::list_bool_vec_ref(ptr);
-        let mut out: Vec<u64>;
-        if step == 1 {
-            let s = start as usize;
-            let mut e = stop as usize;
-            if s > e {
-                e = s;
-            }
-            out = Vec::with_capacity(e.saturating_sub(s));
-            for raw in elems.iter().skip(s).take(e.saturating_sub(s)) {
-                out.push(MoltObject::from_bool(*raw != 0).bits());
-            }
-        } else {
-            let indices = collect_slice_indices(start, stop, step);
-            out = Vec::with_capacity(indices.len());
-            for idx in indices {
-                out.push(MoltObject::from_bool(elems[idx] != 0).bits());
-            }
+        match alloc_list_bool_from_normalized_slice(_py, elems.as_slice(), start, stop, step) {
+            Ok(out_ptr) => MoltObject::from_ptr(out_ptr).bits(),
+            Err(bits) => bits,
         }
-        let out_ptr = alloc_list_with_capacity_owned(_py, &out, out.len());
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(out_ptr).bits()
     }
+}
+
+#[inline]
+fn normalized_slice_len(start: isize, stop: isize, step: isize) -> usize {
+    debug_assert_ne!(step, 0);
+    let mut len = 0usize;
+    let mut idx = start;
+    if step > 0 {
+        while idx < stop {
+            len = len.saturating_add(1);
+            let Some(next) = idx.checked_add(step) else {
+                break;
+            };
+            idx = next;
+        }
+    } else {
+        while idx > stop {
+            len = len.saturating_add(1);
+            let Some(next) = idx.checked_add(step) else {
+                break;
+            };
+            idx = next;
+        }
+    }
+    len
+}
+
+unsafe fn alloc_list_int_from_normalized_slice(
+    _py: &PyToken<'_>,
+    elems: &[i64],
+    start: isize,
+    stop: isize,
+    step: isize,
+) -> Result<*mut u8, u64> {
+    if step == 1 {
+        let s = start as usize;
+        let e = (stop as usize).max(s);
+        return crate::object::builders::alloc_list_int_from_raw_slice(_py, &elems[s..e]);
+    }
+
+    let len = normalized_slice_len(start, stop, step);
+    let mut idx = start;
+    crate::object::builders::alloc_list_int_from_raw_iter(_py, len, |_| {
+        let current = idx;
+        let Some(next) = idx.checked_add(step) else {
+            return elems[current as usize];
+        };
+        idx = next;
+        elems[current as usize]
+    })
+}
+
+unsafe fn alloc_list_bool_from_normalized_slice(
+    _py: &PyToken<'_>,
+    elems: &[u8],
+    start: isize,
+    stop: isize,
+    step: isize,
+) -> Result<*mut u8, u64> {
+    if step == 1 {
+        let s = start as usize;
+        let e = (stop as usize).max(s);
+        return crate::object::builders::alloc_list_bool_from_raw_slice(_py, &elems[s..e]);
+    }
+
+    let len = normalized_slice_len(start, stop, step);
+    let mut idx = start;
+    crate::object::builders::alloc_list_bool_from_raw_iter(_py, len, |_| {
+        let current = idx;
+        let Some(next) = idx.checked_add(step) else {
+            return elems[current as usize];
+        };
+        idx = next;
+        elems[current as usize]
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -158,7 +191,7 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
             && object_type_id(slice_ptr) == TYPE_ID_SLICE
         {
             return crate::with_gil_entry_nopanic!(_py, {
-                list_int_slice_to_boxed_list(_py, ptr, slice_ptr)
+                list_int_slice_to_flat_list(_py, ptr, slice_ptr)
             });
         }
         let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
@@ -348,7 +381,7 @@ pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64
             && object_type_id(slice_ptr) == TYPE_ID_SLICE
         {
             return crate::with_gil_entry_nopanic!(_py, {
-                list_bool_slice_to_boxed_list(_py, ptr, slice_ptr)
+                list_bool_slice_to_flat_list(_py, ptr, slice_ptr)
             });
         }
         let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
@@ -760,22 +793,10 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
             return MoltObject::none().bits();
         };
 
-        let total = std::mem::size_of::<crate::object::MoltHeader>()
-            + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
-            + std::mem::size_of::<u64>(); // padding
-        let ptr = alloc_object(_py, total, TYPE_ID_LIST_INT);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+        match crate::object::builders::alloc_list_int_filled(_py, n, fill_raw) {
+            Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
+            Err(bits) => bits,
         }
-        unsafe {
-            let Some(storage_ptr) = crate::object::layout::ListIntStorage::filled(n, fill_raw)
-            else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
-            };
-            *(ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
-        }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -866,6 +887,75 @@ mod tests {
             assert!(list_fast_store_needs_gil(int_bits, heap_bits));
             assert!(list_fast_store_needs_gil(heap_bits, float_bits));
             assert!(!list_fast_store_needs_gil(heap_bits, heap_bits));
+        });
+    }
+
+    #[test]
+    fn list_int_slice_preserves_flat_storage() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let source_ptr =
+                crate::object::builders::alloc_list_int_from_raw_slice(_py, &[10, 20, 30, 40, 50])
+                    .expect("source list[int]");
+            let source_bits = MoltObject::from_ptr(source_ptr).bits();
+            let slice_bits = molt_slice_new(
+                MoltObject::from_int(1).bits(),
+                MoltObject::from_int(5).bits(),
+                MoltObject::from_int(2).bits(),
+            );
+
+            let out_bits = molt_list_int_getitem(source_bits, slice_bits);
+            let out_ptr = obj_from_bits(out_bits).as_ptr().expect("slice result");
+            assert_eq!(unsafe { object_type_id(out_ptr) }, TYPE_ID_LIST_INT);
+            let out = unsafe { crate::object::layout::list_int_vec_ref(out_ptr) };
+            assert_eq!(out.as_slice(), &[20, 40]);
+
+            dec_ref_bits(_py, out_bits);
+            dec_ref_bits(_py, slice_bits);
+            dec_ref_bits(_py, source_bits);
+        });
+    }
+
+    #[test]
+    fn list_bool_reverse_slice_preserves_flat_storage() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let source_ptr =
+                crate::object::builders::alloc_list_bool_from_raw_slice(_py, &[1, 0, 1, 1, 0])
+                    .expect("source list[bool]");
+            let source_bits = MoltObject::from_ptr(source_ptr).bits();
+            let slice_bits = molt_slice_new(
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+                MoltObject::from_int(-2).bits(),
+            );
+
+            let out_bits = molt_list_bool_getitem(source_bits, slice_bits);
+            let out_ptr = obj_from_bits(out_bits).as_ptr().expect("slice result");
+            assert_eq!(unsafe { object_type_id(out_ptr) }, TYPE_ID_LIST_BOOL);
+            let out = unsafe { crate::object::layout::list_bool_vec_ref(out_ptr) };
+            assert_eq!(out.as_slice(), &[0, 1, 1]);
+
+            dec_ref_bits(_py, out_bits);
+            dec_ref_bits(_py, slice_bits);
+            dec_ref_bits(_py, source_bits);
+        });
+    }
+
+    #[test]
+    fn list_copy_preserves_flat_int_storage_through_shared_builder() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let source_ptr =
+                crate::object::builders::alloc_list_int_from_raw_slice(_py, &[2, 3, 5, 7])
+                    .expect("source list[int]");
+            let source_bits = MoltObject::from_ptr(source_ptr).bits();
+
+            let copy_bits = crate::object::ops_list::molt_list_copy(source_bits);
+            let copy_ptr = obj_from_bits(copy_bits).as_ptr().expect("copy result");
+            assert_eq!(unsafe { object_type_id(copy_ptr) }, TYPE_ID_LIST_INT);
+            let copy = unsafe { crate::object::layout::list_int_vec_ref(copy_ptr) };
+            assert_eq!(copy.as_slice(), &[2, 3, 5, 7]);
+
+            dec_ref_bits(_py, copy_bits);
+            dec_ref_bits(_py, source_bits);
         });
     }
 }
