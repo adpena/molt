@@ -79,7 +79,7 @@ pub extern "C" fn __molt_asyncio_type_name(
     crate::with_gil_entry_nopanic!(_py, {
         let name = type_name(_py, obj_from_bits(bits));
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
 

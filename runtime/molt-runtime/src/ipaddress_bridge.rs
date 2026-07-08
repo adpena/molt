@@ -70,7 +70,7 @@ pub extern "C" fn __molt_ipaddr_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
     }
@@ -128,7 +128,8 @@ pub extern "C" fn __molt_ipaddr_to_bigint(
                 Sign::Plus => 1i32,
             };
             let boxed = bytes.into_boxed_slice();
-            let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+            let ok =
+                unsafe { crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len) };
             if ok == 0 {
                 return 0;
             }

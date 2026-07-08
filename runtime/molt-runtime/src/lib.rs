@@ -71,7 +71,6 @@ mod bridge;
     feature = "stdlib_xml",
     feature = "stdlib_zoneinfo",
 ))]
-mod bridge_buffer;
 mod builtins;
 mod c_api;
 mod call;
