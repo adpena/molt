@@ -41,6 +41,27 @@ def _apply_memory_bounded_cargo_jobs(env: dict[str, str]) -> None:
         env["CARGO_BUILD_JOBS"] = str(jobs)
 
 
+def _maybe_enable_lld_link(env: dict[str, str]) -> None:
+    """On Windows, use LLVM ``lld-link`` as the MSVC linker when it is available.
+
+    ``lld-link`` links the backend daemon / runtime staticlib dramatically faster
+    than the serial MSVC ``link.exe`` (the link is the build long pole). This is
+    PORTABLE — a no-op where ``lld-link`` is absent (CI / boxes without LLVM keep
+    ``link.exe``), and an explicit operator ``CARGO_TARGET_..._LINKER`` always wins.
+    It uses the target-specific linker env var (NOT a rustflag, which build paths
+    that set ``RUSTFLAGS`` would replace), so it survives every cargo invocation and
+    only affects the native ``x86_64-pc-windows-msvc`` target (never wasm).
+    """
+    if os.name != "nt":
+        return
+    key = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
+    if env.get(key, "").strip():
+        return
+    lld = shutil.which("lld-link")
+    if lld:
+        env[key] = lld
+
+
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
     if env.get("MOLT_NATIVE_CPU", "").strip().lower() in ("1", "true", "yes"):
         existing = env.get("CARGO_BUILD_RUSTFLAGS", env.get("RUSTFLAGS", ""))
@@ -144,6 +165,7 @@ def _cargo_build_env() -> dict[str, str]:
     if sys.executable:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
+    _maybe_enable_lld_link(env)
     return env
 
 
