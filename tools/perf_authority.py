@@ -364,8 +364,6 @@ def canonical_scoreboard_shape_problems(
     """Return problems proving a scoreboard is not the canonical release shape."""
     problems: list[str] = []
     cells = perf_schema.flatten_cells(doc)
-    if not cells:
-        return problems
 
     summary = doc.get("summary")
     if not isinstance(summary, Mapping) or summary.get("classify_active") is not True:
