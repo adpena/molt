@@ -291,6 +291,14 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            name="stdlib-intrinsic-surface",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_stdlib_intrinsic_surface.py"), "--check"),
+            timeout=60,
+        )
+    )
+    checks.append(
+        Check(
             name="differential-suite-layout",
             tier=1,
             cmd=_uv_run(str(TOOLS / "check_differential_suite_layout.py")),
