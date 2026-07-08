@@ -77,12 +77,15 @@ __all__ = [
     "budget_utilization",
     "canonical_scoreboard_command_problems",
     "canonical_scoreboard_shape_problems",
+    "current_scoreboard_problems",
+    "current_origin_main_rev",
     "doc_age_days",
     "git_rev_is_ancestor_of_origin",
     "is_stale_snapshot_metadata",
     "non_canonical_provenance",
     "relative_time_delta",
     "safe_speedup",
+    "scoreboard_revision_fields",
     "signed_ratio",
     "signed_ratio_value",
     "stale_snapshot_metadata",
@@ -210,6 +213,11 @@ def _git_output(args: list[str]) -> str | None:
 @functools.lru_cache(maxsize=1)
 def _origin_main_rev() -> str | None:
     return _git_output(["rev-parse", "origin/main"])
+
+
+def current_origin_main_rev() -> str | None:
+    """Return the current ``origin/main`` SHA known to this checkout, if any."""
+    return _origin_main_rev()
 
 
 def non_canonical_provenance(
@@ -475,6 +483,105 @@ def canonical_scoreboard_shape_problems(
                 f"{CANONICAL_PERF_PROFILE} cells for every benchmark; "
                 f"{_sample_items(missing_rows)}"
             )
+
+    return problems
+
+
+def scoreboard_revision_fields(doc: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Return scoreboard revision facts that must agree with current origin/main."""
+    fields: list[tuple[str, str]] = []
+    git_rev = doc.get("git_rev")
+    if isinstance(git_rev, str) and git_rev and git_rev != "unknown":
+        fields.append(("git_rev", git_rev))
+    provenance = doc.get("provenance")
+    if isinstance(provenance, Mapping):
+        local_head = provenance.get("local_head_sha")
+        if isinstance(local_head, str) and local_head and local_head != "unknown":
+            fields.append(("provenance.local_head_sha", local_head))
+    return tuple(fields)
+
+
+def _short_rev(rev: str | None) -> str:
+    return rev[:12] if rev else "<unknown>"
+
+
+def _sample_schema_problems(problems: Sequence[str], *, limit: int = 3) -> str:
+    sample = "; ".join(problems[:limit])
+    if len(problems) > limit:
+        sample += f"; ... {len(problems) - limit} more"
+    return sample
+
+
+def current_scoreboard_problems(
+    doc: Mapping[str, Any],
+    *,
+    label: str = "scoreboard",
+    shape_label: str | None = None,
+    now: dt.datetime | None = None,
+    max_age_days: float = DEFAULT_STALE_DAYS,
+    require_canonical_shape: bool = False,
+) -> list[str]:
+    """Return why a scoreboard is not current, citable release evidence.
+
+    This is the single authority behind release-exit E2 and perf-freshness:
+    current scoreboard evidence must be schema-valid, generated from the exact
+    current ``origin/main`` tip, authoritative, fresh, and green. Callers that
+    need the full release matrix (native+LLVM, release-fast, classified, core)
+    set ``require_canonical_shape=True``.
+    """
+    problems: list[str] = []
+
+    schema_problems = perf_schema.validate_board(doc)
+    if schema_problems:
+        problems.append(
+            f"{label} schema invalid: {_sample_schema_problems(schema_problems)}"
+        )
+
+    if require_canonical_shape:
+        problems.extend(
+            canonical_scoreboard_shape_problems(doc, label=shape_label or label)
+        )
+
+    provenance = doc.get("provenance")
+    authoritative = (
+        provenance.get("authoritative") if isinstance(provenance, Mapping) else None
+    )
+    if authoritative is not True:
+        reason = (
+            provenance.get("authoritative_reason")
+            if isinstance(provenance, Mapping)
+            and isinstance(provenance.get("authoritative_reason"), str)
+            else "missing/false provenance.authoritative"
+        )
+        problems.append(f"{label} is not authoritative: {reason}")
+
+    summary = doc.get("summary")
+    gate_fails = summary.get("gate_fails") if isinstance(summary, Mapping) else None
+    if gate_fails is not False:
+        problems.append(f"{label} gate_fails is not false: {gate_fails!r}")
+
+    generated_at = doc.get("generated_at")
+    age = doc_age_days(generated_at if isinstance(generated_at, str) else None, now=now)
+    if age is None:
+        problems.append(f"{label} generated_at is missing or unparseable")
+    elif age > max_age_days:
+        problems.append(
+            f"{label} generated_at is {age:.0f}d old (>{max_age_days:g}d)"
+        )
+
+    origin_rev = current_origin_main_rev()
+    rev_fields = scoreboard_revision_fields(doc)
+    if origin_rev is None:
+        problems.append(f"{label} cannot resolve origin/main for HEAD check")
+    elif not rev_fields:
+        problems.append(f"{label} has no git_rev or provenance.local_head_sha")
+    else:
+        for field, rev in rev_fields:
+            if rev != origin_rev:
+                problems.append(
+                    f"{label} {field} {_short_rev(rev)} != "
+                    f"origin/main {_short_rev(origin_rev)}"
+                )
 
     return problems
 

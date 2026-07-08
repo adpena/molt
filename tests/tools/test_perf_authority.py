@@ -252,6 +252,103 @@ def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> N
     )
 
 
+def _current_scoreboard_doc(**overrides: object) -> dict:
+    doc = _canonical_scoreboard_doc()
+    doc.update(
+        {
+            "kind": "cpython_floor_scoreboard",
+            "generated_at": "2026-06-24T00:00:00+00:00",
+            "git_rev": "a" * 40,
+        }
+    )
+    provenance = doc["provenance"]
+    assert isinstance(provenance, dict)
+    provenance.update(
+        {
+            "local_head_sha": "a" * 40,
+            "authoritative": True,
+            "authoritative_reason": "unit-test",
+        }
+    )
+    summary = doc["summary"]
+    assert isinstance(summary, dict)
+    summary["gate_fails"] = False
+    doc.update(overrides)
+    return doc
+
+
+def test_current_scoreboard_problems_accepts_current_green_authoritative_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = _dt.datetime(2026, 6, 25, tzinfo=_dt.timezone.utc)
+    monkeypatch.setattr(pa, "current_origin_main_rev", lambda: "a" * 40)
+    monkeypatch.setattr(pa.perf_schema, "validate_board", lambda doc: [])
+
+    assert (
+        pa.current_scoreboard_problems(
+            _current_scoreboard_doc(),
+            now=now,
+            require_canonical_shape=True,
+            shape_label="canonical scoreboard",
+        )
+        == []
+    )
+
+
+def test_current_scoreboard_problems_rejects_noncurrent_red_or_untrusted_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = _dt.datetime(2026, 6, 25, tzinfo=_dt.timezone.utc)
+    monkeypatch.setattr(pa, "current_origin_main_rev", lambda: "a" * 40)
+    monkeypatch.setattr(pa.perf_schema, "validate_board", lambda doc: ["schema gap"])
+    doc = _current_scoreboard_doc(
+        generated_at="2026-01-01T00:00:00+00:00",
+        git_rev="b" * 40,
+    )
+    provenance = doc["provenance"]
+    assert isinstance(provenance, dict)
+    provenance["local_head_sha"] = "c" * 40
+    provenance["authoritative"] = False
+    summary = doc["summary"]
+    assert isinstance(summary, dict)
+    summary["gate_fails"] = True
+
+    problems = pa.current_scoreboard_problems(doc, now=now)
+
+    assert any("scoreboard schema invalid" in p for p in problems)
+    assert any("scoreboard generated_at is 175d old" in p for p in problems)
+    assert any("scoreboard git_rev" in p for p in problems)
+    assert any("scoreboard provenance.local_head_sha" in p for p in problems)
+    assert any("scoreboard is not authoritative" in p for p in problems)
+    assert any("scoreboard gate_fails is not false" in p for p in problems)
+
+
+def test_current_scoreboard_problems_can_require_canonical_release_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = _dt.datetime(2026, 6, 25, tzinfo=_dt.timezone.utc)
+    monkeypatch.setattr(pa, "current_origin_main_rev", lambda: "a" * 40)
+    monkeypatch.setattr(pa.perf_schema, "validate_board", lambda doc: [])
+
+    problems = pa.current_scoreboard_problems(
+        _current_scoreboard_doc(provenance={
+            "backend_binary_identity": {"native/release-fast": "native-sha|1|2"},
+            "local_head_sha": "a" * 40,
+            "authoritative": True,
+            "authoritative_reason": "unit-test",
+        }),
+        now=now,
+        require_canonical_shape=True,
+        shape_label="canonical scoreboard",
+    )
+
+    assert any(
+        "canonical scoreboard missing backend binary identities: llvm/release-fast"
+        in p
+        for p in problems
+    )
+
+
 def test_perf_gate_workflow_runs_canonical_matrix_contract() -> None:
     workflow = (REPO_ROOT / ".github/workflows/perf-gate.yml").read_text(
         encoding="utf-8"
@@ -360,6 +457,55 @@ def _eval_json(tmp_path: Path, name: str, payload: dict) -> dict:
     return freshness.evaluate_json(p, max_age_days=30.0, now=_NOW)
 
 
+def _eval_scoreboard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    *,
+    origin_rev: str = "a" * 40,
+    schema_problems: list[str] | None = None,
+) -> dict:
+    import json
+
+    monkeypatch.setattr(freshness.pa, "current_origin_main_rev", lambda: origin_rev)
+    monkeypatch.setattr(
+        freshness.pa.perf_schema,
+        "validate_board",
+        lambda doc: list(schema_problems or []),
+    )
+    p = tmp_path / "scoreboard.json"
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return freshness.evaluate_scoreboard(p, max_age_days=30.0, now=_NOW)
+
+
+def _scoreboard_payload(
+    *,
+    generated_at: str = "2026-06-24T00:00:00+00:00",
+    git_rev: str = "a" * 40,
+    local_head_sha: str | None = None,
+    authoritative: bool = True,
+    gate_fails: bool = False,
+    stamped: bool = False,
+) -> dict:
+    payload = {
+        "kind": "cpython_floor_scoreboard",
+        "generated_at": generated_at,
+        "git_rev": git_rev,
+        "provenance": {
+            "local_head_sha": local_head_sha or git_rev,
+            "authoritative": authoritative,
+            "authoritative_reason": "unit-test",
+        },
+        "summary": {"gate_fails": gate_fails},
+    }
+    if stamped:
+        payload[pa.STALE_METADATA_KEY] = pa.stale_snapshot_metadata(
+            generated_at=generated_at,
+            git_rev=git_rev,
+        )
+    return payload
+
+
 def test_freshness_no_perf_numbers_is_not_a_hazard(tmp_path: Path) -> None:
     rec = _eval(
         tmp_path,
@@ -459,6 +605,75 @@ def test_freshness_markdown_stamp_does_not_clear_json_hazard(tmp_path: Path) -> 
     assert md_rec["hazard"] is False
     assert json_rec["hazard"] is True
     assert json_rec["stamped"] is False
+
+
+def test_freshness_current_green_scoreboard_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _eval_scoreboard(tmp_path, monkeypatch, _scoreboard_payload())
+
+    assert rec["artifact_kind"] == "scoreboard"
+    assert rec["hazard"] is False
+    assert rec["verdict"] == "scoreboard-current-green"
+
+
+def test_freshness_red_stale_scoreboard_is_hazard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _eval_scoreboard(
+        tmp_path,
+        monkeypatch,
+        _scoreboard_payload(
+            generated_at="2026-01-01T00:00:00+00:00",
+            git_rev="b" * 40,
+            local_head_sha="c" * 40,
+            authoritative=False,
+            gate_fails=True,
+        ),
+    )
+
+    assert rec["hazard"] is True
+    assert rec["verdict"] == "scoreboard-hazard"
+    assert any("generated_at" in reason for reason in rec["reasons"])
+    assert any("git_rev" in reason for reason in rec["reasons"])
+    assert any("provenance.local_head_sha" in reason for reason in rec["reasons"])
+    assert any("is not authoritative" in reason for reason in rec["reasons"])
+    assert any("gate_fails is not false" in reason for reason in rec["reasons"])
+
+
+def test_freshness_schema_invalid_scoreboard_is_hazard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _eval_scoreboard(
+        tmp_path,
+        monkeypatch,
+        _scoreboard_payload(),
+        schema_problems=["cell bench.py is BUILD_FAILED without a molt_failure payload"],
+    )
+
+    assert rec["hazard"] is True
+    assert any("scoreboard schema invalid" in reason for reason in rec["reasons"])
+
+
+def test_freshness_stale_scoreboard_metadata_makes_historical_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = _eval_scoreboard(
+        tmp_path,
+        monkeypatch,
+        _scoreboard_payload(
+            generated_at="2026-01-01T00:00:00+00:00",
+            git_rev="b" * 40,
+            authoritative=False,
+            gate_fails=True,
+            stamped=True,
+        ),
+        schema_problems=["legacy schema"],
+    )
+
+    assert rec["hazard"] is False
+    assert rec["stamped"] is True
+    assert rec["verdict"] == "scoreboard-historical-stamped"
 
 
 def test_freshness_old_dated_doc_is_hazard(tmp_path: Path) -> None:
