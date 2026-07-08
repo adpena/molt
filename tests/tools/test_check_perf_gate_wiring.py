@@ -52,10 +52,71 @@ def test_pull_request_trigger_passes(monkeypatch, tmp_path):
     assert _check_against(monkeypatch, _write(tmp_path, body)) == []
 
 
+def test_multiline_scoreboard_run_step_passes(monkeypatch, tmp_path):
+    body = (
+        "on:\n  push:\n    branches: [main]\n"
+        "jobs:\n  s:\n    steps:\n      - name: Run scoreboard\n"
+        "        run: |\n"
+        "          python3 tools/guarded_exec.py -- \\\n"
+        "            uv run python3 tools/perf_scoreboard.py --classify\n"
+    )
+    assert _check_against(monkeypatch, _write(tmp_path, body)) == []
+
+
 def test_missing_scoreboard_is_flagged(monkeypatch, tmp_path):
     body = "on:\n  push:\n    branches: [main]\njobs:\n  s:\n    steps:\n      - run: echo hi\n"
     problems = _check_against(monkeypatch, _write(tmp_path, body))
     assert any("perf_scoreboard" in p for p in problems)
+
+
+def test_scoreboard_comment_without_run_step_is_flagged(monkeypatch, tmp_path):
+    body = (
+        "on:\n  push:\n    branches: [main]\n"
+        "# tools/perf_scoreboard.py is the canonical gate\n"
+        "jobs:\n  s:\n    steps:\n      - run: echo hi\n"
+    )
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("no executable run step" in p for p in problems)
+
+
+def test_scoreboard_step_continue_on_error_is_flagged(monkeypatch, tmp_path):
+    body = (
+        "on:\n  push:\n    branches: [main]\n"
+        "jobs:\n  s:\n    steps:\n      - run: python3 tools/perf_scoreboard.py\n"
+        "        continue-on-error: true\n"
+    )
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("continue-on-error" in p and "non-blocking" in p for p in problems)
+
+
+def test_scoreboard_job_continue_on_error_is_flagged(monkeypatch, tmp_path):
+    body = (
+        "on:\n  push:\n    branches: [main]\n"
+        "jobs:\n  s:\n    continue-on-error: ${{ matrix.experimental }}\n"
+        "    steps:\n      - run: python3 tools/perf_scoreboard.py\n"
+    )
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("job 's'" in p and "continue-on-error" in p for p in problems)
+
+
+def test_scoreboard_false_if_is_flagged(monkeypatch, tmp_path):
+    body = (
+        "on:\n  push:\n    branches: [main]\n"
+        "jobs:\n  s:\n    steps:\n      - if: ${{ false }}\n"
+        "        run: python3 tools/perf_scoreboard.py\n"
+    )
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("trivially false" in p for p in problems)
+
+
+def test_scoreboard_job_gated_away_from_main_is_flagged(monkeypatch, tmp_path):
+    body = (
+        "on:\n  push:\n    branches: [main]\n"
+        "jobs:\n  s:\n    if: github.event_name == 'workflow_dispatch'\n"
+        "    steps:\n      - run: python3 tools/perf_scoreboard.py\n"
+    )
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("gated away from push/pull_request" in p for p in problems)
 
 
 def test_yaml_on_keyword_gotcha_is_handled(monkeypatch, tmp_path):
@@ -64,11 +125,10 @@ def test_yaml_on_keyword_gotcha_is_handled(monkeypatch, tmp_path):
         "on:\n  push:\n    branches: [main]\n"
         "jobs:\n  s:\n    steps:\n      - run: python3 tools/perf_scoreboard.py\n"
     )
-    import yaml
+    py_yaml_shape = {True: {"push": {"branches": ["main"]}}}
+    assert "push" in w._triggers(py_yaml_shape)
 
-    doc = yaml.safe_load(_write(tmp_path, body).read_text(encoding="utf-8"))
-    # Confirm the gotcha is live (key is True, not "on") and the helper still finds triggers.
-    assert (True in doc) or ("on" in doc)
+    doc = w._load_yaml(_write(tmp_path, body))
     assert "push" in w._triggers(doc)
 
 
