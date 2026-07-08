@@ -47,7 +47,7 @@ pub(super) fn emit_division_numeric_op(
             selection.import,
         ),
         WasmNumericOpLoopKind::Matmul | WasmNumericOpLoopKind::Pow => {
-            numeric_lane_stats.record_op_loop_boxed_runtime_call();
+            numeric_lane_stats.record_op_loop_division_boxed_runtime_site();
             emit_boxed_binary_result(
                 func,
                 op,
@@ -58,7 +58,7 @@ pub(super) fn emit_division_numeric_op(
             );
         }
         WasmNumericOpLoopKind::PowMod | WasmNumericOpLoopKind::Round => {
-            numeric_lane_stats.record_op_loop_boxed_runtime_call();
+            numeric_lane_stats.record_op_loop_division_boxed_runtime_site();
             emit_boxed_ternary_result(
                 func,
                 op,
@@ -69,7 +69,7 @@ pub(super) fn emit_division_numeric_op(
             );
         }
         WasmNumericOpLoopKind::Trunc => {
-            numeric_lane_stats.record_op_loop_boxed_runtime_call();
+            numeric_lane_stats.record_op_loop_division_boxed_runtime_site();
             emit_boxed_unary_result(
                 func,
                 op,
@@ -98,7 +98,7 @@ fn emit_division_binary_op(
 ) {
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
-        numeric_lane_stats.record_op_loop_guarded_int_result();
+        numeric_lane_stats.record_op_loop_division_guarded_int_site();
         emit_guarded_int_binary_result_or_boxed(
             func,
             operands,
@@ -138,7 +138,7 @@ fn emit_division_binary_op(
             },
         );
     } else if matches!(division_op, WasmNumericOpLoopKind::TrueDiv) {
-        numeric_lane_stats.record_op_loop_boxed_runtime_call();
+        numeric_lane_stats.record_op_loop_division_boxed_runtime_site();
         emit_plain_f64_binary_result_or_boxed(
             func,
             operands,
@@ -152,7 +152,7 @@ fn emit_division_binary_op(
             },
         );
     } else {
-        numeric_lane_stats.record_op_loop_boxed_runtime_call();
+        numeric_lane_stats.record_op_loop_division_boxed_runtime_site();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
     store_numeric_result(func, op, locals);

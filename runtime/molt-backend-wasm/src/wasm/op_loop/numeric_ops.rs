@@ -24,6 +24,7 @@ mod vector_reduction_ops;
 pub(super) fn emit_numeric_op(
     func: &mut Function,
     op: &OpIR,
+    op_idx: usize,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     const_cache: &ConstantCache,
@@ -40,6 +41,7 @@ pub(super) fn emit_numeric_op(
             additive_ops::emit_additive_numeric_op(
                 func,
                 op,
+                op_idx,
                 selection,
                 import_ids,
                 locals,
@@ -82,6 +84,7 @@ pub(super) fn emit_numeric_op(
             bitwise_ops::emit_bitwise_numeric_op(
                 func,
                 op,
+                op_idx,
                 selection,
                 import_ids,
                 locals,

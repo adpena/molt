@@ -1,4 +1,5 @@
 use crate::OpIR;
+use crate::Repr;
 use crate::representation_plan::ScalarRepresentationPlan;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,14 +29,13 @@ pub(crate) fn wasm_scalar_integer_fast_path_for_op(
 
 pub(crate) fn wasm_scalar_direct_numeric_lane_for_op(
     plan: &ScalarRepresentationPlan,
+    op_index: usize,
     op: &OpIR,
 ) -> Option<WasmScalarDirectNumericLane> {
-    if plan.op_args_are_inline_safe_ints(op) && plan.op_result_is_inline_safe_int(op) {
-        Some(WasmScalarDirectNumericLane::InlineInt)
-    } else if plan.op_args_are_float_unboxed(op) && plan.op_result_is_float_unboxed(op) {
-        Some(WasmScalarDirectNumericLane::Float)
-    } else {
-        None
+    match plan.op_direct_numeric_repr(op_index, op) {
+        Some(Repr::RawI64Safe) => Some(WasmScalarDirectNumericLane::InlineInt),
+        Some(Repr::FloatUnboxed) => Some(WasmScalarDirectNumericLane::Float),
+        _ => None,
     }
 }
 

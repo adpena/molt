@@ -39,6 +39,7 @@ fn emit_f64_additive(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
 pub(super) fn emit_additive_numeric_op(
     func: &mut Function,
     op: &OpIR,
+    op_idx: usize,
     selection: WasmNumericRuntimeSelection,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
@@ -50,22 +51,22 @@ pub(super) fn emit_additive_numeric_op(
 ) {
     let import_name = selection.import;
     let operands = binary_operands(op, locals);
-    let direct_lane = wasm_scalar_direct_numeric_lane_for_op(scalar_plan, op);
+    let direct_lane = wasm_scalar_direct_numeric_lane_for_op(scalar_plan, op_idx, op);
     if direct_lane == Some(WasmScalarDirectNumericLane::InlineInt) {
-        numeric_lane_stats.record_op_loop_inline_int_raw_result();
+        numeric_lane_stats.record_op_loop_additive_inline_int_raw_site();
         let temps = int_binary_temps(locals);
         emit_trusted_int_binary_operand_tees(func, operands, temps, const_cache, known_raw_ints);
         emit_i64_additive(func, selection.op_loop_kind);
         func.instruction(&Instruction::LocalSet(temps.result));
         emit_inline_int_result(func, temps.result, known_raw_ints);
     } else if direct_lane == Some(WasmScalarDirectNumericLane::Float) {
-        numeric_lane_stats.record_op_loop_float_raw_result();
+        numeric_lane_stats.record_op_loop_additive_float_raw_site();
         emit_plain_f64_binary_result(func, operands, locals, |func, scratch_local| {
             emit_f64_additive(func, selection.op_loop_kind);
             emit_plain_f64_arithmetic_result(func, scratch_local);
         });
     } else if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
-        numeric_lane_stats.record_op_loop_guarded_int_result();
+        numeric_lane_stats.record_op_loop_additive_guarded_int_site();
         emit_guarded_int_binary_result_or_boxed(
             func,
             operands,
@@ -98,7 +99,7 @@ pub(super) fn emit_additive_numeric_op(
             },
         );
     } else {
-        numeric_lane_stats.record_op_loop_boxed_runtime_call();
+        numeric_lane_stats.record_op_loop_additive_boxed_runtime_site();
         emit_plain_f64_binary_result_or_boxed(
             func,
             operands,

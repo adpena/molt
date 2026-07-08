@@ -89,6 +89,12 @@ handoff claims it:
 - Performance proof: startup, size, memory, allocation, copy count, host-call
   count, and throughput rows against CPython and the relevant provider
   baseline.
+- R4a scalar WASM proof records backend-owned emission-site counters from
+  `WasmCompileOutput.diagnostics.numeric_lanes` and the
+  `[molt-wasm-numeric-lane-audit]` stage-audit line. Counters are per lowering
+  family, such as op-loop additive inline-int raw sites, additive float raw
+  sites, bitwise inline-int raw sites, and division guarded/boxed sites, so one
+  raw lane cannot hide another lane silently falling back to boxed runtime calls.
 - Negative proof: synthetic violations that fail closed when a feature,
   symbol, provider, license, target capability, or lifetime contract is absent.
 
@@ -397,8 +403,9 @@ Each target/profile row must record:
    wasm-browser-webnn; split-runtime browser packages now publish the generated
    manifest asset and select `wasm-browser-webgpu` from the WebGPU dispatch
    host import.
-2. Add opcode/import histogram gates for R4a/R4b: a proven typed arithmetic path
-   must emit native WASM scalar or SIMD opcodes and must not retain the boxed
+2. Extend opcode/import histogram gates for R4a/R4b: a proven typed arithmetic
+   path must emit native WASM scalar or SIMD opcodes, record per-family
+   `numeric_lanes` emission-site counters, and must not retain the boxed
    runtime-call lane.
 3. Extend the typed strided storage primitive so buffer, ndarray, DLPack, Arrow,
    and GPU device storage are projections of one authority.

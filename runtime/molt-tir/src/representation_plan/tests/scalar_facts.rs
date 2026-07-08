@@ -789,6 +789,8 @@ fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
     assert!(plan.op_args_are_integer_family(&mul));
     assert!(!plan.op_args_are_inline_safe_ints(&add));
     assert!(!plan.op_result_is_inline_safe_int(&add));
+    assert_eq!(plan.op_direct_numeric_repr(0, &add), None);
+    assert_eq!(plan.op_direct_numeric_repr(1, &mul), None);
 }
 
 #[test]
@@ -819,6 +821,41 @@ fn const_numeric_ops_prove_direct_numeric_result_lanes() {
     assert!(plan.op_result_is_inline_safe_int(&add));
     assert!(plan.op_args_are_float_unboxed(&f_add));
     assert!(plan.op_result_is_float_unboxed(&f_add));
+    assert_eq!(plan.op_direct_numeric_repr(2, &add), Some(Repr::RawI64Safe));
+    assert_eq!(
+        plan.op_direct_numeric_repr(5, &f_add),
+        Some(Repr::FloatUnboxed)
+    );
+}
+
+#[test]
+fn returned_counted_loop_retains_direct_add_op_repr() {
+    let add = op("add", Some("i_next"), None, &["i_cur", "one"]);
+    let func = function(
+        "returned_counted_store_load_loop",
+        &[],
+        None,
+        vec![
+            const_int("init", 0),
+            const_int("one", 1),
+            const_int("stop", 1_000_000),
+            op("store_var", None, Some("i"), &["init"]),
+            op("loop_start", None, None, &[]),
+            op("load_var", Some("i_cur"), Some("i"), &[]),
+            op("lt", Some("keep_going"), None, &["i_cur", "stop"]),
+            op("loop_break_if_false", None, None, &["keep_going"]),
+            add.clone(),
+            op("store_var", None, Some("i"), &["i_next"]),
+            op("loop_continue", None, None, &[]),
+            op("loop_end", None, None, &[]),
+            op("load_var", Some("i_after"), Some("i"), &[]),
+            op("ret", None, Some("i_after"), &["i_after"]),
+        ],
+    );
+
+    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+    assert_eq!(plan.op_direct_numeric_repr(8, &add), Some(Repr::RawI64Safe));
 }
 
 #[test]

@@ -85,6 +85,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
             if emit_numeric_op(
                 func,
                 op,
+                op_idx,
                 import_ids,
                 locals,
                 const_cache,
