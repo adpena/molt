@@ -96,6 +96,40 @@ def test_touch_journal_refuses_to_overwrite_external_edit(tmp_path: Path) -> Non
     assert json.loads(journal.path.read_text(encoding="utf-8"))["entries"] == [entry]
 
 
+def test_default_touch_files_track_current_split_modules() -> None:
+    module = _load_dx_build_timer()
+    touch_files = module._touch_files(REPO_ROOT)
+
+    assert touch_files["value_range"] == (
+        REPO_ROOT / "runtime/molt-passes/src/tir/passes/value_range/mod.rs"
+    )
+    assert touch_files["value_range"].exists()
+    assert touch_files["function_compiler"].exists()
+    assert touch_files["modules"].exists()
+    assert touch_files["gvn"].exists()
+    assert module._scenario_preflight_errors(
+        ["inc-value_range", "inc-function_compiler", "inc-modules", "test-lib"],
+        touch_files,
+    ) == []
+
+
+def test_scenario_preflight_fails_before_prime_for_stale_touch_path(
+    tmp_path: Path,
+) -> None:
+    module = _load_dx_build_timer()
+    errors = module._scenario_preflight_errors(
+        ["inc-value_range", "unknown-shape"],
+        {"value_range": tmp_path / "missing_value_range.rs"},
+    )
+
+    assert len(errors) == 2
+    assert (
+        "scenario=inc-value_range touch_key=value_range missing touch_path="
+        in errors[0]
+    )
+    assert "unknown scenario: unknown-shape" == errors[1]
+
+
 def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
     module = _load_dx_build_timer()
     out = tmp_path / "timer.json"
