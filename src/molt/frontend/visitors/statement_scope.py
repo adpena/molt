@@ -84,9 +84,17 @@ class StatementScopeVisitorMixin(_MixinBase):
 
     def _module_elidable_deleted_functions(self, node: ast.Module) -> frozenset[str]:
         sys_aliases = self._module_static_sys_aliases(node)
-        return self._module_elidable_deleted_functions_in_block(
-            list(node.body), sys_aliases=sys_aliases
+        elidable = set(
+            self._module_elidable_deleted_functions_in_block(
+                list(node.body), sys_aliases=sys_aliases
+            )
         )
+        elidable.update(
+            self._module_elidable_target_dead_private_functions(
+                list(node.body), sys_aliases=sys_aliases
+            )
+        )
+        return frozenset(elidable)
 
     def _module_elidable_deleted_functions_in_block(
         self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
@@ -161,6 +169,82 @@ class StatementScopeVisitorMixin(_MixinBase):
             )
         )
 
+    def _module_elidable_target_dead_private_functions(
+        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+    ) -> frozenset[str]:
+        candidates: set[str] = set()
+        original_def_index: dict[str, int] = {}
+        for index, stmt in enumerate(statements):
+            if (
+                isinstance(stmt, ast.FunctionDef)
+                and stmt.name.startswith("_")
+                and not (stmt.name.startswith("__") and stmt.name.endswith("__"))
+                and self._side_effect_free_module_function_def(stmt)
+            ):
+                candidates.add(stmt.name)
+                original_def_index.setdefault(stmt.name, index)
+        if not candidates:
+            return frozenset()
+
+        live = self._module_live_statements_for_target(
+            statements, sys_aliases=sys_aliases
+        )
+        live_function_defs = {
+            stmt.name for stmt in live if isinstance(stmt, ast.FunctionDef)
+        }
+        if not live_function_defs:
+            return frozenset()
+
+        class LoadCollector(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.loads: set[str] = set()
+
+            def visit_FunctionDef(self, func_node: ast.FunctionDef) -> None:
+                for decorator in func_node.decorator_list:
+                    self.visit(decorator)
+                for default in func_node.args.defaults:
+                    self.visit(default)
+                for default in func_node.args.kw_defaults:
+                    if default is not None:
+                        self.visit(default)
+                for body_stmt in func_node.body:
+                    self.visit(body_stmt)
+
+            def visit_Name(self, name_node: ast.Name) -> None:
+                if isinstance(name_node.ctx, ast.Load):
+                    self.loads.add(name_node.id)
+
+        collector = LoadCollector()
+        original_collector = LoadCollector()
+        for stmt in statements:
+            original_collector.visit(stmt)
+
+        globals_escape_indices: set[int] = set()
+        for index, stmt in enumerate(live):
+            collector.visit(stmt)
+            if self._module_globals_dict_escapes(
+                ast.Module(body=[stmt], type_ignores=[])
+            ):
+                globals_escape_indices.add(index)
+
+        live_index_by_stmt = {id(stmt): index for index, stmt in enumerate(live)}
+        live_def_index = {
+            stmt.name: live_index_by_stmt[id(stmt)]
+            for stmt in live
+            if isinstance(stmt, ast.FunctionDef) and stmt.name in candidates
+        }
+        return frozenset(
+            name
+            for name in candidates
+            if name in live_function_defs
+            and name in original_collector.loads
+            and name not in collector.loads
+            and not any(
+                index > live_def_index.get(name, original_def_index[name])
+                for index in globals_escape_indices
+            )
+        )
+
     def _native_support_function_roots(self) -> frozenset[str]:
         roots: set[str] = {
             name
@@ -228,7 +312,12 @@ class StatementScopeVisitorMixin(_MixinBase):
         prev_module_chunk_globals = self.module_chunk_globals
         prev_elided_deleted_funcs = self.module_elided_deleted_funcs
         prev_pending_classes = self.class_definition_pending
-        self.stable_module_funcs = self._module_stable_funcs(node)
+        self.module_elided_deleted_funcs = set(
+            self._module_elidable_deleted_functions(node)
+        )
+        self.stable_module_funcs = (
+            self._module_stable_funcs(node) - self.module_elided_deleted_funcs
+        )
         self.mutated_classes = self._collect_module_class_mutations(node)
         # F2b (doc 44): the static class graph, const environment, and top-level
         # function metadata are now computed once, pre-walk, by frontend/sema/ and
@@ -246,7 +335,10 @@ class StatementScopeVisitorMixin(_MixinBase):
             self.module_intrinsic_globals.values()
         )
         for func_name, kind in self.module_declared_funcs.items():
-            if normalize_function_kind(kind) is not None:
+            if (
+                normalize_function_kind(kind) is not None
+                and func_name not in self.module_elided_deleted_funcs
+            ):
                 self._reserve_function_symbol(func_name)
         self.module_defined_funcs = set()
         # module_func_defaults is populated by _populate_sema_state above (the
@@ -263,9 +355,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.module_global_mutations = set()
         self.module_globals_dict_escaped = self._module_globals_dict_escapes(node)
         self.module_chunk_globals = set()
-        self.module_elided_deleted_funcs = set(
-            self._module_elidable_deleted_functions(node)
-        )
         self._ensure_globals_builtin()
         if not self.future_annotations and not self.eager_annotations:
             items, id_map = self._collect_module_annotation_items(node)

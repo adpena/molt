@@ -1905,6 +1905,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, live: list[ast.stmt]
     ) -> frozenset[str]: ...
 
+    def _module_elidable_target_dead_private_functions(
+        self, statements: list[ast.stmt], *, sys_aliases: frozenset[str]
+    ) -> frozenset[str]: ...
+
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool: ...
 
     def _module_has_future_annotations(self, node: ast.Module) -> bool: ...
@@ -2356,6 +2360,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _try_emit_imported_attribute_call(
         self, node: ast.Call, needs_bind: bool
+    ) -> Any: ...
+
+    def _try_emit_imported_classlike_call_bind(
+        self, node: ast.Call, *, func_id: str, imported_from: str | None
+    ) -> Any: ...
+
+    def _try_emit_imported_exception_class_constructor(
+        self, node: ast.Call, *, func_id: str, imported_from: str | None
     ) -> Any: ...
 
     def _try_emit_imported_module_direct_or_task_call(
