@@ -961,7 +961,7 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
 def _host_facts() -> dict[str, str]:
     return {
         "os": platform.system().lower() or os.name,
-        "platform": platform.platform(),
+        "platform": sys.platform,
         "arch": platform.machine().lower(),
         "python": platform.python_version(),
     }
