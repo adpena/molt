@@ -218,20 +218,24 @@ is reconciled.
   APDataStore/exFAT.
 - Never launch parallel `uv` bootstrap/sync commands against the same fresh
   checkout. One process owns project-environment creation; after it exits,
-  subsequent uv commands run with the emitted DX env. If isolation is not required, inspect
-  `origin/main:<path>` or reuse an existing warm worktree instead of creating a
-  cold APDataStore worktree just to read or verify docs.
-- APDataStore is exFAT, so Molt cache publication must not depend on hard-link
-  support; the backend cache owns the lock+rename/copy fallback. Do not disable
-  caching, reroute to `E:`, or hand-copy artifacts to work around hard-link
-  errors. Treat `Failed to publish backend cache output` under `D:\Molt` as a
-  DX defect to diagnose through the cache authority.
-- Maintainer/agent git worktrees belong under `D:\Molt\worktrees`, never
-  `E:\Molt\worktrees` or `C:`. Because APDataStore is exFAT, add each new
-  worktree to Git's safe-directory list if Git reports dubious ownership. Do
-  not hand-delete APDataStore build roots; use `tools/molt_ssd_janitor.py`
-  (dry-run by default, `--apply` for cleanup) so registered worktrees and live
-  sessions stay protected.
+  subsequent uv commands run with the emitted DX env. If isolation is not
+  required, inspect `origin/main:<path>` or reuse the warm canonical checkout
+  instead of creating a cold worktree just to read or verify docs.
+- `C:\Molt` is the warm source/artifact tier. Molt cache publication must work
+  there without rerouting to `D:`/`E:`; if an exFAT fallback root is explicitly
+  selected, the backend cache owns the lock+rename/copy fallback. Do not disable
+  caching, reroute to legacy volumes, or hand-copy artifacts to work around
+  publish errors. Treat any cache publication failure under the selected root as
+  a DX defect to diagnose through the cache authority.
+- Maintainer/agent git worktrees belong under `C:\Molt\worktrees` when real
+  isolation is required; the canonical checkout and landing root is
+  `C:\Molt\molt-src`. Never create or use OneDrive worktrees, and do not create
+  new `D:\Molt\worktrees` / `E:\Molt\worktrees` lanes. Harvest useful signal by
+  reviewed cherry-pick/pathspec landing onto `main`, then delete/prune the
+  source worktree, branch, and any temporary bundle; do not let backup piles
+  become a second repository. Do not hand-delete build roots; use
+  `tools/molt_ssd_janitor.py` (dry-run by default, `--apply` for cleanup) so
+  registered worktrees and live sessions stay protected.
 - Queue contract and tutorial: `docs/agent/PROOF_QUEUE.md`. Read it before
   queueing or interpreting long-running proof evidence.
 - Pact Kernel A acceptance must use the named queue lane

@@ -37,6 +37,17 @@ def test_resolve_root_allows_artifact_root_from_linked_worktree(
     assert jan._resolve_root(str(root), force=False) == root
 
 
+def test_resolve_root_allows_primary_source_checkout_under_artifact_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = (tmp_path / "Molt").resolve()
+    repo_root = root / "molt-src"
+    repo_root.mkdir(parents=True)
+    monkeypatch.setattr(jan, "REPO_ROOT", repo_root)
+
+    assert jan._resolve_root(str(root), force=False) == root
+
+
 def test_resolve_root_refuses_arbitrary_parent_of_repo(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

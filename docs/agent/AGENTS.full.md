@@ -654,10 +654,10 @@ Read these first instead of rediscovering project structure:
   selected artifact root. Default Cargo output is session-scoped as
   `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>`; explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
-- DX wrappers prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). On this workstation the persistent env `MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` + `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` selects `C:\Molt` (internal NVMe — faster than the external USB `D:` exFAT for the git+cargo small-file workload; 2026-07-08 dev-velocity migration). **Do NOT override the root back to `D:`/`E:`** (exFAT fallback/overflow). Stale artifacts self-clean by default (dx.py auto-janitor). Absent that env, Windows defaults select the volume labeled `APDataStore` (`D:\Molt`); old `E:\Molt` roots are legacy fallbacks. `MOLT_TARGET_ROOT` is derived from the selected artifact root as `D:\Molt\target-root`; stale `E:\molt-target`, `E:\Molt\target-root`, and `D:\molt-target` defaults are rehomed unless the operator sets `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext emits `UV_LINK_MODE=copy` for exFAT APDataStore roots unless an explicit operator value is present. POSIX defaults prefer `/Volumes/APDataStore/Molt` before `/Volumes/VertigoDataTier/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
+- DX wrappers prefer the canonical workstation artifact root when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). On this workstation `C:\Molt` is the primary NVMe checkout/artifact authority (faster than the external USB `D:` exFAT for git+cargo small-file workload; 2026-07-08 dev-velocity migration). **Do NOT override the root back to `D:`/`E:`** (exFAT fallback/overflow). Stale artifacts self-clean by default (dx.py auto-janitor). Windows defaults select `C:\Molt` when present, then APDataStore-labeled fallback roots; old `D:\Molt`, `E:\Molt`, `D:\molt-target`, and `E:\molt-target` roots are stale inherited state unless `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` explicitly opts into fallback. `MOLT_TARGET_ROOT` is derived from the selected artifact root as `C:\Molt\target-root` on this workstation; preserve an intentional off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext emits `UV_LINK_MODE=copy` for exFAT fallback roots unless an explicit operator value is present. POSIX defaults prefer `/Volumes/APDataStore/Molt` before `/Volumes/VertigoDataTier/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
 - In a fresh checkout/worktree, import RunContext with an already-installed host
   Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
-  before uv touches `.venv` on APDataStore/exFAT. Windows bootstrap:
+  before uv touches `.venv` on an exFAT fallback root. Windows bootstrap:
   `$dx = python tools\run_context_env.py --prefer-external-artifacts --dx --format powershell; Invoke-Expression ($dx -join [Environment]::NewLine)`.
   POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
   In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
@@ -692,17 +692,15 @@ Read these first instead of rediscovering project structure:
 - Branches and worktrees are allowed when they accelerate non-colliding
   implementation, recovery, or swarm work. Name them clearly, keep them based on
   current `main`, and converge useful changes back without preserving legacy
-  compatibility lanes. On this Windows workstation place maintainer/agent
-  worktrees under `D:\Molt\worktrees` (APDataStore, the fast dedicated artifact
-  SSD), never `E:\Molt\worktrees` (legacy/contended) or `C:` (near-full).
-  APDataStore is exFAT and records no ownership, so after `git worktree add` run
-  `git config --global --add safe.directory <worktree-path>` or git aborts with
-  "detected dubious ownership".
-  Do not create a fresh APDataStore worktree for read-only origin/doc checks;
-  use `git show origin/main:<path>` or an existing warm worktree. New worktrees
-  are for isolation from dirty WIP, cherry-pick/merge surgery, or real build
-  proof, and should be removed with `git worktree remove <path>` when the lane
-  closes.
+  compatibility lanes. On this Windows workstation the canonical checkout and
+  landing root is `C:\Molt\molt-src`; maintainer/agent worktrees, when real
+  isolation is required, go under `C:\Molt\worktrees`. Never create or use
+  OneDrive worktrees, and do not create new `D:\Molt\worktrees` /
+  `E:\Molt\worktrees` lanes. Do not create a fresh worktree for read-only
+  origin/doc checks; use `git show origin/main:<path>` or the warm canonical
+  checkout. Harvest useful signal by reviewed cherry-pick/pathspec landing onto
+  `main`, then delete/prune the source worktree, branch, and any temporary
+  bundle; do not let backup piles become a second repository.
 
 ## Crash Recovery Structural Stability Mode (Non-Negotiable)
 - This mode stabilizes the control plane whenever Codex, Claude, the desktop
