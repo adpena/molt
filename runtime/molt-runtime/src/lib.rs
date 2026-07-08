@@ -52,25 +52,7 @@ mod asyncio_bridge;
     not(feature = "stdlib_path"),
 ))]
 mod bridge;
-#[cfg(any(
-    feature = "stdlib_collections",
-    feature = "stdlib_compression",
-    feature = "stdlib_crypto",
-    feature = "stdlib_difflib",
-    feature = "stdlib_graphlib",
-    feature = "stdlib_http",
-    feature = "stdlib_ipaddress",
-    feature = "stdlib_logging_ext",
-    feature = "stdlib_math",
-    feature = "stdlib_path",
-    feature = "stdlib_regex",
-    feature = "stdlib_asyncio",
-    feature = "stdlib_serial",
-    feature = "stdlib_stringprep",
-    feature = "stdlib_text",
-    feature = "stdlib_xml",
-    feature = "stdlib_zoneinfo",
-))]
+#[cfg(molt_runtime_builtins)]
 mod builtins;
 mod c_api;
 mod call;

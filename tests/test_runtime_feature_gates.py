@@ -126,3 +126,29 @@ def test_empty_cargo_group_features_are_not_link_affecting() -> None:
         "stdlib_select",
     ):
         assert feature not in LINK_AFFECTING_FEATURES
+
+
+def test_runtime_builtins_cfg_is_derived_from_cargo_feature_namespace() -> None:
+    """The root builtins module must not maintain a stale feature allowlist.
+
+    `builtins` currently contains true runtime/core authorities (callable
+    identity, exceptions, module table, builtin type wiring) in addition to
+    stdlib implementations. Any stdlib/builtin Cargo feature needs that module
+    available; the build script derives one cfg from Cargo's enabled feature
+    namespace so new `stdlib_*` features do not have to remember a second list.
+    """
+
+    build_rs = (RUNTIME_CRATE / "build.rs").read_text(encoding="utf-8")
+    lib_rs = (RUNTIME_CRATE / "src" / "lib.rs").read_text(encoding="utf-8")
+
+    assert 'cargo:rustc-check-cfg=cfg(molt_runtime_builtins)' in build_rs
+    assert 'cargo:rustc-cfg=molt_runtime_builtins' in build_rs
+    assert 'feature.starts_with("STDLIB_")' in build_rs
+    assert 'feature.starts_with("BUILTIN_")' in build_rs
+    assert 'matches!(feature, "SQLITE" | "MOLT_GPU_PRIMITIVES")' in build_rs
+    assert "#[cfg(molt_runtime_builtins)]\nmod builtins;" in lib_rs
+    assert 'feature = "stdlib_' not in re.search(
+        r"#\[cfg\([^\]]+\)\]\s*\nmod builtins;",
+        lib_rs,
+        flags=re.DOTALL,
+    ).group(0)
