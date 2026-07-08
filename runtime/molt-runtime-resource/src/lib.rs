@@ -14,6 +14,9 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 pub mod bridge_buffer;
+pub mod temp_arena;
+
+pub use temp_arena::TempArena;
 
 #[cfg(test)]
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
