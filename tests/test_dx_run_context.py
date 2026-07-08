@@ -62,6 +62,7 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
             "CARGO_TARGET_DIR": str(explicit_target),
             "CARGO_INCREMENTAL": "1",
             "MOLT_SESSION_ID": "caller-session",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
     )
@@ -126,6 +127,7 @@ def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> N
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
             "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
             "TMPDIR": "/var/folders/example/T/",
         },
         create_dirs=True,
@@ -251,6 +253,7 @@ def test_run_context_prefers_external_without_rejecting_explicit_user_output_roo
         {
             "MOLT_EXT_ROOT": str(user_output_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
     )
@@ -274,6 +277,7 @@ def test_run_context_require_external_artifacts_forces_candidate(
             "MOLT_REQUIRE_EXTERNAL_ARTIFACTS": "1",
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=True,
     )
@@ -312,6 +316,7 @@ def test_run_context_rejects_explicit_c_drive_canonical_root(
                 "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
                 "MOLT_EXTERNAL_MIN_FREE_GB": "0",
                 "CARGO_TARGET_DIR": str(c_target),
+                "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
             },
             create_dirs=False,
         )
@@ -333,6 +338,7 @@ def test_run_context_preserves_nonambient_tmpdir_with_external_root(
             "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
             "MOLT_EXTERNAL_MIN_FREE_GB": "0",
             "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
             "TMPDIR": str(explicit_tmp),
         },
         create_dirs=False,
@@ -353,6 +359,7 @@ def test_run_context_can_force_repo_defaults_except_explicit_keys(
             "MOLT_EXT_ROOT": str(ambient_root),
             "MOLT_CACHE": str(explicit_cache),
             "MOLT_SESSION_ID": "ambient-session",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
         force_default_keys=forced_keys,
@@ -480,6 +487,7 @@ def test_run_context_env_preserves_explicit_uv_project_environment(
     explicit = tmp_path / "custom-venv"
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(explicit))
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+    monkeypatch.setenv("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS", "1")
 
     assert (
         run_context_env.main(
@@ -621,6 +629,7 @@ PYTHONPATH = "{root}/src"
             "PATH": "/usr/bin",
             "MOLT_EXT_ROOT": str(explicit_root),
             "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
         },
         create_dirs=False,
     )
@@ -716,6 +725,42 @@ def test_run_context_scrubs_inherited_legacy_windows_artifact_roots(
     assert env["TMPDIR"] == str(resolved / "tmp")
     assert env["TMP"] == env["TMPDIR"]
     assert env["TEMP"] == env["TMPDIR"]
+
+
+def test_run_context_preserves_legacy_windows_artifact_roots_with_opt_in(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(dx, "_default_windows_external_artifact_roots", lambda: ())
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "MOLT_EXT_ROOT": r"D:\Molt",
+            "MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS": "1",
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "CARGO_TARGET_DIR": r"D:\Molt\target\sessions\intentional",
+            "MOLT_DIFF_CARGO_TARGET_DIR": r"D:\Molt\target\sessions\intentional",
+            "MOLT_CACHE": r"D:\Molt\.molt_cache",
+            "TMPDIR": r"D:\Molt\tmp",
+        },
+        create_dirs=False,
+    )
+
+    assert env["MOLT_EXT_ROOT"] == str(Path(r"D:\Molt").resolve())
+    assert env["CARGO_TARGET_DIR"] == str(
+        Path(r"D:\Molt\target\sessions\intentional").resolve()
+    )
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["MOLT_CACHE"] == str(Path(r"D:\Molt\.molt_cache").resolve())
+    assert env["TMPDIR"] == str(Path(r"D:\Molt\tmp").resolve())
 
 
 def test_run_context_attests_selected_windows_c_artifact_root(
@@ -892,6 +937,7 @@ def test_auto_janitor_throttled_and_optout(monkeypatch, tmp_path):
 
     popen_calls = []
     monkeypatch.setattr(dx.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
+    monkeypatch.setattr(dx, "_running_under_pytest", lambda: False)
     monkeypatch.delenv("MOLT_DISABLE_AUTO_JANITOR", raising=False)
 
     dx._maybe_sweep_stale_artifacts(tmp_path)
@@ -909,6 +955,20 @@ def test_auto_janitor_throttled_and_optout(monkeypatch, tmp_path):
     dx._maybe_sweep_stale_artifacts(other)
     assert len(popen_calls) == 1
     assert not (other / ".molt_janitor_last_run").exists()
+
+
+def test_auto_janitor_skips_under_pytest(monkeypatch, tmp_path):
+    import molt.dx as dx
+
+    popen_calls = []
+    monkeypatch.setattr(dx.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_dx_run_context.py::test (call)")
+    monkeypatch.delenv("MOLT_DISABLE_AUTO_JANITOR", raising=False)
+
+    dx._maybe_sweep_stale_artifacts(tmp_path)
+
+    assert popen_calls == []
+    assert not (tmp_path / ".molt_janitor_last_run").exists()
 
 
 def test_onedrive_paths_rejected_fail_closed():
