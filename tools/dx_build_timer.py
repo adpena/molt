@@ -200,6 +200,42 @@ def _test_build_cmd(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _touch_files(repo_root: Path = REPO_ROOT) -> dict[str, Path]:
+    return {
+        "value_range": repo_root
+        / "runtime/molt-passes/src/tir/passes/value_range/mod.rs",
+        "function_compiler": repo_root
+        / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+        "modules": repo_root / "runtime/molt-runtime/src/builtins/modules.rs",
+        "gvn": repo_root / "runtime/molt-passes/src/tir/passes/gvn.rs",
+    }
+
+
+def _scenario_preflight_errors(
+    scenarios: list[str],
+    touch_files: dict[str, Path],
+) -> list[str]:
+    errors: list[str] = []
+    for scenario in scenarios:
+        if scenario == "cold":
+            continue
+        if scenario == "test-lib":
+            key = "value_range"
+        elif scenario.startswith("inc-"):
+            key = scenario[len("inc-") :]
+        else:
+            errors.append(f"unknown scenario: {scenario}")
+            continue
+        path = touch_files.get(key)
+        if path is None:
+            errors.append(f"scenario={scenario} unknown touch key: {key}")
+        elif not path.exists():
+            errors.append(
+                f"scenario={scenario} touch_key={key} missing touch_path={path}"
+            )
+    return errors
+
+
 def _snapshot_payload(
     args: argparse.Namespace,
     results: dict[str, dict],
@@ -287,13 +323,13 @@ def main() -> int:
     touch_journal = TouchJournal(Path(args.target_dir) / ".dx_build_timer_touches.json")
     touch_journal.recover()
 
-    touch_files = {
-        "value_range": REPO_ROOT / "runtime/molt-passes/src/tir/passes/value_range.rs",
-        "function_compiler": REPO_ROOT
-        / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-        "modules": REPO_ROOT / "runtime/molt-runtime/src/builtins/modules.rs",
-        "gvn": REPO_ROOT / "runtime/molt-passes/src/tir/passes/gvn.rs",
-    }
+    touch_files = _touch_files(REPO_ROOT)
+    preflight_errors = _scenario_preflight_errors(args.scenarios, touch_files)
+    if preflight_errors:
+        print("dx_build_timer scenario preflight failed:", file=sys.stderr)
+        for error in preflight_errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 2
 
     results: dict[str, dict] = {}
     cargo_version = _output_text(
