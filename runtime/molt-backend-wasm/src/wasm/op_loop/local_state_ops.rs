@@ -6,7 +6,6 @@ use wasm_encoder::Function;
 
 mod closure_ops;
 mod field_ops;
-mod guarded_field_ops;
 mod state_machine_ops;
 
 pub(super) struct LocalStateOpContext<'a> {
@@ -42,9 +41,6 @@ pub(super) fn emit_local_state_op(
         return true;
     }
     if closure_ops::emit_closure_local_state_op(&mut context, func, op) {
-        return true;
-    }
-    if guarded_field_ops::emit_guarded_field_local_state_op(&mut context, func, op) {
         return true;
     }
     state_machine_ops::emit_state_machine_local_state_op(&mut context, func, op)
