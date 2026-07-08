@@ -105,17 +105,15 @@ owners (drive them down — a silent degradation taxes every build):
   mid-compile crashes (os error 10054 → rc=124 timeouts) yet enabled by default.
   Now off-by-default on Windows (loud) + post-build stats attestation. Non-Windows
   unchanged. This was NEGATIVE leverage on every cargo build.
-- **numpy frontend LOWERING re-lower ≈180-250s EVERY witness build (~40-50% of a
-  485s acceptance) — OPEN, highest remaining wall-clock item.** Root cause: the
-  dirty-gate at `src/molt/cli/frontend_worker.py:787` skips the persisted
-  lowering-cache READ for "dirty" modules, and numpy is dirty every run because the
-  E1 reseal churns numpy source stats. The `context_digest`+source-stat check
-  inside `_load_cached_module_lowering_result` is the real correctness authority, so
-  the dirty-gate defeats a still-valid cache. FIX (DX/throughput + frontend lane,
-  coordinate — frontend_worker.py is hot): consult the persisted cache even when
-  "dirty", trusting the digest check; partly transient (eases once E1 seal custody
-  stops churning). ATTEST: emit `lowering cache: {hits}/{misses}, {reused_s}s
-  reused / {relowered_s}s re-lowered` so this can't silently regress.
+- **numpy frontend LOWERING re-lower ≈180-250s EVERY witness build — RESOLVED
+  (`500417f9a` "Reuse dirty module lowering cache").** The fix removed the
+  redundant dirty-gate and consults the persisted cache even for "dirty" modules,
+  still passing `context_digest` to `_load_cached_module_lowering_result` (the
+  digest + source-stat check remains the correctness authority — no cache
+  poisoning). It ALSO landed the hit-rate attestation the audit asked for
+  (`hits/misses/reused_ms/relowered_ms` in `build_diagnostics.py`). Orchestrator
+  senior-review: correct + complete. This was ~40-50% of every acceptance run —
+  the biggest wall-clock reclaim, and it directly speeds the E1 acceptance loop.
 - **numeric RAW-LANES (R3b/R4a) = UNPROVEN.** No fire-count attestation exists;
   cannot confirm native-op emission fired. OWNER: R3b lane — add a per-build
   raw-lane-vs-boxed fire count (representation_facts / effect_proof).
