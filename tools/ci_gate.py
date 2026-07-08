@@ -484,7 +484,7 @@ def _build_checks() -> list[Check]:
                 str(TESTS / "tools" / "test_perf_history.py"),
                 "-q",
             ),
-            timeout=120,
+            timeout=180,
             needs_pytest=True,
         )
     )

@@ -29,7 +29,6 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import perf_authority as pa  # noqa: E402
-import perf_schema as perf_schema  # noqa: E402
 
 SCHEMA_VERSION = 1
 
@@ -457,50 +456,17 @@ def _validate_e2_perf_scoreboard(
             )
         )
 
-        schema_problems = perf_schema.validate_board(doc)
-        problems.extend(
-            f"E2: scoreboard schema violation in {path}: {p}" for p in schema_problems
-        )
         problems.extend(
             f"E2: {problem}: {path}"
-            for problem in pa.canonical_scoreboard_shape_problems(
+            for problem in pa.current_scoreboard_problems(
                 doc,
-                label="canonical scoreboard",
+                label="scoreboard",
+                shape_label="canonical scoreboard",
+                now=current,
+                max_age_days=pa.DEFAULT_STALE_DAYS,
+                require_canonical_shape=True,
             )
         )
-
-        provenance = doc.get("provenance")
-        if (
-            not isinstance(provenance, Mapping)
-            or provenance.get("authoritative") is not True
-        ):
-            problems.append(f"E2: scoreboard is not authoritative: {path}")
-
-        summary = doc.get("summary")
-        if not isinstance(summary, Mapping) or summary.get("gate_fails") is not False:
-            problems.append(f"E2: scoreboard gate_fails is not false: {path}")
-
-        generated_at = doc.get("generated_at")
-        age = pa.doc_age_days(
-            generated_at if isinstance(generated_at, str) else None, now=current
-        )
-        if age is None:
-            problems.append(
-                f"E2: scoreboard generated_at is missing or unparseable: {path}"
-            )
-        elif age > pa.DEFAULT_STALE_DAYS:
-            problems.append(
-                f"E2: scoreboard generated_at is {age:.0f}d old "
-                f"(>{pa.DEFAULT_STALE_DAYS}d): {path}"
-            )
-
-        git_rev = doc.get("git_rev")
-        ancestor = pa.git_rev_is_ancestor_of_origin(
-            git_rev if isinstance(git_rev, str) else None
-        )
-        if ancestor is not True:
-            state = "not on origin/main" if ancestor is False else "not provable"
-            problems.append(f"E2: scoreboard git_rev ancestry is {state}: {path}")
 
     if scoreboard_count == 0:
         problems.append(

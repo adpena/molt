@@ -3,6 +3,16 @@
   "kind": "cpython_floor_scoreboard",
   "generated_at": "2026-06-08T23:45:03.871754+00:00",
   "git_rev": "f33caead157c287a2bf49910102ad3f7d495cec1",
+  "perf_authority": {
+    "kind": "stale-perf-snapshot",
+    "mark": "<!-- PERF-AUTHORITY:stale -->",
+    "stale": true,
+    "authoritative": false,
+    "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent`",
+    "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+    "generated_at": "2026-06-08T23:45:03.871754+00:00",
+    "git_rev": "f33caead157c287a2bf49910102ad3f7d495cec1"
+  },
   "provenance": {
     "origin_sha": "1fa7448a2706325126f2555a3f76f05a85aa710b",
     "local_head_sha": "f33caead157c287a2bf49910102ad3f7d495cec1",

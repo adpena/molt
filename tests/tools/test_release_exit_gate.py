@@ -20,6 +20,7 @@ def _load_gate():
     # Release-exit unit tests exercise receipt shape, not git ancestry.
     # Dedicated perf-authority tests own the live ancestry probe.
     module.pa.git_rev_is_ancestor_of_origin = lambda _: True
+    module.pa.current_origin_main_rev = lambda: "a" * 40
     return module
 
 
@@ -54,7 +55,7 @@ def _scoreboard_evidence(
     command: str | None = None,
     classify_active: bool = True,
 ) -> dict[str, str]:
-    schema = gate.perf_schema
+    schema = gate.pa.perf_schema
     suite = benchmarks or gate.pa.CANONICAL_PERF_BENCHMARKS
 
     def cell_for(benchmark: str, backend: str) -> dict[str, object]:
