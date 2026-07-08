@@ -6199,6 +6199,280 @@ def test_proof_queue_diagnoses_source_extension_nm_missing(
     }
 
 
+def test_proof_queue_diagnoses_source_extension_build_plan_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-extension-plan.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-extension-plan",
+        logical_id="e1-numpy-multiarray-rebuild",
+        reason="prove source-extension source-plan path diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_extensions.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-extension-plan.memory_guard.json",
+    )
+    log_path.write_text(
+        '{"schema_version": "1.0", "command": "extension-build", '
+        '"status": "error", "errors": ["Extension build configuration errors: '
+        "source extension build plan not found: "
+        'C:\\repo\\numpy\\tmp\\pact_numpy_multiarray\\intro-targets.json"]}\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "source-extension-plan", status="failed", returncode=2
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-extension-plan",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "source-extension-build-plan-missing"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "intro-targets.json" in diagnostics[0]["summary"]
+    assert "source-extension package custody" in diagnostics[0]["next_action"]
+    assert "do not hand-author package metadata" in diagnostics[0]["next_action"]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
+def test_proof_queue_diagnoses_source_extension_compile_header_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-extension-header.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-extension-header",
+        logical_id="e1-scipy-ndimage-rebuild",
+        reason="prove source-extension missing generated header diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_extensions.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-extension-header.memory_guard.json",
+    )
+    log_path.write_text(
+        '{"schema_version": "1.0", "command": "extension-build", '
+        '"status": "error", "errors": ["Failed compiling nd_image.c: '
+        "In file included from C:\\repo\\scipy\\ndimage\\src\\nd_image.c:45:\\n"
+        "C:\\repo\\scipy\\_lib\\src\\ccallback.h:25:10: fatal error: "
+        "'scipy_config.h' file not found\\n"
+        '1 error generated."]}\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "source-extension-header", status="failed", returncode=2
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-extension-header",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "source-extension-compile-header-missing"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "scipy_config.h" in diagnostics[0]["summary"]
+    assert "package build metadata" in diagnostics[0]["next_action"]
+    assert "do not copy headers" in diagnostics[0]["next_action"]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
+def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-extension-cython.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-extension-cython",
+        logical_id="e1-scipy-ni-label-rebuild",
+        reason="prove source-extension Cython regeneration diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_extensions.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-extension-cython.memory_guard.json",
+    )
+    log_path.write_text(
+        '{"schema_version": "1.0", "command": "extension-build", '
+        '"status": "error", "errors": ["Standalone `cython -3` regeneration '
+        "of _ni_label.pyx failed: AttributeError: 'NoneType' object has no "
+        'attribute \'is_builtin_type\'"]}\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "source-extension-cython", status="failed", returncode=2
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-extension-cython",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "source-extension-cython-regeneration-failed"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "_ni_label.pyx" in diagnostics[0]["summary"]
+    assert "package's declared build metadata" in diagnostics[0]["next_action"]
+    assert "do not add a package-specific standalone Cython command" in diagnostics[0][
+        "next_action"
+    ]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
+def test_proof_queue_diagnoses_cpython_abi_pymod_gil_slot_token_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "pymod-gil-slot.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="pymod-gil-slot",
+        logical_id="e1-scipy-ndimage-rebuild",
+        reason="prove cpython abi PyModuleDef slot token diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["runtime/molt-cpython-abi/include/Python.h"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "pymod-gil-slot.memory_guard.json",
+    )
+    log_path.write_text(
+        '{"schema_version": "1.0", "command": "extension-build", '
+        '"status": "error", "errors": ["Failed compiling nd_image.c: '
+        "nd_image.c:1364:36: error: incompatible integer to pointer conversion "
+        "initializing 'void *' with an expression of type 'int' "
+        "[-Wint-conversion]\\n"
+        " 1364 |     {Py_mod_multiple_interpreters, "
+        "Py_MOD_PER_INTERPRETER_GIL_SUPPORTED},\\n"
+        "      |                                    "
+        "^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\\n"
+        "Python.h:760:46: note: expanded from macro "
+        "'Py_MOD_PER_INTERPRETER_GIL_SUPPORTED'\\n"
+        "  760 | #define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED 2\\n"
+        '      |                                              ^"]}\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "pymod-gil-slot", status="failed", returncode=2)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "pymod-gil-slot",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert (
+        diagnostics[0]["signal_id"]
+        == "cpython-abi-pymod-gil-slot-token-mismatch"
+    )
+    assert diagnostics[0]["severity"] == "error"
+    assert "Py_MOD_PER_INTERPRETER_GIL_SUPPORTED" in diagnostics[0]["summary"]
+    assert "cpython-abi owner" in diagnostics[0]["next_action"]
+    assert "reusable C-API primitive" in diagnostics[0]["next_action"]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_source_lease_contamination(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
