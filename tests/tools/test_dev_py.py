@@ -555,9 +555,10 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     ]
     assert limits is fake_limits
     assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
-    assert env["CARGO_TARGET_DIR"] == str(
-        module.ROOT / "target" / "sessions" / env["MOLT_SESSION_ID"]
-    )
+    # A generated dev session id is custody metadata, not a request for a cold
+    # per-session Cargo target. Ordinary dev.py commands reuse the persistent
+    # target so warm incremental state survives across commands.
+    assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
@@ -572,6 +573,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     assert env["TMP"] == env["TMPDIR"]
     assert env["TEMP"] == env["TMPDIR"]
     assert env["MOLT_SESSION_ID"].startswith("dev-")
+    assert env["MOLT_SESSION_ID_GENERATED"] == "1"
 
 
 def test_dev_py_run_uv_preserves_explicit_canonical_roots(
@@ -610,6 +612,7 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     assert env["MOLT_EXT_ROOT"] == str(explicit_root)
     assert env["MOLT_CACHE"] == str(explicit_cache)
     assert env["MOLT_SESSION_ID"] == "caller-session"
+    assert "MOLT_SESSION_ID_GENERATED" not in env
     assert env["CARGO_TARGET_DIR"] == str(
         explicit_root / "target" / "sessions" / "caller-session"
     )

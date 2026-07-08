@@ -27,12 +27,14 @@ closed.
 ## R73.1 — Efficient, 8GB-capable builds (one shared runtime-artifact cache)
 
 **The naive root:** `molt_runtime.wasm` (the entire Molt runtime crate compiled
-to wasm32) is a FIXED artifact — it depends only on the runtime source + target
-+ abi + profile, NOT on the user program. But the build is session-scoped
-(`src/molt/cli/backend_binary.py` `CARGO_TARGET_DIR = target/sessions/<id>/`),
-so every fresh session/agent recompiles the runtime crate cold (~45 min), and
-the memory-guard timeout quarantines the incremental — an infinite cold-rebuild
-loop.
+to wasm32) is a FIXED artifact: it depends only on runtime source, target, ABI,
+and profile, NOT on the user program. Earlier developer flows put ordinary
+builds under per-session Cargo targets, so every fresh session/agent could
+recompile the runtime crate cold (~45 min), and the memory-guard timeout could
+quarantine incremental state — an infinite cold-rebuild loop. The live DX
+resolver now keeps ordinary builds on the persistent selected-root target and
+reserves `target/sessions/<id>` for explicit isolation lanes; the runtime cache
+below remains the cross-session artifact authority.
 
 **Obligation:**
 1. `molt_runtime.wasm` is built ONCE and reused across sessions, cached

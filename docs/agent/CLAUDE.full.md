@@ -667,10 +667,19 @@ agent/subagent work. It is not the public `molt build` contract: real users may
 compile in place, rely on Molt/Cargo defaults, or pass explicit output/target
 flags.
 
-`MOLT_SESSION_ID` **must be set BEFORE any maintainer/agent build command**. Every agent must export it at the start of every shell command:
+`MOLT_SESSION_ID` is custody metadata by default and an isolation request only
+when the caller pins it before RunContext resolves the environment. Ordinary
+maintainer/agent builds should bootstrap the DX environment and keep the
+persistent selected-root Cargo target (`C:\Molt\target` on this workstation) so
+warm incremental state survives across commands. Pin a session id only for
+perf, benchmark, test-shard, proof-isolation, or deliberately parallel lanes
+that need independent Cargo target and daemon/build-state roots. RunContext
+marks its default custody id with `MOLT_SESSION_ID_GENERATED=1`; wrappers that
+re-enter RunContext must preserve that marker with `MOLT_SESSION_ID`, or
+explicitly pass `--session-id` when they really want target isolation:
 
 ```bash
-export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
+export MOLT_SESSION_ID="bench-baseline"  # optional isolation lane
 ```
 
 **Molt maintainer/agent build artifacts go on an external drive, never `C:` when
@@ -690,9 +699,11 @@ location bans. macOS/Linux use the configured external candidates. The resolver
 owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `MOLT_TARGET_ROOT`, `MOLT_CACHE`, diff/tmp roots, `UV_CACHE_DIR`,
 `UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`,
-`TMP`, `TEMP`, and DX-only `UV_LINK_MODE`. Default Cargo output is session-scoped as
-`$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR`
-remains an operator-owned override. On this Windows workstation the selected
+`TMP`, `TEMP`, and DX-only `UV_LINK_MODE`. Ordinary Cargo output is the
+persistent `$MOLT_EXT_ROOT/target`; caller-pinned `MOLT_SESSION_ID` or
+`--session-id` opts into `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID` for
+deliberate isolation. Explicit `CARGO_TARGET_DIR` remains an operator-owned
+override. On this Windows workstation the selected
 root is `C:\Molt`, and the managed toolchain root is
 `C:\Molt\target-root`. Stale inherited `D:\Molt`, `E:\Molt`,
 `D:\molt-target`, and `E:\molt-target` roots are legacy evidence/fallbacks, not
@@ -709,19 +720,19 @@ before uv touches `.venv` on an exFAT fallback root. Windows bootstrap:
 POSIX bootstrap: `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
 In `--dx` mode the bootstrap emits a stable `UV_PROJECT_ENVIRONMENT`
 (`tmp/uv-project-envs/dx__py3.12`) rather than a per-process `run-<pid>` env, so
-repeated checks reuse the same uv environment while Cargo output remains
-session-scoped by `MOLT_SESSION_ID`. Use `--session-scoped-uv-project-env` only
-when the uv environment must be isolated too.
+repeated checks reuse the same uv environment while ordinary Cargo output
+remains the persistent selected-root target. Use
+`--session-scoped-uv-project-env` only when the uv environment must be isolated
+too.
 Do not use `uv run` to obtain this first env in a cold checkout, and never run
 parallel uv bootstrap/sync commands against the same `.venv`.
 
-Raw `cargo` commands do NOT honor `MOLT_SESSION_ID` by themselves. For any
-direct cargo invocation, export the DX env first. If you bypass the DX env, keep
-session isolation inside the external target root:
+Raw `cargo` commands do not resolve Molt DX roots by themselves. For any direct
+cargo invocation, export the DX env first. If the lane deliberately needs
+target isolation, request it through RunContext rather than hand-rolling paths:
 
 ```bash
-eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
-export CARGO_TARGET_DIR="${MOLT_EXT_ROOT:?}/target/sessions/$MOLT_SESSION_ID"
+eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --session-id bench-baseline --format posix)"
 ```
 
 This gives each session:
@@ -730,9 +741,9 @@ This gives each session:
 - **Its own build state and lock-check caches** — fully isolated build lifecycle
 - **No `cargo clean`** — incremental builds only, no binary deletion
 
-The first build in a new session takes approximately 5 minutes (full compile). Subsequent builds are incremental.
+The first build in a new isolated session is cold by design. Ordinary non-pinned
+DX builds reuse the persistent target and should stay warm.
 
-Without `MOLT_SESSION_ID`, all sessions share the selected `CARGO_TARGET_DIR`
-(solo dev mode).
-
-Agents **MUST** use `export MOLT_SESSION_ID="unique-name"` at the start of every command to ensure isolation.
+Without a pinned isolation id, all ordinary sessions share the selected
+`CARGO_TARGET_DIR`; Cargo's own locks plus the proof-queue/compiler-build mutex
+serialize heavy writers while preserving warm incremental artifacts.

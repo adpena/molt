@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-import molt.dx as molt_dx
 from tests.native_process_guard import run_native_test_process
 
 
@@ -91,12 +90,10 @@ def test_run_context_env_prefers_external_artifact_root() -> None:
     assert result.returncode == 0, result.stderr
     assert _export_value(result.stdout, "MOLT_EXT_ROOT") == str(external_root.resolve())
     session_id = _export_value(result.stdout, "MOLT_SESSION_ID")
-    assert _export_value(result.stdout, "CARGO_TARGET_DIR") == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
-            external_root.resolve(),
-            session_id,
-        )
-    )
+    target_dir = _export_value(result.stdout, "CARGO_TARGET_DIR")
+    assert session_id
+    assert target_dir == str(external_root.resolve() / "target")
+    assert session_id not in target_dir
     socket_dir = _export_value(result.stdout, "MOLT_BACKEND_DAEMON_SOCKET_DIR")
     assert Path(socket_dir).name.startswith("molt-backend-")
 
