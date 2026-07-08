@@ -111,6 +111,25 @@ def test_cimport_pxd_roots_fail_safe_on_absent_package() -> None:
     assert cython_authority._cimport_pxd_roots(sys.executable, ()) == ()
 
 
+def test_cimport_pxd_roots_resolves_from_source_tree(tmp_path: Path) -> None:
+    # A source-recompiled witness builds against the package's OWN source tree, not
+    # a pip install: numpy's `.pxd` is at `<numpy-src>/numpy/__init__.pxd` while the
+    # build plan only puts `<numpy-src>/numpy/_core/include` on -I. The resolver must
+    # walk that include dir's ancestors and add `<numpy-src>` so `cimport numpy`
+    # resolves — WITHOUT the package being importable by the build interpreter.
+    src = tmp_path / "pkg_off_the_shelf"
+    (src / "widget" / "_core" / "include").mkdir(parents=True)
+    (src / "widget" / "__init__.pxd").write_text("# widget pxd\n", encoding="utf-8")
+    # The plan surfaces only the deep C-header dir; ancestor walk must reach `src`.
+    roots = cython_authority._cimport_pxd_roots(
+        sys.executable,
+        ("widget",),
+        search_roots=[src / "widget" / "_core" / "include"],
+    )
+    assert roots == (src.resolve(),), roots
+    assert (roots[0] / "widget" / "__init__.pxd").is_file()
+
+
 def test_pair_generated_c_with_pyx_matches_by_stem() -> None:
     pyx = Path("/pkg/src/_ni_label.pyx")
     assert (
