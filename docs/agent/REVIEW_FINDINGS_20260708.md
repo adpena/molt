@@ -47,6 +47,15 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   STRICT Molt-only import failures now fail instead of skipping; only a same
   import failure on both CPython and Molt downgrades to skip. Re-verified
   2026-07-08 with `pytest tests/tools/test_parity_gate.py -q` (`5 passed`).
+- **#10/#25 ci_gate skip/prerequisite fail-closed: LANDED**. `ci_gate` now
+  distinguishes optional skips from required unmet prerequisites, includes
+  `unmet-prerequisite` in JSON success/summary and required-failure exit logic,
+  and scans command argv for the first `tools/*.py` script before execution.
+  The proof also fixed the DX tests to mark intentional `D:\Molt` fallback roots
+  with `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` while preserving the stale-root
+  scrubber tooth, and prevents auto-janitor orphaning during pytest runs.
+  Verified with `uv run --active --project . --python 3.12 pytest
+  tests/tools/test_ci_gate.py tests/test_dx_run_context.py -q` (`59 passed`).
 - **#11 release-fast debug=0: LANDED** (`f21cf71aa`).
 - **#13 specialized-list primitive GIL fast paths: LANDED**. Regular
   `STORE_SUBSCR_LIST_INT`, raw-index list store, and unchecked list getitem now
@@ -66,4 +75,4 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
 - All others: OPEN — Codex lanes claim via docs/agent/CLAIMS.md, land per the NEW PROTOCOL.
   Highest-value OPEN: #1 (P0 PyType_FromMetaclass fail-open, E1-critical),
   #7/#8 (frontend-timeout → serial degradation, witness-throughput),
-  #9/#10 (parity/ci gates fail-open → vacuous green).
+  #1/#7/#8 remain the next high-value fail-open/vacuous-green risks.

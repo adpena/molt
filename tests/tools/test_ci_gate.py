@@ -196,6 +196,11 @@ def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("MOLT_CACHE", str(cache))
     monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
     monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
+    # Pytest temp roots on this workstation live under the D:\Molt fallback
+    # volume. That root is deliberately scrubbed unless the operator says the
+    # fallback is intentional, so preserve it here to test explicit-root
+    # precedence rather than stale-root rehoming.
+    monkeypatch.setenv("MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS", "1")
 
     env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
 
