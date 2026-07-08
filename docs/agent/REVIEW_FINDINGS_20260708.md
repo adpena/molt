@@ -36,6 +36,11 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
 | 26 | P2 | CODEX-METABUG/DX | metabug | `tools/check_perf_gate_wiring.py:60` | **perf-gate-wiring audit certifies the gate 'fires' without checking it is blocking (continue-on-error / always-false if blind spot)** — Parse the scoreboard step and assert it has no `continue-on-error: true`, no trivially-false `if:`, and lives in a job that is required/blocking on the main/PR path; fail closed if the invoking step is non-blocking. |
 
 ## Landing status (orchestrator)
-- #2 rust-lld linker: verification build in flight (lld-linker-verify-20260708); land on LINK_OK.
-- #11 release-fast debug=0: staged with the linker verify build.
+- #2 rust-lld linker: the review's "`-C linker-features=+lld` is stable" claim was
+  WRONG — it is UNSTABLE on the pinned 1.96.1 toolchain (verify build 20260708
+  failed: "requires -Z unstable-options"). Correct stable+portable path: LLVM
+  `lld-link` is on PATH here, so `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link`
+  (env, non-RUSTFLAGS) — under verification (lld-link-verify2-20260708); if it links,
+  wire as DX auto-detect (portable: no-op where lld-link is absent) + land.
+- #11 release-fast debug=0: LANDED (strip already discarded the debuginfo).
 - All others: OPEN — Codex lanes claim via docs/agent/CLAIMS.md, land per the NEW PROTOCOL.

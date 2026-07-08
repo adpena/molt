@@ -14,6 +14,11 @@ rustflags = []
 #   [target.x86_64-unknown-linux-gnu]
 #   linker = "clang"
 #   rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+# Windows-msvc fast linker (rust-lld) is a REAL win but NOT reachable via a stable
+# rustflag on the pinned 1.96.1 toolchain: `-C linker-features=+lld` is unstable
+# there (needs -Z unstable-options; verified failing 2026-07-08). The stable path
+# is to provision the bundled rust-lld as `lld-link.exe` on PATH and set
+# `linker = "lld-link"` — tracked as review finding #2 (CODEX-BUILD lane).
 [target.x86_64-unknown-linux-gnu]
 rustflags = []
 
