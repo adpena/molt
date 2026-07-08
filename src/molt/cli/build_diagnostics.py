@@ -15,6 +15,7 @@ from molt.cli.models import (
     _BuildDiagnosticsContext,
     _FrontendTimingRecorderConfig,
 )
+from molt.cli.runtime_wasm_cache import _runtime_wasm_cache_diagnostics_snapshot
 from molt.metric_ratios import budget_utilization
 
 
@@ -120,6 +121,7 @@ def _emit_build_diagnostics(
     frontend_parallel = diagnostics.get("frontend_parallel", {})
     frontend_modules_top = diagnostics.get("frontend_module_timings_top", [])
     allocations = diagnostics.get("allocations", {})
+    runtime_wasm_cache = diagnostics.get("runtime_wasm_cache", {})
     print("Build diagnostics:", file=sys.stderr)
     if isinstance(total_sec, (int, float)):
         print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
@@ -161,6 +163,45 @@ def _emit_build_diagnostics(
                     f"{idx}: {file_name}:{line_no} size_bytes={size_bytes} count={count}",
                     file=sys.stderr,
                 )
+    if isinstance(runtime_wasm_cache, dict):
+        hydrate_attempts = runtime_wasm_cache.get("hydrate_attempts")
+        hydrate_hits = runtime_wasm_cache.get("hydrate_hits")
+        hydrate_misses = runtime_wasm_cache.get("hydrate_misses")
+        hydrate_failures = runtime_wasm_cache.get("hydrate_failures")
+        hydrate_hit_rate = runtime_wasm_cache.get("hydrate_hit_rate")
+        publish_attempts = runtime_wasm_cache.get("publish_attempts")
+        publish_successes = runtime_wasm_cache.get("publish_successes")
+        publish_failures = runtime_wasm_cache.get("publish_failures")
+        publish_success_rate = runtime_wasm_cache.get("publish_success_rate")
+        if (
+            isinstance(hydrate_attempts, int)
+            and isinstance(hydrate_hits, int)
+            and isinstance(hydrate_misses, int)
+            and isinstance(hydrate_failures, int)
+            and isinstance(hydrate_hit_rate, (int, float))
+            and isinstance(publish_attempts, int)
+            and isinstance(publish_successes, int)
+            and isinstance(publish_failures, int)
+            and isinstance(publish_success_rate, (int, float))
+        ):
+            print(
+                "- runtime_wasm_cache: "
+                f"hydrate_hits={hydrate_hits}/{hydrate_attempts} "
+                f"hydrate_misses={hydrate_misses} "
+                f"hydrate_failures={hydrate_failures} "
+                f"hydrate_hit_rate={float(hydrate_hit_rate):.6f} "
+                f"publish_successes={publish_successes}/{publish_attempts} "
+                f"publish_failures={publish_failures} "
+                f"publish_success_rate={float(publish_success_rate):.6f}",
+                file=sys.stderr,
+            )
+        last_publish_failure = runtime_wasm_cache.get("last_publish_failure")
+        if isinstance(last_publish_failure, str) and last_publish_failure:
+            print(
+                "- runtime_wasm_cache.last_publish_failure: "
+                f"{last_publish_failure}",
+                file=sys.stderr,
+            )
     if isinstance(frontend_modules_top, list):
         limit = 20 if full_details else 10
         for idx, item in enumerate(frontend_modules_top[:limit], start=1):
@@ -1008,6 +1049,9 @@ def _build_build_diagnostics_payload(
     )
     if lowering_cache_summary is not None:
         payload["frontend_lowering_cache"] = lowering_cache_summary
+    runtime_wasm_cache = _runtime_wasm_cache_diagnostics_snapshot()
+    if runtime_wasm_cache is not None:
+        payload["runtime_wasm_cache"] = runtime_wasm_cache
     midend_payload = _build_midend_diagnostics_payload(
         requested_profile=cast(BuildProfile, diagnostics_context.profile),
         policy_outcomes_by_function=dict(
