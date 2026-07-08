@@ -418,6 +418,559 @@ pub fn path_expandvars_with_lookup(
     out
 }
 
+pub fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
+    type GlobCharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
+
+    fn parse_char_class(pat: &[char], mut idx: usize) -> Option<GlobCharClassParse> {
+        if idx >= pat.len() || pat[idx] != '[' {
+            return None;
+        }
+        idx += 1;
+        if idx >= pat.len() {
+            return None;
+        }
+
+        let mut negate = false;
+        if pat[idx] == '!' {
+            negate = true;
+            idx += 1;
+        }
+        if idx >= pat.len() {
+            return None;
+        }
+
+        let mut singles: Vec<char> = Vec::new();
+        let mut ranges: Vec<(char, char)> = Vec::new();
+
+        if pat[idx] == ']' {
+            singles.push(']');
+            idx += 1;
+        }
+
+        while idx < pat.len() && pat[idx] != ']' {
+            if idx + 2 < pat.len() && pat[idx + 1] == '-' && pat[idx + 2] != ']' {
+                let start = pat[idx];
+                let end = pat[idx + 2];
+                if start <= end {
+                    ranges.push((start, end));
+                }
+                idx += 3;
+                continue;
+            }
+            singles.push(pat[idx]);
+            idx += 1;
+        }
+        if idx >= pat.len() || pat[idx] != ']' {
+            return None;
+        }
+        Some((singles, ranges, negate, idx + 1))
+    }
+
+    fn char_class_hit(ch: char, singles: &[char], ranges: &[(char, char)], negate: bool) -> bool {
+        let mut hit = singles.contains(&ch);
+        if !hit {
+            hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
+        }
+        if negate { !hit } else { hit }
+    }
+
+    let name_chars: Vec<char> = name.chars().collect();
+    let pat_chars: Vec<char> = pat.chars().collect();
+    let mut pi: usize = 0;
+    let mut ni: usize = 0;
+    let mut star_idx: Option<usize> = None;
+    let mut matched_from_star: usize = 0;
+
+    while ni < name_chars.len() {
+        if pi < pat_chars.len() && pat_chars[pi] == '*' {
+            while pi < pat_chars.len() && pat_chars[pi] == '*' {
+                pi += 1;
+            }
+            if pi == pat_chars.len() {
+                return true;
+            }
+            star_idx = Some(pi);
+            matched_from_star = ni;
+            continue;
+        }
+        if pi < pat_chars.len()
+            && pat_chars[pi] == '['
+            && let Some((singles, ranges, negate, next_idx)) = parse_char_class(&pat_chars, pi)
+        {
+            let hit = char_class_hit(name_chars[ni], &singles, &ranges, negate);
+            if hit {
+                pi = next_idx;
+                ni += 1;
+                continue;
+            }
+            if let Some(star) = star_idx {
+                matched_from_star += 1;
+                ni = matched_from_star;
+                pi = star;
+                continue;
+            }
+            return false;
+        }
+        if pi < pat_chars.len() && (pat_chars[pi] == '?' || pat_chars[pi] == name_chars[ni]) {
+            pi += 1;
+            ni += 1;
+            continue;
+        }
+        if let Some(star) = star_idx {
+            matched_from_star += 1;
+            ni = matched_from_star;
+            pi = star;
+            continue;
+        }
+        return false;
+    }
+    while pi < pat_chars.len() && pat_chars[pi] == '*' {
+        pi += 1;
+    }
+    pi == pat_chars.len()
+}
+
+pub fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
+    #[cfg(windows)]
+    let pattern = pattern.replace('/', "\\");
+    #[cfg(not(windows))]
+    let pattern = pattern.to_string();
+    let absolute = pattern.starts_with(sep);
+    if absolute && !path.starts_with(sep) {
+        return false;
+    }
+    let pat = if absolute {
+        pattern.trim_start_matches(sep)
+    } else {
+        pattern.as_str()
+    };
+    let path_trimmed = path.trim_start_matches(sep);
+    if !pat.contains(sep) && !pat.contains('/') {
+        let name = path_basename_text(path, sep);
+        if pat == "*" {
+            return !name.is_empty();
+        }
+        if pat.starts_with("*.") && pat.matches('*').count() == 1 && !pat.contains('?') {
+            return name.ends_with(&pat[1..]);
+        }
+        return path_match_simple_pattern(&name, pat);
+    }
+
+    fn split_components(text: &str, sep: char) -> Vec<&str> {
+        text.split(sep)
+            .filter(|part| !part.is_empty() && *part != ".")
+            .collect()
+    }
+
+    fn match_components(path_parts: &[&str], pat_parts: &[&str]) -> bool {
+        fn inner(path_parts: &[&str], pat_parts: &[&str], pi: usize, pj: usize) -> bool {
+            if pj >= pat_parts.len() {
+                return pi >= path_parts.len();
+            }
+            let pat = pat_parts[pj];
+            if pat == "**" {
+                if inner(path_parts, pat_parts, pi, pj + 1) {
+                    return true;
+                }
+                return pi < path_parts.len() && inner(path_parts, pat_parts, pi + 1, pj);
+            }
+            if pi >= path_parts.len() {
+                return false;
+            }
+            path_match_simple_pattern(path_parts[pi], pat)
+                && inner(path_parts, pat_parts, pi + 1, pj + 1)
+        }
+        inner(path_parts, pat_parts, 0, 0)
+    }
+
+    let pat_parts = split_components(pat, sep);
+    let path_parts = split_components(path_trimmed, sep);
+    if absolute {
+        return match_components(&path_parts, &pat_parts);
+    }
+    for start in 0..=path_parts.len() {
+        if match_components(&path_parts[start..], &pat_parts) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn glob_has_magic_text(pathname: &str) -> bool {
+    pathname
+        .as_bytes()
+        .iter()
+        .any(|ch| matches!(*ch, b'*' | b'?' | b'['))
+}
+
+pub fn glob_is_hidden_text(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+pub fn glob_split_path_text(pathname: &str, sep: char) -> (String, String) {
+    let (drive, root, tail) = path_splitroot_text(pathname, sep);
+    if tail.is_empty() {
+        return (format!("{drive}{root}"), String::new());
+    }
+
+    let mut head = String::new();
+    let mut base = tail.clone();
+    if let Some(idx) = tail.rfind(sep) {
+        head = tail[..idx + sep.len_utf8()].to_string();
+        base = tail[idx + sep.len_utf8()..].to_string();
+    }
+
+    if !head.is_empty() {
+        let all_sep = head.chars().all(|ch| ch == sep);
+        if !all_sep {
+            head = head.trim_end_matches(sep).to_string();
+        }
+    }
+
+    let dirname = format!("{drive}{root}{head}");
+    (dirname, base)
+}
+
+pub fn glob_join_text(base: &str, part: &str, sep: char) -> String {
+    if base.is_empty() {
+        return part.to_string();
+    }
+    if path_isabs_text(part, sep) {
+        return part.to_string();
+    }
+    #[cfg(windows)]
+    {
+        let (part_drive, _part_root, _part_tail) = path_splitroot_text(part, sep);
+        if !part_drive.is_empty() {
+            return part.to_string();
+        }
+    }
+    path_join_text(base.to_string(), part, sep)
+}
+
+pub fn glob_escape_text(pathname: &str, sep: char) -> String {
+    let (drive, root, tail) = path_splitroot_text(pathname, sep);
+    let mut out = String::new();
+    out.push_str(&drive);
+    out.push_str(&root);
+    for ch in tail.chars() {
+        if matches!(ch, '*' | '?' | '[') {
+            out.push('[');
+            out.push(ch);
+            out.push(']');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn glob_regex_escape_char(out: &mut String, ch: char) {
+    if matches!(
+        ch,
+        '.' | '^' | '$' | '+' | '{' | '}' | '(' | ')' | '|' | '\\' | '[' | ']'
+    ) {
+        out.push('\\');
+    }
+    out.push(ch);
+}
+
+fn glob_regex_escape_text(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        glob_regex_escape_char(&mut out, ch);
+    }
+    out
+}
+
+fn glob_split_on_seps(pat: &str, seps: &[char]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in pat.chars() {
+        if seps.contains(&ch) {
+            out.push(cur);
+            cur = String::new();
+        } else {
+            cur.push(ch);
+        }
+    }
+    out.push(cur);
+    out
+}
+
+type GlobTranslateCharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
+
+fn glob_translate_parse_char_class(
+    pat: &[char],
+    mut idx: usize,
+) -> Option<GlobTranslateCharClassParse> {
+    if idx >= pat.len() || pat[idx] != '[' {
+        return None;
+    }
+    idx += 1;
+    if idx >= pat.len() {
+        return None;
+    }
+
+    let mut negate = false;
+    if pat[idx] == '!' {
+        negate = true;
+        idx += 1;
+    }
+    if idx >= pat.len() {
+        return None;
+    }
+
+    let mut singles: Vec<char> = Vec::new();
+    let mut ranges: Vec<(char, char)> = Vec::new();
+
+    if pat[idx] == ']' {
+        singles.push(']');
+        idx += 1;
+    }
+    while idx < pat.len() && pat[idx] != ']' {
+        if idx + 2 < pat.len() && pat[idx + 1] == '-' && pat[idx + 2] != ']' {
+            let start = pat[idx];
+            let end = pat[idx + 2];
+            if start <= end {
+                ranges.push((start, end));
+            }
+            idx += 3;
+            continue;
+        }
+        singles.push(pat[idx]);
+        idx += 1;
+    }
+    if idx >= pat.len() || pat[idx] != ']' {
+        return None;
+    }
+    Some((singles, ranges, negate, idx + 1))
+}
+
+fn glob_translate_char_class(
+    singles: Vec<char>,
+    ranges: Vec<(char, char)>,
+    negate: bool,
+) -> String {
+    let mut out = String::new();
+    out.push('[');
+    if negate {
+        out.push('^');
+    }
+    for ch in singles {
+        if matches!(ch, '\\' | '^' | '-' | ']') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    for (start, end) in ranges {
+        if matches!(start, '\\' | '^' | '-' | ']') {
+            out.push('\\');
+        }
+        out.push(start);
+        out.push('-');
+        if matches!(end, '\\' | '^' | '-' | ']') {
+            out.push('\\');
+        }
+        out.push(end);
+    }
+    out.push(']');
+    out
+}
+
+fn glob_translate_segment(part: &str, star_expr: &str, ques_expr: &str) -> String {
+    let chars: Vec<char> = part.chars().collect();
+    let mut out = String::new();
+    let mut idx = 0usize;
+    while idx < chars.len() {
+        match chars[idx] {
+            '*' => out.push_str(star_expr),
+            '?' => out.push_str(ques_expr),
+            '[' => {
+                if let Some((singles, ranges, negate, next_idx)) =
+                    glob_translate_parse_char_class(&chars, idx)
+                {
+                    out.push_str(&glob_translate_char_class(singles, ranges, negate));
+                    idx = next_idx;
+                    continue;
+                } else {
+                    out.push_str("\\[");
+                }
+            }
+            ch => glob_regex_escape_char(&mut out, ch),
+        }
+        idx += 1;
+    }
+    out
+}
+
+fn glob_default_seps_text() -> String {
+    #[cfg(windows)]
+    {
+        "\\/".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "/".to_string()
+    }
+}
+
+pub fn glob_translate_text(
+    pat: &str,
+    recursive: bool,
+    include_hidden: bool,
+    seps: Option<&str>,
+) -> String {
+    let seps_text = if let Some(raw) = seps {
+        if raw.is_empty() {
+            glob_default_seps_text()
+        } else {
+            raw.to_string()
+        }
+    } else {
+        glob_default_seps_text()
+    };
+    let sep_chars: Vec<char> = seps_text.chars().collect();
+    let escaped_seps = glob_regex_escape_text(&seps_text);
+    let any_sep = if sep_chars.len() > 1 {
+        format!("[{escaped_seps}]")
+    } else {
+        escaped_seps.clone()
+    };
+    let not_sep = format!("[^{escaped_seps}]");
+    let (one_last_segment, one_segment, any_segments, any_last_segments) = if include_hidden {
+        let one_last_segment = format!("{not_sep}+");
+        let one_segment = format!("{one_last_segment}{any_sep}");
+        let any_segments = format!("(?:.+{any_sep})?");
+        let any_last_segments = ".*".to_string();
+        (
+            one_last_segment,
+            one_segment,
+            any_segments,
+            any_last_segments,
+        )
+    } else {
+        let one_last_segment = format!("[^{escaped_seps}.]{not_sep}*");
+        let one_segment = format!("{one_last_segment}{any_sep}");
+        let any_segments = format!("(?:{one_segment})*");
+        let any_last_segments = format!("{any_segments}(?:{one_last_segment})?");
+        (
+            one_last_segment,
+            one_segment,
+            any_segments,
+            any_last_segments,
+        )
+    };
+
+    let parts = glob_split_on_seps(pat, &sep_chars);
+    let last_part_idx = parts.len().saturating_sub(1);
+    let mut results: Vec<String> = Vec::new();
+    for (idx, part) in parts.iter().enumerate() {
+        if part == "*" {
+            if idx < last_part_idx {
+                results.push(one_segment.clone());
+            } else {
+                results.push(one_last_segment.clone());
+            }
+        } else if recursive && part == "**" {
+            if idx < last_part_idx {
+                if parts[idx + 1] != "**" {
+                    results.push(any_segments.clone());
+                }
+            } else {
+                results.push(any_last_segments.clone());
+            }
+        } else {
+            if !part.is_empty() {
+                if !include_hidden && part.chars().next().is_some_and(|ch| ch == '*' || ch == '?') {
+                    results.push(r"(?!\.)".to_string());
+                }
+                let star_expr = format!("{not_sep}*");
+                results.push(glob_translate_segment(part, &star_expr, &not_sep));
+            }
+            if idx < last_part_idx {
+                results.push(any_sep.clone());
+            }
+        }
+    }
+    let body = results.join("");
+    format!("(?s:{body})\\Z")
+}
+
+fn glob_split_components(text: &str, sep: char) -> Vec<String> {
+    text.split(sep)
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn glob_walk(
+    dir: &std::path::Path,
+    rel_parts: &mut Vec<String>,
+    pat_parts: &[String],
+    pi: usize,
+    sep: char,
+    out: &mut Vec<String>,
+) -> std::io::Result<()> {
+    let sep_s = sep.to_string();
+    if pi >= pat_parts.len() {
+        if !rel_parts.is_empty() {
+            out.push(rel_parts.join(&sep_s));
+        }
+        return Ok(());
+    }
+    let pat = &pat_parts[pi];
+    if pat == "**" {
+        glob_walk(dir, rel_parts, pat_parts, pi + 1, sep, out)?;
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            rel_parts.push(name);
+            glob_walk(&entry.path(), rel_parts, pat_parts, pi, sep, out)?;
+            rel_parts.pop();
+        }
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !path_match_simple_pattern(&name, pat) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        rel_parts.push(name);
+        if pi + 1 >= pat_parts.len() {
+            out.push(rel_parts.join(&sep_s));
+        } else if file_type.is_dir() {
+            glob_walk(&entry.path(), rel_parts, pat_parts, pi + 1, sep, out)?;
+        }
+        rel_parts.pop();
+    }
+    Ok(())
+}
+
+pub fn path_glob_matches(
+    dir: &std::path::Path,
+    pattern: &str,
+    sep: char,
+) -> std::io::Result<Vec<String>> {
+    #[cfg(windows)]
+    let pattern = pattern.replace('/', "\\");
+    #[cfg(not(windows))]
+    let pattern = pattern.to_string();
+    let pat_parts = glob_split_components(&pattern, sep);
+    let mut matches: Vec<String> = Vec::new();
+    if !pat_parts.is_empty() {
+        let mut rel_parts: Vec<String> = Vec::new();
+        glob_walk(dir, &mut rel_parts, &pat_parts, 0, sep, &mut matches)?;
+    }
+    Ok(matches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,5 +1029,63 @@ mod tests {
             }),
             "r/n/$$/$MISSING"
         );
+    }
+
+    #[test]
+    fn matches_glob_text_patterns() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let path = format!("root{sep}pkg{sep}mod.py");
+        assert!(path_match_simple_pattern("mod.py", "*.py"));
+        assert!(path_match_simple_pattern("mod7.py", "mod[0-9].py"));
+        assert!(!path_match_simple_pattern("modx.py", "mod[!x].py"));
+        assert!(path_match_text(&path, &format!("pkg{sep}*.py"), sep));
+        assert!(path_match_text(
+            &path,
+            &format!("root{sep}**{sep}*.py"),
+            sep
+        ));
+        assert!(glob_has_magic_text("*.py"));
+        assert!(!glob_has_magic_text("plain.py"));
+        assert!(glob_is_hidden_text(".secret"));
+        assert_eq!(
+            glob_split_path_text(&format!("root{sep}pkg{sep}*.py"), sep),
+            (format!("root{sep}pkg"), "*.py".to_string())
+        );
+        assert_eq!(
+            glob_join_text(&format!("root{sep}pkg"), "mod.py", sep),
+            format!("root{sep}pkg{sep}mod.py")
+        );
+        assert_eq!(glob_escape_text("a*b?[c]", sep), "a[*]b[?][[]c]");
+        assert_eq!(
+            glob_translate_text("*.py", false, false, Some("/")),
+            r"(?s:(?!\.)[^/]*\.py)\Z"
+        );
+    }
+
+    #[test]
+    fn walks_glob_matches_from_platform_authority() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "molt_path_text_glob_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pkg").join("sub")).unwrap();
+        std::fs::write(root.join("pkg").join("a.py"), b"a").unwrap();
+        std::fs::write(root.join("pkg").join("sub").join("b.py"), b"b").unwrap();
+        std::fs::write(root.join("pkg").join("sub").join("c.txt"), b"c").unwrap();
+
+        let mut matches = path_glob_matches(&root, &format!("pkg{sep}**{sep}*.py"), sep).unwrap();
+        matches.sort();
+        assert_eq!(
+            matches,
+            vec![format!("pkg{sep}a.py"), format!("pkg{sep}sub{sep}b.py")]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
