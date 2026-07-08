@@ -8,8 +8,8 @@
 
 use crate::bridge::{
     alloc_dict_with_pairs, alloc_list, alloc_tuple, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, exception_pending, inc_ref_bits, object_type_id, raise_exception, seq_vec_ref,
-    string_obj_to_owned, to_i64,
+    dict_set_in_place, exception_pending, inc_ref_bits, object_type_id, raise_exception,
+    seq_vec_ref, string_obj_to_owned, to_i64,
 };
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;

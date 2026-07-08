@@ -14,7 +14,7 @@ members = [
     "molt-runtime-path",
     "molt-runtime-text",
     "molt-stdlib-difflib",
-    "molt-runtime-graphlib",
+    "molt-stdlib-graphlib",
     "molt-runtime-logging",
     "molt-runtime-stringprep",
     "molt-runtime-http",

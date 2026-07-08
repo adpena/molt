@@ -7,35 +7,35 @@ pub fn resolve_symbol_with(
 ) -> Option<u64> {
     match symbol {
         "molt_graphlib_new" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_new",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_new",
             crate::graphlib::molt_graphlib_new as *const (),
         )),
         "molt_graphlib_add" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_add",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_add",
             crate::graphlib::molt_graphlib_add as *const (),
         )),
         "molt_graphlib_prepare" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_prepare",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_prepare",
             crate::graphlib::molt_graphlib_prepare as *const (),
         )),
         "molt_graphlib_get_ready" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_get_ready",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_get_ready",
             crate::graphlib::molt_graphlib_get_ready as *const (),
         )),
         "molt_graphlib_is_active" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_is_active",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_is_active",
             crate::graphlib::molt_graphlib_is_active as *const (),
         )),
         "molt_graphlib_done" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_done",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_done",
             crate::graphlib::molt_graphlib_done as *const (),
         )),
         "molt_graphlib_static_order" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_static_order",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_static_order",
             crate::graphlib::molt_graphlib_static_order as *const (),
         )),
         "molt_graphlib_drop" => Some(runtime_fn_addr(
-            "molt_runtime_graphlib::graphlib::molt_graphlib_drop",
+            "molt_stdlib_graphlib::graphlib::molt_graphlib_drop",
             crate::graphlib::molt_graphlib_drop as *const (),
         )),
         _ => None,

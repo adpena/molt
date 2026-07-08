@@ -121,8 +121,6 @@ pub use molt_runtime_collections;
 pub use molt_runtime_compression;
 #[cfg(feature = "stdlib_crypto")]
 pub use molt_runtime_crypto;
-#[cfg(feature = "stdlib_graphlib")]
-pub use molt_runtime_graphlib;
 #[cfg(feature = "stdlib_http")]
 pub use molt_runtime_http;
 #[cfg(feature = "stdlib_ipaddress")]
@@ -149,6 +147,8 @@ pub use molt_runtime_xml;
 pub use molt_runtime_zoneinfo;
 #[cfg(feature = "stdlib_difflib")]
 pub use molt_stdlib_difflib;
+#[cfg(feature = "stdlib_graphlib")]
+pub use molt_stdlib_graphlib;
 #[cfg(feature = "stdlib_tk")]
 mod tk_bridge;
 #[cfg(feature = "stdlib_tk")]
@@ -728,8 +728,6 @@ pub use molt_runtime_compression::lzma::*;
 pub use molt_runtime_compression::tarfile::*;
 #[cfg(feature = "stdlib_compression")]
 pub use molt_runtime_compression::zlib::*;
-#[cfg(feature = "stdlib_graphlib")]
-pub use molt_runtime_graphlib::graphlib::*;
 #[cfg(feature = "stdlib_http")]
 pub use molt_runtime_http::functions_http::*;
 #[cfg(feature = "stdlib_http")]
@@ -788,6 +786,8 @@ pub use molt_runtime_xml::xml_sax::*;
 pub use molt_runtime_zoneinfo::zoneinfo::*;
 #[cfg(feature = "stdlib_difflib")]
 pub use molt_stdlib_difflib::difflib::*;
+#[cfg(feature = "stdlib_graphlib")]
+pub use molt_stdlib_graphlib::graphlib::*;
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(unused_imports)]

@@ -198,7 +198,7 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
-name = "molt-runtime-graphlib"
+name = "molt-stdlib-graphlib"
 layer = 3
 role = "stdlib satellite"
 

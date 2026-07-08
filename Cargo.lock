@@ -2977,7 +2977,6 @@ dependencies = [
  "molt-runtime-compression",
  "molt-runtime-core",
  "molt-runtime-crypto",
- "molt-runtime-graphlib",
  "molt-runtime-http",
  "molt-runtime-ipaddress",
  "molt-runtime-itertools",
@@ -2995,6 +2994,7 @@ dependencies = [
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
  "molt-stdlib-difflib",
+ "molt-stdlib-graphlib",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -3084,14 +3084,6 @@ dependencies = [
  "sha3",
  "shake",
  "subtle",
-]
-
-[[package]]
-name = "molt-runtime-graphlib"
-version = "0.1.0"
-dependencies = [
- "molt-lang-obj-model",
- "molt-runtime-core",
 ]
 
 [[package]]
@@ -3273,6 +3265,14 @@ dependencies = [
 
 [[package]]
 name = "molt-stdlib-difflib"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-stdlib-graphlib"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
