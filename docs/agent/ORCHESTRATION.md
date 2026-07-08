@@ -7,6 +7,26 @@ lane you don't own, stop and pick from "Delegated to Codex" instead.
 
 Last updated: 2026-07-08 by the orchestrator.
 
+## 🚨 CANONICAL PATHS — BINDING, READ FIRST (2026-07-08)
+
+The `C:\Users\adpen\OneDrive\Documents\molt` checkout is being **PERMANENTLY
+DELETED**. It is 477 commits stale, OneDrive-sync-throttled, and the root of the
+drift/slowness. **STOP using it — cwd, venv, worktrees, `.pth`, PYTHONPATH, and
+`uv`/`pip` runs.** Work ONLY from these paths:
+
+| purpose | canonical path |
+|---|---|
+| **checkout / all git work + landings** | `C:\Molt\molt-src` (NVMe, off OneDrive, own `.git`) |
+| **python env** | `C:\Molt\molt-src\.venv` (run `uv sync` there once) |
+| **build artifacts** | `C:\Molt` (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` + `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`, NVMe, auto-janitored) |
+
+**FORBIDDEN (being deleted):** `C:\Users\adpen\OneDrive\Documents\molt` and every
+worktree under `D:\Molt\worktrees` (they reference the doomed OneDrive `.git`). Do
+NOT point the editable install / `.pth` / PYTHONPATH there; do NOT run `uv`/`pip`
+from it (that re-anchors the editable install onto OneDrive — the exact drift being
+retired). If your cwd or `.pth` resolves to the OneDrive checkout, STOP and
+`cd C:\Molt\molt-src` first. The orchestrator owns the retirement; do not fight it.
+
 ## 🚀 DEV-VELOCITY PROTOCOL (2026-07-08 CURRENT) — Codex: REBASE, then COMPLY
 
 The orchestrator landed a full dev-velocity overhaul on origin/main. **Every Codex
