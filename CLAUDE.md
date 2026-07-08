@@ -17,6 +17,14 @@ does not recreate third-party libraries inside Molt.
   compatibility overlays. Upstream package behavior flows through source
   admitted by package custody, source-recompiled extensions, C-API/ABI
   primitives, typed storage, import/module custody, and generated reachability.
+- A retained package-semantics clone may exist only as quarantined
+  research/reference material under an explicit `.molt-research-quarantine`
+  marker. It must not be placed under `src/`, packaged, shipped, added to
+  `PYTHONPATH`, `MOLT_MODULE_ROOTS`, module roots, build inputs, import
+  resolution, runtime packages, wheels, or compatibility surfaces. The current
+  tinygrad reference clone is allowed only at
+  `demos/tinygrad/reference_stdlib/`; tests may load it only through
+  `tests/helpers/tinygrad_stdlib_loader.py`.
 - A missing package primitive is completed as a reusable compiler/runtime or
   package-custody primitive, or it fails closed with a precise diagnostic. It is
   never faked with host-CPython fallback, monkeypatching, vendored forks, baked
@@ -24,10 +32,11 @@ does not recreate third-party libraries inside Molt.
   implementations.
 - Harness self-protection is mandatory: `tools/fail_closed_gate.py` must reject
   new ecosystem-baked files, ecosystem build crutches, Molt-owned third-party
-  package reimplementations, fail-open stubs, duplicate authorities, and
-  TODO-as-plan surfaces unless a tracked structural-resolution row already owns
-  deleting the registered debt. Spawn prompts must carry this rule; subagents
-  are not allowed to "unblock" a package by reinventing it.
+  package reimplementations, research-quarantine breaches, fail-open stubs,
+  duplicate authorities, and TODO-as-plan surfaces unless a tracked
+  structural-resolution row already owns deleting the registered debt. Spawn
+  prompts must carry this rule; subagents are not allowed to "unblock" a package
+  by reinventing it.
 
 # Molt Agent Contract
 

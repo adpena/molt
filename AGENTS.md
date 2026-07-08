@@ -16,6 +16,14 @@ third-party libraries inside Molt.
   through source admitted by package custody, source-recompiled extensions,
   C-API/ABI primitives, typed storage, import/module custody, and generated
   reachability.
+- A retained package-semantics clone may exist only as quarantined
+  research/reference material under an explicit `.molt-research-quarantine`
+  marker. It must not be placed under `src/`, packaged, shipped, added to
+  `PYTHONPATH`, `MOLT_MODULE_ROOTS`, module roots, build inputs, import
+  resolution, runtime packages, wheels, or compatibility surfaces. The current
+  tinygrad reference clone is allowed only at
+  `demos/tinygrad/reference_stdlib/`; tests may load it only through
+  `tests/helpers/tinygrad_stdlib_loader.py`.
 - A missing package primitive is completed as a reusable compiler/runtime or
   package-custody primitive, or it fails closed with a precise diagnostic. It is
   never faked with host-CPython fallback, monkeypatching, vendored forks, baked
@@ -23,9 +31,10 @@ third-party libraries inside Molt.
   implementations.
 - Harness self-protection is mandatory: `tools/fail_closed_gate.py` rejects new
   ecosystem-baked files, ecosystem build crutches, Molt-owned package
-  reimplementations, fail-open stubs, duplicate authorities, and TODO-as-plan
-  surfaces unless a structural-resolution row owns deleting the debt. Spawn
-  prompts carry this rule; subagents may not "unblock" by reinventing a package.
+  reimplementations, research-quarantine breaches, fail-open stubs, duplicate
+  authorities, and TODO-as-plan surfaces unless a structural-resolution row owns
+  deleting the debt. Spawn prompts carry this rule; subagents may not "unblock"
+  by reinventing a package.
 
 Related contracts: `docs/agent/AGENTS.full.md` "Ecosystem Compatibility
 Doctrine", `docs/design/foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md`

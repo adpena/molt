@@ -112,6 +112,7 @@ def test_every_discovered_site_is_registered_in_seed() -> None:
 def test_tinygrad_reference_clone_is_quarantined() -> None:
     """The former Molt-owned tinygrad package clone is kept only as a
     demos/reference fixture, never as a shipped stdlib package root."""
+    gate = _load_gate_module()
     assert not (_REPO_ROOT / "src" / "molt" / "stdlib" / "tinygrad").exists()
     assert (
         _REPO_ROOT
@@ -121,6 +122,47 @@ def test_tinygrad_reference_clone_is_quarantined() -> None:
         / "tinygrad"
         / "__init__.py"
     ).exists()
+    assert (
+        _REPO_ROOT
+        / "demos"
+        / "tinygrad"
+        / "reference_stdlib"
+        / ".molt-research-quarantine"
+    ).exists()
+    quarantine_violations = [
+        v for v in gate.check_research_quarantines(_REPO_ROOT) if "tinygrad" in v.detail
+    ]
+    assert not quarantine_violations, (
+        "tinygrad reference clone must remain quarantined:\n"
+        + "\n".join(str(v) for v in quarantine_violations)
+    )
+
+
+def test_negative_control_research_quarantine_usage_fails_then_passes(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    quarantine = tmp_path / "demos" / "tinygrad" / "reference_stdlib"
+    (quarantine / "tinygrad").mkdir(parents=True)
+    (quarantine / ".molt-research-quarantine").write_text(
+        "research/reference only\n",
+        encoding="utf-8",
+    )
+    consumer = tmp_path / "src" / "molt" / "bad_reference.py"
+    consumer.parent.mkdir(parents=True)
+    consumer.write_text(
+        "ROOT = 'demos/tinygrad/reference_stdlib'\n",
+        encoding="utf-8",
+    )
+
+    fail = gate.check_research_quarantines(tmp_path)
+    assert any(
+        v.kind == "research-quarantine-usage" and "bad_reference.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail on a non-allowlisted quarantine reference; got {fail}"
+
+    consumer.unlink()
+    assert not gate.check_research_quarantines(tmp_path)
 
 
 def test_registry_rows_use_only_known_classes() -> None:
@@ -238,6 +280,55 @@ def test_negative_control_ecosystem_reimplementation_fails_then_passes(
 
     shutil.rmtree(package.parent)
     assert not gate.discover_ecosystem_reimplementations(tmp_path)
+    assert not gate.run_gate(tmp_path, registry)
+
+
+# ---------------------------------------------------------------------------
+# Negative control A4 - research/reference quarantine
+# ---------------------------------------------------------------------------
+def test_negative_control_reference_quarantine_fails_then_passes(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    registry = _write_empty_registry(tmp_path)
+    package = (
+        tmp_path
+        / "demos"
+        / "tinygrad"
+        / "reference_stdlib"
+        / "tinygrad"
+        / "__init__.py"
+    )
+    package.parent.mkdir(parents=True, exist_ok=True)
+    package.write_text("# quarantined reference package\n", encoding="utf-8")
+
+    missing_marker = gate.check_research_quarantines(tmp_path)
+    assert any(v.kind == "missing-research-quarantine-marker" for v in missing_marker)
+
+    marker = (
+        tmp_path
+        / "demos"
+        / "tinygrad"
+        / "reference_stdlib"
+        / ".molt-research-quarantine"
+    )
+    marker.write_text("research only\n", encoding="utf-8")
+    bad_user = tmp_path / "src" / "molt" / "cli" / "bad_reference_root.py"
+    bad_user.parent.mkdir(parents=True, exist_ok=True)
+    bad_user.write_text(
+        'MODULE_ROOT = "demos/tinygrad/reference_stdlib"\n'
+        'os.environ["MOLT_MODULE_ROOTS"] = MODULE_ROOT\n',
+        encoding="utf-8",
+    )
+
+    fail = gate.run_gate(tmp_path, registry)
+    assert any(
+        v.kind == "research-quarantine-usage" and "bad_reference_root.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail when implementation paths reference the clone; got {fail}"
+
+    bad_user.unlink()
+    assert not gate.check_research_quarantines(tmp_path)
     assert not gate.run_gate(tmp_path, registry)
 
 

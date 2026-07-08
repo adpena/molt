@@ -304,6 +304,15 @@ third-party package lane.
   ecosystem packages, do not add Molt-owned Python stub, shim, or package
   surfaces. Import routing may only point at upstream source admitted through
   package custody or fail closed with a precise diagnostic.
+- Retained package-semantics clones are allowed only as quarantined
+  research/reference artifacts under an explicit `.molt-research-quarantine`
+  marker. They are not implementation authority: do not add them to `src/`, do
+  not package or ship them, and do not wire them into `PYTHONPATH`,
+  `MOLT_MODULE_ROOTS`, module roots, build inputs, import resolution, runtime
+  packages, wheels, or compatibility surfaces. The current tinygrad reference
+  clone is allowed only at `demos/tinygrad/reference_stdlib/`; tests that need
+  archaeology/regression behavior load it only through
+  `tests/helpers/tinygrad_stdlib_loader.py`.
 - Python-source trap, hard stop: Python is allowed as user source input, thin
   import/API routing, diagnostics, generators, and test fixtures. It is not an
   implementation substrate for NumPy/SciPy/pandas/tinygrad semantics, ndarray
@@ -335,10 +344,12 @@ third-party package lane.
   ecosystem support.
 - Harness self-protection is mandatory: `tools/fail_closed_gate.py` must reject
   new ecosystem-baked files, ecosystem build crutches, Molt-owned third-party
-  package reimplementations, fail-open stubs, duplicate authorities, and
-  TODO-as-plan surfaces unless a tracked structural-resolution row already owns
-  deleting the registered debt. Existing rows are debt baselines that may only
-  move downward.
+  package reimplementations, research-quarantine breaches, fail-open stubs,
+  duplicate authorities, and TODO-as-plan surfaces unless a tracked
+  structural-resolution row already owns deleting the registered debt. Existing
+  rows are debt baselines that may only move downward; research-quarantine
+  breaches are direct gate failures and are fixed by removing the wiring, not by
+  blessing the clone as support.
 - For NumPy/SciPy specifically, prefer strengthening the libmolt CPython/NumPy
   source-compat ABI, ndarray/tensor primitives, and package native-artifact
   pipeline over adding bespoke Python implementations of `numpy` or
