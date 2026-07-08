@@ -53,9 +53,15 @@ divergent worktrees — that is how signal gets lost.
    worktrees short-lived; rebase often; never accumulate long-lived divergent
    worktrees. The orchestrator is pruning merged worktrees/branches — do not fight
    it; if a worktree vanishes it was fully merged (zero loss).
-6. **REVIEW IN FLIGHT.** A full-stack adversarial review (bug classes / metabugs /
-   optimizations) is running under the orchestrator. CONFIRMED findings become
-   assigned lanes on this board — do not freelance into them; wait for assignment.
+6. **REVIEW FINDINGS ARE LANES.** The full-stack adversarial review COMPLETED:
+   **26 CONFIRMED** findings (bug classes / metabugs / optimizations), each
+   independently refuted-then-survived, in
+   [REVIEW_FINDINGS_20260708.md](REVIEW_FINDINGS_20260708.md) with per-finding
+   lane assignments + fix directions. Claim your lane's findings via CLAIMS.md and
+   own them end-to-end (fix + teeth + land + verify FULL surface). Orchestrator
+   owns build-throughput (#2 linker, #11 debug=0) + coordinates the E1-adjacent
+   ABI items (#1 PyType_FromMetaclass fail-open is P0). Do NOT freelance outside
+   your assigned lane.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
