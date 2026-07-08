@@ -891,32 +891,77 @@ def _prepare_frontend_parallel_batch(
     return cached_results, worker_payloads, context_digest_by_module, None
 
 
+def _inject_async_exc(thread_id: int, exc_type: type | None) -> None:
+    """Raise ``exc_type`` in the thread ``thread_id`` (or clear a pending one when
+    ``exc_type`` is None) via the CPython async-exception API. This is what lets the
+    phase timeout fire off the main thread and on platforms without SIGALRM."""
+    import ctypes
+
+    tid = ctypes.c_ulong(thread_id)
+    exc = ctypes.py_object(exc_type) if exc_type is not None else ctypes.py_object()
+    modified = ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, exc)
+    if modified > 1:
+        # Should only ever touch one thread; undo to avoid corrupting others.
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(tid, ctypes.py_object())
+
+
 @contextmanager
 def _phase_timeout(timeout_s: float | None, *, phase_name: str):
     if timeout_s is None:
         yield
         return
-    if os.name != "posix" or threading.current_thread() is not threading.main_thread():
-        yield
-        return
-    if not hasattr(signal, "setitimer") or not hasattr(signal, "ITIMER_REAL"):
-        yield
-        return
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    message = (
+        f"{phase_name} timed out after {timeout_s:.1f}s (MOLT_FRONTEND_PHASE_TIMEOUT)"
+    )
 
-    def _timeout_handler(_signum: int, _frame: Any) -> None:
-        raise TimeoutError(
-            f"{phase_name} timed out after {timeout_s:.1f}s "
-            "(MOLT_FRONTEND_PHASE_TIMEOUT)"
-        )
+    # Precise path: on the POSIX main thread, SIGALRM/setitimer interrupts even
+    # C-level calls. Everywhere else (Windows, or any worker thread — the parallel
+    # lowering pool) fall through to a portable watchdog instead of silently
+    # dropping the configured bound (configured != effective was the bug).
+    if (
+        os.name == "posix"
+        and threading.current_thread() is threading.main_thread()
+        and hasattr(signal, "setitimer")
+        and hasattr(signal, "ITIMER_REAL")
+    ):
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
 
-    signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.setitimer(signal.ITIMER_REAL, timeout_s)
+        def _timeout_handler(_signum: int, _frame: Any) -> None:
+            raise TimeoutError(message)
+
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout_s)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_timer[0] > 0 or previous_timer[1] > 0:
+                signal.setitimer(
+                    signal.ITIMER_REAL, previous_timer[0], previous_timer[1]
+                )
+        return
+
+    # Portable watchdog: a daemon timer injects TimeoutError into THIS thread at the
+    # next bytecode boundary (frontend lowering is Python-bytecode bound). Enforced
+    # on Windows and inside worker threads, where SIGALRM is unavailable.
+    thread_id = threading.get_ident()
+    fired = threading.Event()
+
+    def _fire() -> None:
+        fired.set()
+        _inject_async_exc(thread_id, TimeoutError)
+
+    timer = threading.Timer(timeout_s, _fire)
+    timer.daemon = True
+    timer.start()
     try:
         yield
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0, 0.0)
-        signal.signal(signal.SIGALRM, previous_handler)
-        if previous_timer[0] > 0 or previous_timer[1] > 0:
-            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+        timer.cancel()
+        if fired.is_set():
+            # If the timer fired in the race window after work completed, a
+            # TimeoutError may be pending-but-undelivered — clear it so it can't
+            # strike unrelated later code. (No-op once it has been delivered.)
+            _inject_async_exc(thread_id, None)
