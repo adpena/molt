@@ -35,6 +35,7 @@ worktree, or locked worktrees.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -212,9 +213,13 @@ def main() -> int:
 
     captured: set[str] = set()
     if args.bundle or args.prune:
+        # Default the bundle to a stable `drift-bundles/` dir under the artifact
+        # root (never a worktree being pruned, and off the repo working tree). An
+        # explicit --bundle always wins.
+        default_root = Path(os.environ.get("MOLT_EXT_ROOT") or REPO_ROOT.parent)
         bundle_path = Path(
             args.bundle
-            or (REPO_ROOT.parent / f"drift-harvest-{int(now)}.bundle")
+            or (default_root / "drift-bundles" / f"drift-harvest-{int(now)}.bundle")
         )
         captured = bundle_signal(rows, bundle_path)
         print(f"bundled {len(captured)} signal worktrees -> {bundle_path}")
@@ -239,8 +244,15 @@ def main() -> int:
         if rm.returncode == 0:
             removed += 1
             if r["branch"]:
-                # SUPERSEDED is on main; SIGNAL is bundled — force-delete is safe.
-                if _git(["branch", "-D", r["branch"]]).returncode == 0:
+                # Force-delete the branch ONLY if we can PROVE its work is safe: the
+                # tip is an ancestor of origin/main (truly landed — immune to a
+                # git-cherry merge-commit miscount), OR its commits were captured in
+                # this run's bundle. Otherwise fall back to `-d` (refuses unmerged).
+                on_main = (
+                    _git(["merge-base", "--is-ancestor", r["branch"], "origin/main"]).returncode == 0
+                )
+                flag = "-D" if (on_main or r["path"] in captured) else "-d"
+                if _git(["branch", flag, r["branch"]]).returncode == 0:
                     deleted += 1
     _git(["worktree", "prune"])
     # Delete any remaining fully-merged branches (not checked out anywhere).
