@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+import molt.dx as DX
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import cargo_execution as CARGO_EXEC
 from molt.cli import runtime_build as RUNTIME_BUILD
@@ -303,11 +304,10 @@ def test_memory_bounded_cargo_jobs_fits_small_box(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Simulate an 8GB, 16-core box: jobs must be bounded well below 16 so the
-    # wasm build fits memory instead of thrashing.
-    monkeypatch.setattr(
-        CARGO_EXEC, "_total_system_memory_bytes", lambda: 8 * 1024**3
-    )
-    monkeypatch.setattr(CARGO_EXEC.os, "cpu_count", lambda: 16)
+    # wasm build fits memory instead of thrashing. Job-sizing authority lives in
+    # molt.dx (re-exported through cargo_execution); patch it where it resolves.
+    monkeypatch.setattr(DX, "_total_system_memory_bytes", lambda: 8 * 1024**3)
+    monkeypatch.setattr(DX.os, "cpu_count", lambda: 16)
     jobs = CARGO_EXEC._memory_bounded_cargo_jobs()
     assert jobs is not None
     assert jobs < 16
@@ -318,11 +318,11 @@ def test_memory_bounded_cargo_jobs_fits_small_box(
 def test_memory_bounded_cargo_jobs_capped_by_cpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Lots of RAM but few cores: never exceed the CPU count.
-    monkeypatch.setattr(
-        CARGO_EXEC, "_total_system_memory_bytes", lambda: 128 * 1024**3
-    )
-    monkeypatch.setattr(CARGO_EXEC.os, "cpu_count", lambda: 4)
+    # Lots of RAM but few cores: never exceed the CPU count. The job-sizing
+    # authority lives in molt.dx (re-exported through cargo_execution), so patch
+    # the probes where the function resolves them.
+    monkeypatch.setattr(DX, "_total_system_memory_bytes", lambda: 128 * 1024**3)
+    monkeypatch.setattr(DX.os, "cpu_count", lambda: 4)
     assert CARGO_EXEC._memory_bounded_cargo_jobs() == 4
 
 
