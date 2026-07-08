@@ -552,6 +552,43 @@ session/key brought the same parent check down to 89.2s. Also, the stale row's
 contained `guarded_exec: ... returncode=0`, but the queue surfaced only stale
 terminalization.
 
+2026-07-08 C1 follow-up: pure glob/path pattern text now also belongs to the
+same `molt-runtime-platform::path_text` authority. The satellite owns wildcard
+matching, path-pattern matching, glob magic detection, hidden-name detection,
+glob split/join, `glob.escape`, `glob.translate`, and recursive
+`path_glob_matches` traversal. `molt-runtime` keeps the runtime adapter:
+PyObject/path conversion, `dir_fd` interpretation, directory listing, glob
+iterator object allocation/state, capability checks, and IO exception
+translation. This deletes the old sibling text authority from
+`builtins/io_path_utils.rs` instead of creating a second glob helper lane.
+Proof rows: first satellite row
+`20260708T060849-c1-platform-glob-text-satellite-20260708a-ad3d6a2ca5ae42f9`
+compiled and failed one new test because the fixture used the Rust thread name
+inside a Windows path, producing an invalid `::` filename; `diagnose
+--append-note` recorded that as a Rust test failure. Row
+`20260708T061026-c1-platform-glob-text-satellite-20260708b-ff4258f45aec4842`
+correctly stayed blocked because `--depends-on` is a pass-only scheduling edge,
+not rerun lineage. Corrected rerun
+`20260708T061105-c1-platform-glob-text-satellite-20260708c-20a465695cab4018`
+passed `cargo test -p molt-runtime-platform path_text -j1` in 23.8s after the
+fixture switched to a Windows-safe timestamp, and is linked back to the failed
+row as a `reruns` edge. Dependent parent fan-in row
+`20260708T061159-c1-platform-glob-text-fanin-20260708a-0f754206436a46b9`
+passed `cargo check -p molt-runtime --features stdlib_micro -j1` in 585.8s.
+That fan-in rebuilt broad stdlib dependencies (`aws-lc`, `sqlite`, `lzma`, and
+friends) for a pure path/glob adapter move, which is citable evidence that C1
+must keep cutting parent-runtime fan-in rather than accepting the current DX.
+The board-required real-build row
+`20260708T075031-c1-platform-glob-text-molt-build-e2e-20260708a-9d59782a341c4711`
+terminalized stale after 618.5s with `memory-guard-summary-incomplete` after
+writing only `.molt_build/module_metadata/module_registry.json`; `diagnose
+--append-note` recorded that as queue-custody incomplete evidence, not product
+proof. Rerun
+`20260708T080147-c1-platform-glob-text-molt-build-e2e-20260708b-7b99a07a9f574466`
+passed `python -m molt.cli build tests/differential/basic/module_metadata.py
+--target native --out-dir tmp/c1_glob_text_e2e_postrebase_rerun --json` in
+371.8s on the rebased `origin/main` tree.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
