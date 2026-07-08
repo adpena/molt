@@ -1,9 +1,11 @@
-use super::generators_async::asyncio_clear_pending_exception;
 use super::process_task_state;
 use super::wake_await_waiters;
 use crate::*;
 
 mod child_resources;
+mod stdio;
+
+pub use stdio::molt_asyncio_subprocess_stdio_normalize;
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
@@ -17,8 +19,6 @@ use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
-use std::process::Stdio;
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,16 +29,14 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
+use stdio::PROCESS_STDIO_PIPE;
+use stdio::process_stdio_mode;
+#[cfg(not(target_arch = "wasm32"))]
+use stdio::{NativeProcessStdio, configure_native_stdio};
 
 // --- Process ---
 
-const PROCESS_STDIO_INHERIT: i32 = 0;
-const PROCESS_STDIO_PIPE: i32 = 1;
-const PROCESS_STDIO_DEVNULL: i32 = 2;
-const PROCESS_STDIO_STDOUT: i32 = -2;
-const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
-#[cfg(not(target_arch = "wasm32"))]
-const PROCESS_PIPE_MAX_QUEUED_BYTES_ENV: &str = "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES";
 #[cfg(not(target_arch = "wasm32"))]
 const PROCESS_TEARDOWN_TERM_GRACE_MS_ENV: &str = "MOLT_PROCESS_TEARDOWN_TERM_GRACE_MS";
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,20 +55,6 @@ fn trace_process_spawn() -> bool {
             Some("1")
         )
     })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn process_pipe_max_queued_bytes() -> usize {
-    std::env::var(PROCESS_PIPE_MAX_QUEUED_BYTES_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(super::channels::default_stream_max_queued_bytes)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn new_process_pipe_stream() -> u64 {
-    super::channels::stream_new_with_byte_budget(0, process_pipe_max_queued_bytes())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,220 +77,6 @@ fn ignore_sigpipe() {
             libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
     });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn stdio_from_fd(fd: i32) -> Option<Stdio> {
-    if fd < 0 {
-        return None;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::fd::FromRawFd;
-        let duped = unsafe { libc::dup(fd as libc::c_int) };
-        if duped < 0 {
-            return None;
-        }
-        let file = unsafe { std::fs::File::from_raw_fd(duped) };
-        Some(Stdio::from(file))
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::FromRawHandle;
-        let duped = unsafe { libc::dup(fd as libc::c_int) };
-        if duped < 0 {
-            return None;
-        }
-        let handle = unsafe { libc::get_osfhandle(duped as libc::c_int) };
-        if handle == -1 {
-            unsafe {
-                libc::close(duped as libc::c_int);
-            }
-            return None;
-        }
-        let file = unsafe { std::fs::File::from_raw_handle(handle as *mut _) };
-        Some(Stdio::from(file))
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = fd;
-        None
-    }
-}
-
-fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i32 {
-    let obj = obj_from_bits(bits);
-    if obj.is_none() {
-        return PROCESS_STDIO_INHERIT;
-    }
-    match to_i64(obj) {
-        Some(val) => {
-            let Ok(val) = i32::try_from(val) else {
-                return raise_exception::<_>(_py, "ValueError", &format!("invalid {name} mode"));
-            };
-            match val {
-                PROCESS_STDIO_INHERIT | PROCESS_STDIO_PIPE | PROCESS_STDIO_DEVNULL => val,
-                PROCESS_STDIO_STDOUT if name == "stderr" => val,
-                val if val >= PROCESS_STDIO_FD_BASE => val,
-                _ => raise_exception::<_>(_py, "ValueError", &format!("invalid {name} mode")),
-            }
-        }
-        None => raise_exception::<_>(_py, "TypeError", &format!("{name} must be int or None")),
-    }
-}
-
-/// # Safety
-/// - All arguments must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
-    value_bits: u64,
-    allow_stdout_bits: u64,
-    pipe_const_bits: u64,
-    devnull_const_bits: u64,
-    stdout_const_bits: u64,
-    inherit_mode_bits: u64,
-    pipe_mode_bits: u64,
-    devnull_mode_bits: u64,
-    stdout_mode_bits: u64,
-    fd_base_bits: u64,
-    fd_max_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(inherit_mode) = to_i64(obj_from_bits(inherit_mode_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid asyncio subprocess stdio inherit mode constant",
-            );
-        };
-        let Some(pipe_mode) = to_i64(obj_from_bits(pipe_mode_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid asyncio subprocess stdio pipe mode constant",
-            );
-        };
-        let Some(devnull_mode) = to_i64(obj_from_bits(devnull_mode_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid asyncio subprocess stdio devnull mode constant",
-            );
-        };
-        let Some(stdout_mode) = to_i64(obj_from_bits(stdout_mode_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid asyncio subprocess stdio stdout mode constant",
-            );
-        };
-        let Some(fd_base) = to_i64(obj_from_bits(fd_base_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid asyncio subprocess stdio fd_base constant",
-            );
-        };
-        let Some(fd_max) = to_i64(obj_from_bits(fd_max_bits)) else {
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "invalid asyncio subprocess stdio fd_max constant",
-            );
-        };
-
-        let value_obj = obj_from_bits(value_bits);
-        if value_obj.is_none() {
-            return MoltObject::from_int(inherit_mode).bits();
-        }
-        let allow_stdout = is_truthy(_py, obj_from_bits(allow_stdout_bits));
-
-        if obj_eq(_py, value_obj, obj_from_bits(pipe_const_bits)) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_int(pipe_mode).bits();
-        }
-        if obj_eq(_py, value_obj, obj_from_bits(devnull_const_bits)) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_int(devnull_mode).bits();
-        }
-        if allow_stdout && obj_eq(_py, value_obj, obj_from_bits(stdout_const_bits)) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_int(stdout_mode).bits();
-        }
-
-        let mut fd = to_i64(value_obj);
-        if fd.is_none() {
-            let Some(fileno_name_bits) = attr_name_bits_from_bytes(_py, b"fileno") else {
-                return MoltObject::none().bits();
-            };
-            let missing = missing_bits(_py);
-            let fileno_bits = molt_getattr_builtin(value_bits, fileno_name_bits, missing);
-            dec_ref_bits(_py, fileno_name_bits);
-            if exception_pending(_py) {
-                unsafe { asyncio_clear_pending_exception(_py) };
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "unsupported subprocess stdio option",
-                );
-            }
-            if fileno_bits == missing {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "unsupported subprocess stdio option",
-                );
-            }
-            if !is_truthy(_py, obj_from_bits(molt_is_callable(fileno_bits))) {
-                if !obj_from_bits(fileno_bits).is_none() {
-                    dec_ref_bits(_py, fileno_bits);
-                }
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "unsupported subprocess stdio option",
-                );
-            }
-            let out_bits = unsafe { call_callable0(_py, fileno_bits) };
-            if !obj_from_bits(fileno_bits).is_none() {
-                dec_ref_bits(_py, fileno_bits);
-            }
-            if exception_pending(_py) {
-                unsafe { asyncio_clear_pending_exception(_py) };
-                if !obj_from_bits(out_bits).is_none() {
-                    dec_ref_bits(_py, out_bits);
-                }
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "unsupported subprocess stdio option",
-                );
-            }
-            fd = to_i64(obj_from_bits(out_bits));
-            if !obj_from_bits(out_bits).is_none() {
-                dec_ref_bits(_py, out_bits);
-            }
-        }
-        let Some(fd) = fd else {
-            return raise_exception::<u64>(_py, "TypeError", "unsupported subprocess stdio option");
-        };
-        if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "file descriptor must be >= 0");
-        }
-        if fd > fd_max {
-            return raise_exception::<u64>(_py, "ValueError", "file descriptor is too large");
-        }
-        match fd_base.checked_add(fd) {
-            Some(encoded) => MoltObject::from_int(encoded).bits(),
-            None => raise_exception::<u64>(_py, "ValueError", "file descriptor is too large"),
-        }
-    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -574,6 +344,27 @@ fn spawn_process_writer(mut writer: impl Write + Send + 'static, stream_bits: u6
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn attach_process_stdio(child: &mut std::process::Child, stdio: &mut NativeProcessStdio) {
+    if stdio.stdin_stream != 0
+        && let Some(stdin) = child.stdin.take()
+    {
+        spawn_process_writer(stdin, stdio.stdin_stream);
+    }
+    if stdio.stdout_stream != 0 {
+        if let Some(reader) = stdio.merged_stdout_reader.take() {
+            spawn_process_reader(reader, stdio.stdout_stream);
+        } else if let Some(stdout) = child.stdout.take() {
+            spawn_process_reader(stdout, stdio.stdout_stream);
+        }
+    }
+    if stdio.stderr_stream != 0
+        && let Some(stderr) = child.stderr.take()
+    {
+        spawn_process_reader(stderr, stdio.stderr_stream);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `args_bits`, `env_bits`, and `cwd_bits` must be valid runtime-encoded objects.
 /// The runtime must be initialized and the call must be allowed to enter the GIL.
@@ -674,235 +465,21 @@ pub unsafe extern "C" fn molt_process_spawn(
                 );
             }
 
-            let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
-                new_process_pipe_stream()
-            } else {
-                0
-            };
-            let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
-                new_process_pipe_stream()
-            } else {
-                0
-            };
-            let mut stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
-                new_process_pipe_stream()
-            } else {
-                0
-            };
-            if stderr_mode == PROCESS_STDIO_STDOUT {
-                stderr_stream = 0;
-            }
-
-            let mut merged_stdout_reader = None;
-
-            match stdin_mode {
-                PROCESS_STDIO_PIPE => {
-                    cmd.stdin(Stdio::piped());
-                }
-                PROCESS_STDIO_DEVNULL => {
-                    cmd.stdin(Stdio::null());
-                }
-                val if val >= PROCESS_STDIO_FD_BASE => {
-                    let fd = val - PROCESS_STDIO_FD_BASE;
-                    let Some(stdio) = stdio_from_fd(fd) else {
-                        if stdin_stream != 0 {
-                            molt_stream_drop(stdin_stream);
-                        }
-                        if stdout_stream != 0 {
-                            molt_stream_drop(stdout_stream);
-                        }
-                        if stderr_stream != 0 {
-                            molt_stream_drop(stderr_stream);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid stdin file descriptor",
-                        );
-                    };
-                    cmd.stdin(stdio);
-                }
-                _ => {
-                    cmd.stdin(Stdio::inherit());
-                }
-            };
-
-            if stderr_mode == PROCESS_STDIO_STDOUT {
-                if stdout_mode == PROCESS_STDIO_PIPE {
-                    let (reader, writer) = match os_pipe::pipe() {
-                        Ok(val) => val,
-                        Err(err) => {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_os_error::<u64>(_py, err, "pipe");
-                        }
-                    };
-                    let writer_err = match writer.try_clone() {
-                        Ok(val) => val,
-                        Err(err) => {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_os_error::<u64>(_py, err, "pipe");
-                        }
-                    };
-                    cmd.stdout(writer);
-                    cmd.stderr(writer_err);
-                    merged_stdout_reader = Some(reader);
-                } else if stdout_mode == PROCESS_STDIO_DEVNULL {
-                    cmd.stdout(Stdio::null());
-                    cmd.stderr(Stdio::null());
-                } else if stdout_mode >= PROCESS_STDIO_FD_BASE {
-                    let fd = stdout_mode - PROCESS_STDIO_FD_BASE;
-                    let Some(stdout_stdio) = stdio_from_fd(fd) else {
-                        if stdin_stream != 0 {
-                            molt_stream_drop(stdin_stream);
-                        }
-                        if stdout_stream != 0 {
-                            molt_stream_drop(stdout_stream);
-                        }
-                        if stderr_stream != 0 {
-                            molt_stream_drop(stderr_stream);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid stdout file descriptor",
-                        );
-                    };
-                    let Some(stderr_stdio) = stdio_from_fd(fd) else {
-                        if stdin_stream != 0 {
-                            molt_stream_drop(stdin_stream);
-                        }
-                        if stdout_stream != 0 {
-                            molt_stream_drop(stdout_stream);
-                        }
-                        if stderr_stream != 0 {
-                            molt_stream_drop(stderr_stream);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid stderr file descriptor",
-                        );
-                    };
-                    cmd.stdout(stdout_stdio);
-                    cmd.stderr(stderr_stdio);
-                } else {
-                    cmd.stdout(Stdio::inherit());
-                    cmd.stderr(Stdio::inherit());
-                }
-            } else {
-                match stdout_mode {
-                    PROCESS_STDIO_PIPE => {
-                        cmd.stdout(Stdio::piped());
-                    }
-                    PROCESS_STDIO_DEVNULL => {
-                        cmd.stdout(Stdio::null());
-                    }
-                    val if val >= PROCESS_STDIO_FD_BASE => {
-                        let fd = val - PROCESS_STDIO_FD_BASE;
-                        let Some(stdio) = stdio_from_fd(fd) else {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "invalid stdout file descriptor",
-                            );
-                        };
-                        cmd.stdout(stdio);
-                    }
-                    _ => {
-                        cmd.stdout(Stdio::inherit());
-                    }
+            let mut process_stdio =
+                match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
+                    Ok(stdio) => stdio,
+                    Err(err) => return err,
                 };
-                match stderr_mode {
-                    PROCESS_STDIO_PIPE => {
-                        cmd.stderr(Stdio::piped());
-                    }
-                    PROCESS_STDIO_DEVNULL => {
-                        cmd.stderr(Stdio::null());
-                    }
-                    val if val >= PROCESS_STDIO_FD_BASE => {
-                        let fd = val - PROCESS_STDIO_FD_BASE;
-                        let Some(stdio) = stdio_from_fd(fd) else {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "invalid stderr file descriptor",
-                            );
-                        };
-                        cmd.stderr(stdio);
-                    }
-                    _ => {
-                        cmd.stderr(Stdio::inherit());
-                    }
-                };
-            }
 
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
                 Err(err) => {
-                    if stdin_stream != 0 {
-                        molt_stream_drop(stdin_stream);
-                    }
-                    if stdout_stream != 0 {
-                        molt_stream_drop(stdout_stream);
-                    }
-                    if stderr_stream != 0 {
-                        molt_stream_drop(stderr_stream);
-                    }
+                    process_stdio.drop_streams();
                     return raise_os_error::<u64>(_py, err, "spawn");
                 }
             };
 
-            if stdin_stream != 0
-                && let Some(stdin) = child.stdin.take()
-            {
-                spawn_process_writer(stdin, stdin_stream);
-            }
-            if stdout_stream != 0 {
-                if let Some(reader) = merged_stdout_reader.take() {
-                    spawn_process_reader(reader, stdout_stream);
-                } else if let Some(stdout) = child.stdout.take() {
-                    spawn_process_reader(stdout, stdout_stream);
-                }
-            }
-            if stderr_stream != 0
-                && let Some(stderr) = child.stderr.take()
-            {
-                spawn_process_reader(stderr, stderr_stream);
-            }
+            attach_process_stdio(&mut child, &mut process_stdio);
 
             let pid = child.id();
             let owned_process_group = if owns_process_group {
@@ -921,9 +498,9 @@ pub unsafe extern "C" fn molt_process_spawn(
                 teardown_draining: AtomicBool::new(false),
                 streams_released: AtomicBool::new(false),
                 wait_future: Mutex::new(None),
-                stdin_stream,
-                stdout_stream,
-                stderr_stream,
+                stdin_stream: process_stdio.stdin_stream,
+                stdout_stream: process_stdio.stdout_stream,
+                stderr_stream: process_stdio.stderr_stream,
                 wait_lock: Mutex::new(()),
                 condvar: Condvar::new(),
             });
@@ -1071,235 +648,21 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             #[cfg(unix)]
             apply_child_memory_rlimit(&mut cmd);
 
-            let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
-                new_process_pipe_stream()
-            } else {
-                0
-            };
-            let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
-                new_process_pipe_stream()
-            } else {
-                0
-            };
-            let mut stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
-                new_process_pipe_stream()
-            } else {
-                0
-            };
-            if stderr_mode == PROCESS_STDIO_STDOUT {
-                stderr_stream = 0;
-            }
-
-            let mut merged_stdout_reader = None;
-
-            match stdin_mode {
-                PROCESS_STDIO_PIPE => {
-                    cmd.stdin(Stdio::piped());
-                }
-                PROCESS_STDIO_DEVNULL => {
-                    cmd.stdin(Stdio::null());
-                }
-                val if val >= PROCESS_STDIO_FD_BASE => {
-                    let fd = val - PROCESS_STDIO_FD_BASE;
-                    let Some(stdio) = stdio_from_fd(fd) else {
-                        if stdin_stream != 0 {
-                            molt_stream_drop(stdin_stream);
-                        }
-                        if stdout_stream != 0 {
-                            molt_stream_drop(stdout_stream);
-                        }
-                        if stderr_stream != 0 {
-                            molt_stream_drop(stderr_stream);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid stdin file descriptor",
-                        );
-                    };
-                    cmd.stdin(stdio);
-                }
-                _ => {
-                    cmd.stdin(Stdio::inherit());
-                }
-            };
-
-            if stderr_mode == PROCESS_STDIO_STDOUT {
-                if stdout_mode == PROCESS_STDIO_PIPE {
-                    let (reader, writer) = match os_pipe::pipe() {
-                        Ok(val) => val,
-                        Err(err) => {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_os_error::<u64>(_py, err, "pipe");
-                        }
-                    };
-                    let writer_err = match writer.try_clone() {
-                        Ok(val) => val,
-                        Err(err) => {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_os_error::<u64>(_py, err, "pipe");
-                        }
-                    };
-                    cmd.stdout(writer);
-                    cmd.stderr(writer_err);
-                    merged_stdout_reader = Some(reader);
-                } else if stdout_mode == PROCESS_STDIO_DEVNULL {
-                    cmd.stdout(Stdio::null());
-                    cmd.stderr(Stdio::null());
-                } else if stdout_mode >= PROCESS_STDIO_FD_BASE {
-                    let fd = stdout_mode - PROCESS_STDIO_FD_BASE;
-                    let Some(stdout_stdio) = stdio_from_fd(fd) else {
-                        if stdin_stream != 0 {
-                            molt_stream_drop(stdin_stream);
-                        }
-                        if stdout_stream != 0 {
-                            molt_stream_drop(stdout_stream);
-                        }
-                        if stderr_stream != 0 {
-                            molt_stream_drop(stderr_stream);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid stdout file descriptor",
-                        );
-                    };
-                    let Some(stderr_stdio) = stdio_from_fd(fd) else {
-                        if stdin_stream != 0 {
-                            molt_stream_drop(stdin_stream);
-                        }
-                        if stdout_stream != 0 {
-                            molt_stream_drop(stdout_stream);
-                        }
-                        if stderr_stream != 0 {
-                            molt_stream_drop(stderr_stream);
-                        }
-                        return raise_exception::<_>(
-                            _py,
-                            "ValueError",
-                            "invalid stderr file descriptor",
-                        );
-                    };
-                    cmd.stdout(stdout_stdio);
-                    cmd.stderr(stderr_stdio);
-                } else {
-                    cmd.stdout(Stdio::inherit());
-                    cmd.stderr(Stdio::inherit());
-                }
-            } else {
-                match stdout_mode {
-                    PROCESS_STDIO_PIPE => {
-                        cmd.stdout(Stdio::piped());
-                    }
-                    PROCESS_STDIO_DEVNULL => {
-                        cmd.stdout(Stdio::null());
-                    }
-                    val if val >= PROCESS_STDIO_FD_BASE => {
-                        let fd = val - PROCESS_STDIO_FD_BASE;
-                        let Some(stdio) = stdio_from_fd(fd) else {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "invalid stdout file descriptor",
-                            );
-                        };
-                        cmd.stdout(stdio);
-                    }
-                    _ => {
-                        cmd.stdout(Stdio::inherit());
-                    }
+            let mut process_stdio =
+                match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
+                    Ok(stdio) => stdio,
+                    Err(err) => return err,
                 };
-                match stderr_mode {
-                    PROCESS_STDIO_PIPE => {
-                        cmd.stderr(Stdio::piped());
-                    }
-                    PROCESS_STDIO_DEVNULL => {
-                        cmd.stderr(Stdio::null());
-                    }
-                    val if val >= PROCESS_STDIO_FD_BASE => {
-                        let fd = val - PROCESS_STDIO_FD_BASE;
-                        let Some(stdio) = stdio_from_fd(fd) else {
-                            if stdin_stream != 0 {
-                                molt_stream_drop(stdin_stream);
-                            }
-                            if stdout_stream != 0 {
-                                molt_stream_drop(stdout_stream);
-                            }
-                            if stderr_stream != 0 {
-                                molt_stream_drop(stderr_stream);
-                            }
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "invalid stderr file descriptor",
-                            );
-                        };
-                        cmd.stderr(stdio);
-                    }
-                    _ => {
-                        cmd.stderr(Stdio::inherit());
-                    }
-                };
-            }
 
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
                 Err(err) => {
-                    if stdin_stream != 0 {
-                        molt_stream_drop(stdin_stream);
-                    }
-                    if stdout_stream != 0 {
-                        molt_stream_drop(stdout_stream);
-                    }
-                    if stderr_stream != 0 {
-                        molt_stream_drop(stderr_stream);
-                    }
+                    process_stdio.drop_streams();
                     return raise_os_error::<u64>(_py, err, "spawn");
                 }
             };
 
-            if stdin_stream != 0
-                && let Some(stdin) = child.stdin.take()
-            {
-                spawn_process_writer(stdin, stdin_stream);
-            }
-            if stdout_stream != 0 {
-                if let Some(reader) = merged_stdout_reader.take() {
-                    spawn_process_reader(reader, stdout_stream);
-                } else if let Some(stdout) = child.stdout.take() {
-                    spawn_process_reader(stdout, stdout_stream);
-                }
-            }
-            if stderr_stream != 0
-                && let Some(stderr) = child.stderr.take()
-            {
-                spawn_process_reader(stderr, stderr_stream);
-            }
+            attach_process_stdio(&mut child, &mut process_stdio);
 
             let pid = child.id();
             let owned_process_group = if owns_process_group {
@@ -1318,9 +681,9 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
                 teardown_draining: AtomicBool::new(false),
                 streams_released: AtomicBool::new(false),
                 wait_future: Mutex::new(None),
-                stdin_stream,
-                stdout_stream,
-                stderr_stream,
+                stdin_stream: process_stdio.stdin_stream,
+                stdout_stream: process_stdio.stdout_stream,
+                stderr_stream: process_stdio.stderr_stream,
                 wait_lock: Mutex::new(()),
                 condvar: Condvar::new(),
             });
