@@ -7,8 +7,8 @@ use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_stdlib_text::textwrap::{
-    TextWrapOptions, textwrap_dedent_impl, textwrap_default_options, textwrap_line_is_space,
-    textwrap_splitlines_keepends, textwrap_wrap_impl,
+    TextWrapOptions, textwrap_dedent_impl, textwrap_default_options, textwrap_indent_default_impl,
+    textwrap_indent_result_impl, textwrap_shorten_impl, textwrap_wrap_impl,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -120,11 +120,10 @@ pub(crate) fn textwrap_indent_with_predicate(
     prefix: &str,
     predicate_bits: Option<u64>,
 ) -> u64 {
-    let mut out = String::with_capacity(text.len().saturating_add(prefix.len() * 4));
-    for line in textwrap_splitlines_keepends(text) {
-        let should_prefix = if let Some(predicate) = predicate_bits {
-            let Some(line_bits) = alloc_string_bits(_py, &line) else {
-                return MoltObject::none().bits();
+    let out = if let Some(predicate) = predicate_bits {
+        match textwrap_indent_result_impl(text, prefix, |line| {
+            let Some(line_bits) = alloc_string_bits(_py, line) else {
+                return Err(MoltObject::none().bits());
             };
             let result_bits = unsafe { call_callable1(_py, predicate, line_bits) };
             dec_ref_bits(_py, line_bits);
@@ -132,21 +131,20 @@ pub(crate) fn textwrap_indent_with_predicate(
                 if !obj_from_bits(result_bits).is_none() {
                     dec_ref_bits(_py, result_bits);
                 }
-                return MoltObject::none().bits();
+                return Err(MoltObject::none().bits());
             }
             let truthy = is_truthy(_py, obj_from_bits(result_bits));
             if !obj_from_bits(result_bits).is_none() {
                 dec_ref_bits(_py, result_bits);
             }
-            truthy
-        } else {
-            !textwrap_line_is_space(&line)
-        };
-        if should_prefix {
-            out.push_str(prefix);
+            Ok(truthy)
+        }) {
+            Ok(out) => out,
+            Err(bits) => return bits,
         }
-        out.push_str(&line);
-    }
+    } else {
+        textwrap_indent_default_impl(text, prefix)
+    };
     let out_ptr = alloc_string(_py, out.as_bytes());
     if out_ptr.is_null() {
         MoltObject::none().bits()
@@ -191,33 +189,7 @@ pub extern "C" fn molt_textwrap_shorten(
             string_obj_to_owned(obj_from_bits(placeholder_bits))
                 .unwrap_or_else(|| " [...]".to_string())
         };
-        // Collapse whitespace and truncate
-        let collapsed: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
-        if (collapsed.len() as i64) <= width {
-            let out_ptr = alloc_string(_py, collapsed.as_bytes());
-            if out_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(out_ptr).bits();
-        }
-        let ph_len = placeholder.len() as i64;
-        let max_text = width - ph_len;
-        if max_text < 0 {
-            let out_ptr = alloc_string(_py, placeholder.as_bytes());
-            if out_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(out_ptr).bits();
-        }
-        // Find last space before max_text
-        let mut truncate_at = max_text as usize;
-        if truncate_at < collapsed.len() {
-            // Find last space at or before truncate_at
-            if let Some(pos) = collapsed[..truncate_at].rfind(' ') {
-                truncate_at = pos;
-            }
-        }
-        let result = format!("{}{}", &collapsed[..truncate_at].trim_end(), placeholder);
+        let result = textwrap_shorten_impl(&text, width, &placeholder);
         let out_ptr = alloc_string(_py, result.as_bytes());
         if out_ptr.is_null() {
             MoltObject::none().bits()

@@ -465,6 +465,33 @@ pub fn textwrap_wrap_impl(text: &str, options: &TextWrapOptions) -> Result<Vec<S
     textwrap_wrap_chunks(chunks, options)
 }
 
+pub fn textwrap_shorten_impl(text: &str, width: i64, placeholder: &str) -> String {
+    let collapsed: String = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+    if textwrap_char_len(&collapsed) <= width {
+        return collapsed;
+    }
+
+    let max_text = width - textwrap_char_len(placeholder);
+    if max_text < 0 {
+        return placeholder.to_string();
+    }
+
+    let chars: Vec<char> = collapsed.chars().collect();
+    let mut truncate_at = max_text as usize;
+    if truncate_at < chars.len()
+        && let Some(pos) = chars[..truncate_at].iter().rposition(|ch| *ch == ' ')
+    {
+        truncate_at = pos;
+    }
+
+    let prefix = chars[..truncate_at]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    format!("{prefix}{placeholder}")
+}
+
 pub fn textwrap_line_is_space(line: &str) -> bool {
     !line.is_empty() && line.chars().all(char::is_whitespace)
 }
@@ -501,6 +528,38 @@ pub fn textwrap_splitlines_keepends(text: &str) -> Vec<String> {
         out.push(text[line_start..].to_string());
     }
     out
+}
+
+pub fn textwrap_indent_result_impl<E, F>(
+    text: &str,
+    prefix: &str,
+    mut predicate: F,
+) -> Result<String, E>
+where
+    F: FnMut(&str) -> Result<bool, E>,
+{
+    let mut out = String::with_capacity(text.len().saturating_add(prefix.len() * 4));
+    for line in textwrap_splitlines_keepends(text) {
+        if predicate(&line)? {
+            out.push_str(prefix);
+        }
+        out.push_str(&line);
+    }
+    Ok(out)
+}
+
+pub fn textwrap_indent_impl<F>(text: &str, prefix: &str, mut predicate: F) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    match textwrap_indent_result_impl(text, prefix, |line| Ok::<bool, ()>(predicate(line))) {
+        Ok(out) => out,
+        Err(()) => unreachable!(),
+    }
+}
+
+pub fn textwrap_indent_default_impl(text: &str, prefix: &str) -> String {
+    textwrap_indent_impl(text, prefix, |line| !textwrap_line_is_space(line))
 }
 
 pub fn textwrap_dedent_impl(text: &str) -> String {
@@ -628,7 +687,34 @@ mod tests {
         assert!(!textwrap_line_is_space("line1\n"));
         assert!(textwrap_line_is_space("\n"));
 
+        assert_eq!(
+            textwrap_indent_default_impl("line1\n\nline2", "> "),
+            "> line1\n\n> line2"
+        );
+        assert_eq!(
+            textwrap_indent_impl("line1\n\nline2", "> ", |_| true),
+            "> line1\n> \n> line2"
+        );
+        let fallible =
+            textwrap_indent_result_impl("a\nb", "> ", |line| Ok::<bool, ()>(line.starts_with('b')))
+                .unwrap();
+        assert_eq!(fallible, "a\n> b");
+
         let dedented = textwrap_dedent_impl("    alpha\n      beta\n");
         assert_eq!(dedented, "alpha\n  beta\n");
+    }
+
+    #[test]
+    fn shorten_contracts_live_in_text_authority() {
+        assert_eq!(
+            textwrap_shorten_impl("Hello  world!", 12, " [...]"),
+            "Hello world!"
+        );
+        assert_eq!(
+            textwrap_shorten_impl("Hello  world!", 11, " [...]"),
+            "Hello [...]"
+        );
+        assert_eq!(textwrap_shorten_impl("alpha beta", 2, "..."), "...");
+        assert_eq!(textwrap_shorten_impl("å β gamma", 5, "..."), "å...");
     }
 }
