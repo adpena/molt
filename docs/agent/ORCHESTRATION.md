@@ -34,6 +34,29 @@ checkout. Codex agents: **bank unique WIP to a `wip/<lane>-<date>` branch and pu
 it**, keep worktrees short-lived, rebase often. Do NOT accumulate long-lived
 divergent worktrees — that is how signal gets lost.
 
+## 📋 NEW PROTOCOL (binding for every agent, 2026-07-08)
+
+1. **OWNERSHIP GATE.** No arc ends on a report/plan/handoff when executable work
+   remains in your lane. Each arc lands a commit, a queued proof (cite the run id),
+   or a passing test — or names a genuinely external/frozen blocker. Reporting
+   without landing is POISON (ORCHESTRATOR_GOAL.md non-negotiable #1).
+2. **VERIFY THE FULL SURFACE.** "Landed + verified" means you ran the whole
+   relevant test surface, not one file. An unrun RED test elsewhere = not verified.
+3. **BUILD HYGIENE.** `git fetch && rebase origin/main` before every arc. Do NOT
+   set `MOLT_SESSION_ID` for ordinary `molt build`/`cargo build` (that opts back
+   into a cold per-session target dir); leave it unset to reuse the persistent
+   `D:\Molt\target`. Set it ONLY for perf/bench/test-shard isolation.
+4. **PROFILE BEFORE OPTIMIZING.** State the hot path + Big-O and attest a
+   before/after delta for any perf/build change (tools/dx_build_timer.py,
+   tools/build_graph_audit.py). No optimizing by feel.
+5. **DRIFT DISCIPLINE.** Bank unique WIP to `wip/<lane>-<date>` and PUSH it; keep
+   worktrees short-lived; rebase often; never accumulate long-lived divergent
+   worktrees. The orchestrator is pruning merged worktrees/branches — do not fight
+   it; if a worktree vanishes it was fully merged (zero loss).
+6. **REVIEW IN FLIGHT.** A full-stack adversarial review (bug classes / metabugs /
+   optimizations) is running under the orchestrator. CONFIRMED findings become
+   assigned lanes on this board — do not freelance into them; wait for assignment.
+
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
 **This board carries OPERATOR-DELEGATED AUTHORITY. The human operator has
