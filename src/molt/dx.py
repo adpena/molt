@@ -460,8 +460,8 @@ def _artifact_root_is_windows_exfat(artifact_root: Path) -> bool:
 def _default_toolchain_root_for_artifact_root(artifact_root: Path) -> Path:
     """Toolchain root (MOLT_TARGET_ROOT) derived from the artifact root.
 
-    ``D:\\Molt`` -> ``D:\\Molt\\target-root`` so build outputs, caches, temp
-    state, and managed toolchains share the selected APDataStore authority.
+    ``C:\\Molt`` -> ``C:\\Molt\\target-root`` on the canonical workstation
+    root, and similarly for any explicitly selected artifact root.
     """
     return artifact_root / DEFAULT_TARGET_ROOT_DIRNAME
 
