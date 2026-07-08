@@ -114,3 +114,35 @@ def test_pinned_asset_url_is_wellformed():
         url.startswith("https://github.com/mozilla/sccache/releases/download/")
         and dx._SCCACHE_VERSION in url
     )
+
+
+def test_cargo_build_env_incremental_on_when_sccache_off(monkeypatch):
+    # The warm-rebuild accelerator: with sccache OFF (Windows default), incremental
+    # MUST be on — else every rebuild pays the full cold runtime compile (~15 min).
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
+    monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    env = ce._cargo_build_env()
+    assert env["CARGO_INCREMENTAL"] == "1"
+
+
+def test_cargo_build_env_incremental_off_when_sccache_wrapper(monkeypatch):
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.setenv("RUSTC_WRAPPER", "/opt/sccache")
+    monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    env = ce._cargo_build_env()
+    assert env["CARGO_INCREMENTAL"] == "0"  # sccache skips incremental units
+
+
+def test_maybe_enable_sccache_forces_incremental_off(monkeypatch):
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.setattr(ce.shutil, "which", lambda name: "/opt/sccache")
+    monkeypatch.setattr(ce, "_sccache_server_responsive", lambda p: True)
+    monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
+    env = {"MOLT_USE_SCCACHE": "1"}  # forced on
+    ce._maybe_enable_sccache(env)
+    assert env.get("RUSTC_WRAPPER", "").endswith("sccache")
+    assert env["CARGO_INCREMENTAL"] == "0"
