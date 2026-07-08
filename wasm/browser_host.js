@@ -3764,6 +3764,16 @@ export const loadMoltWasm = async (options = {}) => {
         legacyTableBase: LEGACY_WASM_TABLE_BASE,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
+        rawIndexHasInstalledEntry: (rawTableIdx) => {
+          if (!table) {
+            return false;
+          }
+          try {
+            return typeof table.get(rawTableIdx) === 'function';
+          } catch (err) {
+            return false;
+          }
+        },
       });
       const directName = tableRefExportName(dispatchIdx);
       const appDirectFn = outputInstance?.exports?.[directName];
