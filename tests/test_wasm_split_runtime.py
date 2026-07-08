@@ -96,10 +96,10 @@ def _split_runtime_build_env(
     env["MOLT_BACKEND_DAEMON"] = "0"
     if hermetic_module_roots:
         env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
-    env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    # Cargo parallelism and wasm sccache policy are owned by the DX/cargo
+    # authorities. This harness must not silently force the cold serial path.
     return env
 
 
@@ -128,6 +128,8 @@ def test_split_runtime_target_dir_defaults_to_dx_session_target() -> None:
 def test_build_split_uses_wasm_test_memory_guard(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
+    monkeypatch.delenv("MOLT_WASM_DISABLE_SCCACHE", raising=False)
     source = tmp_path / "main.py"
     source.write_text("print(42)\n", encoding="utf-8")
     output_dir = tmp_path / "out"
@@ -153,6 +155,10 @@ def test_build_split_uses_wasm_test_memory_guard(
     assert "-m" in args and "molt.cli" in args
     assert "--split-runtime" in args
     assert kwargs["cwd"] == ROOT
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env.get("CARGO_BUILD_JOBS") != "1"
+    assert "MOLT_WASM_DISABLE_SCCACHE" not in env
     assert kwargs["timeout"] == _read_timeout_seconds(
         "MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0
     )
