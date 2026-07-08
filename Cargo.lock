@@ -2976,6 +2976,7 @@ dependencies = [
  "molt-runtime-audit",
  "molt-runtime-collections",
  "molt-runtime-compression",
+ "molt-runtime-constants",
  "molt-runtime-core",
  "molt-runtime-crypto",
  "molt-runtime-diagnostics",
@@ -3060,6 +3061,10 @@ dependencies = [
  "xz2",
  "zip",
 ]
+
+[[package]]
+name = "molt-runtime-constants"
+version = "0.1.0"
 
 [[package]]
 name = "molt-runtime-core"

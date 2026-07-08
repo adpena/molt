@@ -187,6 +187,7 @@ molt-runtime-ipaddress = { path = "../molt-runtime-ipaddress", optional = true }
 molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
 molt-runtime-vfs = { path = "../molt-runtime-vfs" }
 molt-runtime-audit = { path = "../molt-runtime-audit" }
+molt-runtime-constants = { path = "../molt-runtime-constants" }
 molt-runtime-diagnostics = { path = "../molt-runtime-diagnostics" }
 molt-runtime-platform = { path = "../molt-runtime-platform" }
 molt-runtime-resource = { path = "../molt-runtime-resource" }

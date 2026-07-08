@@ -78,7 +78,6 @@ mod call;
 mod collections_bridge;
 mod concurrency;
 mod const_data_cache;
-mod constants;
 #[cfg(feature = "stdlib_crypto")]
 mod crypto_bridge;
 #[cfg(feature = "stdlib_difflib")]
@@ -158,6 +157,13 @@ pub use cpython_abi_hooks::{
     molt_cpython_abi_pyinit_module_to_bits,
 };
 pub use molt_runtime_audit as audit;
+pub(crate) use molt_runtime_constants::*;
+pub(crate) const INLINE_INT_MIN_I128: i128 = molt_codegen_abi::INT_MIN_INLINE as i128;
+pub(crate) const INLINE_INT_MAX_I128: i128 = molt_codegen_abi::INT_MAX_INLINE as i128;
+pub(crate) const GEN_CONTROL_SIZE: usize = molt_codegen_abi::GENERATOR_CONTROL_BYTES as usize;
+pub(crate) const TASK_KIND_FUTURE: u64 = molt_codegen_abi::TASK_KIND_FUTURE as u64;
+pub(crate) const TASK_KIND_GENERATOR: u64 = molt_codegen_abi::TASK_KIND_GENERATOR as u64;
+pub(crate) const TASK_KIND_COROUTINE: u64 = molt_codegen_abi::TASK_KIND_COROUTINE as u64;
 pub(crate) use molt_runtime_diagnostics as diagnostics;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use molt_runtime_platform::libc_compat;
@@ -571,7 +577,6 @@ pub(crate) use crate::call::function::{
     call_function_obj3, refresh_function_task_trampoline_cache,
 };
 pub(crate) use crate::call::lookup_call_attr;
-pub(crate) use crate::constants::*;
 pub use crate::intrinsics::capabilities::*;
 pub(crate) use crate::object::accessors::{
     object_field_get_ptr_raw, object_field_set_ptr_raw, resolve_obj_ptr,
