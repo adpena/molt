@@ -473,6 +473,17 @@ def _summary_host_platform(summary_json: object) -> str | None:
     return platform if isinstance(platform, str) and platform.strip() else None
 
 
+def _summary_payload_host_platform(summary: Mapping[str, object]) -> str | None:
+    repro = summary.get("repro")
+    if not isinstance(repro, dict):
+        return None
+    host = repro.get("host")
+    if not isinstance(host, dict):
+        return None
+    platform = host.get("platform")
+    return platform if isinstance(platform, str) and platform.strip() else None
+
+
 def _memory_guard_child_runner_evidence(summary_json: object) -> str | None:
     child = _summary_child_process(summary_json)
     if child is None:
@@ -698,13 +709,40 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
     child_pid = child.get("pid")
     if not isinstance(child_pid, int) or child_pid <= 0:
         return None
-    if not _is_guard_command(child.get("command")):
+    child_is_guard_command = _is_guard_command(child.get("command"))
+    if not child_is_guard_command:
         return None
+    host_platform = _summary_payload_host_platform(summary)
+    child_runner_label = (
+        "windows_memory_guard_child_runner"
+        if host_platform == "win32"
+        else "memory_guard_child_process"
+    )
     if not _pid_alive(child_pid):
         evidence = (
             f"summary_json={row['summary_json']} child_pid={child_pid} "
             f"last_log_age={_format_duration(log_age_s)}"
         )
+        if host_platform == "win32":
+            evidence += f" child_process={child_runner_label}"
+            return _diagnostic(
+                signal_id="running-proof-windows-child-runner-missing",
+                severity="infra",
+                summary=(
+                    "Running proof row's Windows memory-guard child runner is "
+                    "no longer live while the queue-owned guard still owns the row."
+                ),
+                evidence=evidence,
+                next_action=(
+                    "Treat this as Windows memory-guard custody opacity, not a "
+                    "terminal stale signal while the queue-owned guard is live. "
+                    "Wait for the guard's final summary, or let prune-stale "
+                    "reclaim it only after the guard exits or the running-age "
+                    "ceiling is exceeded."
+                ),
+                scopes=("tools/proof_queue.py", "tools/memory_guard.py"),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
         summary_text = "Running proof row's nested memory guard child is no longer live."
     else:
         try:
