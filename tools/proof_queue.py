@@ -4863,7 +4863,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
 
     active_by_key: dict[str, list[str]] = {}
     for row in rows:
-        if row["status"] in RUNNING:
+        if row["status"] in LAUNCHED:
             active_by_key.setdefault(str(row["contention_key"]), []).append(
                 str(row["run_id"])
             )
@@ -5084,7 +5084,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
 
     return {
         "scanned_runs": len(rows),
-        "active_runs": sum(1 for row in rows if row["status"] in RUNNING),
+        "active_runs": sum(1 for row in rows if row["status"] in LAUNCHED),
         "superseded_archaeology_runs": superseded_archaeology_runs,
         "classified_failed_runs": classified_failed_runs,
         "frontier_failures": frontier_failures,
