@@ -353,6 +353,30 @@ materialization split, row
 `20260708T042038-c1-platform-uuid-support-fanin-post-wasmconst-20260708a-57b38262dd0a4cc2`
 passed the same runtime fan-in proof in 70.2s.
 
+2026-07-08 C1 follow-up: the remaining pure `textwrap` residuals now live in
+`molt-stdlib-text::textwrap`. `textwrap_shorten_impl` owns whitespace collapse
+and placeholder truncation, while `textwrap_indent_{default,result}_impl` owns
+line splitting and prefix assembly for both default and callable-predicate
+indent. `molt-runtime` keeps only argument conversion, string allocation,
+exception handling, and the Python callable predicate closure in
+`builtins/functions_textwrap.rs`; the no-predicate path and the callable path
+both share the stdlib-text line assembly authority.
+
+Proof rows:
+`20260708T043018-c1-stdlib-text-textwrap-residual-satellite-20260708a-9f43062a6aae4f94`
+passed `cargo test -p molt-stdlib-text --lib` in 23.9s, and dependent fan-in row
+`20260708T043031-c1-stdlib-text-textwrap-residual-fanin-20260708a-f2a010491ae8456b`
+passed `cargo check -p molt-runtime` in 159.9s.
+
+DX signal recorded during this cut: the required
+`tools/structural_audit.py --check` preflight was run once before drift was
+found, again after fast-forwarding to current `origin/main`, and again before
+commit; all three returned `structural ratchet OK (684 findings; 0 metric(s)
+improved)` but each took multiple minutes. Keep the C1 ratchet, but make this
+board-required reflex incremental or cache-aware enough that decomposition
+agents can run it at the required cadence without losing a full edit loop to
+unchanged findings.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
