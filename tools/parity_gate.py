@@ -63,6 +63,11 @@ _IMPORT_ERROR_MARKERS = (
     "ImportError",
     "No module named",
 )
+_IMPORT_FAILURE_PATTERNS = (
+    re.compile(r"No module named ['\"]([^'\"]+)['\"]"),
+    re.compile(r"cannot import name ['\"]([^'\"]+)['\"] from ['\"]([^'\"]+)['\"]"),
+)
+_UNPARSED_IMPORT_FAILURE = "<unparsed-import-failure>"
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -267,14 +272,30 @@ def run_molt(
 # ---------------------------------------------------------------------------
 
 
-def _cpython_import_failed(stderr: str) -> bool:
-    """Return True if CPython itself failed due to a missing import."""
-    return any(marker in stderr for marker in _IMPORT_ERROR_MARKERS)
-
-
 def _molt_import_failed(stderr: str) -> bool:
     """Return True if Molt failed due to a missing/unsupported import."""
     return any(marker in stderr for marker in _IMPORT_ERROR_MARKERS)
+
+
+def _import_failure_identity(stderr: str) -> str | None:
+    if not any(marker in stderr for marker in _IMPORT_ERROR_MARKERS):
+        return None
+    for pattern in _IMPORT_FAILURE_PATTERNS:
+        match = pattern.search(stderr)
+        if not match:
+            continue
+        if len(match.groups()) == 2:
+            return f"{match.group(2)}.{match.group(1)}"
+        return match.group(1)
+    return _UNPARSED_IMPORT_FAILURE
+
+
+def _same_import_failure(cpython_err: str, molt_err: str) -> bool:
+    cpython_identity = _import_failure_identity(cpython_err)
+    molt_identity = _import_failure_identity(molt_err)
+    if cpython_identity is None or molt_identity is None:
+        return False
+    return cpython_identity == molt_identity
 
 
 def compare(
@@ -313,10 +334,16 @@ def compare(
         base.message = f"molt not found or OS error: {molt_err.strip()}"
         return base
 
-    # If the test needs a module that Molt doesn't support yet, skip gracefully
+    # A Molt-only import failure is a real STRICT parity regression, not a skip.
+    # Only downgrade to skip when CPython failed on the same import as well, or
+    # when the file carries the explicit excluded marker handled above.
     if molt_out is None or _molt_import_failed(molt_err):
-        base.status = "skip"
-        base.message = "molt missing import (skipped)"
+        if cpython_rc != 0 and _same_import_failure(cpython_err, molt_err):
+            base.status = "skip"
+            base.message = "both interpreters failed on the same import"
+            return base
+        base.status = "fail" if tier == TIER_STRICT else "warn"
+        base.message = "molt-only import failure"
         return base
 
     # Compare outputs through the ONE comparison law (doc 66 Phase 0). The tier
@@ -370,17 +397,6 @@ def run_one(
 
     # Run CPython
     cpython_out, cpython_err, cpython_rc = run_cpython(path, timeout=timeout)
-
-    # If CPython itself fails due to import error, skip
-    if cpython_rc != 0 and _cpython_import_failed(cpython_err):
-        return TestResult(
-            file=path,
-            tier=tier,
-            status="skip",
-            message="cpython import error (not a Molt parity test)",
-            cpython_stdout=cpython_out,
-            cpython_stderr=cpython_err,
-        )
 
     # Excluded — no need to run Molt
     if tier == TIER_EXCLUDED:
