@@ -273,6 +273,32 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    match = pq.SOURCE_EXTENSION_NM_MISSING_RE.search(log_tail)
+    if match is not None:
+        object_path = Path(match.group("object"))
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="source-extension-nm-missing",
+                severity="infra",
+                summary=(
+                    "Source-extension object-symbol scan could not read "
+                    f"{object_path.name} because nm/llvm-nm was unavailable."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Install nm/llvm-nm or rerun with MOLT_NM pointing at a "
+                    "bitcode-capable llvm-nm and record that env in the queue row; "
+                    "this is toolchain custody, not a product closure failure."
+                ),
+                scopes=(
+                    "src/molt/cli/source_extensions.py",
+                    "src/molt/cli/backend_cache.py",
+                    "tools/proof_queue.py",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
     match = pq.STATIC_PYMOD_EXEC_RE.search(log_tail)
     if match is not None:
         module = match.group("module")
