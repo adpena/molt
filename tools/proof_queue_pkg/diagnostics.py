@@ -16,6 +16,26 @@ from pathlib import Path
 from tools.proof_queue_pkg import pq
 
 
+SOURCE_EXTENSION_BUILD_PLAN_MISSING_RE = re.compile(
+    r"source extension build plan not found: (?P<path>[^\r\n\"]+)"
+)
+SOURCE_EXTENSION_COMPILE_HEADER_MISSING_RE = re.compile(
+    r"Failed compiling (?P<source>[^:\r\n]+):[\s\S]*?fatal error: "
+    r"'(?P<header>[^']+)' file not found"
+)
+SOURCE_EXTENSION_CYTHON_REGENERATION_FAILED_RE = re.compile(
+    r"Standalone `cython -3` regeneration of (?P<source>[^`]+) failed: "
+    r"(?P<error>[^\r\n\"]+)"
+)
+CPYTHON_ABI_PYMOD_GIL_SLOT_RE = re.compile(
+    r"(?P<evidence>Failed compiling [^\r\n]+:[\s\S]*?"
+    r"incompatible integer to pointer conversion[\s\S]*?"
+    r"Py_mod_multiple_interpreters[\s\S]*?"
+    r"Py_MOD_PER_INTERPRETER_GIL_SUPPORTED[\s\S]*?)"
+    r"(?=\n\n|proof_queue finished|$)"
+)
+
+
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = pq._read_log_tail(Path(row["log_path"]))
     diagnostics: list[dict[str, object]] = []
@@ -295,6 +315,116 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "src/molt/cli/backend_cache.py",
                     "tools/proof_queue.py",
                 ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = SOURCE_EXTENSION_BUILD_PLAN_MISSING_RE.search(log_tail)
+    if match is not None:
+        source_plan_path = Path(match.group("path").strip())
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="source-extension-build-plan-missing",
+                severity="infra",
+                summary=(
+                    "Source-extension build could not find the declared "
+                    f"source plan {source_plan_path.name}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Route this through source-extension package custody and "
+                    "toolchain provisioning: derive Meson/Cython build metadata, "
+                    "generated headers, include roots, and build-root resolution "
+                    "from the package's own build system; do not hand-author "
+                    "package metadata or rerun the same row unchanged."
+                ),
+                scopes=(
+                    "src/molt/cli/source_extensions.py",
+                    "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
+                    "tools/proof_queue.py",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = SOURCE_EXTENSION_COMPILE_HEADER_MISSING_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="source-extension-compile-header-missing",
+                severity="infra",
+                summary=(
+                    "Source-extension compile could not resolve required header "
+                    f"{match.group('header')!r} while compiling "
+                    f"{match.group('source').strip()}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Fix the shared source-extension build-plan/provisioning "
+                    "authority so generated headers and include roots are "
+                    "derived from package build metadata and preserved in the "
+                    "source plan; do not copy headers or patch compiler commands "
+                    "by hand."
+                ),
+                scopes=(
+                    "src/molt/cli/source_extensions.py",
+                    "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
+                    "tools/proof_queue.py",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = SOURCE_EXTENSION_CYTHON_REGENERATION_FAILED_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="source-extension-cython-regeneration-failed",
+                severity="infra",
+                summary=(
+                    "Source-extension Cython regeneration failed for "
+                    f"{match.group('source').strip()}: "
+                    f"{match.group('error').strip()}."
+                ),
+                evidence=match.group(0),
+                next_action=(
+                    "Fix the shared source-extension Cython provisioning "
+                    "authority so regeneration uses the package's declared "
+                    "build metadata, generated dependency graph, include roots, "
+                    "and toolchain configuration; do not add a package-specific "
+                    "standalone Cython command."
+                ),
+                scopes=(
+                    "src/molt/cli/source_extensions.py",
+                    "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
+                    "tools/proof_queue.py",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = CPYTHON_ABI_PYMOD_GIL_SLOT_RE.search(log_tail)
+    if match is not None:
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="cpython-abi-pymod-gil-slot-token-mismatch",
+                severity="error",
+                summary=(
+                    "CPython-ABI header exposes Py_MOD_PER_INTERPRETER_GIL_SUPPORTED "
+                    "as an integer token where PyModuleDef_Slot.value expects a "
+                    "pointer-shaped value."
+                ),
+                next_action=(
+                    "Route to the cpython-abi owner to make the Py_mod_multiple_interpreters "
+                    "slot token ABI-compatible as a reusable C-API primitive; "
+                    "do not work around this in a package source-plan or compiler "
+                    "command."
+                ),
+                scopes=(
+                    "runtime/molt-cpython-abi/include/Python.h",
+                    "runtime/molt-cpython-abi/",
+                ),
+                evidence=match.group("evidence"),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )
         )
