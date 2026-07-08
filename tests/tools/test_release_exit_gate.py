@@ -17,6 +17,9 @@ def _load_gate():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    # Release-exit unit tests exercise receipt shape, not git ancestry.
+    # Dedicated perf-authority tests own the live ancestry probe.
+    module.pa.git_rev_is_ancestor_of_origin = lambda _: True
     return module
 
 
@@ -45,37 +48,46 @@ def _scoreboard_evidence(
     generated_at: str | None = None,
     gate_fails: bool = False,
     authoritative: bool = True,
+    backends: tuple[str, ...] = ("native", "llvm"),
+    profile: str = "release-fast",
+    command: str | None = None,
+    classify_active: bool = True,
 ) -> dict[str, str]:
     schema = gate.perf_schema
-    cell: dict[str, object] = {
-        "benchmark": "tests/benchmarks/bench_fib.py",
-        "target": "native",
-        "backend": "native",
-        "profile": "release-fast",
-        "build_ok": True,
-        "run_blocked": False,
-        "molt_ok": True,
-        "cpython_ok": True,
-        "cold_molt_s": 0.12,
-        "cold_cpython_s": 0.24,
-        "warm_molt_s": 0.10,
-        "warm_cpython_s": 0.20,
-        "warm_speedup": 2.0,
-        "cold_speedup": 2.0,
-        "startup_tax_ms": 5.0,
-        "verdict": schema.VERDICT_GREEN,
-        "binary_size_kib": 512.0,
-        "molt_peak_rss_mib": 18.0,
-        "compile_time_s": 0.4,
-        "stable": True,
-        "pypy_ratio": None,
-        "codon_ratio": None,
-        "codon_equivalent": None,
-        "cpython_peak_rss_mib": 15.0,
-        "output_parity": True,
-        "log_artifact": "bench/scoreboard/logs/fib.log",
-        "classification": schema.CLASS_GREEN,
-    }
+    benchmark = "tests/benchmarks/bench_fib.py"
+
+    def cell_for(backend: str) -> dict[str, object]:
+        return {
+            "benchmark": benchmark,
+            "target": "native",
+            "backend": backend,
+            "profile": profile,
+            "build_ok": True,
+            "run_blocked": False,
+            "molt_ok": True,
+            "cpython_ok": True,
+            "cold_molt_s": 0.12,
+            "cold_cpython_s": 0.24,
+            "warm_molt_s": 0.10,
+            "warm_cpython_s": 0.20,
+            "warm_speedup": 2.0,
+            "cold_speedup": 2.0,
+            "startup_tax_ms": 5.0,
+            "verdict": schema.VERDICT_GREEN,
+            "binary_size_kib": 512.0,
+            "molt_peak_rss_mib": 18.0,
+            "compile_time_s": 0.4,
+            "stable": True,
+            "pypy_ratio": None,
+            "codon_ratio": None,
+            "codon_equivalent": None,
+            "cpython_peak_rss_mib": 15.0,
+            "output_parity": True,
+            "log_artifact": f"bench/scoreboard/logs/fib-{backend}.log",
+            "classification": schema.CLASS_GREEN,
+        }
+
+    cells = {backend: cell_for(backend) for backend in backends}
     path = tmp_path / f"{name}.json"
     stamp = generated_at or dt.datetime.now(dt.timezone.utc).isoformat()
     doc = {
@@ -89,7 +101,10 @@ def _scoreboard_evidence(
             "merge_base_sha": "a" * 40,
             "dirty_tree": False,
             "benchmark_tool_sha": "b" * 40,
-            "backend_binary_identity": {"native/release-fast": "sha|1|2"},
+            "backend_binary_identity": {
+                f"{backend}/{profile}": f"{backend}-sha|1|2"
+                for backend in backends
+            },
             "stdlib_cache_key": "cache",
             "authoritative": authoritative,
         },
@@ -104,25 +119,29 @@ def _scoreboard_evidence(
         "methodology": {},
         "reserved_columns": {},
         "summary": {
+            "cells_total": len(cells),
+            "cells_green": len(cells),
             "cells_fail_engine": 0,
             "cells_fail_cold_budget": 0,
             "cells_warn_cold_floor": 0,
             "cells_fail_stale": 0,
             "verdict_breakdown": {},
+            "classify_active": classify_active,
+            "classification_breakdown": {schema.CLASS_GREEN: []},
             "gate_fails": gate_fails,
         },
-        "benchmarks_run": [cell["benchmark"]],
+        "benchmarks_run": [benchmark],
         "benchmarks_deferred": [],
         "scoreboard": {
-            cell["benchmark"]: {
-                cell["target"]: {cell["backend"]: {cell["profile"]: cell}}
-            }
+            benchmark: {
+                "native": {backend: {profile: cell} for backend, cell in cells.items()}
+            },
         },
     }
     path.write_text(json.dumps(doc), encoding="utf-8")
     return {
         "path": path.name,
-        "command": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent",
+        "command": command or gate.pa.CANONICAL_GATE,
         "summary": "canonical perf scoreboard passed",
     }
 
@@ -394,6 +413,121 @@ def test_release_exit_gate_rejects_stale_or_red_e2_scoreboard(
     assert report.passed is False
     assert any("E2: scoreboard gate_fails is not false" in p for p in report.problems)
     assert any("E2: scoreboard generated_at is 90d old" in p for p in report.problems)
+
+
+def test_release_exit_gate_requires_e2_canonical_scoreboard_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E2={
+            "status": "pass",
+            "evidence": [
+                _scoreboard_evidence(
+                    tmp_path,
+                    gate,
+                    name="noncanonical-command",
+                    command=(
+                        "tools/perf_scoreboard.py --backend native "
+                        "--profile release-fast --classify"
+                    ),
+                )
+            ],
+        },
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any(
+        "E2: evidence[0] canonical scoreboard command must include --set core" in p
+        for p in report.problems
+    )
+    assert any(
+        "E2: evidence[0] canonical scoreboard command missing canonical backends: llvm"
+        in p
+        for p in report.problems
+    )
+    assert any(
+        "E2: evidence[0] canonical scoreboard command missing --require-quiescent"
+        in p
+        for p in report.problems
+    )
+
+
+def test_release_exit_gate_rejects_e2_native_only_scoreboard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E2={
+            "status": "pass",
+            "evidence": [
+                _scoreboard_evidence(
+                    tmp_path,
+                    gate,
+                    name="native-only-scoreboard",
+                    backends=("native",),
+                )
+            ],
+        },
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any(
+        "E2: canonical scoreboard missing backend binary identities: llvm/release-fast"
+        in p
+        for p in report.problems
+    )
+    assert any(
+        "E2: canonical scoreboard must include both native and llvm release-fast cells"
+        in p
+        for p in report.problems
+    )
+
+
+def test_release_exit_gate_rejects_e2_unclassified_or_wrong_profile_scoreboard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E2={
+            "status": "pass",
+            "evidence": [
+                _scoreboard_evidence(
+                    tmp_path,
+                    gate,
+                    name="wrong-profile-scoreboard",
+                    profile="dev",
+                    classify_active=False,
+                )
+            ],
+        },
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any(
+        "E2: canonical scoreboard must be generated with --classify" in p
+        for p in report.problems
+    )
+    assert any(
+        "E2: canonical scoreboard may only contain native+llvm release-fast cells"
+        in p
+        for p in report.problems
+    )
 
 
 def test_release_exit_gate_requires_e1_pact_witness_acceptance_receipt(

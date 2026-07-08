@@ -130,6 +130,100 @@ def test_canonical_gate_names_full_release_fast_backend_contract() -> None:
     assert "--allow-nonauthoritative" not in gate
 
 
+def _canonical_scoreboard_doc(
+    *,
+    backends: tuple[str, ...] = ("native", "llvm"),
+    profile: str = "release-fast",
+    classify_active: bool = True,
+) -> dict:
+    benchmark = "tests/benchmarks/bench_fib.py"
+
+    def cell_for(backend: str) -> dict[str, object]:
+        return {
+            "benchmark": benchmark,
+            "target": "native",
+            "backend": backend,
+            "profile": profile,
+            "build_ok": True,
+            "run_blocked": False,
+            "molt_ok": True,
+            "cpython_ok": True,
+            "cold_molt_s": 0.12,
+            "cold_cpython_s": 0.24,
+            "warm_molt_s": 0.10,
+            "warm_cpython_s": 0.20,
+            "warm_speedup": 2.0,
+            "cold_speedup": 2.0,
+            "startup_tax_ms": 5.0,
+            "verdict": "GREEN",
+            "binary_size_kib": 512.0,
+            "molt_peak_rss_mib": 18.0,
+            "compile_time_s": 0.4,
+            "stable": True,
+            "pypy_ratio": None,
+            "codon_ratio": None,
+            "codon_equivalent": None,
+            "cpython_peak_rss_mib": 15.0,
+            "output_parity": True,
+            "log_artifact": f"bench/scoreboard/logs/fib-{backend}.log",
+            "classification": "GREEN_STABLE",
+        }
+
+    cells = {backend: cell_for(backend) for backend in backends}
+    return {
+        "summary": {"classify_active": classify_active},
+        "provenance": {
+            "backend_binary_identity": {
+                f"{backend}/{profile}": f"{backend}-sha|1|2"
+                for backend in backends
+            }
+        },
+        "scoreboard": {
+            benchmark: {
+                "native": {backend: {profile: cell} for backend, cell in cells.items()}
+            }
+        },
+    }
+
+
+def test_canonical_scoreboard_command_accepts_only_release_gate_shape() -> None:
+    assert pa.canonical_scoreboard_command_problems(pa.CANONICAL_GATE) == []
+
+    problems = pa.canonical_scoreboard_command_problems(
+        "tools/perf_scoreboard.py --backend native --profile dev --classify"
+    )
+
+    assert any("must include --set core" in p for p in problems)
+    assert any("missing canonical backends: llvm" in p for p in problems)
+    assert any("must use only --profile release-fast" in p for p in problems)
+    assert any("missing --require-quiescent" in p for p in problems)
+
+
+def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> None:
+    assert pa.canonical_scoreboard_shape_problems(_canonical_scoreboard_doc()) == []
+
+    native_only = pa.canonical_scoreboard_shape_problems(
+        _canonical_scoreboard_doc(backends=("native",))
+    )
+    assert any(
+        "missing backend binary identities: llvm/release-fast" in p
+        for p in native_only
+    )
+    assert any(
+        "must include both native and llvm release-fast cells" in p
+        for p in native_only
+    )
+
+    wrong_profile = pa.canonical_scoreboard_shape_problems(
+        _canonical_scoreboard_doc(profile="dev", classify_active=False)
+    )
+    assert any("must be generated with --classify" in p for p in wrong_profile)
+    assert any(
+        "may only contain native+llvm release-fast cells" in p
+        for p in wrong_profile
+    )
+
+
 def test_perf_gate_workflow_runs_canonical_matrix_contract() -> None:
     workflow = (REPO_ROOT / ".github/workflows/perf-gate.yml").read_text(
         encoding="utf-8"
