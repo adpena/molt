@@ -184,3 +184,25 @@ def test_build_cmd_scopes_to_daemon_binary() -> None:
         "--features",
         "native-backend",
     ]
+
+
+def test_test_lib_cmd_scopes_to_library_target() -> None:
+    module = _load_dx_build_timer()
+    args = SimpleNamespace(
+        profile="release-fast",
+        package="molt-backend",
+        features="native-backend",
+    )
+
+    assert module._test_build_cmd(args) == [
+        "cargo",
+        "test",
+        "--profile",
+        "release-fast",
+        "-p",
+        "molt-backend",
+        "--features",
+        "native-backend",
+        "--lib",
+        "--no-run",
+    ]
