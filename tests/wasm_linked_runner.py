@@ -297,10 +297,10 @@ def build_wasm_linked(
         "MOLT_SESSION_ID",
         f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
     )
-    env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    # Cargo parallelism and wasm sccache policy are owned by the DX/cargo
+    # authorities. This helper must not silently force the cold serial path.
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")

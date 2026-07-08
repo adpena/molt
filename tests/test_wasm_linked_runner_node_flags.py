@@ -233,7 +233,10 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
 ) -> None:
     root = Path(__file__).resolve().parents[1]
     alias_root = tmp_path / "repo-alias"
-    alias_root.symlink_to(root, target_is_directory=True)
+    try:
+        alias_root.symlink_to(root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable on this host: {exc}")
     src = tmp_path / "probe.py"
     src.write_text("print('hi')\n")
     recorded: dict[str, Any] = {}
@@ -273,6 +276,8 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("CARGO_BUILD_JOBS", raising=False)
+    monkeypatch.delenv("MOLT_WASM_DISABLE_SCCACHE", raising=False)
     monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     output = wasm_runner.build_wasm_linked(root, src, tmp_path)
 
@@ -283,6 +288,8 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
         Path(env["MOLT_EXT_ROOT"]) / "target"
     )
     assert "MOLT_REQUIRE_EXTERNAL_ARTIFACTS" not in env
+    assert "CARGO_BUILD_JOBS" not in env
+    assert "MOLT_WASM_DISABLE_SCCACHE" not in env
 
 
 def test_wasm_test_target_dir_uses_stable_local_lane(

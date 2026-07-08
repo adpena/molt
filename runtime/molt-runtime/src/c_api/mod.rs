@@ -4,12 +4,13 @@
 
 #[cfg(target_arch = "wasm32")]
 mod cpython_abi_wasm_exports;
-#[cfg(not(target_arch = "wasm32"))]
 mod cpython_compat;
 mod molt_api;
 
-// Re-export Rust-callable helpers inside the runtime crate.
-#[cfg(not(target_arch = "wasm32"))]
+// Re-export Rust-callable helpers inside the runtime crate on every target.
+// The wasm C-linker export surface is still owned by cpython_abi_wasm_exports
+// and the split molt-cpython-abi archive; these helpers are not no_mangle ABI
+// definitions.
 pub use cpython_compat::*;
 pub use molt_api::*;
 
