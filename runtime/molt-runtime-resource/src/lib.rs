@@ -13,6 +13,9 @@ use std::fmt;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ---------------------------------------------------------------------------
 // ResourceError
 // ---------------------------------------------------------------------------
@@ -721,7 +724,7 @@ pub fn clear_global_tracker_factory() {
     *limits_guard = None;
 }
 
-pub(crate) fn clear_resource_state() {
+pub fn clear_resource_state() {
     clear_global_tracker_factory();
     let _ = TRACKER.try_with(|cell| {
         *cell.borrow_mut() = Box::new(UnlimitedTracker);

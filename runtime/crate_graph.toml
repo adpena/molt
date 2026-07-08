@@ -243,6 +243,11 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
+name = "molt-runtime-resource"
+layer = 3
+role = "runtime resource policy satellite"
+
+[[crate]]
 name = "molt-runtime-serial"
 layer = 3
 role = "stdlib satellite"

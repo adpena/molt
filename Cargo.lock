@@ -2986,6 +2986,7 @@ dependencies = [
  "molt-runtime-net",
  "molt-runtime-path",
  "molt-runtime-regex",
+ "molt-runtime-resource",
  "molt-runtime-serial",
  "molt-runtime-stringprep",
  "molt-runtime-text",
@@ -3184,6 +3185,13 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-resource"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
