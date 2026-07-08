@@ -28,25 +28,24 @@ the editable install onto OneDrive — the exact drift being retired). If your c
 `.pth` resolves to the OneDrive checkout, STOP and `cd C:\Molt\molt-src` first. The
 orchestrator owns the retirement; do not fight it.
 
-**RETIREMENT STATUS (2026-07-08):** The OneDrive checkout + 100 pre-today OneDrive-`.git`
-worktrees (48 legacy `E:`, 51 `D:`, 1 old `C:`) are being **permanently deleted now**.
-All committed work is bundled on `D:\Molt\*.bundle` (`onedrive-legacy-refs --all` =
-every ref, verified 440 M) + dirty WIP (`full-wip2`, `all-worktree-wip`) — zero
-committed-signal loss. **13 today-dated worktrees are HELD** (spared this pass so live
-agents don't lose in-flight WIP). **If you are an agent on one of these 13, you MUST
-now: `git add -A && git commit` your WIP, push your branch to origin, then move to a
-FRESH worktree off `C:\Molt\molt-src` (`git -C C:\Molt\molt-src worktree add ...`).**
-Once you have landed/pushed, the orchestrator sweeps your old OneDrive-`.git` worktree.
-HELD (pending-delete — drain + reanchor):
-`codex-c1-builtin-constructors-land-20260708`, `codex-c1-runtime-next-20260708`,
-`codex-sourceplan-seal-witness-prep-20260708`, `agent-codexb-20260708`,
-`agent-sealexec-20260708`, `agent-surface-audit-20260708`,
-`codex-c1-methods-decomp-20260708`, `codex-c1-runtime-decomp-next-20260708`,
-`codex-c4-perf-suite-authority-20260708`, `codex-e1-sourceplan-skip-diagnostic-20260708`,
-`codex-proofqueue-preflight-main-20260708`, `codex-r5c-lowering-cache-attest-20260708`,
-`codex-r5c-test-executor-shutdown-20260708`. **KEEP (canonical clone worktrees — NOT
-retired):** `C:\Molt\molt-src` + `C:\Molt\worktrees\codex-c1-runtime-set-like-20260708`,
-`codex-c1-string-split-land-20260708`, `codex-e1-harvest-main-20260708`.
+**RETIREMENT COMPLETE (2026-07-08):** The OneDrive checkout + ALL its worktrees
+(165 branches + 12 orphan detached HEADs across `C:`/`D:`/legacy `E:`) are
+**permanently deleted**, and so are the temporary `D:\Molt\*.bundle` backups. This
+was NOT bundle-and-abandon: every committed unit was classified against current
+origin/main and harvested. **132 branches were already landed by the swarm; the
+rest were landed-by-content or superseded-by-newer-approach.** The THREE genuinely
+unlanded deltas were cherry-picked/reconciled and LANDED on origin/main:
+`bb8201d6c4` (E1 wasm link-import data-symbol host traps, 106 tests), `3e8e04da96`
+(molt-wasm-host main.rs decomposed 3245→575 / 11 modules, cargo-verified),
+`05abec9cd8` (drift gate). Superseded and deliberately NOT re-landed (would trample
+newer work): type-new-trampoline (main is past the `molt_type_new` reserved-callable
+frontier), webgpu-proof + buffer-stride (`de876ce439`), r0-2-eigh (newer
+native-closure custody). **Method:** 3-way `git merge`/`merge-tree` against current
+main shows the GENUINE unlanded delta and ignores `git cherry` patch-id false
+positives (a 26-file branch diff collapsed to a 2-file real delta once the swarm's
+independent landings were counted). There is no OneDrive checkout, no orphan
+worktree, and no signal bundle left anywhere. Canonical is `C:\Molt\molt-src` only;
+agents work in short-lived worktrees off it and prune after landing.
 
 ## 🚀 DEV-VELOCITY PROTOCOL (2026-07-08 CURRENT) — Codex: REBASE, then COMPLY
 
@@ -100,15 +99,21 @@ worktree that vanishes was SUPERSEDED or bundled — do NOT re-create it.
 4. **PROFILE BEFORE OPTIMIZING.** State the hot path + Big-O and attest a
    before/after delta for any perf/build change (tools/dx_build_timer.py,
    tools/build_graph_audit.py). No optimizing by feel.
-5. **DRIFT DISCIPLINE (P0, RECURRING).** Worktree/branch accumulation is POISON
-   and terrible OSS hygiene (it hit ~130 — operator-flagged P0). LAND your signal
-   onto main and DELETE your worktree+branch when a lane finishes — do not leave it.
-   Every session, run `python tools/drift_harvest.py --report`, land SIGNAL
-   surgically (per-commit, never whole-branch merge; regenerate generated files;
-   queue-verify), then `python tools/drift_harvest.py --prune` (it bundles all
-   unique-commit branches BEFORE removing anything → zero signal loss; keeps only
-   truly-fresh WIP). Keep worktrees short-lived; rebase often. If a worktree
-   vanishes it was SUPERSEDED (on main) or bundled — zero loss; do not re-create it.
+5. **DRIFT DISCIPLINE (P0, RECURRING — NOW GATED).** Worktree/branch accumulation
+   is POISON and terrible OSS hygiene (it hit ~130 + a 165-branch OneDrive `.git`,
+   operator-flagged P0, fully retired 2026-07-08). LAND your signal onto main and
+   DELETE your worktree+branch when a lane finishes — do not leave it. Every session
+   run **`python tools/drift_harvest.py --gate`** — it FAILS (exit 1) on SPRAWL
+   (>24 live worktrees) or STALE-SIGNAL (a SIGNAL worktree whose unlanded unique
+   commits are older than 72 h). A red gate is a blocker: harvest + prune before new
+   work. To harvest: DON'T trust `git cherry` (patch-id false-positives flag
+   already-landed work as unique) — use 3-way `git merge`/`git merge-tree` against
+   current origin/main to see the GENUINE unlanded delta, land it surgically
+   (per-commit or squashed, regenerate generated files from source, queue-verify
+   the build/tests), then `python tools/drift_harvest.py --prune`. Do NOT hoard
+   bundles/backups as a substitute for landing: harvest the real signal onto main,
+   verify, then delete. Keep worktrees short-lived; rebase often. If a worktree
+   vanishes it was SUPERSEDED (on main) — zero loss; do not re-create it.
 6. **REVIEW FINDINGS ARE LANES.** The full-stack adversarial review COMPLETED:
    **26 CONFIRMED** findings (bug classes / metabugs / optimizations), each
    independently refuted-then-survived, in
