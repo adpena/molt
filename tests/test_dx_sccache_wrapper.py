@@ -146,3 +146,49 @@ def test_maybe_enable_sccache_forces_incremental_off(monkeypatch):
     ce._maybe_enable_sccache(env)
     assert env.get("RUSTC_WRAPPER", "").endswith("sccache")
     assert env["CARGO_INCREMENTAL"] == "0"
+
+
+def test_lld_link_enabled_on_windows_when_available(monkeypatch):
+    # Portable fast-linker: on Windows with LLVM lld-link on PATH, wire it as the
+    # msvc-target linker (env var, not a rustflag) so cargo links with lld, not
+    # the slow serial link.exe.
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.setattr(ce.os, "name", "nt")
+    monkeypatch.setattr(
+        ce.shutil, "which", lambda n: "C:/LLVM/bin/lld-link.exe" if n == "lld-link" else None
+    )
+    env: dict[str, str] = {}
+    ce._maybe_enable_lld_link(env)
+    assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"].endswith("lld-link.exe")
+
+
+def test_lld_link_noop_when_absent(monkeypatch):
+    # Portability: no lld-link -> keep link.exe (do NOT set a bogus linker).
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.setattr(ce.os, "name", "nt")
+    monkeypatch.setattr(ce.shutil, "which", lambda n: None)
+    env: dict[str, str] = {}
+    ce._maybe_enable_lld_link(env)
+    assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER" not in env
+
+
+def test_lld_link_noop_non_windows(monkeypatch):
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.setattr(ce.os, "name", "posix")
+    monkeypatch.setattr(ce.shutil, "which", lambda n: "/usr/bin/lld-link")
+    env: dict[str, str] = {}
+    ce._maybe_enable_lld_link(env)
+    assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER" not in env
+
+
+def test_lld_link_respects_explicit_override(monkeypatch):
+    import molt.cli.cargo_execution as ce
+
+    monkeypatch.setattr(ce.os, "name", "nt")
+    monkeypatch.setattr(ce.shutil, "which", lambda n: "C:/LLVM/bin/lld-link.exe")
+    env = {"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "custom-linker"}
+    ce._maybe_enable_lld_link(env)
+    assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"] == "custom-linker"
