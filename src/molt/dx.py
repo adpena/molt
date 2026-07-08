@@ -227,6 +227,18 @@ def _memory_bounded_cargo_jobs() -> int | None:
 _JANITOR_THROTTLE_HOURS = 6.0
 
 
+def _running_under_pytest(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
+    return any(
+        source.get(key)
+        for key in (
+            "PYTEST_CURRENT_TEST",
+            "PYTEST_VERSION",
+            "MOLT_PYTEST_OUTER_GUARD_REEXEC",
+        )
+    )
+
+
 def _maybe_sweep_stale_artifacts(ext_root: Path) -> None:
     """Opportunistically reclaim stale build artifacts. Best-effort + throttled.
 
@@ -243,6 +255,8 @@ def _maybe_sweep_stale_artifacts(ext_root: Path) -> None:
             "yes",
             "on",
         ):
+            return
+        if _running_under_pytest():
             return
         marker = ext_root / ".molt_janitor_last_run"
         now = time.time()
