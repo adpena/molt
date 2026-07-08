@@ -102,6 +102,15 @@ pub fn register_ptr(ptr: *mut u8) -> u64 {
     addr
 }
 
+pub fn opaque_handle_bits(ptr: *mut u8) -> u64 {
+    let addr = register_ptr(ptr);
+    debug_assert!(
+        addr <= ((1_u64 << 46) - 1),
+        "opaque runtime handle address exceeds Molt immediate int range"
+    );
+    MoltObject::from_int(addr as i64).bits()
+}
+
 pub fn resolve_ptr(addr: u64) -> Option<*mut u8> {
     if addr == 0 {
         return None;
@@ -560,6 +569,24 @@ mod tests {
         assert!(obj.is_ptr());
         let recovered = obj.as_ptr().expect("unregistered TAG_PTR must recover");
         assert_eq!(recovered.expose_provenance() as u64, addr);
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+        reset_ptr_registry();
+    }
+
+    #[test]
+    fn opaque_handle_bits_registers_inline_handle() {
+        reset_ptr_registry();
+        let boxed = Box::new(17_u8);
+        let ptr = Box::into_raw(boxed);
+        let bits = opaque_handle_bits(ptr);
+        let handle = MoltObject::from_bits(bits)
+            .as_int()
+            .expect("opaque handles are inline-int bits");
+        assert_eq!(resolve_ptr(handle as u64), Some(ptr));
+        assert_eq!(release_ptr(ptr), Some(handle as u64));
+        assert_eq!(resolve_ptr(handle as u64), None);
         unsafe {
             drop(Box::from_raw(ptr));
         }
