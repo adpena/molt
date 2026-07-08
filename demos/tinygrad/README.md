@@ -20,12 +20,19 @@ invoice template apps (`template_extractor.py`, `nl_template_filler.py`).
 
 ## Import model
 
-- The **core tensor primitive** stays a compiler-owned stdlib package and is
-  imported here exactly as a downstream user app would:
-  `from tinygrad.tensor import Tensor`, `from tinygrad.dtypes import dtypes`,
-  `from tinygrad.lazy import ...`, `from tinygrad.realize import ...`,
-  `from tinygrad import nn`. The canonical native ML runtime primitive is
-  `molt.gpu` (imported as `from molt.gpu import ...`).
+- The canonical Molt-owned GPU/tensor primitive is `molt.gpu` (imported as
+  `from molt.gpu import ...`). Production `tinygrad` support must compile
+  upstream tinygrad Python and extensions through package/import custody, with
+  Molt GPU using tinygrad's primitive model for Molt-owned compiler/runtime
+  primitives.
+- `reference_stdlib/tinygrad/` is a quarantined copy of the former Molt-owned
+  tinygrad compatibility package. It is retained for research, science,
+  regression archaeology, and reference comparison only; it is not shipped as a
+  compiler stdlib package. Tests that need it load it explicitly through
+  `tests/helpers/tinygrad_stdlib_loader.py`.
+- Demos that import `tinygrad` are application-level probes. They must not add
+  package semantics under `src/molt/stdlib`; missing package/toolchain behavior
+  belongs in upstream package custody or a fail-closed diagnostic.
 - **Cross-demo** imports inside this directory are relative
   (`from .onnx_interpreter import ...`), because these modules form the
   `demos.tinygrad` package rather than submodules of the `tinygrad` core.
