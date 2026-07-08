@@ -1,4 +1,13 @@
-use super::*;
+use std::sync::atomic::AtomicU64;
+
+use molt_obj_model::MoltObject;
+
+use crate::{
+    PyToken, TYPE_ID_DICT, alloc_class_obj, alloc_dict_with_pairs, alloc_string, alloc_tuple,
+    attr_name_bits_from_bytes, builtin_classes, class_dict_bits, dec_ref_bits, dict_set_in_place,
+    inc_ref_bits, init_atomic_bits, intern_static_name, molt_class_set_base, obj_from_bits,
+    object_class_bits, object_set_class_bits, object_type_id,
+};
 
 fn operator_class(
     _py: &PyToken<'_>,

@@ -1,5 +1,13 @@
 use super::class_support::{attrgetter_class, itemgetter_class, methodcaller_class};
-use super::*;
+use std::sync::atomic::Ordering;
+
+use molt_obj_model::MoltObject;
+
+use crate::{
+    PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
+    exception_pending, inc_ref_bits, molt_getattr_builtin, molt_index, obj_from_bits,
+    object_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
+};
 
 unsafe fn itemgetter_items_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
@@ -51,6 +59,7 @@ unsafe fn methodcaller_set_kwargs_bits(ptr: *mut u8, bits: u64) {
     }
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_init(self_bits: u64, items_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let items_obj = obj_from_bits(items_bits);

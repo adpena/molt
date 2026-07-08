@@ -1,4 +1,14 @@
-use super::*;
+use molt_obj_model::MoltObject;
+
+use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint, int_bits_from_i64};
+use crate::{
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, bigint_bits, bigint_to_inline,
+    call_callable0, complex_bits, complex_from_obj_strict, complex_ptr_from_bits, dec_ref_bits,
+    int_bits_from_i128, molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor,
+    molt_div, molt_eq, molt_floordiv, molt_ge, molt_gt, molt_invert, molt_is_truthy, molt_le,
+    molt_lshift, molt_lt, molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift,
+    molt_sub, obj_from_bits, raise_exception, to_bigint, to_i64, type_name,
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_index(obj_bits: u64) -> u64 {
