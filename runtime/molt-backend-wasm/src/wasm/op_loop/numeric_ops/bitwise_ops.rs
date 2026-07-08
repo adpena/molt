@@ -33,6 +33,7 @@ fn emit_i64_bitwise(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
 pub(super) fn emit_bitwise_numeric_op(
     func: &mut Function,
     op: &OpIR,
+    op_idx: usize,
     selection: WasmNumericRuntimeSelection,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
@@ -55,11 +56,12 @@ pub(super) fn emit_bitwise_numeric_op(
             reloc_enabled,
             known_raw_ints,
             numeric_lane_stats,
+            op_idx,
             selection.op_loop_kind,
             selection.import,
         ),
         WasmNumericOpLoopKind::Invert | WasmNumericOpLoopKind::Neg | WasmNumericOpLoopKind::Pos => {
-            numeric_lane_stats.record_op_loop_boxed_runtime_call();
+            numeric_lane_stats.record_op_loop_bitwise_boxed_runtime_site();
             emit_boxed_unary_result(
                 func,
                 op,
@@ -109,21 +111,22 @@ fn emit_simple_bitwise_op(
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
     numeric_lane_stats: &mut WasmNumericLaneStats,
+    op_idx: usize,
     bitwise_op: WasmNumericOpLoopKind,
     import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
-    if wasm_scalar_direct_numeric_lane_for_op(scalar_plan, op)
+    if wasm_scalar_direct_numeric_lane_for_op(scalar_plan, op_idx, op)
         == Some(WasmScalarDirectNumericLane::InlineInt)
     {
-        numeric_lane_stats.record_op_loop_inline_int_raw_result();
+        numeric_lane_stats.record_op_loop_bitwise_inline_int_raw_site();
         let temps = int_binary_temps(locals);
         emit_trusted_int_binary_operand_tees(func, operands, temps, const_cache, known_raw_ints);
         emit_i64_bitwise(func, bitwise_op);
         func.instruction(&Instruction::LocalSet(temps.result));
         emit_inline_int_result(func, temps.result, known_raw_ints);
     } else if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
-        numeric_lane_stats.record_op_loop_guarded_int_result();
+        numeric_lane_stats.record_op_loop_bitwise_guarded_int_site();
         emit_guarded_int_binary_result_or_boxed(
             func,
             operands,
@@ -156,7 +159,7 @@ fn emit_simple_bitwise_op(
             },
         );
     } else {
-        numeric_lane_stats.record_op_loop_boxed_runtime_call();
+        numeric_lane_stats.record_op_loop_bitwise_boxed_runtime_site();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
     store_numeric_result(func, op, locals);
@@ -183,7 +186,7 @@ fn emit_shift_op(
 ) {
     let operands = binary_operands(op, locals);
     if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
-        numeric_lane_stats.record_op_loop_guarded_int_result();
+        numeric_lane_stats.record_op_loop_bitwise_guarded_int_site();
         emit_guarded_int_binary_result_or_boxed(
             func,
             operands,
@@ -207,7 +210,7 @@ fn emit_shift_op(
             },
         );
     } else {
-        numeric_lane_stats.record_op_loop_boxed_runtime_call();
+        numeric_lane_stats.record_op_loop_bitwise_boxed_runtime_site();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
     store_numeric_result(func, op, locals);

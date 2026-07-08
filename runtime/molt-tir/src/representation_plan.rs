@@ -1,6 +1,4 @@
-#[cfg(feature = "llvm")]
-use std::collections::HashMap;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
@@ -8,7 +6,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
-use crate::tir::ops::AttrValue;
+use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
@@ -91,6 +89,7 @@ pub struct ScalarRepresentationPlan {
     /// eligibility filters. The `primary_names.*` sets are views over this map;
     /// see [`Self::primary_name_sets`].
     repr_by_name: PlanHashMap<String, Repr>,
+    direct_numeric_op_reprs: PlanHashMap<usize, Repr>,
     scalar_slot_exclusion_unsafe: PlanHashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
@@ -216,6 +215,7 @@ impl ScalarRepresentationPlan {
             container_storage_conflicted_names: plan_hash_set(op_count / 8 + 1),
             container_storage_ops: plan_hash_map(op_count / 8 + 1),
             repr_by_name: plan_hash_map(name_capacity),
+            direct_numeric_op_reprs: plan_hash_map(op_count / 4 + 1),
             scalar_slot_exclusion_unsafe: plan_hash_set(op_count / 4 + 1),
             scalar_store_targets_by_kind: BTreeMap::new(),
         }
@@ -331,6 +331,7 @@ impl ScalarRepresentationPlan {
             tir_value_views.push((optimized_tir_func, optimized_names));
         }
         plan.seed_repr_by_name(func_ir, &fact_index, &tir_value_views);
+        plan.seed_direct_numeric_op_reprs(func_ir, &tir_value_views);
         plan
     }
 
@@ -952,6 +953,13 @@ impl ScalarRepresentationPlan {
             .is_some_and(|out| self.is_float_unboxed(out))
     }
 
+    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
+    pub fn op_direct_numeric_repr(&self, op_index: usize, op: &OpIR) -> Option<Repr> {
+        Self::simple_op_supports_direct_numeric_result(op.kind.as_str())
+            .then(|| self.direct_numeric_op_reprs.get(&op_index).copied())
+            .flatten()
+    }
+
     pub fn name_has_scalar_kind(&self, name: &str, kind: ScalarKind) -> bool {
         self.name_scalar_kind(name) == Some(kind)
     }
@@ -1152,6 +1160,121 @@ impl ScalarRepresentationPlan {
         }
 
         out
+    }
+
+    fn seed_direct_numeric_op_reprs(
+        &mut self,
+        func_ir: &FunctionIR,
+        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
+    ) {
+        let mut blocked = plan_hash_set(func_ir.ops.len() / 8 + 1);
+        for (tir_func, _) in tir_value_views {
+            let vr = value_range_for(tir_func);
+            let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
+            let carrier_by_value = native_projectable_scalar_reprs_for(tir_func, &repr_by_value);
+            let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
+            block_ids.sort_by_key(|block_id| block_id.0);
+            for block_id in block_ids {
+                let block = &tir_func.blocks[&block_id];
+                for op in &block.ops {
+                    let Some(op_index) = op.source_op_index() else {
+                        continue;
+                    };
+                    let Some(simple_op) = func_ir.ops.get(op_index) else {
+                        continue;
+                    };
+                    if !Self::simple_op_supports_direct_numeric_result(simple_op.kind.as_str()) {
+                        continue;
+                    }
+                    let Some(repr) = Self::direct_numeric_repr_for_tir_op(op, &carrier_by_value)
+                    else {
+                        continue;
+                    };
+                    Self::insert_direct_numeric_op_repr(
+                        &mut self.direct_numeric_op_reprs,
+                        &mut blocked,
+                        op_index,
+                        repr,
+                    );
+                }
+            }
+        }
+    }
+
+    fn simple_op_supports_direct_numeric_result(kind: &str) -> bool {
+        matches!(
+            kind,
+            "add"
+                | "inplace_add"
+                | "sub"
+                | "inplace_sub"
+                | "mul"
+                | "inplace_mul"
+                | "bit_and"
+                | "inplace_bit_and"
+                | "bit_or"
+                | "inplace_bit_or"
+                | "bit_xor"
+                | "inplace_bit_xor"
+                | "bitand"
+                | "bitor"
+                | "bitxor"
+        )
+    }
+
+    fn direct_numeric_repr_for_tir_op(
+        op: &TirOp,
+        carrier_by_value: &HashMap<ValueId, Repr>,
+    ) -> Option<Repr> {
+        let [result] = op.results.as_slice() else {
+            return None;
+        };
+        if op.operands.is_empty() {
+            return None;
+        }
+        let result_repr = carrier_by_value.get(result).copied()?;
+        match result_repr {
+            Repr::RawI64Safe
+                if op
+                    .operands
+                    .iter()
+                    .all(|operand| carrier_by_value.get(operand) == Some(&Repr::RawI64Safe)) =>
+            {
+                Some(Repr::RawI64Safe)
+            }
+            Repr::FloatUnboxed
+                if op
+                    .operands
+                    .iter()
+                    .all(|operand| carrier_by_value.get(operand) == Some(&Repr::FloatUnboxed)) =>
+            {
+                Some(Repr::FloatUnboxed)
+            }
+            _ => None,
+        }
+    }
+
+    fn insert_direct_numeric_op_repr(
+        op_reprs: &mut PlanHashMap<usize, Repr>,
+        blocked: &mut PlanHashSet<usize>,
+        op_index: usize,
+        repr: Repr,
+    ) -> bool {
+        if blocked.contains(&op_index) {
+            return false;
+        }
+        match op_reprs.get(&op_index).copied() {
+            Some(existing) if existing == repr => false,
+            Some(_) => {
+                op_reprs.remove(&op_index);
+                blocked.insert(op_index);
+                true
+            }
+            None => {
+                op_reprs.insert(op_index, repr);
+                true
+            }
+        }
     }
 
     fn insert_projected_scalar_name_repr(

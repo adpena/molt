@@ -100,12 +100,22 @@ fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
 
 #[test]
 fn proven_inline_int_add_lowers_without_boxed_add_call() {
-    let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+    let add = wasm_test_op("add", Some("i_next"), vec!["i_cur", "one"]);
     let output = compile_final_numeric_ops_with_diagnostics(vec![
-        wasm_const_int_op("lhs", 2),
-        wasm_const_int_op("rhs", 3),
+        wasm_const_int_op("init", 0),
+        wasm_const_int_op("one", 1),
+        wasm_const_int_op("stop", 1_000_000),
+        wasm_store_var_op("i", "init"),
+        wasm_test_op("loop_start", None, Vec::<&str>::new()),
+        wasm_load_var_op("i_cur", "i"),
+        wasm_test_op("lt", Some("keep_going"), vec!["i_cur", "stop"]),
+        wasm_test_op("loop_break_if_false", None, vec!["keep_going"]),
         add,
-        wasm_ret_op("sum"),
+        wasm_store_var_op("i", "i_next"),
+        wasm_test_op("loop_continue", None, Vec::<&str>::new()),
+        wasm_test_op("loop_end", None, Vec::<&str>::new()),
+        wasm_load_var_op("i_after", "i"),
+        wasm_ret_op("i_after"),
     ]);
 
     wasmparser::Validator::new()
@@ -117,11 +127,14 @@ fn proven_inline_int_add_lowers_without_boxed_add_call() {
         output
             .diagnostics
             .numeric_lanes
-            .op_loop_inline_int_raw_results,
+            .op_loop_additive_inline_int_raw_sites,
         1
     );
     assert_eq!(
-        output.diagnostics.numeric_lanes.op_loop_boxed_runtime_calls,
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_boxed_runtime_sites,
         0
     );
 }
@@ -146,11 +159,51 @@ fn proven_float_add_lowers_without_boxed_add_call() {
     assert_molt_main_has_operator(&output.wasm, "F64Add");
     assert_no_direct_call_to_import(&output.wasm, "add");
     assert_eq!(
-        output.diagnostics.numeric_lanes.op_loop_float_raw_results,
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_float_raw_sites,
         1
     );
     assert_eq!(
-        output.diagnostics.numeric_lanes.op_loop_boxed_runtime_calls,
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_boxed_runtime_sites,
+        0
+    );
+}
+
+#[test]
+fn typed_int_floor_div_records_division_guarded_site() {
+    let floor_div = wasm_test_op("floordiv", Some("quot"), vec!["lhs", "rhs"]);
+    let output = compile_final_numeric_function_with_diagnostics(
+        vec!["param_lhs", "param_rhs"],
+        Some(vec!["int", "int"]),
+        vec![
+            wasm_copy_var_op("lhs", "param_lhs"),
+            wasm_copy_var_op("rhs", "param_rhs"),
+            floor_div,
+            wasm_ret_op("quot"),
+        ],
+    );
+
+    wasmparser::Validator::new()
+        .validate_all(&output.wasm)
+        .expect("valid wasm");
+    assert_molt_main_has_operator(&output.wasm, "I64DivS");
+    assert_eq!(
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_division_guarded_int_sites,
+        1
+    );
+    assert_eq!(
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_division_boxed_runtime_sites,
         0
     );
 }
@@ -188,11 +241,28 @@ fn proven_inline_int_bitwise_lowers_without_boxed_bit_or_call() {
         output
             .diagnostics
             .numeric_lanes
-            .op_loop_inline_int_raw_results,
-        2
+            .op_loop_bitwise_inline_int_raw_sites,
+        1
     );
     assert_eq!(
-        output.diagnostics.numeric_lanes.op_loop_boxed_runtime_calls,
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_inline_int_raw_sites,
+        1
+    );
+    assert_eq!(
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_bitwise_boxed_runtime_sites,
+        0
+    );
+    assert_eq!(
+        output
+            .diagnostics
+            .numeric_lanes
+            .op_loop_additive_boxed_runtime_sites,
         0
     );
 }
