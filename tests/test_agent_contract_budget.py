@@ -99,3 +99,16 @@ def test_agent_contract_blocks_unsupported_exec_interrupts() -> None:
         assert "Ctrl-C" in text
         assert "unified exec backend" in text
         assert "incident record" in text
+
+
+def test_agent_contract_pins_ecosystem_source_custody() -> None:
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Molt must never reinvent third-party libraries" in text
+    assert "package's own Python" in text
+    assert "source lists/config headers" in text
+    assert (
+        "docs/design/foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md"
+        in text
+    )
+    assert "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md" in text
+    assert "tools/fail_closed_gate.py" in text

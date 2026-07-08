@@ -1,3 +1,38 @@
+# HIGHEST PRIORITY: UPSTREAM PACKAGE CUSTODY, NEVER REINVENTION
+
+These instructions bind every agent, orchestrator, and subagent before any
+other workflow habit. Molt must never reinvent third-party libraries: it
+compiles each package's own Python and native extensions, and does not recreate
+third-party libraries inside Molt.
+
+- Package build prerequisites resolve automatically through reusable
+  package/toolchain custody from upstream metadata/build systems. Cython, Meson,
+  Ninja, sysroots, generated headers, native libraries, link flags, feature
+  probes, and target-specific build steps are provisioned by shared machinery;
+  manual env recipes, hand installs, and one-off witness setup are DX defects.
+- Never implement an upstream package's semantics as Molt-owned Python/Rust/C
+  package clones, source lists/config headers, symbol tables, ndarray/tensor
+  APIs, kernels, or compatibility overlays. Upstream package behavior flows
+  through source admitted by package custody, source-recompiled extensions,
+  C-API/ABI primitives, typed storage, import/module custody, and generated
+  reachability.
+- A missing package primitive is completed as a reusable compiler/runtime or
+  package-custody primitive, or it fails closed with a precise diagnostic. It is
+  never faked with host-CPython fallback, monkeypatching, vendored forks, baked
+  headers, local stubs, plausible fake returns, or copied package
+  implementations.
+- Harness self-protection is mandatory: `tools/fail_closed_gate.py` rejects new
+  ecosystem-baked files, ecosystem build crutches, Molt-owned package
+  reimplementations, fail-open stubs, duplicate authorities, and TODO-as-plan
+  surfaces unless a structural-resolution row owns deleting the debt. Spawn
+  prompts carry this rule; subagents may not "unblock" by reinventing a package.
+
+Related contracts: `docs/agent/AGENTS.full.md` "Ecosystem Compatibility
+Doctrine", `docs/design/foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md`
+R73.2, `docs/spec/areas/compat/README.md`,
+`docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md`, and the
+fail-closed registry/gate authority.
+
 # TOP PRIORITY: OWNERSHIP OVER REPORTING
 
 These instructions bind every agent, orchestrator, and subagent before any
@@ -25,17 +60,11 @@ owned work.
 
 # Molt Agent Contract
 
-This root file is intentionally compact so Codex always ingests the real
-contract instead of truncating it under the project-doc byte budget. The full
-pre-compaction instruction bodies are preserved at:
-
-- `docs/agent/AGENTS.full.md`
-- `docs/agent/CLAUDE.full.md`
-
-For non-trivial architecture, compatibility, release, merge, or handoff work,
-read the relevant full guide sections after this contract. If the compact and
-full guides ever conflict, this compact contract controls until the full guide
-is reconciled.
+This compact file is the always-loaded contract. Full bodies live in
+`docs/agent/AGENTS.full.md` and `docs/agent/CLAUDE.full.md`; read the relevant
+full sections for non-trivial architecture, compatibility, release, merge, or
+handoff work. If compact and full guides conflict, this compact contract
+controls until reconciled.
 
 ## Non-Negotiables
 
@@ -46,24 +75,12 @@ is reconciled.
 - No hacks, no shortcuts, no workarounds, no facades, no compatibility shims,
   no local-minimum patches, no TODO-as-plan, and no partial implementations
   committed as progress. If the abstraction is wrong, move the abstraction.
-- POISON — permanently forbidden, binds the orchestrator AND every subagent:
-  "unblock the ecosystem by baking the package's own code into Molt." Concretely
-  forbidden: (a) shipping a third-party package's headers, symbols, tables, or
-  type reimplementations inside Molt-owned dirs (e.g. numpy headers under
-  `include/`) — the package owns those; they flow through PACKAGE CUSTODY at
-  source-recompile, never a Molt overlay; (b) a duplicate copy of an authority
-  to dodge fixing the real one (two header homes, two registries, two tables);
-  (c) a fail-OPEN / stub / plausible-fake return that masks a missing primitive
-  as if the path were supported. Ecosystem behavior flows ONLY through reusable
-  custody primitives (package/import custody, source-recompiled extensions,
-  C-API/ABI symbols/type-objects). A missing primitive is COMPLETED as a shared
-  primitive, or it FAILS CLOSED with a precise diagnostic — never faked, baked
-  in, duplicated, or worked around, not even to "unblock" a witness/benchmark.
-  Every spawn prompt MUST carry this. ENFORCEMENT: a ratchet gate (the
-  degrade-to-slow-gate pattern) fails when a new ecosystem-baked file, fail-open
-  mask, duplicate authority, or TODO-as-plan lands in a claimed-supported path
-  without a tracked structural-resolution row driving the class to zero. If you
-  or a subagent reach for any of these, STOP and move the abstraction.
+- POISON - permanently forbidden, binds the orchestrator AND every subagent:
+  never bake package code into Molt, add package-specific build crutches,
+  duplicate authorities, ship fail-open/stub returns, or land TODO-as-plan.
+  Missing primitives become shared structure or fail closed with diagnostics.
+  `tools/fail_closed_gate.py` ratchets these classes; every spawn prompt carries
+  this rule. If you reach for poison, STOP and move the abstraction.
 - A discovered prerequisite is not permission to defer the work, and
   "I will not do X until Y happens" is a turn-blocking avoidance pattern unless
   the formal blocked audit is satisfied. If the prerequisite is inside the owned
@@ -95,28 +112,6 @@ is reconciled.
 - Preserve user and parallel-agent work. Start from live `git status`; never
   revert, overwrite, reset, or clean unrelated changes. If a dirty path affects
   the task, work with it and keep signal.
-
-## Ecosystem Compatibility
-
-- Molt is an AOT Python compiler, not a project to reimplement NumPy, SciPy,
-  pandas, tinygrad, or the Python ecosystem in Molt-owned Python.
-- Ecosystem support must flow through reusable primitives: package/import
-  custody, source-recompiled C/C++/Cython/Rust extensions, CPython C-API/ABI
-  symbols and type objects, typed strided storage, buffer protocol,
-  ndarray/tensor dtype/shape/stride ownership, capsules, module state,
-  extension object closure, native artifact staging, sidecar custody,
-  tree-shaken reachability, and per-target packaging.
-- Python is allowed as user source, thin import/API routing, diagnostics,
-  generators, and test fixtures. It is forbidden as the implementation substrate
-  for upstream package semantics, ndarray kernels, C-extension behavior, or hot
-  numeric operations.
-- Compile and link only the functions, objects, symbols, tables, native
-  artifacts, runtime features, and package source proven reachable from the
-  user's program. Do not widen profiles or ship whole package images to hide
-  missing closure analysis.
-- Missing ABI behavior must become a shared primitive or fail closed with a
-  precise diagnostic. No host-CPython fallback, monkeypatch, vendored fork, or
-  package-specific crutch may masquerade as support.
 
 ## WASM And Pact Authority
 
@@ -290,8 +285,8 @@ is reconciled.
   families.
 - Treat `write_stdin` as stdin input only, not process control. Never send
   Ctrl-C (`\u0003`), SIGINT-like bytes, ESC/control sequences, or other
-  interrupt payloads through it to stop a command. On Windows Codex Desktop this
-  can crash the control plane with `code=3221225786` and
+  interrupt payloads through it to stop a command. On Windows Codex Desktop the
+  unified exec backend can crash with `code=3221225786` and
   `write_stdin failed: Unified exec process failed: process interrupt is not
   supported by this process backend` (`codex_core::tools::router`). Track as
   upstream `openai/codex#30847`; adjacent stale-stdin lifecycle issue:

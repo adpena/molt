@@ -240,8 +240,7 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
 def _all_dynamic_runtime_owned_intrinsic_exports() -> tuple[str, ...]:
     repo_root = Path(__file__).resolve().parents[2]
     package_root = repo_root / "src" / "molt"
-    stdlib_root = package_root / "stdlib"
-    dynamic_roots = (package_root / "gpu", stdlib_root / "tinygrad")
+    dynamic_roots = (package_root / "gpu", repo_root / "src" / "tinygrad")
     names: set[str] = set()
     for root in dynamic_roots:
         if not root.exists():

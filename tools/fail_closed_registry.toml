@@ -6,12 +6,19 @@
 # Molt's contract is one authority per invariant, source-recompiled ecosystem
 # support, and fail-CLOSED on unsupported behavior (a precise diagnostic, never a
 # plausible-looking wrong answer). A *poison site* abandons that contract for a
-# shortcut that silently ships a wrong or degraded result. Four classes:
+# shortcut that silently ships a wrong or degraded result. Poison classes:
 #
 #   ecosystem_baked    : a package-owned header/source (numpy / scipy / pandas
 #                        symbols) vendored AND DEFINED inside a Molt-owned tree
 #                        instead of flowing through source-recompiled extension
 #                        custody. Baked upstream semantics rot when upstream moves.
+#   ecosystem_build_crutch: a package-specific source-plan/build helper or
+#                        generated-header/config authoring path that hand-maintains
+#                        what upstream package metadata/build systems must own.
+#   ecosystem_reimplementation: a Molt-owned Python package root for a
+#                        third-party library. Upstream package Python/extensions
+#                        must flow through package custody, not shadow packages in
+#                        src/molt/stdlib.
 #   fail_open_stub     : a #[no_mangle] extern "C" ABI export that returns a
 #                        plausible NON-NULL / success sentinel on a path it does
 #                        not implement (MoltObject::none() / PyList_New(0)
@@ -34,10 +41,11 @@
 #
 # HOW THE GATE USES THIS FILE (see tools/fail_closed_gate.py)
 # ----------------------------------------------------------
-# 1. DISCOVERY: three content scans (A ecosystem-baked, B fail-open ABI,
-#    C todo-as-plan) plus D (duplicate authority) sweep the real trees. Every
-#    discovered site MUST have a row here; a NEW unregistered poison site FAILS the
-#    gate (drift teeth), exactly like a new op-kind missing from op_kinds.toml.
+# 1. DISCOVERY: content scans (ecosystem-baked, ecosystem-build-crutch,
+#    ecosystem-reimplementation, fail-open ABI/backend dispatch, todo-as-plan,
+#    duplicate authority) sweep the real trees. Every discovered site MUST have a
+#    row here; a NEW unregistered poison site FAILS the gate (drift teeth),
+#    exactly like a new op-kind missing from op_kinds.toml.
 # 2. ANCHOR INTEGRITY: each row's `anchor` must still exist verbatim in `file`, so
 #    a site cannot silently move or vanish out from under its row.
 # 3. TEETH: every row must name a `resolution_row` — the rip task/arc driving it to
@@ -55,6 +63,8 @@
 # (in the same arc that rips a site) — never raise it.
 [baseline]
 ecosystem_baked = 8
+ecosystem_build_crutch = 2
+ecosystem_reimplementation = 0
 fail_open_stub = 1
 duplicate_authority = 3
 todo_as_plan = 0
@@ -158,6 +168,41 @@ commands.py authors an `#include_next "_numpyconfig.h"` overlay to patch numpy's
 NPY_SIZEOF_PY_INTPTR_T = -1 sentinel at build time. This is CLI code baking a
 numpy-source fixup; the target-fact resolution belongs in the recompiled-numpy
 config/custody primitive, not a hand-authored overlay in the build driver.
+"""
+
+# ===========================================================================
+# ecosystem_build_crutch (Scan F) - package-specific build/source-plan helpers.
+# Resolution: task#73.2 (generic auto toolchain and package-build-system custody).
+# Existing rows are debt only; this class may only shrink and no SciPy/pandas
+# clone may land quietly.
+# ===========================================================================
+
+[[site]]
+id = "B1_numpy_multiarray_package_specific_regen_helper"
+class = "ecosystem_build_crutch"
+file = "tools/regen_numpy_multiarray_meson_wasm.py"
+anchor = "regen_numpy_multiarray_meson_wasm.py"
+resolution_row = "task#73.2"
+justification = """
+A NumPy-specific regen script drives Meson/ninja/introspection for one extension
+instead of delegating to a generic package-build-system custody primitive. It
+uses NumPy's own Meson, so it is not package semantics baked into Molt, but the
+package-specific lane must be retired into the R73.2 auto-provision/source-plan
+authority before this class reaches zero.
+"""
+
+[[site]]
+id = "B2_commands_numpy_config_overlay_build_crutch"
+class = "ecosystem_build_crutch"
+file = "src/molt/cli/commands.py"
+anchor = "numpy_config = include_path / \"_numpyconfig.h\""
+resolution_row = "task#73.2"
+justification = """
+The extension build driver authors a NumPy-specific generated-header overlay
+path. The same site is ecosystem_baked because of the emitted include overlay;
+this row separately freezes the package-specific build crutch so future package
+config/header work moves through upstream build metadata and generic target-fact
+custody instead of cloning the pattern for SciPy/pandas.
 """
 
 # ===========================================================================
@@ -300,4 +345,3 @@ is retained only as a readable in-source diagnostic; the accumulator is the
 authority. Row freezes this placeholder-emit surface against a NEW unregistered
 fail-open catch-all.
 """
-
