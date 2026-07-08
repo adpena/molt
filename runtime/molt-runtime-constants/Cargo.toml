@@ -1,0 +1,10 @@
+[package]
+name = "molt-runtime-constants"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "Apache-2.0"
+
+[lib]
+path = "src/lib.rs"

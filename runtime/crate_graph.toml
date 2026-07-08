@@ -248,6 +248,11 @@ layer = 3
 role = "runtime audit policy satellite"
 
 [[crate]]
+name = "molt-runtime-constants"
+layer = 3
+role = "runtime-local bind/table constants and counters satellite"
+
+[[crate]]
 name = "molt-runtime-diagnostics"
 layer = 3
 role = "runtime diagnostics policy satellite"
