@@ -91,6 +91,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 scalar_plan,
                 reloc_enabled,
                 &known_raw_ints,
+                &mut backend.numeric_lane_stats,
             ) {
                 continue;
             }

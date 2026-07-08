@@ -35,7 +35,10 @@ pub mod test_util;
 #[cfg(feature = "wasm-backend")]
 mod wasm;
 #[cfg(feature = "wasm-backend")]
-pub use wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
+pub use wasm::{
+    WasmBackend, WasmCompileDiagnostics, WasmCompileOptions, WasmCompileOutput,
+    WasmNumericLaneStats, WasmProfile,
+};
 #[cfg(feature = "wasm-backend")]
 mod wasm_abi;
 #[cfg(feature = "wasm-backend")]

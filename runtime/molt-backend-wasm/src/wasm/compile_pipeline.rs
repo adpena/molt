@@ -1,11 +1,16 @@
 use super::WasmBackend;
 use super::control_flow::has_non_linear_control_flow;
 use crate::SimpleIR;
+use crate::wasm::WasmCompileOutput;
 use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped;
 use crate::wasm_plan::detect_multi_return_candidates;
 
 impl WasmBackend {
     pub fn compile(self, ir: SimpleIR) -> Vec<u8> {
+        self.compile_with_diagnostics(ir).wasm
+    }
+
+    pub fn compile_with_diagnostics(self, ir: SimpleIR) -> WasmCompileOutput {
         let mut ir = ir;
         crate::apply_profile_order(&mut ir);
         for func_ir in &mut ir.functions {

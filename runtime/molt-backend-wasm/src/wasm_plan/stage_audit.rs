@@ -1,4 +1,5 @@
 use crate::FunctionIR;
+use crate::wasm::WasmNumericLaneStats;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WasmStageAuditShape {
@@ -98,5 +99,20 @@ pub(crate) fn emit_wasm_stage_audit(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string()),
         crate::process_diagnostics::process_peak_rss_mib_label(),
+    );
+}
+
+pub(crate) fn emit_wasm_numeric_lane_audit(stats: WasmNumericLaneStats) {
+    if !wasm_stage_audit_enabled() {
+        return;
+    }
+    eprintln!(
+        "[molt-wasm-numeric-lane-audit] op_loop_inline_int_raw_results={} op_loop_float_raw_results={} op_loop_guarded_int_results={} op_loop_boxed_runtime_calls={} op_loop_raw_results_total={} op_loop_guarded_or_boxed_total={}",
+        stats.op_loop_inline_int_raw_results,
+        stats.op_loop_float_raw_results,
+        stats.op_loop_guarded_int_results,
+        stats.op_loop_boxed_runtime_calls,
+        stats.raw_result_total(),
+        stats.guarded_or_boxed_total(),
     );
 }

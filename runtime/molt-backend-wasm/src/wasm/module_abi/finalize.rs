@@ -5,11 +5,13 @@ use wasm_encoder::{RawSection, TagKind, TagSection, TagType};
 
 use super::callable_table::WasmCallableTableElements;
 use crate::FunctionIR;
-use crate::wasm::WasmBackend;
+use crate::wasm::{WasmBackend, WasmCompileOutput};
 use crate::wasm_abi::TAG_EXCEPTION_FUNC_TYPE;
 use crate::wasm_binary::{add_reloc_sections, strip_unused_imports, validate_wasm_sections};
 use crate::wasm_options::WasmProfile;
-use crate::wasm_plan::{emit_wasm_stage_audit, simple_ir_stage_shape};
+use crate::wasm_plan::{
+    emit_wasm_numeric_lane_audit, emit_wasm_stage_audit, simple_ir_stage_shape,
+};
 
 pub(super) struct WasmModuleFinalizationInput<'a> {
     pub(super) functions: &'a [FunctionIR],
@@ -21,7 +23,7 @@ impl WasmBackend {
     pub(super) fn finalize_wasm_module(
         mut self,
         input: WasmModuleFinalizationInput<'_>,
-    ) -> Vec<u8> {
+    ) -> WasmCompileOutput {
         let WasmModuleFinalizationInput {
             functions,
             callable_table_elements,
@@ -30,6 +32,7 @@ impl WasmBackend {
 
         self.emit_linear_memory_surface();
         self.emit_import_audit();
+        emit_wasm_numeric_lane_audit(self.numeric_lane_stats);
         self.append_ordered_sections(&callable_table_elements);
 
         let unused_imports = if self.options.wasm_profile != WasmProfile::Full {
@@ -38,6 +41,7 @@ impl WasmBackend {
             BTreeSet::new()
         };
         let module_finish_start = Instant::now();
+        let diagnostics = self.compile_diagnostics();
         let mut bytes = self.module.finish();
         emit_wasm_stage_audit(
             "after-module-finish",
@@ -56,7 +60,10 @@ impl WasmBackend {
                 self.data_segments.relocs(),
             );
         }
-        bytes
+        WasmCompileOutput {
+            wasm: bytes,
+            diagnostics,
+        }
     }
 
     fn emit_import_audit(&self) {
@@ -137,6 +144,13 @@ impl WasmBackend {
         eprintln!(
             "[molt-wasm-import-audit] tail calls emitted: {} (return_call instructions)",
             self.tail_calls_emitted
+        );
+        eprintln!(
+            "[molt-wasm-import-audit] numeric lanes: op_loop_inline_int_raw_results={} op_loop_float_raw_results={} op_loop_guarded_int_results={} op_loop_boxed_runtime_calls={}",
+            self.numeric_lane_stats.op_loop_inline_int_raw_results,
+            self.numeric_lane_stats.op_loop_float_raw_results,
+            self.numeric_lane_stats.op_loop_guarded_int_results,
+            self.numeric_lane_stats.op_loop_boxed_runtime_calls,
         );
 
         let total_data_bytes = self.data_segments.total_data_bytes();
