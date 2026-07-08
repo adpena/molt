@@ -1,6 +1,12 @@
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WasmScalarDirectNumericLane {
+    InlineInt,
+    Float,
+}
+
 pub(crate) fn is_shared_drop_fact_marker(kind: &str) -> bool {
     matches!(kind, "drop_inserted" | "exception_region_drops_inserted")
 }
@@ -17,6 +23,19 @@ pub(crate) fn wasm_scalar_integer_fast_path_for_op(
             plan.op_args_are_integer_family(op)
         }
         _ => plan.op_prefers_integer_runtime_lane(op),
+    }
+}
+
+pub(crate) fn wasm_scalar_direct_numeric_lane_for_op(
+    plan: &ScalarRepresentationPlan,
+    op: &OpIR,
+) -> Option<WasmScalarDirectNumericLane> {
+    if plan.op_args_are_inline_safe_ints(op) && plan.op_result_is_inline_safe_int(op) {
+        Some(WasmScalarDirectNumericLane::InlineInt)
+    } else if plan.op_args_are_float_unboxed(op) && plan.op_result_is_float_unboxed(op) {
+        Some(WasmScalarDirectNumericLane::Float)
+    } else {
+        None
     }
 }
 

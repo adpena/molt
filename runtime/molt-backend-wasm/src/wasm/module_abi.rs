@@ -1,6 +1,6 @@
-use super::WasmBackend;
 use super::context::CompileFuncContext;
 use super::trampoline_analysis::WasmTrampolineAnalysis;
+use super::{WasmBackend, WasmCompileOutput};
 use imports::WasmRuntimeImportEmission;
 use native_callables::WasmNativeCallableImportEmission;
 use runtime_surface::WasmRuntimeSurfacePlan;
@@ -28,7 +28,7 @@ impl WasmBackend {
         ir: SimpleIR,
         lir_lowering_plans: crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
-    ) -> Vec<u8> {
+    ) -> WasmCompileOutput {
         let WasmTrampolineAnalysis {
             escaped_callable_targets,
             task_kinds,

@@ -1,6 +1,6 @@
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::WasmFrameLocals;
+use crate::wasm::{WasmFrameLocals, WasmNumericLaneStats};
 use crate::wasm_abi_generated::{WasmNumericOpLoopKind, wasm_numeric_runtime_selection};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
@@ -30,6 +30,7 @@ pub(super) fn emit_numeric_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
+    numeric_lane_stats: &mut WasmNumericLaneStats,
 ) -> bool {
     let Some(selection) = wasm_numeric_runtime_selection(op.kind.as_str()) else {
         return false;
@@ -46,6 +47,7 @@ pub(super) fn emit_numeric_op(
                 scalar_plan,
                 reloc_enabled,
                 known_raw_ints,
+                numeric_lane_stats,
             );
         }
         WasmNumericOpLoopKind::TrueDiv
@@ -66,6 +68,7 @@ pub(super) fn emit_numeric_op(
                 scalar_plan,
                 reloc_enabled,
                 known_raw_ints,
+                numeric_lane_stats,
             );
         }
         WasmNumericOpLoopKind::BitAnd
@@ -86,6 +89,7 @@ pub(super) fn emit_numeric_op(
                 scalar_plan,
                 reloc_enabled,
                 known_raw_ints,
+                numeric_lane_stats,
             );
         }
         WasmNumericOpLoopKind::Lt

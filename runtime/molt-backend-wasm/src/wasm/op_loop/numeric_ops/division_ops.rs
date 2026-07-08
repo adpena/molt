@@ -6,7 +6,7 @@ use super::common::{
 };
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal, WasmNumericLaneStats};
 use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
@@ -28,6 +28,7 @@ pub(super) fn emit_division_numeric_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
+    numeric_lane_stats: &mut WasmNumericLaneStats,
 ) {
     match selection.op_loop_kind {
         WasmNumericOpLoopKind::TrueDiv
@@ -41,18 +42,23 @@ pub(super) fn emit_division_numeric_op(
             scalar_plan,
             reloc_enabled,
             known_raw_ints,
+            numeric_lane_stats,
             selection.op_loop_kind,
             selection.import,
         ),
-        WasmNumericOpLoopKind::Matmul | WasmNumericOpLoopKind::Pow => emit_boxed_binary_result(
-            func,
-            op,
-            import_ids,
-            locals,
-            selection.import,
-            reloc_enabled,
-        ),
+        WasmNumericOpLoopKind::Matmul | WasmNumericOpLoopKind::Pow => {
+            numeric_lane_stats.record_op_loop_boxed_runtime_call();
+            emit_boxed_binary_result(
+                func,
+                op,
+                import_ids,
+                locals,
+                selection.import,
+                reloc_enabled,
+            );
+        }
         WasmNumericOpLoopKind::PowMod | WasmNumericOpLoopKind::Round => {
+            numeric_lane_stats.record_op_loop_boxed_runtime_call();
             emit_boxed_ternary_result(
                 func,
                 op,
@@ -62,14 +68,17 @@ pub(super) fn emit_division_numeric_op(
                 reloc_enabled,
             );
         }
-        WasmNumericOpLoopKind::Trunc => emit_boxed_unary_result(
-            func,
-            op,
-            import_ids,
-            locals,
-            selection.import,
-            reloc_enabled,
-        ),
+        WasmNumericOpLoopKind::Trunc => {
+            numeric_lane_stats.record_op_loop_boxed_runtime_call();
+            emit_boxed_unary_result(
+                func,
+                op,
+                import_ids,
+                locals,
+                selection.import,
+                reloc_enabled,
+            );
+        }
         _ => unreachable!("non-division numeric selector routed to division emitter"),
     }
 }
@@ -83,11 +92,13 @@ fn emit_division_binary_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
     known_raw_ints: &BTreeMap<u32, i64>,
+    numeric_lane_stats: &mut WasmNumericLaneStats,
     division_op: WasmNumericOpLoopKind,
     import_name: crate::wasm_abi_generated::WasmRuntimeImport,
 ) {
     let operands = binary_operands(op, locals);
-    if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
+    if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
+        numeric_lane_stats.record_op_loop_guarded_int_result();
         emit_guarded_int_binary_result_or_boxed(
             func,
             operands,
@@ -127,6 +138,7 @@ fn emit_division_binary_op(
             },
         );
     } else if matches!(division_op, WasmNumericOpLoopKind::TrueDiv) {
+        numeric_lane_stats.record_op_loop_boxed_runtime_call();
         emit_plain_f64_binary_result_or_boxed(
             func,
             operands,
@@ -140,6 +152,7 @@ fn emit_division_binary_op(
             },
         );
     } else {
+        numeric_lane_stats.record_op_loop_boxed_runtime_call();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
     store_numeric_result(func, op, locals);
