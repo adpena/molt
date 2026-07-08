@@ -234,15 +234,26 @@ other third-party ecosystem lane.
 - Python facades are allowed only as thin routing over shared primitives or as
   explicit fail-closed diagnostics. Do not create bespoke NumPy/SciPy/tinygrad
   clones as the ecosystem strategy.
+- Retained package-semantics clones are allowed only as quarantined
+  research/reference artifacts under an explicit `.molt-research-quarantine`
+  marker. They are not implementation authority: do not add them to `src/`, do
+  not package or ship them, and do not wire them into `PYTHONPATH`,
+  `MOLT_MODULE_ROOTS`, module roots, build inputs, import resolution, runtime
+  packages, wheels, or compatibility surfaces. The current tinygrad reference
+  clone is allowed only at `demos/tinygrad/reference_stdlib/`; tests that need
+  archaeology/regression behavior load it only through
+  `tests/helpers/tinygrad_stdlib_loader.py`.
 - Missing ABI behavior becomes a reusable primitive or a precise fail-closed
   diagnostic. No patched upstream fork, monkeypatch shim, host-interpreter
   bridge, or package-local compatibility crutch may masquerade as support.
 - Harness self-protection is mandatory: `tools/fail_closed_gate.py` must reject
   new ecosystem-baked files, ecosystem build crutches, Molt-owned third-party
-  package reimplementations, fail-open stubs, duplicate authorities, and
-  TODO-as-plan surfaces unless a tracked structural-resolution row already owns
-  deleting the registered debt. Existing rows are debt baselines that may only
-  move downward.
+  package reimplementations, research-quarantine breaches, fail-open stubs,
+  duplicate authorities, and TODO-as-plan surfaces unless a tracked
+  structural-resolution row already owns deleting the registered debt. Existing
+  rows are debt baselines that may only move downward; research-quarantine
+  breaches are direct gate failures and are fixed by removing the wiring, not by
+  blessing the clone as support.
 
 ### Anomaly Crux Protocol: Question The Question
 

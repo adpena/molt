@@ -1,0 +1,10 @@
+This directory is quarantined research/reference material, not package support.
+
+It preserves the former Molt-owned tinygrad semantics clone for archaeology,
+science, regression comparison, and primitive-model reference only. Production
+tinygrad support must compile upstream tinygrad through package/import custody.
+
+Do not add this directory to PYTHONPATH, MOLT_MODULE_ROOTS, module roots,
+build inputs, runtime packages, wheels, or import resolution. Tests that need
+the reference behavior must load it explicitly through
+tests/helpers/tinygrad_stdlib_loader.py.

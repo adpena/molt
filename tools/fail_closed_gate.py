@@ -24,6 +24,12 @@ behavior — in favour of a shortcut that silently ships a wrong or degraded ans
     custody and auto-provision the required build backend/toolchain/libraries;
     it must not grow a shadow ``src/molt/stdlib/<package>`` implementation.
 
+  * research-quarantine breach -- a retained package-semantics clone is allowed
+    only as quarantined research/reference material under an explicit marker. It
+    must never be added to ``PYTHONPATH``, ``MOLT_MODULE_ROOTS``, module roots,
+    import resolution, build inputs, or shipped runtime/package paths. Tests may
+    load it only through the approved explicit fixture loader.
+
   * fail_open_stub    — a ``#[no_mangle] extern "C"`` ABI export that returns a
     plausible NON-NULL / success sentinel on a path it does not actually
     implement (``MoltObject::none()`` / ``PyList_New(0)`` placeholder,
@@ -90,6 +96,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -482,6 +489,112 @@ def _line_at(text: str, line_no: int) -> str:
 
 
 _ECOSYSTEM_REIMPLEMENTATION_ROOTS = ("src/molt/stdlib",)
+
+_QUARANTINED_REFERENCE_ROOTS = {
+    "demos/tinygrad/reference_stdlib": "tinygrad",
+}
+_RESEARCH_QUARANTINE_MARKER = ".molt-research-quarantine"
+_QUARANTINE_SCAN_DIRS = (
+    "src",
+    "runtime",
+    "tools",
+    "tests",
+    "bench",
+    "demos",
+)
+_QUARANTINE_SCAN_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".rs",
+        ".toml",
+        ".json",
+        ".md",
+        ".txt",
+        ".ps1",
+        ".sh",
+        ".js",
+        ".ts",
+        ".yml",
+        ".yaml",
+    }
+)
+_QUARANTINED_REFERENCE_TOKENS = (
+    "demos/tinygrad/reference_stdlib",
+    r"demos\tinygrad\reference_stdlib",
+    "reference_stdlib/tinygrad",
+    r"reference_stdlib\tinygrad",
+    "TINYGRAD_STDLIB",
+    "reference_stdlib",
+)
+_QUARANTINED_REFERENCE_USE_RE = re.compile(
+    r"(?:"
+    r"demos[\\/]+tinygrad[\\/]+reference_stdlib"
+    r"|reference_stdlib[\\/]+tinygrad"
+    r"|reference_stdlib"
+    r")"
+)
+_QUARANTINE_TEXT_ALLOWLIST = frozenset(
+    {
+        "tools/fail_closed_gate.py",
+        "tests/cli/test_fail_closed_gate.py",
+        "tests/helpers/tinygrad_stdlib_loader.py",
+        "demos/tinygrad/README.md",
+    }
+)
+
+
+def _is_under_rel(rel: str, base_rel: str) -> bool:
+    return rel == base_rel or rel.startswith(f"{base_rel}/")
+
+
+def _iter_quarantine_text_files(root: Path) -> Iterable[Path]:
+    git_candidates = _git_grep_quarantine_text_files(root)
+    if git_candidates is not None:
+        for path in git_candidates:
+            yield path
+        return
+
+    for base_rel in _QUARANTINE_SCAN_DIRS:
+        base = root / base_rel
+        if not base.exists():
+            continue
+        for path in _walk_files(base, _QUARANTINE_SCAN_SUFFIXES):
+            if path.is_file() and path.suffix in _QUARANTINE_SCAN_SUFFIXES:
+                yield path
+
+
+def _git_grep_quarantine_text_files(root: Path) -> list[Path] | None:
+    """Return tracked files containing quarantine tokens, or None outside git.
+
+    The quarantine rule only needs files that mention a small set of path/root
+    tokens. In the real checkout, ask git's index-aware grep for that candidate
+    set instead of reading every source-ish file. Tmp-root negative controls are
+    not git repositories, so they fall back to the deterministic filesystem walk.
+    """
+
+    if not (root / ".git").exists():
+        return None
+    cmd = ["git", "-C", str(root), "grep", "-Il"]
+    for token in _QUARANTINED_REFERENCE_TOKENS:
+        cmd.extend(["-e", token])
+    cmd.append("--")
+    cmd.extend(_QUARANTINE_SCAN_DIRS)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 1:
+        return []
+    if result.returncode != 0:
+        return None
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for raw in result.stdout.splitlines():
+        rel = raw.strip().replace("\\", "/")
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        path = root / rel
+        if path.suffix in _QUARANTINE_SCAN_SUFFIXES:
+            paths.append(path)
+    return paths
 
 
 def _ecosystem_reimplementation_signature(text: str, package: str) -> tuple[str, int]:
@@ -1086,6 +1199,61 @@ class Violation:
         return f"[{self.kind}] {self.detail}"
 
 
+def check_research_quarantines(root: Path = REPO_ROOT) -> list[Violation]:
+    """Enforce that retained package-semantics clones remain research-only."""
+
+    violations: list[Violation] = []
+    for root_rel, package in _QUARANTINED_REFERENCE_ROOTS.items():
+        quarantine_root = root / root_rel
+        if not quarantine_root.exists():
+            continue
+        marker = quarantine_root / _RESEARCH_QUARANTINE_MARKER
+        if not marker.is_file():
+            violations.append(
+                Violation(
+                    "missing-research-quarantine-marker",
+                    f"{root_rel} exists but lacks {_RESEARCH_QUARANTINE_MARKER}; "
+                    "retained package-semantics clones must be explicitly marked "
+                    "research/reference-only.",
+                )
+            )
+        package_root = quarantine_root / package
+        if not package_root.is_dir():
+            violations.append(
+                Violation(
+                    "invalid-research-quarantine-root",
+                    f"{root_rel} is registered as a quarantined {package!r} "
+                    f"reference but {root_rel}/{package} is missing.",
+                )
+            )
+
+    for path in _iter_quarantine_text_files(root):
+        rel = path.relative_to(root).as_posix()
+        if rel in _QUARANTINE_TEXT_ALLOWLIST:
+            continue
+        if any(
+            _is_under_rel(rel, root_rel) for root_rel in _QUARANTINED_REFERENCE_ROOTS
+        ):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = _QUARANTINED_REFERENCE_USE_RE.search(text)
+        if match is None:
+            continue
+        violations.append(
+            Violation(
+                "research-quarantine-usage",
+                f"{rel} references quarantined package-semantics clone token "
+                f"{match.group(0)!r}. Use upstream package custody for package "
+                "semantics; only tests/helpers/tinygrad_stdlib_loader.py may "
+                "explicitly load the reference clone for research/regression.",
+            )
+        )
+    return violations
+
+
 def load_registry(path: Path = REGISTRY_PATH) -> Registry:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     baseline_tbl = data.get("baseline", {})
@@ -1201,6 +1369,9 @@ def run_gate(
                     "the site. New poison MUST NOT land unregistered.",
                 )
             )
+
+    # --- Research quarantine: retained package clones must stay isolated -------
+    violations.extend(check_research_quarantines(root))
 
     # --- Ratchet: per-class registered count is monotonically non-increasing ---
     live_counts: dict[str, int] = {cls: 0 for cls in _VALID_CLASSES}
