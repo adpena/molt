@@ -1,20 +1,16 @@
+use super::{WasmConstMaterialization, WasmConstMaterializationScratch};
 use crate::OpIR;
+use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::{
     WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
     WasmConstRawIntEffect, WasmConstScalarValue, WasmRuntimeImport, wasm_const_op_policy,
     wasm_const_op_policy_for_opcode,
 };
-use crate::wasm_binary::emit_call;
-use crate::wasm_data::DataSegmentRef;
-use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use wasm_encoder::{Function, Instruction};
-
-use super::WasmBackend;
-use super::frame_locals::{WasmFrameLocals, WasmLiteralScratchLocals};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct WasmConstOpPolicy(&'static WasmConstOpPolicySpec);
@@ -127,18 +123,18 @@ impl WasmConstOpPolicy {
             .as_ref()
             .unwrap_or_else(|| panic!("const op {} requires an output", self.0.kind));
         let out_local = locals[out_name];
-        let payload = match self.literal_payload() {
-            WasmConstLiteralPayload::None => WasmConstMaterializationPayload::RuntimeSingleton,
-            payload => WasmConstMaterializationPayload::Literal {
+        match self.literal_payload() {
+            WasmConstLiteralPayload::None => WasmConstMaterialization::runtime_singleton(
+                self.required_materializer_import(),
+                out_local,
+            ),
+            payload => WasmConstMaterialization::literal(
+                self.required_materializer_import(),
+                out_local,
                 payload,
-                bytes: self.required_simple_ir_literal_bytes(op),
-                scratch: locals.literal_scratch(out_name).into(),
-            },
-        };
-        WasmConstMaterialization {
-            import: self.required_materializer_import(),
-            out_local,
-            payload,
+                self.required_simple_ir_literal_bytes(op),
+                locals.literal_scratch(out_name).into(),
+            ),
         }
     }
 
@@ -148,20 +144,20 @@ impl WasmConstOpPolicy {
         out_local: u32,
         scratch: Option<WasmConstMaterializationScratch>,
     ) -> WasmConstMaterialization {
-        let payload = match self.literal_payload() {
-            WasmConstLiteralPayload::None => WasmConstMaterializationPayload::RuntimeSingleton,
-            payload => WasmConstMaterializationPayload::Literal {
+        match self.literal_payload() {
+            WasmConstLiteralPayload::None => WasmConstMaterialization::runtime_singleton(
+                self.required_materializer_import(),
+                out_local,
+            ),
+            payload => WasmConstMaterialization::literal(
+                self.required_materializer_import(),
+                out_local,
                 payload,
-                bytes: self.required_tir_literal_bytes(op),
-                scratch: scratch.unwrap_or_else(|| {
+                self.required_tir_literal_bytes(op),
+                scratch.unwrap_or_else(|| {
                     panic!("const op {} requires literal scratch locals", self.0.kind)
                 }),
-            },
-        };
-        WasmConstMaterialization {
-            import: self.required_materializer_import(),
-            out_local,
-            payload,
+            ),
         }
     }
 
@@ -220,159 +216,6 @@ impl WasmConstOpPolicy {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct WasmConstMaterialization {
-    import: WasmRuntimeImport,
-    out_local: u32,
-    payload: WasmConstMaterializationPayload,
-}
-
-impl WasmConstMaterialization {
-    pub(crate) fn runtime_import(&self) -> WasmRuntimeImport {
-        self.import
-    }
-
-    pub(crate) fn emit(
-        &self,
-        backend: &mut WasmBackend,
-        func: &mut Function,
-        func_index: u32,
-        reloc_enabled: bool,
-        import_id: u32,
-        const_str_scratch_segment: DataSegmentRef,
-    ) {
-        match &self.payload {
-            WasmConstMaterializationPayload::RuntimeSingleton => {
-                emit_call(func, reloc_enabled, import_id);
-                func.instruction(&Instruction::LocalSet(self.out_local));
-            }
-            WasmConstMaterializationPayload::Literal {
-                payload,
-                bytes,
-                scratch,
-            } => emit_literal_materialization(
-                backend,
-                func,
-                func_index,
-                reloc_enabled,
-                import_id,
-                const_str_scratch_segment,
-                self.out_local,
-                *payload,
-                bytes,
-                *scratch,
-            ),
-        }
-    }
-
-    pub(in crate::wasm) fn emit_with_imports(
-        &self,
-        backend: &mut WasmBackend,
-        func: &mut Function,
-        func_index: u32,
-        reloc_enabled: bool,
-        import_ids: &TrackedImportIds,
-        const_str_scratch_segment: DataSegmentRef,
-    ) {
-        let import_id = import_ids[self.runtime_import()];
-        self.emit(
-            backend,
-            func,
-            func_index,
-            reloc_enabled,
-            import_id,
-            const_str_scratch_segment,
-        );
-    }
-}
-
-#[derive(Debug, Clone)]
-enum WasmConstMaterializationPayload {
-    RuntimeSingleton,
-    Literal {
-        payload: WasmConstLiteralPayload,
-        bytes: Arc<[u8]>,
-        scratch: WasmConstMaterializationScratch,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WasmConstMaterializationScratch {
-    ptr_local: u32,
-    len_local: u32,
-}
-
-impl WasmConstMaterializationScratch {
-    pub(crate) fn new(ptr_local: u32, len_local: u32) -> Self {
-        Self {
-            ptr_local,
-            len_local,
-        }
-    }
-}
-
-impl From<WasmLiteralScratchLocals> for WasmConstMaterializationScratch {
-    fn from(scratch: WasmLiteralScratchLocals) -> Self {
-        Self::new(scratch.ptr_local(), scratch.len_local())
-    }
-}
-
-fn emit_literal_materialization(
-    backend: &mut WasmBackend,
-    func: &mut Function,
-    func_index: u32,
-    reloc_enabled: bool,
-    import_id: u32,
-    scratch_segment: DataSegmentRef,
-    out_local: u32,
-    payload: WasmConstLiteralPayload,
-    bytes: &[u8],
-    scratch: WasmConstMaterializationScratch,
-) {
-    emit_literal_ptr_len(backend, func, func_index, reloc_enabled, bytes, scratch);
-    match payload {
-        WasmConstLiteralPayload::String | WasmConstLiteralPayload::Bytes => {
-            func.instruction(&Instruction::LocalGet(scratch.ptr_local));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalGet(scratch.len_local));
-            backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_segment);
-            emit_call(func, reloc_enabled, import_id);
-            func.instruction(&Instruction::Drop);
-
-            backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_segment);
-            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                align: 3,
-                offset: 0,
-                memory_index: 0,
-            }));
-            func.instruction(&Instruction::LocalSet(out_local));
-        }
-        WasmConstLiteralPayload::BigintDecimal => {
-            func.instruction(&Instruction::LocalGet(scratch.ptr_local));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalGet(scratch.len_local));
-            emit_call(func, reloc_enabled, import_id);
-            func.instruction(&Instruction::LocalSet(out_local));
-        }
-        WasmConstLiteralPayload::None => unreachable!("literal materialization checked above"),
-    }
-}
-
-fn emit_literal_ptr_len(
-    backend: &mut WasmBackend,
-    func: &mut Function,
-    func_index: u32,
-    reloc_enabled: bool,
-    bytes: &[u8],
-    scratch: WasmConstMaterializationScratch,
-) {
-    let data = backend.add_data_segment(reloc_enabled, bytes);
-    backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-    func.instruction(&Instruction::LocalSet(scratch.ptr_local));
-    func.instruction(&Instruction::I64Const(bytes.len() as i64));
-    func.instruction(&Instruction::LocalSet(scratch.len_local));
-}
-
 fn forget_output_raw_int(
     op: &OpIR,
     locals: &WasmFrameLocals,
@@ -396,5 +239,149 @@ fn required_tir_bytes_attr<'a>(op: &'a TirOp, attr: &str, kind: &str) -> &'a [u8
     match op.attrs.get(attr) {
         Some(AttrValue::Bytes(value)) => value.as_slice(),
         _ => panic!("WASM const policy {kind} requires bytes attr {attr}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WasmConstOpPolicy;
+    use crate::OpIR;
+    use crate::wasm_abi_generated::{
+        WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload,
+        WasmConstRawIntEffect, WasmRuntimeImport,
+    };
+    use crate::wasm_values::{box_bool, box_int, box_none};
+    use molt_codegen_abi::box_float_bits as box_float;
+
+    fn op(kind: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn const_policy_classifies_inline_seed_bits() {
+        let mut int_op = op("const");
+        int_op.value = Some(7);
+        let mut bool_op = op("const_bool");
+        bool_op.value = Some(1);
+        let mut float_op = op("const_float");
+        float_op.f_value = Some(1.5);
+        let none_op = op("const_none");
+
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&int_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::Int)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&int_op).and_then(|policy| policy.inline_seed_bits(&int_op)),
+            Some(box_int(7))
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&int_op).map(|policy| policy.raw_int_effect()),
+            Some(WasmConstRawIntEffect::SetInt)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&bool_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::Bool)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&bool_op)
+                .and_then(|policy| policy.inline_seed_bits(&bool_op)),
+            Some(box_bool(1))
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&float_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::Float)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&float_op)
+                .and_then(|policy| policy.inline_seed_bits(&float_op)),
+            Some(box_float(1.5))
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&none_op).map(|policy| policy.inline_seed()),
+            Some(WasmConstInlineSeed::NoneValue)
+        );
+        assert_eq!(
+            WasmConstOpPolicy::for_op(&none_op)
+                .and_then(|policy| policy.inline_seed_bits(&none_op)),
+            Some(box_none())
+        );
+    }
+
+    #[test]
+    fn const_policy_classifies_runtime_seed_and_literal_scratch() {
+        for (kind, payload, import, parse_scalar, lir_policy) in [
+            (
+                "const_str",
+                WasmConstLiteralPayload::String,
+                WasmRuntimeImport::StringFromBytes,
+                true,
+                WasmConstLirFastPolicy::Materialize,
+            ),
+            (
+                "const_bigint",
+                WasmConstLiteralPayload::BigintDecimal,
+                WasmRuntimeImport::BigintFromStr,
+                false,
+                WasmConstLirFastPolicy::Materialize,
+            ),
+            (
+                "const_bytes",
+                WasmConstLiteralPayload::Bytes,
+                WasmRuntimeImport::BytesFromBytes,
+                true,
+                WasmConstLirFastPolicy::Materialize,
+            ),
+        ] {
+            let policy = WasmConstOpPolicy::for_kind(kind).expect("literal const policy");
+            assert!(
+                policy.needs_literal_scratch(),
+                "{kind} must allocate literal scratch"
+            );
+            assert_eq!(policy.literal_payload(), payload);
+            assert_eq!(policy.materializer_import(), Some(import));
+            assert_eq!(policy.parse_scalar_literal(), parse_scalar);
+            assert_eq!(policy.lir_fast_policy(), lir_policy);
+            assert!(
+                policy.needs_dispatch_runtime_seed(),
+                "{kind} must be materialized for dispatch seeds"
+            );
+        }
+
+        for kind in ["const_not_implemented", "const_ellipsis"] {
+            let policy = WasmConstOpPolicy::for_kind(kind).expect("runtime singleton policy");
+            assert!(
+                !policy.needs_literal_scratch(),
+                "{kind} must not allocate literal scratch"
+            );
+            assert_eq!(policy.literal_payload(), WasmConstLiteralPayload::None);
+            assert!(policy.materializer_import().is_some());
+            assert_eq!(
+                policy.lir_fast_policy(),
+                WasmConstLirFastPolicy::Materialize
+            );
+            assert!(
+                policy.needs_dispatch_runtime_seed(),
+                "{kind} must be materialized for dispatch seeds"
+            );
+        }
+    }
+
+    #[test]
+    fn const_policy_rejects_non_const_ops() {
+        assert_eq!(WasmConstOpPolicy::for_kind("add"), None);
+        assert_eq!(WasmConstOpPolicy::for_kind("parse_int"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "WASM const policy const requires int scalar payload")]
+    fn const_policy_fails_closed_on_missing_scalar_payload() {
+        let const_op = op("const");
+        let policy = WasmConstOpPolicy::for_op(&const_op).expect("const policy");
+
+        let _ = policy.inline_seed_bits(&const_op);
     }
 }

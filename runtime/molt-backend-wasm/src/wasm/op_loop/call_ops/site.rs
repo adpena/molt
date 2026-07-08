@@ -148,8 +148,8 @@ pub(super) fn emit_pending_exception_return(func: &mut Function, const_cache: &C
 #[cfg(test)]
 mod tests {
     use super::collect_live_object_locals_for_call;
-    use crate::wasm::frame_locals::WasmLiteralPayload;
     use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
+    use crate::wasm_abi_generated::WasmConstLiteralPayload;
     use std::collections::BTreeMap;
 
     #[test]
@@ -192,7 +192,7 @@ mod tests {
         );
         locals.ensure_literal_scratch(
             "payload",
-            WasmLiteralPayload::String,
+            WasmConstLiteralPayload::String,
             true,
             &mut local_types,
             &mut local_count,
