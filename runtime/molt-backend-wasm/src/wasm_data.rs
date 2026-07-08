@@ -100,11 +100,13 @@ impl WasmDataSegments {
         if cacheable && let Some(existing) = self.cache.get(bytes) {
             return *existing;
         }
-        let offset = self.offset;
         let byte_len: u32 = bytes
             .len()
             .try_into()
             .expect("data segment too large for WASM (>4 GiB)");
+        let align_mask = data_segment_align_mask(byte_len);
+        let offset = align_data_offset(self.offset, align_mask)
+            .expect("WASM data segment offset overflow (>4 GiB total data)");
         let index = self.segments.len() as u32;
         let const_expr = if reloc_enabled {
             const_expr_i32_const_padded(offset as i32)
@@ -114,11 +116,8 @@ impl WasmDataSegments {
         self.section.active(0, &const_expr, bytes.iter().copied());
         // Checked arithmetic detects overflow instead of silently wrapping and
         // corrupting shared linear-memory layout.
-        let align_mask: u32 = if byte_len <= 4 { 3 } else { 7 };
         self.offset = offset
             .checked_add(byte_len)
-            .and_then(|value| value.checked_add(align_mask))
-            .map(|value| value & !align_mask)
             .expect("WASM data segment offset overflow (>4 GiB total data)");
         self.segments.push(DataSegmentInfo { size: byte_len });
         let data_ref = DataSegmentRef { offset, index };
@@ -158,5 +157,48 @@ impl WasmDataSegments {
             offset_in_func,
             segment_index: data.index,
         });
+    }
+}
+
+fn data_segment_align_mask(byte_len: u32) -> u32 {
+    if byte_len <= 4 { 3 } else { 7 }
+}
+
+fn align_data_offset(offset: u32, align_mask: u32) -> Option<u32> {
+    offset
+        .checked_add(align_mask)
+        .map(|aligned| aligned & !align_mask)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aligns_current_segment_before_placement() {
+        let mut segments = WasmDataSegments::new(0);
+
+        let first = segments.add_segment(false, &[1, 2, 3, 4]);
+        let second = segments.add_segment(false, &[5, 6, 7, 8, 9, 10, 11, 12]);
+
+        assert_eq!(first.offset, 0);
+        assert_eq!(
+            second.offset, 8,
+            "the >4-byte segment must align its own start, not inherit the previous 4-byte segment alignment"
+        );
+        assert_eq!(segments.offset(), 16);
+    }
+
+    #[test]
+    fn mutable_segments_share_current_segment_alignment() {
+        let mut segments = WasmDataSegments::new(2);
+
+        let data_ref = segments.add_mutable_segment(false, &[0; 8]);
+
+        assert_eq!(
+            data_ref.offset, 8,
+            "mutable data segments must use the same start-alignment authority as readonly segments"
+        );
+        assert_eq!(segments.offset(), 16);
     }
 }

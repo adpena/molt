@@ -48,6 +48,11 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   import failure on both CPython and Molt downgrades to skip. Re-verified
   2026-07-08 with `pytest tests/tools/test_parity_gate.py -q` (`5 passed`).
 - **#11 release-fast debug=0: LANDED** (`f21cf71aa`).
+- **#18 WASM data segment alignment: LANDED**. Each segment now aligns its own
+  start before emission instead of inheriting the previous segment's alignment;
+  re-verified with `cargo test -p molt-backend-wasm --features test-util
+  wasm_data::tests` (`2 passed`) and `cargo test -p molt-backend --features
+  wasm-backend --test wasm_data_segments` (`9 passed`).
 - NOTE: not in the review but landed same arc — the biggest build-throughput win was
   `ad0cafb82` **adaptive cargo jobs (2→14)**: a hardcoded CARGO_BUILD_JOBS=2 defeated
   the memory-bounded ceiling (~7x under-parallelism). Plus `bdd42535e` persistent
