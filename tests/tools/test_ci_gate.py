@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import molt.dx as molt_dx
+import pytest
 
 from tests.process_guard_common import run_guarded_test_process
 
@@ -249,6 +250,116 @@ def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch) -> None:
     assert result.stdout == "guarded\n"
     assert guarded_calls[0]["command"] == ["python3", "-c", "print('ok')"]
     assert guarded_calls[0]["limits"].enabled is True
+
+
+def test_ci_gate_finds_uv_run_tool_script_after_interpreter() -> None:
+    module = _load_ci_gate()
+
+    assert module._tool_script_arg(module._uv_run(str(module.TOOLS / "ci_gate.py"))) == (
+        module.TOOLS / "ci_gate.py"
+    ).resolve()
+
+
+def test_required_missing_toolchain_is_unmet_prerequisite(monkeypatch) -> None:
+    module = _load_ci_gate()
+
+    monkeypatch.setattr(module, "_has_tool", lambda name: False)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing prerequisite should stop before execution")
+        ),
+    )
+
+    result = module._run_check(
+        module.Check(
+            name="required-rust",
+            tier=1,
+            cmd=["cargo", "metadata"],
+            needs_cargo=True,
+            required=True,
+        )
+    )
+
+    assert result.status == "unmet-prerequisite"
+    assert result.skip_reason == "cargo not found"
+    assert module._results_to_dict([result])["summary"]["success"] is False
+
+
+def test_optional_missing_toolchain_remains_skip(monkeypatch) -> None:
+    module = _load_ci_gate()
+
+    monkeypatch.setattr(module, "_has_tool", lambda name: False)
+
+    result = module._run_check(
+        module.Check(
+            name="optional-rust",
+            tier=1,
+            cmd=["cargo", "metadata"],
+            needs_cargo=True,
+            required=False,
+        )
+    )
+
+    assert result.status == "skip"
+    assert module._results_to_dict([result])["summary"]["success"] is True
+
+
+def test_missing_uv_run_script_is_detected_before_execution(monkeypatch) -> None:
+    module = _load_ci_gate()
+    missing = module.TOOLS / "definitely_missing_ci_gate_script.py"
+    assert not missing.exists()
+    executed = False
+
+    def fake_guarded_completed_process(*_args, **_kwargs):
+        nonlocal executed
+        executed = True
+        raise AssertionError("missing script should stop before execution")
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    result = module._run_check(
+        module.Check(
+            name="missing-script",
+            tier=1,
+            cmd=module._uv_run(str(missing)),
+            required=True,
+        )
+    )
+
+    assert result.status == "unmet-prerequisite"
+    assert result.skip_reason == f"script not found: {missing.resolve()}"
+    assert executed is False
+
+
+def test_main_exits_nonzero_for_required_unmet_prerequisite(monkeypatch) -> None:
+    module = _load_ci_gate()
+
+    monkeypatch.setattr(
+        module,
+        "_build_checks",
+        lambda: [
+            module.Check(
+                name="required-rust",
+                tier=1,
+                cmd=["cargo", "metadata"],
+                needs_cargo=True,
+                required=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(module, "_has_tool", lambda name: False)
+    monkeypatch.setattr(module.sys, "argv", ["ci_gate.py", "--tier", "1", "--json"])
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    assert exc.value.code == 1
 
 
 def test_parallel_workers_clamped_by_global_memory_budget() -> None:

@@ -123,7 +123,7 @@ class Check:
 class CheckResult:
     name: str
     tier: int
-    status: str  # "pass", "fail", "skip", "error"
+    status: str  # "pass", "fail", "skip", "error", "unmet-prerequisite"
     duration_s: float = 0.0
     returncode: int = 0
     stdout: str = ""
@@ -135,6 +135,7 @@ MemoryGuardLimits = harness_memory_guard.HarnessMemoryLimits
 
 
 _DEFAULT_MEMORY_LIMITS = object()
+REQUIRED_FAILURE_STATUSES = {"fail", "error", "unmet-prerequisite"}
 
 
 def default_memory_guard_limits(
@@ -191,6 +192,23 @@ def _uv_pytest(*args: str) -> list[str]:
 
 def _has_tool(name: str) -> bool:
     return shutil.which(name) is not None
+
+
+def _tool_script_arg(cmd: Sequence[str]) -> Path | None:
+    """Return the first Python tool script path invoked by a command."""
+    tools_root = TOOLS.resolve()
+    for arg in cmd:
+        if arg.startswith("-"):
+            continue
+        path = Path(arg)
+        if not path.is_absolute():
+            path = ROOT / path
+        resolved = path.resolve(strict=False)
+        with contextlib.suppress(ValueError):
+            resolved.relative_to(tools_root)
+            if resolved.suffix == ".py":
+                return resolved
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -700,10 +718,9 @@ def _skip_reason(check: Check) -> str | None:
     if check.needs_quint and not _has_tool("quint"):
         return "quint not found"
     # Check that tool script exists for uv-run checks
-    if check.cmd and len(check.cmd) > 4 and check.cmd[0] == _UV:
-        script = check.cmd[4] if len(check.cmd) > 4 else None
-        if script and script.startswith(str(TOOLS)) and not Path(script).exists():
-            return f"script not found: {script}"
+    script = _tool_script_arg(check.cmd)
+    if script is not None and not script.exists():
+        return f"script not found: {script}"
     # Check test directories for pytest checks — find the first arg that
     # looks like a path (after the "pytest" token in the command list).
     if check.needs_pytest:
@@ -780,7 +797,7 @@ def _run_check(
         return CheckResult(
             name=check.name,
             tier=check.tier,
-            status="skip",
+            status="unmet-prerequisite" if check.required else "skip",
             skip_reason=skip,
         )
 
@@ -858,6 +875,7 @@ def _status_icon(status: str) -> str:
         "fail": red("FAIL"),
         "skip": yellow("SKIP"),
         "error": red("ERR "),
+        "unmet-prerequisite": red("MISS"),
     }
     return icons.get(status, status)
 
@@ -967,7 +985,7 @@ def run_gate(
                         _print_result(result, verbose)
                     if (
                         fail_fast
-                        and result.status in ("fail", "error")
+                        and result.status in REQUIRED_FAILURE_STATUSES
                         and futures[future].required
                     ):
                         # Cancel remaining futures
@@ -980,18 +998,22 @@ def run_gate(
                 results.append(result)
                 if not json_out:
                     _print_result(result, verbose)
-                if fail_fast and result.status in ("fail", "error") and check.required:
+                if (
+                    fail_fast
+                    and result.status in REQUIRED_FAILURE_STATUSES
+                    and check.required
+                ):
                     break
 
         # Check for fail-fast across tiers
         if fail_fast and any(
-            r.status in ("fail", "error") for r in results if r.tier == tier
+            r.status in REQUIRED_FAILURE_STATUSES for r in results if r.tier == tier
         ):
             required_failures = [
                 r
                 for r in results
                 if r.tier == tier
-                and r.status in ("fail", "error")
+                and r.status in REQUIRED_FAILURE_STATUSES
                 and any(c.required for c in tier_checks if c.name == r.name)
             ]
             if required_failures:
@@ -1085,6 +1107,7 @@ def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
     passed = sum(1 for r in results if r.status == "pass")
     failed = sum(1 for r in results if r.status == "fail")
     errored = sum(1 for r in results if r.status == "error")
+    unmet_prereq = sum(1 for r in results if r.status == "unmet-prerequisite")
     skipped = sum(1 for r in results if r.status == "skip")
     total_time = sum(r.duration_s for r in results)
 
@@ -1094,9 +1117,10 @@ def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
             "passed": passed,
             "failed": failed,
             "errored": errored,
+            "unmet_prerequisite": unmet_prereq,
             "skipped": skipped,
             "total_time_s": round(total_time, 2),
-            "success": failed == 0 and errored == 0,
+            "success": failed == 0 and errored == 0 and unmet_prereq == 0,
         },
         "checks": [
             {
@@ -1295,6 +1319,7 @@ def main() -> None:
         passed = sum(1 for r in results if r.status == "pass")
         failed = sum(1 for r in results if r.status == "fail")
         errored = sum(1 for r in results if r.status == "error")
+        unmet_prereq = sum(1 for r in results if r.status == "unmet-prerequisite")
         skipped = sum(1 for r in results if r.status == "skip")
         total_time = sum(r.duration_s for r in results)
 
@@ -1306,12 +1331,14 @@ def main() -> None:
             parts.append(red(f"{failed} failed"))
         if errored:
             parts.append(red(f"{errored} errored"))
+        if unmet_prereq:
+            parts.append(red(f"{unmet_prereq} unmet-prerequisite"))
         if skipped:
             parts.append(yellow(f"{skipped} skipped"))
         print(f"  {', '.join(parts)} in {total_time:.1f}s")
 
-        if failed > 0 or errored > 0:
-            failures = [r for r in results if r.status in ("fail", "error")]
+        if failed > 0 or errored > 0 or unmet_prereq > 0:
+            failures = [r for r in results if r.status in REQUIRED_FAILURE_STATUSES]
             print(f"\n{bold('Failures:')}")
             for r in failures:
                 print(f"  {red(r.name)} (tier {r.tier}, rc={r.returncode})")
@@ -1320,7 +1347,8 @@ def main() -> None:
     all_checks = _build_checks()
     required_names = {c.name for c in all_checks if c.required}
     has_required_failure = any(
-        r.status in ("fail", "error") and r.name in required_names for r in results
+        r.status in REQUIRED_FAILURE_STATUSES and r.name in required_names
+        for r in results
     )
     sys.exit(1 if has_required_failure else 0)
 
