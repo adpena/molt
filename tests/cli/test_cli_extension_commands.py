@@ -1738,6 +1738,113 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert artifact_manifest["python_exports"] == ["pkg.demoext"]
 
 
+def test_extension_build_derives_module_attr_support_source_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "meson_extproj"
+    project_root.mkdir()
+    _write_meson_source_plan_project(project_root)
+    ndimage_dir = project_root / "pkg" / "ndimage"
+    ndimage_dir.mkdir()
+    (ndimage_dir / "_filters.py").write_text(
+        "from typing import TYPE_CHECKING\n"
+        "from . import _nd_image\n"
+        "from . import _ni_docstrings\n"
+        "from . import _ni_support\n"
+        "if TYPE_CHECKING:\n"
+        "    from . import _dead_support\n"
+        "def gaussian_filter(value):\n"
+        "    _ni_docstrings.docfiller(gaussian_filter)\n"
+        "    return _ni_support.normalize(value)\n",
+        encoding="utf-8",
+    )
+    (ndimage_dir / "_ni_docstrings.py").write_text(
+        "docfiller = lambda func: func\n",
+        encoding="utf-8",
+    )
+    (ndimage_dir / "_ni_support.py").write_text(
+        "def normalize(value):\n    return value\n",
+        encoding="utf-8",
+    )
+    (ndimage_dir / "_dead_support.py").write_text(
+        "def unused(value):\n    return value\n",
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": ({"PyInit_demoext"}, set()),
+            "helper_generated": ({"helper_generated"}, set()),
+        },
+    )
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        callable_export_json=[
+            json.dumps(
+                {
+                    "module": "pkg.ndimage",
+                    "name": "gaussian_filter",
+                    "binding": "module_attr",
+                    "provider_module": "pkg.ndimage._filters",
+                    "abi": "molt.object_callargs_v1",
+                }
+            )
+        ],
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["support_files"] == [
+        {
+            "path": "pkg/ndimage/_filters.py",
+            "sha256": hashlib.sha256(
+                (ndimage_dir / "_filters.py").read_bytes()
+            ).hexdigest(),
+        },
+        {
+            "path": "pkg/ndimage/_ni_docstrings.py",
+            "sha256": hashlib.sha256(
+                (ndimage_dir / "_ni_docstrings.py").read_bytes()
+            ).hexdigest(),
+        },
+        {
+            "path": "pkg/ndimage/_ni_support.py",
+            "sha256": hashlib.sha256(
+                (ndimage_dir / "_ni_support.py").read_bytes()
+            ).hexdigest(),
+        },
+    ]
+    assert (out_dir / "pkg" / "ndimage" / "_filters.py").is_file()
+    assert (out_dir / "pkg" / "ndimage" / "_ni_docstrings.py").is_file()
+    assert (out_dir / "pkg" / "ndimage" / "_ni_support.py").is_file()
+    assert not (out_dir / "pkg" / "ndimage" / "_dead_support.py").exists()
+
+
 def test_extension_build_follows_linked_static_library_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3523,8 +3630,15 @@ def test_extension_seal_publishes_provider_module_support_source(
     provider_source = artifact_dir / "_morphology.py"
     provider_source.write_text(
         "from . import _nd_image\n"
+        "from . import _ni_docstrings\n"
         "def distance_transform_edt(mask):\n"
+        "    _ni_docstrings.docfiller(distance_transform_edt)\n"
         "    return _nd_image.euclidean_feature_transform(mask)\n",
+        encoding="utf-8",
+    )
+    docstrings_source = artifact_dir / "_ni_docstrings.py"
+    docstrings_source.write_text(
+        "docfiller = lambda func: func\n",
         encoding="utf-8",
     )
     stale_provider_source = artifact_dir / "_stale.py"
@@ -3637,7 +3751,6 @@ def test_extension_seal_publishes_provider_module_support_source(
                 }
             )
         ],
-        support_file=[str(provider_source)],
         json_output=True,
         verbose=False,
     )
@@ -3649,7 +3762,8 @@ def test_extension_seal_publishes_provider_module_support_source(
         "scipy.ndimage.distance_transform_edt"
     ]
     assert payload["data"]["copied_support_files"] == [
-        str(sealed_root / "scipy" / "ndimage" / "_morphology.py")
+        str(sealed_root / "scipy" / "ndimage" / "_morphology.py"),
+        str(sealed_root / "scipy" / "ndimage" / "_ni_docstrings.py"),
     ]
     sealed_manifest = json.loads(
         (
@@ -3663,7 +3777,11 @@ def test_extension_seal_publishes_provider_module_support_source(
         {
             "path": "scipy/ndimage/_morphology.py",
             "sha256": hashlib.sha256(provider_source.read_bytes()).hexdigest(),
-        }
+        },
+        {
+            "path": "scipy/ndimage/_ni_docstrings.py",
+            "sha256": hashlib.sha256(docstrings_source.read_bytes()).hexdigest(),
+        },
     ]
     assert sealed_manifest["python_exports"] == ["scipy.ndimage.distance_transform_edt"]
     assert sealed_manifest["callable_exports"] == [
@@ -3689,7 +3807,7 @@ def test_extension_seal_publishes_provider_module_support_source(
     # provider callable can be published on the package. See the closure arc in
     # test_entry_native_package_import_compiles_package_init_closure.
     assert plan.support_source_module_names() == frozenset(
-        {"scipy.ndimage._morphology", "scipy.ndimage"}
+        {"scipy.ndimage._morphology", "scipy.ndimage._ni_docstrings", "scipy.ndimage"}
     )
 
     alias_root = tmp_path / "sealed_alias"
@@ -3709,7 +3827,6 @@ def test_extension_seal_publishes_provider_module_support_source(
             )
         ],
         support_file=[
-            str(provider_source),
             json.dumps(
                 {
                     "path": "numpy/exceptions.py",
@@ -3726,6 +3843,7 @@ def test_extension_seal_publishes_provider_module_support_source(
     assert alias_payload["data"]["copied_support_files"] == [
         str(alias_root / "numpy" / "exceptions.py"),
         str(alias_root / "scipy" / "ndimage" / "_morphology.py"),
+        str(alias_root / "scipy" / "ndimage" / "_ni_docstrings.py"),
     ]
     alias_manifest = json.loads(
         (
@@ -3743,6 +3861,10 @@ def test_extension_seal_publishes_provider_module_support_source(
         {
             "path": "scipy/ndimage/_morphology.py",
             "sha256": hashlib.sha256(provider_source.read_bytes()).hexdigest(),
+        },
+        {
+            "path": "scipy/ndimage/_ni_docstrings.py",
+            "sha256": hashlib.sha256(docstrings_source.read_bytes()).hexdigest(),
         },
     ]
 

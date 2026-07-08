@@ -12,9 +12,9 @@ from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
     _manifest_callable_exports,
     _manifest_dotted_name_tuple,
-    _manifest_support_file_payloads,
     _validate_extension_manifest,
 )
+from molt.cli.extension_support import module_attr_support_files
 from molt.cli.project_roots import _find_molt_root
 from molt.cli.external_native import (
     _manifest_has_sealed_extension_custody,
@@ -676,7 +676,11 @@ def extension_seal(
     support_sha_errors: list[str] = []
     manifest_support_files = manifest.get("support_files")
     raw_support_files: list[Any] = []
-    if manifest_support_files is not None and not support_file:
+    if (
+        manifest_support_files is not None
+        and not support_file
+        and not callable_export_json
+    ):
         if isinstance(manifest_support_files, list):
             raw_support_files.extend(manifest_support_files)
         else:
@@ -684,10 +688,13 @@ def extension_seal(
     raw_support_files.extend(
         _support_file_payloads(support_file, errors=support_sha_errors)
     )
-    support_files = _manifest_support_file_payloads(
+    support_files = module_attr_support_files(
         raw_support_files,
         field_name="support_files",
-        root=source_package_root,
+        source_root=source_package_root,
+        package=package,
+        extension_module=module_name,
+        callable_exports=callable_exports,
         errors=support_sha_errors,
     )
     support_file_sha256 = tuple(
