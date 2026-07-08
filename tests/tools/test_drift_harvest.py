@@ -45,6 +45,37 @@ def test_classify_assigns_states(monkeypatch):
     assert state["/d/wt/gone"] == "STALE"
 
 
+def test_classify_computes_uniq_lazily(monkeypatch):
+    # Perf invariant: the expensive git-cherry (uniq) call is skipped for PROTECTED,
+    # LOCKED, and FRESH worktrees (they never consume uniq). This is what keeps the
+    # pre-push gate fast on a checkout of mostly-fresh worktrees. Only clean+old
+    # worktrees (SUPERSEDED/SIGNAL candidates) pay for the patch-id computation.
+    now = 1_000_000.0
+    wts = [
+        {"path": "/d/wt/fresh-dirty", "branch": "fd"},
+        {"path": "/d/wt/fresh-recent", "branch": "fr"},
+        {"path": "/Users/x/OneDrive/Documents/molt", "branch": "prot"},
+        {"path": "/d/wt/locked", "branch": "lk", "locked": True},
+        {"path": "/d/wt/old-clean", "branch": "oc"},
+    ]
+    monkeypatch.setattr(dh, "_worktrees", lambda: wts)
+    monkeypatch.setattr(dh, "_worktree_exists", lambda p: True)
+    monkeypatch.setattr(dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0)
+    monkeypatch.setattr(
+        dh, "_last_commit_epoch", lambda p: (now - 60) if p.endswith("fresh-recent") else 0
+    )
+    called: list[str] = []
+
+    def spy(ref):
+        called.append(ref)
+        return 3
+
+    monkeypatch.setattr(dh, "_unique_commit_count", spy)
+    dh.classify(fresh_hours=24.0, now=now)
+    # uniq computed ONLY for the clean+old worktree; never for fresh/protected/locked.
+    assert called == ["oc"]
+
+
 def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypatch):
     # The prune path must never touch FRESH/PROTECTED/LOCKED, and SIGNAL only with
     # --include-signal (after its commits are bundled).

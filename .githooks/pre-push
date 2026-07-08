@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# molt-drift-gate-hook v1  (managed by tools/install_git_hooks.py — do not rename this marker)
 # Drift enforcement gate (P0). Worktree/branch sprawl and aged unlanded SIGNAL are
 # POISON — a 165-branch OneDrive .git had to be retired 2026-07-08. This blocks a
 # push when drift has accumulated so it MUST be harvested onto main and pruned.
@@ -15,13 +16,25 @@ fi
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 gate="$repo_root/tools/drift_harvest.py"
 [ -f "$gate" ] || exit 0
+# The venv lives at the MAIN checkout (git-common-dir's parent), not a linked worktree.
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null)"
+main_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)"
 
 run_gate() {
+  # --no-fetch: the push already contacts origin; skip a redundant/hang-prone
+  # fetch inside the hook. A stale origin/main only risks a benign false positive.
+  # Prefer the repo venv python directly (fast); uv run adds seconds of env
+  # resolution on every push. Fall back to uv, then to PATH python.
+  local vpy
+  for vpy in \
+    "$main_root/.venv/Scripts/python.exe" "$main_root/.venv/bin/python" \
+    "$repo_root/.venv/Scripts/python.exe" "$repo_root/.venv/bin/python"; do
+    if [ -x "$vpy" ]; then "$vpy" "$gate" --gate --no-fetch; return $?; fi
+  done
   if command -v uv >/dev/null 2>&1; then
-    uv run --python 3.12 python "$gate" --gate
-  else
-    python "$gate" --gate
+    uv run --python 3.12 python "$gate" --gate --no-fetch; return $?
   fi
+  python "$gate" --gate --no-fetch
 }
 
 if ! run_gate; then
