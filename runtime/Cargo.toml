@@ -22,6 +22,7 @@ members = [
     "molt-runtime-ipaddress",
     "molt-runtime-zoneinfo",
     "molt-runtime-vfs",
+    "molt-runtime-resource",
     "molt-runtime-protobuf",
     "molt-runtime",
     "molt-backend",
