@@ -44,6 +44,7 @@ CANONICAL_RUN_ENV_KEYS = (
 )
 DX_ENV_KEYS = (
     *CANONICAL_RUN_ENV_KEYS,
+    "PYTHONPATH",
     "MOLT_BACKEND_DAEMON_SOCKET_DIR",
     "MOLT_USE_SCCACHE",
     "MOLT_DIFF_ALLOW_RUSTC_WRAPPER",
@@ -1208,12 +1209,16 @@ def development_artifact_env(
         session_prefix=session_prefix,
         prefer_external_artifacts=True,
     ).dx_env(env, create_dirs=create_dirs)
+    ensure_repo_src_pythonpath(repo_root, env)
+    return env
+
+
+def ensure_repo_src_pythonpath(repo_root: Path, env: dict[str, str]) -> None:
     src = repo_root.resolve() / "src"
     existing = env.get("PYTHONPATH", "")
     parts = [part for part in existing.split(os.pathsep) if part]
     if str(src) not in parts:
         env["PYTHONPATH"] = str(src) if not existing else f"{src}{os.pathsep}{existing}"
-    return env
 
 
 class DxProject:
@@ -1351,6 +1356,7 @@ class DxProject:
             env,
             create_dirs=create_dirs,
         )
+        ensure_repo_src_pythonpath(self.root, env)
         env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
         env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
         # Do NOT hardcode a conservative fixed job count here — it poisons the

@@ -393,6 +393,8 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
 ) -> None:
     _clear_run_context_env(monkeypatch)
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+    ambient_pythonpath = tmp_path / "ambient-pythonpath"
+    monkeypatch.setenv("PYTHONPATH", str(ambient_pythonpath))
 
     assert (
         run_context_env.main(
@@ -413,6 +415,10 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
     assert env["UV_PROJECT_ENVIRONMENT"] == str(
         tmp_path.resolve() / "tmp" / "uv-project-envs" / "dx__py3.12"
     )
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        str(tmp_path.resolve() / "src"),
+        str(ambient_pythonpath),
+    ]
 
 
 def test_run_context_env_can_emit_session_scoped_uv_project_environment(
@@ -654,6 +660,7 @@ def test_dx_project_dx_env_uses_same_key_authority(tmp_path: Path) -> None:
     assert tuple(key for key in DX_ENV_KEYS if key in env)
     assert env["MOLT_EXT_ROOT"] == str(project_root.resolve())
     assert env["SCCACHE_DIR"] == str(project_root.resolve() / ".sccache")
+    assert env["PYTHONPATH"] == str(project_root.resolve() / "src")
 
 
 def test_default_windows_artifact_roots_prefers_primary_then_label_fallback(
