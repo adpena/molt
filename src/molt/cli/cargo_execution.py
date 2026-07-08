@@ -11,6 +11,10 @@ from typing import Iterator
 
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
+    _BYTES_PER_CARGO_JOB,  # noqa: F401 (re-exported for compat)
+    _CARGO_JOB_MEMORY_HEADROOM,  # noqa: F401 (re-exported for compat)
+    _memory_bounded_cargo_jobs,
+    _total_system_memory_bytes,  # noqa: F401 (re-exported for compat)
     development_artifact_env,
     development_artifacts_requested,
 )
@@ -21,75 +25,8 @@ from molt.cli.project_roots import _find_molt_root
 
 _MAX_CONCURRENT_BUILDS = 2
 
-# Peak resident memory a single rustc codegen job for the heavy molt-runtime
-# (and source-recompiled numpy/scipy) wasm build can reach. Cargo's default
-# `-j<num_cpus>` runs that many rustc processes in parallel, so on a small box
-# (8GB) an unbounded job count thrashes swap and stalls the build for ~45min.
-# Bounding jobs to available memory keeps a wasm build inside an 8GB ceiling.
-_BYTES_PER_CARGO_JOB = 2 * 1024 * 1024 * 1024
-# Reserve headroom for the OS, the linker (wasm-ld/lld peaks separately from the
-# parallel rustc jobs), sccache, and the driving Python before dividing the rest
-# among parallel jobs, so the ceiling is a real fit rather than a swap-inducing
-# exact division.
-_CARGO_JOB_MEMORY_HEADROOM = 2 * 1024 * 1024 * 1024
-
-
-def _total_system_memory_bytes() -> int | None:
-    """Best-effort total physical memory in bytes, or ``None`` if unknown.
-
-    Uses only stdlib probes so the CLI does not depend on ``psutil`` or the
-    ``tools/`` memory-guard package (a layering boundary).
-    """
-    if os.name == "nt":
-        import ctypes
-
-        class _MemoryStatusEx(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-
-        status = _MemoryStatusEx()
-        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-        try:
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return int(status.ullTotalPhys)
-        except (OSError, AttributeError, ValueError):
-            return None
-        return None
-    try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        phys_pages = os.sysconf("SC_PHYS_PAGES")
-    except (ValueError, OSError, AttributeError):
-        return None
-    if page_size <= 0 or phys_pages <= 0:
-        return None
-    return int(page_size) * int(phys_pages)
-
-
-def _memory_bounded_cargo_jobs() -> int | None:
-    """Cargo ``--jobs`` ceiling that fits total memory, or ``None`` if unknown.
-
-    Caps parallel rustc jobs to roughly one per ``_BYTES_PER_CARGO_JOB`` of
-    total RAM, never exceeding the CPU count. Returns ``None`` when memory can't
-    be probed so callers leave cargo's default job count untouched.
-    """
-    total = _total_system_memory_bytes()
-    if total is None:
-        return None
-    cpu_count = os.cpu_count() or 1
-    usable = max(0, total - _CARGO_JOB_MEMORY_HEADROOM)
-    mem_jobs = max(1, usable // _BYTES_PER_CARGO_JOB)
-    return max(1, min(cpu_count, mem_jobs))
-
-
+# Cargo `--jobs` memory-bounding authority now lives in molt.dx (the resource
+# authority, importable without a cycle). See dx._memory_bounded_cargo_jobs.
 def _apply_memory_bounded_cargo_jobs(env: dict[str, str]) -> None:
     """Default ``CARGO_BUILD_JOBS`` to a memory-fit ceiling when unset.
 
