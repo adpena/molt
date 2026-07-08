@@ -702,6 +702,20 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
         return
+    # Windows: sccache delivers 0 cache hits here and crashes builds mid-compile
+    # (os error 10054), so "auto" must NOT provision/wire it (that would be a
+    # NEGATIVE-leverage cache). Only an explicit MOLT_USE_SCCACHE=1 forces it.
+    if os.name == "nt" and mode not in {"1", "true", "yes", "on"}:
+        if not _sccache_degrade_warned:
+            _sccache_degrade_warned = True
+            print(
+                "molt: sccache disabled by default on Windows (0 cache hits + "
+                "mid-compile crashes here); using direct rustc. Set "
+                "MOLT_USE_SCCACHE=1 to force.",
+                file=sys.stderr,
+                flush=True,
+            )
+        return
     sccache = _provision_sccache()
     if sccache is None:
         if not _sccache_degrade_warned:
@@ -729,7 +743,10 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
         "MOLT_BACKEND_DAEMON_SOCKET_DIR",
         str(backend_daemon_socket_dir(repo_root, env)),
     )
-    env.setdefault("MOLT_USE_SCCACHE", "1")
+    # sccache off-by-default on Windows: measured 0 cache hits + mid-compile
+    # crashes (os error 10054) that time builds out. Power users force it with
+    # MOLT_USE_SCCACHE=1; cargo_execution also treats "auto" as off-on-Windows.
+    env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "1")
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
     env.setdefault("SCCACHE_DIR", str((artifact_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)

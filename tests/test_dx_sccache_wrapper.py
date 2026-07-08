@@ -76,6 +76,38 @@ def test_respects_preset_wrapper(monkeypatch):
     assert called["n"] == 0  # short-circuits before provisioning
 
 
+def test_windows_auto_disables_sccache(monkeypatch, capsys):
+    # On Windows sccache delivers 0 hits + crashes builds; "auto"/default must NOT
+    # provision or wire it (negative-leverage cache), and must say so loudly.
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
+    tried = {"n": 0}
+    monkeypatch.setattr(dx, "_provision_sccache", lambda: tried.__setitem__("n", tried["n"] + 1))
+    env: dict[str, str] = {}  # mode defaults to "auto"
+    dx._ensure_sccache_wrapper(env)
+    assert "RUSTC_WRAPPER" not in env
+    assert tried["n"] == 0  # must not even attempt provisioning
+    assert "disabled by default on Windows" in capsys.readouterr().err
+
+
+def test_windows_explicit_on_forces_sccache(monkeypatch):
+    monkeypatch.setattr(dx.os, "name", "nt")
+    monkeypatch.setattr(dx, "_provision_sccache", lambda: "/opt/sccache")
+    monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
+    env = {"MOLT_USE_SCCACHE": "1"}  # power-user override
+    dx._ensure_sccache_wrapper(env)
+    assert env.get("RUSTC_WRAPPER") == "/opt/sccache"
+
+
+def test_non_windows_auto_enables_sccache(monkeypatch):
+    monkeypatch.setattr(dx.os, "name", "posix")
+    monkeypatch.setattr(dx, "_provision_sccache", lambda: "/opt/sccache")
+    monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
+    env: dict[str, str] = {}  # auto → on where sccache works
+    dx._ensure_sccache_wrapper(env)
+    assert env.get("RUSTC_WRAPPER") == "/opt/sccache"
+
+
 def test_pinned_asset_url_is_wellformed():
     url = dx._sccache_asset_url()
     assert url is None or (
