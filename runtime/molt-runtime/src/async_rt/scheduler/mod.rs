@@ -11,25 +11,25 @@ use crossbeam_deque::{Injector, Worker};
 use crate::object::ops::string_obj_to_owned;
 use crate::state::clear_worker_thread_state;
 use crate::{
-    ACTIVE_EXCEPTION_STACK, ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, EXCEPTION_STACK, GIL_DEPTH,
-    GilGuard, GilReleaseGuard, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
-    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
-    HEADER_FLAG_TASK_WAKE_PENDING, MoltHeader, MoltObject, PtrSlot, alloc_list, alloc_string,
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, bits_from_ptr,
-    call_poll_fn, class_name_for_error, code_filename_bits, code_name_bits, context_stack_unwind,
-    dec_ref_bits, exception_context_align_depth, exception_context_fallback_pop,
-    exception_context_fallback_push, exception_handler_active, exception_kind_bits,
-    exception_pending, exception_stack_baseline_get, exception_stack_baseline_set,
-    exception_stack_depth, exception_stack_set_depth, format_exception_with_traceback,
-    generator_raise_active, handle_system_exit, header_from_obj_ptr, inc_ref_bits,
-    io_wait_poll_fn_addr, is_missing_bits, is_truthy, maybe_ptr_from_bits, missing_bits,
-    molt_exception_last, molt_getattr_builtin, obj_from_bits, object_class_bits, object_type_id,
-    pending_bits_i64, process_poll_fn_addr, profile_hit, promise_poll_fn_addr, ptr_from_bits,
-    raise_exception, record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
-    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_contains_valid, task_raise_active, thread_poll_fn_addr, to_i64, with_gil,
+    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GIL_DEPTH, GilGuard, GilReleaseGuard,
+    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
+    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, MoltHeader, MoltObject, PtrSlot,
+    alloc_list, alloc_string, anext_default_poll_fn_addr, async_sleep_poll_fn_addr,
+    asyncgen_poll_fn_addr, bits_from_ptr, call_poll_fn, class_name_for_error, code_filename_bits,
+    code_name_bits, context_stack_unwind, dec_ref_bits, exception_context_align_depth,
+    exception_context_fallback_pop, exception_context_fallback_push, exception_handler_active,
+    exception_kind_bits, exception_pending, exception_stack_baseline_get,
+    exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
+    format_exception_with_traceback, generator_raise_active, handle_system_exit,
+    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, is_missing_bits, is_truthy,
+    maybe_ptr_from_bits, missing_bits, molt_exception_last, molt_getattr_builtin, obj_from_bits,
+    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr,
+    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
+    runtime_state, set_task_raise_active, task_exception_baseline_store,
+    task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
+    task_exception_handler_stack_store, task_exception_handler_stack_take,
+    task_exception_stack_store, task_exception_stack_take, task_last_exception_contains_valid,
+    task_raise_active, thread_poll_fn_addr, to_i64, with_gil,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -45,6 +45,14 @@ use super::cancellation::{
 use super::{spawned_task_count, spawned_task_inc};
 
 // --- Scheduler ---
+
+mod diagnostics;
+#[cfg(not(target_arch = "wasm32"))]
+use diagnostics::async_worker_threads;
+use diagnostics::debug_current_task;
+pub(crate) use diagnostics::{
+    AsyncHangProbe, async_trace_enabled, record_async_poll, trace_task_result,
+};
 
 mod compile_governor;
 pub(crate) use compile_governor::{
@@ -84,72 +92,6 @@ pub(crate) use asyncio_runtime::{
     molt_asyncio_task_registry_pop, molt_asyncio_task_registry_set,
     molt_asyncio_task_registry_values, molt_asyncio_unregister_task,
 };
-
-#[inline]
-fn debug_current_task() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1"))
-}
-
-#[inline]
-pub(crate) fn trace_task_result() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_TASK_RESULT").as_deref() == Ok("1"))
-}
-
-pub(crate) struct AsyncHangProbe {
-    threshold: usize,
-    pub(crate) pending_counts: Mutex<HashMap<usize, usize>>,
-}
-
-impl AsyncHangProbe {
-    fn new(threshold: usize) -> Self {
-        Self {
-            threshold,
-            pending_counts: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-pub(crate) fn async_hang_probe(_py: &PyToken<'_>) -> Option<&'static AsyncHangProbe> {
-    runtime_state(_py)
-        .async_hang_probe
-        .get_or_init(|| {
-            let value = std::env::var("MOLT_ASYNC_HANG_PROBE").ok()?;
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            let threshold = match trimmed.parse::<usize>() {
-                Ok(0) => return None,
-                Ok(val) => val,
-                Err(_) => 100_000,
-            };
-            Some(AsyncHangProbe::new(threshold))
-        })
-        .as_ref()
-}
-
-pub(crate) fn async_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        let value = std::env::var("MOLT_ASYNC_TRACE").unwrap_or_default();
-        let trimmed = value.trim().to_ascii_lowercase();
-        !trimmed.is_empty() && trimmed != "0" && trimmed != "false"
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn async_worker_threads() -> usize {
-    static THREADS: OnceLock<usize> = OnceLock::new();
-    *THREADS.get_or_init(|| {
-        let max_threads = num_cpus::get().max(1);
-        let parsed = std::env::var("MOLT_ASYNC_THREADS")
-            .ok()
-            .and_then(|val| val.trim().parse::<usize>().ok());
-        parsed.unwrap_or(0).min(max_threads)
-    })
-}
 
 thread_local! {
     pub(crate) static CURRENT_TASK: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
@@ -300,45 +242,6 @@ pub(crate) fn block_on_wait_spec(
             }
         }
         None
-    }
-}
-
-pub(crate) fn record_async_poll(_py: &PyToken<'_>, task_ptr: *mut u8, pending: bool, site: &str) {
-    profile_hit(_py, &ASYNC_POLL_COUNT);
-    if pending {
-        profile_hit(_py, &ASYNC_PENDING_COUNT);
-    }
-    let Some(probe) = async_hang_probe(_py) else {
-        return;
-    };
-    if task_ptr.is_null() {
-        return;
-    }
-    if !pending {
-        probe
-            .pending_counts
-            .lock()
-            .unwrap()
-            .remove(&(task_ptr as usize));
-        return;
-    }
-    let mut counts = probe.pending_counts.lock().unwrap();
-    let count = counts.entry(task_ptr as usize).or_insert(0);
-    *count += 1;
-    if *count != probe.threshold && *count % probe.threshold != 0 {
-        return;
-    }
-    unsafe {
-        let header = header_from_obj_ptr(task_ptr);
-        eprintln!(
-            "Molt async hang probe: site={} polls={} ptr=0x{:x} type={} state={} poll=0x{:x}",
-            site,
-            count,
-            task_ptr as usize,
-            (*header).type_id,
-            crate::object::object_state(task_ptr),
-            crate::object::object_poll_fn(task_ptr)
-        );
     }
 }
 
