@@ -47,6 +47,61 @@ independent landings were counted). There is no OneDrive checkout, no orphan
 worktree, and no signal bundle left anywhere. Canonical is `C:\Molt\molt-src` only;
 agents work in short-lived worktrees off it and prune after landing.
 
+## 🎯 EXIT-CRITERIA WORK PORTFOLIO (2026-07-08 — CLAIM THESE, STOP FIXATING ON C1)
+
+**STOP starting new C1 runtime/ops decomposition splits.** C1 decomposition is
+INSTRUMENTAL, not an exit criterion, and it is saturated — multiple agents are
+piling onto it while the 100-year exit criteria (E1 witness / E2 perf / E3 parity
+/ E4 structural floor) go under-staffed. If you are reaching for "another C1 split,"
+STOP and claim one of the lanes below instead. Only finish a C1 split already
+IN-FLIGHT with landed WIP; do not open new ones.
+
+The witness E2E lane (`E1-WITNESS-TO-GREEN`) stays SOLO/orchestrator-owned, but its
+**feeders are now OPEN to Codex** — discrete, independently-verifiable artifacts that
+advance E1 without touching the solo lane. Claim via `python tools/claim_lane.py
+<LANE> --check` then `--claim`. Cite queue RUN_IDs. POISON contract binds every lane
+(no fakes/stubs/bake-in/duplicate-authority; missing primitive → shared primitive or
+fail-closed with a precise diagnostic).
+
+**E1 — WITNESS FEEDERS (highest priority; the done criterion is field_solve.py →
+check_parity PASS). Each builds/seals a discrete scipy.ndimage Kernel-A native
+artifact or custody primitive — parallelizable, NOT the solo E2E lane:**
+- `E1-SCIPY-RANK-FILTER-1D` — build `scipy.ndimage._rank_filter_1d` into a wasm32
+  static-link artifact (STATUS: "the next wrapper-reachable native artifact to
+  expose"). Source under `bench/friends/repos/scipy_off_the_shelf/scipy/ndimage/src/`.
+  Accept: `object_count≥1, errors=[]` through the source-extension queue lane.
+- `E1-SCIPY-NI-SUPPORT` — same for `_ni_support`.
+- `E1-SCIPY-NI-DOCSTRINGS` — same for `_ni_docstrings` (doc-only; may be closure-
+  strippable — prove which).
+- `E1-CYTHON-PROVISION-KNOWN-GOOD` — **(subagent active)** Molt provisions the LATEST
+  in-range Cython (3.2.8) which has a `_ni_label.pyx` codegen regression; select a
+  known-good in-constraint version in `source_extension_cython.py`. Coordinate; don't
+  double-claim.
+- `E1-NUMPY-HEADER-OVERLAY-CUSTODY` (also E4) — Molt still ships 23 of NumPy's OWN
+  headers under `include/numpy/*` (POISON, tracked by fail_closed_gate). Route numpy
+  headers through package custody (numpy's `_core/include`) at source-recompile and
+  delete the overlay; the `cpython-abi` tier is already the single authority. Verify
+  the numpy/scipy witness builds still pass through the queue; decrement the
+  fail_closed ratchet (ABI-lane serialization — rebase→graft registry→gate-green→push).
+
+**E2 — PERF (perf IS correctness; profile the hot path FIRST, state Big-O, attest
+before/after — machine-checkable):**
+- `E2-LOOP-UNBOX` — loop-invariant unboxing (outranks borrowed-view repr).
+- `E2-MINMAX-COMPREHENSION-RAWLANE` — raw-lane `min`/`max` + filtered/multi-for
+  comprehensions (regular range loops + `sum(genexpr)` already landed — do NOT redo).
+- `E2-BUILD-WALLCLOCK` — structural build-time attack (crate split / stable target
+  dir / runtime.wasm CDN). Profile with `tools/dx_build_timer.py` first.
+
+**E3 — PARITY (≥3.12 within the verified subset):**
+- `REVIEW-<n>-*` — 25 of the 26 CONFIRMED review findings remain (finding #5 landed).
+  Read `docs/agent/REVIEW_FINDINGS_20260708.md`, claim an unclaimed one in CLAIMS.md,
+  own it end-to-end (root-cause the CLASS, add teeth, verify the FULL surface). Prefer
+  silent-wrong-answer/correctness findings over pure cosmetics.
+
+**E4 — STRUCTURAL FLOOR:**
+- `E4-FAILCLOSED-<class>` — drive one `fail_closed_registry.toml` poison class to zero
+  with a structural-resolution row (the degrade-to-slow-gate pattern), not a suppression.
+
 ## 🚀 DEV-VELOCITY PROTOCOL (2026-07-08 CURRENT) — Codex: REBASE, then COMPLY
 
 The orchestrator landed a full dev-velocity overhaul on origin/main. **Every Codex
