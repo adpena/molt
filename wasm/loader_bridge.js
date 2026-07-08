@@ -829,6 +829,7 @@
       legacyTableBase,
       reservedRuntimeCallableBase,
       reservedRuntimeCallableCount,
+      rawIndexHasInstalledEntry = null,
     },
   ) => {
     if (
@@ -842,6 +843,21 @@
     const legacyStart = legacyTableBase + reservedRuntimeCallableBase;
     const legacyEnd = legacyStart + reservedRuntimeCallableCount * 2;
     if (idx >= legacyStart && idx < legacyEnd) {
+      // A legacy reserved-callable reference is a *bare* index (no installed
+      // table entry) baked by a legacy-layout runtime module, to be relocated
+      // into the live shared-table reserved region. App-local function pointers
+      // legitimately occupy this same low index window (below the shared-table
+      // base), so an index that already resolves to an installed funcref is a
+      // genuine indirect call — NOT a legacy reserved reference — and must be
+      // dispatched directly. The index range alone is ambiguous because both
+      // kinds share [legacyStart, legacyEnd); table occupancy disambiguates.
+      // Only relocate unpopulated (bare) references.
+      if (
+        typeof rawIndexHasInstalledEntry === 'function' &&
+        rawIndexHasInstalledEntry(idx)
+      ) {
+        return idx;
+      }
       return idx - legacyTableBase + sharedTableBase;
     }
     return idx;

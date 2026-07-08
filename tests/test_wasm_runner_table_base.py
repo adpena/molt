@@ -960,3 +960,89 @@ def test_direct_runner_always_initializes_table_before_export_refs() -> None:
     assert runner.index("molt_table_init();") < runner.index(
         "installTableRefs(outputInstance, table, 'output');"
     )
+
+
+def _remap_legacy_runtime_shared_table_index(
+    idx: int,
+    *,
+    shared_table_base: int,
+    reserved_callable_count: int,
+    installed_indices: tuple[int, ...] = (),
+) -> int:
+    """Invoke the JS ``remapLegacyRuntimeSharedTableIndex`` via node.
+
+    ``installed_indices`` model raw table slots that already hold an installed
+    funcref (the ``rawIndexHasInstalledEntry`` predicate returns true for them).
+    """
+    script = (
+        "const bridge = require('./wasm/loader_bridge.js');"
+        "const installed = new Set(JSON.parse(process.argv[2]));"
+        "const out = bridge.remapLegacyRuntimeSharedTableIndex(Number(process.argv[1]), {"
+        "  sharedTableBase: %d,"
+        "  legacyTableBase: %d,"
+        "  reservedRuntimeCallableBase: %d,"
+        "  reservedRuntimeCallableCount: %d,"
+        "  rawIndexHasInstalledEntry: (i) => installed.has(i),"
+        "});"
+        "process.stdout.write(String(out));"
+    ) % (
+        shared_table_base,
+        LEGACY_WASM_TABLE_BASE,
+        WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+        reserved_callable_count,
+    )
+    result = _run_wasm_test_process(
+        ["node", "-e", script, str(idx), json.dumps(list(installed_indices))],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout)
+
+
+def test_remap_relocates_bare_legacy_reserved_reference() -> None:
+    """A bare (unpopulated) legacy reserved reference is relocated to the
+    live shared-table reserved region."""
+    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
+    # An index inside the legacy direct-reserved window with no installed slot.
+    reserved_offset = 14
+    legacy_idx = (
+        LEGACY_WASM_TABLE_BASE
+        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
+        + reserved_offset
+    )
+    remapped = _remap_legacy_runtime_shared_table_index(
+        legacy_idx,
+        shared_table_base=TEST_SHARED_WASM_TABLE_BASE,
+        reserved_callable_count=reserved_callable_count,
+        installed_indices=(),
+    )
+    assert remapped == legacy_idx - LEGACY_WASM_TABLE_BASE + TEST_SHARED_WASM_TABLE_BASE
+
+
+def test_remap_preserves_installed_app_slot_in_legacy_window() -> None:
+    """Regression: an app-local function pointer installed at a raw table index
+    that happens to fall inside the legacy reserved window MUST be dispatched
+    directly, not hijacked into a reserved runtime callable.
+
+    This is the pact-witness capsule misdispatch: a real 4-arg app funcref at
+    table index (legacy_base + reserved_base + 14) was remapped into the
+    reserved region and dispatched to molt_types_capsule_new, raising a spurious
+    ``TypeError: cannot create 'capsule' instances`` during numpy import.
+    """
+    reserved_callable_count = len(WASM_RESERVED_RUNTIME_CALLABLES)
+    reserved_offset = 14
+    installed_idx = (
+        LEGACY_WASM_TABLE_BASE
+        + WASM_RESERVED_RUNTIME_CALLABLE_BASE
+        + reserved_offset
+    )
+    remapped = _remap_legacy_runtime_shared_table_index(
+        installed_idx,
+        shared_table_base=TEST_SHARED_WASM_TABLE_BASE,
+        reserved_callable_count=reserved_callable_count,
+        installed_indices=(installed_idx,),
+    )
+    # An occupied slot is a genuine indirect call: index is returned unchanged.
+    assert remapped == installed_idx

@@ -1042,6 +1042,16 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
       legacyTableBase: tableLayout.legacyTableBase,
       reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
       reservedRuntimeCallableCount: browserAbi.reservedRuntimeCallables.length,
+      rawIndexHasInstalledEntry: (rawTableIdx) => {
+        if (!state.table) {
+          return false;
+        }
+        try {
+          return typeof state.table.get(rawTableIdx) === 'function';
+        } catch (err) {
+          return false;
+        }
+      },
     });
   };
   const callIndirect = (name) => (fnIndex, ...args) => {

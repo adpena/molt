@@ -5324,6 +5324,16 @@ const runDirectLink = async () => {
         legacyTableBase: LEGACY_WASM_TABLE_BASE,
         reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
         reservedRuntimeCallableCount: activeReservedRuntimeCallableCount,
+        rawIndexHasInstalledEntry: (rawTableIdx) => {
+          if (!table) {
+            return false;
+          }
+          try {
+            return typeof table.get(rawTableIdx) === 'function';
+          } catch (err) {
+            return false;
+          }
+        },
       });
       const directName = tableRefExportName(dispatchIdx);
       const appIndirectFn =
