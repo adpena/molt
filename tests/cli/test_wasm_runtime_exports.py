@@ -4,6 +4,7 @@ import pytest
 
 from molt.cli import runtime_build as RUNTIME_BUILD
 from molt._wasm_runtime_exports import (
+    _all_dynamic_runtime_owned_intrinsic_exports,
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_requested_export_names,
     wasm_split_runtime_canonical_import_name,
@@ -61,7 +62,7 @@ RUNTIME_OWNED_GPU_EXPORTS = {
     "molt_gpu_interop_decode_bf16_bytes_to_f32",
 }
 
-TINYGRAD_STDLIB_GPU_EXPORTS = {
+TINYGRAD_GPU_PRIMITIVE_EXPORTS = {
     "molt_gpu_prim_binary",
     "molt_gpu_prim_create_tensor",
     "molt_gpu_prim_create_tensor_raw",
@@ -314,11 +315,11 @@ def test_wasm_runtime_export_link_args_does_not_widen_full_runtime_with_stdlib_m
     assert json_flags == ssl_flags
 
 
-def test_wasm_runtime_export_link_args_include_tinygrad_gpu_intrinsics() -> None:
-    flags = wasm_runtime_export_link_args()
+def test_dynamic_runtime_exports_do_not_follow_quarantined_tinygrad_reference() -> None:
+    dynamic_names = set(_all_dynamic_runtime_owned_intrinsic_exports())
 
-    for name in sorted(TINYGRAD_STDLIB_GPU_EXPORTS):
-        assert f" -C link-arg=--export-if-defined={name}" in flags
+    leaked = sorted(dynamic_names & TINYGRAD_GPU_PRIMITIVE_EXPORTS)
+    assert leaked == []
 
 
 def test_wasm_runtime_export_link_args_adds_runtime_owned_gpu_intrinsics() -> None:
