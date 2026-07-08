@@ -504,10 +504,7 @@ def _lower_module_serial_with_context(
             path_stat=path_stat,
             target_python=lowering_context.target_python,
         )
-        if (
-            context_digest is not None
-            and module_name not in lowering_context.dirty_lowering_modules
-        ):
+        if context_digest is not None:
             cached_payload = _read_persisted_module_lowering(
                 lowering_context.project_root,
                 module_path,
@@ -711,7 +708,6 @@ def _prepare_frontend_parallel_batch(
     cached_results: dict[str, dict[str, Any]] = {}
     worker_payloads: list[tuple[str, dict[str, Any]]] = []
     context_digest_by_module: dict[str, str] = {}
-    dirty_lowering = set(dirty_lowering_modules)
     stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
     if module_source_catalog is None:
         module_source_catalog = _build_module_source_catalog(
@@ -798,50 +794,49 @@ def _prepare_frontend_parallel_batch(
             )
             if context_digest is not None:
                 context_digest_by_module[module_name] = context_digest
-        if module_name not in dirty_lowering:
-            cached_result = _load_cached_module_lowering_result(
-                project_root,
-                module_name,
-                module_path,
-                logical_source_path=logical_source_path,
-                entry_override=entry_override,
-                is_package=is_package,
-                known_classes_snapshot=known_classes_snapshot,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
-                known_modules=known_modules,
-                direct_call_modules=direct_call_modules,
-                stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                known_func_kinds=known_func_kinds,
-                native_callable_exports=native_callable_exports,
-                native_python_exports=native_python_exports,
-                module_deps=module_deps,
-                module_is_namespace=module_is_namespace,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=optimization_profile,
-                pgo_hot_function_names=pgo_hot_function_names,
-                known_modules_sorted=known_modules_sorted,
-                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-                module_dep_closures=module_dep_closures,
-                scoped_lowering_inputs=scoped_lowering_inputs,
-                scoped_inputs=scoped_inputs,
-                source_modules=module_graph,
-                scoped_known_classes_by_module=scoped_known_classes_by_module,
-                scoped_known_classes=scoped_known_classes,
-                context_digest=context_digest_by_module.get(module_name),
-                resolution_cache=module_resolution_cache,
-                path_stat=path_stat,
-                target_python=target_python,
-            )
-            if cached_result is not None:
-                cached_results[module_name] = cached_result
-                continue
+        cached_result = _load_cached_module_lowering_result(
+            project_root,
+            module_name,
+            module_path,
+            logical_source_path=logical_source_path,
+            entry_override=entry_override,
+            is_package=is_package,
+            known_classes_snapshot=known_classes_snapshot,
+            parse_codec=parse_codec,
+            type_hint_policy=type_hint_policy,
+            fallback_policy=fallback_policy,
+            type_facts=type_facts,
+            enable_phi=enable_phi,
+            known_modules=known_modules,
+            direct_call_modules=direct_call_modules,
+            stdlib_allowlist=stdlib_allowlist,
+            known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
+            native_callable_exports=native_callable_exports,
+            native_python_exports=native_python_exports,
+            module_deps=module_deps,
+            module_is_namespace=module_is_namespace,
+            module_chunking=module_chunking,
+            module_chunk_max_ops=module_chunk_max_ops,
+            optimization_profile=optimization_profile,
+            pgo_hot_function_names=pgo_hot_function_names,
+            known_modules_sorted=known_modules_sorted,
+            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+            module_dep_closures=module_dep_closures,
+            scoped_lowering_inputs=scoped_lowering_inputs,
+            scoped_inputs=scoped_inputs,
+            source_modules=module_graph,
+            scoped_known_classes_by_module=scoped_known_classes_by_module,
+            scoped_known_classes=scoped_known_classes,
+            context_digest=context_digest_by_module.get(module_name),
+            resolution_cache=module_resolution_cache,
+            path_stat=path_stat,
+            target_python=target_python,
+        )
+        if cached_result is not None:
+            cached_results[module_name] = cached_result
+            continue
         source_lease = module_source_catalog.lease_for(module_name, module_path)
         worker_payloads.append(
             (
