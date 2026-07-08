@@ -36,11 +36,19 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
 | 26 | P2 | CODEX-METABUG/DX | metabug | `tools/check_perf_gate_wiring.py:60` | **perf-gate-wiring audit certifies the gate 'fires' without checking it is blocking (continue-on-error / always-false if blind spot)** — Parse the scoreboard step and assert it has no `continue-on-error: true`, no trivially-false `if:`, and lives in a job that is required/blocking on the main/PR path; fail closed if the invoking step is non-blocking. |
 
 ## Landing status (orchestrator)
-- #2 rust-lld linker: the review's "`-C linker-features=+lld` is stable" claim was
-  WRONG — it is UNSTABLE on the pinned 1.96.1 toolchain (verify build 20260708
-  failed: "requires -Z unstable-options"). Correct stable+portable path: LLVM
-  `lld-link` is on PATH here, so `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link`
-  (env, non-RUSTFLAGS) — under verification (lld-link-verify2-20260708); if it links,
-  wire as DX auto-detect (portable: no-op where lld-link is absent) + land.
-- #11 release-fast debug=0: LANDED (strip already discarded the debuginfo).
+- **#2 rust-lld linker: LANDED** (`858c6a306`). The review's "`-C linker-features=+lld`
+  is stable" claim was WRONG (unstable on 1.96.1 — verify build failed). Correct
+  stable+portable fix: `_maybe_enable_lld_link` auto-detects LLVM `lld-link` and
+  sets `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` (env, non-RUSTFLAGS; no-op where
+  absent). Verified: lld-link LINKS the daemon (queue LINK_OK). 4 teeth.
+- **#4 walrus scope-analysis: LANDED** (`8883a352c`). `_collect_assigned_names` now
+  collects `NamedExpr` targets (was dropping them; nested scopes don't leak).
+- **#11 release-fast debug=0: LANDED** (`f21cf71aa`).
+- NOTE: not in the review but landed same arc — the biggest build-throughput win was
+  `ad0cafb82` **adaptive cargo jobs (2→14)**: a hardcoded CARGO_BUILD_JOBS=2 defeated
+  the memory-bounded ceiling (~7x under-parallelism). Plus `bdd42535e` persistent
+  target dir + `aa15340aa` incremental-when-sccache-off.
 - All others: OPEN — Codex lanes claim via docs/agent/CLAIMS.md, land per the NEW PROTOCOL.
+  Highest-value OPEN: #1 (P0 PyType_FromMetaclass fail-open, E1-critical),
+  #7/#8 (frontend-timeout → serial degradation, witness-throughput),
+  #9/#10 (parity/ci gates fail-open → vacuous green).

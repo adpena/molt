@@ -728,3 +728,28 @@ def test_populate_sema_state_honors_known_func_defaults_override() -> None:
     gen = SimpleTIRGenerator(module_name="mymod", known_func_defaults=override)
     gen._populate_sema_state(ast.parse("def f(a, b=1): return a\n"))
     assert gen.module_func_defaults == override["mymod"]
+
+
+def test_collect_assigned_names_includes_walrus_targets() -> None:
+    # Regression: walrus (:=) targets bind in the ENCLOSING scope. The set-valued
+    # _collect_assigned_names dropped them (unlike _collect_assigned_names_ordered),
+    # so the local was mis-seen as global/free, corrupting unbound-checks,
+    # closure-cell boxing, and free-var classification.
+    gen = SimpleTIRGenerator()
+
+    names = gen._collect_assigned_names(
+        ast.parse("if (x := len([1, 2, 3])) > 2:\n    y = x\n").body
+    )
+    assert "x" in names and "y" in names
+
+    # Walrus in an assignment's value expression is also a binding.
+    names2 = gen._collect_assigned_names(ast.parse("y = (a := 5) + 1\n").body)
+    assert "a" in names2
+
+    # A walrus inside a NESTED function is that function's local, not the outer
+    # scope's — it must NOT leak (the collector stops at FunctionDef/Lambda).
+    names3 = gen._collect_assigned_names(
+        ast.parse("def g():\n    if (z := 1):\n        pass\ny = 2\n").body
+    )
+    assert "z" not in names3
+    assert {"g", "y"} <= names3
