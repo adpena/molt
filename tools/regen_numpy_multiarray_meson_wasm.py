@@ -316,6 +316,34 @@ def main() -> int:
     if not gen_c:
         print("[regen] WARNING: no generated .c sources found for _multiarray_umath")
 
+    # Family 1b: generated compilable sources of the in-project STATIC LIBRARIES
+    # that ``_multiarray_umath`` links. NumPy's CPU-dispatch loop machinery emits
+    # each ``loops_*.dispatch.c.src`` (and ``argfunc.dispatch.c.src``) as a
+    # per-target generated ``.dispatch.c``/``.dispatch.cpp`` compiled into its own
+    # ``lib<name>.dispatch.h_baseline.a`` static library, and ``npymath`` emits
+    # ``ieee754.c``/``npy_math_complex.c``. Those translation units DEFINE the
+    # typed ufunc loop symbols (``DOUBLE_add``, ``BOOL_equal``, ``BYTE_argmax``,
+    # ...) that ``_multiarray_umath`` references. The source plan follows these
+    # linked static libraries (``_meson_linked_static_library_targets``) and needs
+    # their generated sources present on disk; if they are missing the plan skips
+    # them and every dispatch loop symbol becomes an undefined, ownerless
+    # ``object_closure.runtime_symbol`` — the acceptance build then fails closed at
+    # numpy ufunc-loop custody. Materialize every static-library target's generated
+    # compilable source BY CONSTRUCTION from numpy's own build graph, so the loop
+    # objects get owners; molt still owns object compilation from the source plan.
+    _GEN_COMPILE_SUFFIXES = (".c", ".cpp", ".cxx", ".cc")
+    gen_static_src: set[str] = set()
+    for t in targets:
+        if t.get("type") != "static library":
+            continue
+        for src in t.get("target_sources", []):
+            for g in src.get("generated_sources", []):
+                if str(g).endswith(_GEN_COMPILE_SUFFIXES):
+                    gen_static_src.add(str(g))
+    print(
+        f"[regen] static-library generated sources to materialize: {len(gen_static_src)}"
+    )
+
     ninja = _tool("ninja", "ninja")
 
     # Family 2: the #include-only API .c sources declared by numpy
@@ -381,11 +409,12 @@ def main() -> int:
 
     rel_targets = [
         os.path.relpath(g, build_root).replace(os.sep, "/")
-        for g in sorted(gen_c | gen_api_c | gen_hdr)
+        for g in sorted(gen_c | gen_api_c | gen_hdr | gen_static_src)
     ]
     print(
         f"[regen] ninja generated-output targets "
-        f"({len(gen_c)} .c sources + {len(gen_api_c)} api-.c includes + "
+        f"({len(gen_c)} .c sources + {len(gen_static_src)} static-lib "
+        f"gen sources + {len(gen_api_c)} api-.c includes + "
         f"{len(gen_hdr)} generated headers/inc = {len(rel_targets)}):"
     )
     for r_t in rel_targets:
@@ -410,7 +439,7 @@ def main() -> int:
     # Confirm every generated source AND generated header for the target now
     # resolves. Missing generated .c sources OR generated headers/api-.c means
     # molt's downstream compile would hit a fatal 'file not found'.
-    all_gen: set[str] = set(gen_hdr)
+    all_gen: set[str] = set(gen_hdr) | set(gen_static_src)
     for t in targets:
         if t.get("name") in want:
             for src in t.get("target_sources", []):
