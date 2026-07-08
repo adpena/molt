@@ -27,6 +27,13 @@ pub extern "C" fn molt_asyncio_task_next_name() -> u64 {
 
 /// Validates that a coroutine object is not None.
 /// Returns True bits if valid, raises TypeError otherwise.
+///
+/// # Safety
+///
+/// `coro_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized; Python-level errors are reported through the runtime exception
+/// state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_validate_coro(coro_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -40,6 +47,12 @@ pub unsafe extern "C" fn molt_asyncio_validate_coro(coro_bits: u64) -> u64 {
 
 /// Resolves the cancel message state for a Task.
 /// Increments cancel_requested and returns new count as int bits.
+///
+/// # Safety
+///
+/// `cancel_requested_bits` must be a NaN-boxed Molt object value produced by
+/// the active runtime. The entrypoint must be called only while the Molt
+/// runtime is initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_task_cancel_state(cancel_requested_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -50,6 +63,12 @@ pub unsafe extern "C" fn molt_asyncio_task_cancel_state(cancel_requested_bits: u
 
 /// Decrements the cancel-requested counter for a Task.
 /// Returns the new count as int bits. If count <= 0, returns 0.
+///
+/// # Safety
+///
+/// `cancel_requested_bits` must be a NaN-boxed Molt object value produced by
+/// the active runtime. The entrypoint must be called only while the Molt
+/// runtime is initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_task_uncancel_state(cancel_requested_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -61,6 +80,13 @@ pub unsafe extern "C" fn molt_asyncio_task_uncancel_state(cancel_requested_bits:
 
 /// Validates that a value is a non-negative integer for Semaphore init.
 /// Returns the validated int bits, or raises ValueError.
+///
+/// # Safety
+///
+/// `value_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized; invalid Python values are reported through the runtime
+/// exception state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_validate_semaphore_value(value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -78,6 +104,13 @@ pub unsafe extern "C" fn molt_asyncio_validate_semaphore_value(value_bits: u64) 
 
 /// Validates Barrier parties value.
 /// Returns the validated int bits, or raises ValueError.
+///
+/// # Safety
+///
+/// `parties_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized; invalid Python values are reported through the runtime
+/// exception state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(parties_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -90,6 +123,12 @@ pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(parties_bits: u64
 }
 
 /// Increments a barrier counter. Returns the new count as int bits.
+///
+/// # Safety
+///
+/// `count_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_barrier_count_incr(count_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -114,6 +153,13 @@ pub extern "C" fn molt_asyncio_barrier_abort_state() -> u64 {
 /// Validates the asyncio Lock is acquired before releasing.
 /// `locked_bits`: True if locked, False if not.
 /// Returns None on success, raises RuntimeError if not locked.
+///
+/// # Safety
+///
+/// `locked_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized; invalid lock state is reported through the runtime exception
+/// state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_lock_validate_release(locked_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -129,6 +175,13 @@ pub unsafe extern "C" fn molt_asyncio_lock_validate_release(locked_bits: u64) ->
 /// Validates the asyncio Condition lock is acquired.
 /// `locked_bits`: True if locked, False if not.
 /// Returns None on success, raises RuntimeError if not acquired.
+///
+/// # Safety
+///
+/// `locked_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized; invalid condition state is reported through the runtime
+/// exception state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(locked_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -143,6 +196,12 @@ pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(locked_bits: u64
 
 /// Checks if an exception is a CancelledError by examining its type name.
 /// Returns True/False as bool bits.
+///
+/// # Safety
+///
+/// `exc_bits` must be a NaN-boxed Molt object value produced by the active
+/// runtime. The entrypoint must be called only while the Molt runtime is
+/// initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_is_cancelled_exc(exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -161,6 +220,12 @@ pub unsafe extern "C" fn molt_asyncio_is_cancelled_exc(exc_bits: u64) -> u64 {
 // ── Stream buffer helpers ────────────────────────────────────────────────────
 
 /// StreamReader buffer management: validates the read count parameter.
+///
+/// # Safety
+///
+/// `_buffer_bits` and `n_bits` must be NaN-boxed Molt object values produced by
+/// the active runtime. The entrypoint must be called only while the Molt
+/// runtime is initialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_stream_buffer_read(_buffer_bits: u64, n_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -178,6 +243,13 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_read(_buffer_bits: u64, n_bi
 
 /// StreamWriter buffer append: validates data is bytes-like.
 /// Returns None on success, raises TypeError if data is None.
+///
+/// # Safety
+///
+/// `_buffer_bits` and `data_bits` must be NaN-boxed Molt object values produced
+/// by the active runtime. The entrypoint must be called only while the Molt
+/// runtime is initialized; invalid Python values are reported through the
+/// runtime exception state.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_asyncio_stream_writer_buffer_append(
     _buffer_bits: u64,
