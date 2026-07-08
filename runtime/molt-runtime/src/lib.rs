@@ -160,22 +160,22 @@ pub use cpython_abi_hooks::{
 };
 pub use molt_runtime_audit as audit;
 pub(crate) use molt_runtime_diagnostics as diagnostics;
-mod intrinsics;
 #[cfg(target_arch = "wasm32")]
-mod libc_compat;
+pub(crate) use molt_runtime_platform::libc_compat;
+pub(crate) use molt_runtime_platform::randomness;
+pub(crate) use molt_runtime_platform::socket_constants;
+pub(crate) use molt_runtime_platform::utils;
+#[cfg(windows)]
+pub(crate) use molt_runtime_platform::windows_abi;
+mod intrinsics;
 mod object;
 mod provenance;
-mod randomness;
 pub mod refcount_verify;
 pub use molt_runtime_resource as resource;
-mod socket_constants;
 mod state;
-mod utils;
 pub use molt_runtime_vfs as vfs;
 pub use molt_runtime_vfs::{molt_vfs_inject_entry, molt_vfs_inject_finish};
 mod wasm_abi_exports;
-#[cfg(windows)]
-mod windows_abi;
 
 /// Public Rust API for runtime lifecycle, used by `molt-ffi` and other
 /// dependent crates that need to call init/shutdown without going through

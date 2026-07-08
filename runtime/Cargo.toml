@@ -24,6 +24,7 @@ members = [
     "molt-runtime-vfs",
     "molt-runtime-audit",
     "molt-runtime-diagnostics",
+    "molt-runtime-platform",
     "molt-runtime-resource",
     "molt-runtime-protobuf",
     "molt-runtime",
