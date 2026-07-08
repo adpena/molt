@@ -143,6 +143,30 @@ fails while compiling `molt-runtime` for `wasm32-wasip1` because
 helpers on non-wasm32. That blocker is CPython-ABI hook/runtime-wasm visibility
 work, not VFS load authority.
 
+2026-07-08 update: the wasm runtime visibility blocker is resolved by compiling
+the existing Rust-callable `c_api::cpython_compat` helpers on wasm while leaving
+the wasm C-linker export surface owned by `cpython_abi_wasm_exports` and the
+split `molt-cpython-abi` archive. Queue row
+`20260708T011334-c1-runtime-capi-wasm-helpers-20260708a-85a9f829b1fb4740`
+passed `cargo check -p molt-runtime --target wasm32-wasip1
+--no-default-features`. The first VFS/browser rerun,
+`20260708T011731-c1-vfs-split-wasm-adapter-rerun-20260708a-670bf6e3a9e244d3`,
+then moved the blocker to DX wall clock: the build fixture timed out at its
+inner 900s guard after the split-runtime harness forced `CARGO_BUILD_JOBS=1`
+and `MOLT_WASM_DISABLE_SCCACHE=1`. Removing those harness defaults and
+delegating cargo parallelism/cache policy back to the DX/cargo authorities made
+`20260708T014407-c1-vfs-split-wasm-adapter-rerun-20260708b-c67411edb0ca4105`
+pass the selected split-runtime VFS/browser assertions in 717.62s
+(731.094s queue elapsed). After rebasing over the runtime-platform extraction,
+`20260708T020156-c1-vfs-split-wasm-adapter-rerun-20260708c-c37457ef2cc84382`
+passed the same selected assertions in 582.10s (586.937s queue elapsed). The
+next rerun on the frontend-only rebased base,
+`20260708T021519-c1-vfs-split-wasm-adapter-rerun-20260708d-ec6826e94527497d`
+passed in 96.23s (100.969s queue elapsed), producing `app.wasm`,
+`molt_runtime.wasm`, `molt_vfs_browser.js`, `worker.js`, `manifest.json`, and
+`wrangler.jsonc` under
+`D:\Molt\tmp\pytest-temproot-24076-65bb3a0a97bb40919db51056fb8fea09\pytest-of-adpena\pytest-0\split_a0\out`.
+
 Validation ladder for this split and the next C1 cuts:
 
 - Structural proof: satellite crate test, then `cargo check -p molt-runtime`.
@@ -152,7 +176,9 @@ Validation ladder for this split and the next C1 cuts:
 - Runtime behavior proof: queue-owned native bundle driver that reads nested
   `/bundle` files, writes `/tmp`, and rejects writes back into `/bundle`.
 - Browser/split proof: `tests/test_wasm_split_runtime.py` and VFS browser
-  assertions after the CPython-ABI wasm32 blocker above moves out of the way.
+  assertions; current proof row
+  `20260708T021519-c1-vfs-split-wasm-adapter-rerun-20260708d-ec6826e94527497d`
+  is the citable C1 VFS split-runtime acceptance for this cut.
 - Benchmark triage: `uv run --active --project . --python 3.12 python
   tools/bench_individual.py --bench bench_etl_orders.py --bench
   bench_json_roundtrip.py --samples 3 --warmup 1 --json-out
@@ -176,6 +202,10 @@ installing 57 packages before returning the one-line verdict. Treat those as
 iteration-loop evidence for the C1/R5 optimization queue, not as VFS correctness
 failures. Drift checks should become dependency-light or run from a stable warm
 RunContext environment so the board-required reflex stays cheap enough to use.
+The split-runtime harness itself also contained a silent degrade-to-slow path:
+it forced serial cargo and disabled wasm sccache even when the board and DX
+authority expected warm/shared builds. Any future WASM test helper should opt
+out of cache/parallelism only through explicit operator env, never as a default.
 
 ## Next Decomposition Order
 
