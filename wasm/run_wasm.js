@@ -17,6 +17,7 @@ const {
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature,
   extractWasmTableBase,
+  installManifestLinkImportTraps,
   installWasmTagImports,
   parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
@@ -29,6 +30,7 @@ const {
   runtimeImportObjectArrayArgNames,
 } = require('./loader_bridge.js');
 const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
+const externalNativeLinkImports = wasmAbiGenerated.external_native_link_imports || {};
 let runtimeImportExportNames = runtimeExportByImport;
 const runtimeCanonicalByImport = wasmAbiGenerated.runtime_import_canonical_names || {};
 let runtimeImportCanonicalNames = runtimeCanonicalByImport;
@@ -5449,6 +5451,11 @@ const runDirectLink = async () => {
     wasi_snapshot_preview1: wasiImport,
   };
   installWasmTagImports(runtimeImportObject, runtimeImportsDesc);
+  installManifestLinkImportTraps(
+    runtimeImportObject,
+    runtimeImportsDesc,
+    externalNativeLinkImports,
+  );
   const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, runtimeImportObject);
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
@@ -5490,6 +5497,11 @@ const runDirectLink = async () => {
     wasi_snapshot_preview1: outputWasi.wasiImport,
   };
   installWasmTagImports(outputImportObject, outputImports);
+  installManifestLinkImportTraps(
+    outputImportObject,
+    outputImports,
+    externalNativeLinkImports,
+  );
   const outputModule = await WebAssembly.instantiate(wasmBuffer, outputImportObject);
   outputInstance = outputModule.instance;
   appInstanceForHostCalls = outputInstance;
@@ -5675,6 +5687,11 @@ const runLinked = async () => {
     }
   };
   installWasmTagImports(importObject, linkedImports);
+  installManifestLinkImportTraps(
+    importObject,
+    linkedImports,
+    externalNativeLinkImports,
+  );
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
   const { molt_main, molt_table_init } = linkedModule.instance.exports;

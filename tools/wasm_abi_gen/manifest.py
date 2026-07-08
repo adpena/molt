@@ -49,6 +49,7 @@ LINK_IMPORT_PRIMITIVE_CLASSES = {
     "wasi_link_import",
     "wasm_compiler_rt_link_import",
     "wasm_libc_link_import",
+    "wasm_libcxx_link_import",
     "wasm_toolchain_link_import",
 }
 CONST_POLICY_INLINE_SEEDS = {

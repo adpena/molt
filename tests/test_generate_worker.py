@@ -531,6 +531,63 @@ if (!plan.dispatchReservedRuntimeCallable || !plan.reservedRuntimeCallable.tramp
     assert run.returncode == 0, run.stderr
 
 
+def test_loader_bridge_installs_manifest_link_import_traps(tmp_path) -> None:
+    import pytest
+
+    if shutil.which("node") is None:
+        pytest.skip("node is required for loader bridge link-import test")
+
+    root = Path(__file__).resolve().parents[1]
+    script = tmp_path / "check_link_import_traps.js"
+    script.write_text(
+        f"""
+const bridge = require({str(root / "wasm" / "loader_bridge.js")!r});
+const importObject = {{ env: {{ memory: new WebAssembly.Memory({{ initial: 1 }}) }} }};
+const imports = {{
+  funcImports: [
+    {{ module: 'env', name: '_ZNSt3__217bad_function_callD1Ev' }},
+    {{ module: 'env', name: '_ZTVNSt3__217bad_function_callE' }},
+    {{ module: 'env', name: 'unknown_not_manifested' }},
+  ],
+}};
+bridge.installManifestLinkImportTraps(importObject, imports, {{
+  primitive_classes: {{
+    _ZNSt3__217bad_function_callD1Ev: 'wasm_libcxx_link_import',
+    _ZTVNSt3__217bad_function_callE: 'wasm_libcxx_link_import',
+  }},
+  symbol_kinds: {{
+    _ZTVNSt3__217bad_function_callE: 'data',
+  }},
+}});
+if (typeof importObject.env._ZNSt3__217bad_function_callD1Ev !== 'function') {{
+  throw new Error('function link import was not installed');
+}}
+if (Object.prototype.hasOwnProperty.call(importObject.env, '_ZTVNSt3__217bad_function_callE')) {{
+  throw new Error('data link import was installed as a function');
+}}
+if (Object.prototype.hasOwnProperty.call(importObject.env, 'unknown_not_manifested')) {{
+  throw new Error('unknown import was installed');
+}}
+try {{
+  importObject.env._ZNSt3__217bad_function_callD1Ev();
+  throw new Error('trap did not throw');
+}} catch (err) {{
+  if (!String(err.message || err).includes('wasm_libcxx_link_import')) throw err;
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        ["node", str(script)],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+
+
 def test_static_browser_host_fd_write_preserves_tmp_file_bytes() -> None:
     from pathlib import Path
 
