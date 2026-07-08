@@ -1162,8 +1162,9 @@ def _benchmark_tool_identity() -> dict[str, str | None]:
     as a board measured against a modified tree; we surface both so the reader
     can tell whether the SCOREBOARD LOGIC changed, not just the compiler.
     """
-    rel = str(Path(__file__).resolve().relative_to(REPO_ROOT))
-    blob = _git_output(["hash-object", str(Path(__file__).resolve())])
+    path = Path(__file__).resolve()
+    rel = path.relative_to(REPO_ROOT).as_posix()
+    blob = _git_output(["hash-object", f"--path={rel}", str(path)])
     last_commit = _git_output(["log", "-n", "1", "--format=%H", "--", rel])
     # Does the committed blob differ from the on-disk file?
     head_blob = _git_output(["rev-parse", f"HEAD:{rel}"])
