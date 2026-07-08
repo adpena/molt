@@ -3,6 +3,8 @@ use super::wake_await_waiters;
 use crate::*;
 
 mod child_resources;
+#[cfg(not(target_arch = "wasm32"))]
+mod native_io;
 mod stdio;
 
 pub use stdio::molt_asyncio_subprocess_stdio_normalize;
@@ -15,9 +17,9 @@ use child_resources::apply_child_resource_env;
 use child_resources::enforce_child_resource_env_entries;
 #[cfg(unix)]
 use child_resources::{apply_child_memory_rlimit, configure_unix_owned_process_group};
-use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use std::io::{Read, Write};
+use native_io::{attach_process_stdio, ignore_sigpipe, trace_process_io};
+use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
@@ -31,9 +33,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 use stdio::PROCESS_STDIO_PIPE;
-use stdio::process_stdio_mode;
 #[cfg(not(target_arch = "wasm32"))]
-use stdio::{NativeProcessStdio, configure_native_stdio};
+use stdio::configure_native_stdio;
+use stdio::process_stdio_mode;
 
 // --- Process ---
 
@@ -55,28 +57,6 @@ fn trace_process_spawn() -> bool {
             Some("1")
         )
     })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn trace_process_io() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_PROCESS_IO").ok().as_deref(),
-            Some("1")
-        )
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn ignore_sigpipe() {
-    static IGNORE: OnceLock<()> = OnceLock::new();
-    IGNORE.get_or_init(|| {
-        #[cfg(unix)]
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-        }
-    });
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -224,144 +204,6 @@ fn encode_env_entries(entries: &[(String, String)], overlay: bool) -> Vec<u8> {
         out.extend_from_slice(value_bytes);
     }
     out
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn_process_reader(mut reader: impl Read + Send + 'static, stream_bits: u64) {
-    unsafe {
-        let _ = molt_stream_clone(stream_bits);
-    }
-    thread::spawn(move || {
-        let stream_ptr = ptr_from_bits(stream_bits);
-        if stream_ptr.is_null() {
-            return;
-        }
-        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let bytes = buf[..n].to_vec();
-                    if trace_process_io() {
-                        let limit = 256usize;
-                        let preview = bytes
-                            .iter()
-                            .take(limit)
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        if bytes.len() > limit {
-                            eprintln!(
-                                "molt_process_reader read {} bytes [{} ...]",
-                                bytes.len(),
-                                preview
-                            );
-                        } else {
-                            eprintln!(
-                                "molt_process_reader read {} bytes [{}]",
-                                bytes.len(),
-                                preview
-                            );
-                        }
-                    }
-                    if !super::channels::stream_enqueue_bytes_blocking(stream, bytes) {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        super::channels::stream_close_local(stream);
-        unsafe {
-            molt_stream_drop(stream_bits);
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn_process_writer(mut writer: impl Write + Send + 'static, stream_bits: u64) {
-    unsafe {
-        let _ = molt_stream_clone(stream_bits);
-    }
-    thread::spawn(move || {
-        ignore_sigpipe();
-        let stream_ptr = ptr_from_bits(stream_bits);
-        if stream_ptr.is_null() {
-            return;
-        }
-        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
-        let receiver = stream.receiver.clone();
-        loop {
-            match receiver.recv_timeout(Duration::from_millis(50)) {
-                Ok(bytes) => {
-                    super::channels::stream_release_queued_bytes(stream, bytes.len());
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    if trace_process_io() {
-                        let limit = 64usize;
-                        let preview = bytes
-                            .iter()
-                            .take(limit)
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        if bytes.len() > limit {
-                            eprintln!(
-                                "molt_process_writer write {} bytes [{} ...]",
-                                bytes.len(),
-                                preview
-                            );
-                        } else {
-                            eprintln!(
-                                "molt_process_writer write {} bytes [{}]",
-                                bytes.len(),
-                                preview
-                            );
-                        }
-                    }
-                    if writer.write_all(&bytes).is_err() {
-                        break;
-                    }
-                    if writer.flush().is_err() {
-                        break;
-                    }
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    if stream.closed.load(AtomicOrdering::Acquire) {
-                        break;
-                    }
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        stream.closed.store(true, AtomicOrdering::Release);
-        unsafe {
-            molt_stream_drop(stream_bits);
-        }
-    });
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn attach_process_stdio(child: &mut std::process::Child, stdio: &mut NativeProcessStdio) {
-    if stdio.stdin_stream != 0
-        && let Some(stdin) = child.stdin.take()
-    {
-        spawn_process_writer(stdin, stdio.stdin_stream);
-    }
-    if stdio.stdout_stream != 0 {
-        if let Some(reader) = stdio.merged_stdout_reader.take() {
-            spawn_process_reader(reader, stdio.stdout_stream);
-        } else if let Some(stdout) = child.stdout.take() {
-            spawn_process_reader(stdout, stdio.stdout_stream);
-        }
-    }
-    if stdio.stderr_stream != 0
-        && let Some(stderr) = child.stderr.take()
-    {
-        spawn_process_reader(stderr, stdio.stderr_stream);
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
