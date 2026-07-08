@@ -45,6 +45,7 @@ def _scoreboard_evidence(
     gate,
     name: str = "E2",
     *,
+    benchmarks: tuple[str, ...] | None = None,
     generated_at: str | None = None,
     gate_fails: bool = False,
     authoritative: bool = True,
@@ -54,9 +55,9 @@ def _scoreboard_evidence(
     classify_active: bool = True,
 ) -> dict[str, str]:
     schema = gate.perf_schema
-    benchmark = "tests/benchmarks/bench_fib.py"
+    suite = benchmarks or gate.pa.CANONICAL_PERF_BENCHMARKS
 
-    def cell_for(backend: str) -> dict[str, object]:
+    def cell_for(benchmark: str, backend: str) -> dict[str, object]:
         return {
             "benchmark": benchmark,
             "target": "native",
@@ -83,11 +84,10 @@ def _scoreboard_evidence(
             "codon_equivalent": None,
             "cpython_peak_rss_mib": 15.0,
             "output_parity": True,
-            "log_artifact": f"bench/scoreboard/logs/fib-{backend}.log",
+            "log_artifact": f"bench/scoreboard/logs/{Path(benchmark).stem}-{backend}.log",
             "classification": schema.CLASS_GREEN,
         }
 
-    cells = {backend: cell_for(backend) for backend in backends}
     path = tmp_path / f"{name}.json"
     stamp = generated_at or dt.datetime.now(dt.timezone.utc).isoformat()
     doc = {
@@ -119,8 +119,8 @@ def _scoreboard_evidence(
         "methodology": {},
         "reserved_columns": {},
         "summary": {
-            "cells_total": len(cells),
-            "cells_green": len(cells),
+            "cells_total": len(suite) * len(backends),
+            "cells_green": len(suite) * len(backends),
             "cells_fail_engine": 0,
             "cells_fail_cold_budget": 0,
             "cells_warn_cold_floor": 0,
@@ -130,12 +130,16 @@ def _scoreboard_evidence(
             "classification_breakdown": {schema.CLASS_GREEN: []},
             "gate_fails": gate_fails,
         },
-        "benchmarks_run": [benchmark],
+        "benchmarks_run": list(suite),
         "benchmarks_deferred": [],
         "scoreboard": {
             benchmark: {
-                "native": {backend: {profile: cell} for backend, cell in cells.items()}
-            },
+                "native": {
+                    backend: {profile: cell_for(benchmark, backend)}
+                    for backend in backends
+                }
+            }
+            for benchmark in suite
         },
     }
     path.write_text(json.dumps(doc), encoding="utf-8")
@@ -490,6 +494,36 @@ def test_release_exit_gate_rejects_e2_native_only_scoreboard(
     assert any(
         "E2: canonical scoreboard must include both native and llvm release-fast cells"
         in p
+        for p in report.problems
+    )
+
+
+def test_release_exit_gate_rejects_e2_partial_core_scoreboard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E2={
+            "status": "pass",
+            "evidence": [
+                _scoreboard_evidence(
+                    tmp_path,
+                    gate,
+                    name="partial-core-scoreboard",
+                    benchmarks=(gate.pa.CANONICAL_PERF_BENCHMARKS[0],),
+                )
+            ],
+        },
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any(
+        "E2: canonical scoreboard missing canonical core benchmarks" in p
         for p in report.problems
     )
 
