@@ -693,6 +693,31 @@ def require_external_artifact_root(
     return None
 
 
+def _is_onedrive_path(path: Path) -> bool:
+    """True if *path* is under a OneDrive-synced tree — forbidden for molt.
+
+    OneDrive continuously syncs the `.git` + build tree (thousands of tiny objects),
+    throttling every git/build op and corrupting the working set; it was the root of
+    the drift retired 2026-07-08. The canonical checkout is `C:\\Molt\\molt-src` and
+    artifacts live on `C:\\Molt` — nothing may drift back onto OneDrive.
+    """
+    try:
+        parts = path.resolve().parts
+    except (OSError, ValueError):
+        parts = path.parts
+    return any("onedrive" in str(p).lower() for p in parts)
+
+
+def _reject_onedrive(path: Path, kind: str) -> None:
+    if _is_onedrive_path(path):
+        raise DxConfigError(
+            f"Molt {kind} must NOT be under OneDrive (it throttles/corrupts git + "
+            f"builds and was the retired drift root). Rejected: {path}. Use the "
+            f"canonical checkout C:\\Molt\\molt-src and artifacts C:\\Molt "
+            f"(see docs/agent/ORCHESTRATION.md canonical paths)."
+        )
+
+
 def _validate_windows_artifact_root(
     artifact_root: Path,
     *,
@@ -700,6 +725,9 @@ def _validate_windows_artifact_root(
     env: Mapping[str, str],
     prefer_external: bool,
 ) -> None:
+    # Fail closed against OneDrive re-drift — the checkout AND the artifact root.
+    _reject_onedrive(repo_root, "checkout / repo root")
+    _reject_onedrive(artifact_root, "build-artifact root")
     if not _requires_external_artifacts(
         repo_root,
         env,
