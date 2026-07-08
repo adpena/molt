@@ -7,32 +7,36 @@ lane you don't own, stop and pick from "Delegated to Codex" instead.
 
 Last updated: 2026-07-08 by the orchestrator.
 
-## 🚀 DEV-VELOCITY BULLETIN (2026-07-08) — Codex: REBASE NOW, then read on
+## 🚀 DEV-VELOCITY PROTOCOL (2026-07-08 CURRENT) — Codex: REBASE, then COMPLY
 
-The orchestrator landed build-throughput fixes on origin/main. **Every Codex agent
-and worktree MUST `git fetch origin && git rebase origin/main` before the next arc**
-to pick these up — a stale base keeps paying the old cold-build tax and re-lands
-resolved defects:
+The orchestrator landed a full dev-velocity overhaul on origin/main. **Every Codex
+agent + worktree MUST `git fetch origin && git rebase origin/main` before the next
+arc.** A stale base runs the OLD slow CLI (the editable install was 477 commits
+stale — 2 jobs, incremental off, cold-every-session) and re-lands resolved defects.
 
-- `aa15340aa` — CARGO_INCREMENTAL=1 when sccache is off (sccache is off-by-default
-  on Windows: it delivered 0 hits + crashed builds). Was forced 0 everywhere → zero
-  compiler cache. Warm rebuilds now reuse incremental codegen units.
-- `bdd42535e` — **persistent Cargo target dir by default.** The target dir was
-  session-scoped per-PID, so every session paid a full COLD compile. Now it is a
-  STABLE `D:\Molt\target` unless you PIN an explicit `MOLT_SESSION_ID` (perf/bench/
-  test-shard isolation still works). Cold ~151s / warm 1-file rebuild 60–90s
-  (dev-fast, molt-backend, measured). Do NOT set MOLT_SESSION_ID for ordinary
-  `molt build`.
-- `62efe5a9e` — OWNERSHIP GATE non-negotiable in ORCHESTRATOR_GOAL.md: no reporting/
-  handoff without landing; verify against the FULL surface.
+LANDED — all active in the current CLI (rebase to get them):
+- **Adaptive cargo jobs (2→14)** `ad0cafb82` — hardcoded 2 was defeating the
+  memory-bounded ceiling (~7× under-parallelism on this box).
+- **Incremental-when-sccache-off** `aa15340aa` + **persistent target dir**
+  `bdd42535e` — warm rebuilds reuse cache ACROSS sessions.
+- **lld-link auto-detect** `858c6a306` (fast Windows linker) + **release-fast
+  debug=0** `f21cf71aa`.
+- **Auto-janitor** `25e4d7c2b` — stale per-session targets/tmp/scratch are cleaned
+  BY DEFAULT (throttled, detached, keeps ≥80 GB free, protects live builds). Do NOT
+  hand-manage artifacts or fight it. Opt out only via `MOLT_DISABLE_AUTO_JANITOR=1`.
 
-**DRIFT EMERGENCY (orchestrator owns cleanup):** the shared repo has **176
-worktrees / 232 local branches** (72 fully merged, 160 with unique commits) — the
-signal-loss risk the operator flagged. Orchestrator is consolidating: land unique
-commits → origin/main, prune merged worktrees+branches, establish ONE canonical
-checkout. Codex agents: **bank unique WIP to a `wip/<lane>-<date>` branch and push
-it**, keep worktrees short-lived, rebase often. Do NOT accumulate long-lived
-divergent worktrees — that is how signal gets lost.
+**ARTIFACT ROOT MOVED TO NVMe (this workstation):** artifacts now resolve to
+**`C:\Molt`** (internal NVMe), NOT D:/E: (USB exFAT — metadata-slow, no hard links).
+The persistent machine env (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt`,
+`MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`) is set. **Do NOT override `MOLT_EXT_ROOT` /
+`MOLT_EXTERNAL_ARTIFACT_ROOTS` back to D:/E:** — that reverts to the slow volume.
+The auto-janitor floor keeps C: respectful; the persistent target keeps it bounded.
+
+**DRIFT is now RECURRING DISCIPLINE, not a crisis** (was ~176 worktrees → pruned).
+Bank WIP to `wip/<lane>-<date>` + push; LAND your signal + DELETE your worktree when
+a lane finishes; run `tools/drift_harvest.py` every session (rule 5). ENFORCEMENT:
+the orchestrator runs drift_harvest + the janitor regularly as a backstop, and a
+worktree that vanishes was SUPERSEDED or bundled — do NOT re-create it.
 
 ## 📋 NEW PROTOCOL (binding for every agent, 2026-07-08)
 
@@ -45,7 +49,9 @@ divergent worktrees — that is how signal gets lost.
 3. **BUILD HYGIENE.** `git fetch && rebase origin/main` before every arc. Do NOT
    set `MOLT_SESSION_ID` for ordinary `molt build`/`cargo build` (that opts back
    into a cold per-session target dir); leave it unset to reuse the persistent
-   `D:\Molt\target`. Set it ONLY for perf/bench/test-shard isolation.
+   target (`C:\Molt\target` on the NVMe workstation root). Set it ONLY for
+   perf/bench/test-shard isolation. Do NOT override the artifact root back to D:/E:.
+   Do NOT hand-clean artifacts — the auto-janitor does it by default.
 4. **PROFILE BEFORE OPTIMIZING.** State the hot path + Big-O and attest a
    before/after delta for any perf/build change (tools/dx_build_timer.py,
    tools/build_graph_audit.py). No optimizing by feel.
