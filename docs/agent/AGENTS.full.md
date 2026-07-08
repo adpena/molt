@@ -283,6 +283,22 @@ binary artifact, or ownership boundary made the weird behavior possible.
 This is a turn blocker for NumPy, SciPy, pandas, tinygrad, and every other
 third-party package lane.
 
+- Highest-priority source-custody rule: Molt never reinvents third-party
+  libraries. For ecosystem packages, Molt compiles the package's own Python and
+  C/C++/Cython/Rust extensions through package/import custody. It must not port,
+  translate, stub, or hand-maintain package semantics, package source lists,
+  generated config headers, or per-package build recipes inside Molt-owned code.
+  The scalable path is to derive and provision the required build backend,
+  toolchains, generated sources, headers, target libraries, and link artifacts
+  from upstream package metadata/build systems (`pyproject.toml`, Meson,
+  setup.py, Cython directives, etc.). If a toolchain or library cannot be
+  provisioned automatically, fail closed with a precise diagnostic rather than
+  creating a Molt-owned package crutch. Related contracts:
+  `docs/design/foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md`
+  R73.2, `docs/spec/areas/compat/README.md`,
+  `docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md`, and the
+  fail-closed registry/gate ratchet. Any scanner for this class must land with
+  registry rows or structural deletions for every discovered site.
 - Do not reinvent upstream packages inside `src/molt/stdlib` as the primary
   compatibility strategy. For NumPy, SciPy, pandas, tinygrad, and similar
   ecosystem packages, do not add Molt-owned Python stub, shim, or package
@@ -317,6 +333,12 @@ third-party package lane.
   precise diagnostic. No host interpreter fallback, vendored patched fork,
   monkeypatch shim, or package-specific compatibility crutch may masquerade as
   ecosystem support.
+- Harness self-protection is mandatory: `tools/fail_closed_gate.py` must reject
+  new ecosystem-baked files, ecosystem build crutches, Molt-owned third-party
+  package reimplementations, fail-open stubs, duplicate authorities, and
+  TODO-as-plan surfaces unless a tracked structural-resolution row already owns
+  deleting the registered debt. Existing rows are debt baselines that may only
+  move downward.
 - For NumPy/SciPy specifically, prefer strengthening the libmolt CPython/NumPy
   source-compat ABI, ndarray/tensor primitives, and package native-artifact
   pipeline over adding bespoke Python implementations of `numpy` or

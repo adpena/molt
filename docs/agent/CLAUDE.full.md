@@ -204,6 +204,14 @@ contradictory.
 This is a turn-blocking policy for NumPy, SciPy, pandas, tinygrad, and every
 other third-party ecosystem lane.
 
+- Molt compiles third-party Python and extensions; it does not become the
+  third-party library. All package build prerequisites must resolve
+  automatically through reusable package/toolchain custody. If an upstream
+  package needs Cython, Meson, Ninja, sysroots, generated headers, native
+  libraries, link flags, feature probes, or target-specific build steps, derive,
+  provision, cache, and pass those requirements from the package's own
+  metadata/build system. Manual env-var recipes, hand installs, and one-off
+  witness setup are DX defects to fix in the shared provisioning layer.
 - Ecosystem compatibility is not achieved by reimplementing upstream packages
   package-by-package inside Molt Python. Build shared primitives and make the
   existing upstream source compile, link, import, and execute against Molt.
@@ -229,6 +237,12 @@ other third-party ecosystem lane.
 - Missing ABI behavior becomes a reusable primitive or a precise fail-closed
   diagnostic. No patched upstream fork, monkeypatch shim, host-interpreter
   bridge, or package-local compatibility crutch may masquerade as support.
+- Harness self-protection is mandatory: `tools/fail_closed_gate.py` must reject
+  new ecosystem-baked files, ecosystem build crutches, Molt-owned third-party
+  package reimplementations, fail-open stubs, duplicate authorities, and
+  TODO-as-plan surfaces unless a tracked structural-resolution row already owns
+  deleting the registered debt. Existing rows are debt baselines that may only
+  move downward.
 
 ### Anomaly Crux Protocol: Question The Question
 
