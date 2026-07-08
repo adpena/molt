@@ -787,6 +787,38 @@ fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
     assert!(plan.op_prefers_integer_runtime_lane(&mul));
     assert!(plan.op_args_are_integer_family(&add));
     assert!(plan.op_args_are_integer_family(&mul));
+    assert!(!plan.op_args_are_inline_safe_ints(&add));
+    assert!(!plan.op_result_is_inline_safe_int(&add));
+}
+
+#[test]
+fn const_numeric_ops_prove_direct_numeric_result_lanes() {
+    let const_lhs = const_int("lhs", 2);
+    let const_rhs = const_int("rhs", 3);
+    let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+    let f_lhs = const_float("f_lhs", 1.25);
+    let f_rhs = const_float("f_rhs", 2.5);
+    let f_add = op("add", Some("f_sum"), None, &["f_lhs", "f_rhs"]);
+    let func = function(
+        "const_numeric_ops",
+        &[],
+        None,
+        vec![
+            const_lhs,
+            const_rhs,
+            add.clone(),
+            f_lhs,
+            f_rhs,
+            f_add.clone(),
+        ],
+    );
+
+    let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+    assert!(plan.op_args_are_inline_safe_ints(&add));
+    assert!(plan.op_result_is_inline_safe_int(&add));
+    assert!(plan.op_args_are_float_unboxed(&f_add));
+    assert!(plan.op_result_is_float_unboxed(&f_add));
 }
 
 #[test]

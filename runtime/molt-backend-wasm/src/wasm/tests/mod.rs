@@ -1,5 +1,5 @@
 use super::container_runtime_select::selected_container_runtime_import;
-use super::{WasmBackend, WasmCompileOptions, WasmProfile};
+use super::{WasmBackend, WasmCompileOptions, WasmCompileOutput, WasmProfile};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 use crate::wasm_abi::{
@@ -10,8 +10,8 @@ use crate::wasm_abi::{
 };
 use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
 use crate::wasm_plan::{
-    is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
-    wasm_scalar_truthiness_fast_path_for_name,
+    detect_multi_return_candidates, is_shared_drop_fact_marker,
+    wasm_scalar_integer_fast_path_for_op, wasm_scalar_truthiness_fast_path_for_name,
 };
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +40,23 @@ fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> OpIR {
         args: Some(args.into_iter().map(str::to_string).collect()),
         ..OpIR::default()
     }
+}
+
+fn wasm_compile_final_ir_for_op_loop_tests(ir: SimpleIR) -> Vec<u8> {
+    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir).wasm
+}
+
+fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir: SimpleIR) -> WasmCompileOutput {
+    let multi_return_candidates = detect_multi_return_candidates(&ir);
+    let trampoline_analysis =
+        super::trampoline_analysis::analyze_wasm_trampolines(&ir, multi_return_candidates);
+    WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .emit_wasm_module(ir, BTreeMap::new(), trampoline_analysis)
 }
 
 fn wasm_object_new_bound_ir(payload_size: Option<i64>) -> SimpleIR {
@@ -208,6 +225,33 @@ fn wasm_direct_call_indices_for_export(wasm: &[u8], export_name: &str) -> Vec<u3
         .checked_sub(import_count)
         .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
     wasm_direct_call_indices_for_body(wasm, Some(body_index))
+}
+
+fn wasm_operator_debug_for_export(wasm: &[u8], export_name: &str) -> Vec<String> {
+    let export_index = *wasm_function_export_indices(wasm)
+        .get(export_name)
+        .unwrap_or_else(|| panic!("missing function export {export_name}"));
+    let import_count = wasm_function_import_indices(wasm).len() as u32;
+    let body_filter = export_index
+        .checked_sub(import_count)
+        .unwrap_or_else(|| panic!("export {export_name} is an import, not a defined function"));
+    let mut body_index = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload
+            && let Ok(mut ops) = body.get_operators_reader()
+        {
+            if body_filter != body_index {
+                body_index += 1;
+                continue;
+            }
+            let mut out = Vec::new();
+            while let Ok(op) = ops.read() {
+                out.push(format!("{op:?}"));
+            }
+            return out;
+        }
+    }
+    panic!("requested WASM body {body_filter}, but no matching code body was found")
 }
 
 fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option<u32>) -> Vec<u32> {
@@ -410,9 +454,9 @@ fn wasm_type_section_value_signatures(wasm: &[u8]) -> Vec<(Vec<String>, Vec<Stri
     sigs
 }
 
-mod native_callable;
-mod container_scalar;
-mod import_codegen;
 mod call_indirect_table;
-mod runtime_callable;
+mod container_scalar;
 mod exception_eh;
+mod import_codegen;
+mod native_callable;
+mod runtime_callable;

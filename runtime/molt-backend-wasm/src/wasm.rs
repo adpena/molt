@@ -23,7 +23,7 @@ mod state_dispatch;
 mod task_runtime;
 mod tir_pipeline;
 mod trampoline_analysis;
-pub use backend::WasmBackend;
+pub use backend::{WasmBackend, WasmCompileDiagnostics, WasmCompileOutput, WasmNumericLaneStats};
 #[cfg(test)]
 pub(in crate::wasm) use frame_locals::WasmFrameLocalKind;
 pub(in crate::wasm) use frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};

@@ -216,6 +216,27 @@ pub(super) fn emit_inline_int_result_or_boxed(
     func.instruction(&Instruction::End);
 }
 
+pub(super) fn emit_inline_int_result(
+    func: &mut Function,
+    raw_result_local: u32,
+    known_raw_ints: &BTreeMap<u32, i64>,
+) {
+    emit_box_int_from_local_opt(func, raw_result_local, known_raw_ints);
+}
+
+pub(super) fn emit_plain_f64_binary_result(
+    func: &mut Function,
+    operands: BinaryOperands,
+    locals: &WasmFrameLocals,
+    emit_f64_result: impl FnOnce(&mut Function, u32),
+) {
+    func.instruction(&Instruction::LocalGet(operands.lhs));
+    func.instruction(&Instruction::F64ReinterpretI64);
+    func.instruction(&Instruction::LocalGet(operands.rhs));
+    func.instruction(&Instruction::F64ReinterpretI64);
+    emit_f64_result(func, locals.synthetic(WasmFrameSyntheticLocal::MoltTmp3));
+}
+
 pub(super) fn emit_plain_f64_binary_result_or_boxed(
     func: &mut Function,
     operands: BinaryOperands,
@@ -227,11 +248,7 @@ pub(super) fn emit_plain_f64_binary_result_or_boxed(
 ) {
     emit_plain_f64_binary_guard(func, operands);
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-    func.instruction(&Instruction::LocalGet(operands.lhs));
-    func.instruction(&Instruction::F64ReinterpretI64);
-    func.instruction(&Instruction::LocalGet(operands.rhs));
-    func.instruction(&Instruction::F64ReinterpretI64);
-    emit_f64_result(func, locals.synthetic(WasmFrameSyntheticLocal::MoltTmp3));
+    emit_plain_f64_binary_result(func, operands, locals, emit_f64_result);
     func.instruction(&Instruction::Else);
     emit_boxed_binary_call(func, operands, import_ids, import, reloc_enabled);
     func.instruction(&Instruction::End);

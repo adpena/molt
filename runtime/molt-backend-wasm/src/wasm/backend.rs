@@ -34,6 +34,53 @@ pub struct WasmBackend {
     pub(in crate::wasm) options: WasmCompileOptions,
     /// Number of tail calls emitted via `return_call` (WASM tail calls proposal).
     pub(in crate::wasm) tail_calls_emitted: usize,
+    pub(in crate::wasm) numeric_lane_stats: WasmNumericLaneStats,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WasmCompileDiagnostics {
+    pub tail_calls_emitted: usize,
+    pub numeric_lanes: WasmNumericLaneStats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WasmCompileOutput {
+    pub wasm: Vec<u8>,
+    pub diagnostics: WasmCompileDiagnostics,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WasmNumericLaneStats {
+    pub op_loop_inline_int_raw_results: usize,
+    pub op_loop_float_raw_results: usize,
+    pub op_loop_guarded_int_results: usize,
+    pub op_loop_boxed_runtime_calls: usize,
+}
+
+impl WasmNumericLaneStats {
+    pub fn raw_result_total(self) -> usize {
+        self.op_loop_inline_int_raw_results + self.op_loop_float_raw_results
+    }
+
+    pub fn guarded_or_boxed_total(self) -> usize {
+        self.op_loop_guarded_int_results + self.op_loop_boxed_runtime_calls
+    }
+
+    pub(in crate::wasm) fn record_op_loop_inline_int_raw_result(&mut self) {
+        self.op_loop_inline_int_raw_results += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_float_raw_result(&mut self) {
+        self.op_loop_float_raw_results += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_guarded_int_result(&mut self) {
+        self.op_loop_guarded_int_results += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_boxed_runtime_call(&mut self) {
+        self.op_loop_boxed_runtime_calls += 1;
+    }
 }
 
 impl Default for WasmBackend {
@@ -65,6 +112,14 @@ impl WasmBackend {
             molt_host_init_index: None,
             options,
             tail_calls_emitted: 0,
+            numeric_lane_stats: WasmNumericLaneStats::default(),
+        }
+    }
+
+    pub(in crate::wasm) fn compile_diagnostics(&self) -> WasmCompileDiagnostics {
+        WasmCompileDiagnostics {
+            tail_calls_emitted: self.tail_calls_emitted,
+            numeric_lanes: self.numeric_lane_stats,
         }
     }
 }
