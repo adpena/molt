@@ -5952,6 +5952,102 @@ def test_proof_queue_diagnoses_molt_runtime_invalid_object_header(
     }
 
 
+def test_proof_queue_diagnoses_perf_scoreboard_not_quiescent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "perf-scoreboard-not-quiescent.log"
+    summary_json = tmp_path / "perf-scoreboard-not-quiescent.memory_guard.json"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="perf-scoreboard-not-quiescent-run",
+        logical_id="c4-current-perf-scoreboard",
+        reason="prove perf scoreboard quiescence diagnostic",
+        command=[
+            "uv",
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "python",
+            "tools\\perf_scoreboard.py",
+            "--require-quiescent",
+        ],
+        cwd=proof_queue.ROOT,
+        resource_family="perf",
+        contention_key="c4-current-perf-scoreboard",
+        scopes=["tools/perf_scoreboard.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=summary_json,
+    )
+    log_path.write_text(
+        "\n".join(
+            [
+                "[scoreboard] waiting for quiescence (sample 12, next check in "
+                "15s, budget left 15s): 3 active build process(es) "
+                "(cargo/rustc/molt-backend/molt build); 1-min load 24.00 > "
+                "threshold 12.00 (ncpu=24 * 0.5)",
+                "[scoreboard] machine NOT quiescent - 3 active build process(es) "
+                "(cargo/rustc/molt-backend/molt build); 1-min load 22.32 > "
+                "threshold 12.00 (ncpu=24 * 0.5)",
+                "[scoreboard] *** NON-AUTHORITATIVE: machine not quiet; do not "
+                "optimize from this red list (EXPLORATORY only) ***",
+                "[scoreboard]     reason: machine NOT quiescent "
+                "(--require-quiescent): 3 active build process(es)",
+                "[scoreboard] refusing non-authoritative measurement before "
+                "starting benchmark builds",
+                "proof_queue finished status=failed exit_code=1 elapsed=361.359s",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn,
+        "perf-scoreboard-not-quiescent-run",
+        status="failed",
+        returncode=1,
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "perf-scoreboard-not-quiescent-run",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "perf-scoreboard-not-quiescent"
+    assert diagnostics[0]["severity"] == "operator"
+    assert "failed closed before benchmarking" in diagnostics[0]["summary"]
+    assert "machine NOT quiescent" in diagnostics[0]["evidence"]
+    assert "refusing non-authoritative measurement" in diagnostics[0]["evidence"]
+    assert "--allow-nonauthoritative" in diagnostics[0]["next_action"]
+    assert "tools/perf_scoreboard.py" in diagnostics[0]["scopes"]
+    assert diagnostics[0]["artifacts"] == [str(summary_json), str(log_path)]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_runtime_wasm_rust_target_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

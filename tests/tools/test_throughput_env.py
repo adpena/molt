@@ -132,5 +132,6 @@ def test_run_context_env_prints_powershell_dx_facts() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "$env:MOLT_SESSION_ID = " in result.stdout
+    assert "$env:PYTHONPATH = " in result.stdout
     assert "$env:MOLT_BACKEND_DAEMON_SOCKET_DIR = " in result.stdout
     assert "$env:SCCACHE_DIR = " in result.stdout

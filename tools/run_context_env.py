@@ -17,6 +17,7 @@ from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
     DX_ENV_KEYS,
     RunContext,
+    ensure_repo_src_pythonpath,
     render_env,
 )
 
@@ -106,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.dx
         else context.canonical_env(base_env, create_dirs=False)
     )
+    if args.dx:
+        ensure_repo_src_pythonpath(args.root, env)
     keys = DX_ENV_KEYS if args.dx else CANONICAL_RUN_ENV_KEYS
     fmt = cast(
         Literal["dotenv", "posix", "powershell", "cmd", "json"],
