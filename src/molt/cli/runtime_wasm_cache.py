@@ -38,12 +38,57 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from molt.cli.atomic_io import _atomic_copy_file, _write_json_sidecar
 from molt.cli.default_paths import _default_molt_cache
 
 
 _CACHE_KEY_HEX_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+_RUNTIME_WASM_CACHE_STATS: dict[str, int | str] = {
+    "hydrate_attempts": 0,
+    "hydrate_hits": 0,
+    "hydrate_misses": 0,
+    "hydrate_failures": 0,
+    "publish_attempts": 0,
+    "publish_successes": 0,
+    "publish_failures": 0,
+    "last_publish_failure": "",
+}
+
+
+def _runtime_wasm_cache_diagnostics_snapshot() -> dict[str, Any] | None:
+    """Return a diagnostics snapshot for runtime-wasm shared-cache activity."""
+    hydrate_attempts = int(_RUNTIME_WASM_CACHE_STATS["hydrate_attempts"])
+    publish_attempts = int(_RUNTIME_WASM_CACHE_STATS["publish_attempts"])
+    if hydrate_attempts == 0 and publish_attempts == 0:
+        return None
+    hydrate_hits = int(_RUNTIME_WASM_CACHE_STATS["hydrate_hits"])
+    publish_successes = int(_RUNTIME_WASM_CACHE_STATS["publish_successes"])
+    snapshot: dict[str, Any] = {
+        "hydrate_attempts": hydrate_attempts,
+        "hydrate_hits": hydrate_hits,
+        "hydrate_misses": int(_RUNTIME_WASM_CACHE_STATS["hydrate_misses"]),
+        "hydrate_failures": int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]),
+        "hydrate_hit_rate": round(hydrate_hits / max(1, hydrate_attempts), 6),
+        "publish_attempts": publish_attempts,
+        "publish_successes": publish_successes,
+        "publish_failures": int(_RUNTIME_WASM_CACHE_STATS["publish_failures"]),
+        "publish_success_rate": round(
+            publish_successes / max(1, publish_attempts),
+            6,
+        ),
+    }
+    last_publish_failure = str(_RUNTIME_WASM_CACHE_STATS["last_publish_failure"])
+    if last_publish_failure:
+        snapshot["last_publish_failure"] = last_publish_failure
+    return snapshot
+
+
+def _reset_runtime_wasm_cache_diagnostics() -> None:
+    """Reset process-local diagnostics counters. Intended for tests."""
+    for key in list(_RUNTIME_WASM_CACHE_STATS):
+        _RUNTIME_WASM_CACHE_STATS[key] = "" if key == "last_publish_failure" else 0
 
 
 def _shared_runtime_wasm_cache_root() -> Path:
@@ -110,15 +155,37 @@ def _hydrate_runtime_wasm_from_shared_cache(
     Returns ``True`` only when ``dest`` now holds the reused, validated artifact.
     """
     cache_path = _shared_runtime_wasm_cache_path(fingerprint, reloc=reloc)
-    if cache_path is None or not cache_path.is_file():
+    if cache_path is None:
+        return False
+    _RUNTIME_WASM_CACHE_STATS["hydrate_attempts"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["hydrate_attempts"]) + 1
+    )
+    if not cache_path.is_file():
+        _RUNTIME_WASM_CACHE_STATS["hydrate_misses"] = (
+            int(_RUNTIME_WASM_CACHE_STATS["hydrate_misses"]) + 1
+        )
         return False
     if not bool(is_valid(cache_path)):
+        _RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
+            int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
+        )
         return False
     try:
         _atomic_copy_file(cache_path, dest)
     except OSError:
+        _RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
+            int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
+        )
         return False
-    return bool(is_valid(dest))
+    if bool(is_valid(dest)):
+        _RUNTIME_WASM_CACHE_STATS["hydrate_hits"] = (
+            int(_RUNTIME_WASM_CACHE_STATS["hydrate_hits"]) + 1
+        )
+        return True
+    _RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
+    )
+    return False
 
 
 def _publish_runtime_wasm_to_shared_cache(
@@ -126,7 +193,7 @@ def _publish_runtime_wasm_to_shared_cache(
     src: Path,
     fingerprint: Mapping[str, object],
     reloc: bool,
-) -> None:
+) -> str | None:
     """Publish a freshly built runtime wasm into the shared cache.
 
     Best-effort: a failure to publish must never fail the build (the artifact is
@@ -136,14 +203,22 @@ def _publish_runtime_wasm_to_shared_cache(
     """
     cache_path = _shared_runtime_wasm_cache_path(fingerprint, reloc=reloc)
     if cache_path is None or not src.is_file():
-        return
+        return None
+    _RUNTIME_WASM_CACHE_STATS["publish_attempts"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["publish_attempts"]) + 1
+    )
     try:
         _atomic_copy_file(src, cache_path)
-    except OSError:
-        return
+    except OSError as exc:
+        reason = f"artifact copy failed: {exc}"
+        _RUNTIME_WASM_CACHE_STATS["publish_failures"] = (
+            int(_RUNTIME_WASM_CACHE_STATS["publish_failures"]) + 1
+        )
+        _RUNTIME_WASM_CACHE_STATS["last_publish_failure"] = reason
+        return reason
     key = _runtime_wasm_cache_key(fingerprint)
     if key is None:
-        return
+        return None
     hash_value, meta_digest = key
     try:
         _write_json_sidecar(
@@ -155,5 +230,14 @@ def _publish_runtime_wasm_to_shared_cache(
                 "rustc": fingerprint.get("rustc"),
             },
         )
-    except OSError:
-        return
+    except OSError as exc:
+        reason = f"metadata sidecar failed: {exc}"
+        _RUNTIME_WASM_CACHE_STATS["publish_failures"] = (
+            int(_RUNTIME_WASM_CACHE_STATS["publish_failures"]) + 1
+        )
+        _RUNTIME_WASM_CACHE_STATS["last_publish_failure"] = reason
+        return reason
+    _RUNTIME_WASM_CACHE_STATS["publish_successes"] = (
+        int(_RUNTIME_WASM_CACHE_STATS["publish_successes"]) + 1
+    )
+    return None
