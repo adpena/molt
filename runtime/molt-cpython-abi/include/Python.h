@@ -751,15 +751,19 @@ typedef struct PyModuleDef {
     freefunc            m_free;
 } PyModuleDef;
 
+/* Slot IDs (PyModuleDef_Slot.slot, an int) match CPython 3.12 Include/moduleobject.h. */
 #define Py_mod_create 1
 #define Py_mod_exec 2
 #define Py_mod_multiple_interpreters 3
 #define Py_mod_gil 4
-#define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED 0
-#define Py_MOD_MULTIPLE_INTERPRETERS_SUPPORTED 1
-#define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED 2
-#define Py_MOD_GIL_USED 0
-#define Py_MOD_GIL_NOT_USED 1
+/* Slot VALUES (PyModuleDef_Slot.value, a void*) — CPython 3.12 casts these to
+ * (void *) so they are usable directly as the slot's pointer value. A plain int
+ * here triggers -Wint-conversion when placed in the void* slot field. */
+#define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED ((void *)0)
+#define Py_MOD_MULTIPLE_INTERPRETERS_SUPPORTED ((void *)1)
+#define Py_MOD_PER_INTERPRETER_GIL_SUPPORTED ((void *)2)
+#define Py_MOD_GIL_USED ((void *)0)
+#define Py_MOD_GIL_NOT_USED ((void *)1)
 
 /* ── PyMemberDef / PyGetSetDef (forward decl) ─────────────────────────────── */
 
