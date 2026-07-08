@@ -1,5 +1,38 @@
 //! Runtime-independent importlib support shared by the platform bridge.
 
+use std::collections::HashSet;
+
+pub fn append_unique_path(paths: &mut Vec<String>, entry: &str) {
+    if entry.is_empty() {
+        return;
+    }
+    if paths.iter().any(|existing| existing == entry) {
+        return;
+    }
+    paths.push(entry.to_string());
+}
+
+pub fn append_unique_path_hashed(paths: &mut Vec<String>, seen: &mut HashSet<String>, entry: &str) {
+    if entry.is_empty() {
+        return;
+    }
+    if seen.insert(entry.to_string()) {
+        paths.push(entry.to_string());
+    }
+}
+
+pub fn split_nonempty_paths(raw: &str, sep: char) -> Vec<String> {
+    raw.split(sep)
+        .filter_map(|part| {
+            if part.is_empty() {
+                None
+            } else {
+                Some(part.to_string())
+            }
+        })
+        .collect()
+}
+
 pub fn split_zip_archive_path(path: &str) -> Option<(String, String)> {
     const ARCHIVE_SUFFIXES: [&str; 3] = [".zip", ".whl", ".egg"];
     if path.is_empty() {
@@ -242,5 +275,26 @@ mod tests {
             Some(String::from("C:/pkg"))
         );
         assert_eq!(importlib_package_root_from_origin("pkg/mod.py"), None);
+    }
+
+    #[test]
+    fn path_list_helpers_skip_empty_and_deduplicate() {
+        let mut paths = Vec::new();
+        append_unique_path(&mut paths, "");
+        append_unique_path(&mut paths, "alpha");
+        append_unique_path(&mut paths, "alpha");
+        append_unique_path(&mut paths, "beta");
+        assert_eq!(paths, vec![String::from("alpha"), String::from("beta")]);
+
+        let mut hashed = Vec::new();
+        let mut seen = HashSet::new();
+        append_unique_path_hashed(&mut hashed, &mut seen, "alpha");
+        append_unique_path_hashed(&mut hashed, &mut seen, "alpha");
+        append_unique_path_hashed(&mut hashed, &mut seen, "beta");
+        assert_eq!(hashed, vec![String::from("alpha"), String::from("beta")]);
+        assert_eq!(
+            split_nonempty_paths("alpha::beta:", ':'),
+            vec![String::from("alpha"), String::from("beta")]
+        );
     }
 }

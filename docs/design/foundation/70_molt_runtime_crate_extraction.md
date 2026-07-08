@@ -439,6 +439,25 @@ fan-in row
 `20260708T045954-c1-platform-stat-support-fanin-postrebase-20260708a-3426931702ba4d16`
 passed `cargo check -p molt-runtime` in 157.4s.
 
+2026-07-08 C1 follow-up: path-list de-duplication and path-list splitting for
+platform/importlib bootstrap now live in
+`molt-runtime-platform::importlib_support`. The platform satellite owns
+`append_unique_path`, `append_unique_path_hashed`, and `split_nonempty_paths`,
+including direct tests for empty-entry filtering and stable de-duplication.
+`molt-runtime` keeps only a reexport so existing platform, importlib, and
+importlib.resources consumers continue to share one runtime-independent helper
+authority while the next path-primitive cut is staged.
+
+Queue row
+`20260708T045706-c1-platform-importlib-path-list-satellite-20260708a-bc08ffd280f24c39`
+passed `cargo test -p molt-runtime-platform importlib_support -j1` in 30.3s,
+and dependent parent fan-in row
+`20260708T045752-c1-platform-importlib-path-list-fanin-20260708a-4474dccf606d49a2`
+passed `cargo check -p molt-runtime --features stdlib_micro -j1` in 641.2s.
+The proof confirms the reexport contract, and the timing again shows that tiny
+runtime-independent helper moves are cheap in the satellite but still pay the
+parent god-crate compile tax until more consumers leave `molt-runtime`.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
