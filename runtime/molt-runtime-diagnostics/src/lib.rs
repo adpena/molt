@@ -96,7 +96,7 @@ fn target() -> &'static DiagnosticsTarget {
 /// stdout/stderr that the differential parity harness compares. The destination
 /// is resolved once per process from [`DIAGNOSTICS_FILE_ENV`]; see the module
 /// docs.
-pub(crate) fn emit_line(line: &str) {
+pub fn emit_line(line: &str) {
     target().write_line(line);
 }
 

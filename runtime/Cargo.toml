@@ -23,6 +23,7 @@ members = [
     "molt-runtime-zoneinfo",
     "molt-runtime-vfs",
     "molt-runtime-audit",
+    "molt-runtime-diagnostics",
     "molt-runtime-resource",
     "molt-runtime-protobuf",
     "molt-runtime",
