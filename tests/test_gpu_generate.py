@@ -690,7 +690,7 @@ def test_tinygrad_dflash_import_fails_closed_with_provenance(tmp_path: Path) -> 
     probe.write_text(
         "import importlib.util\n"
         "try:\n"
-        f"    spec = importlib.util.spec_from_file_location('tinygrad.dflash', {str(root / 'src' / 'molt' / 'stdlib' / 'tinygrad' / 'dflash.py')!r})\n"
+        f"    spec = importlib.util.spec_from_file_location('tinygrad.dflash', {str(root / 'demos' / 'tinygrad' / 'dflash.py')!r})\n"
         "    module = importlib.util.module_from_spec(spec)\n"
         "    spec.loader.exec_module(module)\n"
         "    raise AssertionError('tinygrad.dflash import should fail closed')\n"

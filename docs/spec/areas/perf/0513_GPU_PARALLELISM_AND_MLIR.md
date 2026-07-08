@@ -115,7 +115,10 @@ This crate provides:
   compute reductions now carry ranked MIL values, reshape flat gathered views to
   `ReductionDomain.input_shape`, and return `ReductionDomain.output_shape`.
 
-The Python Tensor API is at `src/molt/stdlib/tinygrad/`. It includes the Tensor class,
+The former Molt-owned Python Tensor API is quarantined at
+`demos/tinygrad/reference_stdlib/tinygrad/` for research/reference. Production
+tinygrad support must compile upstream tinygrad through package custody. The
+reference package includes the Tensor class,
 LazyBuffer, dtypes, TurboQuant (Remez-optimal quantization), DDTree (decision tree
 routing with additive log-probability scoring), and an intentional fail-closed
 `tinygrad.dflash` namespace reservation. Paper-faithful DFlash adapter semantics

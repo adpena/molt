@@ -28,7 +28,7 @@ the fail-closed corpus now.
 | **arXiv** | `arXiv:2602.06036v2` — <https://arxiv.org/abs/2602.06036> |
 | **official project** | DFlash, Z-Lab — <https://z-lab.ai/projects/dflash/> |
 | **molt contract layer** | `src/molt/gpu/dflash/{contracts,adapters}.py`; generic speculative protocol/loop primitives live in `src/molt/gpu/speculative.py` |
-| **molt mislabel guard** | `src/molt/stdlib/tinygrad/dflash.py` (fails closed: `tinygrad.dflash` raises `ImportError`) |
+| **molt mislabel guard** | `demos/tinygrad/dflash.py` (fails closed: `tinygrad.dflash` raises `ImportError`) |
 
 ### Primary-source verification (arXiv:2602.06036v2, refreshed 2026-06-25)
 
@@ -73,7 +73,7 @@ older prose snapshot.
   labeled "base DFlash" by a Molt adapter without explicit provenance.
 
 This provenance is the same revision cited by `src/molt/gpu/dflash/contracts.py`
-(module docstring) and `src/molt/stdlib/tinygrad/dflash.py`. DFlash is defined by
+(module docstring) and `demos/tinygrad/dflash.py`. DFlash is defined by
 that source as **target-conditioned block-diffusion drafting**: target hidden
 features are fused and injected into each draft layer's KV cache; drafting is
 conditioned on that target context and the last verified token, and the verified
@@ -212,7 +212,7 @@ here so the algorithm cannot be declared done without satisfying it.
     *named* unavailable adapter raises `LookupError` — never a generic fallback
     runtime;
   - `import tinygrad.dflash` raises `ImportError` pointing at `molt.gpu.dflash`
-    (`src/molt/stdlib/tinygrad/dflash.py`) — a generic helper cannot be
+    (`demos/tinygrad/dflash.py`) — a generic helper cannot be
     imported under the DFlash name.
 - **Status:** STRUCTURALLY ENFORCED + GATED (fail-closed corpus exercises every
   one of these typed refusals).
@@ -314,7 +314,7 @@ typed error, by `tests/gpu/dflash/test_dflash_fidelity.py`:
 | runtime/metadata draft contract mismatch | adapter declares `per_position_marginals` but returns the current linear `block_sequence` runtime | `ValueError("dflash runtime draft_output_contract does not match adapter metadata")` | `resolve_dflash_runtime` |
 | generic adapter returns non-runtime | adapter `create_runtime` returns a non-`DFlashRuntime` | `TypeError("dflash adapter create_runtime() must return DFlashRuntime")` | `build_dflash_runtime` |
 | named adapter unavailable | `build_dflash_runtime(…, dflash_adapter="x")` with no supporting adapter | `LookupError("dflash adapter 'x' is unavailable for this context")` | `build_dflash_runtime` |
-| mislabel guard | `import tinygrad.dflash` | `ImportError("tinygrad.dflash is not available: …")` (points at `molt.gpu.dflash`, names `tinygrad.speculative` as the generic alternative) | `src/molt/stdlib/tinygrad/dflash.py` |
+| mislabel guard | `import tinygrad.dflash` | `ImportError("tinygrad.dflash is not available: …")` (points at `molt.gpu.dflash`, names `tinygrad.speculative` as the generic alternative) | `demos/tinygrad/dflash.py` |
 
 ## Status legend
 
