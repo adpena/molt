@@ -543,39 +543,23 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
                 if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
                     // Copy as a new ListBoolStorage (preserves compact representation).
                     let elems = crate::object::layout::list_bool_vec_ref(list_ptr);
-                    let Some(storage_ptr) =
-                        crate::object::layout::ListBoolStorage::from_slice(elems.as_slice())
-                    else {
-                        return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+                    return match crate::object::builders::alloc_list_bool_from_raw_slice(
+                        _py,
+                        elems.as_slice(),
+                    ) {
+                        Ok(out_ptr) => MoltObject::from_ptr(out_ptr).bits(),
+                        Err(bits) => bits,
                     };
-                    let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
-                        + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
-                        + std::mem::size_of::<u64>();
-                    let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_BOOL);
-                    if out_ptr.is_null() {
-                        drop((*Box::from_raw(storage_ptr)).into_vec());
-                        return MoltObject::none().bits();
-                    }
-                    *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
-                    return MoltObject::from_ptr(out_ptr).bits();
                 }
                 if object_type_id(list_ptr) == TYPE_ID_LIST_INT {
                     let elems = crate::object::layout::list_int_vec_ref(list_ptr);
-                    let Some(storage_ptr) =
-                        crate::object::layout::ListIntStorage::from_slice(elems.as_slice())
-                    else {
-                        return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+                    return match crate::object::builders::alloc_list_int_from_raw_slice(
+                        _py,
+                        elems.as_slice(),
+                    ) {
+                        Ok(out_ptr) => MoltObject::from_ptr(out_ptr).bits(),
+                        Err(bits) => bits,
                     };
-                    let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
-                        + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
-                        + std::mem::size_of::<u64>();
-                    let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_INT);
-                    if out_ptr.is_null() {
-                        drop((*Box::from_raw(storage_ptr)).into_vec());
-                        return MoltObject::none().bits();
-                    }
-                    *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
-                    return MoltObject::from_ptr(out_ptr).bits();
                 }
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let elems = seq_vec_ref(list_ptr);
