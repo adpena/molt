@@ -485,6 +485,35 @@ passed `uv run --active --project . --python 3.12 python -m molt.cli build
 tests\harness\corpus\basic\hello.py` in 234.5s, producing the native hello
 binary.
 
+2026-07-08 C1 follow-up: pure text path helpers now live in
+`molt-runtime-platform::path_text`. The platform satellite owns join, split,
+basename/dirname, suffix/stem, normalization, relative-path, root splitting,
+raw-byte join, and variable-expansion text rules. `molt-runtime` keeps the
+PyObject conversion, capability checks, filesystem calls, glob iterator state,
+and error translation in `builtins/io_path_utils.rs`, plus a reexport of the
+single path-text authority for existing path/importlib consumers.
+
+Proof rows: first satellite row
+`20260708T052332-c1-platform-path-text-satellite-20260708a-18f967f05f4949d1`
+compiled and failed one new test because the test asserted POSIX separators
+while running the Windows path branch; `tools/proof_queue.py diagnose
+--append-note` recorded that as a Rust test failure. Corrected satellite row
+`20260708T052545-c1-platform-path-text-satellite-20260708b-0ec722a3f6bf4889`
+passed `cargo test -p molt-runtime-platform path_text -j1` in 20.8s. Dependent
+parent fan-in row
+`20260708T052618-c1-platform-path-text-fanin-20260708a-c66ece8e0b7e4af0`
+passed `cargo check -p molt-runtime --features stdlib_micro -j1` in 575.1s.
+The board-required real-build E2E row
+`20260708T053720-c1-platform-path-text-molt-build-e2e-20260708a-e7f127a007694df0`
+passed `python -m molt.cli build tests/differential/basic/module_metadata.py
+--target native --out-dir tmp/c1_path_text_e2e` in 830.7s. The timing is the
+C1 tax in plain numbers: the new authority proves in seconds, while parent
+integration and a tiny real build still spend minutes in the god-crate path.
+After rebasing over the TempArena resource split and WASM state-dispatch splits
+on `origin/main`, post-rebase fan-in row
+`20260708T055613-c1-platform-path-text-fanin-postrebase-20260708a-4a74e5f3bd7b48a4`
+passed `cargo check -p molt-runtime --features stdlib_micro -j1` in 74.7s.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
