@@ -8,6 +8,25 @@ import pytest
 import tools.compile_governor as compile_governor
 
 
+def test_compile_governor_authority_is_not_duplicated_in_runtime_async() -> None:
+    repo_root = Path(compile_governor.__file__).resolve().parents[1]
+    runtime_duplicate = (
+        repo_root
+        / "runtime"
+        / "molt-runtime"
+        / "src"
+        / "async_rt"
+        / "scheduler"
+        / "compile_governor.rs"
+    )
+    scheduler_mod = runtime_duplicate.with_name("mod.rs").read_text(encoding="utf-8")
+
+    assert not runtime_duplicate.exists()
+    assert "mod compile_governor;" not in scheduler_mod
+    assert "compile_rate_limiter" not in scheduler_mod
+    assert "CompileRateLimiter" not in scheduler_mod
+
+
 def test_load_1m_returns_none_when_getloadavg_absent(monkeypatch) -> None:
     """os.getloadavg does not exist on Windows. _load_1m must return None (the
     caller's "no load signal" contract), not let AttributeError escape and abort
