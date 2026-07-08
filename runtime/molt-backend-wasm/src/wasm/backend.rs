@@ -51,35 +51,67 @@ pub struct WasmCompileOutput {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WasmNumericLaneStats {
-    pub op_loop_inline_int_raw_results: usize,
-    pub op_loop_float_raw_results: usize,
-    pub op_loop_guarded_int_results: usize,
-    pub op_loop_boxed_runtime_calls: usize,
+    pub op_loop_additive_inline_int_raw_sites: usize,
+    pub op_loop_additive_float_raw_sites: usize,
+    pub op_loop_additive_guarded_int_sites: usize,
+    pub op_loop_additive_boxed_runtime_sites: usize,
+    pub op_loop_bitwise_inline_int_raw_sites: usize,
+    pub op_loop_bitwise_guarded_int_sites: usize,
+    pub op_loop_bitwise_boxed_runtime_sites: usize,
+    pub op_loop_division_guarded_int_sites: usize,
+    pub op_loop_division_boxed_runtime_sites: usize,
 }
 
 impl WasmNumericLaneStats {
     pub fn raw_result_total(self) -> usize {
-        self.op_loop_inline_int_raw_results + self.op_loop_float_raw_results
+        self.op_loop_additive_inline_int_raw_sites
+            + self.op_loop_additive_float_raw_sites
+            + self.op_loop_bitwise_inline_int_raw_sites
     }
 
     pub fn guarded_or_boxed_total(self) -> usize {
-        self.op_loop_guarded_int_results + self.op_loop_boxed_runtime_calls
+        self.op_loop_additive_guarded_int_sites
+            + self.op_loop_additive_boxed_runtime_sites
+            + self.op_loop_bitwise_guarded_int_sites
+            + self.op_loop_bitwise_boxed_runtime_sites
+            + self.op_loop_division_guarded_int_sites
+            + self.op_loop_division_boxed_runtime_sites
     }
 
-    pub(in crate::wasm) fn record_op_loop_inline_int_raw_result(&mut self) {
-        self.op_loop_inline_int_raw_results += 1;
+    pub(in crate::wasm) fn record_op_loop_additive_inline_int_raw_site(&mut self) {
+        self.op_loop_additive_inline_int_raw_sites += 1;
     }
 
-    pub(in crate::wasm) fn record_op_loop_float_raw_result(&mut self) {
-        self.op_loop_float_raw_results += 1;
+    pub(in crate::wasm) fn record_op_loop_additive_float_raw_site(&mut self) {
+        self.op_loop_additive_float_raw_sites += 1;
     }
 
-    pub(in crate::wasm) fn record_op_loop_guarded_int_result(&mut self) {
-        self.op_loop_guarded_int_results += 1;
+    pub(in crate::wasm) fn record_op_loop_additive_guarded_int_site(&mut self) {
+        self.op_loop_additive_guarded_int_sites += 1;
     }
 
-    pub(in crate::wasm) fn record_op_loop_boxed_runtime_call(&mut self) {
-        self.op_loop_boxed_runtime_calls += 1;
+    pub(in crate::wasm) fn record_op_loop_additive_boxed_runtime_site(&mut self) {
+        self.op_loop_additive_boxed_runtime_sites += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_bitwise_inline_int_raw_site(&mut self) {
+        self.op_loop_bitwise_inline_int_raw_sites += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_bitwise_guarded_int_site(&mut self) {
+        self.op_loop_bitwise_guarded_int_sites += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_bitwise_boxed_runtime_site(&mut self) {
+        self.op_loop_bitwise_boxed_runtime_sites += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_division_guarded_int_site(&mut self) {
+        self.op_loop_division_guarded_int_sites += 1;
+    }
+
+    pub(in crate::wasm) fn record_op_loop_division_boxed_runtime_site(&mut self) {
+        self.op_loop_division_boxed_runtime_sites += 1;
     }
 }
 

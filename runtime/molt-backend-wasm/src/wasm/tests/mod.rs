@@ -42,10 +42,6 @@ fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> OpIR {
     }
 }
 
-fn wasm_compile_final_ir_for_op_loop_tests(ir: SimpleIR) -> Vec<u8> {
-    wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir).wasm
-}
-
 fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir: SimpleIR) -> WasmCompileOutput {
     let multi_return_candidates = detect_multi_return_candidates(&ir);
     let trampoline_analysis =

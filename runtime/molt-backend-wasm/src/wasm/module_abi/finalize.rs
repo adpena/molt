@@ -40,8 +40,8 @@ impl WasmBackend {
         } else {
             BTreeSet::new()
         };
-        let module_finish_start = Instant::now();
         let diagnostics = self.compile_diagnostics();
+        let module_finish_start = Instant::now();
         let mut bytes = self.module.finish();
         emit_wasm_stage_audit(
             "after-module-finish",
@@ -146,11 +146,17 @@ impl WasmBackend {
             self.tail_calls_emitted
         );
         eprintln!(
-            "[molt-wasm-import-audit] numeric lanes: op_loop_inline_int_raw_results={} op_loop_float_raw_results={} op_loop_guarded_int_results={} op_loop_boxed_runtime_calls={}",
-            self.numeric_lane_stats.op_loop_inline_int_raw_results,
-            self.numeric_lane_stats.op_loop_float_raw_results,
-            self.numeric_lane_stats.op_loop_guarded_int_results,
-            self.numeric_lane_stats.op_loop_boxed_runtime_calls,
+            "[molt-wasm-import-audit] numeric lanes: op_loop_additive_inline_int_raw_sites={} op_loop_additive_float_raw_sites={} op_loop_additive_guarded_int_sites={} op_loop_additive_boxed_runtime_sites={} op_loop_bitwise_inline_int_raw_sites={} op_loop_bitwise_guarded_int_sites={} op_loop_bitwise_boxed_runtime_sites={} op_loop_division_guarded_int_sites={} op_loop_division_boxed_runtime_sites={}",
+            self.numeric_lane_stats
+                .op_loop_additive_inline_int_raw_sites,
+            self.numeric_lane_stats.op_loop_additive_float_raw_sites,
+            self.numeric_lane_stats.op_loop_additive_guarded_int_sites,
+            self.numeric_lane_stats.op_loop_additive_boxed_runtime_sites,
+            self.numeric_lane_stats.op_loop_bitwise_inline_int_raw_sites,
+            self.numeric_lane_stats.op_loop_bitwise_guarded_int_sites,
+            self.numeric_lane_stats.op_loop_bitwise_boxed_runtime_sites,
+            self.numeric_lane_stats.op_loop_division_guarded_int_sites,
+            self.numeric_lane_stats.op_loop_division_boxed_runtime_sites,
         );
 
         let total_data_bytes = self.data_segments.total_data_bytes();
