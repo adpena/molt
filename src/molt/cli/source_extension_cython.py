@@ -236,18 +236,116 @@ def provision_cython(
     return version, None
 
 
+# Cython's bundled cimport namespaces (shipped in ``Cython/Includes``) resolve
+# without a site-packages ``-I``; they must never be treated as installed-package
+# cimport dependencies.
+_CYTHON_BUILTIN_CIMPORT_ROOTS = frozenset(
+    {"cpython", "libc", "libcpp", "cython", "posix", "openmp"}
+)
+
+# A ``cimport X`` / ``from X cimport ...`` statement. Group 1 = the ``from`` module,
+# group 2 = the bare ``cimport`` target. Leading-dot (relative) forms are handled
+# by the caller (they need no external ``-I``).
+_CIMPORT_RE = re.compile(
+    r"^[ \t]*(?:from[ \t]+([.\w]+)[ \t]+cimport\b|cimport[ \t]+([.\w]+))",
+    re.MULTILINE,
+)
+
+
+def _parse_cimported_packages(pyx_path: Path) -> tuple[str, ...]:
+    """Top-level installed packages a ``.pyx`` (and its sibling ``.pxd``) ``cimport``s.
+
+    Cython resolves ``cimport numpy`` by finding ``numpy/__init__.pxd`` on a ``-I``
+    dir. The set of packages that must be resolvable is DERIVED FROM THE SOURCE —
+    every distinct top-level name in a ``cimport`` — so the include surface is
+    correct for ANY cimport dependency, not a hard-coded per-package list. Relative
+    cimports (leading ``.``) and Cython's bundled namespaces
+    (cpython/libc/libcpp/...) are excluded: they need no site-packages ``-I``.
+    """
+    names: set[str] = set()
+    scan: list[Path] = [pyx_path]
+    if pyx_path.parent.is_dir():
+        scan.extend(sorted(pyx_path.parent.glob("*.pxd")))
+    for src in scan:
+        try:
+            text = src.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for match in _CIMPORT_RE.finditer(text):
+            module = match.group(1) or match.group(2) or ""
+            if not module or module.startswith("."):
+                continue
+            top = module.split(".", 1)[0]
+            if top and top not in _CYTHON_BUILTIN_CIMPORT_ROOTS:
+                names.add(top)
+    return tuple(sorted(names))
+
+
+def _cimport_pxd_roots(interpreter: str, packages: Sequence[str]) -> tuple[Path, ...]:
+    """Install-parent dirs of ``packages`` that ship a top-level ``__init__.pxd``.
+
+    Cython resolves ``cimport numpy`` by searching the ``-I`` dirs for
+    ``numpy/__init__.pxd`` — which ships INSIDE the installed numpy package
+    (``<site-packages>/numpy/__init__.pxd``), NOT in ``numpy.get_include()``
+    (that dir holds only the C headers). Standalone ``python -m cython`` with only
+    the C-header dir on ``-I`` therefore fails to resolve ``cimport numpy``:
+    ``np.uintp_t`` binds to ``None`` and Cython 3.1+ crashes in
+    ``MethodDispatcherTransform`` on the first typed-memoryview subscript with a
+    variable index (e.g. scipy ``_ni_label.pyx``). Pinning an older Cython only
+    MASKS the crash (it emits different, untrustworthy C) — a fail-open, not a fix.
+    The structural fix: for each source-declared cimport dependency, put its
+    install PARENT on ``-I`` so ``<pkg>/__init__.pxd`` resolves against the exact
+    package the build interpreter will import. Fail-safe: packages that are not
+    installed, or ship no top-level ``.pxd``, are skipped — never breaking a build
+    for a pure-C or bundled-namespace cimport.
+    """
+    if not packages:
+        return ()
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for pkg in packages:
+        probe = (
+            "import importlib.util, os\n"
+            f"spec = importlib.util.find_spec({pkg!r})\n"
+            "locs = getattr(spec, 'submodule_search_locations', None) if spec else None\n"
+            "pkg_dir = (list(locs)[0] if locs else None)\n"
+            "print(os.path.dirname(pkg_dir) if pkg_dir and "
+            "os.path.exists(os.path.join(pkg_dir, '__init__.pxd')) else '')\n"
+        )
+        try:
+            completed = subprocess.run(
+                [interpreter, "-c", probe],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        parent = completed.stdout.strip()
+        if not parent:
+            continue
+        resolved = Path(parent).resolve()
+        if resolved not in seen and resolved.is_dir():
+            seen.add(resolved)
+            roots.append(resolved)
+    return tuple(roots)
+
+
 def _cython_include_dirs(
     *,
     pyx_path: Path,
     plan_include_dirs: Sequence[Path],
+    cimport_pxd_roots: Sequence[Path] = (),
 ) -> tuple[Path, ...]:
     """Include (``.pxd``/``.pxi``) search paths for standalone regeneration.
 
-    Cython resolves ``cimport`` / ``include`` against ``-I`` dirs. The package's
-    own source tree (the ``.pyx`` directory and its package roots) plus any
-    plan-declared include dirs form the search surface. numpy's ``.pxd`` ships
-    with the installed numpy that Cython imports, so it is found without an
-    explicit ``-I``.
+    Cython resolves ``cimport`` / ``include`` against ``-I`` dirs. The search
+    surface is the union of: the package's own source tree (the ``.pyx`` directory
+    and its package roots), any plan-declared include dirs, and the install parents
+    of cimport-able dependencies that ship a ``__init__.pxd`` (``cimport_pxd_roots``
+    — derived from the source via :func:`_parse_cimported_packages` and resolved by
+    :func:`_cimport_pxd_roots`). numpy's ``.pxd`` does NOT resolve without an
+    explicit ``-I`` to its package parent.
     """
     dirs: list[Path] = []
     seen: set[Path] = set()
@@ -268,6 +366,9 @@ def _cython_include_dirs(
             break
     for include_dir in plan_include_dirs:
         add(Path(include_dir))
+    # Source-declared cimport dependencies (numpy/__init__.pxd for `cimport numpy`).
+    for pxd_root in cimport_pxd_roots:
+        add(Path(pxd_root))
     return tuple(dirs)
 
 
@@ -293,6 +394,9 @@ def regenerate_cython_c_standalone(
     resolved_includes = _cython_include_dirs(
         pyx_path=pyx_path,
         plan_include_dirs=include_dirs,
+        cimport_pxd_roots=_cimport_pxd_roots(
+            interpreter, _parse_cimported_packages(pyx_path)
+        ),
     )
     argv: list[str] = [interpreter, "-m", "cython", "-3"]
     if is_cpp:
@@ -314,10 +418,19 @@ def regenerate_cython_c_standalone(
             f"standalone: {exc}"
         )
     if result.returncode != 0 or not regenerated_c.is_file():
-        detail = (result.stderr or result.stdout or "").strip().splitlines()
-        tail = detail[-1] if detail else f"exit code {result.returncode}"
+        # Preserve the FULL Cython diagnostic (traceback + message), not just the
+        # last line: Cython crashes (e.g. the MethodDispatcherTransform failure on
+        # an unresolved `cimport numpy`) put the actionable cause in the traceback,
+        # and keeping only stderr[-1] hid it as an "unclassified" failure. Cap the
+        # captured text so a runaway log can't dominate the diagnostic.
+        detail = (result.stderr or result.stdout or "").strip()
+        if not detail:
+            detail = f"exit code {result.returncode}"
+        elif len(detail) > 8000:
+            detail = detail[:4000] + "\n...[truncated]...\n" + detail[-4000:]
         return None, (
-            f"Standalone `cython -3` regeneration of {pyx_path.name} failed: {tail}"
+            f"Standalone `cython -3` regeneration of {pyx_path.name} failed "
+            f"(argv: {' '.join(argv)}):\n{detail}"
         )
     return (
         CythonRegeneration(
