@@ -1,4 +1,5 @@
 use crate::PyToken;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{PtrSlot, obj_from_bits, ptr_from_bits, runtime_state, to_i64};
 use std::time::{Duration, Instant};
 
@@ -7,6 +8,7 @@ use crate::{IoPoller, ProcessTaskState, ThreadTaskState};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::{process_task_state, task_waiting_on, thread_task_state};
 
 #[cfg(not(target_arch = "wasm32"))]
