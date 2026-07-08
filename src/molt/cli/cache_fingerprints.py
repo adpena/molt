@@ -271,6 +271,112 @@ def _frontend_tooling_source_paths(project_root: Path) -> list[Path]:
     return list(_frontend_tooling_source_paths_cached(os.fspath(project_root)))
 
 
+# Molt-owned frontend source files that are shared by *every* frontend phase
+# (import scan, analysis, lowering) yet live outside cli/ and frontend/.
+_FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
+    "type_facts.py",
+    "capabilities.py",
+    "capability_manifest.py",
+    "compat.py",
+    "_wasm_runtime_exports.py",
+)
+
+
+# ``cli/*.py`` modules that run strictly AFTER the frontend has produced its
+# import-scan / analysis / lowering result -- backend codegen, native/wasm
+# linking and artifact staging -- or are orthogonal build machinery (the backend
+# daemon, cargo/toolchain provisioning, packaging, SBOM/signing, the dx/queue CLI
+# surface, and terminal output formatting). None of them can change *what* a
+# module lowers to; they only consume a finished lowering or manage the build
+# environment. An edit to any of them must therefore NOT invalidate the persisted
+# per-module frontend caches (analysis, lowering, import graph), which is exactly
+# the needless cold-start the ranked witness modules pay today when unrelated
+# CLI/runtime/link code is touched.
+#
+# Membership is deliberately CONSERVATIVE: a file belongs here only when it
+# provably cannot alter a frontend result. Anything that participates in module
+# resolution, import admission, capability/type facts, native-export discovery,
+# or frontend compute -- or whose role is uncertain -- is intentionally *omitted*
+# so it keeps invalidating the caches. Over-scoping (a spurious invalidation) is a
+# harmless perf cost; under-scoping (reusing a stale lowering) is a miscompile, so
+# the bias is strictly toward inclusion.
+_POST_LOWERING_ORTHOGONAL_CLI_BASENAMES: frozenset[str] = frozenset(
+    {
+        "backend_binary.py",
+        "backend_cache.py",
+        "backend_cache_setup.py",
+        "backend_compile.py",
+        "backend_daemon_config.py",
+        "backend_daemon_logs.py",
+        "backend_daemon_paths.py",
+        "backend_daemon_startup.py",
+        "backend_diagnostics.py",
+        "backend_execution.py",
+        "backend_ir.py",
+        "backend_output_pipeline.py",
+        "backend_pipeline.py",
+        "binary_image_analysis.py",
+        "cargo_execution.py",
+        "cargo_profiles.py",
+        "completion.py",
+        "dx_cli.py",
+        # NOTE: external_native.py is NOT orthogonal — frontend_pipeline imports its
+        # `_resolve_import_admission_policy`, which feeds `direct_call_modules`, a
+        # lowering-affecting input (native-direct-call vs Python-call lowering).
+        # Excluding it would risk STALE lowering (miscompile). Kept in scope.
+        "link_pipeline.py",
+        "maintenance.py",
+        "mlir_backend.py",
+        "native_binary.py",
+        "native_link_command.py",
+        "native_link_deps.py",
+        "native_main_stub.py",
+        "native_toolchain.py",
+        "non_native_output.py",
+        "queue_cli.py",
+        "runtime_build.py",
+        "runtime_wasm_cache.py",
+        "runtime_wasm_validation.py",
+        "sbom.py",
+        "signing.py",
+        "wasm.py",
+        "wasm_toolchain.py",
+    }
+)
+
+
+def _frontend_semantic_tooling_source_paths(project_root: Path) -> list[Path]:
+    """Source paths the persisted per-module *frontend* caches must key on.
+
+    This is the ``_frontend_tooling_source_paths`` closure MINUS the post-lowering
+    / orthogonal ``cli/*.py`` modules named in
+    ``_POST_LOWERING_ORTHOGONAL_CLI_BASENAMES``. The whole ``frontend/`` tree is
+    kept intact: its subpackages (``visitors``, ``sema``, ``lowering``) import one
+    another, so no subtree can be soundly excluded from one phase without risking
+    a stale result. The single sound reduction is dropping the CLI files that
+    provably run after (or beside) lowering.
+
+    The import-scan, analysis, and lowering caches all key on this one set: each
+    phase depends on the frontend semantic tooling and is independent of the
+    orthogonal backend/link/toolchain tooling, so they share the identical sound
+    scope. Keeping this as one authority (rather than three coincidentally-equal
+    lists) preserves a single source of truth for the cache identity.
+
+    ``cli/*.py`` is enumerated on every call so that a newly-added CLI module is
+    included by default (and therefore keeps invalidating the caches) unless it is
+    explicitly classified as orthogonal above -- the fail-safe direction.
+    """
+    molt_root = project_root / "src" / "molt"
+    cli_root = molt_root / "cli"
+    paths: list[Path] = [molt_root / "frontend"]
+    for cli_file in sorted(cli_root.glob("*.py"), key=lambda candidate: str(candidate)):
+        if cli_file.name in _POST_LOWERING_ORTHOGONAL_CLI_BASENAMES:
+            continue
+        paths.append(cli_file)
+    paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
+    return paths
+
+
 def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
     return tuple(
         str(path.resolve())
@@ -427,5 +533,24 @@ def _cache_tooling_fingerprint() -> str:
         root=root,
         source_paths=_frontend_tooling_source_paths(root),
         scope="frontend-tooling",
+        extra_fingerprint_inputs="",
+    )
+
+
+def _frontend_semantic_tooling_fingerprint() -> str:
+    """Tooling fingerprint for the per-module frontend caches.
+
+    Identical in construction to ``_cache_tooling_fingerprint`` but over the
+    lowering-relevant scope only (see ``_frontend_semantic_tooling_source_paths``),
+    so an unrelated backend/link/daemon/cargo/toolchain edit does not cold-start a
+    module's persisted analysis / lowering / import-graph entry. The distinct
+    ``scope`` tag keeps this digest namespace-separated from the broad
+    ``frontend-tooling`` fingerprint.
+    """
+    root = _compiler_root()
+    return _source_tree_cache_fingerprint(
+        root=root,
+        source_paths=_frontend_semantic_tooling_source_paths(root),
+        scope="frontend-semantic-tooling",
         extra_fingerprint_inputs="",
     )

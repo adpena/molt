@@ -13,7 +13,7 @@ from molt.cli.backend_cache import (
     _read_artifact_sync_state,
     _write_artifact_sync_payload,
 )
-from molt.cli.cache_fingerprints import _cache_tooling_fingerprint
+from molt.cli.cache_fingerprints import _frontend_semantic_tooling_fingerprint
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
@@ -125,7 +125,7 @@ def _import_scan_cache_path(
         "pkg" if is_package else "mod",
         import_scan_mode,
         target_python.tag,
-        _cache_tooling_fingerprint(),
+        _frontend_semantic_tooling_fingerprint(),
     ]
     if capability_config_digest:
         key_parts.append(f"capability_config={capability_config_digest}")
@@ -169,7 +169,7 @@ def _module_graph_cache_path(
             import_admission_policy,
             allow_entry_external_imports=allow_entry_external_imports,
         ),
-        _cache_tooling_fingerprint(),
+        _frontend_semantic_tooling_fingerprint(),
         target_python.tag,
         capability_config_digest=capability_config_digest,
     )
@@ -214,7 +214,8 @@ def _read_persisted_module_graph(
     if (
         not isinstance(payload, dict)
         or payload.get("version") != _MODULE_GRAPH_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+        or payload.get("compiler_fingerprint")
+        != _frontend_semantic_tooling_fingerprint()
         or payload.get("capability_config_digest", "") != capability_config_digest
     ):
         return None
@@ -310,7 +311,7 @@ def _write_persisted_module_graph(
         )
     payload = {
         "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
-        "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "capability_config_digest": capability_config_digest,
         "modules": modules,
         "explicit_imports": sorted(explicit_imports),
@@ -359,7 +360,8 @@ def _read_persisted_import_scan(
         return None
     if (
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+        or payload.get("compiler_fingerprint")
+        != _frontend_semantic_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
         or payload.get("capability_config_digest", "") != capability_config_digest
     ):
@@ -405,7 +407,7 @@ def _write_persisted_import_scan(
         return
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
-        "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "capability_config_digest": capability_config_digest,
         "module_name": module_name,
         "is_package": is_package,

@@ -165,6 +165,7 @@ from molt.cli.cache_fingerprints import (
     _backend_source_paths,
     _cache_fingerprint,
     _cache_tooling_fingerprint,
+    _frontend_semantic_tooling_fingerprint,
 )
 from molt.cli.cache_keys import (
     _cache_backend_payload_ir,
