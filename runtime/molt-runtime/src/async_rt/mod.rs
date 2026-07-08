@@ -46,10 +46,9 @@ pub(crate) use cancellation::{
 
 #[allow(unused_imports)]
 pub(crate) use scheduler::{
-    AsyncHangProbe, CURRENT_TASK, CompileGovernorSnapshot, CompileRateLimiter, MoltScheduler,
-    MoltTask, OptLevel, SleepQueue, async_trace_enabled, asyncgen_registry, await_waiter_clear,
-    await_waiter_register, await_waiters, block_on_wait_spec, compile_rate_limiter,
-    current_task_key, current_task_ptr, fn_ptr_code_get, fn_ptr_code_set,
+    AsyncHangProbe, CURRENT_TASK, MoltScheduler, MoltTask, SleepQueue, async_trace_enabled,
+    asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
+    block_on_wait_spec, current_task_key, current_task_ptr, fn_ptr_code_get, fn_ptr_code_set,
     instant_from_monotonic_secs, molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
     molt_asyncio_child_watcher_pop, molt_asyncio_child_watcher_remove, molt_asyncio_enter_task,
     molt_asyncio_event_loop_get, molt_asyncio_event_loop_get_current,

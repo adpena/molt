@@ -50,11 +50,6 @@ mod block_wait;
 pub(crate) use block_wait::block_on_wait_spec;
 use block_wait::{BLOCK_ON_MAX_WAIT, BLOCK_ON_MIN_SLEEP, BlockOnWaitSpec, block_on_poll_timeout};
 
-mod compile_governor;
-pub(crate) use compile_governor::{
-    CompileGovernorSnapshot, CompileRateLimiter, OptLevel, compile_rate_limiter,
-};
-
 mod sleep_queue;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use sleep_queue::sleep_worker;
