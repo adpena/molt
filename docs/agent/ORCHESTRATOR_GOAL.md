@@ -24,6 +24,15 @@ proof — a bare `molt build field_solve.py` is build evidence, not acceptance.
 
 ## Non-negotiables (verbatim, binding)
 
+- OWNERSHIP GATE (operator's #1 recurring demand). Reporting/planning/handing-off
+  without LANDING is POISON. Before ending any work turn, self-audit: did I land a
+  commit on origin/main, queue/detach a proof with a run id, or make a test pass —
+  or name a genuinely external/frozen/user-owned blocker precisely? If executable
+  work remained in the owned lane and I produced no artifact, that is a violation:
+  go back and DO it. Burn down blockers foundational -> highest dimension, landing
+  at each layer before climbing. Verify claims by running the FULL relevant surface,
+  not a slice ("landed + verified" with an unrun RED test is the exact sin). Binds
+  the orchestrator AND every spawned agent; carry it in every spawn prompt.
 - No Python reimplementation of NumPy/SciPy behavior.
 - No host-CPython/Pyodide fallback.
 - No fake `module__function` symbols from known_modules.
