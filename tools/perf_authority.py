@@ -35,9 +35,13 @@ is the only lane permitted to emit ``authoritative=true``. See
 from __future__ import annotations
 
 import datetime as dt
+import functools
+import shlex
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
@@ -52,9 +56,16 @@ from molt.metric_ratios import (  # noqa: E402
     signed_ratio as signed_ratio,
     signed_ratio_value as signed_ratio_value,
 )
+import perf_schema as perf_schema  # noqa: E402
 
 __all__ = [
     "CANONICAL_GATE",
+    "CANONICAL_PERF_BACKENDS",
+    "CANONICAL_PERF_PROFILE",
+    "CANONICAL_PERF_REPEAT",
+    "CANONICAL_PERF_SAMPLES",
+    "CANONICAL_PERF_SET",
+    "CANONICAL_PERF_WARMUP",
     "CONTRACT_PROFILE",
     "DEFAULT_STALE_DAYS",
     "STALE_BANNER",
@@ -62,6 +73,8 @@ __all__ = [
     "STALE_METADATA_KEY",
     "RatioDirection",
     "budget_utilization",
+    "canonical_scoreboard_command_problems",
+    "canonical_scoreboard_shape_problems",
     "doc_age_days",
     "git_rev_is_ancestor_of_origin",
     "is_stale_snapshot_metadata",
@@ -86,6 +99,23 @@ CANONICAL_GATE = (
 # profile; the non-canonical lanes are never authoritative regardless of
 # profile, but we record the actual profile so the stamp is honest.
 CONTRACT_PROFILE = "release-fast"
+CANONICAL_PERF_SET = "core"
+CANONICAL_PERF_BACKENDS = frozenset({"native", "llvm"})
+CANONICAL_PERF_PROFILE = CONTRACT_PROFILE
+CANONICAL_PERF_SAMPLES = "5"
+CANONICAL_PERF_WARMUP = "2"
+CANONICAL_PERF_REPEAT = "5"
+CANONICAL_PERF_BINARY_IDENTITIES = frozenset(
+    f"{backend}/{CANONICAL_PERF_PROFILE}" for backend in CANONICAL_PERF_BACKENDS
+)
+_CANONICAL_PERF_FORBIDDEN_FLAGS = frozenset(
+    {
+        "--allow-nonauthoritative",
+        "--no-gate",
+        "--sample-hot-only",
+        "--self-test",
+    }
+)
 
 # Default staleness horizon for perf docs (days). A markdown perf snapshot
 # older than this - OR whose git_rev is not an ancestor of origin/main - is
@@ -173,6 +203,11 @@ def _git_output(args: list[str]) -> str | None:
     return out or None
 
 
+@functools.lru_cache(maxsize=1)
+def _origin_main_rev() -> str | None:
+    return _git_output(["rev-parse", "origin/main"])
+
+
 def non_canonical_provenance(
     *,
     profile: str,
@@ -205,6 +240,205 @@ def non_canonical_provenance(
     }
 
 
+def _command_tokens(command: str) -> tuple[str, ...]:
+    try:
+        raw = shlex.split(command, posix=False)
+    except ValueError:
+        raw = command.split()
+    return tuple(part.strip("'\"") for part in raw if part.strip("'\""))
+
+
+def _flag_values(tokens: Sequence[str], flag: str) -> tuple[str, ...]:
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token == flag:
+            if index + 1 < len(tokens):
+                values.append(tokens[index + 1])
+        elif token.startswith(f"{flag}="):
+            values.append(token.split("=", 1)[1])
+    return tuple(values)
+
+
+def _has_flag(tokens: Sequence[str], flag: str) -> bool:
+    return any(token == flag or token.startswith(f"{flag}=") for token in tokens)
+
+
+def _command_names_perf_scoreboard(tokens: Sequence[str]) -> bool:
+    for token in tokens:
+        normalized = token.replace("\\", "/").lower()
+        if (
+            normalized == "perf_scoreboard.py"
+            or normalized.endswith("/perf_scoreboard.py")
+        ):
+            return True
+    return False
+
+
+def canonical_scoreboard_command_problems(
+    command: str,
+    *,
+    label: str = "perf receipt",
+) -> list[str]:
+    """Return problems proving ``command`` is not the canonical perf gate.
+
+    This keeps release gates, docs gates, and future queue receipt consumers on
+    the same definition of citable release performance evidence.
+    """
+    tokens = _command_tokens(command)
+    problems: list[str] = []
+
+    if not _command_names_perf_scoreboard(tokens):
+        problems.append(f"{label} must run tools/perf_scoreboard.py")
+
+    sets = set(_flag_values(tokens, "--set"))
+    if CANONICAL_PERF_SET not in sets:
+        problems.append(f"{label} must include --set {CANONICAL_PERF_SET}")
+
+    backends = set(_flag_values(tokens, "--backend"))
+    missing_backends = sorted(CANONICAL_PERF_BACKENDS - backends)
+    if missing_backends:
+        problems.append(
+            f"{label} missing canonical backends: "
+            f"{', '.join(missing_backends)}"
+        )
+
+    profiles = set(_flag_values(tokens, "--profile"))
+    if profiles != {CANONICAL_PERF_PROFILE}:
+        got = ", ".join(sorted(profiles)) if profiles else "<none>"
+        problems.append(
+            f"{label} must use only --profile {CANONICAL_PERF_PROFILE}; "
+            f"got {got}"
+        )
+
+    required_singletons = {
+        "--samples": CANONICAL_PERF_SAMPLES,
+        "--warmup": CANONICAL_PERF_WARMUP,
+        "--repeat": CANONICAL_PERF_REPEAT,
+    }
+    for flag, required in required_singletons.items():
+        values = set(_flag_values(tokens, flag))
+        if values != {required}:
+            got = ", ".join(sorted(values)) if values else "<none>"
+            problems.append(
+                f"{label} must include {flag} {required}; got {got}"
+            )
+
+    for flag in ("--classify", "--require-quiescent"):
+        if not _has_flag(tokens, flag):
+            problems.append(f"{label} missing {flag}")
+
+    forbidden = sorted(
+        flag for flag in _CANONICAL_PERF_FORBIDDEN_FLAGS if _has_flag(tokens, flag)
+    )
+    if forbidden:
+        problems.append(
+            f"{label} uses non-release perf flags: {', '.join(forbidden)}"
+        )
+
+    return problems
+
+
+def _cell_label(cell: Mapping[str, Any]) -> str:
+    return (
+        f"{cell.get('benchmark')}"
+        f"[{cell.get('target')}/{cell.get('backend')}/{cell.get('profile')}]"
+    )
+
+
+def canonical_scoreboard_shape_problems(
+    doc: Mapping[str, Any],
+    *,
+    label: str = "perf scoreboard",
+) -> list[str]:
+    """Return problems proving a scoreboard is not the canonical release shape."""
+    problems: list[str] = []
+    cells = perf_schema.flatten_cells(doc)
+    if not cells:
+        return problems
+
+    summary = doc.get("summary")
+    if not isinstance(summary, Mapping) or summary.get("classify_active") is not True:
+        problems.append(f"{label} must be generated with --classify")
+
+    provenance = doc.get("provenance")
+    binary_identities = (
+        provenance.get("backend_binary_identity")
+        if isinstance(provenance, Mapping)
+        else None
+    )
+    if not isinstance(binary_identities, Mapping):
+        problems.append(f"{label} lacks backend binary identities")
+    else:
+        missing = sorted(CANONICAL_PERF_BINARY_IDENTITIES - set(binary_identities))
+        if missing:
+            problems.append(
+                f"{label} missing backend binary identities: {', '.join(missing)}"
+            )
+        non_strings = sorted(
+            key
+            for key in CANONICAL_PERF_BINARY_IDENTITIES & set(binary_identities)
+            if not isinstance(binary_identities.get(key), str)
+            or not str(binary_identities.get(key)).strip()
+        )
+        if non_strings:
+            problems.append(
+                f"{label} backend binary identities must be non-empty strings for: "
+                f"{', '.join(non_strings)}"
+            )
+
+    unexpected = [
+        _cell_label(cell)
+        for cell in cells
+        if cell.get("backend") not in CANONICAL_PERF_BACKENDS
+        or cell.get("profile") != CANONICAL_PERF_PROFILE
+    ]
+    if unexpected:
+        sample = ", ".join(unexpected[:5])
+        if len(unexpected) > 5:
+            sample += f", ... {len(unexpected) - 5} more"
+        problems.append(
+            f"{label} may only contain native+llvm "
+            f"{CANONICAL_PERF_PROFILE} cells; unexpected: {sample}"
+        )
+
+    by_benchmark: dict[str, set[str]] = {}
+    for cell in cells:
+        benchmark = cell.get("benchmark")
+        backend = cell.get("backend")
+        profile = cell.get("profile")
+        if (
+            isinstance(benchmark, str)
+            and isinstance(backend, str)
+            and backend in CANONICAL_PERF_BACKENDS
+            and profile == CANONICAL_PERF_PROFILE
+        ):
+            by_benchmark.setdefault(benchmark, set()).add(backend)
+
+    if not by_benchmark:
+        problems.append(
+            f"{label} contains no native+llvm {CANONICAL_PERF_PROFILE} "
+            "benchmark cells"
+        )
+    else:
+        missing_rows = [
+            f"{benchmark} missing "
+            f"{', '.join(sorted(CANONICAL_PERF_BACKENDS - backends))}"
+            for benchmark, backends in sorted(by_benchmark.items())
+            if CANONICAL_PERF_BACKENDS - backends
+        ]
+        if missing_rows:
+            sample = "; ".join(missing_rows[:5])
+            if len(missing_rows) > 5:
+                sample += f"; ... {len(missing_rows) - 5} more"
+            problems.append(
+                f"{label} must include both native and llvm "
+                f"{CANONICAL_PERF_PROFILE} cells for every benchmark; {sample}"
+            )
+
+    return problems
+
+
+@functools.lru_cache(maxsize=512)
 def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     """Is ``git_rev`` an ancestor of (or equal to) ``origin/main``?
 
@@ -215,7 +449,7 @@ def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     """
     if not git_rev or git_rev == "unknown":
         return None
-    origin = _git_output(["rev-parse", "origin/main"])
+    origin = _origin_main_rev()
     if origin is None:
         return None
     # `git merge-base --is-ancestor A B` exits 0 iff A is an ancestor of B
