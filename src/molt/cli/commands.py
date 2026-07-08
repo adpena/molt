@@ -2538,7 +2538,26 @@ def extension_build(
                         command="extension-build",
                     )
                 assert cython_version is not None
-                cython_out_dir = build_tmp / "cython_standalone"
+                # Stage the STANDALONE-regenerated Cython C into the source
+                # plan's build_root (a stable, persistent source-plan relocation
+                # root), NOT the ephemeral per-build TemporaryDirectory. The
+                # object_closure records each object's ``source`` at the path we
+                # compile, and the seal validator relativizes/resolves that path
+                # only when it lives under source_plan.source_root/build_root
+                # (source_extensions._manifest_source_plan_relocation_roots). A
+                # TemporaryDirectory under output_root is deleted when this
+                # ``with`` block exits and is outside every relocation root, so
+                # the recorded source became unresolvable and the sealed witness
+                # root failed closed at scipy custody. build_root is the same
+                # stable home numpy's meson lane records generated sources
+                # against (it holds the meson-generated C already), so the
+                # regenerated Cython C relativizes to
+                # ``molt_cython_standalone/<stem>.c`` and resolves at witness
+                # time. build_root persists across builds; only source_root (the
+                # vendored package tree) is off-limits for generated outputs.
+                cython_out_dir = (
+                    loaded_source_plan.build_root / "molt_cython_standalone"
+                )
                 for original_c, pyx_path in cython_targets:
                     plan_include_dirs = [
                         unit.include_dirs
