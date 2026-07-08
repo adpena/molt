@@ -10,9 +10,13 @@ Last updated: 2026-07-08 by the orchestrator.
 ## 🚀 DEV-VELOCITY PROTOCOL (2026-07-08 CURRENT) — Codex: REBASE, then COMPLY
 
 The orchestrator landed a full dev-velocity overhaul on origin/main. **Every Codex
-agent + worktree MUST `git fetch origin && git rebase origin/main` before the next
-arc.** A stale base runs the OLD slow CLI (the editable install was 477 commits
-stale — 2 jobs, incremental off, cold-every-session) and re-lands resolved defects.
+agent + worktree MUST (1) `git fetch origin && git rebase origin/main`, AND (2)
+RE-READ `AGENTS.md` + `docs/agent/AGENTS.full.md` before the next arc — your
+contract CHANGED (artifact volume → `C:\Molt` NVMe, auto-janitor default, this
+protocol). A cached/stale understanding of AGENTS.md will fight the new setup
+(e.g. routing artifacts back to the slow D:/E: exFAT).** A stale base also runs the
+OLD slow CLI (the editable install was 477 commits stale — 2 jobs, incremental off,
+cold-every-session) and re-lands resolved defects.
 
 LANDED — all active in the current CLI (rebase to get them):
 - **Adaptive cargo jobs (2→14)** `ad0cafb82` — hardcoded 2 was defeating the
