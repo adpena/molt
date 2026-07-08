@@ -128,6 +128,8 @@ jobs:
               --repeat 5 \
               --classify \
               --require-quiescent \
+              --quiescence-wait-s 180 \
+              --quiescence-poll-s 15 \
               --print-provenance \
               --out "bench/scoreboard/cpython_ci_${{ matrix.backend }}.json"
 

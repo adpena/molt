@@ -1372,6 +1372,71 @@ def test_gather_quiescence_runnable_storm_flags_contention(monkeypatch) -> None:
     assert any("runnable" in r for r in q["reasons"])
 
 
+def test_wait_for_quiescence_returns_immediate_quiet_sample(monkeypatch) -> None:
+    quiet = {"quiet": True, "reasons": [], "loadavg_1m": 2.0}
+    monkeypatch.setattr(ps, "gather_quiescence", lambda: dict(quiet))
+    sleeps: list[float] = []
+
+    q = ps.wait_for_quiescence(
+        timeout_s=30.0,
+        poll_s=5.0,
+        sleep_fn=sleeps.append,
+    )
+
+    assert q["quiet"] is True
+    assert q["quiescence_wait_attempts"] == 1
+    assert q["quiescence_waited_s"] == 0.0
+    assert sleeps == []
+
+
+def test_wait_for_quiescence_resamples_until_quiet(monkeypatch) -> None:
+    samples = [
+        {"quiet": False, "reasons": ["1-min load 18 > threshold 12"]},
+        {"quiet": True, "reasons": [], "loadavg_1m": 4.0},
+    ]
+    monkeypatch.setattr(ps, "gather_quiescence", lambda: dict(samples.pop(0)))
+    sleeps: list[float] = []
+    waits: list[str] = []
+
+    q = ps.wait_for_quiescence(
+        timeout_s=30.0,
+        poll_s=5.0,
+        sleep_fn=sleeps.append,
+        emit_wait=lambda sample, attempt, sleep_s, remaining_s: waits.append(
+            f"{attempt}:{sleep_s}:{remaining_s}:{';'.join(sample['reasons'])}"
+        ),
+    )
+
+    assert q["quiet"] is True
+    assert q["quiescence_wait_attempts"] == 2
+    assert q["quiescence_waited_s"] == 5.0
+    assert sleeps == [5.0]
+    assert waits == ["1:5.0:30.0:1-min load 18 > threshold 12"]
+
+
+def test_wait_for_quiescence_returns_final_noisy_sample_after_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ps,
+        "gather_quiescence",
+        lambda: {"quiet": False, "reasons": ["still noisy"]},
+    )
+    sleeps: list[float] = []
+
+    q = ps.wait_for_quiescence(
+        timeout_s=12.0,
+        poll_s=5.0,
+        sleep_fn=sleeps.append,
+    )
+
+    assert q["quiet"] is False
+    assert q["reasons"] == ["still noisy"]
+    assert q["quiescence_wait_attempts"] == 4
+    assert q["quiescence_waited_s"] == 12.0
+    assert sleeps == [5.0, 5.0, 2.0]
+
+
 def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
     # --require-quiescent + a non-quiet machine => provenance.authoritative False
     # even on a clean origin/main tree.

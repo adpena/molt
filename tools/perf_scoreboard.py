@@ -60,6 +60,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -743,6 +744,46 @@ def gather_quiescence() -> dict:
 # This is the signal the NEXT optimization is steered by — never the alloc count.
 
 
+# Quiescence wait (#69 Rule 2): same predicate, bounded decay window.
+def wait_for_quiescence(
+    *,
+    timeout_s: float,
+    poll_s: float = 15.0,
+    sleep_fn=time.sleep,
+    emit_wait=None,
+) -> dict:
+    """Return a quiescence sample, waiting briefly for transient load decay.
+
+    The predicate is still exactly ``gather_quiescence()``. This helper only
+    prevents a just-finished build from forcing an immediate non-authoritative
+    board while the load signal decays. If the host stays noisy through the
+    budget, the final noisy sample is returned and the caller still fails
+    closed under ``--require-quiescent``.
+    """
+    timeout = max(0.0, float(timeout_s))
+    poll = max(0.1, float(poll_s))
+    waited = 0.0
+    attempts = 0
+
+    while True:
+        sample = gather_quiescence()
+        attempts += 1
+        sample["quiescence_wait_attempts"] = attempts
+        sample["quiescence_waited_s"] = round(waited, 3)
+        sample["quiescence_wait_timeout_s"] = timeout
+        if sample.get("quiet") or waited >= timeout:
+            return sample
+
+        sleep_s = min(poll, timeout - waited)
+        if sleep_s <= 0:
+            return sample
+        if emit_wait is not None:
+            emit_wait(sample, attempts, sleep_s, timeout - waited)
+        sleep_fn(sleep_s)
+        waited += sleep_s
+
+
+# Cycle attribution (#69 Rule 1): CYCLES, not alloc counts.
 def _resolve_sampler() -> str | None:
     """Path to the macOS ``sample`` CPU profiler, or None if unavailable."""
     import shutil
@@ -1841,6 +1882,21 @@ def main(argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
+        "--quiescence-wait-s",
+        type=float,
+        default=0.0,
+        help=(
+            "when --require-quiescent is set, wait up to this many seconds for "
+            "the same quiescence predicate to pass before failing closed"
+        ),
+    )
+    parser.add_argument(
+        "--quiescence-poll-s",
+        type=float,
+        default=15.0,
+        help="poll cadence for --quiescence-wait-s (default: 15s)",
+    )
+    parser.add_argument(
         "--print-provenance",
         action="store_true",
         help=(
@@ -2039,7 +2095,23 @@ def main(argv: list[str]) -> int:
     # --- Quiescence guard (#69 Rule 2) — measure BEFORE timing -------------
     # Detect contamination first so a non-quiet machine is stamped
     # authoritative=false (when --require-quiescent) BEFORE any number is taken.
-    quiescence = gather_quiescence()
+    def emit_quiescence_wait(
+        sample: dict, attempt: int, sleep_s: float, remaining_s: float
+    ) -> None:
+        why = "; ".join(sample.get("reasons", [])) or "machine not quiet"
+        print(
+            "[scoreboard] waiting for quiescence "
+            f"(sample {attempt}, next check in {sleep_s:.0f}s, "
+            f"budget left {remaining_s:.0f}s): {why}",
+            file=sys.stderr,
+        )
+
+    quiescence_wait_s = ns.quiescence_wait_s if ns.require_quiescent else 0.0
+    quiescence = wait_for_quiescence(
+        timeout_s=quiescence_wait_s,
+        poll_s=ns.quiescence_poll_s,
+        emit_wait=emit_quiescence_wait,
+    )
     if not quiescence["quiet"]:
         print(
             "[scoreboard] machine NOT quiescent — " + "; ".join(quiescence["reasons"]),
@@ -2052,8 +2124,11 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
     else:
+        waited_s = float(quiescence.get("quiescence_waited_s") or 0.0)
+        waited_note = f" after waiting {waited_s:.0f}s" if waited_s else ""
         print(
-            f"[scoreboard] machine quiescent (load={quiescence['loadavg_1m']} "
+            f"[scoreboard] machine quiescent{waited_note} "
+            f"(load={quiescence['loadavg_1m']} "
             f"ncpu={quiescence['ncpu']} runnable={quiescence['runnable_signal']} "
             f"builds=0)",
             file=sys.stderr,

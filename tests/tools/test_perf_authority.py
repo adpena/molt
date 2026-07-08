@@ -124,6 +124,8 @@ def test_canonical_gate_names_full_release_fast_backend_contract() -> None:
         "--repeat 5",
         "--classify",
         "--require-quiescent",
+        "--quiescence-wait-s 180",
+        "--quiescence-poll-s 15",
     ):
         assert token in gate
     assert "--no-gate" not in gate
@@ -366,6 +368,8 @@ def test_perf_gate_workflow_runs_canonical_matrix_contract() -> None:
         "--repeat 5",
         "--classify",
         "--require-quiescent",
+        "--quiescence-wait-s 180",
+        "--quiescence-poll-s 15",
         "--print-provenance",
     ):
         assert token in workflow
