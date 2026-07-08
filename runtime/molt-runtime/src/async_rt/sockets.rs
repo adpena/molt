@@ -357,6 +357,11 @@ pub(crate) fn env_from_bits(
 }
 
 #[cfg(molt_has_net_io)]
+mod io_ops;
+#[cfg(molt_has_net_io)]
+pub use io_ops::*;
+
+#[cfg(molt_has_net_io)]
 mod ops;
 #[cfg(molt_has_net_io)]
 pub use ops::*;
