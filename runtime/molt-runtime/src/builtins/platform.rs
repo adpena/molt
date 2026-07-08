@@ -15,8 +15,11 @@ use crate::builtins::modules::{runpy_exec_restricted_source, sys_modules_dict_bi
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::object::ops_sys::runtime_target_minor;
-use crate::randomness::fill_os_random;
 use crate::*;
+pub(crate) use molt_runtime_platform::env_support::{
+    env_state, env_state_get, locale_encoding_label, locale_state, os_name_str, process_env_state,
+    sys_platform_str, trace_env_get,
+};
 use molt_runtime_platform::uuid_support::{
     uuid_node, uuid_v1_bytes, uuid_v3_bytes, uuid_v4_bytes, uuid_v5_bytes,
 };
@@ -96,43 +99,11 @@ pub(crate) fn platform_clear_runtime_state(_py: &PyToken<'_>, state: &crate::sta
     crate::state::cache::clear_atomic_slots(_py, &slots);
 }
 
-static ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-static PROCESS_ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 #[cfg(all(feature = "source_extension_loader", not(target_arch = "wasm32")))]
 static SOURCE_EXTENSION_LIBRARIES: OnceLock<Mutex<Vec<libloading::Library>>> = OnceLock::new();
 static EXTENSION_METADATA_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static EXTENSION_METADATA_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-
-fn trace_env_get() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_ENV_GET").ok().as_deref(),
-            Some("1")
-        )
-    })
-}
-
-fn env_state() -> &'static Mutex<BTreeMap<String, String>> {
-    ENV_STATE.get_or_init(|| Mutex::new(collect_env_state()))
-}
-
-pub(crate) fn env_state_get(key: &str) -> Option<String> {
-    let guard = env_state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard.get(key).cloned()
-}
-
-fn process_env_state() -> &'static Mutex<BTreeMap<String, String>> {
-    PROCESS_ENV_STATE.get_or_init(|| Mutex::new(collect_env_state()))
-}
-
-fn locale_state() -> &'static Mutex<String> {
-    LOCALE_STATE.get_or_init(|| Mutex::new(String::from("C")))
-}
 
 fn extension_metadata_ok_cache() -> &'static Mutex<BTreeMap<String, String>> {
     EXTENSION_METADATA_OK_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -144,115 +115,6 @@ fn extension_metadata_cache_stats() -> (u64, u64) {
         EXTENSION_METADATA_CACHE_HITS.load(Ordering::Relaxed),
         EXTENSION_METADATA_CACHE_MISSES.load(Ordering::Relaxed),
     )
-}
-
-fn collect_env_state() -> BTreeMap<String, String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        collect_wasm_env_state()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::vars().collect()
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
-fn collect_wasm_env_state() -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    let mut env_count = 0u32;
-    let mut buf_size = 0u32;
-    let rc = unsafe { environ_sizes_get(&mut env_count, &mut buf_size) };
-    if rc != 0 || env_count == 0 || buf_size == 0 {
-        return out;
-    }
-    let env_count = match usize::try_from(env_count) {
-        Ok(val) => val,
-        Err(_) => return out,
-    };
-    let buf_size = match usize::try_from(buf_size) {
-        Ok(val) => val,
-        Err(_) => return out,
-    };
-    let mut ptrs = vec![std::ptr::null_mut(); env_count];
-    let mut buf = vec![0u8; buf_size];
-    let rc = unsafe { environ_get(ptrs.as_mut_ptr(), buf.as_mut_ptr()) };
-    if rc != 0 {
-        return out;
-    }
-    for &ptr in &ptrs {
-        if ptr.is_null() {
-            continue;
-        };
-        let offset = (ptr as usize).saturating_sub(buf.as_ptr() as usize);
-        if offset >= buf.len() {
-            continue;
-        }
-        let slice = &buf[offset..];
-        let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-        let entry = &slice[..end];
-        let text = String::from_utf8_lossy(entry);
-        if let Some((key, val)) = text.split_once('=') {
-            out.insert(key.to_string(), val.to_string());
-        }
-    }
-    out
-}
-
-#[cfg(all(target_arch = "wasm32", feature = "wasm_freestanding"))]
-fn collect_wasm_env_state() -> BTreeMap<String, String> {
-    BTreeMap::new()
-}
-
-fn os_name_str() -> &'static str {
-    #[cfg(target_os = "windows")]
-    {
-        "nt"
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        "posix"
-    }
-}
-
-fn sys_platform_str() -> &'static str {
-    #[cfg(target_arch = "wasm32")]
-    {
-        "wasi"
-    }
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
-    {
-        "win32"
-    }
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
-    {
-        "darwin"
-    }
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
-    {
-        "linux"
-    }
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
-    {
-        "android"
-    }
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "freebsd"))]
-    {
-        "freebsd"
-    }
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        not(any(
-            target_os = "windows",
-            target_os = "macos",
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd"
-        ))
-    ))]
-    {
-        "unknown"
-    }
 }
 
 fn append_unique_path(paths: &mut Vec<String>, entry: &str) {
@@ -1594,14 +1456,6 @@ fn alloc_string_triplets_list_bits(
         None
     } else {
         Some(MoltObject::from_ptr(list_ptr).bits())
-    }
-}
-
-fn locale_encoding_label(locale: &str) -> &'static str {
-    if locale == "C" || locale == "POSIX" {
-        "US-ASCII"
-    } else {
-        "UTF-8"
     }
 }
 
@@ -3839,10 +3693,3 @@ pub use env_ffi::*;
 #[cfg(test)]
 #[path = "platform_tests.rs"]
 mod tests;
-
-#[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
-#[link(wasm_import_module = "wasi_snapshot_preview1")]
-unsafe extern "C" {
-    fn environ_sizes_get(environ_count: *mut u32, environ_buf_size: *mut u32) -> u16;
-    fn environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> u16;
-}

@@ -377,6 +377,42 @@ board-required reflex incremental or cache-aware enough that decomposition
 agents can run it at the required cadence without losing a full edit loop to
 unchanged findings.
 
+2026-07-08 C1 follow-up: host environment snapshot state, process-environment
+state, locale state, target platform labels, locale encoding labels, and WASI
+environment collection now live in `molt-runtime-platform::env_support`.
+`molt-runtime` keeps the Python object-facing `platform_env_ffi.rs` ABI surface:
+object conversion, exception raising, audit/capability checks, and bytes/string
+allocation. The parent runtime reexports the platform support functions only for
+the existing runtime bridge and stdlib consumers, so `molt-runtime-http` and
+`shutil.which` continue to read the same shared environment authority without
+owning that state in the parent god-crate.
+
+Queue row
+`20260708T042955-c1-platform-env-support-satellite-20260708b-4768c84fe60f4078`
+passed `cargo test -p molt-runtime-platform env_support -j1` in 41.5s. Parent
+fan-in row
+`20260708T043046-c1-platform-env-support-fanin-20260708b-238110cf206e4c05`
+passed `cargo check -p molt-runtime --features stdlib_micro -j1` in 627.9s with
+a dependency edge on the satellite row. Final exact-tree row
+`20260708T044428-c1-platform-env-support-fanin-final-20260708a-d170a8ea852b4877`
+passed the same parent fan-in proof in 58.9s after the stale
+`fill_os_random` import was removed and the warmed target dir was reused. After
+rebasing over the textwrap residual extraction on `origin/main`, row
+`20260708T044824-c1-platform-env-support-fanin-post-textwrap-20260708a-012cbb0b976940c5`
+passed the current-runtime fan-in proof in 65.5s. The first two rows,
+`20260708T042833-c1-platform-env-support-satellite-20260708a-7c5f50ee231e42cf`
+and
+`20260708T042834-c1-platform-env-support-fanin-20260708a-8b8ff1527cb9440c`,
+were invalid proof shapes: the queue-owned Cargo lane passes arguments after
+`cargo`, so the command must be `test --package ...` or `check --package ...`,
+not `--package ... test/check`. Treat those rows as queue-DX evidence and not as
+runtime failures. The 41.5s satellite proof versus 627.9s first parent fan-in
+is a measured C1/R5 build-throughput signal: platform authority extraction is
+cheap, but every remaining parent-runtime consumer still pays the god-crate tax
+until the runtime fan-in is decomposed further. The warmed 58.9s final row shows
+the queue target reuse helps, but it does not erase the structural parent-crate
+tax.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
