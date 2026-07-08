@@ -192,6 +192,46 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
             )
         )
 
+    if (
+        "[scoreboard] machine NOT quiescent" in log_tail
+        and "[scoreboard] refusing non-authoritative measurement before starting benchmark builds"
+        in log_tail
+    ):
+        evidence_parts = [
+            pq._first_log_line_containing(
+                log_tail, "[scoreboard] machine NOT quiescent"
+            )
+            or "",
+            pq._first_log_line_containing(
+                log_tail,
+                "[scoreboard] refusing non-authoritative measurement",
+            )
+            or "",
+        ]
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="perf-scoreboard-not-quiescent",
+                severity="operator",
+                summary=(
+                    "The canonical perf scoreboard failed closed before "
+                    "benchmarking because the machine never became quiescent."
+                ),
+                evidence="\n".join(part for part in evidence_parts if part),
+                next_action=(
+                    "Let active build/proof work drain or schedule an exclusive "
+                    "perf window, then rerun the same canonical scoreboard from "
+                    "current origin/main. Do not use --allow-nonauthoritative for "
+                    "release or acceptance evidence."
+                ),
+                scopes=(
+                    "tools/perf_scoreboard.py",
+                    "tools/proof_queue.py",
+                    "docs/agent/ORCHESTRATION.md",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
     rust_test_result = pq.RUST_TEST_RESULT_FAILED_RE.search(log_tail)
     rust_cargo_test_failed = pq.RUST_CARGO_TEST_FAILED_RE.search(log_tail)
     if rust_test_result is not None or rust_cargo_test_failed is not None:
