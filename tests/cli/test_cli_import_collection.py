@@ -5799,7 +5799,7 @@ def test_external_native_artifact_plan_records_cpython_abi_link_symbol_board(
     ]
 
 
-def test_external_native_artifact_plan_records_package_native_symbol_board(
+def test_external_native_artifact_plan_rejects_package_native_symbol_without_owner(
     tmp_path: Path,
 ) -> None:
     external_root = tmp_path / "site"
@@ -5837,16 +5837,12 @@ def test_external_native_artifact_plan_records_package_native_symbol_board(
         required_modules={"nativepkg.core._multiarray_umath"},
     )
 
-    assert errors == []
-    assert plan is not None
-    assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
-        {
-            "symbol": "BOOL_absolute",
-            "status": "package_native",
-            "primitive_class": "native_package_symbol",
-            "source": "runtime_symbols+undefined_symbols",
-        }
-    ]
+    assert plan is None
+    assert any(
+        "object_closure runtime ABI symbol 'BOOL_absolute' is package-native "
+        "but has no object owner" in error
+        for error in errors
+    )
 
 
 def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(

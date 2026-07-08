@@ -59,6 +59,7 @@ _SOURCE_EXTENSION_TARGET_OUTPUT_SUFFIXES = (
     ".dll",
     ".dylib",
 )
+_NINJA_OBJECT_SUFFIXES = (".o", ".obj")
 _SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX = (
     "extension_manifest.json source missing:"
 )
@@ -349,16 +350,22 @@ def _meson_target_filename_names(filename: Any) -> set[str]:
     return {name for name in names if name}
 
 
-def _meson_target_object_roots(filename: Any, *, build_root: Path) -> tuple[Path, ...]:
+def _meson_target_output_paths(filename: Any, *, build_root: Path) -> tuple[Path, ...]:
     raw_filenames = filename if isinstance(filename, list) else (filename,)
-    roots: list[Path] = []
+    outputs: list[Path] = []
     for raw_filename in raw_filenames:
         if not isinstance(raw_filename, str) or not raw_filename.strip():
             continue
         target_path = Path(raw_filename).expanduser()
         if not target_path.is_absolute():
             target_path = build_root / target_path
-        target_path = target_path.resolve()
+        outputs.append(target_path.resolve())
+    return _dedupe_paths(outputs)
+
+
+def _meson_target_object_roots(filename: Any, *, build_root: Path) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for target_path in _meson_target_output_paths(filename, build_root=build_root):
         roots.append((target_path.parent / f"{target_path.name}.p").resolve())
     return _dedupe_paths(roots)
 
@@ -756,27 +763,142 @@ def _meson_link_archive_names(target: Mapping[str, Any]) -> set[str]:
     return names
 
 
+def _ninja_logical_lines(path: Path) -> tuple[str, ...]:
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return ()
+    lines: list[str] = []
+    pending = ""
+    for raw_line in raw_lines:
+        line = raw_line.rstrip()
+        if pending:
+            pending += line.lstrip()
+        else:
+            pending = line
+        if pending.rstrip().endswith("$"):
+            pending = pending.rstrip()[:-1] + " "
+            continue
+        lines.append(pending)
+        pending = ""
+    if pending:
+        lines.append(pending)
+    return tuple(lines)
+
+
+def _ninja_find_build_colon(text: str) -> int:
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "$":
+            escaped = True
+            continue
+        if char == ":":
+            return index
+    return -1
+
+
+def _ninja_split_words(text: str) -> tuple[str, ...]:
+    words: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char.isspace():
+            if current:
+                words.append("".join(current))
+                current = []
+            index += 1
+            continue
+        if char == "$" and index + 1 < len(text):
+            next_char = text[index + 1]
+            if next_char in {" ", ":", "$"}:
+                current.append(next_char)
+                index += 2
+                continue
+        current.append(char)
+        index += 1
+    if current:
+        words.append("".join(current))
+    return tuple(words)
+
+
+def _resolve_ninja_build_path(raw_path: str, *, build_root: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = build_root / path
+    return path.resolve()
+
+
+def _load_ninja_build_explicit_inputs(
+    build_root: Path,
+) -> dict[Path, tuple[Path, ...]]:
+    edges: dict[Path, tuple[Path, ...]] = {}
+    for line in _ninja_logical_lines(build_root / "build.ninja"):
+        if not line.startswith("build "):
+            continue
+        payload = line[len("build ") :]
+        colon_index = _ninja_find_build_colon(payload)
+        if colon_index < 0:
+            continue
+        output_words = _ninja_split_words(payload[:colon_index])
+        rule_and_inputs = _ninja_split_words(payload[colon_index + 1 :])
+        if not output_words or not rule_and_inputs:
+            continue
+        raw_inputs: list[str] = []
+        for word in rule_and_inputs[1:]:
+            if word in {"|", "||"}:
+                break
+            raw_inputs.append(word)
+        inputs = tuple(
+            _resolve_ninja_build_path(raw_input, build_root=build_root)
+            for raw_input in raw_inputs
+        )
+        for output_word in output_words:
+            output = _resolve_ninja_build_path(output_word, build_root=build_root)
+            edges[output] = inputs
+    return edges
+
+
 def _meson_linked_static_library_targets(
     *,
     primary_target: Mapping[str, Any],
     payload: Sequence[Any],
+    build_root: Path,
 ) -> list[Mapping[str, Any]]:
     """In-project ``static_library`` targets linked by ``primary_target``.
 
     Follows the primary target's link archives to the ``static library`` targets
     in the same intro-targets plan whose output filename matches. Molt compiles
     those targets' sources into the extension closure so linked-in symbols
-    (e.g. numpy ``unique.cpp`` in ``libunique_hash.a``) are present.
+    (e.g. numpy ``unique.cpp`` in ``libunique_hash.a``) are present. If a linked
+    archive is an aggregate with no intro sources, expand its Ninja member
+    objects back to the Meson static targets that own those object roots.
     """
     archive_names = _meson_link_archive_names(primary_target)
     if not archive_names:
         return []
-    linked: list[Mapping[str, Any]] = []
+    static_targets: list[Mapping[str, Any]] = []
     for entry in payload:
         if not isinstance(entry, Mapping):
             continue
-        if str(entry.get("type", "")).strip() != "static library":
-            continue
+        if str(entry.get("type", "")).strip() == "static library":
+            static_targets.append(entry)
+
+    linked: list[Mapping[str, Any]] = []
+    seen_ids: set[int] = set()
+
+    def append_target(entry: Mapping[str, Any]) -> bool:
+        entry_id = id(entry)
+        if entry_id in seen_ids:
+            return False
+        seen_ids.add(entry_id)
+        linked.append(entry)
+        return True
+
+    for entry in static_targets:
         entry_filenames = entry.get("filename")
         raw_filenames = (
             entry_filenames if isinstance(entry_filenames, list) else (entry_filenames,)
@@ -785,10 +907,45 @@ def _meson_linked_static_library_targets(
             if not isinstance(raw_filename, str):
                 continue
             if Path(raw_filename.replace("\\", "/")).name in archive_names:
-                linked.append(entry)
+                append_target(entry)
+                break
+    if not linked:
+        return []
+
+    archive_edges = _load_ninja_build_explicit_inputs(build_root)
+    if not archive_edges:
+        return linked
+
+    target_object_roots: list[tuple[Path, Mapping[str, Any]]] = []
+    for entry in static_targets:
+        for root in _meson_target_object_roots(
+            entry.get("filename"),
+            build_root=build_root,
+        ):
+            target_object_roots.append((root, entry))
+
+    queue = list(linked)
+    for target in queue:
+        target_outputs = _meson_target_output_paths(
+            target.get("filename"),
+            build_root=build_root,
+        )
+        member_inputs = [
+            member
+            for output in target_outputs
+            for member in archive_edges.get(output, ())
+            if member.suffix.lower() in _NINJA_OBJECT_SUFFIXES
+        ]
+        for member in member_inputs:
+            for root, owner in target_object_roots:
+                if owner is target:
+                    continue
+                if not _path_is_within(member, root):
+                    continue
+                if append_target(owner):
+                    queue.append(owner)
                 break
     return linked
-
 
 def _filter_meson_source_group_to_existing(
     group: Mapping[str, Any],
@@ -919,6 +1076,7 @@ def _load_meson_intro_targets_source_extension_plan(
     linked_static_targets = _meson_linked_static_library_targets(
         primary_target=target,
         payload=payload,
+        build_root=resolved_build_root,
     )
     combined_source_groups: list[Mapping[str, Any]] = list(target_sources)
     skipped_generated_sources: list[Path] = []

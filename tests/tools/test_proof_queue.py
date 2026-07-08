@@ -6138,6 +6138,67 @@ def test_proof_queue_diagnoses_wasm_toolchain_contract_import_missing(
     }
 
 
+def test_proof_queue_diagnoses_source_extension_nm_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-extension-nm.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-extension-nm",
+        logical_id="e1-numpy-multiarray-rebuild",
+        reason="prove source-extension nm custody diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm",
+        contention_key="compiler-build-resource",
+        scopes=["src/molt/cli/source_extensions.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-extension-nm.memory_guard.json",
+    )
+    log_path.write_text(
+        "unable to read global symbol table for compiled extension object "
+        "D:\\Molt\\tmp\\pact_numpy\\82_umathmodule.o; "
+        "install llvm-nm/nm or set MOLT_NM\n",
+        encoding="utf-8",
+    )
+    proof_queue._update_run(conn, "source-extension-nm", status="failed", returncode=2)
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-extension-nm",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "source-extension-nm-missing"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "82_umathmodule.o" in diagnostics[0]["summary"]
+    assert "MOLT_NM" in diagnostics[0]["next_action"]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_source_lease_contamination(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

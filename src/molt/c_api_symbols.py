@@ -41,6 +41,10 @@ _C_API_DECLARATION_ONLY_SYMBOLS = frozenset(
     }
 )
 
+_C_API_SOURCE_INTERNAL_PREFIXES = (
+    "npyv_",
+)
+
 
 _C_API_PRIMITIVE_EXACT: dict[str, str] = {
     "Py_INCREF": "refcount",
@@ -136,6 +140,7 @@ def is_c_api_external_requirement(symbol: str) -> bool:
     return (
         is_c_api_symbol(symbol)
         and symbol not in _C_API_DECLARATION_ONLY_SYMBOLS
+        and not symbol.startswith(_C_API_SOURCE_INTERNAL_PREFIXES)
         and not symbol.endswith("_H")
     )
 

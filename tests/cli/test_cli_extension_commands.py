@@ -10,6 +10,7 @@ from pathlib import Path
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import commands as cli_commands
+from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
 from molt.cli.extension_manifest import (
     _CURRENT_MOLT_C_API_VERSION,
@@ -19,6 +20,7 @@ from molt.cli.extension_manifest import (
 from molt.cli.source_extensions import source_extension_manifest_source_path
 from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import wasm_toolchain as cli_wasm_toolchain
+from molt.c_api_symbols import is_c_api_external_requirement
 import pytest
 
 from tests.cli.process_guard import run_cli_test_process
@@ -83,7 +85,12 @@ def _install_extension_object_symbol_facts(
         return {default_init_symbol}, {"PyModule_Create", "molt_c_api_version"}
 
     monkeypatch.setattr(
-        cli_commands._source_extensions,
+        cli_backend_cache,
+        "_native_object_global_symbol_sets",
+        fake_object_symbols,
+    )
+    monkeypatch.setattr(
+        cli_commands,
         "_native_object_global_symbol_sets",
         fake_object_symbols,
     )
@@ -183,6 +190,7 @@ def _write_meson_source_plan_project(
     project_root: Path,
     *,
     linked_static_library: bool = False,
+    aggregate_static_library: bool = False,
 ) -> Path:
     src_dir = project_root / "pkg"
     include_dir = src_dir / "include"
@@ -240,9 +248,20 @@ def _write_meson_source_plan_project(
             "int array__unique_hash(void) { return 1; }\n",
             encoding="utf-8",
         )
+    if aggregate_static_library:
+        (generated_dir / "loops_arithmetic.dispatch.c").write_text(
+            "int FLOAT_add_indexed(void) { return 1; }\n",
+            encoding="utf-8",
+        )
+        (generated_dir / "simd.dispatch.c").write_text(
+            "int SIMD_not_linked(void) { return 1; }\n",
+            encoding="utf-8",
+        )
     linker_parameters = ["-Wl,--as-needed"]
     if linked_static_library:
         linker_parameters.append("pkg/libunique_hash.a")
+    if aggregate_static_library:
+        linker_parameters.append("pkg/lib_multiarray_umath_mtargets.a")
     intro_targets = [
         {
             "id": "pkg.demoext",
@@ -288,6 +307,91 @@ def _write_meson_source_plan_project(
                     }
                 ],
             }
+        )
+    if aggregate_static_library:
+        intro_targets.extend(
+            [
+                {
+                    "id": "pkg.lib_multiarray_umath_mtargets",
+                    "name": "_multiarray_umath_mtargets",
+                    "type": "static library",
+                    "filename": str(
+                        project_root
+                        / "build"
+                        / "pkg"
+                        / "lib_multiarray_umath_mtargets.a"
+                    ),
+                    "defined_in": str(project_root / "meson.build"),
+                    "build_by_default": True,
+                    "target_sources": [
+                        {
+                            "language": None,
+                            "machine": "host",
+                            "parameters": ["csrDT"],
+                        }
+                    ],
+                },
+                {
+                    "id": "pkg.libloops_arithmetic_dispatch",
+                    "name": "loops_arithmetic.dispatch.h_baseline",
+                    "type": "static library",
+                    "filename": str(
+                        project_root
+                        / "build"
+                        / "pkg"
+                        / "libloops_arithmetic.dispatch.h_baseline.a"
+                    ),
+                    "defined_in": str(project_root / "meson.build"),
+                    "build_by_default": True,
+                    "target_sources": [
+                        {
+                            "language": "c",
+                            "machine": "host",
+                            "parameters": ["-Igenerated", "-DDISPATCH=1"],
+                            "sources": [],
+                            "generated_sources": [
+                                "generated/loops_arithmetic.dispatch.c"
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "id": "pkg.lib_simd_mtargets",
+                    "name": "_simd_mtargets",
+                    "type": "static library",
+                    "filename": str(
+                        project_root / "build" / "pkg" / "lib_simd_mtargets.a"
+                    ),
+                    "defined_in": str(project_root / "meson.build"),
+                    "build_by_default": True,
+                    "target_sources": [
+                        {
+                            "language": None,
+                            "machine": "host",
+                            "parameters": ["csrDT"],
+                        }
+                    ],
+                },
+                {
+                    "id": "pkg.lib_simd_dispatch",
+                    "name": "_simd.dispatch.h_baseline",
+                    "type": "static library",
+                    "filename": str(
+                        project_root / "build" / "pkg" / "lib_simd.dispatch.h_baseline.a"
+                    ),
+                    "defined_in": str(project_root / "meson.build"),
+                    "build_by_default": True,
+                    "target_sources": [
+                        {
+                            "language": "c",
+                            "machine": "host",
+                            "parameters": ["-Igenerated", "-DSIMD=1"],
+                            "sources": [],
+                            "generated_sources": ["generated/simd.dispatch.c"],
+                        }
+                    ],
+                },
+            ]
         )
     intro_path = meson_info_dir / "intro-targets.json"
     intro_path.write_text(json.dumps(intro_targets, indent=2) + "\n")
@@ -336,6 +440,48 @@ def _write_meson_source_plan_project(
                     "build/unique.cpp.o",
                 ],
             }
+        )
+    if aggregate_static_library:
+        compile_commands.append(
+            {
+                "directory": str(project_root / "build"),
+                "file": "generated/loops_arithmetic.dispatch.c",
+                "arguments": [
+                    "cc",
+                    "-Igenerated",
+                    "-DDISPATCH=1",
+                    "-c",
+                    "generated/loops_arithmetic.dispatch.c",
+                    "-o",
+                    "pkg/libloops_arithmetic.dispatch.h_baseline.a.p/"
+                    "loops_arithmetic.dispatch.c.o",
+                ],
+            }
+        )
+        compile_commands.append(
+            {
+                "directory": str(project_root / "build"),
+                "file": "generated/simd.dispatch.c",
+                "arguments": [
+                    "cc",
+                    "-Igenerated",
+                    "-DSIMD=1",
+                    "-c",
+                    "generated/simd.dispatch.c",
+                    "-o",
+                    "pkg/lib_simd.dispatch.h_baseline.a.p/simd.dispatch.c.o",
+                ],
+            }
+        )
+        (project_root / "build" / "build.ninja").write_text(
+            "build pkg/lib_multiarray_umath_mtargets.a: STATIC_LINKER "
+            "pkg/libloops_arithmetic.dispatch.h_baseline.a.p/"
+            "loops_arithmetic.dispatch.c.o\n"
+            "  LINK_ARGS = csrDT\n"
+            "build pkg/lib_simd_mtargets.a: STATIC_LINKER "
+            "pkg/lib_simd.dispatch.h_baseline.a.p/simd.dispatch.c.o\n"
+            "  LINK_ARGS = csrDT\n",
+            encoding="utf-8",
         )
     (project_root / "build" / "compile_commands.json").write_text(
         json.dumps(compile_commands, indent=2) + "\n",
@@ -1005,6 +1151,10 @@ def test_extension_scan_classifies_project_generated_c_api_symbols(
                 "PyObject *use(PyObject *value) {",
                 "    (void)npy_generated_int8;",
                 "    (void)npyv_u8;",
+                "    (void)npyv_lanetype_f32;",
+                "    (void)npyv_loadable_stride_f32;",
+                "    (void)npyv_storable_stride_f32;",
+                "    (void)npy_missing_runtime;",
                 "    return value;",
                 "}",
                 "",
@@ -1026,8 +1176,20 @@ def test_extension_scan_classifies_project_generated_c_api_symbols(
     assert data["symbol_status"]["npy_generated_int8"] == "project_generated"
     assert data["project_generated_c_api_prefixes"] == ["npy_generated_"]
     assert data["project_generated_symbols"] == ["npy_generated_int8"]
-    assert data["symbol_status"]["npyv_u8"] == "missing"
-    assert "npyv_u8" in data["missing_symbols"]
+    assert not is_c_api_external_requirement("npyv_u8")
+    assert not is_c_api_external_requirement("npyv_lanetype")
+    assert not is_c_api_external_requirement("npyv_loadable_stride")
+    assert not is_c_api_external_requirement("npyv_storable_stride")
+    for symbol in (
+        "npyv_u8",
+        "npyv_lanetype_f32",
+        "npyv_loadable_stride_f32",
+        "npyv_storable_stride_f32",
+    ):
+        assert symbol not in data["required_symbols"]
+        assert symbol not in data["missing_symbols"]
+    assert data["symbol_status"]["npy_missing_runtime"] == "missing"
+    assert "npy_missing_runtime" in data["missing_symbols"]
 
 
 def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
@@ -1579,6 +1741,7 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
 def test_extension_build_follows_linked_static_library_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
@@ -1621,8 +1784,17 @@ def test_extension_build_follows_linked_static_library_source_closure(
         json_output=False,
         verbose=False,
     )
+    captured = capsys.readouterr()
 
     assert rc == 0
+    skipped_generated_source = (
+        project_root / "build" / "generated" / "cleaned_unique.c"
+    ).resolve()
+    assert (
+        "Warning: source_plan skipped 1 cleaned generated source absent from disk"
+        in captured.err
+    )
+    assert str(skipped_generated_source) in captured.err
     assert any(
         "-c" in cmd and any("unique.cpp" in part for part in cmd)
         for cmd in commands
@@ -1633,7 +1805,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 3
     assert manifest["source_plan"]["skipped_generated_sources"] == [
-        str((project_root / "build" / "generated" / "cleaned_unique.c").resolve())
+        str(skipped_generated_source)
     ]
     assert manifest["build"]["source_plan_skipped_generated_source_count"] == 1
     assert str((project_root / "pkg" / "unique.cpp").resolve()) in (
@@ -1650,6 +1822,84 @@ def test_extension_build_follows_linked_static_library_source_closure(
         for symbol in obj["defined_symbols"]
     }
     assert "array__unique_hash" in defined_symbols
+
+
+def test_extension_build_follows_meson_aggregate_static_library_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "meson_extproj"
+    project_root.mkdir()
+    _write_meson_source_plan_project(project_root, aggregate_static_library=True)
+    commands: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        commands.append(cmd)
+        out_index = cmd.index("-o")
+        out_path = Path(cmd[out_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"obj" if "-c" in cmd else b"shared")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
+    _install_extension_object_symbol_facts(
+        monkeypatch,
+        default_init_symbol="PyInit_demoext",
+        by_stem={
+            "demoext": ({"PyInit_demoext"}, {"FLOAT_add_indexed"}),
+            "helper_generated": ({"helper_generated"}, set()),
+            "loops_arithmetic.dispatch": ({"FLOAT_add_indexed"}, set()),
+            "simd.dispatch": ({"SIMD_not_linked"}, set()),
+        },
+    )
+    monkeypatch.setattr(
+        cli_commands,
+        "_shared_library_defines_symbol",
+        lambda _path, symbol: (symbol == "PyInit_demoext", None),
+    )
+
+    out_dir = project_root / "dist"
+    rc = cli_commands.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    assert any(
+        "-c" in cmd and any("loops_arithmetic.dispatch.c" in part for part in cmd)
+        for cmd in commands
+    )
+    assert not any(
+        "-c" in cmd and any("simd.dispatch.c" in part for part in cmd)
+        for cmd in commands
+    )
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["build"]["object_count"] == 3
+    assert manifest["build"]["linked_object_count"] == 2
+    assert str(
+        (project_root / "build" / "generated" / "loops_arithmetic.dispatch.c").resolve()
+    ) in manifest["source_plan"]["generated_sources"]
+    assert str(
+        (project_root / "build" / "generated" / "simd.dispatch.c").resolve()
+    ) not in manifest["source_plan"]["generated_sources"]
+    object_sources = {
+        Path(obj["source"]).resolve()
+        for obj in manifest["object_closure"]["objects"]
+    }
+    assert (
+        project_root / "build" / "generated" / "loops_arithmetic.dispatch.c"
+    ).resolve() in object_sources
+    defined_symbols = {
+        symbol
+        for obj in manifest["object_closure"]["objects"]
+        for symbol in obj["defined_symbols"]
+    }
+    assert "FLOAT_add_indexed" in defined_symbols
+    assert "FLOAT_add_indexed" not in manifest["object_closure"]["runtime_symbols"]
 
 
 def test_extension_build_rejects_parallel_sources_with_source_plan(
