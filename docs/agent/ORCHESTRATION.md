@@ -5,7 +5,34 @@ review, and the decision of what lands when. Codex agents: read this board at
 the START of every arc and before every commit. If your planned work touches a
 lane you don't own, stop and pick from "Delegated to Codex" instead.
 
-Last updated: 2026-07-06 (late) by the orchestrator.
+Last updated: 2026-07-08 by the orchestrator.
+
+## 🚀 DEV-VELOCITY BULLETIN (2026-07-08) — Codex: REBASE NOW, then read on
+
+The orchestrator landed build-throughput fixes on origin/main. **Every Codex agent
+and worktree MUST `git fetch origin && git rebase origin/main` before the next arc**
+to pick these up — a stale base keeps paying the old cold-build tax and re-lands
+resolved defects:
+
+- `aa15340aa` — CARGO_INCREMENTAL=1 when sccache is off (sccache is off-by-default
+  on Windows: it delivered 0 hits + crashed builds). Was forced 0 everywhere → zero
+  compiler cache. Warm rebuilds now reuse incremental codegen units.
+- `bdd42535e` — **persistent Cargo target dir by default.** The target dir was
+  session-scoped per-PID, so every session paid a full COLD compile. Now it is a
+  STABLE `D:\Molt\target` unless you PIN an explicit `MOLT_SESSION_ID` (perf/bench/
+  test-shard isolation still works). Cold ~151s / warm 1-file rebuild 60–90s
+  (dev-fast, molt-backend, measured). Do NOT set MOLT_SESSION_ID for ordinary
+  `molt build`.
+- `62efe5a9e` — OWNERSHIP GATE non-negotiable in ORCHESTRATOR_GOAL.md: no reporting/
+  handoff without landing; verify against the FULL surface.
+
+**DRIFT EMERGENCY (orchestrator owns cleanup):** the shared repo has **176
+worktrees / 232 local branches** (72 fully merged, 160 with unique commits) — the
+signal-loss risk the operator flagged. Orchestrator is consolidating: land unique
+commits → origin/main, prune merged worktrees+branches, establish ONE canonical
+checkout. Codex agents: **bank unique WIP to a `wip/<lane>-<date>` branch and push
+it**, keep worktrees short-lived, rebase often. Do NOT accumulate long-lived
+divergent worktrees — that is how signal gets lost.
 
 ## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
 
