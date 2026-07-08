@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use crate::ThreadTaskState;
 use crate::object::{dec_ref_ptr, inc_ref_ptr};
 use crate::{
-    HEADER_FLAG_SPAWN_RETAIN, MoltObject, ProcessTaskState, PtrSlot, PyToken, dec_ref_bits,
-    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, obj_from_bits, process_poll_fn_addr,
-    promise_poll_fn_addr, runtime_state, thread_poll_fn_addr,
+    HEADER_FLAG_SPAWN_RETAIN, MoltObject, ProcessTaskState, PtrSlot, PyToken, header_from_obj_ptr,
+    io_wait_poll_fn_addr, process_poll_fn_addr, promise_poll_fn_addr, runtime_state,
+    thread_poll_fn_addr,
 };
 
 use super::{async_trace_enabled, wake_task_ptr};
