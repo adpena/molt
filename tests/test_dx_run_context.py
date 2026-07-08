@@ -801,3 +801,30 @@ def test_uv_project_env_custom_purpose_and_python(tmp_path: Path) -> None:
         }
     )
     assert env == (tmp_path / "tmp" / "uv-project-envs" / "witness__py3.13").resolve()
+
+
+def test_auto_janitor_throttled_and_optout(monkeypatch, tmp_path):
+    # Stale artifacts are cleaned BY DEFAULT: canonical_env fires a throttled,
+    # detached, best-effort janitor sweep. Verify it spawns once, then throttles,
+    # and honors the opt-out.
+    import molt.dx as dx
+
+    popen_calls = []
+    monkeypatch.setattr(dx.subprocess, "Popen", lambda *a, **k: popen_calls.append(a))
+    monkeypatch.delenv("MOLT_DISABLE_AUTO_JANITOR", raising=False)
+
+    dx._maybe_sweep_stale_artifacts(tmp_path)
+    assert len(popen_calls) == 1
+    assert (tmp_path / ".molt_janitor_last_run").exists()
+
+    # Immediately again -> throttled (recent marker), no second spawn.
+    dx._maybe_sweep_stale_artifacts(tmp_path)
+    assert len(popen_calls) == 1
+
+    # Opt-out on a fresh root -> never spawns.
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setenv("MOLT_DISABLE_AUTO_JANITOR", "1")
+    dx._maybe_sweep_stale_artifacts(other)
+    assert len(popen_calls) == 1
+    assert not (other / ".molt_janitor_last_run").exists()

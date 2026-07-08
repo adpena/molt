@@ -8,8 +8,10 @@ import platform
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -209,6 +211,69 @@ def _memory_bounded_cargo_jobs() -> int | None:
     usable = max(0, total - _CARGO_JOB_MEMORY_HEADROOM)
     mem_jobs = max(1, usable // _BYTES_PER_CARGO_JOB)
     return max(1, min(cpu_count, mem_jobs))
+
+
+# Fire the SSD janitor at most once per this many hours per artifact root, so the
+# molt volume stays tidy BY DEFAULT wherever it runs — stale per-session cargo
+# targets / tmp / scratch never pile up again (they hit 881 dirs before this).
+_JANITOR_THROTTLE_HOURS = 6.0
+
+
+def _maybe_sweep_stale_artifacts(ext_root: Path) -> None:
+    """Opportunistically reclaim stale build artifacts. Best-effort + throttled.
+
+    Spawns ``tools/molt_ssd_janitor.py --apply`` DETACHED (never blocks or slows a
+    build) at most once per :data:`_JANITOR_THROTTLE_HOURS` per artifact root. The
+    janitor is age-based and protects anything live (registered worktrees, the
+    current session, recently-touched dirs), so it only removes obsolete cruft.
+    Set ``MOLT_DISABLE_AUTO_JANITOR=1`` to opt out. Never raises.
+    """
+    try:
+        if os.environ.get("MOLT_DISABLE_AUTO_JANITOR", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return
+        marker = ext_root / ".molt_janitor_last_run"
+        now = time.time()
+        try:
+            last = marker.stat().st_mtime
+        except OSError:
+            last = 0.0
+        if now - last < _JANITOR_THROTTLE_HOURS * 3600:
+            return
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(now), encoding="utf-8")  # claim the slot first
+        janitor = Path(__file__).resolve().parent.parent.parent / "tools" / "molt_ssd_janitor.py"
+        if not janitor.exists():
+            return
+        creationflags = 0
+        if os.name == "nt":
+            # DETACHED_PROCESS | CREATE_NO_WINDOW — outlive this process, no console.
+            creationflags = 0x00000008 | 0x08000000
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(janitor),
+                "--root",
+                str(ext_root),
+                "--apply",
+                "--no-sizes",
+                "--free-below-gb",
+                "80",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=True,
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+        )
+    except Exception:
+        # Cleanup is best-effort — never break a build over it.
+        pass
 
 
 def _env_bool(
@@ -945,6 +1010,10 @@ class RunContext:
             prefer_external=self.prefer_external_artifacts,
         )
         env["MOLT_EXT_ROOT"] = str(ext_root)
+        if create_dirs:
+            # Keep the artifact volume tidy BY DEFAULT — throttled, detached,
+            # best-effort. Only in real (create_dirs) contexts, never in tests.
+            _maybe_sweep_stale_artifacts(Path(ext_root))
 
         def install_default(key: str, value: Path | str) -> None:
             if key in forced or not env.get(key):
