@@ -8581,6 +8581,69 @@ def test_admit_run_allows_multiple_queued_rows_per_contention_key(
     assert {r["status"] for r in rows} == {"queued"}
 
 
+def test_proof_queue_audit_treats_queued_rows_as_wait_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = proof_queue._connect(db)
+    for run_id, status in (
+        ("gate-first", "queued"),
+        ("gate-second", "queued"),
+        ("gate-running", "dispatched"),
+    ):
+        log_path = tmp_path / f"{run_id}.log"
+        log_path.write_text("queued wait-list row\n", encoding="utf-8")
+        proof_queue._insert_run(
+            conn,
+            run_id=run_id,
+            logical_id=run_id,
+            reason="prove queued rows do not own active contention custody",
+            command=[sys.executable, "-c", "print('proof')"],
+            cwd=proof_queue.ROOT,
+            resource_family="wasm-browser",
+            contention_key="wasm:pact-witness",
+            scopes=["tools/proof_queue.py"],
+            git_snapshot={
+                "available": True,
+                "head": "abc123",
+                "dirty": False,
+                "status": [],
+            },
+            log_path=log_path,
+            summary_json=tmp_path / f"{run_id}.memory_guard.json",
+        )
+        proof_queue._insert_note(
+            conn,
+            run_id=run_id,
+            body="test: queued rows are wait-list state, not resource custody",
+            kind="submission",
+            author="codex",
+        )
+        if status != "queued":
+            proof_queue._update_run(
+                conn, run_id, status=status, started_at=proof_queue._utc_now()
+            )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "audit",
+                "--no-notebook-check",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "active=1" in output
+    assert "queue-contention-duplicate" not in output
+
+
 def test_detached_claim_serializes_contention_key(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     conn = proof_queue._connect(db)
