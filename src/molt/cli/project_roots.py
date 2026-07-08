@@ -7,6 +7,21 @@ from pathlib import Path
 from molt.cli.output import fail as _fail
 
 
+def _is_path_within(path: Path, container: Path) -> bool:
+    """Return True when ``path`` is (resolves to) inside ``container``.
+
+    A pure path-containment predicate. It lives in this low-level path module so
+    both frontend module-resolution and post-lowering setup/readiness code can
+    share one authority without either dragging the other's import closure onto
+    its path.
+    """
+    try:
+        path.resolve().relative_to(container.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _resolve_root_override(var: str) -> Path | None:
     override = os.environ.get(var)
     if not override:
