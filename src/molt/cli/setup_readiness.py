@@ -668,7 +668,16 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     rustc_wrapper = os.environ.get("RUSTC_WRAPPER", "").strip()
     sccache_mode = os.environ.get("MOLT_USE_SCCACHE", "auto").strip().lower() or "auto"
     sccache_path = shutil.which("sccache")
-    if rustc_wrapper:
+    _forced_sccache = sccache_mode in {"1", "true", "yes", "on"}
+    _wrapper_is_sccache = bool(rustc_wrapper) and Path(rustc_wrapper).name == "sccache"
+    if os.name == "nt" and not _wrapper_is_sccache and not _forced_sccache:
+        # sccache is off-by-default on Windows: measured 0 cache hits + mid-compile
+        # crashes (os error 10054) here make it NEGATIVE leverage, so OFF is the
+        # healthy state — do NOT advise enabling it (that would re-introduce the harm).
+        sccache_ok = True
+        sccache_detail = "off by default on Windows (0 hits + mid-compile crashes here); using direct rustc"
+        sccache_advice = None
+    elif rustc_wrapper:
         wrapper_name = Path(rustc_wrapper).name
         sccache_ok = wrapper_name == "sccache"
         sccache_detail = f"RUSTC_WRAPPER={rustc_wrapper}"
