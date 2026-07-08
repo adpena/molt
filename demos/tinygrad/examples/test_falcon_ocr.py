@@ -10,10 +10,10 @@ This test is designed to run inside the molt runtime. When run outside
 intrinsics and uses the tinygrad Tensor class directly.
 
 Usage inside molt:
-    molt test src/molt/stdlib/tinygrad/examples/test_falcon_ocr.py
+    molt test demos/tinygrad/examples/test_falcon_ocr.py
 
 Usage for structural verification (standalone):
-    python3 -c "exec(open('src/molt/stdlib/tinygrad/examples/test_falcon_ocr.py').read())"
+    python3 -c "exec(open('demos/tinygrad/examples/test_falcon_ocr.py').read())"
     (Will fail on functions requiring molt.gpu.Buffer)
 """
 
