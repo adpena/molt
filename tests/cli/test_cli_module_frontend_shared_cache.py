@@ -294,7 +294,9 @@ def test_changed_tooling_fingerprint_is_not_reused_from_shared(
 
     # Session B with a DIFFERENT tooling fingerprint (a compiler/frontend change).
     _use_session(monkeypatch, "B")
-    monkeypatch.setattr(MC, "_cache_tooling_fingerprint", lambda: "different-tooling-fp")
+    monkeypatch.setattr(
+        MC, "_frontend_semantic_tooling_fingerprint", lambda: "different-tooling-fp"
+    )
 
     # The shared slot for the NEW fingerprint identity must be a different slot,
     # and no entry exists there -> cold miss (no cross-identity reuse).

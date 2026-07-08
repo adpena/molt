@@ -10360,7 +10360,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     module_path.write_text("import json\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
@@ -10379,7 +10379,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     ) == ("json",)
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_cache_tooling_fingerprint", lambda: "tool-b"
+        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
     )
     assert (
         cli_module_graph_cache._read_persisted_import_scan(
@@ -10402,7 +10402,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
     original = module_path.stat()
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
@@ -10507,7 +10507,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     stdlib_root = tmp_path / "stdlib"
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli_module_graph_cache._write_persisted_module_graph(
         tmp_path,
@@ -10538,7 +10538,7 @@ def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
     )
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_cache_tooling_fingerprint", lambda: "tool-b"
+        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
     )
     assert (
         cli_module_graph_cache._read_persisted_module_graph(
@@ -10567,7 +10567,7 @@ def test_persisted_module_graph_cache_tracks_source_content(
     stdlib_root = tmp_path / "stdlib"
 
     monkeypatch.setattr(
-        cli_module_graph_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli_module_graph_cache._write_persisted_module_graph(
         tmp_path,
@@ -10608,7 +10608,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     module_path.write_text("def f(x=1):\n    return x\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli._write_persisted_module_analysis(
         tmp_path,
@@ -10629,7 +10629,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     ) == ({"f": _func_metadata(params=1)}, {"f": "sync"}, ("json",))
 
     monkeypatch.setattr(
-        cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-b"
+        cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
     )
     assert (
         cli._read_persisted_module_analysis(
@@ -10652,7 +10652,7 @@ def test_persisted_module_analysis_cache_tracks_source_content(
     original = module_path.stat()
 
     monkeypatch.setattr(
-        cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     cli._write_persisted_module_analysis(
         tmp_path,
@@ -12532,7 +12532,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
         cache_path,
         {
             "version": cli._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
-            "compiler_fingerprint": cli._cache_tooling_fingerprint(),
+            "compiler_fingerprint": cli._frontend_semantic_tooling_fingerprint(),
             "module_name": "pkg",
             "is_package": False,
             "import_scan_mode": "full",
@@ -13784,11 +13784,11 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
     )
 
     monkeypatch.setattr(
-        cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-a"
+        cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     payload_a = cli._module_lowering_context_payload(**kwargs)
     monkeypatch.setattr(
-        cli_module_cache, "_cache_tooling_fingerprint", lambda: "tool-b"
+        cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
     )
     payload_b = cli._module_lowering_context_payload(**kwargs)
 

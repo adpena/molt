@@ -20,7 +20,7 @@ from molt.cli.backend_cache import (
     _read_artifact_sync_state,
     _write_artifact_sync_payload,
 )
-from molt.cli.cache_fingerprints import _cache_tooling_fingerprint
+from molt.cli.cache_fingerprints import _frontend_semantic_tooling_fingerprint
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.function_references import (
     format_function_reference_edges,
@@ -766,7 +766,7 @@ def _module_analysis_cache_key(
         import_scan_mode,
         kind,
         target_python.tag,
-        _cache_tooling_fingerprint(),
+        _frontend_semantic_tooling_fingerprint(),
     ]
     if capability_config_digest:
         key_parts.append(f"capability_config={capability_config_digest}")
@@ -907,7 +907,8 @@ def _validate_persisted_module_analysis_payload(
         return None
     if (
         payload.get("version") != _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION
-        or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+        or payload.get("compiler_fingerprint")
+        != _frontend_semantic_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
         or payload.get("capability_config_digest", "") != capability_config_digest
     ):
@@ -1038,7 +1039,7 @@ def _write_persisted_module_analysis(
         return
     payload: dict[str, Any] = {
         "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
-        "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "capability_config_digest": capability_config_digest,
         "module_name": module_name,
         "is_package": is_package,
@@ -1417,7 +1418,7 @@ def _module_lowering_context_payload(
         "is_package": is_package,
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_override,
-        "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
         "size": path_stat.st_size,
