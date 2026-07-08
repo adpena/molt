@@ -324,6 +324,33 @@ fn make_call_method(result: u32, method: &str, args: Vec<u32>) -> TirOp {
 }
 
 #[test]
+fn defers_float_str_repr_constants_to_runtime_formatter() {
+    // CPython 3.12 repr(f64::from_bits(0x4289368ec8725340)) is
+    // "3465264303690.4062"; Rust Display rounds this exact value to
+    // "...4063". SCCP must not rewrite either call unless it can use the same
+    // CPython-compatible formatter as the runtime.
+    let tricky = f64::from_bits(0x4289368ec8725340);
+    let ops = vec![
+        make_const_float(0, tricky),
+        make_call_builtin(1, "str", vec![0]),
+        make_call_builtin(2, "repr", vec![0]),
+    ];
+    let (result_ops, _) = run_sccp_on_ops(ops, 3);
+    assert_eq!(result_ops[1].opcode, OpCode::CallBuiltin);
+    assert_eq!(result_ops[1].operands, vec![ValueId(0)]);
+    assert_eq!(
+        result_ops[1].attrs.get("name"),
+        Some(&AttrValue::Str("str".into()))
+    );
+    assert_eq!(result_ops[2].opcode, OpCode::CallBuiltin);
+    assert_eq!(result_ops[2].operands, vec![ValueId(0)]);
+    assert_eq!(
+        result_ops[2].attrs.get("name"),
+        Some(&AttrValue::Str("repr".into()))
+    );
+}
+
+#[test]
 fn fold_len_of_constant_string() {
     // len("hello") => 5
     let ops = vec![
