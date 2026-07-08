@@ -68,6 +68,14 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   re-verified with `cargo test -p molt-backend-wasm --features test-util
   wasm_data::tests` (`2 passed`) and `cargo test -p molt-backend --features
   wasm-backend --test wasm_data_segments` (`9 passed`).
+- **#23 runtime-wasm shared cache publish telemetry: LANDED**. Runtime wasm
+  shared-cache publish failures now increment process-local cache diagnostics,
+  retain the last failure reason, warn on human build output, and flow into
+  `build_diagnostics.runtime_wasm_cache` so a broken shared cache is visible
+  instead of degenerating into silent cold rebuilds. Re-verified with
+  `tests/cli/test_cli_runtime_wasm_shared_cache.py` plus the four
+  runtime-wasm-cache diagnostics tests in
+  `tests/cli/test_cli_import_collection.py` (`15 passed`).
 - NOTE: not in the review but landed same arc — the biggest build-throughput win was
   `ad0cafb82` **adaptive cargo jobs (2→14)**: a hardcoded CARGO_BUILD_JOBS=2 defeated
   the memory-bounded ceiling (~7x under-parallelism). Plus `bdd42535e` persistent
