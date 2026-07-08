@@ -380,6 +380,7 @@ class GeneratorStateMixin(_MixinBase):
         self.module_declared_classes: set[str] = set()
         self.stable_module_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
+        self.module_elided_deleted_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()
         self.module_global_mutations: set[str] = set()
         self.module_globals_dict_escaped = False

@@ -283,6 +283,12 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     delete_target(elt)
                 return
             if isinstance(target, ast.Name):
+                if (
+                    self.current_func_name == "molt_main"
+                    and target.id in self.module_elided_deleted_funcs
+                ):
+                    self.module_elided_deleted_funcs.discard(target.id)
+                    return
                 self._emit_delete_name(target.id)
                 return
             if isinstance(target, ast.Attribute):
