@@ -543,27 +543,12 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                         } else {
                             0
                         };
-                        let Some(storage_ptr) =
-                            crate::object::layout::ListBoolStorage::filled(total, fill)
-                        else {
-                            return raise_exception::<_>(
-                                _py,
-                                "MemoryError",
-                                "list allocation failed",
-                            );
+                        return match crate::object::builders::alloc_list_bool_filled(
+                            _py, total, fill,
+                        ) {
+                            Ok(out_ptr) => Some(MoltObject::from_ptr(out_ptr).bits()),
+                            Err(_) => None,
                         };
-                        let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
-                            + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
-                            + std::mem::size_of::<u64>(); // padding
-                        let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_BOOL);
-                        if out_ptr.is_null() {
-                            // Reconstruct and drop the vec to free the buffer.
-                            drop((*Box::from_raw(storage_ptr)).into_vec());
-                            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                        }
-                        *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) =
-                            storage_ptr;
-                        return Some(MoltObject::from_ptr(out_ptr).bits());
                     }
 
                     // Int fast path: [0] * N, [42] * N, [-1] * N → ListIntStorage.
@@ -571,26 +556,12 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     // enabling direct memory loads in the native backend's inline
                     // getitem/setitem paths.
                     if let Some(int_val) = val_obj.as_int() {
-                        let Some(storage_ptr) =
-                            crate::object::layout::ListIntStorage::filled(total, int_val)
-                        else {
-                            return raise_exception::<_>(
-                                _py,
-                                "MemoryError",
-                                "list allocation failed",
-                            );
+                        return match crate::object::builders::alloc_list_int_filled(
+                            _py, total, int_val,
+                        ) {
+                            Ok(out_ptr) => Some(MoltObject::from_ptr(out_ptr).bits()),
+                            Err(_) => None,
                         };
-                        let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
-                            + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
-                            + std::mem::size_of::<u64>(); // padding
-                        let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_INT);
-                        if out_ptr.is_null() {
-                            // Reconstruct and drop the vec to free the buffer.
-                            drop((*Box::from_raw(storage_ptr)).into_vec());
-                            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-                        }
-                        *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
-                        return Some(MoltObject::from_ptr(out_ptr).bits());
                     }
 
                     // Single-element repeat: vec![val; total] compiles to
@@ -631,39 +602,23 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
             TYPE_ID_LIST_BOOL => {
                 let elems = crate::object::layout::list_bool_vec_ref(ptr);
                 let src = elems.as_slice();
-                let Some(storage_ptr) =
-                    crate::object::layout::ListBoolStorage::repeated_slice(src, times)
-                else {
-                    return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
-                };
-                let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
-                    + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
-                    + std::mem::size_of::<u64>();
-                let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_BOOL);
-                if out_ptr.is_null() {
-                    drop((*Box::from_raw(storage_ptr)).into_vec());
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                match crate::object::builders::alloc_list_bool_from_repeated_raw_slice(
+                    _py, src, times,
+                ) {
+                    Ok(out_ptr) => Some(MoltObject::from_ptr(out_ptr).bits()),
+                    Err(_) => None,
                 }
-                *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
-                Some(MoltObject::from_ptr(out_ptr).bits())
             }
             TYPE_ID_LIST_INT => {
                 let elems = crate::object::layout::list_int_vec_ref(ptr);
-                let Some(storage_ptr) =
-                    crate::object::layout::ListIntStorage::repeated_slice(elems.as_slice(), times)
-                else {
-                    return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
-                };
-                let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
-                    + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
-                    + std::mem::size_of::<u64>();
-                let out_ptr = alloc_object(_py, obj_size, TYPE_ID_LIST_INT);
-                if out_ptr.is_null() {
-                    drop((*Box::from_raw(storage_ptr)).into_vec());
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                match crate::object::builders::alloc_list_int_from_repeated_raw_slice(
+                    _py,
+                    elems.as_slice(),
+                    times,
+                ) {
+                    Ok(out_ptr) => Some(MoltObject::from_ptr(out_ptr).bits()),
+                    Err(_) => None,
                 }
-                *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
-                Some(MoltObject::from_ptr(out_ptr).bits())
             }
             TYPE_ID_TUPLE => {
                 let elems = seq_vec_ref(ptr);

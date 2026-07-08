@@ -900,6 +900,221 @@ pub(crate) fn alloc_list_with_capacity_owned(
     ptr
 }
 
+#[inline]
+fn specialized_list_object_size<Storage>() -> usize {
+    std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut Storage>()
+        + std::mem::size_of::<u64>()
+}
+
+#[inline]
+unsafe fn drop_list_int_storage(storage_ptr: *mut crate::object::layout::ListIntStorage) {
+    unsafe {
+        drop((*Box::from_raw(storage_ptr)).into_vec());
+    }
+}
+
+#[inline]
+unsafe fn drop_list_bool_storage(storage_ptr: *mut crate::object::layout::ListBoolStorage) {
+    unsafe {
+        drop((*Box::from_raw(storage_ptr)).into_vec());
+    }
+}
+
+unsafe fn alloc_list_int_with_storage(
+    _py: &PyToken<'_>,
+    storage_ptr: *mut crate::object::layout::ListIntStorage,
+) -> Result<*mut u8, u64> {
+    let out_ptr = alloc_object(
+        _py,
+        specialized_list_object_size::<crate::object::layout::ListIntStorage>(),
+        TYPE_ID_LIST_INT,
+    );
+    if out_ptr.is_null() {
+        unsafe {
+            drop_list_int_storage(storage_ptr);
+        }
+        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+    }
+    unsafe {
+        *(out_ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
+    }
+    Ok(out_ptr)
+}
+
+unsafe fn alloc_list_bool_with_storage(
+    _py: &PyToken<'_>,
+    storage_ptr: *mut crate::object::layout::ListBoolStorage,
+) -> Result<*mut u8, u64> {
+    let out_ptr = alloc_object(
+        _py,
+        specialized_list_object_size::<crate::object::layout::ListBoolStorage>(),
+        TYPE_ID_LIST_BOOL,
+    );
+    if out_ptr.is_null() {
+        unsafe {
+            drop_list_bool_storage(storage_ptr);
+        }
+        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+    }
+    unsafe {
+        *(out_ptr as *mut *mut crate::object::layout::ListBoolStorage) = storage_ptr;
+    }
+    Ok(out_ptr)
+}
+
+pub(crate) fn alloc_list_int_from_raw_slice(
+    _py: &PyToken<'_>,
+    elems: &[i64],
+) -> Result<*mut u8, u64> {
+    let Some(storage_ptr) = crate::object::layout::ListIntStorage::from_slice(elems) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe { alloc_list_int_with_storage(_py, storage_ptr) }
+}
+
+pub(crate) fn alloc_list_bool_from_raw_slice(
+    _py: &PyToken<'_>,
+    elems: &[u8],
+) -> Result<*mut u8, u64> {
+    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::from_slice(elems) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe { alloc_list_bool_with_storage(_py, storage_ptr) }
+}
+
+pub(crate) fn alloc_list_int_filled(
+    _py: &PyToken<'_>,
+    len: usize,
+    value: i64,
+) -> Result<*mut u8, u64> {
+    let Some(storage_ptr) = crate::object::layout::ListIntStorage::filled(len, value) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe { alloc_list_int_with_storage(_py, storage_ptr) }
+}
+
+pub(crate) fn alloc_list_bool_filled(
+    _py: &PyToken<'_>,
+    len: usize,
+    value: u8,
+) -> Result<*mut u8, u64> {
+    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::filled(len, value) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe { alloc_list_bool_with_storage(_py, storage_ptr) }
+}
+
+pub(crate) fn alloc_list_int_from_repeated_raw_slice(
+    _py: &PyToken<'_>,
+    elems: &[i64],
+    times: usize,
+) -> Result<*mut u8, u64> {
+    let Some(storage_ptr) = crate::object::layout::ListIntStorage::repeated_slice(elems, times)
+    else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe { alloc_list_int_with_storage(_py, storage_ptr) }
+}
+
+pub(crate) fn alloc_list_bool_from_repeated_raw_slice(
+    _py: &PyToken<'_>,
+    elems: &[u8],
+    times: usize,
+) -> Result<*mut u8, u64> {
+    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::repeated_slice(elems, times)
+    else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe { alloc_list_bool_with_storage(_py, storage_ptr) }
+}
+
+pub(crate) fn alloc_list_int_from_raw_iter<F>(
+    _py: &PyToken<'_>,
+    len: usize,
+    mut raw_at: F,
+) -> Result<*mut u8, u64>
+where
+    F: FnMut(usize) -> i64,
+{
+    let Some(storage_ptr) = crate::object::layout::ListIntStorage::with_capacity(len) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe {
+        let storage = &mut *storage_ptr;
+        for idx in 0..len {
+            if !storage.push(raw_at(idx)) {
+                drop_list_int_storage(storage_ptr);
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "list allocation failed",
+                ));
+            }
+        }
+        alloc_list_int_with_storage(_py, storage_ptr)
+    }
+}
+
+pub(crate) fn alloc_list_bool_from_raw_iter<F>(
+    _py: &PyToken<'_>,
+    len: usize,
+    mut raw_at: F,
+) -> Result<*mut u8, u64>
+where
+    F: FnMut(usize) -> u8,
+{
+    let Some(storage_ptr) = crate::object::layout::ListBoolStorage::with_capacity(len) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "list allocation failed",
+        ));
+    };
+    unsafe {
+        let storage = &mut *storage_ptr;
+        for idx in 0..len {
+            if !storage.push(raw_at(idx)) {
+                drop_list_bool_storage(storage_ptr);
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "MemoryError",
+                    "list allocation failed",
+                ));
+            }
+        }
+        alloc_list_bool_with_storage(_py, storage_ptr)
+    }
+}
+
 pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     let cap = if elems.len() <= MAX_SMALL_LIST {
         MAX_SMALL_LIST

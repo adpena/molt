@@ -63,6 +63,12 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   `with_gil_entry_nopanic`, while heap-ref updates still enter the canonical
   refcount path. Verified with `cargo test -p molt-runtime specialized_list
   --lib` (`2 passed`, `484 filtered out`).
+- **#14 specialized-list slice flat builder: LANDED**. Specialized int/bool
+  slicing now preserves `TYPE_ID_LIST_INT`/`TYPE_ID_LIST_BOOL` and fills flat
+  storage directly through the shared builder authority; list copy, list repeat,
+  and `molt_list_int_new` use the same specialized-list allocation primitive
+  instead of hand-allocating storage/object pairs. Verified with `cargo test -p
+  molt-runtime specialized_list --lib` (`5 passed`, `484 filtered out`).
 - **#18 WASM data segment alignment: LANDED**. Each segment now aligns its own
   start before emission instead of inheriting the previous segment's alignment;
   re-verified with `cargo test -p molt-backend-wasm --features test-util
