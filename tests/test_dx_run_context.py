@@ -261,11 +261,13 @@ def test_run_context_prefers_external_without_rejecting_explicit_user_output_roo
 
 
 def test_run_context_require_external_artifacts_forces_candidate(
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
     external_root = tmp_path / "external-drive" / "Molt"
     repo_root.mkdir()
+    monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
 
     env = RunContext(repo_root, session_prefix="test").canonical_env(
         {

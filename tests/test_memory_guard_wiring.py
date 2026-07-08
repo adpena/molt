@@ -197,11 +197,12 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
     class Completed:
         returncode = 77
 
-    def fake_run(argv, *, env, check, creationflags=0):
+    def fake_run(argv, *, env, check, creationflags=0, **kwargs):
         captured["argv"] = list(argv)
         captured["env"] = dict(env)
         captured["check"] = check
         captured["creationflags"] = creationflags
+        captured["stdio"] = dict(kwargs)
         return Completed()
 
     def fake_execvpe(*_args):
@@ -243,7 +244,7 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
     assert isinstance(env, dict)
     assert env["MOLT_PYTEST_OUTER_GUARD_REEXEC"] == "1"
     assert captured["check"] is False
-    assert captured["creationflags"] == getattr(
+    assert captured["creationflags"] & getattr(
         pytest_memory_guard_bootstrap.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
         0,
@@ -251,8 +252,8 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
 
 
 def test_pytest_startup_windows_handoff_interrupt_exits_cleanly(monkeypatch) -> None:
-    def fake_run(argv, *, env, check, creationflags=0):
-        del argv, env, check, creationflags
+    def fake_run(argv, *, env, check, creationflags=0, **kwargs):
+        del argv, env, check, creationflags, kwargs
         raise KeyboardInterrupt
 
     def fake_exit(code):
@@ -650,6 +651,9 @@ def test_windows_pytest_artifact_base_skips_unhealthy_external_candidate(
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", raising=False)
     monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_c_drive_path", lambda _path: False
+    )
+    monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "_default_windows_pytest_artifact_roots",
         lambda: (unhealthy, healthy),
@@ -698,6 +702,24 @@ def test_windows_pytest_artifact_base_rejects_c_drive_ext_root(
 
     with pytest.raises(RuntimeError, match="must not be placed on C"):
         pytest_memory_guard_bootstrap._windows_pytest_artifact_base()
+
+
+def test_windows_pytest_artifact_base_accepts_attested_c_drive_ext_root(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_c_drive_path", lambda _path: True
+    )
+    artifact_root = tmp_path / "artifact-root"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
+    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
+
+    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == (
+        artifact_root / "tmp"
+    )
 
 
 def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None:
