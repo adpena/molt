@@ -21,11 +21,32 @@ drift/slowness. **STOP using it — cwd, venv, worktrees, `.pth`, PYTHONPATH, an
 | **build artifacts** | `C:\Molt` (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt` + `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`, NVMe, auto-janitored) |
 
 **FORBIDDEN (being deleted):** `C:\Users\adpen\OneDrive\Documents\molt` and every
-worktree under `D:\Molt\worktrees` (they reference the doomed OneDrive `.git`). Do
-NOT point the editable install / `.pth` / PYTHONPATH there; do NOT run `uv`/`pip`
-from it (that re-anchors the editable install onto OneDrive — the exact drift being
-retired). If your cwd or `.pth` resolves to the OneDrive checkout, STOP and
-`cd C:\Molt\molt-src` first. The orchestrator owns the retirement; do not fight it.
+worktree that references the doomed OneDrive `.git` (scattered under `C:\Molt\worktrees`,
+`D:\Molt\worktrees`, and legacy `E:\Molt\worktrees`). Do NOT point the editable
+install / `.pth` / PYTHONPATH there; do NOT run `uv`/`pip` from it (that re-anchors
+the editable install onto OneDrive — the exact drift being retired). If your cwd or
+`.pth` resolves to the OneDrive checkout, STOP and `cd C:\Molt\molt-src` first. The
+orchestrator owns the retirement; do not fight it.
+
+**RETIREMENT STATUS (2026-07-08):** The OneDrive checkout + 100 pre-today OneDrive-`.git`
+worktrees (48 legacy `E:`, 51 `D:`, 1 old `C:`) are being **permanently deleted now**.
+All committed work is bundled on `D:\Molt\*.bundle` (`onedrive-legacy-refs --all` =
+every ref, verified 440 M) + dirty WIP (`full-wip2`, `all-worktree-wip`) — zero
+committed-signal loss. **13 today-dated worktrees are HELD** (spared this pass so live
+agents don't lose in-flight WIP). **If you are an agent on one of these 13, you MUST
+now: `git add -A && git commit` your WIP, push your branch to origin, then move to a
+FRESH worktree off `C:\Molt\molt-src` (`git -C C:\Molt\molt-src worktree add ...`).**
+Once you have landed/pushed, the orchestrator sweeps your old OneDrive-`.git` worktree.
+HELD (pending-delete — drain + reanchor):
+`codex-c1-builtin-constructors-land-20260708`, `codex-c1-runtime-next-20260708`,
+`codex-sourceplan-seal-witness-prep-20260708`, `agent-codexb-20260708`,
+`agent-sealexec-20260708`, `agent-surface-audit-20260708`,
+`codex-c1-methods-decomp-20260708`, `codex-c1-runtime-decomp-next-20260708`,
+`codex-c4-perf-suite-authority-20260708`, `codex-e1-sourceplan-skip-diagnostic-20260708`,
+`codex-proofqueue-preflight-main-20260708`, `codex-r5c-lowering-cache-attest-20260708`,
+`codex-r5c-test-executor-shutdown-20260708`. **KEEP (canonical clone worktrees — NOT
+retired):** `C:\Molt\molt-src` + `C:\Molt\worktrees\codex-c1-runtime-set-like-20260708`,
+`codex-c1-string-split-land-20260708`, `codex-e1-harvest-main-20260708`.
 
 ## 🚀 DEV-VELOCITY PROTOCOL (2026-07-08 CURRENT) — Codex: REBASE, then COMPLY
 
