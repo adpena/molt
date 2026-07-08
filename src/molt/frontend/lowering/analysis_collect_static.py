@@ -550,6 +550,16 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 self.names.update(outer._collect_target_names(node.target))
                 self.generic_visit(node.value)
 
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+                # Walrus (:=) binds its target in the ENCLOSING scope (outside any
+                # comprehension). Omitting it here diverged from CPython's symbol
+                # table: the local was mis-seen as global/free, corrupting
+                # unbound-checks, closure-cell boxing, and free-var classification.
+                # Mirrors _collect_assigned_names_ordered's NamedExpr handler.
+                if isinstance(node.target, ast.Name):
+                    self.names.add(node.target.id)
+                self.generic_visit(node.value)
+
             def visit_For(self, node: ast.For) -> None:
                 self.names.update(outer._collect_target_names(node.target))
                 self.generic_visit(node)
