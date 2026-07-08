@@ -909,8 +909,14 @@ def _object_closure_abi_symbol_board(
                     "the generated WASM ABI/link import surface"
                 )
             else:
-                status = "package_native"
+                status = "missing"
                 primitive_class = "native_package_symbol"
+                errors.append(
+                    f"object_closure runtime ABI symbol {symbol!r} is package-native "
+                    "but has no object owner; add its defining source/object to "
+                    "object_closure.defined_symbols or declare an explicit "
+                    "external link/runtime ABI authority"
+                )
         elif symbol in runtime_backed_symbols:
             status = "missing"
             primitive_class = _abi_primitive_class(symbol)

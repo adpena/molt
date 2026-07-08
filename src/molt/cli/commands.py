@@ -1820,6 +1820,28 @@ def _extension_manifest_public_exports(
     )
 
 
+def _source_plan_skipped_generated_sources_warning(
+    source_plan: _source_extensions._SourceExtensionBuildPlan | None,
+) -> str | None:
+    if source_plan is None or not source_plan.skipped_generated_sources:
+        return None
+    preview = [str(path) for path in source_plan.skipped_generated_sources[:8]]
+    remaining = len(source_plan.skipped_generated_sources) - len(preview)
+    suffix = f"; +{remaining} more" if remaining > 0 else ""
+    noun = (
+        "source"
+        if len(source_plan.skipped_generated_sources) == 1
+        else "sources"
+    )
+    return (
+        "source_plan skipped "
+        f"{len(source_plan.skipped_generated_sources)} cleaned generated {noun} "
+        "absent from disk: "
+        + ", ".join(preview)
+        + suffix
+    )
+
+
 def extension_build(
     project: str | None = None,
     out_dir: str | None = None,
@@ -2957,6 +2979,11 @@ def extension_build(
             build_payload["source_c_api_scan"] = (
                 source_c_api_requirements.manifest_payload()
             )
+        source_plan_skipped_sources_warning = (
+            _source_plan_skipped_generated_sources_warning(loaded_source_plan)
+        )
+        if source_plan_skipped_sources_warning is not None:
+            warnings.append(source_plan_skipped_sources_warning)
         if loaded_source_plan is not None:
             manifest_payload["source_plan"] = loaded_source_plan.manifest_payload()
             build_payload["source_plan_digest"] = loaded_source_plan.digest
@@ -3187,6 +3214,8 @@ def extension_build(
         print(f"Wrote extension manifest: {manifest_path}")
         print(f"Wrote extension artifact: {extracted_extension_path}")
         print(f"Wrote artifact manifest: {artifact_manifest_path}")
+        if source_plan_skipped_sources_warning is not None:
+            print(f"Warning: {source_plan_skipped_sources_warning}", file=sys.stderr)
         if verbose:
             print(f"Target triple: {target_triple}")
             print(f"Build target: {runtime_target_triple or 'native'}")

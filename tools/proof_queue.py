@@ -154,6 +154,10 @@ NATIVE_SUPPORT_CUSTODY_RE = re.compile(
     r"reachable native support source imports native package modules without source "
     r"or artifact custody:\s+(?P<detail>[^\r\n]+)"
 )
+SOURCE_EXTENSION_NM_MISSING_RE = re.compile(
+    r"unable to read global symbol table for compiled extension object "
+    r"(?P<object>[^\r\n;]+); install llvm-nm/nm or set MOLT_NM"
+)
 STDLIB_PROFILE_REFUSAL_RE = re.compile(
     r"Profile '(?P<profile>[^']+)' excludes the '(?P<feature>[^']+)' "
     r"runtime feature"
