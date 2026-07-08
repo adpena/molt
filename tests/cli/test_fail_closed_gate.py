@@ -11,8 +11,10 @@ Covers:
   * a ratchet negative control: registering one more row of a class than its
     baseline fails the ratchet.
 
-The four poison classes and their injected fixtures:
+The poison classes and their injected fixtures:
   A ecosystem_baked    — a ``typedef struct PyArray_Descr`` in a Molt-owned header
+  A2 ecosystem_build_crutch — a ``regen_scipy_*`` package-specific source-plan
+                          helper that bypasses upstream build metadata custody
   B fail_open_stub      — a ``#[no_mangle]`` ABI export using ``wrapping_add`` on int
   C todo_as_plan        — a ``status:divergent`` marker inside a public def that
                           returns a divergent value (does not fail closed)
@@ -22,6 +24,7 @@ The four poison classes and their injected fixtures:
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -51,6 +54,8 @@ def _load_gate_module():
 _EMPTY_REGISTRY = (
     "[baseline]\n"
     "ecosystem_baked = 0\n"
+    "ecosystem_build_crutch = 0\n"
+    "ecosystem_reimplementation = 0\n"
     "fail_open_stub = 0\n"
     "duplicate_authority = 0\n"
     "todo_as_plan = 0\n"
@@ -150,6 +155,75 @@ def test_negative_control_ecosystem_baked_fails_then_passes(tmp_path: Path) -> N
         encoding="utf-8",
     )
     assert not gate.discover_ecosystem_baked(tmp_path), "forwarder must not be flagged"
+    assert not gate.run_gate(tmp_path, registry)
+
+
+# ---------------------------------------------------------------------------
+# Negative control A2 — ecosystem_build_crutch
+# ---------------------------------------------------------------------------
+def test_negative_control_ecosystem_build_crutch_fails_then_passes(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    registry = _write_empty_registry(tmp_path)
+    helper = tmp_path / "tools" / "regen_scipy_ndimage_source_plan.py"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text(
+        '"""Hand-authored SciPy ndimage source_plan helper."""\n'
+        "SOURCES = ['scipy/ndimage/src/ni_label.c']\n"
+        "def main():\n"
+        "    return 'compile_commands.json for scipy'\n",
+        encoding="utf-8",
+    )
+
+    discovered = gate.discover_ecosystem_build_crutches(tmp_path)
+    assert any(
+        s.file == "tools/regen_scipy_ndimage_source_plan.py" for s in discovered
+    ), f"Scan F failed to discover injected package build crutch; got {discovered}"
+
+    fail = gate.run_gate(tmp_path, registry)
+    assert any(
+        v.kind == "unregistered-poison-site"
+        and "regen_scipy_ndimage_source_plan.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail on unregistered ecosystem_build_crutch; got {fail}"
+
+    helper.unlink()
+    assert not gate.discover_ecosystem_build_crutches(tmp_path)
+    assert not gate.run_gate(tmp_path, registry)
+
+
+# ---------------------------------------------------------------------------
+# Negative control A3 - ecosystem_reimplementation
+# ---------------------------------------------------------------------------
+def test_negative_control_ecosystem_reimplementation_fails_then_passes(
+    tmp_path: Path,
+) -> None:
+    gate = _load_gate_module()
+    registry = _write_empty_registry(tmp_path)
+    package = tmp_path / "src" / "molt" / "stdlib" / "numpy" / "__init__.py"
+    package.parent.mkdir(parents=True, exist_ok=True)
+    package.write_text(
+        '"""Fake NumPy implemented inside Molt."""\n'
+        "def array(values):\n"
+        "    return list(values)\n",
+        encoding="utf-8",
+    )
+
+    discovered = gate.discover_ecosystem_reimplementations(tmp_path)
+    assert any(
+        s.file == "src/molt/stdlib/numpy/__init__.py" for s in discovered
+    ), f"Scan A3 failed to discover injected package reimplementation; got {discovered}"
+
+    fail = gate.run_gate(tmp_path, registry)
+    assert any(
+        v.kind == "unregistered-poison-site"
+        and "src/molt/stdlib/numpy/__init__.py" in v.detail
+        for v in fail
+    ), f"gate MUST fail on unregistered ecosystem_reimplementation; got {fail}"
+
+    shutil.rmtree(package.parent)
+    assert not gate.discover_ecosystem_reimplementations(tmp_path)
     assert not gate.run_gate(tmp_path, registry)
 
 

@@ -12,6 +12,18 @@ behavior — in favour of a shortcut that silently ships a wrong or degraded ans
     ``static inline`` body is upstream semantics frozen into Molt; it rots the
     moment upstream moves and it is not the reusable primitive the contract wants.
 
+  * ecosystem_build_crutch — a package-specific source-plan/build helper or
+    generated-header/config authoring path that hand-maintains what the
+    package's own build metadata and build system must own. Molt may run and
+    introspect upstream Meson/setup.py/Cython/etc.; it must not clone that logic
+    into one-off ``regen_scipy_*`` / ``regen_numpy_*`` lanes.
+
+  * ecosystem_reimplementation — a Molt-owned Python package root for NumPy,
+    SciPy, pandas, tinygrad, or a similar third-party library. Molt must compile
+    upstream package Python plus source-recompiled extensions through package
+    custody and auto-provision the required build backend/toolchain/libraries;
+    it must not grow a shadow ``src/molt/stdlib/<package>`` implementation.
+
   * fail_open_stub    — a ``#[no_mangle] extern "C"`` ABI export that returns a
     plausible NON-NULL / success sentinel on a path it does not actually
     implement (``MoltObject::none()`` / ``PyList_New(0)`` placeholder,
@@ -44,13 +56,15 @@ behavior — in favour of a shortcut that silently ships a wrong or degraded ans
     API whose body says "ignore for now" is a poison site.
 
 ``tools/fail_closed_registry.toml`` is the single authority: one row per KNOWN
-poison site, classified into the four classes above, each naming the
+poison site, classified into the poison classes above, each naming the
 ``resolution_row`` (the rip task driving it to zero). This gate is the teeth. It
 is modelled EXACTLY on ``tools/degrade_to_slow_gate.py`` + its registry ratchet:
 
-  * DISCOVERY SCAN  — three scans (A ecosystem-baked, B fail-open ABI, C
-    todo-as-plan) sweep the real trees and emit the live poison-site set. A
-    curated allowlist keeps sound conservatism, thin compat forwarders, the
+  * DISCOVERY SCAN  — content scans (ecosystem-baked, ecosystem-build-crutch,
+    ecosystem-reimplementation, fail-open ABI/backend dispatch, todo-as-plan,
+    duplicate authority) sweep the real trees and emit the live poison-site set.
+    A curated allowlist keeps sound conservatism, thin compat forwarders,
+    package-build-system custody, the
     package-custody CLASSIFIER, and honest ``status:planned`` stubs OUT.
 
   * DRIFT RECONCILIATION — every discovered site MUST have a registry row. A new,
@@ -192,6 +206,8 @@ def _walk_files(base: Path, suffixes: frozenset[str]) -> Iterable[Path]:
 _VALID_CLASSES = frozenset(
     {
         "ecosystem_baked",
+        "ecosystem_build_crutch",
+        "ecosystem_reimplementation",
         "fail_open_stub",
         "duplicate_authority",
         "todo_as_plan",
@@ -366,6 +382,166 @@ def _first_line(text: str, needle: str) -> int:
         if needle in line:
             return i
     return 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scan F — ecosystem build/source-plan crutches
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A package build/source-plan crutch is not a package-owned C symbol definition;
+# it is Molt tooling cloning one package's build knowledge by hand. The correct
+# primitive is to run/provision/introspect the package's own build system
+# (pyproject/Meson/setup.py/Cython/etc.) through a generic custody path.
+_BUILD_CRUTCH_SCAN_DIRS = (
+    "tools",
+    "src/molt/cli",
+)
+_ECOSYSTEM_PACKAGE_NAMES = ("numpy", "scipy", "pandas", "tinygrad")
+_PACKAGE_REGEN_HELPER_RE = re.compile(
+    r"(?:^|/)regen_(?:numpy|scipy|pandas|tinygrad)[A-Za-z0-9_]*\.py$"
+)
+_PACKAGE_CONFIG_WRITE_RE = re.compile(
+    r"(?:scipy_config\.h|_numpyconfig\.h|numpyconfig\.h)"
+)
+_BUILD_CRUTCH_ALLOWLIST = frozenset(
+    {
+        # The gate names the poison class it enforces; that prose is not a
+        # package build helper.
+        "tools/fail_closed_gate.py",
+        # Generic source-extension authorities may mention package examples while
+        # consuming upstream Meson/compile_commands metadata for any package.
+        "src/molt/cli/source_extensions.py",
+        "src/molt/cli/source_extension_cython.py",
+        "src/molt/cli/source_extension_toolchain.py",
+    }
+)
+
+
+def discover_ecosystem_build_crutches(root: Path) -> list[DiscoveredSite]:
+    found: list[DiscoveredSite] = []
+    for path in _iter_files(root, _BUILD_CRUTCH_SCAN_DIRS, (".py",)):
+        rel = path.relative_to(root).as_posix()
+        if rel in _BUILD_CRUTCH_ALLOWLIST:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lower = text.lower()
+        if _PACKAGE_REGEN_HELPER_RE.search(rel):
+            if any(
+                token in lower
+                for token in (
+                    "source_plan",
+                    "source plan",
+                    "meson",
+                    "compile_commands",
+                    "ninja",
+                    "wasi",
+                )
+            ):
+                signature = path.name
+                found.append(
+                    DiscoveredSite(
+                        "F",
+                        "ecosystem_build_crutch",
+                        rel,
+                        signature,
+                        1,
+                        "package-specific regen/build helper; use a generic "
+                        "upstream-build-system custody path instead",
+                    )
+                )
+                continue
+        config_match = _PACKAGE_CONFIG_WRITE_RE.search(text)
+        if config_match and (
+            "write_text" in text
+            or "source_plan_target_facts" in text
+            or "generated-header" in lower
+        ):
+            line_no = _first_line(text, config_match.group(0))
+            signature = _line_at(text, line_no).strip()
+            found.append(
+                DiscoveredSite(
+                    "F",
+                    "ecosystem_build_crutch",
+                    rel,
+                    signature,
+                    line_no,
+                    "Molt-authored package config/generated-header path; derive "
+                    "this from the package build system instead",
+                )
+            )
+    return found
+
+
+def _line_at(text: str, line_no: int) -> str:
+    if line_no <= 0:
+        return ""
+    lines = text.splitlines()
+    if line_no > len(lines):
+        return ""
+    return lines[line_no - 1]
+
+
+_ECOSYSTEM_REIMPLEMENTATION_ROOTS = ("src/molt/stdlib",)
+
+
+def _ecosystem_reimplementation_signature(text: str, package: str) -> tuple[str, int]:
+    for i, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(("from ", "import ", "class ", "def ")) and package in line:
+            return line, i
+    for i, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line in {'"""', "'''"}:
+            continue
+        return line, i
+    return package, 1
+
+
+def _ecosystem_reimplementation_site(
+    root: Path, path: Path, package: str
+) -> DiscoveredSite:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    signature, line = _ecosystem_reimplementation_signature(text, package)
+    return DiscoveredSite(
+        "A3",
+        "ecosystem_reimplementation",
+        path.relative_to(root).as_posix(),
+        signature,
+        line,
+        f"Molt-owned Python package root for third-party package {package!r}; "
+        "compile upstream package sources/extensions through package custody "
+        "instead of reimplementing the library in Molt",
+    )
+
+
+def discover_ecosystem_reimplementations(root: Path) -> list[DiscoveredSite]:
+    found: list[DiscoveredSite] = []
+    for base_rel in _ECOSYSTEM_REIMPLEMENTATION_ROOTS:
+        base = root / base_rel
+        if not base.exists():
+            continue
+        for package in sorted(_ECOSYSTEM_PACKAGE_NAMES):
+            module_file = base / f"{package}.py"
+            if module_file.exists():
+                found.append(
+                    _ecosystem_reimplementation_site(root, module_file, package)
+                )
+            package_dir = base / package
+            if not package_dir.is_dir():
+                continue
+            init_file = package_dir / "__init__.py"
+            if init_file.exists():
+                found.append(_ecosystem_reimplementation_site(root, init_file, package))
+                continue
+            for py_file in sorted(package_dir.rglob("*.py")):
+                found.append(_ecosystem_reimplementation_site(root, py_file, package))
+                break
+    return found
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -866,6 +1042,8 @@ def _first_guard(text: str) -> str:
 def discover_all(root: Path) -> list[DiscoveredSite]:
     return (
         discover_ecosystem_baked(root)
+        + discover_ecosystem_build_crutches(root)
+        + discover_ecosystem_reimplementations(root)
         + discover_fail_open_abi(root)
         + discover_fail_open_backend_dispatch(root)
         + discover_todo_as_plan(root)

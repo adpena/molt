@@ -1,3 +1,34 @@
+# HIGHEST PRIORITY: UPSTREAM PACKAGE CUSTODY, NEVER REINVENTION
+
+These instructions bind every agent, orchestrator, and subagent before any
+other workflow habit. Molt compiles third-party Python and native extensions; it
+does not recreate third-party libraries inside Molt.
+
+- All package build prerequisites must resolve automatically through reusable
+  package/toolchain custody. If NumPy, SciPy, pandas, tinygrad, torch, sklearn,
+  or any other package needs Cython, Meson, Ninja, sysroots, generated headers,
+  native libraries, link flags, feature probes, or toolchain-specific build
+  steps, Molt must derive, provision, cache, and pass those requirements from
+  the package's own metadata/build system. Manual env-var recipes, hand installs,
+  and one-off witness setup are DX defects to fix in the shared provisioning
+  layer.
+- Never implement an upstream package's semantics as Molt-owned Python/Rust/C
+  package clones, headers, symbol tables, ndarray/tensor APIs, kernels, or
+  compatibility overlays. Upstream package behavior flows through source
+  admitted by package custody, source-recompiled extensions, C-API/ABI
+  primitives, typed storage, import/module custody, and generated reachability.
+- A missing package primitive is completed as a reusable compiler/runtime or
+  package-custody primitive, or it fails closed with a precise diagnostic. It is
+  never faked with host-CPython fallback, monkeypatching, vendored forks, baked
+  headers, local stubs, plausible fake returns, or copied package
+  implementations.
+- Harness self-protection is mandatory: `tools/fail_closed_gate.py` must reject
+  new ecosystem-baked files, ecosystem build crutches, Molt-owned third-party
+  package reimplementations, fail-open stubs, duplicate authorities, and
+  TODO-as-plan surfaces unless a tracked structural-resolution row already owns
+  deleting the registered debt. Spawn prompts must carry this rule; subagents
+  are not allowed to "unblock" a package by reinventing it.
+
 # Molt Agent Contract
 
 This root file is intentionally compact so Claude and other agents ingest the
@@ -198,8 +229,8 @@ is reconciled.
   families.
 - Treat interactive agent stdin writes as stdin input only, not process control.
   Never send Ctrl-C (`\u0003`), SIGINT-like bytes, ESC/control sequences, or
-  other interrupt payloads to stop a command. On Windows Codex Desktop this can
-  crash the control plane with `code=3221225786` and
+  other interrupt payloads to stop a command. On Windows Codex Desktop the
+  unified exec backend can crash with `code=3221225786` and
   `write_stdin failed: Unified exec process failed: process interrupt is not
   supported by this process backend` (`codex_core::tools::router`). Track as
   upstream `openai/codex#30847`; adjacent stale-stdin lifecycle issue:

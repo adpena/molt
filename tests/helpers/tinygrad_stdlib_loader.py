@@ -8,7 +8,7 @@ import types
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TINYGRAD_STDLIB = ROOT / "src" / "molt" / "stdlib" / "tinygrad"
+TINYGRAD_STDLIB = ROOT / "demos" / "tinygrad" / "reference_stdlib" / "tinygrad"
 
 
 def _load_module(module_name: str, path: Path):
