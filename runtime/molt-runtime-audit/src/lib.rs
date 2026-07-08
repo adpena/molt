@@ -519,7 +519,7 @@ pub fn audit_capability_decision_owned(
 #[macro_export]
 macro_rules! audit_cap_check {
     ($op:expr, $cap:expr, $args:expr, $decision:expr) => {
-        $crate::audit::audit_emit($crate::audit::AuditEvent::new(
+        $crate::audit_emit($crate::AuditEvent::new(
             $op,
             $cap,
             $args,
@@ -528,7 +528,7 @@ macro_rules! audit_cap_check {
         ));
     };
     ($op:expr, $cap:expr, $args:expr, $decision:expr, $module:expr) => {
-        $crate::audit::audit_emit($crate::audit::AuditEvent::new(
+        $crate::audit_emit($crate::AuditEvent::new(
             $op,
             $cap,
             $args,

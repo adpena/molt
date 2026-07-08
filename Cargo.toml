@@ -8,6 +8,7 @@ members = [
     "runtime/molt-runtime-path",
     "runtime/molt-runtime-stringprep",
     "runtime/molt-runtime-vfs",
+    "runtime/molt-runtime-audit",
     "runtime/molt-runtime-resource",
     "runtime/molt-runtime-tk",
     "runtime/molt-obj-model",
