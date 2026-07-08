@@ -109,6 +109,20 @@ def test_every_discovered_site_is_registered_in_seed() -> None:
     )
 
 
+def test_tinygrad_reference_clone_is_quarantined() -> None:
+    """The former Molt-owned tinygrad package clone is kept only as a
+    demos/reference fixture, never as a shipped stdlib package root."""
+    assert not (_REPO_ROOT / "src" / "molt" / "stdlib" / "tinygrad").exists()
+    assert (
+        _REPO_ROOT
+        / "demos"
+        / "tinygrad"
+        / "reference_stdlib"
+        / "tinygrad"
+        / "__init__.py"
+    ).exists()
+
+
 def test_registry_rows_use_only_known_classes() -> None:
     """Integrity: every registry row names a KNOWN poison class (catches a typo'd
     class in the TOML). A class may legitimately have ZERO rows once its poison is

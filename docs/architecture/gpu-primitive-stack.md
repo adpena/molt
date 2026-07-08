@@ -4,16 +4,18 @@
 
 Molt's GPU compute subsystem implements all of deep learning with 26 compute primitives, a zero-copy ShapeTracker view system, lazy evaluation DAG, kernel fusion, and multi-backend rendering. The design is tinygrad-conformant: the same 3 OpTypes and 26 ops that tinygrad uses to express all ML operations.
 
-Non-negotiable: tinygrad compatibility is a primitive and wiring contract, not
-a local fork of tinygrad semantics. `src/molt/stdlib/tinygrad/` and
-`src/tinygrad/` must expose exact upstream tinygrad API behavior over Molt's
-shared tensor/GPU/storage primitives. When upstream tinygrad needs a capability
-that Molt lacks, add the reusable primitive or fail closed with a precise
-diagnostic; do not patch around the gap with package-local behavior drift.
+Non-negotiable: tinygrad compatibility is a primitive, package-custody, and
+wiring contract, not a local fork of tinygrad semantics. Production tinygrad
+support compiles upstream tinygrad Python and extensions through Molt
+package/import custody with automatic toolchain provisioning. Molt-owned GPU
+code may use tinygrad's primitive model as the model for Molt compiler/runtime
+primitives. When upstream tinygrad needs a capability that Molt lacks, add the
+reusable primitive or fail closed with a precise diagnostic; do not patch around
+the gap with package-local behavior drift.
 
 ```
                      Python Tensor API
-                     (src/molt/stdlib/tinygrad/)
+                     (upstream tinygrad via package custody)
                             |
                             v
                     +-----------------+
@@ -55,11 +57,14 @@ diagnostic; do not patch around the gap with package-local behavior drift.
 ## Location
 
 - **Rust crate**: `runtime/molt-gpu/` (48 files, 15,748 LOC — 25 source, 21 test, 2 bench)
-- **Python API**: `src/molt/stdlib/tinygrad/` (21 files, 7,291 LOC)
-- **Public tinygrad shim**: `src/tinygrad/` re-exports the `molt.gpu.Tensor`
-  surface for `import tinygrad` and `from tinygrad import Tensor`; exact-case
-  import graph resolution prevents public attributes from being replaced by
-  case-mismatched child modules on case-insensitive filesystems.
+- **Python package API**: upstream tinygrad source admitted through
+  package/import custody. The former Molt-owned implementation is quarantined at
+  `demos/tinygrad/reference_stdlib/tinygrad/` for research/reference only and is
+  not a shipped stdlib/runtime package.
+- **Transitional public tinygrad shim**: `src/tinygrad/` re-exports selected
+  `molt.gpu` primitives for current compatibility probes. It is not the
+  end-state package semantics authority; package behavior belongs to upstream
+  tinygrad custody.
 - **Tests**: `runtime/molt-gpu/tests/` (21 test files, 323 tests)
 - **Benchmarks**: `runtime/molt-gpu/benches/` (2 files)
 
@@ -192,7 +197,7 @@ Narrowing is applied at render time and is transparent to the user.
 
 ### Python Tensor API
 
-`src/molt/stdlib/tinygrad/tensor.py` provides the user-facing Tensor class with ~80 methods that compose the 26 primitives:
+The quarantined reference package at `demos/tinygrad/reference_stdlib/tinygrad/tensor.py` preserves the former user-facing Tensor class with ~80 methods that compose the 26 primitives:
 
 - `exp()`, `log()`, `sin()`, `sqrt()` -- direct unary ops
 - `matmul()` -- RESHAPE + EXPAND + MUL + REDUCE_SUM
