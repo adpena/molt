@@ -35,7 +35,7 @@ fn normalize_wasm_poll_fn_addr(poll_fn_addr: u64) -> u64 {
     if poll_fn_addr >= table_base {
         return poll_fn_addr;
     }
-    let legacy_base = crate::WASM_TABLE_BASE_FALLBACK;
+    let legacy_base = crate::wasm_table_base_fallback();
     if table_base == legacy_base || poll_fn_addr < legacy_base {
         return poll_fn_addr;
     }
