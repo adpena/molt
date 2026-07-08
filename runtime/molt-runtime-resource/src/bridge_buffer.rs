@@ -11,7 +11,7 @@ fn charge_bridge_buffer<T>(len: usize) -> bool {
     if bytes == 0 {
         return true;
     }
-    crate::resource::with_tracker(|tracker| tracker.on_allocate(bytes)).is_ok()
+    crate::with_tracker(|tracker| tracker.on_allocate(bytes)).is_ok()
 }
 
 fn release_bridge_buffer<T>(len: usize) {
@@ -21,19 +21,22 @@ fn release_bridge_buffer<T>(len: usize) {
     if bytes == 0 {
         return;
     }
-    let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(bytes));
+    let _ = crate::try_with_tracker(|tracker| tracker.on_free(bytes));
 }
 
-pub(crate) fn export_u8_box(bytes: Box<[u8]>, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
+/// Export a boxed byte buffer to raw bridge out-pointers.
+///
+/// # Safety
+/// `out_ptr` and `out_len` must be valid, writable pointers when non-null.
+pub unsafe fn export_u8_box(bytes: Box<[u8]>, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
     export_box(bytes, out_ptr, out_len)
 }
 
-#[cfg(any(
-    feature = "stdlib_collections",
-    feature = "stdlib_regex",
-    feature = "stdlib_serial",
-))]
-pub(crate) fn export_u64_box(
+/// Export a boxed u64 buffer to raw bridge out-pointers.
+///
+/// # Safety
+/// `out_ptr` and `out_len` must be valid, writable pointers when non-null.
+pub unsafe fn export_u64_box(
     values: Box<[u64]>,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
@@ -41,8 +44,11 @@ pub(crate) fn export_u64_box(
     export_box(values, out_ptr, out_len)
 }
 
-#[cfg(feature = "stdlib_compression")]
-pub(crate) fn export_u8_box_ptr(bytes: Box<[u8]>, out_len: *mut usize) -> *mut u8 {
+/// Export a boxed byte buffer to a raw pointer plus length out-pointer.
+///
+/// # Safety
+/// `out_len` must be a valid, writable pointer when non-null.
+pub unsafe fn export_u8_box_ptr(bytes: Box<[u8]>, out_len: *mut usize) -> *mut u8 {
     if out_len.is_null() {
         return std::ptr::null_mut();
     }
@@ -77,7 +83,12 @@ fn export_box<T>(boxed: Box<[T]>, out_ptr: *mut *const T, out_len: *mut usize) -
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_bridge_free_u8(ptr: *mut u8, len: usize) {
+/// Free a byte buffer returned by this bridge-buffer authority.
+///
+/// # Safety
+/// `ptr` must be null or a pointer returned by `export_u8_box` or
+/// `export_u8_box_ptr` with the same `len`.
+pub unsafe extern "C" fn __molt_bridge_free_u8(ptr: *mut u8, len: usize) {
     if ptr.is_null() {
         return;
     }
@@ -88,7 +99,12 @@ pub extern "C" fn __molt_bridge_free_u8(ptr: *mut u8, len: usize) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
+/// Free a u64 buffer returned by this bridge-buffer authority.
+///
+/// # Safety
+/// `ptr` must be null or a pointer returned by `export_u64_box` with the same
+/// `len`.
+pub unsafe extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
     if ptr.is_null() {
         return;
     }
@@ -101,9 +117,7 @@ pub extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::{
-        LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker,
-    };
+    use crate::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker};
 
     struct TrackerReset;
 
@@ -123,13 +137,13 @@ mod tests {
         let mut out_ptr: *const u8 = std::ptr::null();
         let mut out_len = 0usize;
         assert_eq!(
-            export_u8_box(Box::from([1u8, 2, 3, 4]), &mut out_ptr, &mut out_len),
+            unsafe { export_u8_box(Box::from([1u8, 2, 3, 4]), &mut out_ptr, &mut out_len) },
             1
         );
         assert_eq!(out_len, 4);
         assert!(!out_ptr.is_null());
         assert!(with_tracker(|tracker| tracker.on_allocate(5)).is_err());
-        __molt_bridge_free_u8(out_ptr as *mut u8, out_len);
+        unsafe { __molt_bridge_free_u8(out_ptr as *mut u8, out_len) };
         assert!(with_tracker(|tracker| tracker.on_allocate(8)).is_ok());
     }
 
@@ -143,7 +157,7 @@ mod tests {
         let mut out_ptr: *const u64 = std::ptr::null();
         let mut out_len = 0usize;
         assert_eq!(
-            export_u64_box(Box::from([1u64]), &mut out_ptr, &mut out_len),
+            unsafe { export_u64_box(Box::from([1u64]), &mut out_ptr, &mut out_len) },
             0
         );
         assert!(out_ptr.is_null());

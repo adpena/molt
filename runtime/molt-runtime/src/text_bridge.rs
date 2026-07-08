@@ -87,7 +87,7 @@ pub extern "C" fn __molt_text_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
     }
@@ -111,7 +111,7 @@ pub extern "C" fn __molt_text_type_name(
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
 

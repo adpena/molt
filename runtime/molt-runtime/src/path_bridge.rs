@@ -154,7 +154,7 @@ pub extern "C" fn __molt_path_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
     }
@@ -357,11 +357,13 @@ pub extern "C" fn __molt_path_path_from_bits(
             Ok(path) => {
                 let s = path.to_string_lossy().into_owned();
                 let bytes = s.into_bytes().into_boxed_slice();
-                crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+                unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
             }
             Err(msg) => {
                 let bytes = msg.into_bytes().into_boxed_slice();
-                let _ = crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len);
+                let _ = unsafe {
+                    crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+                };
                 0
             }
         }
@@ -378,6 +380,6 @@ pub extern "C" fn __molt_path_type_name(
         let obj = obj_from_bits(bits);
         let name = crate::object::ops::type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }

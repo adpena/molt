@@ -13,6 +13,8 @@ use std::fmt;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+pub mod bridge_buffer;
+
 #[cfg(test)]
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

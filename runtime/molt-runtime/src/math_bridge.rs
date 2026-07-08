@@ -116,7 +116,7 @@ pub extern "C" fn __molt_math_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
     }
@@ -132,7 +132,7 @@ pub extern "C" fn __molt_math_type_name(
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
 
@@ -279,7 +279,8 @@ pub extern "C" fn __molt_math_to_bigint(
                 Sign::Plus => 1i32,
             };
             let boxed = bytes.into_boxed_slice();
-            let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+            let ok =
+                unsafe { crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len) };
             if ok == 0 {
                 return 0;
             }
@@ -370,7 +371,7 @@ pub extern "C" fn __molt_math_bigint_ref(
         Sign::Plus => 1i32,
     };
     let boxed = bytes.into_boxed_slice();
-    let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+    let ok = unsafe { crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len) };
     if ok == 0 {
         return 0;
     }
@@ -395,7 +396,7 @@ pub extern "C" fn __molt_math_bigint_from_f64_trunc(
         Sign::Plus => 1i32,
     };
     let boxed = bytes.into_boxed_slice();
-    let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+    let ok = unsafe { crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len) };
     if ok == 0 {
         return 0;
     }
@@ -472,7 +473,9 @@ pub extern "C" fn __molt_math_index_bigint_from_obj(
                     Sign::Plus => 1i32,
                 };
                 let boxed = bytes.into_boxed_slice();
-                let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+                let ok = unsafe {
+                    crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len)
+                };
                 if ok == 0 {
                     return 0;
                 }
@@ -537,7 +540,7 @@ pub extern "C" fn __molt_math_class_name_for_error(
 ) -> i32 {
     let name = _class_name_for_error(type_bits);
     let bytes = name.into_bytes().into_boxed_slice();
-    crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+    unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
 }
 
 #[unsafe(no_mangle)]
@@ -572,7 +575,7 @@ pub extern "C" fn __molt_math_format_obj(
         let obj = obj_from_bits(bits);
         let s = _format_obj(_py, obj);
         let bytes = s.into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
 
@@ -586,7 +589,7 @@ pub extern "C" fn __molt_math_format_obj_str(
         let obj = obj_from_bits(bits);
         let s = _format_obj_str(_py, obj);
         let bytes = s.into_bytes().into_boxed_slice();
-        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
+        unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
     })
 }
 
