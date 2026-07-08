@@ -207,6 +207,27 @@ it forced serial cargo and disabled wasm sccache even when the board and DX
 authority expected warm/shared builds. Any future WASM test helper should opt
 out of cache/parallelism only through explicit operator env, never as a default.
 
+2026-07-08 C1 follow-up: the runtime-independent `importlib` archive/path and
+metadata parsers now live in `molt-runtime-platform::importlib_support`.
+`molt-runtime` keeps the object/ABI/bootstrap bridge in
+`builtins/platform_importlib_support.rs`, but imports the pure helpers from the
+platform satellite instead of carrying local duplicate authority. Queue row
+`20260708T023119-c1-platform-importlib-support-satellite-20260708a-0e194159ce86428a`
+passed `cargo test -p molt-runtime-platform`, proving the satellite-owned
+parser behavior directly. The first fan-in row,
+`20260708T023132-c1-platform-importlib-support-fanin-20260708a-e7e5f9fad75945b6`,
+was an invalid proof shape: `cargo check -p molt-runtime --no-default-features`
+configured out `builtins` and failed before reaching this importlib cut. The
+next default-feature rerun,
+`20260708T024928-c1-platform-importlib-support-fanin-20260708b-b6b1663927d746ae`,
+failed because the new Rust module was still untracked and therefore absent
+from the queue proof snapshot. After staging the exact C1 pathspec, rerun
+`20260708T025204-c1-platform-importlib-support-fanin-20260708c-3f5c5eb82f664720`
+passed `cargo check -p molt-runtime` in 89.609s. The final warning-cleanup
+rerun,
+`20260708T025448-c1-platform-importlib-support-fanin-20260708d-e198f95e263342b9`,
+passed the same default-feature runtime fan-in in 89.938s.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
