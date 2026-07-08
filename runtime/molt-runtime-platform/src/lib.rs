@@ -6,6 +6,7 @@ pub mod importlib_support;
 pub mod libc_compat;
 pub mod randomness;
 pub mod socket_constants;
+pub mod stat_support;
 pub mod utils;
 pub mod uuid_support;
 #[cfg(windows)]

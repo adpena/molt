@@ -413,6 +413,32 @@ until the runtime fan-in is decomposed further. The warmed 58.9s final row shows
 the queue target reuse helps, but it does not erase the structural parent-crate
 tax.
 
+2026-07-08 C1 follow-up: pure `stat` mode support now lives in
+`molt-runtime-platform::stat_support`. The platform satellite owns POSIX/Windows
+mode constants, target-gated 3.13 stat constants, `S_IFMT`/`S_IMODE`, `S_IS*`
+predicates, and `filemode` text formatting. `molt-runtime` keeps only
+target-version lookup, Python object conversion, exported ABI entrypoints, and
+string/tuple allocation in `builtins/functions_stat.rs`.
+
+Proof rows: the first satellite row
+`20260708T044756-c1-platform-stat-support-satellite-20260708a-acc347d6b41e4da5`
+failed at compile time because the new test used an undefined shorthand
+`S_IRWXU`; `tools/proof_queue.py diagnose --append-note` recorded that as an
+E0425 test defect, and dependent fan-in row
+`20260708T044809-c1-platform-stat-support-fanin-20260708a-375a85464efa46c3`
+correctly stayed blocked. Corrected satellite row
+`20260708T045000-c1-platform-stat-support-satellite-20260708b-334c2e4aba514327`
+passed `cargo test -p molt-runtime-platform -j1` in 30.6s, and dependent fan-in
+row
+`20260708T045012-c1-platform-stat-support-fanin-20260708b-d922a660a2da4746`
+passed `cargo check -p molt-runtime` in 149.5s. After rebasing over the WASM
+state-remap split on `origin/main`, post-rebase satellite row
+`20260708T045944-c1-platform-stat-support-satellite-postrebase-20260708a-cabe43cba49148e7`
+passed `cargo test -p molt-runtime-platform -j1` in 42.8s, and post-rebase
+fan-in row
+`20260708T045954-c1-platform-stat-support-fanin-postrebase-20260708a-3426931702ba4d16`
+passed `cargo check -p molt-runtime` in 157.4s.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
