@@ -30,6 +30,13 @@ def _evidence(tmp_path: Path, name: str) -> dict[str, str]:
     }
 
 
+def _baseline_metrics(gate, rel_path: str) -> dict[str, float]:
+    baseline, error = gate._load_metric_baseline(rel_path)
+    assert error is None
+    assert baseline is not None
+    return {str(k): float(v) for k, v in baseline.items()}
+
+
 def _scoreboard_evidence(
     tmp_path: Path,
     gate,
@@ -120,6 +127,95 @@ def _scoreboard_evidence(
     }
 
 
+def _canonicalization_evidence(
+    tmp_path: Path,
+    gate,
+    *,
+    metrics: dict[str, float] | None = None,
+) -> dict[str, str]:
+    path = tmp_path / "canonicalization-contract.json"
+    doc = {
+        "violations": [],
+        "metrics": metrics
+        or _baseline_metrics(gate, "tools/canonicalization_contract_baseline.json"),
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return {
+        "path": path.name,
+        "command": "tools/canonicalization_contract.py --json",
+        "summary": "canonicalization contract ratchet captured",
+    }
+
+
+def _structural_audit_evidence(
+    tmp_path: Path,
+    gate,
+    *,
+    metrics: dict[str, float] | None = None,
+) -> dict[str, str]:
+    path = tmp_path / "structural-audit.json"
+    doc = {
+        "findings": [],
+        "metrics": metrics
+        or _baseline_metrics(gate, "tools/structural_audit_baseline.json"),
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return {
+        "path": path.name,
+        "command": "tools/structural_audit.py --json",
+        "summary": "structural audit ratchet captured",
+    }
+
+
+def _degrade_to_slow_evidence(
+    tmp_path: Path,
+    *,
+    ok: bool = True,
+    pending: int = 0,
+    baseline: int = 0,
+) -> dict[str, str]:
+    path = tmp_path / "degrade-to-slow.json"
+    doc = {
+        "ok": ok,
+        "errors": [] if ok else ["forced failure"],
+        "warnings": [],
+        "registry_row_count": 4,
+        "metabug_fix_pending_count": pending,
+        "metabug_fix_pending_baseline": baseline,
+        "discovered_site_count": 4,
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return {
+        "path": path.name,
+        "command": "tools/degrade_to_slow_gate.py --json",
+        "summary": "degrade-to-slow gate passed",
+    }
+
+
+def _fail_closed_evidence(tmp_path: Path, *, ok: bool = True) -> dict[str, str]:
+    path = tmp_path / "fail-closed.log"
+    text = (
+        "fail-closed gate: OK (12 registered sites; fail_open_stub=0)\n"
+        if ok
+        else "fail-closed gate: FAIL\n"
+    )
+    path.write_text(text, encoding="utf-8")
+    return {
+        "path": path.name,
+        "command": "tools/fail_closed_gate.py",
+        "summary": "fail-closed poison gate passed",
+    }
+
+
+def _e4_evidence(tmp_path: Path, gate) -> list[dict[str, str]]:
+    return [
+        _canonicalization_evidence(tmp_path, gate),
+        _structural_audit_evidence(tmp_path, gate),
+        _degrade_to_slow_evidence(tmp_path),
+        _fail_closed_evidence(tmp_path),
+    ]
+
+
 def _manifest(tmp_path: Path, gate, **overrides: object) -> dict[str, object]:
     criteria = {
         key: {"status": "pass", "evidence": [_evidence(tmp_path, key)]}
@@ -129,6 +225,7 @@ def _manifest(tmp_path: Path, gate, **overrides: object) -> dict[str, object]:
         "status": "pass",
         "evidence": [_scoreboard_evidence(tmp_path, gate)],
     }
+    criteria["E4"] = {"status": "pass", "evidence": _e4_evidence(tmp_path, gate)}
     criteria.update(overrides)
     return {"schema_version": 1, "criteria": criteria}
 
@@ -256,6 +353,81 @@ def test_release_exit_gate_rejects_stale_or_red_e2_scoreboard(
     assert report.passed is False
     assert any("E2: scoreboard gate_fails is not false" in p for p in report.problems)
     assert any("E2: scoreboard generated_at is 90d old" in p for p in report.problems)
+
+
+def test_release_exit_gate_requires_e4_structural_floor_receipts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(
+        tmp_path,
+        gate,
+        E4={"status": "pass", "evidence": [_evidence(tmp_path, "generic-e4")]},
+    )
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any(
+        "E4: structural floor requires canonicalization_contract" in p
+        for p in report.problems
+    )
+    assert any("fail_closed_gate" in p for p in report.problems)
+
+
+def test_release_exit_gate_rejects_e4_structural_metric_regression(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    metrics = _baseline_metrics(gate, "tools/canonicalization_contract_baseline.json")
+    metrics["misplaced_module_lines"] += 1.0
+    doc = _manifest(tmp_path, gate)
+    doc["criteria"]["E4"] = {  # type: ignore[index]
+        "status": "pass",
+        "evidence": [
+            _canonicalization_evidence(tmp_path, gate, metrics=metrics),
+            _structural_audit_evidence(tmp_path, gate),
+            _degrade_to_slow_evidence(tmp_path),
+            _fail_closed_evidence(tmp_path),
+        ],
+    }
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any(
+        "E4: canonicalization_contract metric 'misplaced_module_lines' regressed"
+        in p
+        for p in report.problems
+    )
+
+
+def test_release_exit_gate_rejects_failed_e4_gate_receipts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setattr(gate.pa, "git_rev_is_ancestor_of_origin", lambda _: True)
+    doc = _manifest(tmp_path, gate)
+    doc["criteria"]["E4"] = {  # type: ignore[index]
+        "status": "pass",
+        "evidence": [
+            _canonicalization_evidence(tmp_path, gate),
+            _structural_audit_evidence(tmp_path, gate),
+            _degrade_to_slow_evidence(tmp_path, ok=False),
+            _fail_closed_evidence(tmp_path, ok=False),
+        ],
+    }
+
+    report = gate.validate_manifest(doc, manifest_path=tmp_path / "release-exit.json")
+
+    assert report.passed is False
+    assert any("E4: degrade_to_slow_gate report is not ok" in p for p in report.problems)
+    assert any(
+        "E4: fail_closed_gate receipt does not contain OK verdict" in p
+        for p in report.problems
+    )
 
 
 def test_release_exit_gate_json_cli_reports_failures(

@@ -19,6 +19,13 @@ generic file attachment. The evidence must include a canonical
 true`, fresh under `DEFAULT_STALE_DAYS`, on `origin/main` ancestry, and has
 `summary.gate_fails == false`.
 
+The same release gate treats E4 `status: pass` as typed structural evidence, not
+a generic JSON attachment. E4 must include the canonicalization contract JSON,
+the structural-audit JSON, the degrade-to-slow gate report, and a fail-closed
+gate receipt. The two metric artifacts are compared against their checked-in
+baselines and fail closed on any regression; the poison receipt must contain the
+`fail-closed gate: OK` verdict.
+
 ## Non-Canonical Lanes
 
 `tools/bench.py` and `bench/harness.py` still measure useful development

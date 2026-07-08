@@ -64,6 +64,14 @@ CRITERIA: dict[str, str] = {
 
 REQUIRED_EVIDENCE_FIELDS = frozenset({"path", "command", "summary"})
 E2_SCOREBOARD_KIND = "cpython_floor_scoreboard"
+E4_REQUIRED_RECEIPT_KINDS = frozenset(
+    {
+        "canonicalization_contract",
+        "structural_audit",
+        "degrade_to_slow_gate",
+        "fail_closed_gate",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -152,6 +160,176 @@ def _load_json_evidence(path: Path) -> tuple[Mapping[str, Any] | None, str | Non
     if not isinstance(raw, Mapping):
         return None, f"JSON evidence root must be an object: {path}"
     return raw, None
+
+
+def _load_text_evidence(path: Path) -> tuple[str | None, str | None]:
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except OSError as exc:
+        return None, f"cannot read {path}: {exc}"
+    except UnicodeDecodeError as exc:
+        return None, f"invalid UTF-8 text in {path}: {exc}"
+
+
+def _load_metric_baseline(rel_path: str) -> tuple[Mapping[str, Any] | None, str | None]:
+    path = TOOLS_ROOT.parent / rel_path
+    doc, error = _load_json_evidence(path)
+    if error is not None:
+        return None, error
+    assert doc is not None
+    return doc, None
+
+
+def _validate_metrics_against_baseline(
+    doc: Mapping[str, Any],
+    *,
+    path: Path,
+    baseline_rel: str,
+    label: str,
+) -> list[str]:
+    problems: list[str] = []
+    metrics = doc.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return [f"E4: {label} evidence lacks a metrics object: {path}"]
+
+    baseline, error = _load_metric_baseline(baseline_rel)
+    if error is not None:
+        return [f"E4: cannot load {label} baseline {baseline_rel}: {error}"]
+    assert baseline is not None
+
+    for key, raw_baseline in sorted(baseline.items()):
+        raw_current = metrics.get(key)
+        if not isinstance(raw_current, int | float):
+            problems.append(f"E4: {label} metric {key!r} missing/non-numeric: {path}")
+            continue
+        if not isinstance(raw_baseline, int | float):
+            problems.append(
+                f"E4: {label} baseline metric {key!r} is non-numeric in {baseline_rel}"
+            )
+            continue
+        if float(raw_current) > float(raw_baseline):
+            problems.append(
+                f"E4: {label} metric {key!r} regressed "
+                f"{float(raw_baseline):g} -> {float(raw_current):g}: {path}"
+            )
+    return problems
+
+
+def _classify_e4_json_receipt(
+    doc: Mapping[str, Any],
+    *,
+    path: Path,
+) -> tuple[str | None, list[str]]:
+    problems: list[str] = []
+    if "violations" in doc and "metrics" in doc:
+        problems.extend(
+            _validate_metrics_against_baseline(
+                doc,
+                path=path,
+                baseline_rel="tools/canonicalization_contract_baseline.json",
+                label="canonicalization_contract",
+            )
+        )
+        return "canonicalization_contract", problems
+
+    if "findings" in doc and "metrics" in doc:
+        problems.extend(
+            _validate_metrics_against_baseline(
+                doc,
+                path=path,
+                baseline_rel="tools/structural_audit_baseline.json",
+                label="structural_audit",
+            )
+        )
+        return "structural_audit", problems
+
+    if {
+        "ok",
+        "errors",
+        "metabug_fix_pending_count",
+        "metabug_fix_pending_baseline",
+    } <= set(doc):
+        if doc.get("ok") is not True:
+            problems.append(f"E4: degrade_to_slow_gate report is not ok: {path}")
+        if doc.get("errors"):
+            problems.append(f"E4: degrade_to_slow_gate report has errors: {path}")
+        pending = doc.get("metabug_fix_pending_count")
+        baseline = doc.get("metabug_fix_pending_baseline")
+        if not isinstance(pending, int) or not isinstance(baseline, int):
+            problems.append(
+                "E4: degrade_to_slow_gate pending/baseline counts "
+                f"must be integers: {path}"
+            )
+        elif pending > baseline:
+            problems.append(
+                "E4: degrade_to_slow_gate pending count regressed "
+                f"{baseline} -> {pending}: {path}"
+            )
+        return "degrade_to_slow_gate", problems
+
+    return None, problems
+
+
+def _validate_e4_structural_floor(
+    evidence: object,
+    *,
+    base_dir: Path,
+) -> list[str]:
+    problems: list[str] = []
+    seen: set[str] = set()
+    items = evidence if isinstance(evidence, list) else []
+
+    for index, raw_entry in enumerate(items):
+        entry = raw_entry if isinstance(raw_entry, Mapping) else None
+        if entry is None:
+            continue
+        resolved = _resolve_evidence_path(entry.get("path"), base_dir=base_dir)
+        if resolved is None or not resolved.exists():
+            continue
+        command = entry.get("command")
+        command_text = command if isinstance(command, str) else ""
+
+        doc, json_error = _load_json_evidence(resolved)
+        if doc is not None:
+            kind, receipt_problems = _classify_e4_json_receipt(doc, path=resolved)
+            if kind is not None:
+                seen.add(kind)
+                problems.extend(receipt_problems)
+                continue
+            # It may still be the text-only fail-closed receipt; fall through.
+        elif json_error is not None and resolved.suffix.lower() == ".json":
+            problems.append(f"E4: invalid JSON evidence[{index}]: {json_error}")
+            continue
+
+        text, text_error = _load_text_evidence(resolved)
+        if text_error is not None:
+            problems.append(f"E4: cannot classify evidence[{index}]: {text_error}")
+            continue
+        assert text is not None
+        if "tools/fail_closed_gate.py" in command_text:
+            if "fail-closed gate: OK" in text:
+                seen.add("fail_closed_gate")
+            else:
+                problems.append(
+                    f"E4: fail_closed_gate receipt does not contain OK verdict: {resolved}"
+                )
+        elif "tools/degrade_to_slow_gate.py" in command_text:
+            if "degrade-to-slow gate: PASS" in text:
+                seen.add("degrade_to_slow_gate")
+            else:
+                problems.append(
+                    "E4: degrade_to_slow_gate text receipt does not contain "
+                    f"PASS verdict: {resolved}"
+                )
+
+    missing = sorted(E4_REQUIRED_RECEIPT_KINDS - seen)
+    if missing:
+        problems.append(
+            "E4: structural floor requires canonicalization_contract, "
+            "structural_audit, degrade_to_slow_gate, and fail_closed_gate "
+            f"receipts; missing: {', '.join(missing)}"
+        )
+    return problems
 
 
 def _validate_e2_perf_scoreboard(
@@ -272,6 +450,13 @@ def validate_manifest(
                 item_problems.extend(evidence_problems)
                 if key == "E2" and not evidence_problems:
                     item_problems.extend(_validate_e2_perf_scoreboard(evidence_paths))
+                if key == "E4" and not evidence_problems:
+                    item_problems.extend(
+                        _validate_e4_structural_floor(
+                            item.get("evidence"),
+                            base_dir=base_dir,
+                        )
+                    )
         results.append(
             CriterionResult(
                 criterion=key,
