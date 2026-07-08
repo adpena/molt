@@ -100,6 +100,63 @@ _BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
 
 
 class CallNamedDispatchMixin(_MixinBase):
+    def _try_emit_imported_exception_class_constructor(
+        self,
+        node: ast.Call,
+        *,
+        func_id: str,
+        imported_from: str | None,
+    ) -> Any:
+        if imported_from is None:
+            return CALL_NOT_HANDLED
+        original_attr = self._imported_attr_name(func_id)
+        class_info = self.classes.get(original_attr)
+        if (
+            not isinstance(class_info, dict)
+            or class_info.get("module") != imported_from
+            or not class_info.get("exception_subclass")
+        ):
+            return CALL_NOT_HANDLED
+        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
+            return CALL_NOT_HANDLED
+        args: list[MoltValue] = []
+        for arg in node.args:
+            arg_val = self.visit(arg)
+            if arg_val is None:
+                self._bridge_fallback(
+                    node,
+                    f"{original_attr} with unsupported arg expression",
+                    impact="medium",
+                    alternative=f"{original_attr} with simple arguments",
+                    detail="argument expression could not be lowered",
+                )
+                return None
+            args.append(arg_val)
+        class_val = self.visit(node.func)
+        if class_val is None:
+            raise NotImplementedError("Unsupported exception class call target")
+        return self._emit_exception_new_from_class(class_val, args)
+
+    def _try_emit_imported_classlike_call_bind(
+        self,
+        node: ast.Call,
+        *,
+        func_id: str,
+        imported_from: str | None,
+    ) -> Any:
+        if imported_from is None:
+            return CALL_NOT_HANDLED
+        original_attr = self._imported_attr_name(func_id)
+        if not original_attr[:1].isupper():
+            return CALL_NOT_HANDLED
+        callee = self.visit(node.func)
+        if callee is None:
+            raise NotImplementedError("Unsupported imported class-like call target")
+        res = MoltValue(self.next_var(), type_hint="Any")
+        callargs = self._emit_call_args_builder(node)
+        self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
+        return res
+
     def _try_emit_imported_named_call(
         self,
         node: ast.Call,
@@ -118,6 +175,13 @@ class CallNamedDispatchMixin(_MixinBase):
         normalized = self._normalize_allowlist_module(imported_from)
         visible_module = normalized or imported_from
         original_attr = self._imported_attr_name(func_id)
+        imported_exception_ctor = self._try_emit_imported_exception_class_constructor(
+            node,
+            func_id=func_id,
+            imported_from=imported_from,
+        )
+        if imported_exception_ctor is not CALL_NOT_HANDLED:
+            return imported_exception_ctor
         target_module: str | None = None
         direct_registry_authorized = False
 
@@ -281,6 +345,22 @@ class CallNamedDispatchMixin(_MixinBase):
                 )
                 if lowered_intrinsic_early is not None:
                     return lowered_intrinsic_early
+            imported_exception_ctor = (
+                self._try_emit_imported_exception_class_constructor(
+                    node,
+                    func_id=func_id,
+                    imported_from=imported_from,
+                )
+            )
+            if imported_exception_ctor is not CALL_NOT_HANDLED:
+                return imported_exception_ctor
+            imported_classlike_call = self._try_emit_imported_classlike_call_bind(
+                node,
+                func_id=func_id,
+                imported_from=imported_from,
+            )
+            if imported_classlike_call is not CALL_NOT_HANDLED:
+                return imported_classlike_call
             if (
                 target_info is None
                 and self.current_func_name != "molt_main"

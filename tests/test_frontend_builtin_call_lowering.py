@@ -1110,11 +1110,12 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
         and const_str.get(op["args"][1]) == "Path"
     }
     assert imported_path_values, "expected from-import to materialize pathlib.Path"
-    assert path_class_vars, "expected pathlib.Path lookup in lowered main ops"
+    path_call_targets = imported_path_values | path_class_vars
+    assert path_call_targets, "expected pathlib.Path imported value in lowered main ops"
     assert any(
         op.get("kind") == "call_bind"
         and len(op.get("args") or []) >= 1
-        and op["args"][0] in path_class_vars
+        and op["args"][0] in path_call_targets
         for op in main_ops
     ), "expected imported pathlib.Path constructor to lower via call_bind"
     assert all(
@@ -1122,6 +1123,72 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
         for op in main_ops
         if op.get("kind") == "call"
     ), "main lowering should not hardwire zipfile._path.Path.__init__ for pathlib.Path"
+
+
+def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
+    known_classes = {
+        "AxisError": {
+            "fields": {},
+            "size": 0,
+            "dynamic": False,
+            "static": True,
+            "methods": {},
+            "mro": ["AxisError", "ValueError", "Exception", "BaseException", "object"],
+            "module": "numpy.exceptions",
+            "exception_subclass": True,
+        }
+    }
+    gen = SimpleTIRGenerator(
+        module_name="scipy._lib._util",
+        known_modules={"numpy.exceptions", "scipy._lib._util"},
+        known_classes=known_classes,
+        direct_call_modules={"scipy._lib._util"},
+        native_support_function_roots={"normalize_axis_index"},
+    )
+    gen.visit(
+        ast.parse(
+            "from numpy.exceptions import AxisError\n\n"
+            "def normalize_axis_index(axis, ndim):\n"
+            "    raise AxisError('bad')\n"
+        )
+    )
+    ir = gen.to_json()
+    func_ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == "scipy__lib__util__normalize_axis_index"
+    )
+
+    assert any(op.get("kind") == "exception_new_from_class" for op in func_ops)
+    assert all(op.get("kind") != "call_bind" for op in func_ops)
+
+
+def test_imported_uppercase_constructor_uses_bind_when_module_outside_scope() -> None:
+    gen = SimpleTIRGenerator(
+        module_name="scipy._lib._util",
+        known_modules={"scipy._lib._util"},
+        direct_call_modules={"scipy._lib._util"},
+        native_support_function_roots={"normalize_axis_index"},
+    )
+    gen.visit(
+        ast.parse(
+            "from numpy.exceptions import AxisError\n\n"
+            "def normalize_axis_index(axis, ndim):\n"
+            "    raise AxisError('bad')\n"
+        )
+    )
+    ir = gen.to_json()
+    func_ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == "scipy__lib__util__normalize_axis_index"
+    )
+
+    assert any(op.get("kind") == "call_bind" for op in func_ops)
+    assert all(
+        not (op.get("kind") == "call" and op.get("s_value") == "AxisError")
+        for op in func_ops
+    )
 
 
 def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
@@ -2103,6 +2170,72 @@ def test_target_sys_platform_elides_deleted_unreachable_module_helper_body() -> 
         for func in ir["functions"]
         for op in func["ops"]
     )
+
+
+def test_target_sys_platform_elides_unreferenced_private_helper_body() -> None:
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "def _mac_os_check():\n"
+        "    y = polyval([1], [2])\n"
+        "if sys.platform == 'darwin':\n"
+        "    _mac_os_check()\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert all(func["name"] != "numpy___mac_os_check" for func in ir["functions"])
+    assert all(
+        op.get("kind") != "call_indirect"
+        for func in ir["functions"]
+        for op in func["ops"]
+    )
+
+
+def test_target_sys_platform_keeps_public_helper_without_live_load() -> None:
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "def mac_os_check():\n"
+        "    y = polyval([1], [2])\n"
+        "if sys.platform == 'darwin':\n"
+        "    mac_os_check()\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert any(func["name"] == "numpy__mac_os_check" for func in ir["functions"])
+
+
+def test_target_sys_platform_keeps_private_helper_without_pruned_load() -> None:
+    source = (
+        "import sys\n"
+        "from .lib._polynomial_impl import polyval\n"
+        "def _private_helper():\n"
+        "    y = polyval([1], [2])\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys", "numpy.lib._polynomial_impl"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+
+    assert any(func["name"] == "numpy___private_helper" for func in ir["functions"])
 
 
 def test_target_sys_platform_keeps_deleted_helper_body_when_platform_branch_live() -> (
