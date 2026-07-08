@@ -708,6 +708,30 @@ def test_gather_provenance_authoritative_when_clean(monkeypatch) -> None:
     assert prov["dirty_tree"] is False
 
 
+def test_benchmark_tool_identity_uses_git_tree_paths(monkeypatch) -> None:
+    rel = Path(ps.__file__).resolve().relative_to(ps.REPO_ROOT).as_posix()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(args: list[str]) -> str | None:
+        calls.append(tuple(args))
+        if args == ["hash-object", f"--path={rel}", str(Path(ps.__file__).resolve())]:
+            return "b" * 40
+        if args == ["log", "-n", "1", "--format=%H", "--", rel]:
+            return "c" * 40
+        if args == ["rev-parse", f"HEAD:{rel}"]:
+            return "b" * 40
+        return None
+
+    monkeypatch.setattr(ps, "_git_output", fake_git)
+
+    identity = ps._benchmark_tool_identity()
+
+    assert identity["path"] == rel
+    assert identity["modified_vs_head"] == "false"
+    assert "\\" not in rel
+    assert ("rev-parse", f"HEAD:{rel}") in calls
+
+
 def _fake_git(args: list[str]) -> str | None:
     if args[:2] == ["rev-parse", "HEAD"]:
         return "a" * 40
