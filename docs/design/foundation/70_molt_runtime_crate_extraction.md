@@ -458,6 +458,33 @@ The proof confirms the reexport contract, and the timing again shows that tiny
 runtime-independent helper moves are cheap in the satellite but still pay the
 parent god-crate compile tax until more consumers leave `molt-runtime`.
 
+2026-07-08 C1 follow-up: resource-tracked temporary byte arena allocation now
+lives in `molt-runtime-resource::TempArena`. The resource satellite owns
+chunk allocation, tracker charging/release, reset/drain semantics, and the
+resource-limit regression tests. `molt-runtime/src/arena.rs` keeps only the
+object-writing `ScopeArena` authority and a runtime-local tracker-release
+helper for its aligned object chunks; JSON parsing and parser TLS import the
+temporary byte arena through `crate::resource`.
+
+Queue row
+`20260708T052219-c1-temp-arena-resource-lib-post-importlib-20260708a-a72f71227e30408d`
+passed `cargo test -p molt-runtime-resource --lib` in 13.2s. The first parent
+fan-in row,
+`20260708T041406-c1-temp-arena-runtime-fanin-20260708a-8ba16e6ba791412f`,
+correctly failed because `ScopeArena` still referenced the removed helper; the
+repair kept object-arena release local to the parent runtime instead of pulling
+`ScopeArena` into the resource satellite. After rebasing over the textwrap,
+platform environment, WASM state-remap, stat-support, and importlib path-list
+extractions on `origin/main`, current-tree fan-in row
+`20260708T052259-c1-temp-arena-runtime-fanin-post-importlib-20260708a-f1988eca92014bcc`
+passed `cargo check -p molt-runtime` in 69.8s. The board-required real compiler
+E2E row
+`20260708T052557-c1-temp-arena-molt-build-e2e-post-importlib-20260708a-e92f4930ab084d66`
+passed `uv run --active --project . --python 3.12 python -m molt.cli build
+--profile dev --output tmp\c1_temp_arena_hello_post_importlib.exe
+tests\harness\corpus\basic\hello.py` in 234.5s, producing the native hello
+binary.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with

@@ -1,5 +1,5 @@
-use crate::arena::TempArena;
 use crate::object::ops_encoding::DecodeFailure;
+use crate::resource::TempArena;
 use crate::*;
 use std::collections::HashSet;
 use std::fmt::Write as _;
