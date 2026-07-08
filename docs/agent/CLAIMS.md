@@ -21,6 +21,11 @@ checkout (`python tools/tree_drift_check.py --fetch` first).
   coherent arc. (See the E1 order-of-operations in the PAUSE HANDOFF /
   `ORCHESTRATION.md`.)
 
+- **`CODEX-B-CACHE-KEY`** — frontend lowering cache-KEY scoping (`cache_fingerprints.py`
+  + `frontend_*` + aligned tests) so unrelated CLI/runtime/link edits don't cold-start
+  the witness lowering cache. Coherent structural move; one owner. (Orchestrator-held;
+  handoff from the prior in-progress agent per the reclaim directive in `ORCHESTRATION.md`.)
+
 (Add new SOLO lanes here as the orchestrator or a claimant identifies them.)
 
 ## Protocol (binding)
@@ -75,3 +80,4 @@ steps below are the contract it implements.
 | _(none yet — first claimant of E1-WITNESS-TO-GREEN appends here)_ | | | | |
 | E1-WITNESS-TO-GREEN | Codex/codex-e1-seal-regen-20260707 | 2026-07-07T21:02:53Z | CLAIMED | Start from clean origin/main 6e1494cb8; first step is seal-regen artifact custody, re-seal gate, then pact-witness-acceptance. |
 | E1-WITNESS-TO-GREEN | orchestrator (obs) | 2026-07-08T01:20:00Z | PROGRESS | Orchestrator-observed ALIVE: codex-e1 worktree active (14 dirty, static_truth/analysis_collect_static <2h), seal machinery landing (8e4fae62b skip-stale, 36b11f58f relativize). Claim is LIVE — do NOT reclaim. E1 agent: post your own PROGRESS rows + drive the 17-source seal regen (still 0 runtime_python_import_modules on disk). |
+| CODEX-B-CACHE-KEY | orchestrator | 2026-07-08T01:35:00Z | CLAIMED | Reclaimed per operator direction. Awaiting handoff of the in-progress cache_fingerprints.py tooling-scoping WIP (bank to wip/codex-b-cache-scoping-20260708), then finish with warm-run before/after cache-hit measurement + tests. |

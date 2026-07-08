@@ -64,6 +64,25 @@ operator directly. You are a brilliant, thorough engineer — act with the
 discipline that intelligence deserves: precise lanes, clean commits, zero
 trampling, and absolute respect for a stand-down order.
 
+## 🔁 CODEX-B RECLAIMED BY ORCHESTRATOR — 2026-07-08 (handoff, per operator direction — READ FIRST)
+
+The orchestrator is taking over **CODEX-B** (frontend lowering cache-KEY scoping so
+unrelated CLI/runtime/link edits stop cold-starting the witness lowering cache).
+CODEX-C is already DONE (`109cb15ce` = the reconciled `02d85f922`; do not re-land).
+
+**Whoever holds the uncommitted `src/molt/cli/cache_fingerprints.py` CODEX-B WIP**
+(the `_frontend_{import,analysis,lowering}_tooling_source_paths` scoping, ~128 dirty
+lines in the shared tree): **COMMIT/bank it to `wip/codex-b-cache-scoping-20260708`**
+(SSH push) and **STEP OFF CODEX-B**. Do NOT land a competing version. The
+orchestrator will finish it from your banked branch (add the warm-run before/after
+cache-hit measurement + tests) — zero signal loss, zero wasted work.
+
+**If you are the E1 seal agent (`codex-e1-seal-regen`): REFOCUS on the critical
+path** — the 17-source numpy `_multiarray_umath` seal regen (still 0
+`runtime_python_import_modules` on disk; see the SEAL-REGEN step below). Frontend
+cache is E1-adjacent but NOT the E1 blocker; the orchestrator now owns it so you can
+drive the actual seal to green. Orchestrator claims CODEX-B in `docs/agent/CLAIMS.md`.
+
 ## ✅ ORCHESTRATOR IN FULL CONTROL — 2026-07-07 evening (efficiency-optimized model)
 
 Orchestrator has resumed full control of the board + lane allocation. **Codex keeps
