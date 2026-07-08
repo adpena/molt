@@ -399,6 +399,40 @@ pub(super) fn evaluate_method_call(
 }
 
 /// Concrete evaluation of known pure builtins.
+/// CPython `str(float)` == `repr(float)` (identical since Py3). Fold ONLY where
+/// Rust's shortest-round-trip `Display` provably matches CPython: the
+/// non-scientific finite regime. CPython switches to exponential notation for a
+/// decimal exponent < -4 or >= 16 (i.e. `abs >= 1e16` or `0 < abs < 1e-4`) and
+/// spells non-finite values `nan`/`inf`/`-inf` — in those cases Rust's `Display`
+/// diverges, so we DON'T fold and defer to the correct runtime formatter. Whole
+/// finite values keep the trailing `.0` (`{:.1}`) exactly as CPython does.
+fn fold_float_str(v: f64) -> Option<ConstVal> {
+    let av = v.abs();
+    if !v.is_finite() || (av != 0.0 && (av >= 1e16 || av < 1e-4)) {
+        return None;
+    }
+    let s = if v.fract() == 0.0 {
+        format!("{:.1}", v)
+    } else {
+        format!("{}", v)
+    };
+    Some(ConstVal::Str(s))
+}
+
+/// CPython `repr(str)`. Fold ONLY the case where a single-quoted, unescaped
+/// rendering is byte-for-byte what CPython produces: printable-ASCII content
+/// (0x20..=0x7e) with no single quote (which flips CPython to double quotes) and
+/// no backslash (which needs escaping). Anything else — a `'`, a `\`, control
+/// chars, or non-ASCII needing `\x`/`\u` escapes — is deferred to the runtime,
+/// which reproduces CPython's quote-selection and escaping.
+fn fold_repr_str(s: &str) -> Option<ConstVal> {
+    if s.bytes().all(|b| (0x20..=0x7e).contains(&b)) && !s.contains('\'') && !s.contains('\\') {
+        Some(ConstVal::Str(format!("'{}'", s)))
+    } else {
+        None
+    }
+}
+
 fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
     match name {
         "len" => {
@@ -462,15 +496,7 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
             let a = operands.first().copied().flatten()?;
             match a {
                 ConstVal::Int(v) => Some(ConstVal::Str(v.to_string())),
-                ConstVal::Float(v) => {
-                    // Python: float → str preserves ".0" for whole numbers
-                    let s = if v.fract() == 0.0 && v.is_finite() {
-                        format!("{:.1}", v)
-                    } else {
-                        format!("{}", v)
-                    };
-                    Some(ConstVal::Str(s))
-                }
+                ConstVal::Float(v) => fold_float_str(*v),
                 ConstVal::Bool(v) => {
                     Some(ConstVal::Str(if *v { "True" } else { "False" }.to_string()))
                 }
@@ -483,18 +509,11 @@ fn eval_concrete_builtin(name: &str, operands: &[Option<&ConstVal>]) -> Option<C
             let a = operands.first().copied().flatten()?;
             match a {
                 ConstVal::Int(v) => Some(ConstVal::Str(v.to_string())),
-                ConstVal::Float(v) => {
-                    let s = if v.fract() == 0.0 && v.is_finite() {
-                        format!("{:.1}", v)
-                    } else {
-                        format!("{}", v)
-                    };
-                    Some(ConstVal::Str(s))
-                }
+                ConstVal::Float(v) => fold_float_str(*v),
                 ConstVal::Bool(v) => {
                     Some(ConstVal::Str(if *v { "True" } else { "False" }.to_string()))
                 }
-                ConstVal::Str(s) => Some(ConstVal::Str(format!("'{}'", s))),
+                ConstVal::Str(s) => fold_repr_str(s),
                 ConstVal::None => Some(ConstVal::Str("None".to_string())),
                 _ => None, // compound types don't fold to repr
             }
@@ -1143,6 +1162,52 @@ mod unicode_fold_tests {
         assert_eq!(builtin("len", &[s("a😀b")]), Some(ConstVal::Int(3)));
         // ASCII fast path unchanged.
         assert_eq!(builtin("len", &[s("abc")]), Some(ConstVal::Int(3)));
+    }
+
+    #[test]
+    fn str_repr_fold_matches_cpython_or_refuses() {
+        // Float str/repr: FOLD the non-scientific finite regime to CPython's exact
+        // output; REFUSE (return None → defer to the correct runtime formatter) for
+        // scientific-notation and non-finite values, where Rust's Display diverges.
+        // Expectations captured from the CPython 3.12 reference interpreter.
+        for (v, expect) in [
+            (0.0_f64, "0.0"),
+            (-0.0, "-0.0"),
+            (1.5, "1.5"),
+            (100.0, "100.0"),
+            (0.1, "0.1"),
+            (1234.5678, "1234.5678"),
+            (0.0001, "0.0001"),
+            (9.5e15, "9500000000000000.0"),
+        ] {
+            let want = Some(ConstVal::Str(expect.to_string()));
+            assert_eq!(builtin("str", &[ConstVal::Float(v)]), want, "str({v})");
+            assert_eq!(builtin("repr", &[ConstVal::Float(v)]), want, "repr({v})");
+        }
+        for v in [1e-5_f64, 1e16, 1e17, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(builtin("str", &[ConstVal::Float(v)]), None, "str({v}) must defer");
+            assert_eq!(builtin("repr", &[ConstVal::Float(v)]), None, "repr({v}) must defer");
+        }
+        // repr(str): FOLD only simple printable-ASCII with no `'` and no `\`; REFUSE
+        // (defer) the quote-selection / escaping cases. CPython 3.12 ground truth:
+        // repr("it's") == "\"it's\"" (double-quoted), repr("a\\b") escapes, etc.
+        for (input, expect) in [
+            ("abc", "'abc'"),
+            ("a b c", "'a b c'"),
+            ("a\"b", "'a\"b'"),
+            ("x!@#$%", "'x!@#$%'"),
+        ] {
+            assert_eq!(
+                builtin("repr", &[s(input)]),
+                Some(ConstVal::Str(expect.to_string())),
+                "repr({input:?})"
+            );
+        }
+        for input in ["it's", "a\\b", "a\nb", "café"] {
+            assert_eq!(builtin("repr", &[s(input)]), None, "repr({input:?}) must defer");
+        }
+        // str(str) is identity — unchanged.
+        assert_eq!(builtin("str", &[s("café")]), Some(s("café")));
     }
 
     #[test]
