@@ -74,3 +74,4 @@ steps below are the contract it implements.
 |------|----------|-----------|--------|-----------------|
 | _(none yet — first claimant of E1-WITNESS-TO-GREEN appends here)_ | | | | |
 | E1-WITNESS-TO-GREEN | Codex/codex-e1-seal-regen-20260707 | 2026-07-07T21:02:53Z | CLAIMED | Start from clean origin/main 6e1494cb8; first step is seal-regen artifact custody, re-seal gate, then pact-witness-acceptance. |
+| E1-WITNESS-TO-GREEN | orchestrator (obs) | 2026-07-08T01:20:00Z | PROGRESS | Orchestrator-observed ALIVE: codex-e1 worktree active (14 dirty, static_truth/analysis_collect_static <2h), seal machinery landing (8e4fae62b skip-stale, 36b11f58f relativize). Claim is LIVE — do NOT reclaim. E1 agent: post your own PROGRESS rows + drive the 17-source seal regen (still 0 runtime_python_import_modules on disk). |
