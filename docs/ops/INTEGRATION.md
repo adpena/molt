@@ -141,12 +141,16 @@ them and the doc records them so they are canonical, not tribal.
   ```
   (Agent worktree isolation branches from the session-start commit; foundation
   work touching just-landed files should branch from current `main` instead.)
-- **`MOLT_SESSION_ID` before any build.** Export it at the start of *every*
-  shell command so each session gets its own `target-<id>/`, daemon socket, and
-  build caches:
+- **DX env before any build.** Export the RunContext facts at the start of a
+  shell before build/test/bench work so artifact roots, cache roots, temp roots,
+  daemon socket paths, and Python path all come from the same authority:
   ```bash
-  export MOLT_SESSION_ID="<unique-name>"   # MUST precede any molt/cargo command
+  eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
   ```
+  Do not pin `MOLT_SESSION_ID` for ordinary builds; the generated custody id
+  still uses the persistent Cargo target. Use `--session-id <unique-name>` only
+  for perf/bench/test-shard/proof lanes that intentionally need
+  `target/sessions/<id>/` isolation.
 - **`PYTHONPATH=<repo>/src`** when running the in-repo `molt` package or tools
   that import it.
 - **`safe_run.py` for any raw binary.** Never run a compiled molt binary (or

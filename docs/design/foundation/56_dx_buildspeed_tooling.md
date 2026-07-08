@@ -96,8 +96,8 @@ state, grep/read-verified this session:
 | **`cli.py` → `cli/` package** | **DONE through 21d Phase 0+.** `src/molt/cli.py` no longer exists; `src/molt/cli/__init__.py` (~41K lines, the residual engine) + `wasm.py`, `deps.py`, `native_toolchain.py`, `completion.py`, `arg_helpers.py`, `maintenance.py`, `debug_helpers.py`. `cli/__main__.py` present (preserves `-m molt.cli`). | `src/molt/cli/*.py` glob; audit board still flags `src/molt/cli.py` 41641 — **board path is STALE** (the line count moved into `cli/__init__.py`) |
 | **Frontend mixin split** | **IN FLIGHT** (21c). `frontend/__init__.py` now 27,940 lines (was 44,620); `frontend/visitors/calls.py` (8,733), `frontend/visitors/classes.py` (3,977), `frontend/lowering/serialization.py` (4,413) extracted. | `STRUCTURAL_AUDIT_BOARD.md:26,32,89,113,115`; git status shows `frontend/visitors/classes.py` + `lowering/serialization.py` modified |
 | **Cargo profiles** | **MATURE.** `dev`, `dev-fast` (cgu=256, lto=off), `release-fast` (thin LTO — Phase 1a LANDED), `release-output` (fat LTO, opt-z, abort), `release-size`, `wasm-release`, `wasm-release-fallback`, `dev-release`. Per-package hot-crate opt overrides documented + measured. | `Cargo.toml:34-565` |
-| **Session isolation** | **LANDED.** `_session_target_dir` → `target/sessions/<sid>` (`cli/__init__.py:13595`); per-session daemon socket + `session_id` in daemon-path cache key (`:13664`). | read-verified |
-| **sccache + artifact roots** | Wiring LANDED. `molt dx env` / `RunContext.dx_env` now resolve `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=10G` cross-platform; dev/guarded Cargo builds install the same defaults before enabling `RUSTC_WRAPPER=sccache`. On Windows developer checkouts on `C:`, the DX resolver selects a healthy non-`C:` artifact root or fails closed before builds/tests spill Cargo, uv, pip, Python bytecode, or temp artifacts onto `C:`. This is a developer control-plane rule, not the public compile contract: real users may build in place, use Cargo defaults, or pass target/output flags. Default developer Cargo output is session-scoped as `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR` remains the operator-owned escape hatch. `tools/throughput_env.sh` is a POSIX compatibility wrapper over the Python DX resolver, not the cache-policy authority. | code-verified |
+| **Session isolation** | **LANDED, opt-in.** Caller-pinned `MOLT_SESSION_ID` / `--session-id` maps to `target/sessions/<sid>` for perf, benchmark, test-shard, and proof-isolation lanes; ordinary generated RunContext custody ids keep Cargo on the persistent selected-root `target` so warm incremental state survives. | `src/molt/dx.py`; `tests/test_dx_run_context.py` |
+| **sccache + artifact roots** | Wiring LANDED. `molt dx env` / `RunContext.dx_env` now resolve `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=10G` cross-platform; dev/guarded Cargo builds install the same defaults before enabling `RUSTC_WRAPPER=sccache`. On this Windows workstation the DX resolver selects `C:\Molt` as the primary NVMe artifact root and rejects stale `D:`/`E:` inheritance unless explicitly preserved. This is a developer control-plane rule, not the public compile contract: real users may build in place, use Cargo defaults, or pass target/output flags. Ordinary developer Cargo output is the persistent `$MOLT_EXT_ROOT/target`; caller-pinned isolation lanes use `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID`; explicit `CARGO_TARGET_DIR` remains the operator-owned escape hatch. `tools/throughput_env.sh` is a POSIX compatibility wrapper over the Python DX resolver, not the cache-policy authority. | code-verified |
 | **DX toolchain check** | `molt dx check` is the cross-platform preflight for developer toolchain facts and reuses the setup-validation authority. It reports the Windows LLVM failure mode where `clang` is installed from `C:\Program Files\LLVM\bin` but `llvm-config.exe` is absent, so `llvm-sys` cannot build even though LLVM itself is on PATH. | code-verified |
 | **Coordination facility** | **Windows-robust** discovery index (NOT a lock). `agent_coordination.py`: proof-lane rules, BOM-tolerant record read (`_decode_record_bytes:1112`), `codex-stall` telemetry, `broad_lane_collisions` (only broad-sweep coordinators, only same target+lane). Real serialization authority = harness lock `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` (`MULTI_AGENT_COORDINATION.md:108`). | read-verified |
 | **Structural audit ratchet** | **LANDED + CI-gated.** `tools/structural_audit.py --check` ratchets `god_files`, `max_god_file_lines`, `duplicate_authorities` (currently 0), `debt_markers_total`. | `STRUCTURAL_AUDIT_BOARD.md:8-19` |
@@ -203,11 +203,10 @@ extend `tests/test_agent_coordination.py`.
 
 ### FACT-C: The canonical build-environment authority `molt dx` (retires DX-3)
 
-**Problem class:** the throughput env is a **POSIX-only shell script**
-(`throughput_env.sh`) — on Windows (the lead's host, per env) agents must hand-set
+**Problem class:** the throughput env used to be a **POSIX-only shell script**
+(`throughput_env.sh`) — on Windows (the lead's host, per env) agents hand-set
 `MOLT_SESSION_ID`, `CARGO_TARGET_DIR`, `SCCACHE_DIR`, daemon socket dir, etc.,
-*per shell command* (CLAUDE.md "Concurrent Development" + "MOLT_SESSION_ID must be
-set BEFORE any build"). Ritual that differs by platform is a class of silent
+*per shell command*. That ritual differs by platform and is a class of silent
 misconfiguration (wrong target dir → lock collision → killed builds;
 `MULTI_AGENT_COORDINATION` Windows traps §). The CLI's `_maybe_enable_sccache`
 does NOT set the shared `SCCACHE_DIR` — only the shell wrapper does, so Windows
@@ -216,8 +215,11 @@ agents get no cross-worktree cache sharing.
 **The fact:** a single cross-platform `molt dx` subcommand group that *is* the
 build-environment authority, resolving every knob from facts:
 - `molt dx env` — the Python/Rust port of `throughput_env.sh` (works on Windows):
-  resolves + exports `MOLT_SESSION_ID` (defaults to a stable per-worktree id),
-  `CARGO_TARGET_DIR`=`target/sessions/<sid>`, `SCCACHE_DIR`=`<root>/.sccache`
+  resolves + exports one coherent RunContext fact set. Ordinary builds get
+  `CARGO_TARGET_DIR`=`<root>/target` for warm incremental reuse; `--session-id`
+  opts perf/bench/test-shard/proof lanes into
+  `CARGO_TARGET_DIR`=`<root>/target/sessions/<sid>`. It also sets
+  `SCCACHE_DIR`=`<root>/.sccache`
   + `SCCACHE_CACHE_SIZE`, daemon socket dir, `MOLT_CACHE`, diff roots, `TMPDIR`.
   Emits `--print` (eval-able / PowerShell `Invoke-Expression`-able) and `--apply`
   (writes a `.molt/dx.env` the CLI auto-loads). **This makes the LANDED

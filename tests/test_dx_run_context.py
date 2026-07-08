@@ -31,6 +31,7 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
 
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["MOLT_SESSION_ID"].startswith("test-")
+    assert env["MOLT_SESSION_ID_GENERATED"] == "1"
     # No explicit MOLT_SESSION_ID -> STABLE persistent target dir (survives across
     # sessions for warm incremental rebuilds), not a per-session cold dir.
     assert env["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
@@ -72,6 +73,7 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(explicit_target)
     assert env["CARGO_INCREMENTAL"] == "1"
     assert env["MOLT_SESSION_ID"] == "caller-session"
+    assert "MOLT_SESSION_ID_GENERATED" not in env
 
 
 def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
@@ -85,6 +87,17 @@ def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
     ctx = RunContext(tmp_path, session_prefix="test")
     stable = ctx.canonical_env({"PATH": "/usr/bin"}, create_dirs=False)
     assert stable["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
+    assert stable["MOLT_SESSION_ID_GENERATED"] == "1"
+
+    reentered = ctx.canonical_env(
+        {
+            "PATH": "/usr/bin",
+            "MOLT_SESSION_ID": stable["MOLT_SESSION_ID"],
+            "MOLT_SESSION_ID_GENERATED": "1",
+        },
+        create_dirs=False,
+    )
+    assert reentered["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
 
     pinned = ctx.canonical_env(
         {"PATH": "/usr/bin", "MOLT_SESSION_ID": "shard-7"}, create_dirs=False
@@ -92,6 +105,42 @@ def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
     assert pinned["CARGO_TARGET_DIR"] == str(
         tmp_path.resolve() / "target" / "sessions" / "shard-7"
     )
+    assert "MOLT_SESSION_ID_GENERATED" not in pinned
+
+
+def test_live_dx_docs_do_not_reintroduce_session_scoped_default() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    docs = [
+        repo / "AGENTS.md",
+        repo / "docs" / "agent" / "AGENTS.full.md",
+        repo / "docs" / "agent" / "CLAUDE.full.md",
+        repo / "docs" / "agent" / "PROOF_QUEUE.md",
+        repo / "docs" / "ops" / "INTEGRATION.md",
+        repo / "docs" / "design" / "foundation" / "56_dx_buildspeed_tooling.md",
+        repo
+        / "docs"
+        / "design"
+        / "foundation"
+        / "73_efficient_builds_toolchain_provisioning_binary_cdn.md",
+        repo / "docs" / "OPERATIONS.md",
+    ]
+    forbidden = [
+        "MOLT_SESSION_ID` **must be set BEFORE",
+        "Default Cargo output is session-scoped",
+        "Cargo output remains session-scoped",
+        "ALWAYS set `MOLT_SESSION_ID` before ANY build command",
+        'CARGO_TARGET_DIR="${MOLT_EXT_ROOT:?}/target/sessions/$MOLT_SESSION_ID"',
+        "Agents **MUST** use `export MOLT_SESSION_ID",
+    ]
+
+    offenders: list[str] = []
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        for needle in forbidden:
+            if needle in text:
+                offenders.append(f"{path.relative_to(repo)}: {needle}")
+
+    assert offenders == []
 
 
 def test_development_artifact_env_session_id_overrides_ambient_session(
@@ -412,6 +461,7 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
     payload = json.loads(capsys.readouterr().out)
     env = payload["env"]
     assert env["MOLT_SESSION_ID"].startswith("run-")
+    assert env["MOLT_SESSION_ID_GENERATED"] == "1"
     assert env["UV_PROJECT_ENVIRONMENT"] == str(
         tmp_path.resolve() / "tmp" / "uv-project-envs" / "dx__py3.12"
     )
@@ -477,6 +527,7 @@ def test_run_context_env_session_id_overrides_missing_ambient_session(
     payload = json.loads(capsys.readouterr().out)
     env = payload["env"]
     assert env["MOLT_SESSION_ID"] == "witness-warm"
+    assert "MOLT_SESSION_ID_GENERATED" not in env
     assert env["CARGO_TARGET_DIR"] == str(
         tmp_path.resolve() / "target" / "sessions" / "witness-warm"
     )
