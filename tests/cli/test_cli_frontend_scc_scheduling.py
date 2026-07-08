@@ -19,7 +19,6 @@ provably load-bearing.
 
 from __future__ import annotations
 
-from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any
 
@@ -368,6 +367,7 @@ def _make_execution_context(
         stdlib_like_by_module={name: False for name in names},
         known_classes={},
         target_python=None,
+        target_sys_platform=None,
         frontend_phase_timeout=None,
         scc_serial_modules=scc_serial_modules,
     )

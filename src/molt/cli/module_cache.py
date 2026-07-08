@@ -1361,6 +1361,7 @@ def _module_lowering_context_payload(
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    target_sys_platform: str | None = None,
 ) -> dict[str, Any] | None:
     if path_stat is None:
         try:
@@ -1418,6 +1419,7 @@ def _module_lowering_context_payload(
         "entry_module": entry_override,
         "compiler_fingerprint": _cache_tooling_fingerprint(),
         "target_python": target_python.tag,
+        "target_sys_platform": target_sys_platform,
         "size": path_stat.st_size,
         "mtime_ns": path_stat.st_mtime_ns,
         "parse_codec": parse_codec,
@@ -1503,6 +1505,7 @@ def _module_lowering_context_digest_for_module(
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    target_sys_platform: str | None = None,
 ) -> str | None:
     context_payload = _module_lowering_context_payload(
         module_name,
@@ -1543,6 +1546,7 @@ def _module_lowering_context_digest_for_module(
         is_package=is_package,
         path_stat=path_stat,
         target_python=target_python,
+        target_sys_platform=target_sys_platform,
     )
     if context_payload is None:
         return None
@@ -1740,6 +1744,7 @@ def _load_cached_module_lowering_result(
     source_modules: Collection[str] | None = None,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    target_sys_platform: str | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
@@ -1786,6 +1791,7 @@ def _load_cached_module_lowering_result(
             is_package=is_package,
             path_stat=path_stat,
             target_python=target_python,
+            target_sys_platform=target_sys_platform,
         )
         if context_digest is None:
             return None
@@ -1837,6 +1843,7 @@ def _module_worker_payload(
     scoped_known_classes: dict[str, Any] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    target_sys_platform: str | None = None,
     frontend_phase_timeout: float | None = None,
 ) -> dict[str, Any]:
     if source_lease is None:
@@ -1902,5 +1909,6 @@ def _module_worker_payload(
         "pgo_hot_functions": scoped_inputs.pgo_hot_function_names_payload,
         "type_facts": scoped_inputs.type_facts,
         "target_python": target_python.short,
+        "target_sys_platform": target_sys_platform,
         "frontend_phase_timeout": frontend_phase_timeout,
     }

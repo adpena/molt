@@ -13355,6 +13355,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             module_chunking=False,
             dirty_lowering_modules=set(),
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            target_sys_platform=None,
         )
     )
 
@@ -13441,6 +13442,7 @@ def test_prepare_frontend_parallel_batch_reuses_dirty_module_lowering_cache(
             module_chunking=False,
             dirty_lowering_modules={"alpha"},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            target_sys_platform=None,
         )
     )
 
@@ -14079,6 +14081,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             module_chunking=False,
             dirty_lowering_modules={"main", "alpha"},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            target_sys_platform=None,
         )
     )
 
@@ -14143,6 +14146,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
             module_chunking=False,
             dirty_lowering_modules={"main"},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            target_sys_platform=None,
         )
     )
 
@@ -14899,6 +14903,52 @@ def test_module_lowering_context_digest_includes_native_python_exports() -> None
     assert digest_a is not None
     assert digest_b is not None
     assert digest_a != digest_b
+
+
+def test_module_lowering_context_digest_includes_target_sys_platform() -> None:
+    common: dict[str, object] = {
+        "logical_source_path": "/tmp/main.py",
+        "entry_override": None,
+        "known_classes_snapshot": {},
+        "parse_codec": "json",
+        "type_hint_policy": "ignore",
+        "fallback_policy": "error",
+        "type_facts": None,
+        "enable_phi": True,
+        "known_modules": {"main", "sys"},
+        "direct_call_modules": {"main"},
+        "stdlib_allowlist": set(),
+        "known_func_defaults": {},
+        "known_func_kinds": {},
+        "module_deps": {"main": {"sys"}, "sys": set()},
+        "module_is_namespace": False,
+        "module_chunking": False,
+        "module_chunk_max_ops": 0,
+        "optimization_profile": "dev",
+        "pgo_hot_function_names": set(),
+        "module_dep_closures": {
+            "main": frozenset({"main", "sys"}),
+            "sys": frozenset({"sys"}),
+        },
+        "path_stat": os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    }
+
+    digest_wasm = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        target_sys_platform="wasm",
+        **common,
+    )
+    digest_darwin = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        target_sys_platform="darwin",
+        **common,
+    )
+
+    assert digest_wasm is not None
+    assert digest_darwin is not None
+    assert digest_wasm != digest_darwin
 
 
 def test_module_lowering_context_digest_includes_scoped_func_kinds(
@@ -20813,6 +20863,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         manifest_env_vars={},
         capability_config_cache_digest="",
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_sys_platform=None,
     )
     resolved_entry = cli._ResolvedBuildEntry(
         source_path=tmp_path / "main.py",
@@ -20896,6 +20947,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             stdlib_like_by_module={},
             known_classes={},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            target_sys_platform=None,
         ),
         frontend_layer_runtime_hooks=cli._FrontendLayerRuntimeHooks(
             warnings=[],

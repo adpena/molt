@@ -33,13 +33,37 @@ else:
 
 
 class AnalysisCollectStaticMixin(_MixinBase):
+    def _sys_platform_static_truth_kwargs(
+        self, extra_sys_platform_module_aliases: Iterable[str] = ()
+    ) -> dict[str, object]:
+        target_sys_platform = self.target_sys_platform
+        if target_sys_platform is None:
+            return {}
+        aliases = {
+            name
+            for imported in (self.imported_modules, self.global_imported_modules)
+            for name, module_name in imported.items()
+            if module_name == "sys"
+        }
+        aliases.update(extra_sys_platform_module_aliases)
+        if not aliases:
+            return {}
+        return {
+            "target_sys_platform": target_sys_platform,
+            "sys_platform_module_aliases": frozenset(aliases),
+        }
+
     def _collect_module_annotation_items(
         self, node: ast.Module
     ) -> tuple[list[tuple[str, ast.expr, int]], dict[int, int]]:
         items: list[tuple[str, ast.expr, int]] = []
         id_map: dict[int, int] = {}
+        outer = self
 
         class Collector(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.sys_platform_module_aliases: set[str] = set()
+
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 return
 
@@ -55,12 +79,23 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_If(self, node: ast.If) -> None:
                 # CPython does not record annotations from a statically-dead
                 # branch (`if False:`/`if TYPE_CHECKING:`) in `__annotations__`.
-                static_branch = static_if_live_branch(node)
+                static_branch = static_if_live_branch(
+                    node,
+                    **outer._sys_platform_static_truth_kwargs(
+                        self.sys_platform_module_aliases
+                    ),
+                )
                 if static_branch is not None:
                     for stmt in static_branch:
                         self.visit(stmt)
                     return None
                 self.generic_visit(node)
+
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    if alias.name == "sys":
+                        self.sys_platform_module_aliases.add(alias.asname or alias.name)
+                return None
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 if isinstance(node.target, ast.Name):
@@ -86,6 +121,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
         counts: dict[str, int] = {}
         func_defs: set[str] = set()
         has_dynamic_bind = False
+        outer = self
 
         def record(name: str) -> None:
             counts[name] = counts.get(name, 0) + 1
@@ -126,6 +162,9 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     record_pattern(sub)
 
         class Collector(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.sys_platform_module_aliases: set[str] = set()
+
             def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
                 func_defs.add(node.name)
                 record(node.name)
@@ -197,7 +236,12 @@ class AnalysisCollectStaticMixin(_MixinBase):
                     self.visit(stmt)
 
             def visit_If(self, node: ast.If) -> None:
-                static_branch = static_if_live_branch(node)
+                static_branch = static_if_live_branch(
+                    node,
+                    **outer._sys_platform_static_truth_kwargs(
+                        self.sys_platform_module_aliases
+                    ),
+                )
                 if static_branch is not None:
                     for stmt in static_branch:
                         self.visit(stmt)
@@ -263,6 +307,8 @@ class AnalysisCollectStaticMixin(_MixinBase):
                 for alias in node.names:
                     name = alias.asname or alias.name.split(".", 1)[0]
                     record(name)
+                    if alias.name == "sys":
+                        self.sys_platform_module_aliases.add(name)
 
             def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 nonlocal has_dynamic_bind
@@ -772,6 +818,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
         stmt_nodes = [node for node in nodes if isinstance(node, ast.stmt)]
         global_decls = self._collect_global_decls(stmt_nodes)
         nonlocal_decls = self._collect_nonlocal_decls(stmt_nodes)
+        outer = self
         names: list[str] = []
         seen: set[str] = set()
 
@@ -787,6 +834,9 @@ class AnalysisCollectStaticMixin(_MixinBase):
             return alias.name.split(".", 1)[0]
 
         class CodeNamesCollector(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.sys_platform_module_aliases: set[str] = set()
+
             def visit_Name(self, node: ast.Name) -> None:
                 if module_scope:
                     add(node.id)
@@ -806,6 +856,10 @@ class AnalysisCollectStaticMixin(_MixinBase):
             def visit_Import(self, node: ast.Import) -> None:
                 for alias in node.names:
                     add(alias.name)
+                    if alias.name == "sys":
+                        self.sys_platform_module_aliases.add(
+                            alias.asname or alias.name
+                        )
                     if "." in alias.name:
                         if module_scope:
                             add(import_store_name(alias))
@@ -822,7 +876,12 @@ class AnalysisCollectStaticMixin(_MixinBase):
                         add(alias.asname)
 
             def visit_If(self, node: ast.If) -> None:
-                static_branch = static_if_live_branch(node)
+                static_branch = static_if_live_branch(
+                    node,
+                    **outer._sys_platform_static_truth_kwargs(
+                        self.sys_platform_module_aliases
+                    ),
+                )
                 if static_branch is not None:
                     for stmt in static_branch:
                         self.visit(stmt)

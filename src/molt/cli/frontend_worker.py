@@ -177,6 +177,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
+    target_sys_platform = cast(str | None, payload.get("target_sys_platform"))
     target_python = _parse_target_python_version(
         cast(str | None, payload.get("target_python"))
     )
@@ -234,6 +235,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
         native_support_function_roots=native_support_function_roots,
+        target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -359,6 +361,7 @@ def _module_frontend_generator(
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
+    target_sys_platform: str | None,
     scoped_inputs: _ScopedLoweringInputView,
     scoped_known_classes: dict[str, Any],
 ) -> SimpleTIRGenerator:
@@ -383,6 +386,7 @@ def _module_frontend_generator(
         native_support_function_roots=set(
             scoped_inputs.native_support_function_roots_set
         ),
+        target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, optimization_profile),
@@ -503,6 +507,7 @@ def _lower_module_serial_with_context(
             is_package=is_package,
             path_stat=path_stat,
             target_python=lowering_context.target_python,
+            target_sys_platform=lowering_context.target_sys_platform,
         )
         if context_digest is not None:
             cached_payload = _read_persisted_module_lowering(
@@ -536,6 +541,7 @@ def _lower_module_serial_with_context(
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
         optimization_profile=lowering_context.optimization_profile,
+        target_sys_platform=lowering_context.target_sys_platform,
         scoped_inputs=scoped_inputs,
         scoped_known_classes=scoped_known_classes,
     )
@@ -698,6 +704,7 @@ def _prepare_frontend_parallel_batch(
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
     dirty_lowering_modules: Collection[str],
     target_python: TargetPythonVersion,
+    target_sys_platform: str | None,
     frontend_phase_timeout: float | None = None,
 ) -> tuple[
     dict[str, dict[str, Any]],
@@ -791,6 +798,7 @@ def _prepare_frontend_parallel_batch(
                 is_package=is_package,
                 path_stat=path_stat,
                 target_python=target_python,
+                target_sys_platform=target_sys_platform,
             )
             if context_digest is not None:
                 context_digest_by_module[module_name] = context_digest
@@ -833,6 +841,7 @@ def _prepare_frontend_parallel_batch(
             resolution_cache=module_resolution_cache,
             path_stat=path_stat,
             target_python=target_python,
+            target_sys_platform=target_sys_platform,
         )
         if cached_result is not None:
             cached_results[module_name] = cached_result
@@ -874,6 +883,7 @@ def _prepare_frontend_parallel_batch(
                     scoped_known_classes_by_module=scoped_known_classes_by_module,
                     scoped_known_classes=scoped_known_classes,
                     target_python=target_python,
+                    target_sys_platform=target_sys_platform,
                     frontend_phase_timeout=frontend_phase_timeout,
                 ),
             )

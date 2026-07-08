@@ -2040,6 +2040,48 @@ def test_known_module_import_uses_runtime_import_boundary() -> None:
     )
 
 
+def test_target_sys_platform_prunes_unreachable_darwin_guarded_module_code() -> None:
+    source = (
+        "import sys\n"
+        "if sys.platform == 'darwin':\n"
+        "    polyval([1], [2])\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys"},
+        target_sys_platform="wasm",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+
+    assert all(op.get("s_value") != "polyval" for op in main_ops)
+
+
+def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> None:
+    source = (
+        "import sys\n"
+        "if sys.platform == 'darwin':\n"
+        "    polyval([1], [2])\n"
+        "answer = 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="numpy",
+        known_modules={"sys"},
+        target_sys_platform="darwin",
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+
+    assert any(op.get("s_value") == "polyval" for op in main_ops)
+
+
 def test_source_import_statements_use_import_transaction_details() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"json", "json.tool", "pkg", "pkg.child"},
