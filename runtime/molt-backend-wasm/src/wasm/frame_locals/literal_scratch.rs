@@ -20,7 +20,7 @@ impl WasmLiteralScratchLocals {
     }
 
     #[cfg(test)]
-    pub(in crate::wasm) fn payload(self) -> WasmLiteralPayload {
+    pub(in crate::wasm) fn payload(self) -> WasmConstLiteralPayload {
         self.policy.payload()
     }
 
@@ -30,42 +30,22 @@ impl WasmLiteralScratchLocals {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::wasm) enum WasmLiteralPayload {
-    None,
-    String,
-    Bytes,
-    BigintDecimal,
-}
-
-impl WasmLiteralPayload {
-    fn needs_literal_scratch(self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    fn from_const_payload(payload: WasmConstLiteralPayload) -> Self {
-        match payload {
-            WasmConstLiteralPayload::None => Self::None,
-            WasmConstLiteralPayload::String => Self::String,
-            WasmConstLiteralPayload::Bytes => Self::Bytes,
-            WasmConstLiteralPayload::BigintDecimal => Self::BigintDecimal,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::wasm) struct WasmLiteralScratchPolicy {
-    payload: WasmLiteralPayload,
+    payload: WasmConstLiteralPayload,
     parse_scalar_eligible: bool,
 }
 
 impl WasmLiteralScratchPolicy {
-    pub(in crate::wasm) fn new(payload: WasmLiteralPayload, parse_scalar_eligible: bool) -> Self {
+    pub(in crate::wasm) fn new(
+        payload: WasmConstLiteralPayload,
+        parse_scalar_eligible: bool,
+    ) -> Self {
         assert!(
-            payload.needs_literal_scratch(),
+            !matches!(payload, WasmConstLiteralPayload::None),
             "literal scratch policy requires a typed literal payload"
         );
         assert!(
-            !matches!(payload, WasmLiteralPayload::BigintDecimal) || !parse_scalar_eligible,
+            !matches!(payload, WasmConstLiteralPayload::BigintDecimal) || !parse_scalar_eligible,
             "const_bigint decimal literal scratch must not be scalar-parse eligible"
         );
         Self {
@@ -74,7 +54,7 @@ impl WasmLiteralScratchPolicy {
         }
     }
 
-    pub(in crate::wasm) fn payload(self) -> WasmLiteralPayload {
+    pub(in crate::wasm) fn payload(self) -> WasmConstLiteralPayload {
         self.payload
     }
 
@@ -86,8 +66,10 @@ impl WasmLiteralScratchPolicy {
         if !policy.needs_literal_scratch() {
             return None;
         }
-        let payload = WasmLiteralPayload::from_const_payload(policy.literal_payload());
-        Some(Self::new(payload, policy.parse_scalar_literal()))
+        Some(Self::new(
+            policy.literal_payload(),
+            policy.parse_scalar_literal(),
+        ))
     }
 }
 
@@ -95,7 +77,7 @@ impl WasmFrameLocals {
     pub(in crate::wasm) fn ensure_literal_scratch(
         &mut self,
         out_name: &str,
-        payload: WasmLiteralPayload,
+        payload: WasmConstLiteralPayload,
         parse_scalar_eligible: bool,
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
@@ -190,8 +172,9 @@ impl WasmFrameLocals {
 
 #[cfg(test)]
 mod tests {
-    use super::{WasmFrameLocalKind, WasmFrameLocals, WasmLiteralPayload};
+    use super::{WasmFrameLocalKind, WasmFrameLocals};
     use crate::wasm::const_materialization::WasmConstOpPolicy;
+    use crate::wasm_abi_generated::WasmConstLiteralPayload;
     use wasm_encoder::ValType;
 
     #[test]
@@ -202,14 +185,14 @@ mod tests {
 
         let first = locals.ensure_literal_scratch(
             "payload",
-            WasmLiteralPayload::String,
+            WasmConstLiteralPayload::String,
             true,
             &mut local_types,
             &mut local_count,
         );
         let second = locals.ensure_literal_scratch(
             "payload",
-            WasmLiteralPayload::String,
+            WasmConstLiteralPayload::String,
             true,
             &mut local_types,
             &mut local_count,
@@ -220,7 +203,7 @@ mod tests {
 
         assert_eq!(first.ptr_local(), 0);
         assert_eq!(first.len_local(), 1);
-        assert_eq!(first.payload(), WasmLiteralPayload::String);
+        assert_eq!(first.payload(), WasmConstLiteralPayload::String);
         assert!(first.parse_scalar_eligible());
         assert_eq!(second.ptr_local(), first.ptr_local());
         assert_eq!(second.len_local(), first.len_local());
@@ -291,11 +274,14 @@ mod tests {
             &mut local_count,
         );
 
-        assert_eq!(string_scratch.payload(), WasmLiteralPayload::String);
+        assert_eq!(string_scratch.payload(), WasmConstLiteralPayload::String);
         assert!(string_scratch.parse_scalar_eligible());
-        assert_eq!(bigint_scratch.payload(), WasmLiteralPayload::BigintDecimal);
+        assert_eq!(
+            bigint_scratch.payload(),
+            WasmConstLiteralPayload::BigintDecimal
+        );
         assert!(!bigint_scratch.parse_scalar_eligible());
-        assert_eq!(bytes_scratch.payload(), WasmLiteralPayload::Bytes);
+        assert_eq!(bytes_scratch.payload(), WasmConstLiteralPayload::Bytes);
         assert!(bytes_scratch.parse_scalar_eligible());
         assert!(none_scratch.is_none());
         assert!(locals.try_parse_scalar_literal_scratch("text").is_some());
@@ -306,7 +292,7 @@ mod tests {
             locals
                 .try_literal_scratch("digits")
                 .map(|scratch| scratch.payload()),
-            Some(WasmLiteralPayload::BigintDecimal)
+            Some(WasmConstLiteralPayload::BigintDecimal)
         );
         assert_eq!(
             local_types,
