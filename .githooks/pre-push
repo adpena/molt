@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Drift enforcement gate (P0). Worktree/branch sprawl and aged unlanded SIGNAL are
+# POISON — a 165-branch OneDrive .git had to be retired 2026-07-08. This blocks a
+# push when drift has accumulated so it MUST be harvested onto main and pruned.
+# False positives are acceptable (operator directive) — a red gate means "harvest
+# + prune now", which is always correct hygiene. Override for a genuine emergency
+# with MOLT_SKIP_DRIFT_GATE=1 git push ...
+set -uo pipefail
+
+if [ "${MOLT_SKIP_DRIFT_GATE:-}" = "1" ]; then
+  echo "pre-push: drift gate skipped (MOLT_SKIP_DRIFT_GATE=1)"
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+gate="$repo_root/tools/drift_harvest.py"
+[ -f "$gate" ] || exit 0
+
+run_gate() {
+  if command -v uv >/dev/null 2>&1; then
+    uv run --python 3.12 python "$gate" --gate
+  else
+    python "$gate" --gate
+  fi
+}
+
+if ! run_gate; then
+  echo ""
+  echo "pre-push BLOCKED by drift gate. Harvest SIGNAL onto origin/main (use 3-way"
+  echo "git merge/merge-tree, not git cherry) and prune landed/superseded worktrees:"
+  echo "  python tools/drift_harvest.py --prune"
+  echo "Emergency override: MOLT_SKIP_DRIFT_GATE=1 git push ..."
+  exit 1
+fi
+exit 0
