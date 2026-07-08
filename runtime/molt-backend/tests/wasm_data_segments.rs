@@ -4,8 +4,7 @@
 //! data offsets are 8-byte aligned, the manifest segment exists, and duplicate
 //! strings are deduplicated.
 
-use molt_backend::WasmBackend;
-use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use molt_backend::{FunctionIR, OpIR, SimpleIR, WasmBackend, WasmCompileOptions};
 use wasmparser::{DataKind, Parser, Payload};
 
 fn op(kind: &str) -> OpIR {
@@ -23,6 +22,10 @@ fn use_value(name: &str) -> OpIR {
 
 fn compile_ir(ir: SimpleIR) -> Vec<u8> {
     WasmBackend::new().compile(ir)
+}
+
+fn compile_ir_with_options(ir: SimpleIR, options: WasmCompileOptions) -> Vec<u8> {
+    WasmBackend::with_options(options).compile(ir)
 }
 
 struct DataSegment {
@@ -216,6 +219,41 @@ fn data_segments_are_8_byte_aligned() {
             0,
             "data segment at offset {} is not 8-byte aligned (data len={})",
             seg.offset,
+            seg.data.len()
+        );
+    }
+}
+
+#[test]
+fn data_segment_starts_align_current_payload_from_unaligned_base() {
+    let wasm = compile_ir_with_options(
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        },
+        WasmCompileOptions {
+            data_base: 2,
+            ..WasmCompileOptions::default()
+        },
+    );
+
+    let segments = extract_data_segments(&wasm);
+    assert!(!segments.is_empty(), "expected emitted data segments");
+    for seg in &segments {
+        let required_alignment = if seg.data.len() <= 4 { 4 } else { 8 };
+        assert_eq!(
+            seg.offset % required_alignment,
+            0,
+            "data segment at offset {} is not aligned to its own {}-byte payload requirement (data len={})",
+            seg.offset,
+            required_alignment,
             seg.data.len()
         );
     }
