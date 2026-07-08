@@ -22,6 +22,7 @@ pub mod codec_registry;
 pub mod fnmatch;
 #[cfg(feature = "stdlib_text")]
 pub mod html;
+pub mod punycode;
 pub mod textwrap;
 pub mod tokenize;
 #[cfg(feature = "stdlib_text")]

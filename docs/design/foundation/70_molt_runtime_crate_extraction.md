@@ -304,6 +304,31 @@ passed the same parent fan-in proof in 53.5s. Treat the stale invalid row and th
 repeated nested memory-guard cleanup warning as proof-queue/Cargo-lock DX defects
 to drive down separately, not as refcount authority failures.
 
+2026-07-08 C1 follow-up: pure RFC 3492 `encodings.punycode` encode/decode
+behavior now lives in `molt-stdlib-text::punycode`. `molt-runtime` keeps only
+the ABI/object bridge in `builtins/punycode.rs`, importing the shared
+`punycode_{encode,decode}_impl` authority. The module is always available from
+`molt-stdlib-text`, like codec registry facts, because the runtime depends on
+the text crate with `default-features = false` and the punycode intrinsics are
+not a heavy `stdlib_text` surface.
+
+Proof rows:
+`20260708T040103-c1-stdlib-text-punycode-satellite-20260708b-680f230e36aa4b4a`
+passed `cargo test -p molt-stdlib-text --lib` in 32.0s, and
+`20260708T040238-c1-stdlib-text-punycode-fanin-20260708a-80dc7458ca614730`
+passed `cargo check -p molt-runtime` in 137.7s with a dependency edge on the
+satellite row. After rebasing over the refcount-audit satellite on
+`origin/main`, row
+`20260708T041015-c1-stdlib-text-punycode-fanin-postrebase-20260708a-c013c193ee6a422a`
+passed the runtime fan-in in 142.7s. The first attempted single-test proof,
+`20260708T040049-c1-stdlib-text-punycode-satellite-20260708a-157af34190f74bd5`,
+was rejected by the queue with `queue-cold-single-cargo-proof`; that is useful
+DX policy signal, not a code failure, and pushed this lane to prove the whole
+crate lib shard instead of paying a cold compile for one test filter. The
+runtime fan-in repeated the nested memory-guard orphan-cleanup warning with
+receipt
+`D:\Molt\target\sessions\proof-rust-772c70152a7d-cargo-mo\.molt_state\quarantine\cargo_incremental\20260708-040457-pid23588-orphaned_processes_cleaned\receipt.json`.
+
 ## Next Decomposition Order
 
 1. Continue legal subsystem extractions that avoid reserved lanes, starting with
