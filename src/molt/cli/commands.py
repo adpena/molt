@@ -2578,6 +2578,11 @@ def extension_build(
             unit_include_paths = (
                 list(plan_unit.include_dirs) if plan_unit is not None else include_paths
             )
+            if regeneration is not None:
+                unit_include_paths = [
+                    *regeneration.cimport_header_include_dirs,
+                    *unit_include_paths,
+                ]
             if plan_unit is not None:
                 unit_include_paths = _source_plan_include_paths_for_abi(
                     unit_include_paths,

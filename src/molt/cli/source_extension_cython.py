@@ -25,6 +25,7 @@ when it cannot be provisioned.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -78,6 +79,9 @@ class CythonRegeneration:
     regenerated_c: Path
     cython_version: str
     cython_argv: tuple[str, ...]
+    cimport_packages: tuple[str, ...] = ()
+    cimport_pxd_roots: tuple[Path, ...] = ()
+    cimport_header_include_dirs: tuple[Path, ...] = ()
 
     def manifest_payload(self) -> dict[str, Any]:
         return {
@@ -87,6 +91,11 @@ class CythonRegeneration:
             "standalone": True,
             "cython_version": self.cython_version,
             "cython_argv": list(self.cython_argv),
+            "cimport_packages": list(self.cimport_packages),
+            "cimport_pxd_roots": [str(path) for path in self.cimport_pxd_roots],
+            "cimport_header_include_dirs": [
+                str(path) for path in self.cimport_header_include_dirs
+            ],
         }
 
 
@@ -243,13 +252,15 @@ _CYTHON_BUILTIN_CIMPORT_ROOTS = frozenset(
     {"cpython", "libc", "libcpp", "cython", "posix", "openmp"}
 )
 
-# A ``cimport X`` / ``from X cimport ...`` statement. Group 1 = the ``from`` module,
-# group 2 = the bare ``cimport`` target. Leading-dot (relative) forms are handled
-# by the caller (they need no external ``-I``).
-_CIMPORT_RE = re.compile(
-    r"^[ \t]*(?:from[ \t]+([.\w]+)[ \t]+cimport\b|cimport[ \t]+([.\w]+))",
-    re.MULTILINE,
+# ``cimport X`` may name a comma-separated module list with aliases. ``from X
+# cimport ...`` contributes the ``X`` side. Leading-dot modules are relative and
+# need no external package-root include.
+_BARE_CIMPORT_RE = re.compile(r"^[ \t]*cimport[ \t]+(?P<modules>.+?)\s*$")
+_FROM_CIMPORT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(?P<module>[.\w]+)[ \t]+cimport\b"
 )
+_CIMPORT_AS_RE = re.compile(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*\s*$")
+_TOP_LEVEL_CIMPORT_RE = re.compile(r"^(?P<top>[A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _parse_cimported_packages(pyx_path: Path) -> tuple[str, ...]:
@@ -268,17 +279,36 @@ def _parse_cimported_packages(pyx_path: Path) -> tuple[str, ...]:
         scan.extend(sorted(pyx_path.parent.glob("*.pxd")))
     for src in scan:
         try:
-            text = src.read_text(encoding="utf-8", errors="ignore")
+            lines = src.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
             continue
-        for match in _CIMPORT_RE.finditer(text):
-            module = match.group(1) or match.group(2) or ""
-            if not module or module.startswith("."):
+        for raw_line in lines:
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
                 continue
-            top = module.split(".", 1)[0]
-            if top and top not in _CYTHON_BUILTIN_CIMPORT_ROOTS:
-                names.add(top)
+            from_match = _FROM_CIMPORT_RE.match(line)
+            if from_match is not None:
+                _add_cimport_top_level_package(names, from_match.group("module"))
+                continue
+            cimport_match = _BARE_CIMPORT_RE.match(line)
+            if cimport_match is None:
+                continue
+            for module in cimport_match.group("modules").split(","):
+                module = _CIMPORT_AS_RE.sub("", module.strip())
+                _add_cimport_top_level_package(names, module)
     return tuple(sorted(names))
+
+
+def _add_cimport_top_level_package(names: set[str], module: str) -> None:
+    module = module.strip()
+    if not module or module.startswith("."):
+        return
+    match = _TOP_LEVEL_CIMPORT_RE.match(module)
+    if match is None:
+        return
+    top = match.group("top")
+    if top and top not in _CYTHON_BUILTIN_CIMPORT_ROOTS:
+        names.add(top)
 
 
 def _cimport_pxd_roots(
@@ -369,6 +399,101 @@ def _cimport_pxd_roots(
     return tuple(roots)
 
 
+def _cimport_header_include_dirs(
+    interpreter: str,
+    packages: Sequence[str],
+) -> tuple[Path, ...]:
+    """Package-owned C header include dirs exposed by cimported dependencies.
+
+    A pxd-shipping dependency may emit C that must be compiled against headers
+    from the same package version that supplied the pxd. Resolve generic
+    ``get_include()`` hooks in the build interpreter; packages without such a
+    hook are skipped fail-safe, leaving source-plan metadata authoritative.
+    """
+    requested = tuple(
+        sorted(
+            {
+                package
+                for package in packages
+                if package and package not in _CYTHON_BUILTIN_CIMPORT_ROOTS
+            }
+        )
+    )
+    if not requested:
+        return ()
+    probe = r"""
+import importlib
+import json
+import sys
+from pathlib import Path
+
+roots = []
+for name in json.loads(sys.argv[1]):
+    try:
+        module = importlib.import_module(name)
+        getter = getattr(module, "get_include", None)
+        if not callable(getter):
+            continue
+        value = getter()
+    except Exception:
+        continue
+    values = value if isinstance(value, (list, tuple)) else [value]
+    for raw in values:
+        try:
+            path = Path(raw).resolve()
+        except (OSError, TypeError):
+            continue
+        if path.is_dir():
+            roots.append(str(path))
+print(json.dumps(roots))
+"""
+    try:
+        result = subprocess.run(
+            [interpreter, "-c", probe, json.dumps(requested)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if result.returncode != 0:
+        return ()
+    payload = _json_from_probe_stdout(result.stdout)
+    if not isinstance(payload, list):
+        return ()
+    return _existing_unique_dirs(payload)
+
+
+def _json_from_probe_stdout(stdout: str) -> Any:
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _existing_unique_dirs(values: Sequence[Any]) -> tuple[Path, ...]:
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            path = Path(value).resolve()
+        except OSError:
+            continue
+        if path in seen or not path.is_dir():
+            continue
+        seen.add(path)
+        dirs.append(path)
+    return tuple(dirs)
+
+
 def _cython_include_dirs(
     *,
     pyx_path: Path,
@@ -429,14 +554,20 @@ def regenerate_cython_c_standalone(
     is_cpp = original_c.suffix.lower() in {".cpp", ".cxx", ".cc"}
     out_dir.mkdir(parents=True, exist_ok=True)
     regenerated_c = out_dir / f"{pyx_path.stem}{original_c.suffix.lower()}"
+    cimport_packages = _parse_cimported_packages(pyx_path)
+    cimport_pxd_roots = _cimport_pxd_roots(
+        interpreter,
+        cimport_packages,
+        search_roots=[*include_dirs, pyx_path.parent],
+    )
+    cimport_header_include_dirs = _cimport_header_include_dirs(
+        interpreter,
+        cimport_packages,
+    )
     resolved_includes = _cython_include_dirs(
         pyx_path=pyx_path,
         plan_include_dirs=include_dirs,
-        cimport_pxd_roots=_cimport_pxd_roots(
-            interpreter,
-            _parse_cimported_packages(pyx_path),
-            search_roots=[*include_dirs, pyx_path.parent],
-        ),
+        cimport_pxd_roots=cimport_pxd_roots,
     )
     argv: list[str] = [interpreter, "-m", "cython", "-3"]
     if is_cpp:
@@ -479,6 +610,9 @@ def regenerate_cython_c_standalone(
             regenerated_c=regenerated_c.resolve(),
             cython_version=cython_version,
             cython_argv=tuple(argv),
+            cimport_packages=cimport_packages,
+            cimport_pxd_roots=cimport_pxd_roots,
+            cimport_header_include_dirs=cimport_header_include_dirs,
         ),
         None,
     )

@@ -23,6 +23,19 @@ SOURCE_EXTENSION_COMPILE_HEADER_MISSING_RE = re.compile(
     r"Failed compiling (?P<source>[^:\r\n]+):[\s\S]*?fatal error: "
     r"'(?P<header>[^']+)' file not found"
 )
+SOURCE_EXTENSION_CIMPORT_HEADER_MISMATCH_RE = re.compile(
+    r"(?P<evidence>Failed compiling (?P<source>[^:\r\n]+):[\s\S]*?"
+    r"(?:call to undeclared function "
+    r"'(?P<symbol>PyDataType_[^']+|_PyUFuncObject_GET_ITEM_DATA)'|"
+    r"member reference type 'int' is not a pointer)[\s\S]*?)"
+    r"(?=\n\n|proof_queue finished|$)"
+)
+SOURCE_EXTENSION_CPYTHON_ABI_DECL_MISSING_RE = re.compile(
+    r"(?P<evidence>Failed compiling (?P<source>[^:\r\n]+):[\s\S]*?"
+    r"call to undeclared function '(?P<symbol>_?Py[A-Za-z0-9_]+)'[\s\S]*?"
+    r"Python\.h[\s\S]*?)"
+    r"(?=\n\n|proof_queue finished|$)"
+)
 SOURCE_EXTENSION_CYTHON_REGENERATION_FAILED_RE = re.compile(
     r"Standalone `cython -3` regeneration of (?P<source>[^`]+) failed: "
     r"(?P<error>[^\r\n\"]+)"
@@ -398,6 +411,62 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "src/molt/cli/source_extensions.py",
                     "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
                     "tools/proof_queue.py",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = SOURCE_EXTENSION_CIMPORT_HEADER_MISMATCH_RE.search(log_tail)
+    if match is not None:
+        symbol = match.group("symbol") or "package C accessor"
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="source-extension-cimport-header-mismatch",
+                severity="infra",
+                summary=(
+                    "Source-extension compile used Cython pxd facts that do not "
+                    f"match the C header include surface while compiling "
+                    f"{match.group('source').strip()} ({symbol})."
+                ),
+                evidence=match.group("evidence"),
+                next_action=(
+                    "Keep cimport .pxd roots and package C header include roots "
+                    "under the same build-interpreter package custody. Derive "
+                    "both from source cimports and package build hooks; do not "
+                    "pin an older Cython, copy package headers, or add a "
+                    "package-specific source-plan/header overlay."
+                ),
+                scopes=(
+                    "src/molt/cli/source_extension_cython.py",
+                    "src/molt/cli/commands.py",
+                    "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
+                ),
+                artifacts=(str(row["summary_json"]), str(row["log_path"])),
+            )
+        )
+
+    match = SOURCE_EXTENSION_CPYTHON_ABI_DECL_MISSING_RE.search(log_tail)
+    if match is not None:
+        symbol = match.group("symbol")
+        diagnostics.append(
+            pq._diagnostic(
+                signal_id="source-extension-cpython-abi-declaration-missing",
+                severity="error",
+                summary=(
+                    "Source-extension compile requires CPython ABI declaration "
+                    f"{symbol}, but Molt's cpython-abi header does not expose it."
+                ),
+                evidence=match.group("evidence"),
+                next_action=(
+                    "Route to the cpython-abi owner to add the missing "
+                    "declaration, macro, or helper as a shared C-API primitive. "
+                    "Do not relax compiler diagnostics, pin an older Cython, or "
+                    "patch the package source/source-plan around the missing ABI."
+                ),
+                scopes=(
+                    "runtime/molt-cpython-abi/include/Python.h",
+                    "runtime/molt-cpython-abi/",
+                    "src/molt/cli/source_extensions.py",
                 ),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),
             )

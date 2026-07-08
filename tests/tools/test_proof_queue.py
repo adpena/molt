@@ -6398,6 +6398,146 @@ def test_proof_queue_diagnoses_source_extension_cython_regeneration_failed(
     }
 
 
+def test_proof_queue_diagnoses_source_extension_cimport_header_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-extension-cimport-header.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-extension-cimport-header",
+        logical_id="e1-scipy-ni-label-rebuild",
+        reason="prove source-extension cimport/header custody diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_extension_cython.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-extension-cimport-header.memory_guard.json",
+    )
+    log_path.write_text(
+        '{"schema_version": "1.0", "command": "extension-build", '
+        '"status": "error", "errors": ["Failed compiling _ni_label.c: '
+        "cython_standalone/_ni_label.c:18976:13: error: call to undeclared "
+        "function 'PyDataType_TYPEOBJ'; ISO C99 and later do not support "
+        "implicit function declarations [-Wimplicit-function-declaration]\\n"
+        "cython_standalone/_ni_label.c:20142:13: error: call to undeclared "
+        "function '_PyUFuncObject_GET_ITEM_DATA'; ISO C99 and later do not "
+        'support implicit function declarations"]}\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "source-extension-cimport-header", status="failed", returncode=2
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-extension-cimport-header",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert diagnostics[0]["signal_id"] == "source-extension-cimport-header-mismatch"
+    assert diagnostics[0]["severity"] == "infra"
+    assert "PyDataType_TYPEOBJ" in diagnostics[0]["summary"]
+    assert "same build-interpreter package custody" in diagnostics[0]["next_action"]
+    assert "do not pin an older Cython" in diagnostics[0]["next_action"]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
+def test_proof_queue_diagnoses_source_extension_cpython_abi_declaration_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    log_path = tmp_path / "source-extension-cpython-abi-decl.log"
+    conn = proof_queue._connect(db)
+    proof_queue._insert_run(
+        conn,
+        run_id="source-extension-cpython-abi-decl",
+        logical_id="e1-scipy-ni-label-rebuild",
+        reason="prove source-extension cpython abi declaration diagnosis",
+        command=[sys.executable, "-m", "molt", "extension", "build"],
+        cwd=proof_queue.ROOT,
+        resource_family="wasm-source-extension",
+        contention_key="wasm:pact-seal-regen",
+        scopes=["src/molt/cli/source_extension_cython.py"],
+        git_snapshot={
+            "available": True,
+            "head": "abc123",
+            "dirty": False,
+            "status": [],
+        },
+        log_path=log_path,
+        summary_json=tmp_path / "source-extension-cpython-abi-decl.memory_guard.json",
+    )
+    log_path.write_text(
+        '{"schema_version": "1.0", "command": "extension-build", '
+        '"status": "error", "errors": ["Failed compiling _ni_label.c: '
+        "cython_standalone/_ni_label.c:31134:73: error: call to undeclared "
+        "function 'PyType_IS_GC'; ISO C99 and later do not support implicit "
+        "function declarations [-Wimplicit-function-declaration]\\n"
+        "runtime\\\\molt-cpython-abi\\\\include\\\\Python.h:1031:21: note: "
+        '\'PyTraceBack_Here\' declared here"]}\n',
+        encoding="utf-8",
+    )
+    proof_queue._update_run(
+        conn, "source-extension-cpython-abi-decl", status="failed", returncode=2
+    )
+
+    assert (
+        proof_queue.main(
+            [
+                "--db",
+                str(db),
+                "--logs-root",
+                str(tmp_path / "runs"),
+                "--repo-root",
+                str(proof_queue.ROOT),
+                "evidence",
+                "--run-id",
+                "source-extension-cpython-abi-decl",
+            ]
+        )
+        == 0
+    )
+    evidence = json.loads(capsys.readouterr().out)
+    diagnostics = evidence[0]["diagnostics"]
+    assert (
+        diagnostics[0]["signal_id"]
+        == "source-extension-cpython-abi-declaration-missing"
+    )
+    assert diagnostics[0]["severity"] == "error"
+    assert "PyType_IS_GC" in diagnostics[0]["summary"]
+    assert "cpython-abi owner" in diagnostics[0]["next_action"]
+    assert "Do not relax compiler diagnostics" in diagnostics[0]["next_action"]
+    assert str(log_path) in diagnostics[0]["artifacts"]
+    assert "unclassified-failed-proof" not in {
+        item["signal_id"] for item in diagnostics
+    }
+
+
 def test_proof_queue_diagnoses_cpython_abi_pymod_gil_slot_token_mismatch(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
