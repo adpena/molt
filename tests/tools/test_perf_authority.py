@@ -240,6 +240,17 @@ def test_canonical_scoreboard_shape_requires_native_and_llvm_release_fast() -> N
         for p in partial_suite
     )
 
+    empty_board = pa.canonical_scoreboard_shape_problems({"scoreboard": {}})
+    assert any(
+        "benchmarks_run must list the canonical core suite" in p
+        for p in empty_board
+    )
+    assert any("lacks backend binary identities" in p for p in empty_board)
+    assert any(
+        "contains no native+llvm release-fast benchmark cells" in p
+        for p in empty_board
+    )
+
 
 def test_perf_gate_workflow_runs_canonical_matrix_contract() -> None:
     workflow = (REPO_ROOT / ".github/workflows/perf-gate.yml").read_text(
