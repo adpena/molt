@@ -428,16 +428,19 @@ def _validate_e4_structural_floor(
 
 
 def _validate_e2_perf_scoreboard(
-    evidence_paths: Sequence[str],
+    evidence: object,
     *,
+    base_dir: Path,
     now: dt.datetime | None = None,
 ) -> list[str]:
     problems: list[str] = []
     scoreboard_count = 0
     current = now or dt.datetime.now(dt.timezone.utc)
 
-    for raw_path in evidence_paths:
-        path = Path(raw_path)
+    for index, entry in enumerate(_evidence_items(evidence)):
+        path = _resolve_evidence_path(entry.get("path"), base_dir=base_dir)
+        if path is None or not path.exists():
+            continue
         doc, error = _load_json_evidence(path)
         if error is not None:
             problems.append(f"E2: {error}")
@@ -446,10 +449,24 @@ def _validate_e2_perf_scoreboard(
         if doc.get("kind") != E2_SCOREBOARD_KIND:
             continue
         scoreboard_count += 1
+        problems.extend(
+            f"E2: evidence[{index}] {problem}"
+            for problem in pa.canonical_scoreboard_command_problems(
+                _entry_command_text(entry),
+                label="canonical scoreboard command",
+            )
+        )
 
         schema_problems = perf_schema.validate_board(doc)
         problems.extend(
             f"E2: scoreboard schema violation in {path}: {p}" for p in schema_problems
+        )
+        problems.extend(
+            f"E2: {problem}: {path}"
+            for problem in pa.canonical_scoreboard_shape_problems(
+                doc,
+                label="canonical scoreboard",
+            )
         )
 
         provenance = doc.get("provenance")
@@ -551,7 +568,12 @@ def validate_manifest(
                         )
                     )
                 if key == "E2" and not evidence_problems:
-                    item_problems.extend(_validate_e2_perf_scoreboard(evidence_paths))
+                    item_problems.extend(
+                        _validate_e2_perf_scoreboard(
+                            item.get("evidence"),
+                            base_dir=base_dir,
+                        )
+                    )
                 if key == "E3" and not evidence_problems:
                     item_problems.extend(
                         _validate_e3_parity_receipt(
