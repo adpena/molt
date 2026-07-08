@@ -828,3 +828,20 @@ def test_auto_janitor_throttled_and_optout(monkeypatch, tmp_path):
     dx._maybe_sweep_stale_artifacts(other)
     assert len(popen_calls) == 1
     assert not (other / ".molt_janitor_last_run").exists()
+
+
+def test_onedrive_paths_rejected_fail_closed():
+    # Nothing may ever drift back onto OneDrive — checkout OR artifacts fail closed.
+    import pytest as _pytest
+    import molt.dx as dx
+    from pathlib import Path
+
+    with _pytest.raises(dx.DxConfigError, match="OneDrive"):
+        dx._reject_onedrive(Path(r"C:\Users\x\OneDrive\Documents\molt"), "checkout")
+    with _pytest.raises(dx.DxConfigError, match="OneDrive"):
+        dx._reject_onedrive(Path(r"C:\Users\x\OneDrive\molt\target"), "artifacts")
+    # Canonical paths pass.
+    dx._reject_onedrive(Path(r"C:\Molt\molt-src"), "checkout")
+    dx._reject_onedrive(Path(r"C:\Molt"), "artifacts")
+    assert dx._is_onedrive_path(Path(r"C:\Users\x\OneDrive\Documents\molt")) is True
+    assert dx._is_onedrive_path(Path(r"C:\Molt\molt-src")) is False
