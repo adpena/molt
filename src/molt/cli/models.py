@@ -463,6 +463,7 @@ class _FrontendLayerExecutionContext:
     stdlib_like_by_module: Mapping[str, bool]
     known_classes: Mapping[str, Any]
     target_python: TargetPythonVersion
+    target_sys_platform: str | None
     frontend_phase_timeout: float | None
     scc_serial_modules: frozenset[str] = frozenset()
 
@@ -524,6 +525,7 @@ class _SerialFrontendLoweringContext:
     known_classes: Mapping[str, Any]
     frontend_phase_timeout: float | None
     target_python: TargetPythonVersion
+    target_sys_platform: str | None
 
 
 @dataclass(frozen=True)
@@ -570,6 +572,7 @@ class _EntryFrontendLoweringContext:
     pgo_hot_function_names: Collection[str]
     frontend_phase_timeout: float | None
     target_python: TargetPythonVersion
+    target_sys_platform: str | None
 
 
 @dataclass
@@ -1549,6 +1552,7 @@ class _PreparedBuildConfig:
     manifest_env_vars: dict[str, str]
     capability_config_cache_digest: str
     target_python: TargetPythonVersion
+    target_sys_platform: str | None
 
 
 @dataclass(frozen=True)

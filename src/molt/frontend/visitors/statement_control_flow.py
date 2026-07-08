@@ -30,7 +30,9 @@ else:
 
 class ControlFlowStatementVisitorMixin(_MixinBase):
     def visit_If(self, node: ast.If) -> None:
-        static_branch = static_if_live_branch(node)
+        static_branch = static_if_live_branch(
+            node, **self._sys_platform_static_truth_kwargs()
+        )
         if static_branch is not None:
             self._emit_static_if_live_branch(static_branch)
             return None

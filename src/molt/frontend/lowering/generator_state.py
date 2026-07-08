@@ -293,6 +293,7 @@ class GeneratorStateMixin(_MixinBase):
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
         native_support_function_roots: set[str] | None = None,
+        target_sys_platform: str | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -424,6 +425,7 @@ class GeneratorStateMixin(_MixinBase):
             ):
                 self.stdlib_hint_trust = True
         self._source_is_stdlib_module = self.stdlib_hint_trust
+        self.target_sys_platform = target_sys_platform
         self.global_dict_key_hints: dict[str, str] = {}
         self.global_dict_value_hints: dict[str, str] = {}
         self.type_facts = type_facts
