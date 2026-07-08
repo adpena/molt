@@ -7,8 +7,6 @@ mod synthetic_locals;
 
 pub(in crate::wasm) use anonymous_locals::WasmFrameAnonymousLocal;
 pub(in crate::wasm) use dispatch_locals::WasmDispatchFrameLocals;
-#[cfg(test)]
-pub(in crate::wasm) use literal_scratch::WasmLiteralPayload;
 pub(in crate::wasm) use literal_scratch::{WasmLiteralScratchLocals, WasmLiteralScratchPolicy};
 pub(in crate::wasm) use synthetic_locals::WasmFrameSyntheticLocal;
 
