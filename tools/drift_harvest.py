@@ -127,18 +127,21 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
             continue
         dirty = _dirty_count(path)
         last = _last_commit_epoch(path)
-        uniq = _unique_commit_count(ref) if ref else 0
         fresh = dirty > 0 or last >= cutoff
+        # ``git cherry`` (patch-id) is the expensive per-worktree call. PROTECTED,
+        # LOCKED, and FRESH worktrees never consume ``uniq`` (they are always kept),
+        # so compute it lazily only for the SUPERSEDED-vs-SIGNAL decision. This keeps
+        # the pre-push gate fast on a checkout of mostly-fresh worktrees without
+        # changing any state assignment or prune/bundle behaviour.
         if _protected(path):
-            state = "PROTECTED"
+            state, uniq = "PROTECTED", 0
         elif wt.get("locked"):
-            state = "LOCKED"
+            state, uniq = "LOCKED", 0
         elif fresh:
-            state = "FRESH"
-        elif uniq == 0:
-            state = "SUPERSEDED"
+            state, uniq = "FRESH", 0
         else:
-            state = "SIGNAL"
+            uniq = _unique_commit_count(ref) if ref else 0
+            state = "SUPERSEDED" if uniq == 0 else "SIGNAL"
         rows.append(
             {
                 "path": path,
@@ -239,9 +242,17 @@ def main() -> int:
     )
     ap.add_argument("--max-worktrees", type=int, default=24)
     ap.add_argument("--max-signal-age-hours", type=float, default=72.0)
+    ap.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="skip 'git fetch origin' (for pre-push hooks: the push already "
+        "contacts origin, and a stale origin/main only risks a benign false "
+        "positive — never a missed prune)",
+    )
     args = ap.parse_args()
 
-    _git(["fetch", "origin", "--quiet"])
+    if not args.no_fetch:
+        _git(["fetch", "origin", "--quiet"])
     now = args.now if args.now is not None else time.time()
     rows = classify(args.fresh_hours, now)
 
