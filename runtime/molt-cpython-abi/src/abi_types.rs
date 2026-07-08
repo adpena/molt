@@ -534,6 +534,96 @@ unsafe impl Sync for PyType_Spec {}
 unsafe impl Send for PyModuleDef_Slot {}
 unsafe impl Sync for PyModuleDef_Slot {}
 
+// ── Number / Sequence / Mapping / Async / Buffer protocol tables ──────────────
+//
+// `PyTypeObject` stores `tp_as_number`/`tp_as_sequence`/`tp_as_mapping`/
+// `tp_as_async`/`tp_as_buffer` as opaque `*mut c_void` (nothing on the Rust side
+// dereferences them by field — the typed view lives in the C header). To let
+// `PyType_FromSpecWithBases` place `Py_nb_*`/`Py_sq_*`/`Py_mp_*`/`Py_am_*`/
+// `Py_bf_*` slot pointers into the correct field, these structs mirror the exact
+// field order of CPython 3.12's `PyNumberMethods`/`PySequenceMethods`/
+// `PyMappingMethods`/`PyAsyncMethods`/`PyBufferProcs` (and this crate's own
+// `include/Python.h`). Every member is a function pointer or `void*`, so all
+// fields are pointer-sized and the layout is byte-identical to the header; we
+// type them as `*mut c_void` because we only *store* the slot pointer here, never
+// call through it. Field order is load-bearing — a reordering is a silent
+// miscompile — so it is kept 1:1 with the header and CPython `Include/cpython/
+// object.h`.
+#[repr(C)]
+pub struct PyNumberMethods {
+    pub nb_add: *mut c_void,
+    pub nb_subtract: *mut c_void,
+    pub nb_multiply: *mut c_void,
+    pub nb_remainder: *mut c_void,
+    pub nb_divmod: *mut c_void,
+    pub nb_power: *mut c_void,
+    pub nb_negative: *mut c_void,
+    pub nb_positive: *mut c_void,
+    pub nb_absolute: *mut c_void,
+    pub nb_bool: *mut c_void,
+    pub nb_invert: *mut c_void,
+    pub nb_lshift: *mut c_void,
+    pub nb_rshift: *mut c_void,
+    pub nb_and: *mut c_void,
+    pub nb_xor: *mut c_void,
+    pub nb_or: *mut c_void,
+    pub nb_int: *mut c_void,
+    pub nb_reserved: *mut c_void,
+    pub nb_float: *mut c_void,
+    pub nb_inplace_add: *mut c_void,
+    pub nb_inplace_subtract: *mut c_void,
+    pub nb_inplace_multiply: *mut c_void,
+    pub nb_inplace_remainder: *mut c_void,
+    pub nb_inplace_power: *mut c_void,
+    pub nb_inplace_lshift: *mut c_void,
+    pub nb_inplace_rshift: *mut c_void,
+    pub nb_inplace_and: *mut c_void,
+    pub nb_inplace_xor: *mut c_void,
+    pub nb_inplace_or: *mut c_void,
+    pub nb_floor_divide: *mut c_void,
+    pub nb_true_divide: *mut c_void,
+    pub nb_inplace_floor_divide: *mut c_void,
+    pub nb_inplace_true_divide: *mut c_void,
+    pub nb_index: *mut c_void,
+    pub nb_matrix_multiply: *mut c_void,
+    pub nb_inplace_matrix_multiply: *mut c_void,
+}
+
+#[repr(C)]
+pub struct PySequenceMethods {
+    pub sq_length: *mut c_void,
+    pub sq_concat: *mut c_void,
+    pub sq_repeat: *mut c_void,
+    pub sq_item: *mut c_void,
+    pub was_sq_slice: *mut c_void,
+    pub sq_ass_item: *mut c_void,
+    pub was_sq_ass_slice: *mut c_void,
+    pub sq_contains: *mut c_void,
+    pub sq_inplace_concat: *mut c_void,
+    pub sq_inplace_repeat: *mut c_void,
+}
+
+#[repr(C)]
+pub struct PyMappingMethods {
+    pub mp_length: *mut c_void,
+    pub mp_subscript: *mut c_void,
+    pub mp_ass_subscript: *mut c_void,
+}
+
+#[repr(C)]
+pub struct PyAsyncMethods {
+    pub am_await: *mut c_void,
+    pub am_aiter: *mut c_void,
+    pub am_anext: *mut c_void,
+    pub am_send: *mut c_void,
+}
+
+#[repr(C)]
+pub struct PyBufferProcs {
+    pub bf_getbuffer: *mut c_void,
+    pub bf_releasebuffer: *mut c_void,
+}
+
 /// CPython METH flags (tp_methods ml_flags).
 pub const METH_VARARGS: c_int = 0x0001;
 pub const METH_KEYWORDS: c_int = 0x0002;
